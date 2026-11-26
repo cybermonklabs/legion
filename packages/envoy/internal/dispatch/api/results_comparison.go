@@ -282,7 +282,7 @@ type baseBranchAnswer struct {
 }
 
 func newComparisonReader(ctx context.Context, s *server, at string) *comparisonReader {
-	return &comparisonReader{
+	c := &comparisonReader{
 		server: s, readOnly: readOnlyCredential(ctx) != nil, at: at, repos: map[string]repositoryAnswer{},
 		defaults:           map[string]defaultBranchAnswer{},
 		baseBranches:       map[string]baseBranchAnswer{},
@@ -295,6 +295,8 @@ func newComparisonReader(ctx context.Context, s *server, at string) *comparisonR
 		branchIssues:   map[[2]string][2]bool{},
 		askedPulls:     map[[2]string]struct{}{},
 	}
+	c.fills.readOnly, c.fills.answers = c.readOnly, &c.answers
+	return c
 }
 
 // noMergedBranch is what delivery.Attributor.BaseBranchMergedFor answers for an issue Dispatch

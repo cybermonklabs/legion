@@ -125,9 +125,9 @@ type ciRun struct {
 // or failed, the result derived from that run, merged into the results the read loaded for it,
 // newest first (newestResultsFirst). The heads are the head of each open pull request of the issue
 // (ciHeadsOf), each read in the repository of its own row, or where none is open the merged one
-// that merged last, which the reader's fill (comparisonReader.fillMergeTimes, over the reader's
-// memo) orders. Where Dispatch cannot tell which merged one merged last, it reads no head, and each
-// such check's `ci` is unread for the case read_failed (ciCaseReadFailed). It answers each check's
+// that merged last, which fillMergeTimes orders over the reader's memo (comparisonReader.fills).
+// Where Dispatch cannot tell which merged one merged last, it reads no head, and each such check's
+// `ci` is unread for the case read_failed (ciCaseReadFailed). It answers each check's
 // read at each head, by block id and then by the head's repository and commit (ciHeadKey), which
 // the comparison gives each subject (comparison.ci): two repositories at one commit each read
 // their own runs there, and each derives a result of its own, so a fail in one is never hidden by
@@ -306,11 +306,11 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 // the check's `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the
 // final head of the merged pull request that merged last; and none where Dispatch holds neither.
 // Where none is open, the merged pull requests are taken in the order they merged only once the
-// reader's fill (comparisonReader.fillMergeTimes) says they can be: where it says they cannot,
-// ordered is false and no head is read, since the head of the highest number, or of a merge with
-// no time ordered last, may be an older merge's than the newest. Each read of the heads takes the
-// reader's answers (comparisonReader.answers), as every read of the heads on the results path
-// does.
+// fill over the reader's memo (fillMergeTimes, comparisonReader.fills) says they can be: where it
+// says they cannot, ordered is false and no head is read, since the head of the highest number, or
+// of a merge with no time ordered last, may be an older merge's than the newest. Each read of the
+// heads takes the reader's answers (comparisonReader.answers), as every read of the heads on the
+// results path does.
 func (s *server) ciHeadsOf(ctx context.Context, reader *comparisonReader, issueKey string) ([]delivery.NewestHead, bool, error) {
 	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil {
@@ -333,7 +333,7 @@ func (s *server) ciHeadsOf(ctx context.Context, reader *comparisonReader, issueK
 	for index, head := range attributed {
 		merged[index] = head.MergeTime()
 	}
-	if !reader.fillMergeTimes(ctx, merged) {
+	if !s.fillMergeTimes(ctx, &reader.fills, merged) {
 		return nil, false, nil
 	}
 	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)

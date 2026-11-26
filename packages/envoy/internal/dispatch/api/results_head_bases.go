@@ -92,7 +92,7 @@ func (c *comparisonReader) mergedInOrder(ctx context.Context, heads []delivery.A
 	for index, head := range heads {
 		rows[index] = head.MergeTime()
 	}
-	ordered := c.fillMergeTimes(ctx, rows)
+	ordered := c.server.fillMergeTimes(ctx, &c.fills, rows)
 	for index := range heads {
 		heads[index].MergedAt = rows[index].MergedAt
 	}

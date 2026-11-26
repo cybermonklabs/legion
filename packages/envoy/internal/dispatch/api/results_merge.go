@@ -16,12 +16,16 @@ import (
 
 // mergeTimeFills is one results read's memo of the merge times it learned (fillMergeTimes): the
 // comparisonReader holds it (comparisonReader.fills), and deriveCIResults and the comparison after
-// it both fill through that reader, so the read learns no merge time twice. learned holds, by
+// it both fill through that reader's, so the read learns no merge time twice. learned holds, by
 // repository and number, each pull request the read asked GitHub about and the time it learned
-// there, nil where it learned none; the zero value is an empty memo.
+// there, nil where it learned none. readOnly and answers are the reader's
+// (comparisonReader.readOnly, comparisonReader.answers), which newComparisonReader sets: a
+// read-only caller's refresh stores nothing and adds what it read to answers (refreshMerge).
 type mergeTimeFills struct {
-	mu      sync.Mutex
-	learned map[string]*time.Time
+	mu       sync.Mutex
+	learned  map[string]*time.Time
+	readOnly bool
+	answers  *delivery.HeadAnswers
 }
 
 // fillMergeTimes reports whether rows, the merged pull request rows one read orders by when each
@@ -41,7 +45,7 @@ type mergeTimeFills struct {
 // no time, and its set stays one that cannot be ordered, as does a set whose read failed now. The
 // reconcile's rule arm offers every other such row once (delivery.ListStalePullRequestHeads). A
 // read-only caller's read asks GitHub the same and stores nothing (refreshMerge).
-func (c *comparisonReader) fillMergeTimes(ctx context.Context, rows []delivery.MergeTime) (ordered bool) {
+func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows []delivery.MergeTime) (ordered bool) {
 	if len(rows) < 2 {
 		return true
 	}
@@ -49,7 +53,7 @@ func (c *comparisonReader) fillMergeTimes(ctx context.Context, rows []delivery.M
 	for index := range rows {
 		row := &rows[index]
 		if row.MergedAt == nil && row.AttributionRule < delivery.AttributionRuleVersion {
-			row.MergedAt = c.refreshMerge(ctx, row.Repo, row.Number)
+			row.MergedAt = s.refreshMerge(ctx, fills, row.Repo, row.Number)
 		}
 		if row.MergedAt == nil {
 			ordered = false
@@ -62,44 +66,48 @@ func (c *comparisonReader) fillMergeTimes(ctx context.Context, rows []delivery.M
 // from GitHub in this read of the results, read back by its number
 // (delivery.Attributor.StoredMergeTime) through the request's answers, since the refresh answers
 // only whether it failed: nil where the row holds no time of its merge, a refresh or a read that
-// failed included, each logged. A refresh that failed leaves the row as it was. c.fills keeps
-// each answer, so one read of the results asks GitHub about a pull request once. A deployment
-// that holds no App key refreshes nothing.
+// failed included, each logged. A refresh that failed leaves the row as it was. fills keeps each
+// answer, so one read of the results asks GitHub about a pull request once. A deployment that
+// holds no App key refreshes nothing.
 //
 // A writer's read refreshes the row and stores it (delivery.Attributor.RefreshPullRequestHead). A
 // read-only caller's read stores nothing: it reads the pull request exactly as the refresh would
 // (delivery.Attributor.ReadPullRequestHead), a stamp included, and adds the answer to its
-// request's answers (c.answers), so the read back and every later read of the heads read the row
-// as a writer's read reads the row its refresh stored.
-func (c *comparisonReader) refreshMerge(ctx context.Context, repo string, number int) *time.Time {
-	s := c.server
+// request's answers (fills.answers), so the read back and every later read of the heads read the
+// row as a writer's read reads the row its refresh stored.
+func (s *server) refreshMerge(ctx context.Context, fills *mergeTimeFills, repo string, number int) *time.Time {
 	if s.deps.GitHub == nil {
 		return nil
 	}
 	key := repo + "#" + strconv.Itoa(number)
-	c.fills.mu.Lock()
-	defer c.fills.mu.Unlock()
-	if learned, asked := c.fills.learned[key]; asked {
+	fills.mu.Lock()
+	defer fills.mu.Unlock()
+	if learned, asked := fills.learned[key]; asked {
 		return learned
 	}
-	if c.fills.learned == nil {
-		c.fills.learned = map[string]*time.Time{}
+	if fills.learned == nil {
+		fills.learned = map[string]*time.Time{}
+	}
+	var answers delivery.HeadAnswers
+	if fills.answers != nil {
+		answers = *fills.answers
 	}
 	var refreshErr error
-	if c.readOnly {
+	if fills.readOnly {
 		var pulls delivery.CommitPulls
-		pulls, refreshErr = s.deps.Attributor.ReadPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, repo, number, s.resultsNow(), c.answers)
-		c.answers.Add(pulls)
+		pulls, refreshErr = s.deps.Attributor.ReadPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, repo, number, s.resultsNow(), answers)
+		fills.answers.Add(pulls)
+		answers = *fills.answers
 	} else {
 		refreshErr = s.deps.Attributor.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, repo, number, s.resultsNow())
 	}
 	if refreshErr != nil {
 		slog.Warn("dispatch: refresh a merged pull request a results read orders", "repo", repo, "number", number, "error", refreshErr)
 	}
-	learned, err := s.deps.Attributor.StoredMergeTime(ctx, s.deps.Store.Pool, repo, number, c.answers)
+	learned, err := s.deps.Attributor.StoredMergeTime(ctx, s.deps.Store.Pool, repo, number, answers)
 	if err != nil {
 		slog.Warn("dispatch: read a refreshed merged pull request", "repo", repo, "number", number, "error", err)
 	}
-	c.fills.learned[key] = learned
+	fills.learned[key] = learned
 	return learned
 }
