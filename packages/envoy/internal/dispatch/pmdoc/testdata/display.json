@@ -608,6 +608,126 @@
     }
   },
   {
+    "name": "emails-after-a-link-address",
+    "markdown": "Mail [w](dispatch://ACME-1)me@example.com, or \\[w](dispatch://ACME-1)me@example.com, now.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail "
+            },
+            {
+              "type": "text",
+              "text": "w",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", or [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", now."
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail "
+            },
+            {
+              "type": "text",
+              "text": "w",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", or [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", now."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "name": "html-block",
     "markdown": "Before the block.\n\n\u003cdiv class=\"note\"\u003e\n  \u003cp\u003eMarkup the Proof schema carries inline only.\u003c/p\u003e\n\u003c/div\u003e\n\nAfter the block.\n",
     "latest": {
@@ -4010,7 +4130,6 @@
           "attrs": {
             "blockId": "q2",
             "multiple": false,
-            "state": "open",
             "urgency": "blocking"
           },
           "content": [
@@ -4116,7 +4235,6 @@
           "attrs": {
             "blockId": "q1",
             "multiple": true,
-            "state": "open",
             "urgency": "low"
           },
           "content": [

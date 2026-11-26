@@ -24,7 +24,7 @@ import (
 // to the parser can be one: the writer keeps a run's spelling only where the run reads back as
 // written (inlineWithEscapes), so a parser change that moves what a run reads back as moves what
 // the renderer writes of it, and raises this number too.
-const RendererVersion = 2
+const RendererVersion = 3
 
 type renderer struct {
 	b                bytes.Buffer

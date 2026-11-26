@@ -112,7 +112,11 @@ func TestTheBackfillGivesEverySessionTheCensusNamesItsNode(t *testing.T) {
 // connection: a session has no projection row, and the batch takes no owner lock and appends no
 // event. The two sessions' nodes are held as rows other transactions inserted and have not
 // committed, and the batch must queue behind them in ascending id, whatever order it read them in.
-// The issue's owner lock is held throughout, and the batch never queues behind it.
+// The issue's owner lock is held throughout, and the batch never queues behind it. The test
+// follows the session pass alone (backfillSessions): the asks and follower passes Backfill runs
+// after it take that lock, as the owner of the ask and the follower rows they state
+// (TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows), and following them would read their lock as
+// the session batch's.
 func requireTheSessionBatchLockOrder(t *testing.T) {
 	writes := newAddressingWrites(t)
 	database := writes.database
@@ -126,7 +130,10 @@ func requireTheSessionBatchLockOrder(t *testing.T) {
 			Kind: graphstore.KindSession, ID: session, Statement: "with graph_nodes_written as (",
 		}, []graphstore.Node{graphstore.SessionNode(session, backfillActor, time.Now(), graphstore.NoEvent)}, nil))
 	}
-	report := followTheBackfill(t, database, "writeSessionBatch", holds)
+	report := followTheRun(t, database, "writeSessionBatch", func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+		done, err := backfillSessions(ctx, database)
+		return BackfillReport{Kinds: []KindBackfill{done}}, err
+	}, holds)
 	if done := reportedKind(t, report, graphstore.KindSession); done.Rows != 3 || !done.Complete {
 		t.Errorf("the backfill reports %#v for sessions, want 3 rows and every session complete", done)
 	}

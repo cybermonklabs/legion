@@ -105,9 +105,14 @@ type issueResults struct {
 	Checks                 []model.CheckBlock `json:"checks"`
 }
 
-// resultBody is a well-formed record body with the given check and verdict.
+// resultBody is a well-formed record body with the given check and verdict. It states a negative
+// control, since a pass of a before_merge check that states none is refused (recordCheckResult); a
+// test of a body without one deletes the field or sets it in fields.
 func resultBody(check, verdict, commit string, fields map[string]any) map[string]any {
-	body := map[string]any{"check": check, "role": "implementer", "verdict": verdict, "commit": commit}
+	body := map[string]any{
+		"check": check, "role": "implementer", "verdict": verdict, "commit": commit,
+		"negative_control": "Broke what the check proves and the run failed.",
+	}
 	for name, value := range fields {
 		body[name] = value
 	}
@@ -263,7 +268,7 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 // refused until the caller names which document it means.
 func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, _, _ := newTestServer(t, testServerOptions{})
 	parent := createInteractionIssue(t, handler, "RES", "Parent", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", twoChecks)
 	child := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
@@ -299,7 +304,14 @@ func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
 		t.Fatalf("child's result = recorded on %s against %s, want %s against %s",
 			childResult.Result.IssueKey, childResult.Result.CheckIssueKey, child.Key, parent.Key)
 	}
-	event := lastIssueEventPayload(t, database, parent.Key)
+	// The drain writes the Verification version the result moved after the route's COMMIT, so the
+	// parent's newest event is that version's artifact.version, and the child's result is the
+	// parent's newest result.recorded (R12 of the issue tree's spec).
+	recordedOnParent := eventPayloads(t, handler, parent.Key, "result.recorded")
+	if len(recordedOnParent) == 0 {
+		t.Fatalf("%s holds no result.recorded event, want the child's result on it", parent.Key)
+	}
+	event := recordedOnParent[len(recordedOnParent)-1]
 	if event["result_id"] != childResult.Result.ID || event["issue"] != child.Key || event["check_issue"] != parent.Key {
 		t.Fatalf("result.recorded payload = %+v, want the child's result on the parent's check", event)
 	}
@@ -3378,7 +3390,7 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("record a result against c1: status=%d body=%s", first.Code, first.Body.String())
 	}
-	writeBrowserDocument(t, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
+	writeBrowserDocument(t, handler, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
 
 	held := checkOf(t, readResults(t, handler, issue.Key), "c1")
 	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {
@@ -3595,9 +3607,26 @@ func assertCI(t *testing.T, check model.CheckBlock, run, state, ciCase, line str
 	}
 }
 
+// checkRowArtifact is the artifact the document_blocks row of check is keyed by, read in the room
+// its Verification document is edited in (refs.DocumentRoomBlocksSQL): the tree artifact of an
+// issue room, else the document itself. A recorded result of the check is keyed by it too.
+func checkRowArtifact(t *testing.T, database *store.Store, check model.CheckBlock) string {
+	t.Helper()
+	var artifact string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select d.artifact_id::text from document_blocks d
+		where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = $2 and d.type = 'check'`,
+		check.ArtifactID, check.BlockID).Scan(&artifact); err != nil {
+		t.Fatalf("read the row of check %s of %s: %v", check.BlockID, check.ArtifactID, err)
+	}
+	return artifact
+}
+
 // assertDerived asserts that the check's one result is the one derived from run id, which
-// concluded conclusion at sha, and that it stands at the head it was read at.
-func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusion, verdict, sha string) model.CheckResult {
+// concluded conclusion at sha, that it names the artifact the check's block row is keyed by
+// (checkRowArtifact), as a recorded result of the check does, and that it stands at the head it
+// was read at.
+func assertDerived(t *testing.T, database *store.Store, check model.CheckBlock, id int64, run, conclusion, verdict, sha string) model.CheckResult {
 	t.Helper()
 	if len(check.Results) != 1 {
 		t.Fatalf("check %s holds %+v, want the one result derived from run %d", check.BlockID, check.Results, id)
@@ -3609,11 +3638,11 @@ func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusi
 		result.Actor.ID != want.ID || result.Session != "" || result.Run != run || result.Verdict != verdict ||
 		result.CommitSHA != sha || !result.CreatedAt.Equal(completedAt) ||
 		result.NegativeControl != check.NegativeControl || result.Surface != check.Surface ||
-		result.CheckBlockID != check.BlockID || result.CheckArtifactID != check.ArtifactID ||
+		result.CheckBlockID != check.BlockID || result.CheckArtifactID != checkRowArtifact(t, database, check) ||
 		result.CheckIssueKey != check.IssueKey || result.CheckSHA256 != check.SHA256 ||
 		result.Failed != 0 || result.Skipped != 0 || result.Excluded != 0 || result.EventSeq != nil ||
 		result.Screenshots == nil || len(result.Screenshots) != 0 {
-		t.Fatalf("check %s's derived result = %+v, want run %d's %s at %s by %+v, completed %s, carrying the check's own fields",
+		t.Fatalf("check %s's derived result = %+v, want run %d's %s at %s by %+v, completed %s, carrying the check's own fields and naming its row's artifact",
 			check.BlockID, result, id, verdict, sha, want, ciRunCompletedAt)
 	}
 	if observed := "conclusion: " + conclusion + "\n" + ciRunURL(id); result.Observed != observed {
@@ -3672,7 +3701,7 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 				}
 			} else {
 				assertCI(t, check, ciCheckRun, test.state, test.ciCase, ciVerdictLineOf("c1", ciCheckRun, test.state, head))
-				assertDerived(t, check, test.run, ciCheckRun, test.ciCase, test.state, head)
+				assertDerived(t, database, check, test.run, ciCheckRun, test.ciCase, test.state, head)
 				wantStands := model.CheckPassStands{Answer: model.PassStandsNo}
 				if test.state == model.CIStatePass {
 					wantStands = model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"ci"}}
@@ -3858,12 +3887,77 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 	fake.set(headCommit, completedRun(31, ciCheckRun, "failure"), completedRun(32, ciCheckRun, "success"))
 	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
 	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit))
-	assertDerived(t, check, 32, ciCheckRun, "success", "pass", headCommit)
+	assertDerived(t, database, check, 32, ciCheckRun, "success", "pass", headCommit)
 
 	fake.set(headCommit, completedRun(34, ciCheckRun, "failure"), completedRun(33, ciCheckRun, "success"))
 	check = checkOf(t, readResults(t, handler, issue.Key), "c1")
 	assertCI(t, check, ciCheckRun, model.CIStateFail, "failure", ciVerdictLineOf("c1", ciCheckRun, "fail", headCommit))
-	assertDerived(t, check, 34, ciCheckRun, "failure", "fail", headCommit)
+	assertDerived(t, database, check, 34, ciCheckRun, "failure", "fail", headCommit)
+}
+
+// A derived result names the artifact its check's document_blocks row is keyed by, as a recorded
+// result of a check of the same document does: on an issue born converted, the tree artifact of
+// the issue's room, and not the Verification document, which the check itself still answers as
+// its artifact_id. A check of a document past the blocks a write indexes in its own request, as
+// TestADocumentPastTheBlockBoundLeavesItsBlocksToTheReconciliation writes one, whose block index
+// the reconciliation still owes, holds the document_blocks row the write that accepted its version
+// wrote at once (R8 of the issue tree's spec) and is answered the same: its derived result names
+// the room its document is edited in.
+func TestCIResultNamesTheArtifactItsChecksRowIsKeyedBy(t *testing.T) {
+	ctx := context.Background()
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCA", "acme/widgets", "Keyed by the tree")
+	tree, err := issueTreeOf(ctx, database.Pool, issue.Key)
+	if err != nil || tree == "" {
+		t.Fatalf("the tree of %s is %q (%v), want the issue born converted", issue.Key, tree, err)
+	}
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", ciCheckKept)+"\n"+twoChecks)
+	if recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{"role": "tester"})); recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result against k1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(91, ciCheckRun, "success"))
+
+	read := readResults(t, handler, issue.Key)
+	check := checkOf(t, read, "c1")
+	if keyed := checkRowArtifact(t, database, check); keyed != tree || check.ArtifactID != verification.Artifact.ID {
+		t.Fatalf("c1 answers artifact_id %s and its row is keyed by %s, want verification.md %s and the tree %s",
+			check.ArtifactID, keyed, verification.Artifact.ID, tree)
+	}
+	derived := assertDerived(t, database, check, 91, ciCheckRun, "success", "pass", headCommit)
+	recorded := checkOf(t, read, "k1").Results
+	if len(recorded) != 1 {
+		t.Fatalf("k1 holds %+v, want the result recorded against it", recorded)
+	}
+	if derived.CheckArtifactID != tree || recorded[0].CheckArtifactID != tree {
+		t.Fatalf("c1's derived result names check_artifact_id %s and k1's recorded result %s, want both the tree %s, not verification.md %s",
+			derived.CheckArtifactID, recorded[0].CheckArtifactID, tree, verification.Artifact.ID)
+	}
+
+	owed := issueOfProject(t, handler, "RESCA", "Owed its block index",
+		ciCheckBlock("c1", ciCheckKept)+"\n"+deferralList(itemsOverTheBlockBound, "item."))
+	owedTree, err := issueTreeOf(ctx, database.Pool, owed)
+	if err != nil || owedTree == "" {
+		t.Fatalf("the tree of %s is %q (%v), want the issue born converted", owed, owedTree, err)
+	}
+	writeHead(t, database, "acme/widgets", 8, newHeadCommit, "open", owed)
+	fake.set(newHeadCommit, completedRun(92, ciCheckRun, "success"))
+	deferred := checkOf(t, readResults(t, handler, owed), "c1")
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = 'c1'`,
+		deferred.ArtifactID).Scan(&rows); err != nil {
+		t.Fatalf("count the rows of c1 of %s: %v", owed, err)
+	}
+	if version := blockIndexVersion(t, database, deferred.ArtifactID); version != nil || rows != 1 || deferred.Version != 1 {
+		t.Fatalf("%s's verification.md is indexed at version %v and holds %d rows of c1 (version %d), want its blocks owed to the block-index reconciliation and the one row of c1 its version's write wrote at once, at version 1",
+			owed, version, rows, deferred.Version)
+	}
+	if len(deferred.Results) != 1 || deferred.Results[0].ID != "ci-run:92" || deferred.Results[0].CheckArtifactID != owedTree {
+		t.Fatalf("the c1 of %s, whose block index is owed, holds %+v, want the result derived from run 92 naming the tree %s",
+			owed, deferred.Results, owedTree)
+	}
 }
 
 // A ci_check name written with spaces around it is either refused at the write or answered by
@@ -3924,7 +4018,7 @@ func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
 		t.Fatalf("c1 ci_check = %q, want %q as written", check.CICheck, " "+ciCheckRun)
 	}
 	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit))
-	assertDerived(t, check, 61, ciCheckRun, "success", "pass", headCommit)
+	assertDerived(t, database, check, 61, ciCheckRun, "success", "pass", headCommit)
 
 	blank := issueOfProject(t, handler, "RESCT", "Blank",
 		ciCheckBlock("c1", `negative_control="`+ciCheckNegativeControl+`" ci_check="   "`))
@@ -3955,11 +4049,11 @@ func TestCIResultIsReadAtTheOpenHeadOverAnOlderMergedOne(t *testing.T) {
 	fake.set(newHeadCommit, completedRun(42, ciCheckRun, "success"))
 
 	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
-	assertDerived(t, check, 42, ciCheckRun, "success", "pass", newHeadCommit)
+	assertDerived(t, database, check, 42, ciCheckRun, "success", "pass", newHeadCommit)
 
 	writeHead(t, database, "acme/widgets", 5, newHeadCommit, "merged", issue.Key)
 	check = checkOf(t, readResults(t, handler, issue.Key), "c1")
-	result := assertDerived(t, check, 42, ciCheckRun, "success", "pass", newHeadCommit)
+	result := assertDerived(t, database, check, 42, ciCheckRun, "success", "pass", newHeadCommit)
 	if basis := result.CommitStands.Basis; basis == nil || basis.PullRequest == nil || *basis.PullRequest != 5 {
 		t.Fatalf("the derived result at the merged head stands at %+v, want #5's head", basis)
 	}
@@ -3985,8 +4079,8 @@ func TestCIResultReadsOneHeadOnceAndAnIssueWithoutOneNotAtAll(t *testing.T) {
 	fake.set(headCommit, completedRun(51, ciCheckRun, "success"), completedRun(52, "lint", "failure"))
 
 	read := readResults(t, handler, issue.Key)
-	assertDerived(t, checkOf(t, read, "c1"), 51, ciCheckRun, "success", "pass", headCommit)
-	assertDerived(t, checkOf(t, read, "c2"), 52, "lint", "failure", "fail", headCommit)
+	assertDerived(t, database, checkOf(t, read, "c1"), 51, ciCheckRun, "success", "pass", headCommit)
+	assertDerived(t, database, checkOf(t, read, "c2"), 52, "lint", "failure", "fail", headCommit)
 	assertCI(t, checkOf(t, read, "c3"), "build", model.CIStateNoResult, "absent", ciUnconcludedLineOf("c3", "build", "absent"))
 	if reads := fake.reads(headCommit); reads != 1 {
 		t.Fatalf("one answer read the head's check runs %d times, want once for three checks", reads)

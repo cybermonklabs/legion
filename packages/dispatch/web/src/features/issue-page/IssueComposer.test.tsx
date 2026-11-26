@@ -1477,11 +1477,11 @@ test("under a view a sent write leaves no landing and gives the focus back where
 });
 
 // R11: `r` on a statement aims the box at it: the target line names it by the page's word for its
-// kind and draws none of its words, and the placeholder says the comment goes beside the
+// kind and draws none of its words, and the placeholder says the comment is on the
 // statement. The comment sent carries the statement's whole words as its anchor's quote, with no
 // occurrence, so words the document holds twice are refused rather than anchored to the wrong
-// block. The margin beside the statement draws the comment, and no row of the outline, so once
-// it lands the reader is back on the statement's own row.
+// block. Once it lands the reader is back on the statement's own row; the outline draws the
+// comment as a row under the issue, at its end, and no margin beside the statement draws it yet.
 test("a statement's target line names its kind, and its comment carries its words as the quote and lands on its row", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1608,9 +1608,9 @@ test("a refused comment on a statement keeps its words and its statement, throug
 // over its refused send - as a reload brings one back - lands as every send from the box lands
 // (R4). The box mounted again shows the statement the refusal was written for, so Send there is
 // that refusal's own and goes. The held send keeps the statement's row beside its words, so once
-// the comment lands the outline brings the statement's row on screen and gives it the focus - the
-// margin beside it draws the comment, which has no row of its own - rather than giving the focus
-// back to where the reader came from.
+// the comment lands the outline brings the statement's row on screen and gives it the focus,
+// rather than giving it back to where the reader came from. The comment itself is drawn as a row
+// under the issue, at the outline's end; no margin beside the statement draws it yet.
 test("a comment on a statement sent again from a box mounted over its refused send lands on the statement's row", async () => {
   const user = userEvent.setup();
   stub(
@@ -2284,24 +2284,33 @@ test("the current point is the question that waits on the reader, then the newes
 
 // R12: while the point's row is folded away, each row above it on its path carries the path's
 // mark and the lighter ring - outside the halo on a folded branch's bullet - and no row carries
-// `aria-current`; unfolded, the point's own row alone is marked, with the quiet ring. The reply's
-// Fold, pressed by hand, puts the path back, and its Unfold the point.
+// `aria-current`; unfolded, the point's own row alone is marked, with the quiet ring. Every
+// branch opens unfolded (R11), so the point's own row is marked at first; bob's comment's Fold,
+// pressed by hand, puts the path on its row, the reply's Fold puts the path back, and its Unfold
+// the point.
 test("the rows above a folded-away point carry the path's ring, and its own row the point's", async () => {
   const user = userEvent.setup();
   renderPage({}, branchOutline());
-  // The page opens with bob's comment folded, the newest act two levels under it.
-  expect(drawnPoint()).toEqual(pathThrough("comment-1"));
+  const toggle = (name: string) =>
+    user.click(within(rowOf("comment-1a")).getByRole("button", { name }));
+  // The page opens with every branch unfolded: the newest act, two levels under bob's comment,
+  // is the point on its own row.
+  expect(drawnPoint()).toEqual(pointOn("comment-1b"));
+  expect(dotOf("comment-1b")).toHaveClass(pagePointRing);
+
+  // Bob's comment folded: its row alone is on the path, ringed as a folded branch's bullet.
+  await user.click(within(rowOf("comment-1")).getByRole("button", { name: CONTROL_LABELS.fold }));
+  await waitFor(() => expect(drawnPoint()).toEqual(pathThrough("comment-1")));
   expect(dotOf("comment-1")).toHaveClass(pagePathRingFolded);
 
-  // Bob's comment unfolded and his reply still folded: both are on the path, each ringed as its
+  // Bob's comment unfolded and his reply folded: both are on the path, each ringed as its
   // bullet is drawn.
   await user.click(within(rowOf("comment-1")).getByRole("button", { name: CONTROL_LABELS.unfold }));
+  await toggle(CONTROL_LABELS.fold);
   await waitFor(() => expect(drawnPoint()).toEqual(pathThrough("comment-1", "comment-1a")));
   expect(dotOf("comment-1")).toHaveClass(pagePathRing);
   expect(dotOf("comment-1a")).toHaveClass(pagePathRingFolded);
 
-  const toggle = (name: string) =>
-    user.click(within(rowOf("comment-1a")).getByRole("button", { name }));
   await toggle(CONTROL_LABELS.unfold);
   await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-1b")));
   expect(dotOf("comment-1b")).toHaveClass(pagePointRing);

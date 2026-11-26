@@ -294,7 +294,9 @@ func ciRunOf(id int64, name string, object map[string]any) *ciRun {
 
 // ciAnswerOf decides one check CI proves from run, the run named name at head, nil where head
 // carries none: the `ci` member, and the derived result for a pass or a fail, nil for every other
-// case. words is the rule the pull-request body line keeps the run's name and the check's words by.
+// case. The result names the room the check's document is edited in (RowArtifactID), which keys
+// the check's block row and a recorded result of it, whether the index holds that row yet or not.
+// words is the rule the pull-request body line keeps the run's name and the check's words by.
 func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, run *ciRun, words lineWords) (*model.CheckCI, *model.CheckResult) {
 	at := fmt.Sprintf("%s, the head of %s#%d", head.HeadSHA, head.Repo, head.Number)
 	switch {
@@ -322,7 +324,7 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 	result := model.CheckResult{
 		ID:       ciResultIDPrefix + strconv.FormatInt(run.id, 10),
 		IssueKey: check.IssueKey, CheckIssueKey: check.IssueKey,
-		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
+		CheckArtifactID: check.RowArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: check.Version, CheckSHA256: check.SHA256,
 		Role: ciResultRole, Surface: check.Surface, Run: run.name, Observed: ciObserved(*run),
 		CommitSHA: head.HeadSHA, NegativeControl: check.NegativeControl, Verdict: verdict,

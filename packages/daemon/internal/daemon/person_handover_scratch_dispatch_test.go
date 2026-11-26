@@ -437,8 +437,11 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 	return listed
 }
 
-// editDocument applies ops to artifactID as a session through Dispatch's edits route, which
-// versions the document in the route's own transaction, and answers the version it wrote.
+// editDocument applies ops to artifactID as the person through Dispatch's edits route, which
+// versions the document in the route's own transaction, and answers the version it wrote. Each
+// document it edits is the spec of a labelled root. Once the daemon's role-holder publications
+// have marked the project, Dispatch refuses such a write from a session that is no architect of
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these parked roots.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
 	var edited struct {
@@ -446,14 +449,14 @@ func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]st
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asPerson)
 	if edited.Version == nil {
 		r.t.Fatalf("the edit of %s wrote no version", artifactID)
 	}
 	return edited.Version.Number
 }
 
-// revise replaces find with with in artifactID as a session and answers the new version.
+// revise replaces find with with in artifactID as the person and answers the new version.
 func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	r.t.Helper()
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
@@ -476,19 +479,20 @@ func (r *personHandoverRig) uploadDocument(key, name, content string) string {
 	return uploaded.Artifact.ID
 }
 
-// personHandoverBlock is the decision block the carried case writes into a spec, and the option
-// the person answers it with.
+// personHandoverBlock is the ask block the carried case writes into a spec, the option the
+// person answers it with, and the reading of that answer then written inside the block.
 const (
-	personHandoverBlock  = ":::ask{#wave urgency=\"med\" multiple=\"false\"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n"
-	personHandoverAnswer = "Two"
+	personHandoverBlock   = ":::ask{#wave urgency=\"med\" multiple=\"false\"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n"
+	personHandoverAnswer  = "Two"
+	personHandoverReading = "The answer reads as the two quietest regions first."
 )
 
-// blockAsk waits for Dispatch's settlement to index the decision block blockID of key's document
+// blockAsk waits for Dispatch's settlement to index the ask block blockID of key's document
 // as an open ask and answers the ask's id.
 func (r *personHandoverRig) blockAsk(key, blockID string) string {
 	r.t.Helper()
 	var found string
-	testwait.Eventually(r.t, "Dispatch to index the decision block "+blockID+" of "+key, func() bool {
+	testwait.Eventually(r.t, "Dispatch to index the ask block "+blockID+" of "+key, func() bool {
 		var asks []struct {
 			ID      string  `json:"id"`
 			BlockID *string `json:"block_id"`
@@ -506,11 +510,61 @@ func (r *personHandoverRig) blockAsk(key, blockID string) string {
 	return found
 }
 
-// answerBlock answers the decision block's ask as the person with selected.
+// answerBlock answers the ask block's ask as the person with selected.
 func (r *personHandoverRig) answerBlock(askID, selected string) {
 	r.t.Helper()
 	dispatchCall(r.t, r.baseURL, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		map[string]any{"selected": []string{selected}, "expected_edited_at": nil}, nil)
+}
+
+// addReading writes reading inside the answered ask block blockID of key's document
+// artifactID, after the block's own content, as the person's upload of the whole document - the
+// write that places a reading after a block's options - and answers the version it wrote. The
+// person writes it, as editDocument does, since Dispatch refuses a spec write of a labelled root
+// from a session that is no architect of it. The upload replaces the version it read, so it names
+// that version's token, as every replacement does.
+func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string) int {
+	r.t.Helper()
+	var text struct {
+		Markdown string `json:"markdown"`
+		Token    string `json:"token"`
+	}
+	dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, &text, asPerson)
+	opening := ":::ask{#" + blockID + " "
+	start := strings.Index(text.Markdown, opening)
+	end := -1
+	if start >= 0 {
+		end = strings.Index(text.Markdown[start:], "\n:::\n")
+	}
+	if start < 0 || end < 0 || text.Token == "" {
+		r.t.Fatalf("%s's document holds no ask block %s to write a reading in, or its read names no token (%q):\n%s", key, blockID, text.Token, text.Markdown)
+	}
+	end += start
+	markdown := text.Markdown[:start] + ":" + text.Markdown[start:end] +
+		"\n\n:::reading{#" + blockID + "-reading}\n" + reading + "\n:::\n::::\n" + text.Markdown[end+len("\n:::\n"):]
+	var uploaded struct {
+		Version struct {
+			Number int `json:"number"`
+		} `json:"version"`
+	}
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
+		map[string]any{"name": "spec.md", "content": markdown, "precondition": map[string]string{"document": text.Token}}, &uploaded, asPerson)
+	if uploaded.Version.Number == 0 {
+		r.t.Fatalf("the upload of %s's document with its reading wrote no version", key)
+	}
+	return uploaded.Version.Number
+}
+
+// approvedLatest is the version at which artifactID reads approved as its latest version, through
+// the read the daemon's design gate makes (dispatch.HTTPClient.Approval, Approval.ApprovedLatest),
+// and 0 where its latest version is not approved.
+func (r *personHandoverRig) approvedLatest(artifactID string) int {
+	r.t.Helper()
+	approval, err := dispatch.New(r.baseURL, dispatch.BearerTransport(scratchAgentToken, nil)).Approval(r.t.Context(), artifactID)
+	if err != nil {
+		r.t.Fatalf("read the approval of %s as the daemon's design gate reads it: %v", artifactID, err)
+	}
+	return approval.ApprovedLatest()
 }
 
 // carriedReview waits for Dispatch to record its carry of the person's approval of version from on
@@ -892,15 +946,17 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a parked labelled child, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root a session writes a decision block into the spec;
+//  7. the carried case: on a parked labelled root the person writes an ask block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
-//     person then answers the block, and Dispatch records a carried approval of the version the
-//     answer wrote, in the person's name: the daemon applies it writing nothing;
-//  8. the recorded parked root of step 1, its spec revised by a session, is approved by the person
+//     person then answers the block, which writes one version that changes only the block's
+//     server-owned attributes, and Dispatch carries their approval to it in their name; a reading
+//     of the answer is then written inside the answered block, and Dispatch carries the approval
+//     on to the version that reading wrote: the daemon applies each carry writing nothing;
+//  8. the recorded parked root of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, parked again by the person and its spec revised by a session, is approved
-//     again by the person at the new version: todo again, a second queue.
+//  9. the root of step 3, parked again by the person and its spec revised by the person, is
+//     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
 	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
@@ -944,8 +1000,10 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A parked labelled child.
-	child := r.create(asSession, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
+	// 5. A parked labelled child. The person files it: Dispatch refuses a session that is no
+	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
+	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
+	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
 	r.setStatus(child.Key, "backlog")
 	review = r.approve(child.PrimaryArtifactID)
 	r.applied(r.newestEvent(child.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
@@ -964,24 +1022,44 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.notQueued(running.Key, "in_progress", 0)
 	t.Logf("the person's approval of the running root %s's registered gate document opened its gate and queued no handover:\n%s", running.Key, body)
 
-	// 7. The carried case.
+	// 7. The carried case: the person's answer writes one version, which changes only the
+	// server-owned attributes of the ask's block - its state, who answered and when - and Dispatch
+	// carries the person's approval across it; a reading of the answer inside the answered block
+	// carries it on to the version the reading writes. The daemon applies each carried approval
+	// writing nothing.
 	carried := r.create(asSession, "Regional wave decision pending", labelled)
 	r.setStatus(carried.Key, "backlog")
 	blockVersion := r.editDocument(carried.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": personHandoverBlock})
 	askID := r.blockAsk(carried.Key, "wave")
 	approved := r.approve(carried.PrimaryArtifactID)
 	if approved.Version != blockVersion {
-		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the decision block", carried.Key, approved.Version, blockVersion)
+		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the ask block: an open ask keeps no state in the stored bytes, so the settlement that opens its row writes no version",
+			carried.Key, approved.Version, blockVersion)
 	}
 	r.queuedByThePerson(carried.Key, "approval", 1)
 	reparked := r.setStatus(carried.Key, "backlog")
 	r.applied(r.newestEvent(carried.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == reparked.LastSeq }))
 	r.answerBlock(askID, personHandoverAnswer)
+	answerCarry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
+	if latest := r.approvedLatest(carried.PrimaryArtifactID); answerCarry.Version != approved.Version+1 || latest != answerCarry.Version {
+		t.Fatalf("after the person's answer, Dispatch carried the approval of %s's spec to version %d and reads it approved at its latest version %d (0: not approved); want both %d, the one version the answer wrote",
+			carried.Key, answerCarry.Version, latest, approved.Version+1)
+	}
+	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == answerCarry.Version }))
+	readingVersion := r.addReading(carried.Key, carried.PrimaryArtifactID, "wave", personHandoverReading)
+	if readingVersion != answerCarry.Version+1 {
+		t.Fatalf("the reading wrote version %d of %s's spec; want %d, the version after the one the answer wrote",
+			readingVersion, carried.Key, answerCarry.Version+1)
+	}
 	carry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
+	if latest := r.approvedLatest(carried.PrimaryArtifactID); carry.Version != readingVersion || latest != readingVersion {
+		t.Fatalf("Dispatch carried the person's approval of %s's spec to version %d and reads it approved at its latest version %d (0: not approved); want both %d, the version the reading wrote",
+			carried.Key, carry.Version, latest, readingVersion)
+	}
 	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == carry.Version }))
 	r.notQueued(carried.Key, "backlog", 1)
-	t.Logf("the person's answer to the decision block of %s carried their approval of version %d to version %d (%q), and the daemon queued nothing for it",
-		carried.Key, approved.Version, carry.Version, *carry.Reason)
+	t.Logf("the person's answer to the ask block of %s wrote version %d, which carried their approval of version %d (%q), and the reading inside it carried it on to version %d (%q); the daemon queued nothing for either",
+		carried.Key, answerCarry.Version, approved.Version, *answerCarry.Reason, carry.Version, *carry.Reason)
 
 	// 8. The recorded parked root with a gate from its earlier run, approved at a new version.
 	revised := r.revise(recorded.PrimaryArtifactID, "behind a flag", "behind a flag, in two waves")

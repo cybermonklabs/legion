@@ -269,7 +269,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		return nil, fmt.Errorf("census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither %s nor any table, and the runner can create neither; name an existing schema in the search_path", versionTable)
 	}
 	report := &Report{VersionTable: versionTable, TableLimit: options.TableLimit, LongTransaction: options.LongTransaction}
-	recorded, err := recordedVersions(ctx, tx, versionTable)
+	recorded, err := RecordedVersions(ctx, tx, versionTable)
 	if err != nil {
 		return nil, err
 	}
@@ -314,9 +314,14 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// as an enabled one does, so no later migration is exempt from the limit.
 	var laterEventTrigger exemptionsOff
 	// changedBy names, by table, the first pending migration that touches the table with anything
-	// but bounded writes: after it, the keys, rules and triggers the census reads of the table are
-	// not certain to be the ones a later migration's writes meet, so no later migration is admitted
-	// for bounded writes of it (boundedWrites).
+	// but bounded writes or a concurrent index build (ConcurrentIndex), or a catalog-only
+	// migration that only adds plain columns (addsPlainColumns) or only references the table by
+	// its primary key (referencedByItsPrimaryKey): after it, the keys, rules and triggers the
+	// census reads of the table are not certain to be the ones a later migration's writes meet,
+	// so no later migration is admitted for bounded writes of it (boundedWrites). None of the
+	// three left out changes what boundedWrites decides by, of what it reads of the table
+	// (boundedTableQuery): its primary key and the key's types, the columns foreign keys
+	// reference, its rules, its row-level security, its child tables and its enabled triggers.
 	changedBy := map[string]string{}
 	for _, migration := range migrations {
 		if recorded[migration.Version] {
@@ -394,8 +399,34 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 				return nil, err
 			}
 		}
+		// A concurrent index build (ConcurrentIndex) is a single non-unique index: it changes none of
+		// the keys, the rules, the row-level security, the children and the triggers a later
+		// migration's bounded writes are judged by (boundedTableQuery), so it leaves a table
+		// unchanged for them. So does a migration the census exempts from the limit as catalog-only
+		// (TableSizeExemption, which no event trigger can run code on) and that only adds plain
+		// columns (addsPlainColumns): a nullable column with no default and no constraint is in no
+		// primary key, no foreign key references it, and it adds no rule, row-level security, child
+		// table or trigger. A column with a default is not plain: an insert that leaves the column out
+		// runs its default for each row, as a trigger does, and the census does not read it.
+		// A catalog-only migration whose foreign keys reference a table by its primary key, and that
+		// touches the table in no other way (referencedByItsPrimaryKey), leaves it unchanged for
+		// them too: the key's columns are ones an update may not set anyway, and the triggers
+		// Postgres makes for the key are internal, which the census leaves out. It is judged only
+		// where the migration's own statements leave the catalog reads on (readsOff) and Census
+		// gives it a catalog, in which referencedByItsPrimaryKey reads the primary key.
+		plainColumns := entry.TableSizeExemption != "" && classified.addsPlainColumns
+		judgeKeys := entry.TableSizeExemption != "" && !classified.readsOff
 		for _, table := range entry.Tables {
-			if table.Exists && table.Through == "" && table.BoundedWrites == 0 && changedBy[table.Name] == "" {
+			if table.Exists && table.Through == "" && table.BoundedWrites == 0 && !entry.ConcurrentIndex && !plainColumns && changedBy[table.Name] == "" {
+				if judgeKeys {
+					referenced, err := writes.referencedByItsPrimaryKey(text.code, table.Name)
+					if err != nil {
+						return nil, fmt.Errorf("census: %s: read the foreign keys to %s: %w", migration.Name, table.Name, err)
+					}
+					if referenced {
+						continue
+					}
+				}
 				changedBy[table.Name] = migration.Name
 			}
 		}
@@ -542,8 +573,10 @@ func migrationLockTimeouts(sql string) []string {
 	return settings
 }
 
-// recordedVersions reads every version versionTable records; none when the table does not exist.
-func recordedVersions(ctx context.Context, tx pgx.Tx, versionTable string) (map[int]bool, error) {
+// RecordedVersions reads every version versionTable records; none when the table does not exist.
+// The census reads it so, and so does a reader that holds a database to the migrations its binary
+// embeds (dispatch's store.UnappliedMigrations).
+func RecordedVersions(ctx context.Context, tx pgx.Tx, versionTable string) (map[int]bool, error) {
 	recorded := map[int]bool{}
 	var exists bool
 	if err := tx.QueryRow(ctx, "select to_regclass($1) is not null", versionTable).Scan(&exists); err != nil {

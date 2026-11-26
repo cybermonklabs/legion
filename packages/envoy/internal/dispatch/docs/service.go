@@ -2,12 +2,15 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +104,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -124,10 +134,11 @@ type Deps struct {
 // its preflight load, and only while its head is still the one that load read. Load, ygo's, is a
 // room's load. Head is the version Load would fold up to now, which says whether a state loaded
 // earlier is still the stored one. DocumentStamp names the stored state a read of the document
-// meets now, and LoadDocument is that state decoded once with the stamp it was read under, which
-// a read of a document no room holds caches its rendering by (coldRead). compactRoom is the
-// compaction every path Dispatch compacts a document on runs (a room's close, the compaction
-// queue, the compaction sweep), under the tail rule; Compact, ygo's, is the keep-N rule only.
+// meets now, beside the room the document is edited in, and LoadDocument is that state decoded
+// once with the stamp it was read under, which a read of a document no room holds caches its
+// rendering by (coldRead). compactRoom is the compaction every path Dispatch compacts a document
+// on runs (a room's close, the compaction queue, the compaction sweep), under the tail rule;
+// Compact, ygo's, is the keep-N rule only.
 // pgVersioned is the PgVersioned the store is or wraps, which New hands the Service's
 // per-process values: its process id (Service.ProcessID), which every content-changing write's
 // announcement names (announceDocumentHead), and its note of each append and load
@@ -142,7 +153,7 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	DocumentStamp(ctx context.Context, artifactID string) (room string, stamp DocumentStamp, err error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned
@@ -172,6 +183,12 @@ type Service struct {
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
+	// objectPassFinished is when this process's last object pass that a cursor row records
+	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
+	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
+	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
+	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -262,9 +279,16 @@ type Service struct {
 	// describe its fork, at names where: "fork" once forkLive has brought the fork up to date,
 	// "margin", "docTree" and "capture" as a margin write (applyMargin) or a read joined to the
 	// write's transaction takes the rendering in place of reading the fork (reuseRendering), and
-	// "publish" just before publishLiveWrite releases the fork. Nil outside tests; tests use it to
-	// compare the rendering with a fresh read and render of the fork.
+	// "commit" as the commit hands the fork to the room's shadow (Ledger.commit), the last point
+	// the fork is the write's own: the room's worker measures on the shadow the browser updates
+	// the transaction's advisory lock held back (roomShadow.measure), whether the write's publish
+	// has begun or not. Nil outside tests; tests use it to compare the rendering with a fresh read
+	// and render of the fork.
 	checkRendering func(at string, write *liveWrite)
+	// beforePublish runs as a committed write's publish begins (publishLiveWrite), after the
+	// pause armed there (PauseAfterCommit) and before the publish releases the fork. Nil outside
+	// tests; tests use it to read the write and its room as the publish finds them.
+	beforePublish func(write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
 	// room in that window.
@@ -299,6 +323,15 @@ type Service struct {
 	// Nil outside tests; tests return an error from it to kill that transaction and find that
 	// none of the three survived it.
 	afterBlockIndexWrite func(artifactID string) error
+	// afterOwedDocumentsListed runs in the block-index tick once it has listed the documents owed a
+	// block index (owedDocuments), before it indexes any of them, with that list. Nil outside
+	// tests; tests hold the tick there to write a version of a listed document before its pass.
+	afterOwedDocumentsListed func(owed []owedDocument) error
+	// beforeNoVersionClear runs inside the tick's pass over a document listed with no markdown
+	// version, under the document owner's lock, once the re-read has found it holds none, right
+	// before the statement that clears its marks and states it (indexOwedDocument). Nil outside
+	// tests; tests read from it which documents reach that clear.
+	beforeNoVersionClear func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -323,6 +356,10 @@ type Service struct {
 	// holder takes - the window the commit's cursors must already stand at the head for
 	// (Ledger.takeRoomCursors).
 	afterLiveCommit func(room string)
+	// fillHold, where a test set it (HoldFills), runs at the start of each fill of a record digest
+	// a write left owed (fillOwedDigests), once that write has committed and before the fill's own
+	// transaction begins. Unset outside tests.
+	fillHold atomic.Pointer[func(issueKey string)]
 	// beforeFlushMeasure runs once a flush has copied the room's shadow window and the classes it
 	// is to store under the state's lock and released that lock, and before it measures them on
 	// the shadow (Service.flushThrough, storedClasses). Nil outside tests; tests use it to drop
@@ -431,7 +468,8 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
+	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
+	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
 	settleWG sync.WaitGroup
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
@@ -492,6 +530,10 @@ type Service struct {
 	// appended while the load ran, which reaches no instance of its own (roomLoad).
 	instances sync.Map
 	roomLoads sync.Map
+	// layoutMoved is the latest instant by which a transaction of this process that joined a
+	// document to an issue room had committed (noteLayoutMoved, Ledger.closeJoinedRooms), nil until
+	// one has. A room's load takes no layout a socket's admission read before it (admittedIssueRead).
+	layoutMoved atomic.Pointer[time.Time]
 	// reads holds the renderings of the documents cold reads served, each under the stored state
 	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
 	// (readBudgetFor).
@@ -569,40 +611,50 @@ type Service struct {
 	hostname string
 }
 
+// artifactOwner is what lockArtifactOwner reads of an artifact beside the owner row it locks: its
+// issue or project, its slug and name, and its kind, which tells an issue's tree, whose room is the
+// issue room (settlement.readLocked), from a document. Retired is whether the artifact is retired
+// (artifacts.retired_at, RetireDocument), read in the statement after the owner's lock, which the
+// retirement takes too: a writer that holds the lock reads a retirement that committed before it,
+// and no retirement commits until the writer's transaction ends.
 type artifactOwner struct {
 	IssueKey *string
 	Project  string
 	Slug     string
 	Name     string
+	Kind     string
+	Retired  bool
 }
 
 // lockArtifactOwner loads an artifact's owner, then takes that owner's lock (store.LockOwner): the
 // artifact itself for a project document, its issue otherwise. The lock is a transaction advisory
 // lock, so it serialises this writer against every other writer of the owner without taking a row
 // lock, and so without giving the transaction a transaction id or blocking the `for key share` a
-// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open is
-// read in the statement after the lock, sent with it (store.LockOwnerAndRead), so a close committed
-// while this waited is seen.
+// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open,
+// and whether the document is retired (artifactOwner.Retired), are read in the statement after
+// the lock, sent with it (store.LockOwnerAndRead), so a close or a retirement committed while this
+// waited is seen.
 func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, bool, error) {
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
-		select issue_key, coalesce(project_key, ''), slug, name
+		select issue_key, coalesce(project_key, ''), slug, name, kind
 		from artifacts where id = $1
-	`, artifactID).Scan(&owner.IssueKey, &owner.Project, &owner.Slug, &owner.Name); err != nil {
+	`, artifactID).Scan(&owner.IssueKey, &owner.Project, &owner.Slug, &owner.Name, &owner.Kind); err != nil {
 		return artifactOwner{}, false, fmt.Errorf("load document owner: %w", err)
 	}
 	if owner.IssueKey == nil {
 		if err := store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(artifactID), `
-			select true from artifacts where id = $1 and issue_key is null
-		`, []any{artifactID}, new(bool)); err != nil {
+			select retired_at is not null from artifacts where id = $1 and issue_key is null
+		`, []any{artifactID}, &owner.Retired); err != nil {
 			return artifactOwner{}, false, fmt.Errorf("lock and read document artifact: %w", err)
 		}
 		return owner, true, nil
 	}
 	var open bool
 	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(*owner.IssueKey), `
-		select closed_at is null from issues where key = $1
-	`, []any{*owner.IssueKey}, &open); err != nil {
+		select i.closed_at is null, a.retired_at is not null
+		from issues i, artifacts a where i.key = $1 and a.id = $2
+	`, []any{*owner.IssueKey, artifactID}, &open, &owner.Retired); err != nil {
 		return artifactOwner{}, false, fmt.Errorf("lock and read document issue: %w", err)
 	}
 	return owner, open, nil
@@ -899,6 +951,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
@@ -1707,14 +1760,16 @@ func ArtifactVersionEventPayload(
 }
 
 // stampBlockIDs stamps the block ids doc's tree lacks or repeats on the tree as it stands
-// (rewriteLive), and returns the stamped tree, how many ids it minted, and each ask block whose
-// id it changed. Its caller decides from a read of its own whether any id needs repair, so a
-// document that needs none opens no transaction, and records the stamped asks
-// (recordStampedAskBlocks) once it holds the room's state lock, which no Yjs transaction takes.
-func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, error) {
+// (rewriteRoom, over the room's layout, which is rewriteLive's for a room that is its own
+// document), and returns the stamped tree, how many top-level blocks each of the room's fragments
+// holds, how many ids it minted, and each ask block whose id it changed. Its caller decides from a
+// read of its own whether any id needs repair, so a document that needs none opens no
+// transaction, and records the stamped asks (recordStampedAskBlocks) once it holds the room's
+// state lock, which no Yjs transaction takes.
+func stampBlockIDs(doc *crdt.Doc, layout roomLayout, origin any) (*pmdoc.Node, []int, int, []stampedAsk, error) {
 	minted := 0
 	var stamped []stampedAsk
-	tree, err := rewriteLive(doc, origin, func(live *pmdoc.Node) bool {
+	tree, counts, err := rewriteRoom(doc, layout, origin, func(live *pmdoc.Node) bool {
 		before := askBlockOrder(live)
 		minted = pmdoc.EnsureBlockIDsCount(live)
 		if minted > 0 && len(before) > 0 {
@@ -1722,7 +1777,7 @@ func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, e
 		}
 		return minted > 0
 	})
-	return tree, minted, stamped, err
+	return tree, counts, minted, stamped, err
 }
 
 // settlementVersionCredit is whom a settlement's version credits, taken before the tree it records:
@@ -1733,6 +1788,12 @@ func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, e
 // move of an approval request from a version before the closed issue's versions, still name them.
 // state is the room the capture was taken from (consumeAskAuthorsLocked). askSources, copied once
 // the settlement holds the tree it reconciles, names who introduced each new ask block in it.
+//
+// For an issue room, whose settlement writes a version of each document whose fragment changed,
+// documents is whom each document's version lists, by document (roomCredit): the authors of the
+// updates that changed that document's fragment, and listed the R rows of them the capture read,
+// which that version's commit deletes. authors is then every document's, which actor is weighed
+// against as for one document.
 type settlementVersionCredit struct {
 	capture    authorCapture
 	state      *roomState
@@ -1740,6 +1801,8 @@ type settlementVersionCredit struct {
 	actor      model.Actor
 	kept       bool
 	askSources askBlockSources
+	documents  map[string][]model.Actor
+	listed     map[string][]model.Actor
 }
 
 // versionActor is whom the version itself names, on its artifact.version event and as the actor
@@ -1752,11 +1815,37 @@ func (credit settlementVersionCredit) versionActor() model.Actor {
 	return credit.actor
 }
 
-// settlementRead is one read of a settlement's room (readSettlementTree): the tree, the commit
-// position it is the room at, and the credit sequence the in-flight credits its version lists are
-// bounded by (settlementCredit).
+// documentActor is whom the version of document, a document of an issue room, names
+// (versionActor) by settlementAuthors' rule weighed against that version's own authors
+// (documents): the room's actor where the version lists them, or where neither the version nor any
+// other document of the room lists anyone, and SettlementActor otherwise - the room's latest editor
+// edited another document's fragment, and the version does not name them.
+func (credit settlementVersionCredit) documentActor(document string) model.Actor {
+	actor, authors := credit.versionActor(), credit.documents[document]
+	if slices.ContainsFunc(authors, actor.SameAs) || len(authors) == 0 && len(credit.authors) == 0 {
+		return actor
+	}
+	return SettlementActor
+}
+
+// documentLatest is the person a version of document, a document of an issue room, names on its
+// edit notice as the one who edited last (authorCapture.latest): the room's latest person where the
+// version lists them, and nobody otherwise, since their latest edit was of another document.
+func (credit settlementVersionCredit) documentLatest(document string) *model.Actor {
+	latest := credit.capture.latest
+	if latest == nil || !slices.ContainsFunc(credit.documents[document], latest.SameAs) {
+		return nil
+	}
+	return latest
+}
+
+// settlementRead is one read of a settlement's room (readSettlementTree): the tree, how many
+// top-level blocks each fragment of an issue room holds of it (nil for a room that is its own
+// document), the commit position it is the room at, and the credit sequence the in-flight credits
+// its version lists are bounded by (settlementCredit).
 type settlementRead struct {
 	tree    *pmdoc.Node
+	counts  []int
 	point   roomPoint
 	through uint64
 }
@@ -1776,20 +1865,21 @@ type settlementRead struct {
 // versions, and arming one would end this settlement as superseded (treePoint). A read after
 // the ask blocks were reconciled arms one (followUp), since that reconciliation did not see them.
 // A read that found the updates but could not read the tree arms that settlement all the same:
-// its caller arms what the drain classified wherever the tree read ends.
-func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room string, afterTake func(room string), followUp bool) (settlementRead, error) {
+// its caller arms what the drain classified wherever the tree read ends. layout is the fragments
+// the settlement settles (settlement.layout, treePoint).
+func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room string, layout roomLayout, afterTake func(room string), followUp bool) (settlementRead, error) {
 	through := state.creditSeq.Load()
 	if afterTake != nil {
 		afterTake(room)
 	}
-	tree, point, settles, err := s.treePoint(room, doc)
+	tree, counts, point, settles, err := s.treePoint(room, doc, layout)
 	if settles && followUp {
 		s.scheduleSettle(room)
 	}
 	if err != nil {
 		return settlementRead{}, err
 	}
-	return settlementRead{tree: tree, point: point, through: through}, nil
+	return settlementRead{tree: tree, counts: counts, point: point, through: through}, nil
 }
 
 // settlementCredit is whom a settlement's version of read, a read of room, lists
@@ -1802,9 +1892,24 @@ func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room strin
 // queue has yet to write among them (transactionPendingAuthors) - so a credit observed after the
 // bound whose update the settlement stored is listed too; one whose update the read lacks stays
 // pending for the next version.
-func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room string, read settlementRead) (settlementVersionCredit, error) {
-	owed, err := transactionPendingAuthors(ctx, tx, room)
-	if err != nil {
+//
+// An issue room, whose layout is not empty, reads the pending authors of every document of the
+// room, the queued ones among them (transactionRoomPendingAuthors), and its credit lists each
+// document's own beside the room's (roomCredit). An author pending under several documents is one
+// author of the room's, Proven only when every row is (mergeAuthors).
+func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room string, layout roomLayout, read settlementRead) (settlementVersionCredit, error) {
+	var owed map[string]model.Actor
+	var perDocument map[string]map[string]model.Actor
+	var err error
+	if len(layout) > 0 {
+		if perDocument, err = transactionRoomPendingAuthors(ctx, tx, layout.documents(room)); err != nil {
+			return settlementVersionCredit{}, err
+		}
+		owed = make(map[string]model.Actor)
+		for _, authors := range perDocument {
+			mergeAuthors(owed, authors)
+		}
+	} else if owed, err = transactionPendingAuthors(ctx, tx, room); err != nil {
 		return settlementVersionCredit{}, err
 	}
 	recorded, recordedKept, err := readSettlementEditSource(ctx, tx, room)
@@ -1817,7 +1922,45 @@ func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room str
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return settlementAuthors(state, owed, recorded, recordedKept, durableLatest, read.through), nil
+	credit := settlementAuthors(state, owed, recorded, recordedKept, durableLatest, read.through)
+	if len(layout) > 0 {
+		credit.documents, credit.listed = roomCredit(room, perDocument, credit.capture.inflight)
+	}
+	return credit, nil
+}
+
+// roomCredit is whom each document's version of an issue room lists, by document, room the tree
+// artifact: the pending authors read of that document (owed), which its version's commit deletes
+// (listed), and the authors of each in-flight credit the capture took (inflight) whose edit changed
+// that document's fragment (inflightCredit.documents), a credit naming no document being the room's
+// own. An author both read and credited is one author of the list, Proven only when every row
+// and credit merged into it is (mergeAuthors). Each list is in actorSlice's order.
+func roomCredit(room string, owed map[string]map[string]model.Actor, inflight []*inflightCredit) (documents, listed map[string][]model.Actor) {
+	authors := make(map[string]map[string]model.Actor, len(owed))
+	listed = make(map[string][]model.Actor, len(owed))
+	for document, held := range owed {
+		authors[document] = maps.Clone(held)
+		listed[document] = actorSlice(held)
+	}
+	credit := func(document string, record *inflightCredit) {
+		if authors[document] == nil {
+			authors[document] = make(map[string]model.Actor, len(record.authors))
+		}
+		mergeAuthors(authors[document], record.authors)
+	}
+	for _, record := range inflight {
+		if len(record.documents) == 0 {
+			credit(room, record)
+		}
+		for _, document := range record.documents {
+			credit(document, record)
+		}
+	}
+	documents = make(map[string][]model.Actor, len(authors))
+	for document, held := range authors {
+		documents[document] = actorSlice(held)
+	}
+	return documents, listed
 }
 
 // settlementAuthors takes the authors a settlement's version lists (captureAuthors), with the
@@ -1903,11 +2046,12 @@ const (
 	// settleRoomFailed is a settlement that could not finish after it wrote into its room. The room
 	// has failed (failRoom), and the reload that failure makes arms the settlement again.
 	settleRoomFailed
-	// settleReloaded is a settlement whose room holds a stored history that was replaced under it,
-	// which no catch-up can bring to the durable head (ErrRoomBehindHead). The room has been closed
-	// for a reload or the settlement armed again (reloadReplacedRoom), which logs the refusal, and
-	// the pending-settlement row, which the refusal's rollback kept, still says the settlement is
-	// owed.
+	// settleReloaded is a settlement whose room instance was replaced under it: it holds a stored
+	// history that was replaced, which no catch-up can bring to the durable head
+	// (ErrRoomBehindHead), or it is an issue room loaded over documents the room no longer holds
+	// (errRoomLayoutMoved). The room has been closed for a reload or the settlement armed again
+	// (reloadReplacedRoom), which logs the refusal, and the pending-settlement row, which the
+	// refusal's rollback kept, still says the settlement is owed.
 	settleReloaded
 )
 
@@ -1983,26 +2127,31 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 	return advanced, nil
 }
 
-// reloadReplacedRoom answers a settlement whose room's stored history was replaced under it
-// (refusal, ErrRoomBehindHead): live, the room instance the settlement holds, holds a history the
-// store no longer has - a rebuild deleted every row and seeded a fresh one, a prune lowered the
-// head, a compaction folded away the rows the room stands on (historyReplaced) - so no catch-up can
-// bring it to the head and only a reload can. The settlement has written nothing, and its caller
-// has rolled its transaction back, which releases the document's advisory lock that the close
-// below needs. It closes the room as the catch-up does for the same case (roomCatchUps.closeReplaced)
-// and arms the settlement again: its timer loads the document at the head and settles every
+// reloadReplacedRoom answers a settlement whose room instance was replaced under it (refusal):
+// live, the room instance the settlement holds, holds a history the store no longer has - a
+// rebuild deleted every row and seeded a fresh one, a prune lowered the head, a compaction folded
+// away the rows the room stands on (historyReplaced, ErrRoomBehindHead) - so no catch-up can bring
+// it to the head and only a reload can; or live is an issue room loaded over documents the room
+// no longer holds - a document joined it, and the notice that closes the room on every process
+// (AnnounceDocumentRooms) did not reach this one (errRoomLayoutMoved) - so a settlement of it would
+// version and index the room over fragments that are not the room's, and only a load reads the
+// room's layout. The settlement has written nothing, and its caller has rolled its transaction
+// back, which releases the document's advisory lock that the close below needs. It closes the room
+// as the catch-up does for the same case (roomCatchUps.closeReplaced) and arms the settlement
+// again: its timer loads the document at the head, over the room's layout, and settles every
 // update, and doc_settlements_pending, which the rollback kept, says the work is owed should this
 // process stop first.
 //
 // A room this process is still writing is not closed, since the close would take that write's
 // publish with it. An open live write gets its settlement when it finishes (settleDeferred,
 // finishLiveWrite). An update the room's persistence has not stored yet arms one a settle delay
-// later: that update's append from this room is refused too, which asks for the room's catch-up,
-// and that closes the room, whose reload arms one too (onLoadDocument), so either timer meets the
-// closing room or the reloaded one. A shutdown's settlement leaves the room for the next process,
-// as it does for any other write into a room it is closing. Those checks and the close's
-// reservation are made under one hold of the room's state lock (reserveRoomCloseLocked), so no
-// write opens between them.
+// later: on a replaced history that update's append from this room is refused too, which asks for
+// the room's catch-up, and that closes the room, whose reload arms one too (onLoadDocument), so
+// either timer meets the closing room or the reloaded one; on a stale layout the append lands, and
+// the settlement armed again meets the room with nothing left to store and closes it. A shutdown's
+// settlement leaves the room for the next process, as it does for any other write into a room it
+// is closing. Those checks and the close's reservation are made under one hold of the room's state
+// lock (reserveRoomCloseLocked), so no write opens between them.
 //
 // A write that opened while this settlement ran took the settlement over as it opened
 // (openLiveWrite), and arms it when it ends whether or not it is still open here. Otherwise the
@@ -2012,17 +2161,18 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 // room. A room the close does not reach - live already retired or replaced - is left to whatever
 // holds the document, and the settlement is armed again on it. A closed issue's room is closed
 // and its settlement armed again as an open one's is, since its document settles whether or not
-// its issue is closed (settleRoomWithin). Every outcome is logged but a service that is stopping
-// and a room already failed, which its failure accounts for, so a refused settlement on a room
-// still serving leaves a line naming what became of its room.
+// its issue is closed (settleRoomWithin). Every outcome is logged, refusal naming what the
+// settlement found, but a service that is stopping and a room already failed, which its failure
+// accounts for, so a refused settlement on a room still serving leaves a line naming what became
+// of its room.
 func (s *Service) reloadReplacedRoom(ctx context.Context, room string, state *roomState, generation uint64, live *crdt.Doc, refusal error) {
 	if s.shuttingDown(room) {
-		slog.Warn("dispatch: skip shutdown document settlement from a room whose stored history was replaced; the next process settles it",
+		slog.Warn("dispatch: skip shutdown document settlement from a room instance that was replaced; the next process settles it",
 			"room", room, "error", refusal)
 		return
 	}
 	leftOpen := func(reason string) {
-		slog.Info("dispatch: left open a document room its settlement found on a replaced stored history",
+		slog.Info("dispatch: left open a document room its settlement found replaced",
 			"room", room, "reason", reason, "error", refusal)
 	}
 	state.mu.Lock()
@@ -2063,15 +2213,22 @@ func (s *Service) reloadReplacedRoom(ctx context.Context, room string, state *ro
 	case errors.Is(err, websocket.ErrRoomInUse):
 		leftOpen("another caller is inside the room, which ygo closes no room under; the settlement is armed again")
 	case err != nil:
-		slog.Warn("dispatch: close a document room its settlement found on a replaced stored history; the settlement is armed again",
-			"room", room, "error", err)
+		slog.Warn("dispatch: close a document room its settlement found replaced; the settlement is armed again",
+			"room", room, "error", err, "found", refusal)
 	case closed:
-		slog.Info("dispatch: closed a document room its settlement found on a replaced stored history; settling it again from the store",
+		slog.Info("dispatch: closed a document room its settlement found replaced; settling it again from the store",
 			"room", room, "error", refusal)
 	default:
 		leftOpen("the room it read was retired or replaced before the close reached it; the settlement is armed again")
 	}
 }
+
+// errRoomLayoutMoved refuses a settlement of an issue room whose instance was loaded over other
+// documents than the room holds now (settlement.readLocked): a document joined the room, and the
+// notice that closes the room on every process (AnnounceDocumentRooms) did not reach this one. It
+// is ErrServiceUnavailable, as ErrRoomBehindHead is, and the settlement closes the room for a load
+// that reads the room's layout (reloadReplacedRoom).
+var errRoomLayoutMoved = fmt.Errorf("%w: the issue room's documents changed since its room loaded", ErrServiceUnavailable)
 
 // errRoomCloseHeldOff is closeRoomBehindHead's answer when something of this process holds the
 // room open for now: it closed nothing, and the room is exactly as stale as its caller found it.
@@ -2163,6 +2320,7 @@ func (s *Service) reserveRoomCloseLocked(room string, state *roomState, live *cr
 	}
 	state.reloading = true
 	state.reservedFor = live
+	state.reserved = make(chan struct{})
 	state.roomGeneration = s.nextRoomGeneration()
 	// The closed room's settlement failures are not the next room's, and the record outlives the
 	// close. retrySettleLocked counts a failure only for the generation its settlement read, and
@@ -2203,11 +2361,35 @@ func (s *Service) closeReservedRoom(ctx context.Context, reservation roomCloseRe
 	}
 	// Cleared on a released record too: it holds the instance, which nothing should keep alive.
 	state.reservedFor = nil
+	if state.reserved != nil {
+		close(state.reserved)
+		state.reserved = nil
+	}
 	s.unlockState(reservation.room, state)
 	if reservation.owesSettlement {
 		s.scheduleSettle(reservation.room)
 	}
 	return closed, err
+}
+
+// awaitReservedClose waits until no close reserved on room's state (reserveRoomCloseLocked) is in
+// flight, or until ctx ends, so a write that follows meets the room that close leaves rather than
+// the reservation's refusal (errRoomReloading). Its caller holds no lock of the room or its issue,
+// which the close's flush may take.
+func (s *Service) awaitReservedClose(ctx context.Context, room string) {
+	state := s.lockExistingState(room)
+	if state == nil {
+		return
+	}
+	reserved := state.reserved
+	s.unlockState(room, state)
+	if reserved == nil {
+		return
+	}
+	select {
+	case <-reserved:
+	case <-ctx.Done():
+	}
 }
 
 // closeRoomInstance closes live, room's instance, and never a room that replaced it, answering
@@ -2375,11 +2557,15 @@ type BlockIDBackfill struct {
 	Err        error
 }
 
-// BackfillBlockIDs runs the identity closure against every document. A document
+// BackfillBlockIDs runs the identity closure against every room: every document that is its own
+// room, and every issue's tree, whose room holds its converted documents' fragments. A document
 // failure is reported with that document so later documents can still be stamped.
 func (s *Service) BackfillBlockIDs(ctx context.Context) ([]BlockIDBackfill, error) {
 	ctx = store.WithTransactionTracking(ctx)
-	rows, err := s.store.Pool.Query(ctx, `select id::text from artifacts where kind = 'doc' order by id`)
+	rows, err := s.store.Pool.Query(ctx, `
+		select a.id::text from artifacts a
+		where a.kind in ('doc', 'tree') and not exists (select 1 from document_rooms moved where moved.artifact_id = a.id)
+		order by a.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
@@ -2424,7 +2610,7 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 	var cursor *roomCursor
 	slot, update, err := s.applySuppressed(backfillCtx, artifactID, nil, func(doc *crdt.Doc, origin any) error {
 		cursor = s.cursorOf(doc)
-		read, err := s.liveTree(artifactID, doc)
+		read, _, err := s.liveFragmentsTree(artifactID, doc, s.layoutOf(doc).fragments())
 		if err != nil {
 			return err
 		}
@@ -2434,7 +2620,7 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 		if s.afterBackfillRead != nil {
 			s.afterBackfillRead(artifactID)
 		}
-		_, minted, stampRenamed, err := stampBlockIDs(doc, origin)
+		_, _, minted, stampRenamed, err := stampBlockIDs(doc, s.layoutOf(doc), origin)
 		report.Stamped = minted
 		renamed = stampRenamed
 		return err
@@ -2551,18 +2737,19 @@ type roomIssueState struct {
 	open bool
 }
 
-// issueDocumentsStatement reads every document of issue $1 and whether the issue is open now.
+// issueDocumentsStatement reads every room of issue $1 - its documents and its tree, whose room
+// is the issue room - and whether the issue is open now.
 const issueDocumentsStatement = `
 	select a.id::text, i.closed_at is null
 	from artifacts a join issues i on i.key = a.issue_key
-	where a.issue_key = $1 and a.kind = 'doc'`
+	where a.issue_key = $1 and a.kind in ('doc', 'tree')`
 
-// residentIssuesStatement reads whether the issue of each document in $1 is open now, true for a
+// residentIssuesStatement reads whether the issue of each room in $1 is open now, true for a
 // document of no issue (as issueOpen has it).
 const residentIssuesStatement = `
 	select a.id::text, coalesce(i.closed_at is null, true)
 	from artifacts a left join issues i on i.key = a.issue_key
-	where a.id = any($1::uuid[]) and a.kind = 'doc'`
+	where a.id = any($1::uuid[]) and a.kind in ('doc', 'tree')`
 
 // readRoomIssueStates runs sql, one of the two statements above, through the pool.
 func (s *Service) readRoomIssueStates(ctx context.Context, sql string, arg any) ([]roomIssueState, error) {
@@ -3450,21 +3637,181 @@ type Queryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// issueOpen reads the document's issue state from q. Which q is the whole question: an API
-// handler that anchors a comment or an ask is inside a transaction here, and its own
-// connection is the only one it may use, while a room load must read from the pool that owns
+// issueOpen reads the document's issue state from q (readDocumentRoom). Which q is the whole
+// question: an API handler that anchors a comment or an ask is inside a transaction here, and its
+// own connection is the only one it may use, while a room load must read from the pool that owns
 // the load - a writer holding a connection waits for that load, so a load that waits for the
 // shared pool closes the same cycle the transaction rule closes.
 func (s *Service) issueOpen(ctx context.Context, q Queryer, artifactID string) (bool, error) {
-	var open bool
-	if err := q.QueryRow(ctx, `
-		select coalesce(i.closed_at is null, true)
-		from artifacts a left join issues i on i.key = a.issue_key
-		where a.id = $1 and a.kind = 'doc'
-	`, artifactID).Scan(&open); err != nil {
-		return false, fmt.Errorf("check document issue: %w", err)
+	read, err := readDocumentRoom(ctx, q, artifactID)
+	return read.open, err
+}
+
+// documentRoom is what one read of a document says of the room it is edited in
+// (readDocumentRoom): whether its issue is open, the room, and the room's layout.
+type documentRoom struct {
+	open   bool
+	room   string
+	layout roomLayout
+}
+
+// roomLayoutSQL is, as SQL over the uuid expression room, an issue's tree, the documents the room
+// holds a fragment of - every document whose document_rooms row names room and that is not
+// retired - as a text array in the order the room renders them (roomLayout): verification-md,
+// plan-md, the spec, then every other document in the order it was created. Every read of a room's
+// layout reads it here, so the layout a room loaded and the one a settlement reads again compare
+// element for element. A retired document (RetireDocument) takes no new text, so its fragment
+// leaves the room's layout: the room reloads without it (AnnounceDocumentRooms), and nothing typed
+// into it is reconciled, versioned or indexed, while the room's block index keeps the blocks it
+// recorded of the document as the retirement left them (refs.PlanBlocks).
+func roomLayoutSQL(room string) string {
+	return `array(
+			select d.id::text from document_rooms held join artifacts d on d.id = held.artifact_id
+			where held.room = ` + room + ` and d.retired_at is null
+			order by ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + `, d.created_at, d.id)`
+}
+
+// roomLayoutRankSQL is, as SQL over the band expression band (refs.DocumentBandSQL), the place a
+// document of that band takes in its room's layout (roomLayoutSQL): verification-md, plan-md, the
+// spec, then every other document.
+func roomLayoutRankSQL(band string) string {
+	return `case ` + band + `
+				when '` + string(refs.RankBandVerification) + `' then 0
+				when '` + string(refs.RankBandPlan) + `' then 1
+				when '` + string(refs.RankBandSpec) + `' then 2
+				else 3 end`
+}
+
+// joinedRoomLayoutStatement is the layout of the room $1 (roomLayoutSQL) with the documents $2,
+// of the bands $3, each in its place: documents the reading transaction creates and joins to the
+// room, whose artifacts and document_rooms rows it has not written yet (Ledger.pendingJoins). Each
+// is created after every document the room holds, so it takes the last place of its band.
+var joinedRoomLayoutStatement = `
+	select array(
+		select layout.id from (
+			select d.id::text as id, ` + roomLayoutRankSQL(refs.DocumentBandSQL("d")) + ` as rank,
+				false as joining, d.created_at as at
+			from document_rooms held join artifacts d on d.id = held.artifact_id
+			where held.room = $1::uuid and d.retired_at is null
+			union all
+			select joining.id, ` + roomLayoutRankSQL("joining.band") + `, true, null
+			from unnest($2::text[], $3::text[]) as joining(id, band)
+		) layout
+		order by layout.rank, layout.joining, layout.at, layout.id)`
+
+// indexedRoom is the room artifactID's document is edited in and that room's layout, as the
+// reference indexing of a version tx writes reads them (IndexDocumentReferences, indexVersion).
+// A document tx creates (Ledger.RegisterPendingArtifact) has no artifacts row a read before tx's
+// write phase can see, so its room is the ledger's: the issue room tx joins it to
+// (Ledger.RegisterPendingRoom), else the document itself, since a document_rooms row names an
+// artifacts row and every writer of one for a document its own transaction creates records it
+// there. Every other document's room is the stored one (readDocumentRoom). Where tx joins a
+// document it creates to the room, the layout holds that document in its place
+// (joinedRoomLayoutStatement).
+func indexedRoom(ctx context.Context, tx pgx.Tx, artifactID string) (string, roomLayout, error) {
+	ledger := ledgerFrom(ctx)
+	room, layout := artifactID, roomLayout(nil)
+	if _, created := pendingArtifact(ctx, artifactID); created {
+		if joined, ok := ledger.roomOf(artifactID); ok {
+			room = joined
+		}
+	} else {
+		read, err := readDocumentRoom(ctx, tx, artifactID)
+		if err != nil {
+			return "", nil, err
+		}
+		room, layout = read.room, read.layout
 	}
-	return open, nil
+	documents, bands := ledger.pendingJoins(room)
+	if len(documents) == 0 {
+		return room, layout, nil
+	}
+	for index, band := range bands {
+		if band == "\x00" {
+			return "", nil, fmt.Errorf("document %s joins room %s with no band registered for its row", documents[index], room)
+		}
+	}
+	var joined []string
+	if err := tx.QueryRow(ctx, joinedRoomLayoutStatement, room, documents, bands).Scan(&joined); err != nil {
+		return "", nil, fmt.Errorf("read the documents of room %s: %w", room, err)
+	}
+	return room, roomLayout(joined), nil
+}
+
+// documentRoomStatement is the one statement a document socket's admission reads the document
+// through (issueOpen), $1 the uuid the socket asked for: whether the issue of its room is open,
+// true for a document of no issue; the room, which is the document_rooms row's room where the
+// document was converted into an issue room, else the document itself; and, for a room that is an
+// issue's tree, the documents it holds a fragment of in the order the room renders them
+// (roomLayoutSQL). The asked artifact and its room are each a doc or a tree; anything else is no
+// row.
+var documentRoomStatement = `
+	select coalesce(i.closed_at is null, true), room.id::text,
+		case when room.kind = 'tree' then ` + roomLayoutSQL("room.id") + ` end
+	from artifacts asked
+	left join document_rooms moved on moved.artifact_id = asked.id
+	join artifacts room on room.id = coalesce(moved.room, asked.id)
+	left join issues i on i.key = room.issue_key
+	where asked.id = $1 and asked.kind in ('doc', 'tree') and room.kind in ('doc', 'tree')`
+
+// readDocumentRoom reads, in one statement (documentRoomStatement), the room artifactID's document
+// is edited in, its layout, and whether its issue is open, from q (issueOpen says which q).
+func readDocumentRoom(ctx context.Context, q Queryer, artifactID string) (documentRoom, error) {
+	var read documentRoom
+	var layout []string
+	if err := q.QueryRow(ctx, documentRoomStatement, artifactID).Scan(&read.open, &read.room, &layout); err != nil {
+		return documentRoom{}, fmt.Errorf("check document issue: %w", err)
+	}
+	read.layout = roomLayout(layout)
+	return read, nil
+}
+
+// roomLayoutStatement is the layout of the issue room $1 (roomLayoutSQL).
+var roomLayoutStatement = `select ` + roomLayoutSQL("$1::uuid")
+
+// readRoomLayout reads, from q, the layout of room, an issue's tree: the documents the room holds
+// a fragment of, in the order it renders them.
+func readRoomLayout(ctx context.Context, q Queryer, room string) (roomLayout, error) {
+	var layout []string
+	if err := q.QueryRow(ctx, roomLayoutStatement, room).Scan(&layout); err != nil {
+		return nil, fmt.Errorf("read the documents of room %s: %w", room, err)
+	}
+	return roomLayout(layout), nil
+}
+
+// DocumentRoomOfStatement is the room the document $1 (text) is edited in (refs.DocumentRoomSQL):
+// its document_rooms row's room, else the document itself spelled as the caller spelled it, for an
+// entry point that reads nothing else of the document first, in this package or another. Its one
+// column is room.
+var DocumentRoomOfStatement = `
+	select coalesce(nullif(` + refs.DocumentRoomSQL("asked.id::uuid") + `, asked.id::uuid)::text, asked.id) as room
+	from (select $1::text as id) asked`
+
+// roomOf is the room artifactID's document is edited in: the issue room the transaction of ctx's
+// ledger joins it to or resolved it into (Ledger.roomOf) - for a document that transaction creates,
+// one no read before its write phase can see - else the room DocumentRoomOfStatement reads from q:
+// the issue room it was converted into, else the document itself. Every room entry point that
+// takes an artifact id resolves it here first.
+func roomOf(ctx context.Context, q Queryer, artifactID string) (string, error) {
+	if room, held := ledgerFrom(ctx).roomOf(artifactID); held {
+		return room, nil
+	}
+	var room string
+	if err := q.QueryRow(ctx, DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
+		return "", fmt.Errorf("read the document's room: %w", err)
+	}
+	return room, nil
+}
+
+// roomBound is what a statement that resolves artifactID's room in its own SQL
+// (refs.DocumentRoomSQL) binds for it: the room the ledger ctx carries holds for it (roomOf),
+// whose own room it is, else artifactID itself, whose document_rooms row the statement reads. A
+// document the transaction joins to a room before its row is written so resolves to that room.
+func roomBound(ctx context.Context, artifactID string) string {
+	if room, held := ledgerFrom(ctx).roomOf(artifactID); held {
+		return room
+	}
+	return artifactID
 }
 
 // waitForPendingUpdates waits until the room has handed persistence every update its update

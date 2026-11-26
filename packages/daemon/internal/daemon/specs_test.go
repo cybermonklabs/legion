@@ -53,11 +53,9 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 		steps []record.DesignStep
 		line  string
 	}{
-		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
-			"Design gate steps: `decisions`, `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
+		{"two steps", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
 		{"root-issues", config.DesignGateRootIssues.Steps(),
 			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
-		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
 		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
 	} {
 		for _, tc := range []struct {
@@ -640,7 +638,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -656,7 +654,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 		{"kubernetes, session, recorded 0", "kubernetes", pair, base, true},
 		{"kubernetes, session, recorded a stale number", "kubernetes", pair, withContract(base, 23), true},
 		{"kubernetes, no session", "kubernetes", pair, withSession(base, ""), false},
-		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion), false},
+		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion()), false},
 		{"kubernetes, no known pair", "kubernetes", nil, base, false},
 		{"tmux", "tmux", pair, base, false},
 	} {
@@ -686,7 +684,7 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair, appOwners: noAppOwners}
 	c := supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController, Session: "sess-1", PluginContract: 23}
 	spec, err := s.SpawnSpec(context.Background(), c)
@@ -699,10 +697,10 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 }
 
 // A launch carries the passthrough variables the daemon's own environment holds — the seven stall
-// limits and the two refusal cooldowns — merged into the git identity's variables rather than
-// replacing them or being replaced by them, and carries no variable the two lists do not hold: a
-// session told none of one runs on the default its plugin holds
-// (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
+// limits and the two refusal cooldowns — merged into the git identity's variables and the table of
+// every role's identity rather than replacing them or being replaced by them, and carries no
+// variable the two lists do not hold: a session told none of one runs on the default its plugin
+// holds (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
 // stall limits are merged after SpawnSpec's fork, so the controller's launch is told them as a
 // phase worker's is, and the cooldowns reach the controller from its own spec
 // (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
@@ -733,8 +731,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER", "LEGION_REFUSAL_COOLDOWN_MAX_MS")
 
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
+	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
+		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+			asked = append(asked, appauth.AppRoleFor(role))
+			return bot, nil
+		}}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -747,8 +749,17 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	}
 	want := maps.Clone(held)
 	maps.Copy(want, bot.Env())
+	want[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(map[claim.Role]runtime.GitIdentity{
+		claim.RoleArchitect: bot, claim.RolePlanner: bot, claim.RoleImplementer: bot,
+		claim.RoleTester: bot, claim.RoleReviewer: bot, claim.RoleMerger: bot,
+	})
 	if !maps.Equal(spec.Env, want) {
-		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity, %v", spec.Env, want)
+		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity and the role identities, %v", spec.Env, want)
+	}
+	// One identity per App, the claim's own first: the implement App's, then the review App's for
+	// its four roles (specs.roleIdentities).
+	if want := []appauth.AppRole{appauth.Implement, appauth.Review}; !slices.Equal(asked, want) {
+		t.Errorf("identity asked for the Apps %q, want %q: the claim's own App, then the other App", asked, want)
 	}
 
 	// The controller's launch is told the same seven — the stall limits after the fork, the
@@ -784,7 +795,7 @@ func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
 		appOwners: noAppOwners,

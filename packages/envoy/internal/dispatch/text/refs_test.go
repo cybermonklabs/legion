@@ -84,8 +84,9 @@ func TestExtractAtReportsByteOffsets(t *testing.T) {
 }
 
 // A `dispatch://` address's span runs from its first byte to the end of the reference as
-// trimReference leaves it, whether or not it names anything; a `dispatch://` inside a URL is part of
-// that URL's span, never an address of its own, and a text holding no address has no span.
+// spanReference leaves it, whether or not it names anything - a link's address to the link's own
+// `)`, so an email typed straight after the link is outside it; a `dispatch://` inside a URL is
+// part of that URL's span, never an address of its own, and a text holding no address has no span.
 func TestDispatchSpansAreTheTrimmedAddresses(t *testing.T) {
 	person := "dispatch://person/john.doe@example.com"
 	rows := []struct {
@@ -98,6 +99,7 @@ func TestDispatchSpansAreTheTrimmedAddresses(t *testing.T) {
 		{"(dispatch://CORE-1/spec).", [][2]int{{1, 1 + len("dispatch://CORE-1/spec")}}},
 		{"See dispatch://CORE-1, dispatch://nothing-here_*.", [][2]int{{4, 4 + len("dispatch://CORE-1")}, {23, 23 + len("dispatch://nothing-here")}}},
 		{"https://a.test/" + person + " and dispatch://CORE-2|x", [][2]int{{len("https://a.test/" + person + " and "), len("https://a.test/" + person + " and dispatch://CORE-2")}}},
+		{"[w](dispatch://CORE-1)me@example.com", [][2]int{{4, 4 + len("dispatch://CORE-1")}}},
 	}
 	for _, row := range rows {
 		if got := DispatchSpans(row.value); !reflect.DeepEqual(got, row.want) {
@@ -770,6 +772,70 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 		for _, ref := range Extract(body, server) {
 			if ref.Kind != "url" {
 				t.Errorf("Extract(%q) cites %#v; want nothing", body, ref)
+			}
+		}
+	}
+}
+
+// A node the store addresses by its own id carries no issue key in its address (D7 of the
+// plan): `dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`,
+// `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`, the uuid as the store writes it,
+// `dispatch://lens_kind/<slug>`, and a finding of a lens, `dispatch://lens/<uuid>#b-<id>`, which no
+// pin names. A request (ParseRef) and text (Extract) read each the same way, and each target id is
+// the one the store keys the node by: the uuid or the slug, and a finding's `lens/<uuid>#<id>`.
+// Anything else after the kind names nothing.
+func TestParseRefReadsTheStoreAddresses(t *testing.T) {
+	const server = "https://dispatch.example"
+	const lens = "7c1e0000-0000-4000-8000-000000000002"
+	for _, test := range []struct {
+		reference string
+		want      Ref
+		target    string
+	}{
+		{"dispatch://interaction/7c1e0000-0000-4000-8000-000000000001",
+			Ref{Kind: "interaction", ID: "7c1e0000-0000-4000-8000-000000000001"}, "7c1e0000-0000-4000-8000-000000000001"},
+		{"dispatch://lens/" + lens, Ref{Kind: "lens", ID: lens}, lens},
+		{"dispatch://risk/7c1e0000-0000-4000-8000-000000000003",
+			Ref{Kind: "risk", ID: "7c1e0000-0000-4000-8000-000000000003"}, "7c1e0000-0000-4000-8000-000000000003"},
+		{"dispatch://constraint/7c1e0000-0000-4000-8000-000000000004",
+			Ref{Kind: "constraint", ID: "7c1e0000-0000-4000-8000-000000000004"}, "7c1e0000-0000-4000-8000-000000000004"},
+		{"dispatch://lens_kind/pre-mortem", Ref{Kind: "lens_kind", ID: "pre-mortem"}, "pre-mortem"},
+		{"dispatch://lens/" + lens + "#b-f%C3%A9-1", Ref{Kind: "block", Item: "lens", ID: lens, Block: "fé-1"}, "lens/" + lens + "#fé-1"},
+	} {
+		t.Run(test.reference, func(t *testing.T) {
+			got, ok := ParseRef(test.reference, server)
+			if !ok || got != test.want {
+				t.Fatalf("ParseRef(%q) = %#v, %t; want %#v", test.reference, got, ok, test.want)
+			}
+			if cited := Extract("See "+test.reference+".", server); len(cited) != 1 || cited[0] != test.want {
+				t.Fatalf("Extract() of %q cites %#v; want %#v", test.reference, cited, test.want)
+			}
+			if target := TargetID(got); target != test.target {
+				t.Fatalf("TargetID(%#v) = %q; want %q", got, target, test.target)
+			}
+		})
+	}
+	for _, reference := range []string{
+		"dispatch://lens/" + lens + "#b-x@v1",
+		"dispatch://lens/7C1E0000-0000-4000-8000-000000000002",
+		"dispatch://lens/7c1e0000",
+		"dispatch://lens/{" + lens + "}",
+		"dispatch://risk/7c1e0000-0000-4000-8000-000000000003/x",
+		"dispatch://risk/7c1e0000-0000-4000-8000-000000000003#b-x",
+		"dispatch://interaction/",
+		"dispatch://interaction",
+		"dispatch://lens_kind/Pre-mortem",
+		"dispatch://lens_kind/pre_mortem",
+		"dispatch://lens_kind/pre-mortem#b-x",
+		"dispatch://CORE-1/lens/" + lens,
+		"dispatch://CORE/lens/" + lens,
+	} {
+		if got, ok := ParseRef(reference, server); ok {
+			t.Errorf("ParseRef(%q) = %#v; want no reference", reference, got)
+		}
+		for _, ref := range Extract("See "+reference+".", server) {
+			if ref.Kind != "url" {
+				t.Errorf("Extract() of %q cites %#v; want nothing", reference, ref)
 			}
 		}
 	}

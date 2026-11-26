@@ -47,7 +47,9 @@ const (
 //     and reported whole beside it, for the reason given where that pair is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
-//     listArtifactAsksQueryOpen, whose texts this release does not edit at all - their gain is
+//     listArtifactAsksQueryOpen. This release edits the two ask statements only to read each
+//     ask's answer state off its node (askNodeAnswerColumn), and listArtifactAsksQueryOpen also to
+//     pick its open asks by that state (askNodeStateOf); their gain is
 //     asks_issue_key (20261101182426) and messages_issue_roots (20261101182433), and for the
 //     artifact list the drop of asks_open_artifact (20261101182440), whose before side needs
 //     that index present. No one schema holds both sides of those, so each is measured alone,
@@ -71,11 +73,11 @@ func TestStatementTimings(t *testing.T) {
 
 	// The eight filters main's listing took, narrowed to the project and nothing else: the list a
 	// dashboard opens. listIssues' arguments are those eight, the closed window, the `advances`
-	// keys and the move read's gate, named here as the request that asks for none of them, so
-	// both sides read the same rows; the listing's status is a list where main's was one value,
-	// so each side is passed its own empty status.
+	// keys, the move read's gate and the two strings of the label filter's map, named here as the
+	// request that asks for none of them, so both sides read the same rows; the listing's status
+	// is a list where main's was one value, so each side is passed its own empty status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false, false, "", ""})
 	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},

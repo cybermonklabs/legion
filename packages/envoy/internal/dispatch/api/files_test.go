@@ -153,8 +153,9 @@ func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
 	if code := responseCode(t, response); code != "FILE_STORE_UNAVAILABLE" {
 		t.Fatalf("error code = %q, want FILE_STORE_UNAVAILABLE", code)
 	}
+	// The issue's tree artifact is no file: an issue is born converted, holding its room's tree.
 	var artifacts int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifacts where issue_key = $1 and kind <> 'doc'`, issue).Scan(&artifacts); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifacts where issue_key = $1 and kind not in ('doc', 'tree')`, issue).Scan(&artifacts); err != nil {
 		t.Fatalf("count artifacts: %v", err)
 	}
 	if artifacts != 0 {

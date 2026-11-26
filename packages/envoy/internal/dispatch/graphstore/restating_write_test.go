@@ -14,91 +14,93 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// laterState is a state no writer of this release writes: a later release's build marks a
-// node proposed. This release serves beside that build during a roll and alone after a rollback,
-// so its writers meet nodes that build marked.
-const laterState = "proposed"
-
 // TestARestatingWriteKeepsTheValuesItDoesNotOwn holds a write that restates a node (Node.Restates)
-// to the rule moveNodes writes it by (R8 of this change). The node is a comment's as
-// its one statement writes it (CommentFacts), which restates it. Marked at a later release's
-// state and reserved for its author by a plain write, it keeps both when that restating write
-// writes it live and project-visible again; a restating write that says gone writes it gone and
-// keeps its visibility; a restating write of a node stored gone writes it live; a node stored
-// live stays live; and a plain write still moves both. After every write the row and the log of
-// its base attributes agree, and the log holds one tuple for each value a write moved and none
-// for a value a restating write kept.
+// to the rule queueNodes writes it by (spec requirement r-proposed). A node a plain
+// write marked proposed, settled or overtaken and reserved for its author keeps both when a
+// restating write writes it live and project-visible again; a restating write that says gone
+// writes it gone and keeps its visibility; a restating write of a node stored gone writes it
+// live; a node stored live stays live; and a plain write still moves both. After every write the
+// row and the log of its base attributes agree, and the log holds one tuple for each value a
+// write moved and none for a value a restating write kept. The node is of the kind this
+// package's tests admit as one that takes a node reserved for its author (authorOnlyTestKind),
+// since the store takes such a node of no kind the read registry does not flag.
 func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	seedSupertags(t, ctx, database, authorOnlyTestKind)
+	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 
-	restated, _ := CommentFacts(nil, "restated-comment", who, at, NoEvent, "", "")
-	if !restated.Restates {
-		t.Fatal("CommentFacts writes a comment's node that does not restate it: a write of it again would move the state another write gave it")
+	for _, marked := range []string{StateProposed, StateSettled, StateOvertaken} {
+		t.Run(marked, func(t *testing.T) {
+			restated := Node{
+				Kind: authorOnlyTestKind, ID: "RESTATE-" + marked, Supertag: authorOnlyTestKind,
+				Visibility: VisibilityProject, State: StateLive, Project: "CORE",
+				MadeAt: at, MadeBy: who, SourceEvent: NoEvent, Restates: true,
+			}
+			states := []string{StateLive}
+			visibilities := []string{VisibilityProject}
+			// write writes the node a minute after the write before it, so each tuple a write
+			// states is dated by that write.
+			writes := 0
+			write := func(node Node) {
+				t.Helper()
+				node.MadeAt = at.Add(time.Duration(writes) * time.Minute)
+				writes++
+				writeNode(t, ctx, database, node)
+			}
+
+			// A node the store does not hold is made as the restating write states it.
+			write(restated)
+			requireBaseLog(t, ctx, database, restated, StateLive, VisibilityProject, states, visibilities)
+
+			marking := restated
+			marking.Restates = false
+			marking.State, marking.Visibility = marked, VisibilityAuthor
+			write(marking)
+			states, visibilities = append(states, marked), append(visibilities, VisibilityAuthor)
+			requireBaseLog(t, ctx, database, restated, marked, VisibilityAuthor, states, visibilities)
+
+			// Live and project-visible, restated: both kept, nothing stated.
+			write(restated)
+			requireBaseLog(t, ctx, database, restated, marked, VisibilityAuthor, states, visibilities)
+
+			// Gone, restated: written gone, the visibility kept.
+			gone := restated
+			gone.State = StateGone
+			write(gone)
+			states = append(states, StateGone)
+			requireBaseLog(t, ctx, database, restated, StateGone, VisibilityAuthor, states, visibilities)
+
+			// Live over gone, restated: written live, the visibility still kept.
+			write(restated)
+			states = append(states, StateLive)
+			requireBaseLog(t, ctx, database, restated, StateLive, VisibilityAuthor, states, visibilities)
+
+			// Live over live, restated: nothing moves.
+			write(restated)
+			requireBaseLog(t, ctx, database, restated, StateLive, VisibilityAuthor, states, visibilities)
+
+			// A plain write moves both.
+			plain := marking
+			plain.Visibility = VisibilityProject
+			write(plain)
+			states, visibilities = append(states, marked), append(visibilities, VisibilityProject)
+			requireBaseLog(t, ctx, database, restated, marked, VisibilityProject, states, visibilities)
+		})
 	}
-	states := []string{StateLive}
-	visibilities := []string{VisibilityProject}
-	// write writes the node a minute after the write before it, so each tuple a write states is
-	// dated by that write.
-	writes := 0
-	write := func(node Node) {
-		t.Helper()
-		node.MadeAt = at.Add(time.Duration(writes) * time.Minute)
-		writes++
-		writeNode(t, ctx, database, node)
-	}
-
-	// A node the store does not hold is made as the restating write states it.
-	write(restated)
-	requireBaseLog(t, ctx, database, restated, StateLive, VisibilityProject, states, visibilities)
-
-	marking := restated
-	marking.Restates = false
-	marking.State, marking.Visibility = laterState, VisibilityAuthor
-	write(marking)
-	states, visibilities = append(states, laterState), append(visibilities, VisibilityAuthor)
-	requireBaseLog(t, ctx, database, restated, laterState, VisibilityAuthor, states, visibilities)
-
-	// Live and project-visible, restated: both kept, nothing stated.
-	write(restated)
-	requireBaseLog(t, ctx, database, restated, laterState, VisibilityAuthor, states, visibilities)
-
-	// Gone, restated: written gone, the visibility kept.
-	gone := restated
-	gone.State = StateGone
-	write(gone)
-	states = append(states, StateGone)
-	requireBaseLog(t, ctx, database, restated, StateGone, VisibilityAuthor, states, visibilities)
-
-	// Live over gone, restated: written live, the visibility still kept.
-	write(restated)
-	states = append(states, StateLive)
-	requireBaseLog(t, ctx, database, restated, StateLive, VisibilityAuthor, states, visibilities)
-
-	// Live over live, restated: nothing moves.
-	write(restated)
-	requireBaseLog(t, ctx, database, restated, StateLive, VisibilityAuthor, states, visibilities)
-
-	// A plain write moves both.
-	plain := marking
-	plain.Visibility = VisibilityProject
-	write(plain)
-	states, visibilities = append(states, laterState), append(visibilities, VisibilityProject)
-	requireBaseLog(t, ctx, database, restated, laterState, VisibilityProject, states, visibilities)
 
 	// One write of two nodes, handed in out of (kind, id) order, restating one and moving the
 	// other: whether a node is restated travels with that node, not with its place in the list.
 	t.Run("one write restating one node and moving another", func(t *testing.T) {
 		node := func(id string) Node {
 			return Node{
-				Kind: KindComment, ID: id, Supertag: KindComment,
-				Visibility: VisibilityProject, State: laterState,
+				Kind: KindIssue, ID: id, Supertag: SupertagIssue,
+				Visibility: VisibilityProject, State: StateProposed, Project: "CORE",
 				MadeAt: at, MadeBy: who, SourceEvent: NoEvent,
 			}
 		}
-		moving, kept := node("mixed-a"), node("mixed-b")
+		moving, kept := node("MIXED-A"), node("MIXED-B")
 		writeNode(t, ctx, database, moving)
 		writeNode(t, ctx, database, kept)
 
@@ -109,11 +111,33 @@ func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("write the two nodes: %v", err)
 		}
-		requireBaseLog(t, ctx, database, kept, laterState, VisibilityProject,
-			[]string{laterState}, []string{VisibilityProject})
+		requireBaseLog(t, ctx, database, kept, StateProposed, VisibilityProject,
+			[]string{StateProposed}, []string{VisibilityProject})
 		requireBaseLog(t, ctx, database, moving, StateLive, VisibilityProject,
-			[]string{laterState, StateLive}, []string{VisibilityProject})
+			[]string{StateProposed, StateLive}, []string{VisibilityProject})
 	})
+}
+
+// TestEveryObjectWriterRestatesItsNode holds the writers of an issue's, a document's, an ask's,
+// a message's and a comment's node to restating it: each of them writes the node again for facts
+// of its own, and a later write may mark the node proposed, which a create or a backfill writing
+// it again must not undo.
+func TestEveryObjectWriterRestatesItsNode(t *testing.T) {
+	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	who := model.Actor{Kind: "user", ID: "alice"}
+	comment, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, "", "", "CORE", nil)
+	for name, node := range map[string]Node{
+		"IssueNode":    IssueNode("CORE-1", "CORE", who, at),
+		"ArtifactNode": ArtifactNode("CORE-1/spec", "CORE", "", who, at),
+		"AskNode":      AskNode("22222222-2222-4222-8222-222222222222", "CORE", nil, who, at),
+		"MessageNode":  MessageNode("33333333-3333-4333-8333-333333333333", "CORE", nil, who, at),
+		"CommentFacts": comment,
+	} {
+		if !node.Restates {
+			t.Errorf("%s writes a node that does not restate it: a re-write would move a proposed %s back to live",
+				name, node.Kind)
+		}
+	}
 }
 
 // TestARestatingWriteKeepsTheStoredAttributes holds a write that restates a node (Node.Restates)
@@ -210,10 +234,7 @@ func requireBaseLog(
 			t.Errorf("node %s/%s's row reads %s %q and the log's newest is %q (held %t, %v): the row is not the projection of its tuples",
 				node.Kind, node.ID, attribute.name, attribute.row, current, held, err)
 		}
-		history, err := History(ctx, database.Pool, node.Kind, node.ID, attribute.name)
-		if err != nil {
-			t.Fatalf("read node %s/%s's %s history: %v", node.Kind, node.ID, attribute.name, err)
-		}
+		history := historyOf(t, ctx, database, node.Kind, node.ID, attribute.name)
 		stated := make([]string, len(history))
 		for index, tuple := range history {
 			stated[index] = tuple.ToID

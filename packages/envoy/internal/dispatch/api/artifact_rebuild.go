@@ -50,7 +50,9 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	report, written, err := s.deps.Docs.RebuildDocument(documentCtx, artifact.ID, input.Markdown, actor)
+	// Nothing after the rebuild's version reads its block index or its record, so a version above
+	// the bound leaves its blocks to the block-index reconciliation (docs.WithDeferredBlockIndex).
+	report, written, err := s.deps.Docs.RebuildDocument(docs.WithDeferredBlockIndex(documentCtx), artifact.ID, input.Markdown, actor)
 	if errors.Is(err, docs.ErrDocumentLive) {
 		writeError(w, "DOCUMENT_LIVE", http.StatusConflict, err.Error())
 		return
@@ -65,7 +67,7 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	var published []*model.Event
 	if written.Wrote {
-		event, err := s.commitArtifactVersionEvent(ledger, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
+		event, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

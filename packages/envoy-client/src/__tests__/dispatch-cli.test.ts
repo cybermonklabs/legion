@@ -52,18 +52,18 @@ function blockCapRefusal(block: number, units: number): string {
 const printedBlockCapRefusal = (block: number, units: number) =>
   `CAP_EXCEEDED: ${blockCapRefusal(block, units)}`;
 
-/** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
+/** How the Dispatch server refuses a body whose block `block` is an ask block, worded as
  *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
  *  where it stands, so the body is refused however short it is (INFRA-1201). */
 function decisionBlockRefusal(block: number): string {
   return (
-    `body block ${block} (ask) holds a decision block, which nobody can answer where it stands: ` +
-    "ask the question in the issue's own document, as a decision block there, or open an ask " +
-    "with `dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+    `body block ${block} (ask) holds an ask block, which nobody can answer where it stands: ` +
+    "ask the question in the issue's own document, as an ask block there, or open an ask " +
+    "with `dispatch ask`; to show an ask block as an example, put it in a fenced code block"
   );
 }
 
-/** The server's refusal of `body`: a decision block in it (400 DECISION_BLOCK_IN_BODY), else a
+/** The server's refusal of `body`: an ask block in it (400 DECISION_BLOCK_IN_BODY), else a
  *  paragraph over the bound Dispatch holds each block to (400 CAP_EXCEEDED), else undefined.
  *  Dispatch bounds a body block by block and never as a whole, so a body of any length in
  *  paragraphs posts and one long paragraph does not. */
@@ -808,7 +808,7 @@ describe("the dispatch CLI", () => {
       '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
       '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
       '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
-      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
+      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111 --negative-control 'Removed the guard and the test failed.'",
       "",
     ].join("\n");
     for (const call of [argv, [...argv, "--dry-run"]]) {
@@ -1667,6 +1667,44 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
 
+  // An insert's into, the block its markdown goes inside, reaches Dispatch as the caller wrote it,
+  // and `doc-edit --help` names the key with its spelling and a reading inserted into an ask.
+  test("dispatch doc-edit sends an insert's into as given, and its help names into", async () => {
+    const op = {
+      op: "insert",
+      into: "block:a1",
+      markdown: ":::reading{#r1}\nThe agent reads the answer as REST for every service.\n:::",
+    };
+    let sent: { ops?: unknown } | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/artifacts/doc-2/edits") {
+        sent = await request.json();
+        return Response.json({ applied: 1, version: { number: 4 }, token: "sha256:read" });
+      }
+      return fetch(request);
+    }) as typeof fetch;
+    const { code, stdout } = await run(
+      ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify([op])],
+      omp,
+      "",
+      fetchImpl
+    );
+    expect(code, stdout).toBe(0);
+    expect(stdout).toContain("Applied 1 ops (version 4)");
+    expect(sent?.ops).toEqual([op]);
+
+    const help = await run(["doc-edit", "--help"], omp);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain(
+      '\n        into (text): Insert inside this block, after its last child: "block:<id>" is the one form it takes.'
+    );
+    expect(help.stdout).toContain(
+      '{"op":"insert","into":"block:a1","markdown":":::reading{#r1}\\nThe agent reads the answer as REST for every service.\\n:::"}'
+    );
+  });
+
   // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
   // command prints that refusal as a line of its own, its code first and then Dispatch's message,
   // and exits 1, as for every write Dispatch refused. The credential is the read trade
@@ -1732,6 +1770,166 @@ describe("the dispatch CLI", () => {
     ]);
     // Every request presented the read-only token, never the bearer the shell holds.
     expect(sent.map((one) => one.authorization)).toEqual(sent.map(() => `DPoP ${readToken}`));
+  });
+});
+
+// `dispatch api`: one GET of a route under /api/v1, with the session's own credential, Dispatch's
+// JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each request
+// carried, which the server above does not, and a broker of its own answers a pod's trade.
+describe("dispatch api", () => {
+  interface Asked {
+    readonly method: string;
+    readonly path: string;
+    readonly authorization: string;
+  }
+  const asked: Asked[] = [];
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const { pathname, search } = new URL(request.url);
+      asked.push({
+        method: request.method,
+        path: `${pathname}${search}`,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (pathname === "/api/v1/issues/DSP-1") {
+        return Response.json({
+          key: "DSP-1",
+          claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
+        });
+      }
+      // Dispatch's own answer to a path no build of it serves (the router's `staticHandler`): it
+      // names the route and where every route is listed.
+      if (pathname.startsWith("/api/v1/issuez/")) {
+        return Response.json(
+          {
+            code: "NOT_FOUND",
+            error: `no route for ${request.method} ${pathname}`,
+            hint: "GET /api/v1 lists every route",
+          },
+          { status: 404 }
+        );
+      }
+      return Response.json(
+        { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
+        { status: 404 }
+      );
+    },
+  });
+  /** The session each trade asked the broker to write under, as its `session` form field. */
+  const trades: string[] = [];
+  /** The access token the broker answered each trade with, in the order of `trades`. */
+  const accessTokens: string[] = [];
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
+      const accessToken = fixtureSecret("access");
+      accessTokens.push(accessToken);
+      return Response.json({
+        access_token: accessToken,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+        credential_id: "cred-1",
+      });
+    },
+  });
+  afterAll(() => {
+    dispatch.stop(true);
+    broker.stop(true);
+  });
+  beforeEach(() => {
+    asked.length = 0;
+    trades.length = 0;
+    accessTokens.length = 0;
+    forgetBrokerClients();
+  });
+  const session = { ...omp, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+
+  test("reads a route with the session's bearer and prints Dispatch's JSON", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1?events=0"], session);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).claim.actor.id).toBe("ses-architect");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: `Bearer ${TOKEN}` },
+    ]);
+  });
+
+  test("under DISPATCH_TOKEN_BROKER=1, reads a route with a broker token traded for this session", async () => {
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, "projected.service.account.token\n");
+    // A pod launched under the setting: the bearer the environment still holds is never read.
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1"], {
+      ...session,
+      DISPATCH_TOKEN_BROKER: "1",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).key).toBe("DSP-1");
+    expect(trades).toEqual(["ses-1"]);
+    expect(asked).toEqual([
+      {
+        method: "GET",
+        path: "/api/v1/issues/DSP-1",
+        authorization: `DPoP ${accessTokens[0]}`,
+      },
+    ]);
+  });
+
+  test("refuses a path outside /api/v1, naming it, exit 2, and sends nothing", async () => {
+    const outside = [
+      "https://dispatch.internal.example/api/v1/issues/DSP-1",
+      "//dispatch.internal.example/api/v1/issues/DSP-1",
+      "/api/v2/issues/DSP-1",
+      "/api/v1/../../healthz",
+      "/api/v1/%2E%2e/healthz",
+      "/api/v1/issues\\..\\..\\healthz",
+    ];
+    for (const path of outside) {
+      const { code, stdout } = await run(["api", "--path", path], session);
+      expect(code, path).toBe(2);
+      expect(stdout, path).toStartWith("dispatch api was not called: 1 problem\n");
+      expect(stdout, path).toContain(`path ${JSON.stringify(path)} `);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  test("exits 1 on Dispatch's 404, printing its error and code", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-404"], session);
+    expect(code).toBe(1);
+    expect(stdout).toBe("NOT_FOUND: issue DSP-404 not found\n");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-404", authorization: `Bearer ${TOKEN}` },
+    ]);
+  });
+
+  // The help of `dispatch api` promises Dispatch's error with its code on a refused read. A path
+  // the caller wrote reaches no route far more often because the path is wrong than because a
+  // release is in progress, so the words that a release is in progress and to try again in one
+  // minute, which send an agent to wait and ask again, are not Dispatch's answer: its answer names
+  // the route. The timeout leaves room for the client's waits between no-route attempts.
+  test("exits 1 on a path Dispatch has no route for, printing Dispatch's own error", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
+    expect(code).toBe(1);
+    expect(stdout).toContain("no route for GET /api/v1/issuez/DSP-1");
+    expect(stdout).not.toContain("a new release of Dispatch is in progress");
+  }, 20_000);
+
+  // Dispatch's no-route answer carries a `hint` beside its error, saying where every route is
+  // listed, and a caller who wrote a wrong path needs that line most. The read is one GET, not
+  // sent again.
+  test("prints the hint Dispatch gives beside its no-route error", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
+    expect(code).toBe(1);
+    expect(stdout).toContain("GET /api/v1 lists every route");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issuez/DSP-1", authorization: `Bearer ${TOKEN}` },
+    ]);
   });
 });
 
@@ -1823,7 +2021,7 @@ describe("the dispatch entry as its own process", () => {
     }
   }, 30_000);
 
-  // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
+  // A body holding an ask block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
   // INFRA-1201), and what the writer reads is the whole of the server's message, which says
   // where the question belongs. The refusal now opens with the server's code, because
   // `skill://dispatch` has every agent branch on the code and the command printed none

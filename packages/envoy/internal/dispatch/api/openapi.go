@@ -103,98 +103,6 @@ func newOpenAPIEmitter() (*openAPIEmitter, []reflect.Type) {
 	return emitter, bothDirections
 }
 
-// openAPIDocument builds the document. It walks the table with its test hooks in, since a hook's
-// row is a row of the table wherever a deployment leaves it out (scopedRoutesNotMounted), and
-// marks each hook row x-test-hook so a reader of the document can tell the twelve apart.
-func openAPIDocument() (*openapi31.Spec, error) {
-	emitter, bothDirections := newOpenAPIEmitter()
-	for _, body := range bothDirections {
-		emitter.fail("%s is reflected both as a request body and as a response, and one schema "+
-			"cannot answer for both: a request body requires the fields tagged required:\"true\" "+
-			"and a response the fields Go's marshaller always writes, so either reading is wrong "+
-			"for one of its two directions. Give each direction a Go type of its own.",
-			openAPIGoTypeName(body))
-	}
-
-	spec := emitter.reflector.SpecEns()
-	spec.Openapi = "3.1.0"
-	spec.Info.WithTitle("Dispatch HTTP API")
-	spec.Info.WithVersion("1")
-	spec.Info.WithDescription(
-		"Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go " +
-			"types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never " +
-			"this document: it is committed so a client's types can be rendered from it, and " +
-			"`envoy-dispatch openapi --check` refuses a tree where it is stale.")
-
-	if err := emitter.resolveRawFields(); err != nil {
-		return nil, err
-	}
-
-	hooks := openAPIHookRoutes()
-	paths := map[string]*openapi31.PathItem{}
-	operationIDs := map[string]string{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		operation, err := emitter.operation(route, hooks[name])
-		if err != nil {
-			return nil, err
-		}
-		id := *operation.ID
-		if taken, clash := operationIDs[id]; clash {
-			emitter.fail("operationId %s is taken by both %s and %s", id, taken, name)
-		}
-		operationIDs[id] = name
-		item := paths[route.Pattern]
-		if item == nil {
-			item = &openapi31.PathItem{}
-			paths[route.Pattern] = item
-		}
-		if err := item.SetOperation(strings.ToLower(route.Method), operation); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	for pattern, item := range paths {
-		spec.PathsEns().WithMapOfPathItemValuesItem(pattern, *item)
-	}
-
-	for key := range rawFieldSchemas {
-		if !emitter.rawFieldsSeen[key] {
-			emitter.fail("rawFieldSchemas names %s, which is no field of any type the document "+
-				"describes: drop the row or name the field it meant", key)
-		}
-	}
-	for goType, name := range schemaNames {
-		if emitter.schemaOwners[name] != goType {
-			emitter.fail("schemaNames gives %s the name %s, and the document declares no schema "+
-				"of that type: drop the row or name the type it meant", openAPIGoTypeName(goType), name)
-		}
-	}
-	if len(emitter.failures) > 0 {
-		sort.Strings(emitter.failures)
-		return nil, fmt.Errorf("emit the OpenAPI document:\n\t%s",
-			strings.Join(slices.Compact(emitter.failures), "\n\t"))
-	}
-	return spec, nil
-}
-
-// openAPIHookRoutes names every row the table mounts only with Deps.TestHooksEnabled, read as the
-// difference between the two tables rather than listed, so a hook added to routes() is marked
-// without this file being touched.
-func openAPIHookRoutes() map[string]bool {
-	served := map[string]bool{}
-	for _, route := range (&server{}).routes() {
-		served[route.Method+" "+route.Pattern] = true
-	}
-	hooks := map[string]bool{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		if !served[name] {
-			hooks[name] = true
-		}
-	}
-	return hooks
-}
-
 // fail records a refusal the whole emit carries.
 func (e *openAPIEmitter) fail(format string, args ...any) {
 	e.failures = append(e.failures, fmt.Sprintf(format, args...))
@@ -369,8 +277,10 @@ func openAPIStructOf(t reflect.Type) reflect.Type {
 // gets. It is not for a request body (openAPIRequestBodyTypes), where what a caller must send is
 // the handler's own refusals and no json tag states it: there a property is required only when
 // its Go field carries `required:"true"`, which jsonschema-go has read into the parent's required
-// before this runs. A field rawFieldSchemas names is left out of required by its json tag alone —
-// absent is one of its three states — and carries the schema that table gives it.
+// before this runs. A response field tagged `required:"false"` is left out of required although
+// the marshaller always writes it (openAPIOlderServersOmit). A field rawFieldSchemas names is left
+// out of required by its json tag alone — absent is one of its three states — and carries the
+// schema that table gives it.
 //
 // A name is added to required once however often it is reflected. A shaped read shadows a field
 // of the row it embeds - shapedAsk declares `options` in front of the model.Ask it embeds - and
@@ -404,7 +314,7 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 		return err
 	}
 	if !openAPIOmitsEmpty(p.Field.Tag.Get("json")) {
-		if !e.requestBodies[openAPIStructOf(p.ParentSchema.ReflectType)] &&
+		if !e.requestBodies[openAPIStructOf(p.ParentSchema.ReflectType)] && !openAPIOlderServersOmit(p.Field) &&
 			!slices.Contains(p.ParentSchema.Required, p.Name) {
 			p.ParentSchema.Required = append(p.ParentSchema.Required, p.Name)
 		}
@@ -451,6 +361,18 @@ func openAPIIsList(t reflect.Type) bool {
 // the field, so the document marks it optional rather than required.
 func openAPIOmitsEmpty(tag string) bool {
 	return strings.Contains(tag, ",omitempty") || strings.Contains(tag, ",omitzero")
+}
+
+// openAPIOlderServersOmit is whether a response field is tagged `required:"false"`: a member this
+// release added to a shape a server of the release before already answers. This build's
+// marshaller writes it on every answer, since it carries no `,omitempty`. But during a roll, and
+// after a rollback, the same route is answered by a server of the release before, which does not
+// send it, and the release keeps serving that server's answers to every reader (the root's R22).
+// So the document marks the field optional, and a reader takes its absence as what the older
+// server's answer means. The tag is jsonschema-go's own `required`, which reads `false` as no
+// requirement, so only this emitter's own rule needs telling.
+func openAPIOlderServersOmit(field reflect.StructField) bool {
+	return field.Tag.Get("required") == "false"
 }
 
 // openAPIAllowNullRef gives a nilable field whose schema is a bare $ref its null arm. Go
@@ -689,8 +611,8 @@ func openAPICamel(segment string) string {
 }
 
 // parameters are the row's path parameters, in the pattern's own order, then the keys the shape's
-// query struct declares, in the struct's own order, then the `session` parameter every operation
-// carries.
+// query struct declares, in the struct's own order, then the headers the shape names, in its own
+// order, then the `session` parameter every operation carries.
 func (e *openAPIEmitter) parameters(
 	route apiRoute,
 	shape routeShape,
@@ -711,6 +633,16 @@ func (e *openAPIEmitter) parameters(
 			return nil, err
 		}
 		parameters = append(parameters, query...)
+	}
+	for _, header := range shape.Headers {
+		parameter := openapi31.Parameter{
+			Name:   header.Name,
+			In:     openapi31.ParameterInHeader,
+			Schema: map[string]any{"type": "string"},
+		}
+		parameter.WithRequired(header.Required)
+		parameter.WithDescription(header.Description)
+		parameters = append(parameters, openapi31.ParameterOrReference{Parameter: &parameter})
 	}
 	session := openapi31.Parameter{
 		Name:   "session",

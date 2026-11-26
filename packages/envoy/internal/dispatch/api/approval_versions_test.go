@@ -638,7 +638,8 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 	}
 	connect := func(t *testing.T, doc *document, headers http.Header) *syncedPeer {
 		t.Helper()
-		peer := &syncedPeer{wsURL: doc.wsURL, sockets: doc.sockets, headers: headers, artifactID: doc.artifactID, doc: crdt.New()}
+		peer := &syncedPeer{wsURL: doc.wsURL, sockets: doc.sockets, headers: headers, artifactID: doc.artifactID,
+			fragment: artifactFragment(t, doc.handler, doc.artifactID), doc: crdt.New()}
 		peer.connect(t)
 		t.Cleanup(peer.close)
 		doc.peers = append(doc.peers, peer)

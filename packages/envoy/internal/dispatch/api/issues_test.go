@@ -742,7 +742,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, false, "", "").Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 
@@ -760,16 +760,17 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 }
 
-// GET /issues/{key}/asks?state=open must also stay on the asks_open partial index even
-// after Postgres switches the underlying prepared statement from a per-execution custom
-// plan (built for that call's actual bound values) to a cached generic plan, which it
-// automatically considers starting on a statement's 6th execution. queryOwnerAsks bakes the
-// open case's state predicate into the query text as a literal instead of a bound
-// parameter specifically so that no plan kind can lose the fact that it always matches
-// state = 'open'; a $-parameterized predicate keeps the index for a custom plan (built
-// knowing the actual bound value) but loses it for a generic one, which cannot assume the
-// parameter is always 'open' and so cannot prove the partial index applies at all -
-// forcing a sequential scan of asks.
+// GET /issues/{key}/asks?state=open must also stay on an index of asks even after Postgres
+// switches the underlying prepared statement from a per-execution custom plan (built for that
+// call's actual bound values) to a cached generic plan, which it automatically considers
+// starting on a statement's 6th execution. The open list picks the issue's asks by their node's
+// state (askNodeStateOf, R3), which no index of asks holds, so it reaches them through the
+// issue's own index, asks_issue_key (20261101182426), keyed on the issue the statement binds,
+// and filters each by its node: the partial index asks_open (0001) is keyed on the row's state,
+// which this read no longer tests. The test's name is from when it read asks_open; what it holds
+// is that no plan kind reads asks whole. queryOwnerAsks still writes the state into the query text
+// as a literal rather than a bound parameter, so the statement's text, and with it every plan
+// pgx caches for it, is one for each state.
 //
 // plan_cache_mode = force_generic_plan pins every execution (including the first) to a
 // generic plan instead of relying on Postgres's cost-based custom/generic switch, which
@@ -817,7 +818,7 @@ func TestListIssueAsksOpenQueryUsesAsksOpenIndex(t *testing.T) {
 		t.Fatalf("explain plans = %#v, want one plan", plans)
 	}
 	if explaintest.SeqScansRelation(t, plans[0].Plan, "asks") {
-		t.Fatalf("open asks generic query plan sequentially scans asks; want an index scan via asks_open:\n%s", planJSON)
+		t.Fatalf("open asks generic query plan sequentially scans asks; want an index scan via asks_issue_key:\n%s", planJSON)
 	}
 }
 
@@ -1002,6 +1003,20 @@ func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
 	issues := decodeBody[[]model.IssueSummary](t, filtered)
 	if len(issues) != 1 || issues[0].Key != second.Key {
 		t.Fatalf("issues matching frontend and docs = %#v, want only %s (not %s)", issues, second.Key, third.Key)
+	}
+
+	// The filter matches a label where strings.EqualFold matches it (labelKey), whatever the
+	// collation of the labels column. ä lists the issue labelled Ä. legion lists the issue
+	// labelled legion, but not the issue labelled only LEGİON (with U+0130), which
+	// strings.ToLower, and lower() in a glibc collation, map to legion.
+	umlaut := create("Umlaut", []string{"\u00c4"})
+	if listed := listedKeys(t, handler, "project=CORE&label=%C3%A4"); !slices.Equal(listed, []string{umlaut.Key}) {
+		t.Fatalf("issues matching \u00e4 = %v, want only %s", listed, umlaut.Key)
+	}
+	lookAlike := create("Look-alike", []string{"LEG\u0130ON"})
+	labelled := create("Labelled", []string{"legion"})
+	if listed := listedKeys(t, handler, "project=CORE&label=legion"); !slices.Contains(listed, labelled.Key) || slices.Contains(listed, lookAlike.Key) {
+		t.Fatalf("issues matching legion = %v, want %s listed and %s not listed", listed, labelled.Key, lookAlike.Key)
 	}
 }
 

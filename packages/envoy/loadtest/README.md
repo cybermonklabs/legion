@@ -1452,7 +1452,7 @@ dump as `seed-check.json`, and in `seed.meta.json` and the manifest's `seed.chec
 | Field | What it is |
 | --- | --- |
 | `documents` | Documents checked. |
-| `differences` | Differences from the bundle: a document with no local one, another version, another number of open anchored items, or another text. |
+| `differences` | Differences from the bundle: a document with no local one, another version, another number of open anchored items, another text (each ask block's server-owned attributes aside, as the text route serves it), or another answer of an answered or resolved typed ask block, read as its ask's node holds it. |
 | `version_size_mismatches` | Versions whose stored size change is neither production's nor its negative. |
 | `anchors_outside_logged_block` | Anchored items with no recorded rule or stored quote, or whose stored quote is not unique in the text or lies outside the span its rule chose. |
 | `anchor_rules` | `logged_quote`, `in_logged_block`, `nearest_surviving_block`: anchors seeded by each rule. |

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -308,7 +310,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	if err := queueExec(ledger, `
 		update comments
 		set body = $2, edited_at = $3
-		where id = $1
+		where id = $1 and `+graphstore.KeptHeadRows+`
 	`, comment.ID, input.Body, editedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -333,6 +335,27 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of a comment's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the comment as changed by that run where it changed them
+	// (spec requirement r-interaction). Nothing else this route writes reaches the comment's node,
+	// so it writes that node for the run (planCommentChangedForRun). The node write is queued after
+	// the row's update, its references and its mark, and what it states right after comment.edited
+	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
+	// (writeIssue).
+	var commentNode graphstore.Uncaused
+	if previousBody != comment.Body {
+		if commentNode, err = planCommentChangedForRun(r.Context(), tx, comment, editedAt, actor); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, commentNode)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	payload, logins, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -352,6 +375,18 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The stamp queueLoggedEvent queues with the event appends no event, so the id sequence still
+	// names comment.edited here. The comment's own head rows hold its body and the time it was
+	// edited (graphstore.HeadRowsSQL), so they are written again whether or not a node write was
+	// planned.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, append(graphstore.HeldHeads(commentNode), graphstore.NodeKey{Kind: graphstore.KindComment, ID: comment.ID}))
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -361,23 +396,34 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
-// recordOrphanedCommentAnchor records on the comment's row what a document write just found:
-// the mark its anchor names is no longer in the document (docs.ErrAnchorOrphaned). The anchor
-// keeps everything else it carries, so the comment still reads as the one made on that quote,
-// and the write is queued on the caller's own ledger, which both callers of this then end their
-// own way: the accept and the reject arms of commentAction commit the orphaning and answer 409,
-// where deleteComment carries on and deletes the comment.
-//
-// Only the orphaned key is written, the one key this refusal decides: writing the whole anchor
-// would write back every other key of the column as this transaction read it, which is not what
-// orphaning an anchor means. The narrow write says what it changes, and the artifact the
-// comment's anchored_to tuple names stays among the rest, so this write restates nothing the
-// store holds.
-func recordOrphanedCommentAnchor(ledger *docs.Ledger, comment *model.Comment) error {
-	comment.Anchor.Orphaned = true
-	return queueExec(ledger, `
-		update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
-	`, comment.ID)
+// planCommentChangedForRun plans the write of comment's node that names it changed at at by by,
+// for the run ctx carries (graphstore.PlanChangedForRun), for a write of the comment's row that
+// reaches no node of the store: an edit of its words (editComment) and its delete
+// (deleteComment), each made for a run (store.WithRun, which withinGoingRun puts on a request
+// naming its run). The comment is a node of the store where its row names its node
+// (comments.node_kind), which a comment left out of the store (commentStored's unprojected), or
+// one a process of the release before wrote and the backfill has not stated yet, does not, and has
+// none for a run to name. That column is read here, in the caller's read phase and for a run
+// alone, under the owner lock every writer of the comment holds, in the one statement that reads
+// the scope of what the comment belongs to (graphstore.CommentScopeOf). The node is the one the
+// create and the backfill write (graphstore.CommentFacts' node): in that project, or between those
+// parties, made by its author at its created_at. Its relations stand as they were stated and are
+// stated again by nobody. It answers the zero Uncaused, for which QueueNodes and QueueCaused queue
+// nothing, for no run and for a comment the store holds no node of. The caller queues the node
+// write (graphstore.QueueNodes) after its row's write and every document write it makes, and what
+// it states right after its own event (graphstore.QueueCaused over graphstore.LatestEvent).
+func planCommentChangedForRun(ctx context.Context, tx pgx.Tx, comment model.Comment, at time.Time, by model.Actor) (graphstore.Uncaused, error) {
+	if store.RunOf(ctx) == "" {
+		return graphstore.Uncaused{}, nil
+	}
+	stored, project, parties, err := graphstore.CommentScopeOf(ctx, tx, comment.ID, comment.IssueKey, comment.ArtifactID)
+	if err != nil || !stored {
+		return graphstore.Uncaused{}, err
+	}
+	return graphstore.PlanChangedForRun(ctx, at, by, func() (graphstore.Node, error) {
+		node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
+		return node, nil
+	})
 }
 
 func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action string) {
@@ -394,6 +440,12 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	}
 	if !ok {
 		return
+	}
+	// Read before the transaction opens (specWriterOf), for the check of the accept and the
+	// reject below; the resolve writes no document text and reads nothing for it.
+	var writer specWriter
+	if action != "resolve" {
+		writer = s.specWriterOf(r, actor)
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -483,6 +535,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			projectionKind = kind
 		}
 		if comment.Anchor != nil {
+			// The check of who writes an issue's spec or Verification document, on the document
+			// the suggestion is anchored in, before the document call. The accept and the reject
+			// need the person scope at the route's gate, so the check passes them at once.
+			if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, comment.Anchor.ArtifactID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 			var markErr error
 			if action == "accept" {
 				markErr = s.deps.Docs.AcceptSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, comment.Suggestion.ReplaceWith, actor)
@@ -494,7 +553,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 					s.writeHandlerError(w, markErr)
 					return
 				}
-				if err := recordOrphanedCommentAnchor(ledger, &comment); err != nil {
+				if err := orphanCommentAnchor(r.Context(), tx, ledger, &comment, actor); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
@@ -567,7 +626,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		// Accepting a suggestion is a decision, so it names the version it produced; the
 		// transactional apply never schedules a settle (R30), so this is the only version write.
 		summary := acceptedVersionName(comment.Body, comment.Anchor.Quote, comment.Suggestion.ReplaceWith)
-		named, err := s.deps.Docs.NamedVersion(documentCtx, comment.Anchor.ArtifactID, summary, actor)
+		// The accept then reads the version's markdown alone (namedVersionDiff), so a version above
+		// the bound leaves its blocks to the block-index reconciliation (docs.WithDeferredBlockIndex).
+		named, err := s.deps.Docs.NamedVersion(docs.WithDeferredBlockIndex(documentCtx), comment.Anchor.ArtifactID, summary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -587,7 +648,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			s.writeHandlerError(w, err)
 			return
 		}
-		versionEvent, err := s.commitArtifactVersionEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, named, diff)
+		versionEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, named, diff)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -633,6 +694,55 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// orphanCommentAnchor records on comment's row what a document write just found: the mark its
+// anchor names is no longer in the document (docs.ErrAnchorOrphaned). The anchor keeps everything
+// else it carries, so the comment still reads as the one made on that quote, and the write is
+// queued on the caller's own ledger, which both callers of this then end their own way: the accept
+// and the reject arms of commentAction commit the orphaning and answer 409, where deleteComment
+// carries on and deletes the comment.
+//
+// Only the anchor's orphaned key is written, the one key this refusal decides: writing the whole
+// anchor would write back every other key of the column as this transaction read it, which is not
+// what orphaning an anchor means. The narrow write says what it changes, and the artifact the
+// comment's anchored_to tuple names stays among the rest, so this write restates nothing the
+// store holds. Where the anchor stood in a block until now, it queues after it the retraction of
+// the anchored_in to that block's node and, for a comment that answers nothing, of its part_of to
+// the same node (graphstore.AnchorTuples, this issue's spec R31): an orphaned anchor stands in no
+// block, and its comment stands under its document. The caller's transaction holds the comment's
+// owner lock and the comment's own row (lockedComment, lockedCommentForCorrection), so the block
+// is read here, in its read phase, off the row as it stands, and a comment the store holds no
+// node of states nothing to retract. The retractions are dated now by actor, at the sentinel,
+// since the orphaning appends no event.
+func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, actor model.Actor) error {
+	stood := !comment.Anchor.Orphaned
+	comment.Anchor.Orphaned = true
+	id := comment.ID
+	var block *string
+	if stood {
+		if err := tx.QueryRow(ctx, `
+			select case when c.node_kind is not null then `+graphstore.AnchorBlockAddressSQL("c")+` end
+			from comments c where c.id = $1
+		`, id).Scan(&block); err != nil {
+			return fmt.Errorf("read the anchor block of comment %s: %w", id, err)
+		}
+	}
+	if err := queueExec(ledger, `
+		update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1 and `+graphstore.KeptHeadRows+`
+	`, id); err != nil {
+		return err
+	}
+	if block == nil || !graphstore.AddressFits(*block) {
+		return nil
+	}
+	answersNothing := comment.Answers == nil && comment.ReplyTo == nil && comment.AskID == nil
+	retractions := graphstore.AnchorTuples(nil, id, refs.BlockNodeKind, *block, answersNothing, false, actor, time.Now().UTC(), graphstore.NoEvent)
+	return ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, retractions)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, retractions))
+		return nil
+	})
 }
 
 // acceptedComment is the accept route's response: the comment, plus whether the live document

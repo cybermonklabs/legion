@@ -2,7 +2,7 @@
 # pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no
 # merge; its filter names the eleven spec files and what they test, less than the job reads on
 # purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of
-# those rows. Rule 23 of .github/scripts/check-ci-filters.sh holds it to the spec files the
+# those rows. Rule 24 of .github/scripts/check-ci-filters.sh holds it to the spec files the
 # references lane runs.
 # why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
 EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files and what they test, less than the job reads on purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of those rows", [
@@ -11,6 +11,7 @@ EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references 
     '.github/scripts/dispatch-browser-shard-suite.sh',
     '.github/scripts/dispatch-browser-reading-rows.sh',
     '.github/scripts/dispatch-browser-latest-blobs.sh',
+    '.github/scripts/dispatch-browser-fetch-binaries.sh',
     # why: .github/ci-notes/ci.md#dispatch_references-the-eleven-spec-files-and-the-helpers-only-they-share
     'packages/dispatch/e2e/bare-references.e2e.ts',
     'packages/dispatch/e2e/btw.e2e.ts',
@@ -52,7 +53,6 @@ EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references 
     'packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx',
     'packages/dispatch/web/src/features/architecture/AttachmentLists.tsx',
     'packages/dispatch/web/src/features/priorities/PriorityDescription.tsx',
-    'packages/dispatch/web/src/features/priorities/useInPlaceDraft.ts',
     'packages/contracts/src/dispatch-text-references*.ts',
     'packages/contracts/src/reference-spans.ts',
     'packages/contracts/src/dispatch-writing-boxes.ts',

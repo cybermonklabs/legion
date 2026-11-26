@@ -411,8 +411,9 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/decisions`: the issue's decision records, each with whether it
- *  waits for the reader's review and the Keep a person recorded. */
+/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
+ *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
+ *  the Decisions tab reads them. */
 export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
@@ -532,7 +533,8 @@ export function listPriorities(
 }
 
 /** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
- *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+ *  title, as the title's slug cut to `PRIORITY_ID_MAX` (200) characters at the end of a word when
+ *  it is longer, and refuses a second write of that id with 409 PRIORITY_EXISTS. */
 export function createPriority(
   input: Body<"/api/v1/priorities", "post">,
   options: ApiOptions = {}

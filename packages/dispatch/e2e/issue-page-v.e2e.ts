@@ -50,6 +50,7 @@ import {
   identityBlockBottom,
   openPreset,
 } from "./issue-page-i";
+import { refuseTreeRead, treeReadRoute } from "./issue-page-t-tree";
 import {
   asRecorder,
   boxesPastTheirCard,
@@ -66,7 +67,6 @@ import {
   paintedMarks,
   RUNBOOK,
   readServed,
-  refuseBlocksRead,
   STATEMENT_B_WORDS,
   seedLinkedChecks,
   tabWalk,
@@ -220,13 +220,14 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       // under it, and the table's three columns stand at 38, 36 and 26 per cent of its width; at
       // 760 px and below the body is its column less 20 px with 10 px above it, no heading is
       // drawn, and each statement is a card with a 4 px left edge and 8 px corners, 8 px from the
-      // next.
+      // next. From 1024 px up the Contents pane stands beside the view (R13), so the column is
+      // what the frame leaves beside the pane, read from the frame itself.
       const frame = await verificationFrame(page);
       expect(frame.page.scroll, `the page scrolls sideways at ${width} px`).toBeLessThanOrEqual(
         frame.page.viewport
       );
       if (width === 1440 || width === 1024) {
-        const measure = width === 1440 ? 1180 : frame.body.parent - 48;
+        const measure = Math.min(1180, frame.body.parent - 48);
         expect(
           Math.abs(frame.body.width - measure),
           `the body is ${frame.body.width} px wide, not ${measure} px, at ${width} px`
@@ -768,14 +769,16 @@ test("the Verification view draws a check's links, its agent's role and a child'
 });
 
 // Row 4. From the issue's own address `t k` turns the view on with the focus on the issue's row
-// and the view's top on screen, and asks the server for nothing the first load did not; Tab
-// alone then reaches the chips, a check's words, its Facts control, the copy control its facts
-// draw and its line of earlier results, in reading order, and Enter works each one; the tree
-// answers the outline's keys, Facts shuts and opens a check's facts while the focus stays and
-// `o` keeps them drawn after `j` moves on; a press on a result's cell focuses its check's row
-// (facts drawn while focused and shut once `j` moves on) and a press on a statement's words puts
-// the caret in it, Escape giving the row back; axe finds no break of the tree's structure; `t k`
-// from a row turns the view off; and the view's own address leaves the focus on the issue's row.
+// and the view's top on screen, and asks the server for nothing the first load did not: the view's
+// read of the tree came with the load, which R4 sends for this seed's issue, a parent whose
+// Conversation's read holds no check of its children. Tab alone then reaches the chips, a check's
+// words, its Facts control, the copy control its facts draw and its line of earlier results, in
+// reading order, and Enter works each one; the tree answers the outline's keys, Facts shuts and
+// opens a check's facts while the focus stays and `o` keeps them drawn after `j` moves on; a press
+// on a result's cell focuses its check's row (facts drawn while focused and shut once `j` moves
+// on) and a press on a statement's words puts the caret in it, Escape giving the row back; axe
+// finds no break of the tree's structure; `t k` from a row turns the view off; and the view's own
+// address leaves the focus on the issue's row.
 // SLOW(>=2s): a whole seeded issue loaded and waited out to a quiet window twice, a walk of up to
 // 40 Tabs and some twenty keys and presses each waited on, an axe pass, and a third load.
 test("the Verification view is worked by the keyboard alone", async ({ browser }) => {
@@ -799,12 +802,17 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
 
     // From the issue's own address, with the focus on the page, `t k` turns the view on, leaves
     // the focus on the issue's row inside it with the view's top on screen under the header's
-    // band, and asks the server for nothing the first load did not.
+    // band, and asks the server for nothing the first load did not: the first load sent the view's
+    // read of the tree (`?view=verification`) with it.
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(seeded.key, "conversation"));
     await expectLoadSettled(traffic);
     await expectIssuePageDrawn(page);
     const loaded = new Set(traffic.requests.map((request) => request.path));
+    expect(
+      loaded.has(`/api/v1/issues/${seeded.key}/tree?view=verification`),
+      "the first load sent no read of the Verification view"
+    ).toBe(true);
     traffic.reset();
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -1092,7 +1100,7 @@ test("the Verification view keeps its rows when its document's blocks read fails
 
     // From here on the Verification document's blocks read is refused, as many times as the page
     // asks it.
-    const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
+    const blocksRead = await refuseTreeRead(page, seeded.key);
 
     // The view off, from a row of it: the outline takes its place.
     await verificationCard(page, ids[0] ?? "").focus();
@@ -1163,7 +1171,7 @@ test("the Verification view says nothing of a check's statements before the Veri
     const { ids, truth } = await openSettledView(page, seeded);
     expect(truth.loose, "the settled view draws a check that serves no statement").toEqual([]);
 
-    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    const blocksRoute = treeReadRoute(seeded.key);
     const answered = (path: string) =>
       page.waitForResponse((response) => new URL(response.url()).pathname === path);
     const readsAnswered = () =>
@@ -1210,7 +1218,7 @@ test("the Verification view says nothing of a check's statements before the Veri
     // The blocks read refused from the first load, as many times as the page asks it (two
     // retries after the first): the view says so in one line with a Retry, over a tree that
     // holds no card and no row, and draws nothing its reads do not say.
-    const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
+    const blocksRead = await refuseTreeRead(page, seeded.key);
     const refusedReads = readsAnswered();
     await openPreset(page, seeded.key, "verification");
     await Promise.all([refusedReads, blocksRead.refused(3)]);
@@ -1339,7 +1347,7 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
+    const blocksRead = await refuseTreeRead(page, seeded.key);
     // no opening focus: the view's take (`slots/stage.tsx`) focuses the refused read's Retry, not
     // a row, as the Retry is drawn, which the count below waits for; it gives that focus once more
     // a frame later, which the frames `focusThePage` waits before its blur cover.

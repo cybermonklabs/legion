@@ -7,7 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // seedActor is the author every seeded row carries that is not a session's. It is a user actor,
@@ -116,13 +118,33 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 
 // writeIssues writes every issue, parents before children, so issues_parent_key_fkey holds on
 // each row as it lands. The search vector, the title lexemes and the embedding queue row are the
-// triggers' work, as they are on every other write.
+// triggers' work, as they are on every other write. Each batch writes its issues' nodes first, in
+// the transaction that copies their rows and in each issue's project, with the child_of of each
+// issue that has a parent, and each row names its node (node_kind, node_address), as the server's
+// issue create does (api's createIssue); the seed records no event of an issue, so what the node
+// write states carries the sentinel. A database migrated from a release before the marker migration
+// (20261116092210) carries no node columns on issues, and its rows are written without them
+// (carriesNodeMarker), and without a child_of, which the backfill states with the row's node.
 func (r *seedRun) writeIssues(ctx context.Context) error {
+	marked, err := r.carriesNodeMarker(ctx, "issues")
+	if err != nil {
+		return err
+	}
+	columns := []string{
+		"key", "project_key", "number", "title", "status", "parent_key", "created_by",
+		"created_at", "updated_at", "closed_at", "rank", "repo", "priority",
+	}
+	if marked {
+		columns = append(columns, "node_kind", "node_address")
+	}
 	issues := r.plan.issues
 	return r.inBatches(ctx, "issues", len(issues), batchRows, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		rows := make([][]any, 0, to-from)
+		nodes := make([]graphstore.Node, 0, to-from)
+		var tuples []graphstore.Tuple
 		for index := from; index < to; index++ {
 			issue := issues[index]
+			project := r.plan.projects[issue.Project].Key
 			var parent *string
 			if issue.Parent >= 0 {
 				parent = &issues[issue.Parent].Key
@@ -135,18 +157,49 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 			if issue.Status == "done" {
 				closedAt = issue.CreatedAt.Add(seedSpan / 10)
 			}
-			rows = append(rows, []any{
-				issue.Key, r.plan.projects[issue.Project].Key, issue.Number,
+			row := []any{
+				issue.Key, project, issue.Number,
 				r.plan.vocabulary.phrase(r.random, 7), issue.Status, parent, seedActor,
 				issue.CreatedAt, issue.CreatedAt, closedAt, issue.Rank, repo, int16(index % 4),
-			})
+			}
+			if marked {
+				row = append(row, graphstore.KindIssue, issue.Key)
+			}
+			rows = append(rows, row)
+			nodes = append(nodes, graphstore.IssueNode(issue.Key, project, seedAuthor, issue.CreatedAt))
+			if marked && parent != nil {
+				tuples = append(tuples, graphstore.IssueChildOf(issue.Key, *parent, seedAuthor, issue.CreatedAt))
+			}
 		}
-		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, []string{
-			"key", "project_key", "number", "title", "status", "parent_key", "created_by",
-			"created_at", "updated_at", "closed_at", "rank", "repo", "priority",
-		}, pgx.CopyFromRows(rows))
-		return err
+		// The nodes go in before the rows, which name them, and their head rows after the rows,
+		// since an issue's node is held under the issue whose row it names: one head write.
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("the issues' nodes: %w", err)
+		}
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows)); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
 	})
+}
+
+// carriesNodeMarker reads whether table carries the node pair migration 20261116092210 adds
+// (node_kind, node_address). The measurement protocol seeds a database migrated from the release
+// before this one with --no-migrate, whose issues and artifacts carry neither column, and an
+// insert naming them fails there; on such a database a row is written as that release's server
+// writes it, naming no node, and its marker is the backfill's to write.
+func (r *seedRun) carriesNodeMarker(ctx context.Context, table string) (bool, error) {
+	var carries bool
+	if err := r.database.Pool.QueryRow(ctx, `select exists (
+		select 1 from information_schema.columns
+		where table_schema = current_schema() and table_name = $1 and column_name = 'node_address'
+	)`, table).Scan(&carries); err != nil {
+		return false, fmt.Errorf("read whether %s carries the node columns: %w", table, err)
+	}
+	return carries, nil
 }
 
 // writeIssueLinks writes the blocked_by links. The heavily linked issue takes HubLinks of them,

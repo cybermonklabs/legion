@@ -45,6 +45,7 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
+  PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -102,6 +103,7 @@ import {
   GOING_MODEL_CALL_MAX,
   GOING_REQUEST_RUNE_MAX,
   GOING_REQUEST_TTL_MS,
+  GOING_RUN_HEADER,
   GOING_RUN_MS,
   GOING_SEARCH_MAX,
   GOING_SEARCH_TOOL,
@@ -121,6 +123,7 @@ import {
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
   legionWakeSubject,
+  MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
   roleSubject,
   SUBJECT_MAX_BYTES,
@@ -341,6 +344,15 @@ func UncapturedTopicRefusal(topic, sessionID string) string {
 	return ${uncapturedTopicRefusalText}
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = ${JSON.stringify(MESSAGE_NOT_SENT_PREFIX)}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -497,12 +509,25 @@ const GoingModelCallMax = ${GOING_MODEL_CALL_MAX}
 // apart.
 const GoingWordsMax = ${GOING_WORDS_MAX}
 
-// GoingRunWindow is how long one run may take, measured from the POST that started it, and
-// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
-// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
-// server's windows and the page's account of them cannot drift apart.
+// GoingRunWindow is how long one run may take, measured from the POST that started it. Generated
+// from GOING_RUN_MS in packages/contracts so the server's window and the page's account of it
+// cannot drift apart.
 const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
+
+// GoingRequestTTL is how long a run is readable, from its POST, by its going_requests row's
+// created_at: then the sweep states the run's node gone and removes its rows, and the node, its
+// words and its frames stay in the store. Generated from GOING_REQUEST_TTL_MS in packages/contracts.
 const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
+
+// GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
+// server holds the run to the caller's whole credential and to its window before the write runs,
+// and the nodes a write it accepts creates or changes each carry a changed_by_run tuple to the
+// run's interaction. A write sent again under the Idempotency-Key of a write already committed is
+// answered that committed answer, even after the run has ended, and nothing runs again. The key's
+// comparison of the two requests includes this header, so the key reused with another run, or
+// with none, is 422 KEY_REUSED. Generated from GOING_RUN_HEADER in packages/contracts so the
+// server's check and every caller that sends the header name it once.
+const GoingRunHeader = ${JSON.stringify(GOING_RUN_HEADER)}
 
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
@@ -543,6 +568,12 @@ const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.
 const IssueTitleMax = ${ISSUE_TITLE_MAX}
+
+// PriorityIDMax is the longest priority id, in characters, that POST /api/v1/priorities writes:
+// the bound of an id the caller names and the length the id it derives from a title is cut to.
+// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal and the server's
+// cut cannot drift apart.
+const PriorityIDMax = ${PRIORITY_ID_MAX}
 
 // DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
 // ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;
@@ -1140,12 +1171,13 @@ ${keep}
 // renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
 // `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
 // map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
-// string enum.
+// string enum. `default` is the value a field holds where the manifest names none.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
   $ref?: string;
   const?: string;
+  default?: unknown;
   enum?: string[];
   items?: BlockProp;
   anyOf?: BlockProp[];
@@ -1201,7 +1233,9 @@ function blockGoType(prop: BlockProp): string {
     case "integer":
       return "int";
     case "boolean":
-      return "bool";
+      // A flag true by default is held as a pointer: an absent one then reads as its default,
+      // and a false one is written back rather than dropped as the zero value `omitempty` drops.
+      return prop.default === true ? "*bool" : "bool";
     case "array":
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;

@@ -262,6 +262,14 @@ func manifestAsOf(t *testing.T, version int) []byte {
 			attr.Choices = slices.DeleteFunc(slices.Clone(attr.Choices), func(choice string) bool {
 				return later(attr.ChoiceVersions[choice].Since)
 			})
+			attr.Items = slices.DeleteFunc(slices.Clone(attr.Items), func(item BlockItemKind) bool {
+				return later(attr.ItemVersions[string(item)].Since)
+			})
+			for item, versions := range attr.ItemVersions {
+				if later(versions.Since) {
+					delete(attr.ItemVersions, item)
+				}
+			}
 		}
 	}
 	encoded, err := json.Marshal(value)

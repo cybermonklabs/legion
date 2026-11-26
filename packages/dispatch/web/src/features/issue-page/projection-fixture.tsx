@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import type { ArtifactBlock, IssueDetails } from "../../api/types";
+import { primarySpec } from "../../api/issue-cache";
+import type { IssueDetails } from "../../api/types";
 import type { PostDeletion } from "../refs/post-marks";
 import {
   type KnownReferences,
@@ -22,6 +23,8 @@ import {
   targetNaming,
 } from "./issue-tree";
 import { lineOrKindWord, useNodeLine } from "./node-line";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import type { TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * What the shared reader makes of what the tree holds, read through the code the page's
@@ -187,38 +190,30 @@ export function blockReads(
   issue: IssueDetails,
   nodes: readonly Pick<TreeNode, "reference" | "text" | "tree" | "type">[]
 ): IssueTreeReads {
-  const blocks = new Map<string, ArtifactBlock[]>();
-  for (const { reference, type } of nodes) {
+  const spec = primarySpec(issue);
+  const answerNodes: TreeAnswerNode[] = [];
+  for (const [position, { reference, type }] of nodes.entries()) {
     const route = reference === undefined ? undefined : parseNodeReference(reference);
     if ((route?.kind !== "spec" && route?.kind !== "artifact") || route.block === undefined) {
       continue;
     }
-    const slug = route.kind === "artifact" ? route.slug : undefined;
-    const artifactId =
-      slug === undefined
-        ? issue.primary_artifact_id
-        : issue.artifacts?.find((artifact) => artifact.slug === slug)?.id;
-    if (artifactId === undefined) continue;
-    const id = route.block.id;
-    const block: ArtifactBlock = {
-      attributes: [],
-      from: 0,
-      id,
-      references: { asks: 0, comments: 0 },
-      to: 1,
-      token: id,
-      type,
-    };
-    blocks.set(artifactId, [...(blocks.get(artifactId) ?? []), block]);
+    const artifact =
+      route.kind === "spec" ? spec : issue.artifacts?.find((one) => one.slug === route.slug);
+    if (artifact === undefined) continue;
+    answerNodes.push(
+      treeNode(route.block.id, type, issue.key, {
+        document: { artifact_id: artifact.id, position, slug: artifact.slug },
+      })
+    );
   }
   return {
-    documents: [...blocks].map(([artifactId, held]) => ({ artifactId, blocks: held })),
     issue,
     targets: nodes.flatMap(({ reference, text, tree }) =>
       reference === undefined || tree === undefined
         ? []
         : [{ gone: false, kind: "block", name: text, ref: reference, text_tree: tree }]
     ),
+    tree: treeAnswer(answerNodes, [], { issue: issue.key }),
   };
 }
 

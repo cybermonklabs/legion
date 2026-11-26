@@ -43,6 +43,12 @@ type roomShadow struct {
 
 	mu  sync.Mutex
 	doc *crdt.Doc
+	// layout is the room's layout as the instance the shadow measures holds it (roomInstance.layout),
+	// set once the shadow names that instance (installShadowLocked, cursorLocked): an issue room's
+	// shadow renders every fragment of it, as the room's replica does (renderRoomForUpdate), so a
+	// browser edit of any document's fragment measures as the change it is. Empty for a room that
+	// is its own document, whose shadow renders its own fragment.
+	layout roomLayout
 	// markdown is doc's rendering, nil while doc does not render; rendered says it was taken.
 	// repaired is how many of repairs doc holds. released marks a shadow that has let go of its
 	// document (release), whose measures stand down.
@@ -78,13 +84,17 @@ func (w *liveWrite) newShadow() *roomShadow {
 // earlier write's last published update, which the write's read held. A cold write's shadow names
 // the instance resident now, else the load under way; with neither, the room that loads next reads
 // the write from the store and needs none. A shadow it does not install lets go of its document,
-// so a cold write's fork is collected at releaseFork, before the publish loads the room. The
-// caller holds state.mu.
+// so a cold write's fork is collected at releaseFork, before the publish, which loads no room
+// (publishLiveWrite): the room loads later, from the store, when the settlement the publish arms
+// warms it or a browser opens the document. The caller holds state.mu.
 func (s *Service) installShadowLocked(room string, state *roomState, shadow *roomShadow) {
 	if state.released || state.failed != nil {
 		// An uninstalled shadow is shared with no one, so its doc needs no sh.mu.
 		shadow.doc = nil
 		return
+	}
+	if live := s.srv.GetDoc(room); live != nil {
+		shadow.layout = s.layoutOf(live)
 	}
 	if shadow.cursor == nil {
 		if live := s.srv.GetDoc(room); live != nil {
@@ -106,7 +116,7 @@ func (sh *roomShadow) cursorLocked() *roomCursor {
 	if sh.cursor == nil && sh.load != nil {
 		sh.load.mu.Lock()
 		if instance := sh.load.instance; instance != nil {
-			sh.cursor = &instance.cursor
+			sh.cursor, sh.layout = &instance.cursor, instance.layout
 		}
 		sh.load.mu.Unlock()
 		if sh.cursor != nil {
@@ -311,14 +321,21 @@ func (sh *roomShadow) applyLocked(room string, update []byte) {
 	}
 }
 
-// renderLocked takes the shadow's rendering. A shadow holding no document renders none. The
-// caller holds sh.mu.
+// renderLocked takes the shadow's rendering: every fragment of an issue room's layout joined, as
+// its replica renders it, else the room's own fragment. A shadow holding no document renders none.
+// The caller holds sh.mu.
 func (sh *roomShadow) renderLocked() {
 	sh.markdown = nil
 	if sh.doc == nil {
 		return
 	}
-	markdown, err := renderFragmentMarkdown(sh.doc.GetXmlFragment(fragmentName))
+	var markdown string
+	var err error
+	if len(sh.layout) > 0 {
+		markdown, _, _, err = renderRoomForUpdate(sh.doc, sh.layout)
+	} else {
+		markdown, err = renderFragmentMarkdown(sh.doc.GetXmlFragment(fragmentName))
+	}
 	if err != nil {
 		return
 	}

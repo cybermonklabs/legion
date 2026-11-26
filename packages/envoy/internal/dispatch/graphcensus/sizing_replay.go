@@ -22,7 +22,8 @@ import (
 // A version's row is dated once, when it is written, and a document's versions are numbered in
 // the order they are written, so the versions inside the window are each document's last ones
 // and the one before the first of them is the one whose next version lies inside it.
-var replayVersionsQuery = `
+func replayVersionsQuery(rooms bool) string {
+	return `
 	with indexed as (
 		select i.artifact_id, i.version, v.created_at > ` + sizingWindow + ` as inside,
 		       coalesce(lead(v.created_at > ` + sizingWindow + `)
@@ -38,7 +39,7 @@ var replayVersionsQuery = `
 	union all
 	select r.artifact_id::text, r.version, 0, null, null, t.block_id, t.text, earlier.text
 	from replayed r
-	join document_block_texts t on t.artifact_id = r.artifact_id and t.version = r.version
+	join document_block_texts t on ` + documentTexts("t", "r.artifact_id", rooms) + ` and t.version = r.version
 	left join lateral (
 		select p.text from document_block_texts p
 		where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
@@ -46,6 +47,7 @@ var replayVersionsQuery = `
 	) earlier on true
 	where r.inside
 	order by 1, 2, 3, 6`
+}
 
 // replayedParents is what replayParents read: how many blocks the windowed versions moved to
 // another parent, over how many version rows, and how many of those rows did not parse.
@@ -65,12 +67,13 @@ type replayedParents struct{ moved, read, unreadable int64 }
 // in the version before and its new text in the later one (blockIdentities). Blocks of one
 // document with equal text are matched in document order, so the count is exact except there. A
 // version that does not parse is counted as read and unreadable, and neither it nor the version
-// after it is compared, as the index wrote no blocks for it.
-func replayParents(ctx context.Context, tx pgx.Tx) (replayedParents, error) {
+// after it is compared, as the index wrote no blocks for it. rooms says the database holds the
+// issue rooms' tables (documentTexts).
+func replayParents(ctx context.Context, tx pgx.Tx, rooms bool) (replayedParents, error) {
 	if err := installStoreBlockSchema(ctx, tx); err != nil {
 		return replayedParents{}, err
 	}
-	rows, err := tx.Query(ctx, replayVersionsQuery)
+	rows, err := tx.Query(ctx, replayVersionsQuery(rooms))
 	if err != nil {
 		return replayedParents{}, fmt.Errorf("read the indexed versions of the window: %w", err)
 	}
@@ -121,14 +124,17 @@ func replayParents(ctx context.Context, tx pgx.Tx) (replayedParents, error) {
 // transaction of its own: that would take another snapshot than the versions the replay reads,
 // and the census's one connection holds its transaction open.
 //
-// A database the store does not exist on yet holds no type node, and the sizing takes its
-// readings there too (commentWriterPeople), so there the replay parses against the schema the
-// process holds, which in the census subcommand is the embedded file: it installs no other.
+// A database not migrated to this build (storeAbsence) holds no type node this build reads: the
+// store does not exist on it yet, or it is the store of a release before, whose graph_nodes this
+// build's reader does not read. The sizing takes its readings there too (commentWriterPeople),
+// so there the replay parses against the schema the process holds, which in the census subcommand
+// is the embedded file: it installs no other.
 func installStoreBlockSchema(ctx context.Context, tx pgx.Tx) error {
-	var held bool
-	if err := tx.QueryRow(ctx, `select to_regclass('graph_nodes') is not null`).Scan(&held); err != nil {
-		return fmt.Errorf("look up the store's type nodes: %w", err)
+	absent, err := storeAbsence(ctx, tx)
+	if err != nil {
+		return err
 	}
+	held := absent == ""
 	if held {
 		if err := tx.QueryRow(ctx, `select exists (select 1 from graph_nodes where kind = $1)`,
 			schemanodes.KindSupertag).Scan(&held); err != nil {
@@ -273,4 +279,18 @@ func placementOf(identities []blockIdentity, parent int) blockPlacement {
 		return blockPlacement{}
 	}
 	return blockPlacement{parent: identities[parent], held: true}
+}
+
+// documentTexts is true of the document_block_texts row aliased texts while it is a text of a
+// block of the document the uuid expression document names: a row under that document, or, where
+// the database holds issue rooms (rooms), for a document of an issue room, a row under the room's
+// tree artifact, whose rows carry each document's own version numbers, of a block that document
+// holds (refs.BlockDocumentSQL). So a version of a room's document is read with its own blocks'
+// texts alone, and its indexed versions are its own (T12a of the issue-tree plan).
+func documentTexts(texts, document string, rooms bool) string {
+	if !rooms {
+		return texts + `.artifact_id = ` + document
+	}
+	return `(` + texts + `.artifact_id = any(array[` + document + `, ` + refs.DocumentRoomSQL(document) + `]) and ` +
+		refs.BlockDocumentSQL(texts) + ` = ` + document + `)`
 }

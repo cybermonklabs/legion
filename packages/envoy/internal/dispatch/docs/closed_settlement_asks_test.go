@@ -305,10 +305,13 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 // is written by SQL a minute ahead: the issue row reads closed from then on, and the store's close
 // margin admits B's browser's block however long the run takes (observedBeforeClose). B's own timer
 // settles the document; its record reads the issue open when the settlement holds the document's
-// owner lock, and the block is saved resolved with no row, its author recorded for the reopen.
+// owner lock, and the block is saved with no row, its author recorded for the reopen. Another
+// build serves beside this one (serveTwoBuilds), so the block is saved resolved for that build's
+// pages, which read a block's state from its markdown (unindexedAskWrite).
 func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	t.Parallel()
 	pair := newProcessPair(t)
+	serveTwoBuilds(t, pair.database)
 	ctx := context.Background()
 	b := pair.taskB
 	if err := b.warmLiveDocument(ctx, pair.artifactID); err != nil {
@@ -364,9 +367,9 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 // and the settlement retracts the ask. DOC-1 then closes, written by SQL a minute ahead with
 // nothing telling the room, so the store's close margin admits alice's undo, which brings the
 // block back (observedBeforeClose). The settlement the resumption runs on the closed issue leaves
-// the ask retracted and saves its block resolved, and deletes the document's pending row. The
-// reopen marks the document owed (MarkReopenOwedAskDocuments), and one resumption pass settles
-// it on the open issue, which restores the ask as a returning block's ask is restored.
+// the ask retracted and saves its block with no state, and deletes the document's pending row.
+// The reopen marks the document owed (MarkReopenOwedAskDocuments), and one resumption pass
+// settles it on the open issue, which restores the ask as a returning block's ask is restored.
 func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testing.T) {
 	t.Parallel()
 	service, artifactID, _ := settleReturnedAskBlockWhileClosed(t)
@@ -420,9 +423,9 @@ func TestTheSettlementAfterAReopenCreditsTheEditorTheClosedSettlementSaved(t *te
 // TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen: alice deletes the block of
 // an open ask on the open issue, which a settlement retracts; DOC-1 closes in the database alone,
 // a minute ahead, so the close margin admits her undo, which brings the block back; and the
-// resumption settles the document on the closed issue, saving the block resolved and leaving the
-// ask retracted. It answers the service, the document and alice once that settlement has
-// committed, with the document owing nothing.
+// resumption settles the document on the closed issue, saving the block as it came back and
+// leaving the ask retracted. It answers the service, the document and alice once that settlement
+// has committed, with the document owing nothing.
 func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 	t.Helper()
 	service, artifactID := newTestService(t)
@@ -456,9 +459,13 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
 	waitForNoPendingSettlement(t, service, artifactID, "the closed issue's document to settle the returned block")
-	const resolved = `#returning-ask urgency="med" multiple="false" state="resolved"`
-	if _, markdown, _ := latestDocumentVersion(t, service.store, artifactID); !strings.Contains(markdown, resolved) {
-		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the returned block saved resolved: %s", markdown, resolved)
+	// The closed issue's settlement saves the returned block, whose ask it leaves retracted, with
+	// what a version keeps of it on a fleet of one build: the state its ask's node holds, resolved
+	// (keptAskState), as the release before saved it. The block is saved whole, its question
+	// included.
+	const saved = "\n:::ask{#returning-ask urgency=\"med\" multiple=\"false\" state=\"resolved\"}\nWill it come back?\n:::\n"
+	if _, markdown, _ := latestDocumentVersion(t, service.store, artifactID); !strings.Contains(markdown, saved) {
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the returned block saved resolved, as its ask's node holds it:%s", markdown, saved)
 	}
 	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the closed issue's settlement left the ask %s %+v, want it still retracted while DOC-1 is closed", ask.State, ask.Resolution)

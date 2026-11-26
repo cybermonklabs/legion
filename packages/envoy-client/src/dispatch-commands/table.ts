@@ -1,4 +1,5 @@
 import type { dispatchToolSpecs } from "@legion/contracts";
+import { apiCommand } from "./api";
 import {
   askCommand,
   editAskCommand,
@@ -38,8 +39,26 @@ import {
 } from "./issues";
 import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
-import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
+import {
+  architectureSyncCommand,
+  projectCommand,
+  projectsCommand,
+  projectUpdateCommand,
+} from "./projects";
 import { readCommand } from "./read";
+import {
+  constraintCommand,
+  constraintsCommand,
+  findingCommand,
+  lensCommand,
+  lensesCommand,
+  pointerCommand,
+  premortemConvertCommand,
+  proposedCommand,
+  riskCommand,
+  settleCommand,
+  stateCommand,
+} from "./reasoning";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 import { stepsCommand } from "./steps";
@@ -83,6 +102,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_search: acting(searchCommand),
   dispatch_project: acting(projectCommand),
   dispatch_projects: acting(projectsCommand),
+  dispatch_project_update: acting(projectUpdateCommand),
   dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_ask: acting(askCommand),
@@ -115,5 +135,17 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_answers: onSession(answersCommand),
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
+  dispatch_api: onSession(apiCommand),
   dispatch_inbox: onSession(inboxCommand),
+  dispatch_lens: acting(lensCommand),
+  dispatch_finding: acting(findingCommand),
+  dispatch_risk: acting(riskCommand),
+  dispatch_constraint: acting(constraintCommand),
+  dispatch_constraints: acting(constraintsCommand),
+  dispatch_pointer: acting(pointerCommand),
+  dispatch_lenses: onSession(lensesCommand),
+  dispatch_state: acting(stateCommand),
+  dispatch_settle: acting(settleCommand),
+  dispatch_proposed: acting(proposedCommand),
+  dispatch_premortem_convert: acting(premortemConvertCommand),
 };

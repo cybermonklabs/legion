@@ -60,7 +60,7 @@ github_apps:
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
-  design: [decisions, criteria]
+  design: [criteria, spec]
 `
 
 const gatesEmptyListFile = `project: DEMO
@@ -422,11 +422,92 @@ hooks:
 	}
 }
 
+// The broker's lines in the tests below: the setting on, and kubernetesFile's bearer file, which
+// the setting replaces.
+const (
+	brokerOn          = "dispatch_token_broker: true\n"
+	dispatchTokenLine = "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n"
+	// exchangeAudienceBlock is a runtime.kubernetes.agent_secrets block that names the exchange
+	// audience every pod's roles trade for their own Dispatch tokens under the setting.
+	exchangeAudienceBlock = "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+		"      exchange_audience: legion-broker-exchange\n"
+)
+
+// `dispatch_token_broker: true` makes the daemon's Dispatch credential its own pod identity,
+// traded at the secrets broker (dispatch://INFRA-4425 R1). Beside dispatch_token_file, without
+// dispatch_url, and without runtime.kubernetes.agent_secrets.exchange_audience it is each refused,
+// naming the key; with dispatch_url and the audience it loads, and that dispatch_url needs no
+// token file.
+func TestDispatchTokenBrokerNeedsThePodIdentity(t *testing.T) {
+	broker := kubernetesWith(dispatchTokenLine, brokerOn)
+	noURL := strings.Replace(broker, "dispatch_url: https://dispatch.internal.example\n", "", 1)
+	if noURL == broker {
+		t.Fatal("the broker file names no dispatch_url to take out")
+	}
+	const noAudience = "dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset"
+	for name, tc := range map[string]struct{ body, want string }{
+		"beside dispatch_token_file": {kubernetesWith(dispatchTokenLine, dispatchTokenLine+brokerOn) + exchangeAudienceBlock,
+			"dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both"},
+		"without dispatch_url":                          {noURL + exchangeAudienceBlock, "dispatch_token_broker is set but dispatch_url is not"},
+		"with a broker that names no exchange_audience": {broker + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile, noAudience},
+		"with no broker block at all":                   {broker, noAudience},
+		"a setting that is no boolean":                  {kubernetesWith(dispatchTokenLine, "dispatch_token_broker: yes please\n") + exchangeAudienceBlock, "dispatch_token_broker must be true or false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	cfg, err := LoadForValidation(writeConfigFile(t, broker+exchangeAudienceBlock), noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	if !cfg.DispatchTokenBroker || cfg.DispatchTokenFile != "" || cfg.DispatchTokenTransitionFile != "" || cfg.DispatchURL != "https://dispatch.internal.example" {
+		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenFile = %q, DispatchTokenTransitionFile = %q, DispatchURL = %q; want the setting on, no token file, no transition file and the URL",
+			cfg.DispatchTokenBroker, cfg.DispatchTokenFile, cfg.DispatchTokenTransitionFile, cfg.DispatchURL)
+	}
+}
+
+// `dispatch_token_transition_file` names the file holding the shared Dispatch token a launch into a
+// pod built before dispatch_token_broker gets (dispatch://INFRA-4425 R4), so the loader takes it
+// only beside `dispatch_token_broker: true`: without the setting, or with it false, the file is
+// refused naming both keys. Beside it the file loads, its path resolved against the
+// configuration's directory as dispatch_token_file's is.
+func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
+	const transition = "dispatch_token_transition_file: tokens/DISPATCH_TOKEN\n"
+	const refusal = "dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting"
+	for name, body := range map[string]string{
+		"without dispatch_token_broker":    kubernetesWith(dispatchTokenLine, dispatchTokenLine+transition) + exchangeAudienceBlock,
+		"with dispatch_token_broker false": kubernetesWith(dispatchTokenLine, dispatchTokenLine+"dispatch_token_broker: false\n"+transition) + exchangeAudienceBlock,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, body), noEnv)
+			if err == nil || err.Error() != refusal {
+				t.Fatalf("LoadForValidation error = %v, want %q", err, refusal)
+			}
+		})
+	}
+
+	path := writeConfigFile(t, kubernetesWith(dispatchTokenLine, brokerOn+transition)+exchangeAudienceBlock)
+	cfg, err := LoadForValidation(path, noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	if want := filepath.Join(filepath.Dir(path), "tokens", "DISPATCH_TOKEN"); !cfg.DispatchTokenBroker || cfg.DispatchTokenTransitionFile != want {
+		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenTransitionFile = %q; want the setting on and %q", cfg.DispatchTokenBroker, cfg.DispatchTokenTransitionFile, want)
+	}
+}
+
 // `gates.design` takes the steps a deployment gates, in the order it names them, and the two
 // words it took before the list as the lists they mean. A key that names nothing, written as
 // `design:` or as the empty string, is the unset key the loader read before the list, the single
 // step spec. A value it does not take, and a list naming one step twice, are refused by a
-// message naming what the key takes.
+// message naming what the key takes. The `decisions` step an earlier release gated is refused by
+// a message of its own, which says the step is gone, that decisions are nodes of the spec, and to
+// gate `spec`, and still names the steps the key takes.
 func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -434,7 +515,7 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 		want    []record.DesignStep
 		refusal string
 	}{
-		{name: "a list", body: gatesListFile, want: []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}},
+		{name: "a list", body: gatesListFile, want: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}},
 		{name: "the empty list", body: gatesEmptyListFile, want: []record.DesignStep{}},
 		{name: "no gates key", body: gatesAbsentFile, want: []record.DesignStep{record.DesignStepSpec}},
 		{name: "the word root-issues", body: minimalFile, want: []record.DesignStep{record.DesignStepSpec}},
@@ -444,13 +525,16 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 		{
 			name:    "a word the key does not take",
 			body:    gatesUnknownWordFile,
-			refusal: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
+			refusal: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
 		},
 		{name: "a step named twice", body: gatesRepeatedStepFile, refusal: "gates.design names 'spec' twice"},
 		{name: "a step the key does not take", body: strings.Replace(minimalFile, "design: root-issues", "design: [spec, later]", 1),
-			refusal: "gates.design[1] must be 'decisions', 'criteria' or 'spec'"},
+			refusal: "gates.design[1] must be 'criteria' or 'spec'"},
+		{name: "the decisions step, which is gone", body: strings.Replace(minimalFile, "design: root-issues", "design: [decisions]", 1),
+			refusal: "gates.design[0] names the 'decisions' step, which is gone: decisions are nodes of the spec, " +
+				"so gate 'spec' to have a person approve them; gates.design[0] must be 'criteria' or 'spec'"},
 		{name: "a value that is neither a string nor a list", body: strings.Replace(minimalFile, "design: root-issues", "design: {step: spec}", 1),
-			refusal: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step"},
+			refusal: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeConfigFile(t, tc.body), noEnv)
@@ -861,7 +945,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		{
 			name: "gates design is invalid",
 			body: minimalFile + "gates: {design: later}\n",
-			want: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
+			want: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
 		},
 		{
 			name: "gates has an unknown setting",
@@ -1697,10 +1781,10 @@ func TestLoadReadsRuntimeAsItsDiscriminator(t *testing.T) {
 }
 
 // Every top-level key of the earlier schema (38 keys, nats_daemon_nkey_seed_file among them since
-// #1494) plus the new postgres_dsn and the wake pacing's two keys, and the class it is in. No
-// shipped key may fall through to the typo refusal, and none is accepted without being modelled,
-// but for a warned key, which is accepted, read for nothing, and answered with a warning rather
-// than a refusal.
+// #1494) plus the new postgres_dsn, the wake pacing's two keys and the daemon's Dispatch broker's
+// two, and the class it is in. No shipped key may fall through to the typo refusal, and none is
+// accepted without being modelled, but for a warned key, which is accepted, read for nothing, and
+// answered with a warning rather than a refusal.
 func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 	const (
 		modelled  = "modelled"
@@ -1751,6 +1835,8 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 
 		{key: "dispatch_url", line: "dispatch_url: https://dispatch.example", class: modelled},
 		{key: "dispatch_token_file", line: "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN", class: modelled},
+		{key: "dispatch_token_broker", line: "dispatch_token_broker: true", class: kubernetesOnly, want: "dispatch_token_broker is not used when runtime is tmux: a tmux daemon has no pod identity to trade at the secrets broker; remove dispatch_token_broker"},
+		{key: "dispatch_token_transition_file", line: "dispatch_token_transition_file: /var/run/legion/DISPATCH_TOKEN_TRANSITION", class: kubernetesOnly, want: "dispatch_token_transition_file is not used when runtime is tmux: it holds the shared Dispatch token a pod built before dispatch_token_broker gets, and a tmux daemon starts no pod; remove dispatch_token_transition_file"},
 		{key: "projects", line: "projects: {DEMO: {}}", class: modelled},
 		{key: "gates", line: "gates: {design: off}", class: modelled},
 		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},

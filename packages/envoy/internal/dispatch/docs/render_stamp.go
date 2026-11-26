@@ -31,7 +31,7 @@ type RenderStamp struct {
 // RenderStampHead is the `with` clause a version write opens its insert with: the head of the
 // room $1 names, read once as every reader of the document reads it (headVersion), for the two
 // values RenderStampValues takes from it.
-const RenderStampHead = `with head as (select ` + headVersion + ` as version)`
+var RenderStampHead = `with head as (select ` + headVersion + ` as version)`
 
 // RenderStampColumns are the four columns of a version row's render stamp, in the order a write
 // supplies their values: the two RenderStampValues answers, then the token and the renderer
@@ -85,7 +85,7 @@ func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 // markdown, its document token and its render stamp, beside the document's DocumentStamp now
 // (documentStampSQL). Every value is null for a document with no version, as the markdown and the
 // stamp are for a version written before the stamp existed or by a write holding no tree.
-const storedVersionSQL = `
+var storedVersionSQL = `
 		select v.markdown, v.document_token, v.head_version, v.doc_update_row, v.renderer_version,
 			s.version, s.row_xmin
 		from (` + documentStampSQL + `

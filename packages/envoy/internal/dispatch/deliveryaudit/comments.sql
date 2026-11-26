@@ -88,7 +88,7 @@ state as (
 ),
 -- Every change to who follows an ask, read from the records that make one: the asker follows
 -- from the ask's creation, a session follows from each reply it posts on the ask (both through
--- asks.QueueFollowAuthor, which appends no event), and ask.follower_added / ask.follower_removed
+-- asks.PlanFollowAuthor, which appends no event), and ask.follower_added / ask.follower_removed
 -- add and remove one.
 follower_events as materialized (
     select f.payload ->> 'ask_id' as ask_id, f.payload ->> 'session_id' as session_id,

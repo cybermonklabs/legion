@@ -517,7 +517,7 @@ func TestARunOfFailedReadsIsRetriedThenRecordedUnavailable(t *testing.T) {
 	}
 }
 
-// A change of decision blocks alone tells nobody anything of the work: each holder's told version,
+// A change of ask blocks alone tells nobody anything of the work: each holder's told version,
 // and the root architect's, rises straight to the approved one, and nothing is sent. The one
 // exception is a holder owed the opening (the gate closed on that version, the holder was told so,
 // and a person approved it later): it is owed a task with the opening and the words that nothing its
@@ -545,7 +545,7 @@ func TestADecisionOnlyChangeRaisesWhatEachHolderTookAndSendsNothing(t *testing.T
 
 	for _, audience := range []record.DesignAudience{record.AudienceHolder, record.AudienceArchitect} {
 		if took, _ := r.toldOf(reconcileRoot, audience).Took(record.DesignStepSpec); took != 5 {
-			t.Fatalf("%s's %s took %d after a decision-only change, want it raised to 5", reconcileRoot, audience, took)
+			t.Fatalf("%s's %s took %d after an ask-only change, want it raised to 5", reconcileRoot, audience, took)
 		}
 	}
 	if took, _ := r.toldOf(reconcileChild, record.AudienceHolder).Took(record.DesignStepSpec); took != 4 {
@@ -572,7 +572,7 @@ func TestADecisionOnlyChangeRaisesWhatEachHolderTookAndSendsNothing(t *testing.T
 }
 
 // A version that holds the same text as the version each holder took tells nobody anything of the
-// work, as a decision-only one does: the record keeps the pair as unchanged, each holder's told
+// work, as an ask-only one does: the record keeps the pair as unchanged, each holder's told
 // version and the root architect's rise straight to the approved one, and no task is sent, though
 // both holders are in a turn and the claim of each would take one. The control is the same tree
 // answered with a changed section: the pair is not unchanged, nothing rises, and each holder and

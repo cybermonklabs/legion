@@ -140,7 +140,8 @@ export function DecisionsRow({
   /** Whether this row draws what its focus adds: it has the focus, the reader pinned it open,
    *  or the cycle key opens every body. */
   body: boolean;
-  /** The decisions document a decision is a block of, which its Keep writes against. */
+  /** The document a decision's `decision` block stands in - the spec, or another document of the
+   *  issue - which its Keep writes against. */
   document?: Artifact;
   /** The document this row's own text is being edited in, while this is the row edited (the
    *  list's `editing`): its one editor is drawn on the row's stage in place of the words. */
@@ -378,8 +379,8 @@ export function DecisionsRow({
               </Link>
             )}
           </div>
-          {/* What the focus adds to the row, as the outline's body adds it (`NodeRow.tsx`'s
-              `NodeBody`), for a decision as for an ask: who made the node where the margin does
+          {/* What the focus adds to the row, as the outline's face draws it (`NodeRow.tsx`'s
+              `NodeFace`), for a decision as for an ask: who made the node where the margin does
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
               word alone (ruling 5) - and the control that keeps the body open (R6). The open

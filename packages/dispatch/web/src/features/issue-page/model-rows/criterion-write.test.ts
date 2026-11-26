@@ -292,7 +292,7 @@ test("a refusal keeps the text", async () => {
 // settles each takes the line again.
 test("a criterion out holds the box's other targets", () => {
   const client = signedInClient();
-  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["asks", KEY, "thread"], []);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(["agents"], []);
   const wrapper = ({ children }: { children: ReactNode }) =>
@@ -508,17 +508,14 @@ test("a criterion's row draws its bullet in the statements' colour", () => {
         null,
         createElement(NodeRow, {
           author: { kind: "person", name: "alice", reader: false },
-          body: false,
           context: false,
           focused: false,
           isClosed: false,
           level: 2,
           node: treeNode({ id: "tree-md#b-c1", text: TEXT, type: "criterion" }),
           onFocus: () => {},
-          onPin: () => {},
           onToggle: () => {},
           ownAnswer: false,
-          pinned: false,
           rowKey: "tree-md#b-c1",
           tabStop: false,
         })

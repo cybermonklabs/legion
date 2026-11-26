@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -447,6 +448,12 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
+	// The issue's create writes its spec and, for an issue born converted, the documents of its
+	// room beside it: the refused upload leaves exactly those.
+	created := issueArtifactIDs(t, database, issue.Key)
+	if !slices.Contains(created, issue.PrimaryArtifactID) {
+		t.Fatalf("the issue was created holding the artifacts %v, want its spec %s among them", created, issue.PrimaryArtifactID)
+	}
 
 	refused := postUpload(t, handler, issue.Key, map[string]any{
 		"name": "fresh.md", "content": "# Fresh\n",
@@ -478,14 +485,28 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	if strings.Contains(conflict.Error, "document edit precondition failed") {
 		t.Fatalf("the refusal reads %q, want a sentence of its own: no document of this owner changed", conflict.Error)
 	}
-	var artifacts int
+	if after := issueArtifactIDs(t, database, issue.Key); !slices.Equal(after, created) {
+		t.Fatalf("the issue holds the artifacts %v after the refused first upload, want only the %v it was created with", after, created)
+	}
+	var named int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from artifacts where issue_key = $1`, issue.Key).Scan(&artifacts); err != nil {
-		t.Fatalf("count the issue's artifacts: %v", err)
+		`select count(*) from artifacts where issue_key = $1 and name = 'fresh.md'`, issue.Key).Scan(&named); err != nil {
+		t.Fatalf("count the issue's artifacts named fresh.md: %v", err)
 	}
-	if artifacts != 1 {
-		t.Fatalf("the issue holds %d artifacts after the refused first upload, want only the spec it was created with", artifacts)
+	if named != 0 {
+		t.Fatalf("the issue holds %d artifacts named fresh.md after the refused first upload, want none", named)
 	}
+}
+
+// issueArtifactIDs is the id of each artifact the issue issueKey holds, in id order.
+func issueArtifactIDs(t *testing.T, database *store.Store, issueKey string) []string {
+	t.Helper()
+	var ids []string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(array_agg(id::text order by id), '{}') from artifacts where issue_key = $1`, issueKey).Scan(&ids); err != nil {
+		t.Fatalf("read the artifacts of %s: %v", issueKey, err)
+	}
+	return ids
 }
 
 // A file replaced naming no token is taken unchecked, as a document replaced naming none is.

@@ -1,6 +1,6 @@
 import type {
   GraphEdgeWithTrees,
-  GraphExcerptWithTrees,
+  GraphExcerpt,
   GraphNode,
   IssueReferences,
   ReferenceLink,
@@ -12,23 +12,20 @@ import type {
  * document lists built on it.
  */
 
-/** An edge's excerpt without the tree a dashboard read carries: the excerpt the route table holds
- *  (`GraphExcerptWithTrees`) less its `text_tree`. It is written here because the route table no
- *  longer names the plain excerpt: the server's edge read declares the edge's own fields rather
- *  than embedding model.GraphEdge, so the document's reflector never reaches model.GraphExcerpt,
- *  and main exports this name. A `GraphExcerptWithTrees` is a `GraphExcerpt` wherever one is
- *  wanted. */
-export type GraphExcerpt = Omit<GraphExcerptWithTrees, "text_tree">;
-
 /** One edge of the reference graph without the tree a dashboard read carries: the edge the route
- *  table holds (`GraphEdgeWithTrees`) with its excerpt back to the plain `GraphExcerpt`. A
- *  `GraphEdgeWithTrees` is a `GraphEdge` wherever one is wanted. */
+ *  table holds (`GraphEdgeWithTrees`) with its excerpt back to the plain `GraphExcerpt`, which the
+ *  document declares again because the proposed node's excerpt (`ProposedNode.excerpt`) reaches
+ *  model.GraphExcerpt. A `GraphEdgeWithTrees` is a `GraphEdge` wherever one is wanted. */
 export type GraphEdge = Omit<GraphEdgeWithTrees, "excerpt"> & { readonly excerpt?: GraphExcerpt };
 
-// GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
-// `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
-// schema decides those names (Go's pmdoc.LinkKinds), so any other string is admitted beside the
-// structural ones, which keep their completion; none of them is ever an attribute's name. The
+// GraphEdgeKind is an edge's kind: one of the structural kinds (Go's model.GraphEdgeKinds, six of
+// which the store states with no projection row behind them, and an issue's duplicate_of and
+// filed_from, which it holds alone too), or the name of a typed block's `block[]` attribute
+// (BlockAttributeSchema), whose pointers are edges of that kind. `needs` is both: an issue's wait
+// on an issue, which a Dispatch of the issue tree answers as needs where graph_edges names it
+// blocked_by, and a plan task's `block[]` attribute, since waiting is one relation. The block
+// schema decides the other names (Go's pmdoc.LinkKinds), so any other string is admitted beside
+// the structural ones, which keep their completion; none of them is ever an attribute's name. The
 // route table widens the edge's kind to a plain string, so the completion is spelled here.
 export type GraphEdgeKind =
   | "mentions"
@@ -43,6 +40,15 @@ export type GraphEdgeKind =
   | "part_of"
   | "depends_on"
   | "affects"
+  | "changed_by_run"
+  | "has_kind"
+  | "triggered_by"
+  | "constrained_by"
+  | "prevented_by"
+  | "authored_by"
+  | "needs"
+  | "duplicate_of"
+  | "filed_from"
   | (string & {});
 
 /** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it ("Two builds at

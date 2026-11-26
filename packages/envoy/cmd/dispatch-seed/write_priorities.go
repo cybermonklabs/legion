@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // priorityPlan is one priority: the id every address of it carries, the three attributes a person
@@ -41,21 +42,12 @@ const advancesPerIssue = 2
 // The two status groupings the faults of GET /api/v1/priorities read, as the SQL literal lists
 // this command's own statements splice. They are model.IssueStatusesInFlight and
 // model.IssueStatusesParked, the lists the route itself reads (api/priority_queries.go), so the
-// report's own reading of the two faults (reportDistributions) asks what the route asks.
+// report's own reading of the two faults (reportDistributions) asks what the route asks. They
+// are the lifecycle's own words and never a value from outside the binary.
 var (
-	priorityInFlightStatuses = sqlStatusList(model.IssueStatusesInFlight)
-	priorityParkedStatuses   = sqlStatusList(model.IssueStatusesParked)
+	priorityInFlightStatuses = store.QuoteLiterals(model.IssueStatusesInFlight)
+	priorityBacklogStatuses  = store.QuoteLiterals(model.IssueStatusesParked)
 )
-
-// sqlStatusList writes statuses as the literal list an `in` clause takes. Its callers pass the
-// lifecycle's own words and never a value from outside the binary.
-func sqlStatusList(statuses []string) string {
-	quoted := make([]string, len(statuses))
-	for index, status := range statuses {
-		quoted[index] = "'" + status + "'"
-	}
-	return strings.Join(quoted, ", ")
-}
 
 // priorityMemberTerms are the issues that advance each priority, as the route resolves them: the
 // relations stated now, and every issue below one of those, since a child inherits the priorities

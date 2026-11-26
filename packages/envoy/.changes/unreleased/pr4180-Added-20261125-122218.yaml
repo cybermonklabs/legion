@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `envoy-dispatch convert-issues` and the issue-room step convert an existing issue into its one
+  room and tree. The boot moves the nodes under a thread the Legion daemon began to their issue,
+  and the store census counts the citations no node resolves (`unresolved_citations`), the carried
+  reviews with no source version (`review_carried_from`) and the typed blocks whose node lacks its
+  type (`block_type`).
+time: 2026-11-25T12:22:18Z
+custom:
+    Issue: pr4180

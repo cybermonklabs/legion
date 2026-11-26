@@ -79,7 +79,7 @@ func (s *Service) SetAskBlockText(
 	actor model.Actor,
 ) (AskBlockText, error) {
 	var stored *AskBlockText
-	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	err := s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
 		if err != nil {
 			return err
@@ -164,7 +164,7 @@ func (s *Service) SetAskBlockText(
 		if next.EqualWithBlockIDs(tree) {
 			return nil
 		}
-		fragment := doc.GetXmlFragment(fragmentName)
+		fragment := doc.documentFragment()
 		var updateErr error
 		transact(func(transaction *crdt.Transaction) {
 			updateErr = pmdoc.Update(transaction, fragment, next)
@@ -230,10 +230,12 @@ func withoutUnchanged(current askBlock, edit AskBlockEdit) AskBlockEdit {
 // of it is refused on its empty question (refuseEmptyQuestionEdit). An options edit of such a
 // block is refused, since the merge pairs each sent option with the item of one list
 // (mergeAskOptions) and such a block gives it no way to say which, so rebuilding across them
-// would move a person's words from one list into another.
+// would move a person's words from one list into another. The readings the block closes with
+// (pmdoc.TypedContent) are no part of the question or the options, and close it as they stand.
 func askBlockChildren(current askBlock, edit AskBlockEdit, budget *pmdoc.WriteBudget) ([]*pmdoc.Node, error) {
+	content, readings := pmdoc.TypedContent(current.node)
 	paragraphs := []*pmdoc.Node{}
-	for _, child := range current.node.Children {
+	for _, child := range content {
 		if child.Type != "bullet_list" {
 			paragraphs = append(paragraphs, child)
 		}
@@ -267,7 +269,8 @@ func askBlockChildren(current askBlock, edit AskBlockEdit, budget *pmdoc.WriteBu
 	}
 
 	children := append([]*pmdoc.Node{}, paragraphs...)
-	return append(children, lists...), nil
+	children = append(children, lists...)
+	return append(children, readings...), nil
 }
 
 // askBlockLists is every bullet list block holds, in document order.
@@ -644,9 +647,11 @@ func normalizeAskOptions(options []model.AskOption) []model.AskOption {
 // has been told to change a document with a document edit rather than to upload its name again
 // (the dispatch_artifact tool's own description), and only the reason above lets it do otherwise
 // here. The block and the paragraph are quoted as data (quotedAskChild), never written into the
-// reason raw.
+// reason raw. The readings the block closes with stay as they are (askBlockChildren), so none is
+// weighed.
 func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
-	for _, child := range block.node.Children {
+	content, _ := pmdoc.TypedContent(block.node)
+	for _, child := range content {
 		if child.Type == "bullet_list" || writesNothingButItsText(child) {
 			continue
 		}

@@ -68,12 +68,14 @@ interface Scripted {
 
 /**
  * A `startPendingSync` over a fresh document and its store. `wrapStore` stands in for the store
- * with one that changes how it behaves, given the real store of the document's client.
+ * with one that changes how it behaves, given the real store of the document's client. `fragment`
+ * is the document's tree: `prosemirror`, or its own fragment of an issue's room.
  */
 async function scripted(
   artifact = artifactId(),
   seed?: Uint8Array,
-  wrapStore: (store: PendingEdits) => PendingEdits = (store) => store
+  wrapStore: (store: PendingEdits) => PendingEdits = (store) => store,
+  fragment = "prosemirror"
 ): Promise<Scripted> {
   const doc = new Y.Doc();
   if (seed !== undefined) {
@@ -83,6 +85,7 @@ async function scripted(
   const states: PendingState[] = [];
   const sync = startPendingSync({
     doc,
+    fragment,
     onChange: (state) => states.push(state),
     remoteOrigin: SERVER,
     store: Promise.resolve(store),
@@ -470,6 +473,82 @@ test("a read-only first sync keeps a saved row that writes a root other than the
   });
 });
 
+/** An issue's room: the issue's own nodes in `prosemirror`, and a paragraph of text in each
+ *  document's fragment, named by the document's artifact id. */
+function issueRoom(documents: readonly string[]): Y.Doc {
+  const room = new Y.Doc();
+  room.clientID = 100;
+  typeInto(room, "The issue's own node.");
+  for (const document of documents) {
+    const paragraph = new Y.XmlElement("paragraph");
+    paragraph.insert(0, [new Y.XmlText(`${document} text.`)]);
+    room.getXmlFragment(document).insert(0, [paragraph]);
+  }
+  return room;
+}
+
+/** Types `text` at the end of the first paragraph of the room's fragment `document`. */
+function typeIntoFragment(room: Y.Doc, document: string, text: string): void {
+  const paragraph = room.getXmlFragment(document).get(0);
+  const typed = paragraph instanceof Y.XmlElement ? paragraph.get(0) : undefined;
+  if (!(typed instanceof Y.XmlText)) {
+    throw new Error("the fragment's first block is a paragraph of text");
+  }
+  typed.insert(typed.length, text);
+}
+
+test("a read-only first sync drops a saved row the server already holds in its document's fragment of an issue's room", async () => {
+  const artifact = artifactId();
+  const room = issueRoom([artifactId(), artifact]);
+  const [saved] = await savedChanges(artifact, room, (browser) =>
+    typeIntoFragment(browser, artifact, " Saved.")
+  );
+  if (saved === undefined) {
+    throw new Error("the browser saved its edit");
+  }
+  // The server applied the edit before the issue closed; the acknowledgement never came.
+  Y.applyUpdate(room, saved.update);
+  const { states, sync } = await scripted(
+    artifact,
+    Y.encodeStateAsUpdate(room),
+    undefined,
+    artifact
+  );
+
+  await admit(sync, true);
+
+  expect(await rowsOf(artifact)).toEqual([]);
+  expect(states.at(-1)).toEqual({
+    count: 0,
+    readOnly: true,
+    rebuiltAt: undefined,
+    stored: true,
+  });
+});
+
+test("a read-only first sync keeps a saved row that changes another document's fragment of the room", async () => {
+  const artifact = artifactId();
+  const sibling = artifactId();
+  const room = issueRoom([sibling, artifact]);
+  await savedChanges(artifact, room, (browser) => typeIntoFragment(browser, sibling, " Unsent."));
+  const { states, sync } = await scripted(
+    artifact,
+    Y.encodeStateAsUpdate(room),
+    undefined,
+    artifact
+  );
+
+  await admit(sync, true);
+
+  expect((await rowsOf(artifact)).length).toBe(1);
+  expect(states.at(-1)).toEqual({
+    count: 1,
+    readOnly: true,
+    rebuiltAt: undefined,
+    stored: true,
+  });
+});
+
 test("a connection first admitted read-only and later writable stores and counts the typing", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
@@ -621,6 +700,7 @@ test("a first sync deletes every row it handled in one IndexedDB write", async (
   };
   const sync = startPendingSync({
     doc,
+    fragment: "prosemirror",
     onChange() {},
     remoteOrigin: SERVER,
     store: Promise.resolve(store),
@@ -655,6 +735,7 @@ test("a later SyncStep2 acknowledgement retries an earlier row whose individual 
   const logged = quietConsoleError();
   const sync = startPendingSync({
     doc,
+    fragment: "prosemirror",
     onChange() {},
     remoteOrigin: SERVER,
     store: Promise.resolve(store),
@@ -776,6 +857,7 @@ test("a connection presents its schema version and creatable version, and its ve
   try {
     const connect = await loadDocumentTransport();
     connection = connect(artifact, {
+      fragment: "prosemirror",
       onAdmission() {},
       onOutsideSchema() {},
       onPending() {},
@@ -824,6 +906,7 @@ async function admitted(
   let synced = false;
   const connect = await loadDocumentTransport();
   const connection = connect(artifact, {
+    fragment: "prosemirror",
     onAdmission() {},
     onOutsideSchema() {},
     onPending() {},

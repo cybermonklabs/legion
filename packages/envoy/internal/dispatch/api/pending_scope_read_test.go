@@ -24,9 +24,10 @@ import (
 // pendingScopeQueries are the reads refs makes of the document a queued row belongs to, one per
 // kind of source a route queues (refs.pendingScope): each a `with` over the columns that insert
 // will bind. They are matched by the column list, which is what tells them from every other
-// read the request sends.
+// read the request sends. An ask's list holds its block id, since the document an ask's block is
+// on, in an issue room, is read off it (refs.AskBlockDocumentSQL).
 var pendingScopeQueries = []string{
-	"with k (block_artifact_id, anchor, artifact_id, issue_key)",
+	"with k (block_artifact_id, block_id, anchor, artifact_id, issue_key)",
 	"with c (anchor, artifact_id, ask_id, reply_to, issue_key)",
 	"with m (issue_key)",
 }

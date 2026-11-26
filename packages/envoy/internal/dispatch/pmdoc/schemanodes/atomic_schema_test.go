@@ -41,7 +41,8 @@ func TestTheInstalledSchemaIsOneAtomicValue(t *testing.T) {
 	pool := database.Pool
 	// The installed schema is process-wide. The hook puts back the one this binary booted
 	// with once the test is over.
-	pmdoctest.UseBlockSchema(t, decodeSchema(t, pmdoc.SchemaJSON()))
+	booted := decodeSchema(t, pmdoc.SchemaJSON())
+	pmdoctest.UseBlockSchema(t, booted)
 
 	requireTheRegistrationIsAWake(t)
 	requireTheServerClosesItsSocketsOnASwitch(t)
@@ -51,7 +52,7 @@ func TestTheInstalledSchemaIsOneAtomicValue(t *testing.T) {
 		t.Fatalf("this build's schema version is %d; the test needs two versions it can install", built)
 	}
 	addTheClaimType(t, ctx, pool)
-	requireReadersSeeWholeValues(t, ctx, pool, built)
+	requireReadersSeeWholeValues(t, ctx, pool, built, booted)
 	requireAFailedReadKeepsTheValueAndIsMadeAgain(t, ctx)
 	requireARefusedValueKeepsTheValueAndIsReadAgain(t, ctx, pool, built)
 	requireAStoreAboveThisBuildIsInstalledAtItsOwnVersion(t, ctx, pool, built)
@@ -163,26 +164,34 @@ func requireTheServerClosesItsSocketsOnASwitch(t *testing.T) {
 // version without the claim type, this build's version with it - while goroutines read the
 // installed value through every reader of the package. A reader that sees a version and a type
 // set that disagree has seen a half-built value, which is what the one pointer rules out. The
-// race detector is on, so a map written after it was published fails the run too.
-func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
+// race detector is on, so a map written after it was published fails the run too. manifest is
+// this build's own, the schema the store holds at built.
+func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store.Pool, built int, manifest pmdoc.BlockSchema) {
 	t.Helper()
 	flip := func(version int, claimState string) {
 		// One statement, so the store itself never answers half a change: the version every
-		// type carries and whether the claim type is live move together. An element whose since
-		// is above the version - check's ci_check, read from version 4 - is in no store at that
-		// version, since a manifest holding one is refused, so it leaves with the version and
-		// comes back with it.
+		// type carries, whether the claim type is live and the elements read only from a later
+		// version move together. An element whose since is above the version is in no store at
+		// that version, since a manifest holding one is refused, so it leaves with the version
+		// and comes back with it. A type or an attribute carries its since on its node and goes
+		// gone. An item kind of an attribute's items carries it in the attribute's item_versions
+		// - plan_task's needs takes an issue from version 7 - and leaves the attribute's items:
+		// the statement writes each such attribute's items as this build's manifest gives them
+		// at the version (itemsAsOf).
 		if _, err := pool.Exec(ctx, `
 			update graph_nodes
-			set attributes = case when kind = $3 and coalesce((attributes->>'block_type')::boolean, false)
-					then jsonb_set(attributes, '{version}', to_jsonb($1::int))
+			set attributes = case
+					when kind = $3 and coalesce((attributes->>'block_type')::boolean, false)
+						then jsonb_set(attributes, '{version}', to_jsonb($1::int))
+					when kind = $4 and $5::jsonb ? id
+						then (attributes - 'items' - 'item_versions') || ($5::jsonb -> id)
 					else attributes end,
 				state = case
 					when kind = $3 and id = 'claim' then $2::text
 					when attributes ? 'since' then case when (attributes->>'since')::int > $1 then 'gone' else 'live' end
 					else state end
 			where kind in ($3, $4)
-		`, version, claimState, KindSupertag, KindAttribute); err != nil {
+		`, version, claimState, KindSupertag, KindAttribute, itemsAsOf(t, manifest, version)); err != nil {
 			t.Errorf("flip the store's schema to version %d: %v", version, err)
 		}
 	}
@@ -468,6 +477,50 @@ func addTheClaimType(t *testing.T, ctx context.Context, pool *store.Pool) {
 	`, writer); err != nil {
 		t.Fatalf("tie the claim type's attribute to it: %v", err)
 	}
+}
+
+// itemsAsOf is what each attribute of manifest whose items carry versions of their own holds of
+// them at version, as a build of that version reads them (pmdoc.Install's asOfVersion): the item
+// kinds whose since is at or below version, in the manifest's order, with the versions the
+// manifest gives them, and neither key where no item is left. It is one JSON object keyed by the
+// attribute's node id, `<type>/<store name>`, so one statement writes every such attribute's
+// items. At this build's version it is the manifest's own items, which is what the store's
+// migrations wrote.
+func itemsAsOf(t *testing.T, manifest pmdoc.BlockSchema, version int) string {
+	t.Helper()
+	held := make(map[string]map[string]any)
+	for _, typ := range manifest.Types {
+		for _, attribute := range typ.Attributes {
+			if len(attribute.ItemVersions) == 0 {
+				continue
+			}
+			var items []pmdoc.BlockItemKind
+			versions := make(map[string]pmdoc.BlockElementVersions)
+			for _, item := range attribute.Items {
+				given, gives := attribute.ItemVersions[string(item)]
+				if max(given.Since, 1) > version {
+					continue
+				}
+				items = append(items, item)
+				if gives {
+					versions[string(item)] = given
+				}
+			}
+			fields := make(map[string]any)
+			if len(items) > 0 {
+				fields["items"] = items
+				if len(versions) > 0 {
+					fields["item_versions"] = versions
+				}
+			}
+			held[typ.Name+"/"+StoreName(typ.Name, attribute.Name)] = fields
+		}
+	}
+	encoded, err := json.Marshal(held)
+	if err != nil {
+		t.Fatalf("encode the items of the manifest as of version %d: %v", version, err)
+	}
+	return string(encoded)
 }
 
 // setStoreVersion moves the version every block type in the store carries.

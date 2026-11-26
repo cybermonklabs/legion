@@ -5,12 +5,14 @@ import {
 } from "@legion/contracts";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentRow } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
   createPriority,
   getArtifactText,
+  listPriorities,
   publishAgentStreamFrame,
   requestApproval,
 } from "./api";
@@ -41,6 +43,7 @@ import {
   heldRow,
   heldRows,
   keyboardOnly,
+  NO_MATCH,
   OFF_ISSUE_PERSON,
   QUERY,
   rowsOfBox,
@@ -77,11 +80,12 @@ import {
  * the list, so a row with no driver fails as a box with no driver does.
  *
  * `e2e/writing-boxes.ts` holds the world and the checks; this file holds how each box is
- * reached. Two boxes draw the picker in an editor of their own rather than in the shared text
+ * reached. Three boxes draw the picker in an editor of their own rather than in the shared text
  * field, and carry what is theirs alone: the document body, where a pick goes through the
- * editor's own transaction into the document's stored text and reaches another reader of it,
- * and the agent live conversation, where `/` still opens the session's commands and Enter takes
- * a row rather than sending the message.
+ * editor's own transaction into the document's stored text and reaches another reader of it; a
+ * priority's description, drawn in the same editor, where a pick goes into the priority's stored
+ * description; and the agent live conversation, where `/` still opens the session's commands and
+ * Enter takes a row rather than sending the message.
  */
 
 test.setTimeout(120_000);
@@ -616,17 +620,66 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
     },
   },
   // A priority belongs to no issue, so its box is on the priority's own page rather than the
-  // world's host, and lists everyone who has signed in. An unwritten description reads as the
-  // prompt that opens its editor.
+  // world's host, and lists everyone who has signed in. The description is drawn in the documents'
+  // editor (`PriorityDescription`), which hosts the picker as a document's body does, so the box
+  // is driven by the keyboard as that body is, and its pick is read in the priority's stored
+  // description. An unwritten description reads as the prompt above the empty editor.
   "priority-description": {
     drive: async (page, world) => {
       const priority = await createPriority({ owner: "alice", title: "Keep one build" });
       await page.goto(`/priorities/${priority.id}`);
-      await page.getByText("No description is written. Click here to write one.").click();
-      const field = page.getByRole("textbox", { exact: true, name: "Description of P1" });
-      await expect(field).toBeFocused();
-      await walkBox(field, world);
-      await expectRow(page, field, "priority-description", "priority-description");
+      await expect(page.getByText("No description is written. Write one below.")).toBeVisible();
+      const editor = page.getByRole("textbox", { exact: true, name: "Description" });
+      await expectHint(page, editor, "priority-description", "priority-description");
+      const list = refPicker(page);
+      /** Clears the line the caret is on, picker and all. */
+      const clearLine = async () => {
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Shift+Home");
+        await page.keyboard.press("Backspace");
+        await expect(list).toHaveCount(0);
+      };
+      await editor.click();
+      await keyboardOnly(editor);
+      for (const door of ["[[", "@", "#"] as const) {
+        await page.keyboard.type(`${door}${QUERY}`);
+        await expect
+          .poll(() => pickerRows(list), { message: `the ${door} door's rows` })
+          .toEqual(DOOR_ROWS[door]);
+        await clearLine();
+      }
+      // A priority's description is indexed by nothing, so a query nothing answers stays one
+      // while the typing in it is stored.
+      await page.keyboard.type(`[[${NO_MATCH}`);
+      await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
+      await clearLine();
+      // The box writes on no issue, so the picker lists everyone who has signed in.
+      await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
+      await expect(
+        list.getByRole("option", { name: new RegExp(`^${OFF_ISSUE_PERSON}$`) }),
+        "a box that writes on no issue lists everyone signed in"
+      ).toBeVisible();
+      await clearLine();
+
+      // The pick lands at the caret, written through the editor's own transaction, and is
+      // written as the priority's description.
+      await page.keyboard.type(" then deploy");
+      await page.keyboard.press("Home");
+      await page.keyboard.type(`Ship after #${QUERY}`);
+      await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["#"]);
+      await page.keyboard.press("Enter");
+      const written = `Ship after dispatch://${world.target} then deploy`;
+      await expect
+        .poll(
+          async () =>
+            (await listPriorities()).priorities?.find((row) => row.id === priority.id)
+              ?.description ?? "",
+          { timeout: 30_000 }
+        )
+        .toContain(written);
+      // The editor draws no party list and its write delivers nothing, so the stored text is
+      // its claim.
+      heldRow("priority-description", "priority-description");
     },
   },
   "suggestion-replacement": {

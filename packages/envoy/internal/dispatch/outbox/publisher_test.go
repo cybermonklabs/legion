@@ -481,8 +481,15 @@ func TestRunSkipsAnUnfollowedSession(t *testing.T) {
 	seedIssue(t, database, "T-1", nil)
 	askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: "session-asker"}, "Ship it?")
 	seedFollower(t, database, askID, "session-replier")
-	if removed, err := asks.Unfollow(context.Background(), database.Pool, askID, "session-asker"); err != nil || !removed {
-		t.Fatalf("unfollow: removed=%t err=%v", removed, err)
+	unfollow, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the unfollow: %v", err)
+	}
+	if unfollowed, err := asks.Unfollow(context.Background(), unfollow, askID, "session-asker", model.Actor{Kind: "session", ID: "session-asker"}, time.Now()); err != nil || !unfollowed.Removed {
+		t.Fatalf("unfollow: removed=%t err=%v", unfollowed.Removed, err)
+	}
+	if err := unfollow.Commit(context.Background()); err != nil {
+		t.Fatalf("commit the unfollow: %v", err)
 	}
 	event := appendEvent(t, database, broker, model.Event{
 		IssueKey: new("T-1"),

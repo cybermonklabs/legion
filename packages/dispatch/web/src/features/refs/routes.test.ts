@@ -695,6 +695,24 @@ test("the plan tab owns its path, its reference and its short form", () => {
   ).toEqual(route);
 });
 
+// Graph, the new issue page's view of the whole tree read, owns its path and Graph zoomed to one
+// node its own: each is the issue's route with Graph on, and its reference is the issue's.
+test("the graph view owns its path, zoomed to a node too, and its reference is the issue's", () => {
+  const route = { key: "CORE-1", kind: "graph" as const };
+  const zoomed = { key: "CORE-1", kind: "graph" as const, node: "spec#b-r1" };
+
+  expect(parseIssuePath("/issues/CORE-1/graph")).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/graph"));
+  expect(parseIssuePath("/issues/CORE-1/graph/spec%23b-r1")).toEqual(zoomed);
+  expect(buildIssuePath(zoomed)).toBe(browserPath("issues/CORE-1/graph/spec%23b-r1"));
+  expect(parseIssuePath("/issues/CORE-1/graph/%E0%A4%A")).toBeUndefined();
+  expect(buildDispatchReference(zoomed)).toBe("dispatch://CORE-1");
+  expect(shortForm(route)).toBe("CORE-1");
+  expect(
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/graph", "https://dispatch.test")
+  ).toEqual(route);
+});
+
 // The eight forms a tab was once written as - `dispatch://CORE-1/verification` and its seven
 // siblings - are no reference the server reads: only `spec`, `artifact/<slug>`, `ask/<id>`,
 // `comment/<id>` and `message/<id>` follow an issue key in the grammar both readers read. A tab
@@ -715,24 +733,26 @@ test("the conversation, read as `log` and `conversation` alike, is written as it
   expect(buildDispatchReference({ key: "CORE-1", kind: "conversation" })).toBe("dispatch://CORE-1");
 });
 
-// The Decisions tab is a view of the issue's decisions.md: its page is the tab's own route, and
-// the reference it names, as every reader of a dashboard URL reads it, is that document.
-test("the decisions tab owns its path and names the issue's decisions.md", () => {
+// The Decisions tab reads the issue's decision nodes: its page is the tab's own route, and the
+// reference `dispatch://CORE-1/decisions` reads as that page, whatever its fragment. As every tab,
+// it is written as the issue it is a view of. No reader names a decisions document.
+test("the decisions tab owns its path and its reference names the issue's Decisions page", () => {
   const route = { key: "CORE-1", kind: "decisions" as const };
-  const document = { key: "CORE-1", kind: "artifact" as const, slug: "decisions-md" };
 
   expect(parseIssuePath("/issues/CORE-1/decisions")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
   expect(issueTabForRoute(route, undefined)).toBe("decisions");
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/artifact/decisions-md");
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1");
+  expect(parseDispatchReference("dispatch://CORE-1/decisions")).toEqual(route);
+  expect(buildReferencePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
   expect(shortForm(route)).toBe("CORE-1 decisions");
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
     expect(read("https://dispatch.test/issues/CORE-1/decisions", "https://dispatch.test")).toEqual(
-      document
+      route
     );
     expect(
       read("https://dispatch.test/issues/CORE-1/decisions#b-x", "https://dispatch.test")
-    ).toEqual(document);
+    ).toEqual(route);
   }
 });
 

@@ -217,6 +217,65 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 	}
 }
 
+// A held task a release before this one queued can carry the approval it kept of that release's
+// `decisions` step, a step this release no longer has (record.DesignStep.Valid). When a decision the
+// task named leaves it, the narrowing (the daemon's rootTask) writes the task again, and that
+// rewrite names no approval: the step names a document no step of this release records, so
+// record.DesignStep.Document would call it the primary document with the decisions document's
+// version numbers. The record's own read of such a pair leaves it out the same way
+// (record.Store.UnclaimedKept), and the rewritten delivery holds no approval either.
+func TestTheHeldTaskOfAnEarlierReleaseNamesNoApprovalOfTheDecisionsStepWhenItIsNarrowed(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	const key = "LEGION-313"
+	steps := config.DesignGateRootIssues.Steps()
+	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Project: heldTaskProject, Tree: key, Title: "Kept of an earlier release",
+		Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "A", LastDispatchSeq: 1})
+
+	token := mustClaimToken(t, key, claim.RoleArchitect)
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	kept := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0001", Decision: record.DecisionAskAnswered,
+		Actor: "user:alice", At: at}
+	replaced := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0002", Decision: record.DecisionAskAnswered,
+		Actor: "user:alice", At: at.Add(time.Minute)}
+	const earlierStep = record.DesignStep("decisions")
+	if earlierStep.Valid() {
+		t.Fatalf("the step %q is one this release records: the case's premise", earlierStep)
+	}
+	named := record.KeptDecisions{Decisions: []record.DecisionMark{kept, replaced},
+		KeptApproval: record.KeptApproval{Step: earlierStep, Approved: 3, Latest: 5}}
+	if _, err := pool.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
+		values ($1, $2, $3, $4, $5, $6, 'outbox:9'), ($1, $7, $3, $4, $8, null, null)`,
+		key, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(token), replaced.Ref, at.Add(time.Hour)); err != nil {
+		t.Fatalf("keep the decisions of %s, the first held by the architect's task: %v", key, err)
+	}
+	encoded, err := json.Marshal(named)
+	if err != nil {
+		t.Fatalf("encode what the held task names: %v", err)
+	}
+
+	w := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
+	task, rewritten, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
+		supervise.Delivery{ID: "outbox:9", Task: "The task an earlier release wrote.", Kept: encoded})
+	if err != nil {
+		t.Fatalf("narrow the held task of %s: %v", key, err)
+	}
+	want := workflow.KeptDecisionsTask(key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})
+	if task != want {
+		t.Fatalf("the narrowed task = %q, want %q: the one decision the task still holds, and no approval of the step %q",
+			task, want, earlierStep)
+	}
+	var holds record.KeptDecisions
+	if err := json.Unmarshal(rewritten, &holds); err != nil {
+		t.Fatalf("decode what the narrowed delivery holds: %v (%s)", err, rewritten)
+	}
+	if holds.KeptApproval != (record.KeptApproval{}) || len(holds.Decisions) != 1 || holds.Decisions[0].Ref != kept.Ref {
+		t.Fatalf("the narrowed delivery holds %+v, want the one decision %s and no approval", holds, kept.Ref)
+	}
+}
+
 // heldTaskRig is one root whose architect is up, with a child of its tree, over the real parts the
 // daemon wires: the record store on a database of its own, the workflow engine, admission, the
 // outbox runner, and a claim supervisor whose Deps.RootHears and Deps.RootTask are the production

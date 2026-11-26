@@ -169,6 +169,7 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 			"The broken " + webSnippetStart + "layout" + webSnippetStop +
 				": ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
 		},
+		{"ordered-from-3", "3. Keep the old page.\n4. Then drop it.\n"},
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -16,8 +17,14 @@ import (
 // inbox reads it; a project with no open ask has no row of that count, which the coalesce reads
 // as the 0 the subquery answered. It is named here rather than written inside the handler so
 // the plan test explains the statement the route runs.
+//
+// The count reads the ask's row's state, not its node's: the one writer of an answer state writes
+// the two in one transaction (asks.Settle), so they differ only inside a roll's window, between a
+// process of the release before writing an answer state to the row alone and the decisions step's
+// catch-up tick that states it on the node; R3 holds the reads that show an answer to the node,
+// and a count shows none.
 const projectListQuery = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.created_at
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.proven_sessions, p.created_at
 		from projects p
 		left join (
 			select coalesce(i.project_key, ar.project_key) as project_key, count(*) as total
@@ -31,6 +38,19 @@ const projectListQuery = `
 		order by p.key
 	`
 
+// projectRowQuery reads one project as GET /api/v1/projects lists it (projectListQuery), so the
+// answer of the proven-sessions routes carries the open-ask count the list shows, not a zero.
+const projectRowQuery = `select * from (` + projectListQuery + `) listed where listed.key = $1`
+
+// scanListedProject reads one row of projectListQuery or projectRowQuery.
+func scanListedProject(row pgx.Row) (model.Project, error) {
+	var project model.Project
+	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt); err != nil {
+		return model.Project{}, err
+	}
+	return project, nil
+}
+
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -43,11 +63,15 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	projects := []model.Project{}
 	for rows.Next() {
-		var project model.Project
-		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.CreatedAt); err != nil {
+		project, err := scanListedProject(rows)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// A stored list may hold the retired `decisions` step until the decisions step rewrites
+		// it, and the database's check still admits it: the read answers the list without it.
+		// kept for one release: check-narrowings
+		project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {
@@ -149,9 +173,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
-		returning key, name, gated_steps, default_repo, default_assignee, created_at
+		returning key, name, gated_steps, default_repo, proven_sessions, default_assignee, created_at
 	`, input.Key, input.Name, projectDefault).Scan(
-		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultRepo, &created.DefaultAssignee, &created.CreatedAt); err != nil {
+		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultRepo, &created.ProvenSessions, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
 			return

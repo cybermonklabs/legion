@@ -15,12 +15,15 @@ import {
   DESKTOP,
   type DrawnRow,
   drawnRows,
+  expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   expectSeedDrawn,
   focusRow,
   focusThePage,
   LONG_ROWS,
+  leftOutOfConversation,
   nodeRow,
   nodeRows,
   ONE_LINE_WORDS,
@@ -79,14 +82,9 @@ interface DrawnAuthor {
   readonly shape: string;
 }
 
-/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). */
-const AUTHORLESS: readonly string[] = [
-  "check",
-  "child_issue",
-  "decision",
-  "plan_task",
-  "requirement",
-];
+/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). A decision is
+ *  none of them: its row draws who decided it, as the decisions read's entry names them. */
+const AUTHORLESS: readonly string[] = ["check", "child_issue", "plan_task", "requirement"];
 
 /** Each row that draws an author other than the one `stored` gives its node, or that draws one
  *  where its kind has none. A row of neither, which the seed gave no known author, is left out. */
@@ -163,9 +161,9 @@ test("a node draws its kind at the right of its row and every node starts at one
         .toBeGreaterThan(0);
       const layouts = await rowLayouts(page, seeded.slugs.spec);
       expectRowLayouts(layouts, where, true, size.width);
-      // Decision 246: the spec's requirement is a statement and the decisions document's is a
-      // block, so the view draws a bullet of each colour, each on its own row, for the check
-      // above to read.
+      // Decision 246: the spec's requirement is a statement and the requirement inside the
+      // plan's decision is a block, so the view draws a bullet of each colour, each on its own
+      // row, for the check above to read.
       expect(
         layouts
           .filter((row) => row.type === "requirement" && !row.context)
@@ -174,7 +172,7 @@ test("a node draws its kind at the right of its row and every node starts at one
       ).toEqual(
         expect.arrayContaining([
           [`${seeded.slugs.spec}#b-r-one`, true],
-          [`${seeded.slugs.decisions}#b-r1`, false],
+          [`${seeded.slugs.plan}#b-r1`, false],
         ])
       );
       expectRowGroups(await rowGroups(page), where, size.width, addressesOf(seeded));
@@ -199,14 +197,18 @@ test("a node draws its kind at the right of its row and every node starts at one
       rows.filter((row) => row.type === "issue"),
       "the body draws the issue's own row"
     ).toEqual([]);
-    // A one-line statement with no state is 29 px tall at 1440 px (R1).
-    const oneLine = (await rowLayouts(page, seeded.slugs.spec)).find(
-      (row) => row.id === `${seeded.slugs.spec}#b-r-one`
-    );
+    // Conversation draws its read alone: no result, plan task or message, and no comment on a
+    // node's text, which is drawn beside that node.
+    const leftOut = leftOutOfConversation(seeded);
     expect(
-      oneLine?.height ?? 1e6,
-      "the one-line statement is taller than 29 px"
-    ).toBeLessThanOrEqual(29);
+      rows.filter((row) => leftOut.includes(row.id ?? "")).map((row) => row.id),
+      "Conversation draws a row its read does not hold"
+    ).toEqual([]);
+    // The statement's words take one line. Its face and acts are now drawn underneath even
+    // without focus, so the old 29 px limit for the whole closed card no longer applies.
+    const oneLine = rowWords(nodeRow(page, `${seeded.slugs.spec}#b-r-one`).first());
+    await expect(oneLine).toBeVisible();
+    expect((await oneLine.boundingBox())?.height, "the statement is taller than one line").toBe(24);
 
     // A child: its status, what blocks it and who holds it, and no author (R5).
     const child = nodeRow(page, seeded.child).first();
@@ -245,12 +247,6 @@ test("a node draws its kind at the right of its row and every node starts at one
       await expect(ties, `r-ties' words draw "${source}"`).not.toContainText(source);
     }
 
-    // The needs chip names its target by its first words, with no mark of markdown (F18).
-    const needs = nodeRow(page, `${seeded.slugs.plan}#b-t2`).first().locator("[data-node-chip]");
-    await expect(needs, "t2 draws other than its one needs chip").toHaveCount(1);
-    await expect(needs.locator("[data-chip-name]")).toHaveText(/^1\. Stand/u);
-    await expect(needs, "the needs chip draws a mark of markdown").not.toHaveText(/[*\\]/u);
-
     // The decision that quotes a typed block draws none of its source, and its reference is a
     // chip in place, which names r-one by its first words (F20).
     const raw = rowOf(rows, seeded.raw);
@@ -270,11 +266,6 @@ test("a node draws its kind at the right of its row and every node starts at one
     await expect(cited, "a chip in a decision's words draws a mark of markdown").not.toHaveText(
       /[*\\]/u
     );
-
-    // An agent's link and a word that only looks like a key (R4).
-    const linked = nodeRow(page, seeded.linked).first();
-    await expect(linked.locator("a", { hasText: "UTF-16" })).toHaveCount(0);
-    await expect(rowWords(linked)).toContainText("in UTF-16.");
 
     // A picture is 84 px tall, and a press opens it whole (R4).
     const picture = nodeRow(page, seeded.pictured).first().locator("[data-node-words] img");
@@ -314,6 +305,20 @@ test("a node draws its kind at the right of its row and every node starts at one
     await page.setViewportSize(PHONE);
     const comment = await focusRow(page, seeded.comment);
     expect((await rowAct(comment, "reply").boundingBox())?.height ?? 1e6).toBeLessThan(44);
+
+    // Graph draws the whole tree read, the plan's tasks and the messages Conversation leaves out
+    // among it, each as Conversation draws a node. The needs chip names its target by its first
+    // words, with no mark of markdown (F18); an agent's link, and a word that only looks like a
+    // key (R4).
+    await page.setViewportSize(DESKTOP);
+    await page.goto(presetPath(seeded.key, "graph"));
+    const needs = nodeRow(page, `${seeded.slugs.plan}#b-t2`).first().locator("[data-node-chip]");
+    await expect(needs, "t2 draws other than its one needs chip in Graph").toHaveCount(1);
+    await expect(needs.locator("[data-chip-name]")).toHaveText(/^1\. Stand/u);
+    await expect(needs, "the needs chip draws a mark of markdown").not.toHaveText(/[*\\]/u);
+    const linked = nodeRow(page, seeded.linked).first();
+    await expect(rowWords(linked)).toContainText("in UTF-16.");
+    await expect(linked.locator("a", { hasText: "UTF-16" })).toHaveCount(0);
   });
 });
 
@@ -336,11 +341,9 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // 390 px the view row stays there. A row whose top lies 10 px under it takes the focus with no
 // scroll of the browser's own (`preventScroll`, as a chord or an address puts the focus), so
 // only the row's own placement (`useRowOnScreen`) can move it: under part G the header publishes
-// no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
-// page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
-// places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
-// goes on to `t c`, whose outline takes the focus; reading `t s` again is left to the Spec view's
-// own rows, which this tree does not hold yet.
+// no band, and `bringOnScreen` alone leaves the row where it is. Then `t s` puts the focus on the
+// Spec view's tab-stop row from the page's foot, which the chord shows and the row places: the
+// Spec view draws its statements as rows, so `t s` alone reaches one.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({
@@ -393,18 +396,11 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
     await expect(page, "t s did not open Spec").toHaveURL(
       new RegExp(`${presetPath(seeded.key, "spec")}$`)
     );
-    // The Spec view is empty until its own slot is filled, so Conversation brings the outline back.
-    await page.keyboard.press("t");
-    await page.keyboard.press("c");
-    await expect(page, "t c did not open Conversation").toHaveURL(
-      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
-    );
     const first = page.locator("[data-node-row]:focus");
-    await expect(first, "t s then t c focused no row").toHaveCount(1);
+    await expect(first, "t s focused no row").toHaveCount(1);
     await expect
       .poll(async () => (await belowWhatStays(first)) ?? -1, {
-        message:
-          "after t s then t c the focused row's top lies under the view row that stays at the top",
+        message: "after t s the focused row's top lies under the view row that stays at the top",
       })
       .toBeGreaterThanOrEqual(0);
   });
@@ -413,16 +409,25 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
 // Decision 282: at 390 px a note whose body holds a table of sixteen columns, drawn in its row and
 // not edited, made the whole page 794 px wide. A wide block in a node's words scrolls sideways
 // inside itself, as a table does in a document's reading: the page is no wider than the screen,
-// and the table's own scroll still reaches its last column.
-// SLOW(>=2s): an issue with one note seeded and loaded at 390 px, and its table waited for until
-// the batched read that carries a block's words draws it.
+// and the table's own scroll still reaches its last column. A note of the spec is no kind
+// Conversation's read holds, so Conversation draws no row of it, and the row reads it in Graph,
+// which draws the whole tree read.
+// SLOW(>=2s): an issue with one note seeded and loaded at 390 px twice, and its table waited for
+// until the batched read that carries a block's words draws it.
 test("at 390 px a note's table of sixteen columns scrolls inside its row, and the page is no wider than the screen", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
   await phase(browser, seedWideNote, async (page, seeded) => {
     await page.setViewportSize(PHONE);
-    await openIssue(page, seeded.key);
+    const settling = watchApiRequests(page);
+    await page.goto(`/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
+    await expect(nodeRow(page, seeded.note), "Conversation draws the spec's note").toHaveCount(0);
+    await page.goto(presetPath(seeded.key, "graph"));
+    await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     const table = rowWords(nodeRow(page, seeded.note)).locator("table");
     await expect
       .poll(
@@ -461,57 +466,27 @@ test("at 390 px a note's table of sixteen columns scrolls inside its row, and th
   });
 });
 
-// c-cut: ruling 1 on R2 at 1440 px.
+// c-cut: ruling 1 on R2 at 1440 px, as every node is now drawn whole, with no limit of lines.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
-// ten presses and focus moves, each waited on until the row redraws.
-test("an agent message and an answered question are cut at six lines, and the words of the reader and a waiting question are whole", async ({
+// a few focus moves, each waited on, and Graph loaded for the agent's message.
+test("an agent message and an answered question are drawn whole, as the words of the reader and a waiting question are", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     await openIssue(page, seeded.key);
     await expectSeedDrawn(page, seeded);
-    const agent = nodeRow(page, seeded.longMessage).first();
-    // The page cuts a row in the first view before it paints it, and any other row once it
-    // stands within a screen of the viewport but wholly outside the view (decision 261), so each
-    // row read here is first scrolled to just under the view, or just over it where the row is
-    // too near the page's top to stand under it, waited for there, and then brought into view.
-    const cutOf = async (id: string) => {
-      const target = nodeRow(page, id).first();
-      await target.evaluate((element) => {
-        const box = element.getBoundingClientRect();
-        const under = box.top + window.scrollY - window.innerHeight - 1;
-        window.scrollTo(0, under >= 0 ? under : box.bottom + window.scrollY + 1);
-      });
-      await expect
-        .poll(
-          async () =>
-            (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === id)?.more ?? "",
-          { message: `${id} draws no more` }
-        )
-        .toMatch(/^more · [\d,]+ words$/u);
-      await target.scrollIntoViewIfNeeded();
+    // Each row read here is brought into view first, so it is read where the reader reads it.
+    const layoutOf = async (id: string) => {
+      await nodeRow(page, id).first().scrollIntoViewIfNeeded();
       return (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === id);
     };
-    const cut = await cutOf(seeded.longMessage);
+    expect(await layoutOf(seeded.answeredLong), "the answered question is cut").toMatchObject({
+      more: null,
+      wordsHidden: 0,
+    });
     expect(
-      Number(/([\d,]+)/u.exec(cut?.more ?? "")?.[1]?.replace(",", "")),
-      "the cut holds back 20 words or fewer"
-    ).toBeGreaterThan(20);
-    expect((await rowWords(agent).boundingBox())?.height ?? 1e6).toBeLessThanOrEqual(6 * 24 + 12);
-    await rowMore(agent).click();
-    // They stay whole once the focus has been on the message and has left it.
-    await focusRow(page, seeded.longMessage);
-    await focusRow(page, seeded.comment);
-    await expect
-      .poll(async () =>
-        (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === seeded.longMessage)
-      )
-      .toMatchObject({ more: CONTROL_LABELS.read_less, wordsHidden: 0 });
-
-    const layouts = await rowLayouts(page, seeded.slugs.spec);
-    expect(
-      layouts.find((row) => row.id === seeded.longComment),
+      await layoutOf(seeded.longComment),
       "the reader's own long comment is cut"
     ).toMatchObject({
       more: null,
@@ -530,14 +505,14 @@ test("an agent message and an answered question are cut at six lines, and the wo
       "the reader's answer hides a word"
     ).toBeLessThanOrEqual(1);
     expect((await getAsk(seeded.waitingLong)).ask.waiting_on_person).toBe(READER);
-    expect(
-      layouts.find((row) => row.id === seeded.waitingLong),
-      "the waiting question is cut"
-    ).toMatchObject({
+    expect(await layoutOf(seeded.waitingLong), "the waiting question is cut").toMatchObject({
       more: null,
       wordsHidden: 0,
     });
-    expect((await cutOf(seeded.answeredLong))?.more ?? "").toMatch(/^more · /u);
+    await expect(
+      rowMore(nodeRows(page)),
+      "a row of Conversation draws a control for more words"
+    ).toHaveCount(0);
 
     // Focused, the answered question is whole, with no more, on the focused card.
     const answered = await focusRow(page, seeded.answeredLong);
@@ -558,17 +533,29 @@ test("an agent message and an answered question are cut at six lines, and the wo
     );
     await expect(statement.locator("[data-node-margin] [data-node-author]")).toHaveCount(0);
 
-    // Keep open keeps a body when the focus moves on; a second press lets it close (R6).
-    await rowBody(statement).getByRole("button", { name: CONTROL_LABELS.keep_open }).click();
+    // A row draws its body whatever the focus, so no row draws Keep open, and the statement's
+    // body stays when the focus moves on.
+    await expect(
+      nodeRows(page).getByRole("button", { name: CONTROL_LABELS.keep_open }),
+      "a row draws Keep open"
+    ).toHaveCount(0);
     await focusRow(page, seeded.comment);
-    await expect(rowBody(statement)).toHaveCount(1);
-    await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
-    await rowBody(statement).getByRole("button", { name: CONTROL_LABELS.let_close }).click();
-    await focusRow(page, seeded.comment);
-    await expect(rowBody(statement)).toHaveCount(0);
+    await expect(
+      rowBody(statement),
+      "the statement's body closed as the focus left it"
+    ).toHaveCount(1);
 
     // No element of a row carries a `title` (R6).
     expect(await nodeRows(page).locator("[title]").count()).toBe(0);
+
+    // The agent's long message is no row of Conversation, whose read holds no message; Graph
+    // draws it, whole as every node.
+    await page.goto(presetPath(seeded.key, "graph"));
+    await expect(rowWords(nodeRow(page, seeded.longMessage).first())).toContainText("plan160.");
+    expect(await layoutOf(seeded.longMessage), "the agent's message is cut").toMatchObject({
+      more: null,
+      wordsHidden: 0,
+    });
   });
 });
 
@@ -587,7 +574,8 @@ interface Jump {
 }
 
 /** Opens issue `key` at `size` and waits until it draws every long row `seedLongRows` wrote,
- *  with every branch open. */
+ *  with every branch open and every page of the head comment's replies drawn: an outline draws a
+ *  node's first 50 children, and a control after them that draws the next 50 (R15). */
 async function openLongRows(
   page: Page,
   key: string,
@@ -596,15 +584,20 @@ async function openLongRows(
 ): Promise<void> {
   await page.setViewportSize(size);
   await openIssue(page, key);
+  const nextPage = page.locator("[data-issue-page] [data-tree-page] button");
   await expect
     .poll(
       async () => {
         await unfoldEveryBranch(page);
+        // The poll reads the rows again after this press, so a control drawn after this count
+        // is pressed on the poll's next pass rather than missed.
+        if ((await nextPage.count()) > 0) await nextPage.first().click();
         return nodeRows(page).count();
       },
       { message: `${where} the page never drew every long row` }
     )
     .toBeGreaterThan(LONG_ROWS);
+  await expect(nextPage, `${where} a page of long rows is still held back`).toHaveCount(0);
 }
 
 /** Jumps the page, as a drag of the scrollbar does, to 40 px above the foot of the words of row
@@ -631,21 +624,26 @@ function jumpAbove(page: Page, crossing: string): Promise<Jump> {
   }, crossing);
 }
 
-/** Waits until row `above`, which a jump left above the view, draws its cut, and two frames
- *  more, and fails unless the first row wholly in view that `jump` read stands within a pixel of
- *  where it stood, and unless it and row `crossing`, which a jump left across the view's top,
- *  are still drawn whole: a row in view keeps its length (decision 261). */
+/** How many frames a jump's reading is held for: a second of the page's own frames, in which a
+ *  row that changes its height after the jump would move the rows under it. */
+const HELD_FRAMES = 60;
+
+/** Waits out `HELD_FRAMES` frames, and fails unless the first row wholly in view that `jump`
+ *  read stands within a pixel of where it stood, and unless it and row `crossing`, which the jump
+ *  left across the view's top, are drawn whole: a row in view keeps its length (decision 261). */
 async function expectFirstHeld(
   page: Page,
-  rows: { readonly above: string; readonly crossing: string },
+  crossing: string,
   jump: Jump,
   where: string
 ): Promise<void> {
-  await expect(
-    rowMore(nodeRow(page, rows.above)),
-    `${where} the row above the view was not cut`
-  ).toHaveCount(1);
-  await nextFrames(page);
+  await page.evaluate(async (count) => {
+    for (let frame = 0; frame < count; frame += 1) {
+      const next = Promise.withResolvers<void>();
+      requestAnimationFrame(() => next.resolve());
+      await next.promise;
+    }
+  }, HELD_FRAMES);
   const first = nodeRow(page, jump.first ?? "");
   const top = await first.evaluate((row) => row.getBoundingClientRect().top);
   expect(
@@ -654,7 +652,7 @@ async function expectFirstHeld(
   ).toBeLessThanOrEqual(1);
   await expect(rowMore(first), `${where} the first row wholly in view was cut`).toHaveCount(0);
   await expect(
-    rowMore(nodeRow(page, rows.crossing)),
+    rowMore(nodeRow(page, crossing)),
     `${where} the row across the view's top was cut`
   ).toHaveCount(0);
 }
@@ -676,39 +674,27 @@ async function middleRow(page: Page, rows: readonly string[], where: string): Pr
   return middle ?? "";
 }
 
-// Decision 252: a long jump into the middle of the page - a fast drag of the scrollbar - lands
-// on rows no batch measured, and the browser's own scroll anchoring holds the view only while
-// the rows that shrink are outside it. At each width the row scrolls a conversation of long rows
-// to its foot and waits there until the rows above the view are cut, then jumps to 40 px above
-// the foot of the words of the row that holds the page's middle: that row crosses the view's
-// top, and the one under it is the first row wholly in view. Once the row above them draws its
-// cut, the first row wholly in view stands where it stood, within a pixel, and both rows in view
-// are still whole (decision 261). It carries `@phone` because the phone project lays the page
-// out at three device pixels to the CSS pixel, where the scroll that holds the row snaps to a
-// device pixel.
-// SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, scrolled to their foot and to
-// their middle, each scroll waited out until the rows above the view are cut.
-test("a long jump into the middle of the page keeps the first row wholly in view where it stood as the rows there are cut @phone", async ({
+// Decisions 252 and 260: a long jump into the middle of the page - a fast drag of the scrollbar -
+// lands on rows no frame has laid out yet, and the first row wholly in view stays where it stood.
+// At each width the row jumps to 40 px above the foot of the words of the row that holds the
+// page's middle: that row crosses the view's top, and the one under it is the first row wholly
+// in view. Then it jumps to 40 px above the foot of the words of the planner's row right above
+// the reader's own run of long rows: the planner's row crosses the view's top, and the reader's
+// rows alone stand in view under it. After each jump the first row wholly in view stands where
+// it stood, within a pixel, for a second of frames, and both rows are drawn whole (decision
+// 261). It carries `@phone` because the phone project lays the page out at three device pixels
+// to the CSS pixel, where the scroll that holds the row snaps to a device pixel.
+// SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, and two jumps into them at each,
+// each held for a second of frames.
+test("a long jump into the middle of the page keeps the first row wholly in view where it stood @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedLongRows, async (page, seeded) => {
+    const mine = seeded.own[0] ?? "";
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await openLongRows(page, seeded.key, size, where);
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await expect
-        .poll(
-          () =>
-            page.evaluate(() =>
-              [...document.querySelectorAll("[data-node-row]")].some((row) => {
-                const box = row.getBoundingClientRect();
-                return box.bottom <= 0 && row.querySelector("[data-node-more]") !== null;
-              })
-            ),
-          { message: `${where} no row above the view at the page's foot was cut` }
-        )
-        .toBe(true);
       const crossing = await middleRow(page, seeded.rows, where);
       const jump = await jumpAbove(page, crossing);
       const at = seeded.rows.indexOf(crossing);
@@ -717,46 +703,19 @@ test("a long jump into the middle of the page keeps the first row wholly in view
         `${where} the jump did not land with a whole row crossing the view's top above the first row wholly in view`
       ).toMatchObject({ cut: false, first: seeded.rows[at + 1] });
       expect(jump.crossingTop, `${where} the crossing row's words start in view`).toBeLessThan(0);
-      await expectFirstHeld(page, { above: seeded.rows[at - 1] ?? "", crossing }, jump, where);
-    }
-  });
-});
+      await expectFirstHeld(page, crossing, jump, where);
 
-// Decision 260: the row a slice holds is the first row wholly in view of any kind, not only one
-// that can be cut. At each width the row jumps from the page's top to 40 px above the foot of the
-// words of the planner's row right above the reader's own run of long rows, which no cut ever
-// shortens: the planner's row crosses the view's top, and the reader's rows alone stand in view
-// under it. Once the planner's row above it draws its cut, the reader's first row stands where
-// it stood, within a pixel, and both rows are whole. It carries `@phone` for the reason the row
-// above gives.
-// SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, and each jump into them waited
-// out until the planner's row above the view is cut.
-test("a long jump that lands on the reader's own rows keeps the first of them where it stood as the row above them is cut @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  await phase(browser, seedLongRows, async (page, seeded) => {
-    const mine = seeded.own[0] ?? "";
-    const above = seeded.rows[seeded.rows.indexOf(seeded.aboveOwn) - 1] ?? "";
-    for (const size of [DESKTOP, PHONE]) {
-      const where = `at ${size.width} px`;
-      await openLongRows(page, seeded.key, size, where);
-      // The rows drawn at load are cut before the jump, so no cut of theirs lands after it.
-      await expect(
-        rowMore(nodeRow(page, seeded.rows[0] ?? "")),
-        `${where} the first row was not cut`
-      ).toHaveCount(1);
-      const jump = await jumpAbove(page, seeded.aboveOwn);
+      const own = await jumpAbove(page, seeded.aboveOwn);
       expect(
-        jump,
+        own,
         `${where} the jump did not land with the planner's whole row across the view's top`
       ).toMatchObject({ cut: false, first: mine });
-      expect(jump.crossingTop, `${where} the planner's row's words start in view`).toBeLessThan(0);
+      expect(own.crossingTop, `${where} the planner's row's words start in view`).toBeLessThan(0);
       expect(
-        jump.inView,
+        own.inView,
         `${where} a row other than the reader's own stands in view under the planner's`
-      ).toEqual([seeded.aboveOwn, ...seeded.own.slice(0, jump.inView.length - 1)]);
-      await expectFirstHeld(page, { above, crossing: seeded.aboveOwn }, jump, where);
+      ).toEqual([seeded.aboveOwn, ...seeded.own.slice(0, own.inView.length - 1)]);
+      await expectFirstHeld(page, seeded.aboveOwn, own, `${where}, landing on the reader's rows,`);
     }
   });
 });
@@ -770,19 +729,18 @@ interface FirstViewFrame {
   readonly view: number;
 }
 
-// Decision 263: a row that stands in view as the page opens is cut before the page paints it, so
-// the reader never sees it whole and it never shrinks in view. At each width a script that runs
-// before the page's own reads the planner's long statement, the body's first row, which a check
-// nothing proves keeps open in an outline folded to what is open, at each animation frame from
-// the first one it is drawn in: it is cut on that first frame, and its height is the same 60
-// frames later. The row is drawn from the spec's blocks before the coverage read brings its
-// words, and a row with no words has nothing to cut, so it is read from the first frame it draws
-// its words in: CI run 44547033390 read it at 390 px with none for two frames, and then whole,
-// 472 px tall, for the 59 after. It carries `@phone` because the phone's first view is another
-// set of rows, laid out at three device pixels to the CSS pixel.
+// Decision 263, as R11 leaves it: a row that stands in view as the page opens is drawn whole on
+// the first frame it is drawn in, and never changes its height in view after. At each width a
+// script that runs before the page's own reads the planner's long statement, the body's first
+// row, at each animation frame from the first one it is drawn in: it draws no control for more
+// words on that first frame, and its height is the same 60 frames later. The row is drawn from
+// the spec's blocks before the reads that bring its words, and a row with no words has no height
+// of its words yet, so it is read from the first frame it draws its words in. It carries
+// `@phone` because the phone's first view is another set of rows, laid out at three device
+// pixels to the CSS pixel.
 // SLOW(>=2s): sixty-six long rows seeded, and the page loaded at two widths, each watched over
 // 61 frames.
-test("a long row in the first view is drawn cut on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
+test("a long row in the first view is drawn whole on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -819,9 +777,10 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       expect(first.top, `${where} the row was drawn outside the first view`).toBeLessThan(
         first.view
       );
-      expect(first.cut, `${where} the row was drawn whole on the first frame it was drawn in`).toBe(
-        true
-      );
+      expect(
+        first.cut,
+        `${where} the row was drawn cut on the first frame it was drawn in, not whole`
+      ).toBe(false);
       expect(
         frames.map((frame) => frame.height).filter((height) => height !== first.height),
         `${where} the row's height changed in the 60 frames after its first`
@@ -839,7 +798,16 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
+    // The planner, whom the registry does not list, by the title its session stamped on each
+    // write the seed made as it: its messages and asks, and the decisions it wrote, whose
+    // decider the decisions read names with that title (`DecisionEntry.decided_by.title`).
     const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
+    // An agent the registry does not list and whose own record stamps no title: the recorder of
+    // the result, whom the page names by its own word for an agent nothing names.
+    const unnamedAgent = {
+      author: CONTROL_LABELS.unnamed_author,
+      shape: GLYPH_TOKENS.authors.agent,
+    };
     const stored = new Map<string, DrawnAuthor>([
       [seeded.comment, reader],
       [seeded.longComment, reader],
@@ -852,15 +820,19 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
       [seeded.answeredLong, plannerAuthor],
       [seeded.waitingLong, plannerAuthor],
       [seeded.openQuestion, plannerAuthor],
-      [seeded.result, { author: CONTROL_LABELS.unnamed_author, shape: GLYPH_TOKENS.authors.agent }],
+      [seeded.result, unnamedAgent],
+      [seeded.shaping, plannerAuthor],
+      [seeded.changed, plannerAuthor],
+      [seeded.unsure, plannerAuthor],
+      [seeded.raw, plannerAuthor],
     ]);
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
       await expectSeedDrawn(page, seeded);
       // A person by their login and an agent by its role's word, or by the page's word for one
-      // that names none, each by its kind's shape: people share one, agents another. A node the
-      // model holds no author for draws none.
+      // that names none, each by its kind's shape: people share one, agents another. A decision
+      // draws who decided it. A node the model holds no author for draws none.
       await expect
         .poll(async () => authorOffences(await drawnRows(page), stored), {
           message: "a row draws its author other than by the stored actor's name and kind",
@@ -888,8 +860,9 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
     }
     await page.setViewportSize(DESKTOP);
     // The planner's open row gives its whole title; a node with no author says so in a third
-    // shape.
-    const planner = await focusRow(page, seeded.linked);
+    // shape. The planner's messages are no rows of Conversation, so its open question stands for
+    // the planner there.
+    const planner = await focusRow(page, seeded.openQuestion);
     await expect(rowBody(planner).locator("[data-node-author-title]")).toHaveText(PLANNER_TITLE);
     const statement = await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
     const unknown = await rowBody(statement)
@@ -901,18 +874,35 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
     expect(
       new Set([
         rowOf(rows, seeded.comment)?.authorShape,
-        rowOf(rows, seeded.linked)?.authorShape,
+        rowOf(rows, seeded.openQuestion)?.authorShape,
         unknown,
       ]).size,
       "a person, an agent and an author nobody recorded do not each have a shape of their own"
     ).toBe(3);
+    // Graph draws the result and the messages Conversation leaves out, each by its stored author.
+    await page.goto(presetPath(seeded.key, "graph"));
+    const graphOnly = [seeded.result, seeded.longMessage, seeded.linked, ...seeded.replies];
+    await expect
+      .poll(
+        async () => {
+          const drawn = await drawnRows(page);
+          return graphOnly.filter((id) => rowOf(drawn, id) === undefined);
+        },
+        { message: "Graph never drew the result and the messages Conversation leaves out" }
+      )
+      .toEqual([]);
+    await expect
+      .poll(async () => authorOffences(await drawnRows(page), stored), {
+        message: "a row of Graph draws its author other than by the stored actor's name and kind",
+      })
+      .toEqual([]);
   });
 });
 
 // c-writer: R7 and R10 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // six rows focused, three presses waited out for the writer's frames, and a read of the API.
-test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it", async ({
+test("a row's Reply and Answer set the page's writer, and a decision asked to change says so", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -967,8 +957,9 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     const shaping = await focusRow(page, seeded.shaping);
     await expect(shaping.locator("button[data-row-action]")).toHaveCount(2);
 
-    // The decision a person asked to change says so, holds the change under it, and draws no
-    // Keep and no Change (R10, F6).
+    // The decision a person asked to change says so, and draws no Keep and no Change (R10, F6).
+    // The change is a comment on the decision's words, which Conversation draws beside its node
+    // and not as a row.
     const changed = rowOf(await drawnRows(page), seeded.changed);
     expect(changed).toMatchObject({
       state: "change_requested",
@@ -980,8 +971,8 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     ).toBe(true);
     expect(
       await parentOfRow(page, seeded.change),
-      "the change is not drawn under its decision"
-    ).toBe(seeded.changed);
+      "the change is drawn as a row of Conversation"
+    ).toBeUndefined();
     const outlined = await focusRow(page, seeded.changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
 

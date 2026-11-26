@@ -130,8 +130,11 @@ func (w addressingWrites) writeCausing(
 	return appended
 }
 
-// createIssue writes an issue as the API's createIssue does: the row, and the issue.created event
-// whose payload is the issue it made, routed to no one.
+// createIssue writes an issue as the API's createIssue does: the issue's node before its row, the
+// row naming that node (the issue-tree spec), and the issue.created event whose payload is the
+// issue it made, routed to no one. The node's facts carry the sentinel rather than that event,
+// since this writes the event after the rows; no read here asks what caused them. A row the API
+// wrote names its node, so no backfill pass reads it.
 func (w addressingWrites) createIssue(t *testing.T, key string, number int, rank string, by model.Actor) model.Event {
 	t.Helper()
 	return w.write(t, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
@@ -139,10 +142,13 @@ func (w addressingWrites) createIssue(t *testing.T, key string, number int, rank
 		if err != nil {
 			return model.Event{}, err
 		}
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.IssueNode(key, "CENS", by, time.Now().UTC())}, nil); err != nil {
+			return model.Event{}, err
+		}
 		if _, err := tx.Exec(ctx, `
-			insert into issues (key, project_key, number, title, created_by, rank)
-			values ($1, 'CENS', $2, 'Routed and re-routed', $3, $4)
-		`, key, number, creator, rank); err != nil {
+			insert into issues (key, project_key, number, title, created_by, rank, node_kind, node_address)
+			values ($1, 'CENS', $2, 'Routed and re-routed', $3, $4, $5, $1)
+		`, key, number, creator, rank, graphstore.KindIssue); err != nil {
 			return model.Event{}, err
 		}
 		return model.Event{

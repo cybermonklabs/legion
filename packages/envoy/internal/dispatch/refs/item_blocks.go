@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -652,15 +653,36 @@ func (i ItemIndexing) SettlingForms() ItemIndexing {
 
 // Queue queues the index's writes on a write phase's batch: the item's state row taken first,
 // the blocks the body changed and removed, the block texts of a kind that records them, the
-// links its blocks hold, and last the statement that records the item indexed
-// (queueRecordIndexed).
+// head rows of a comment's blocks it wrote, moved or removed (queueBlockHeads), the links its
+// blocks hold, and last the statement that records the item indexed (queueRecordIndexed).
 func (i ItemIndexing) Queue(b *store.WriteBatch) {
 	i.queueStateLock(b)
 	if i.changed {
 		i.queueBlocks(b)
+		i.queueBlockHeads(b)
 	}
 	i.queueBlockRefs(b)
 	i.queueRecordIndexed(b)
+}
+
+// queueBlockHeads queues the head write of each block of a comment queueBlocks writes, moves or
+// removes (graphstore.QueueHeads): the head row of a current block of a comment holds its
+// comment_blocks row and its newest text (graphstore.HeadRowsSQL), and a removed block holds none.
+// The blocks of an ask or a message hold no such row.
+func (i ItemIndexing) queueBlockHeads(b *store.WriteBatch) {
+	if i.kind != ItemComment {
+		return
+	}
+	nodes := make([]graphstore.NodeKey, 0, len(i.written)+len(i.kept)+len(i.removed))
+	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
+		for _, row := range rows {
+			nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: string(i.kind) + "/" + i.itemID + "#" + row.id})
+		}
+	}
+	for _, id := range i.removed {
+		nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: string(i.kind) + "/" + i.itemID + "#" + id})
+	}
+	graphstore.QueueHeads(b, nodes)
 }
 
 // queueRecordIndexed queues the statement that records the item indexed from the text whose sum
@@ -922,13 +944,15 @@ type itemBlockRow struct {
 // move their position, type and excerpt; removed ones lose their position at `at`. A kind with
 // revisions records each written block's text, and null for each removed one, at the revision. A
 // kind whose blocks record a maker writes each written block's; a kept block keeps the maker it
-// was written with, as it keeps its text.
+// was written with, as it keeps its text. Each statement claims the head rows kept
+// (graphstore.KeptHeadRows), which the index writes after them in the same batch (queueBlockHeads),
+// so the head mark triggers of a comment's blocks and their texts leave the issue's mark as it is.
 func (i ItemIndexing) queueBlocks(b *store.WriteBatch) {
 	kind, tables, itemID, revision := i.kind, i.tables, i.itemID, i.revision
 	if len(i.removed) > 0 {
 		b.Queue(fmt.Sprintf("remove the blocks %s %s no longer holds", kind, itemID), `
 			update `+tables.blocks+` set position = null, removed_at = $2
-			where `+tables.item+` = $1::uuid and block_id = any($3)
+			where `+tables.item+` = $1::uuid and block_id = any($3) and `+graphstore.KeptHeadRows+`
 		`, itemID, i.at, i.removed)
 	}
 	if len(i.written) > 0 {
@@ -945,6 +969,7 @@ func (i ItemIndexing) queueBlocks(b *store.WriteBatch) {
 				insert into `+tables.blocks+` (`+tables.item+`, block_id, node_id, position, type, text_sha256, excerpt, made_at, changed_revision, changed_at`+maker+`)
 				select $1::uuid, b.id, '`+string(kind)+`/' || $1::uuid::text || '#' || b.id, b.position, b.type, b.sum, b.excerpt, $2, $3, $4`+makerValue+`
 				from unnest($5::text[], $6::int[], $7::text[], $8::text[], $9::text[], $10::text[]) as b (id, position, type, sum, excerpt, made_by)
+				where `+graphstore.KeptHeadRows+`
 				on conflict (`+tables.item+`, block_id) do update set
 					position = excluded.position,
 					type = excluded.type,
@@ -982,7 +1007,7 @@ func (i ItemIndexing) queueBlocks(b *store.WriteBatch) {
 		b.Queue(fmt.Sprintf("move the unchanged blocks of %s %s", kind, itemID), `
 			update `+tables.blocks+` b set position = k.position, type = k.type, excerpt = k.excerpt
 			from unnest($2::text[], $3::int[], $4::text[], $5::text[]) as k (id, position, type, excerpt)
-			where b.`+tables.item+` = $1::uuid and b.block_id = k.id
+			where b.`+tables.item+` = $1::uuid and b.block_id = k.id and `+graphstore.KeptHeadRows+`
 		`, itemID, ids, positions, types, excerpts)
 	}
 	if !tables.revisions() || len(i.written)+len(i.removed) == 0 {
@@ -999,6 +1024,7 @@ func (i ItemIndexing) queueBlocks(b *store.WriteBatch) {
 	b.Queue(fmt.Sprintf("record the block texts of revision %d of %s %s", revision, kind, itemID), `
 		insert into `+tables.texts+` (`+tables.item+`, block_id, revision, text)
 		select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
+		where `+graphstore.KeptHeadRows+`
 		on conflict (`+tables.item+`, block_id, revision) do update set text = excluded.text
 	`, itemID, revision, textIDs, texts)
 }

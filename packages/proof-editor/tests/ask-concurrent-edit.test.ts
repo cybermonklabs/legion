@@ -271,7 +271,7 @@ test("a list a collaborator leaves holding a bare paragraph is still deleted", a
   );
 });
 
-test("the server's block node types and the schema's typed blocks are the live schema's block group", async () => {
+test("the server's block node types and the schema's typed blocks naming no parents are the live schema's block group", async () => {
   // The list pmdoc's isBlockNodeType embeds (packages/envoy/internal/dispatch/pmdoc/node.go).
   const serverBlockNodeTypes: string[] = JSON.parse(
     readFileSync(
@@ -285,7 +285,13 @@ test("the server's block node types and the schema's typed blocks are the live s
       const blockGroup = Object.values(view.state.schema.nodes)
         .filter((type) => type.isInGroup("block"))
         .map((type) => type.name);
-      const accepted = [...serverBlockNodeTypes, ...blockSchema.types.map((type) => type.name)];
+      // A typed block naming parents (a reading) is in no node group, on either side.
+      const accepted = [
+        ...serverBlockNodeTypes,
+        ...blockSchema.types
+          .filter((type) => (type.parents?.length ?? 0) === 0)
+          .map((type) => type.name),
+      ];
       expect(accepted.sort()).toEqual(blockGroup.sort());
     },
     { blockSchema }
@@ -406,6 +412,31 @@ test("typing at a caret in a two-list ask inserts the text", async () => {
       typeText(view, "!");
       expect(blocks(requireAsk(view.state.doc))[2]).toEqual(["bullet_list", "Option B!"]);
       expectEveryWord(view, ydoc);
+    },
+    { blockSchema }
+  );
+});
+
+// Settlement takes an ask's `state` off the live block once the fleet keeps the answer on the
+// ask's node alone. The editor's schema gives that server attribute no
+// default, so an edit inside the block - here a letter typed into its question - writes none back
+// into the shared document, although y-prosemirror writes every attribute the editor's node holds.
+test("an edit inside an ask block that holds no state leaves no state in Yjs", async () => {
+  await withMarksEditor(
+    ASK_DOC,
+    ({ view, ydoc }) => {
+      // The server's settlement, delivered as a collaborator's update: the block's state comes off.
+      const peer = peerOf(ydoc);
+      requireYAsk(peer).removeAttribute("state");
+      deliver(peer, ydoc);
+      expect(Object.keys(requireYAsk(ydoc).getAttributes())).not.toContain("state");
+      const questionEnd = textblockStart(view.state.doc, "Which one?") + "Which one?".length;
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, questionEnd)));
+      typeText(view, "!");
+      expect(blocks(requireAsk(view.state.doc))[0]).toEqual(["paragraph", "Which one?!"]);
+      // The letter reached the shared document (wrapped in the authorship mark it carries).
+      expect(childElement(requireYAsk(ydoc), 0).toString()).toContain("!");
+      expect(Object.keys(requireYAsk(ydoc).getAttributes())).not.toContain("state");
     },
     { blockSchema }
   );
@@ -715,6 +746,119 @@ test("undo and redo of a letter typed in the second option list apply with the s
       press("Mod-Shift-z");
       expect(blocks(requireAsk(view.state.doc))[2]).toEqual(["bullet_list", "Option xB"]);
       expect(ydoc.getXmlFragment("prosemirror").toString()).toContain("Option xB");
+    },
+    { blockSchema }
+  );
+});
+
+/** A reading reading `text`, as y-prosemirror stores one: its element holding one paragraph. */
+function yReading(text: string): Y.XmlElement {
+  const reading = new Y.XmlElement("reading");
+  reading.setAttribute(BLOCK_ID_ATTR, crypto.randomUUID());
+  const paragraph = new Y.XmlElement("paragraph");
+  paragraph.setAttribute(BLOCK_ID_ATTR, crypto.randomUUID());
+  paragraph.insert(0, [new Y.XmlText(text)]);
+  reading.insert(0, [paragraph]);
+  return reading;
+}
+
+test("an ask a collaborator closes with a reading keeps it, and keeps it when a paragraph lands after it", async () => {
+  await withMarksEditor(
+    ASK_DOC,
+    ({ view, ydoc }) => {
+      const peer = peerOf(ydoc);
+      const ask = requireYAsk(peer);
+      ask.insert(ask.length, [yReading("The agent reads it as A.")]);
+      deliver(peer, ydoc);
+      expect(blocks(requireAsk(view.state.doc))).toEqual([
+        ["paragraph", "Which one?"],
+        ["bullet_list", "Option AAfter"],
+        ["reading", "The agent reads it as A."],
+      ]);
+      expect(yAskChildren(ydoc)).toEqual(["paragraph", "bullet_list", "reading"]);
+
+      // A second collaborator's edit leaves a paragraph after the reading, which the ask's rule
+      // refuses: the ask is built all the same, its reading in it, as the server keeps it.
+      const second = peerOf(ydoc);
+      const held = requireYAsk(second);
+      const stray = new Y.XmlElement("paragraph");
+      stray.insert(0, [new Y.XmlText("An afterthought.")]);
+      held.insert(held.length, [stray]);
+      deliver(second, ydoc);
+      expect(blocks(requireAsk(view.state.doc)).map(([type]) => type)).toEqual([
+        "paragraph",
+        "bullet_list",
+        "reading",
+        "paragraph",
+      ]);
+      expect(yAskChildren(ydoc)).toEqual(["paragraph", "bullet_list", "reading", "paragraph"]);
+      expect(view.state.doc.textContent).toContain("The agent reads it as A.");
+    },
+    { blockSchema }
+  );
+});
+
+/** `Intro`, then a decision whose content is `We ship on Friday.` and which holds no reading. */
+const DECISION_DOC = "Intro\n\n:::decision{#d1}\nWe ship on Friday.\n:::\n";
+
+/** The decision's element in `ydoc`'s fragment, which must hold one. */
+function requireYDecision(ydoc: Y.Doc): Y.XmlElement {
+  const decision = ydoc
+    .getXmlFragment("prosemirror")
+    .toArray()
+    .find(
+      (child): child is Y.XmlElement =>
+        child instanceof Y.XmlElement && child.nodeName === "decision"
+    );
+  if (decision === undefined) throw new Error("the Yjs document holds no decision");
+  return decision;
+}
+
+test("a decision keeps its reading when a collaborator's paragraph lands after it at the same place", async () => {
+  await withMarksEditor(
+    DECISION_DOC,
+    ({ view, ydoc }) => {
+      // A person adds a paragraph at the end of the decision while an agent's write adds its first
+      // reading there. Both insert at the same index, and Yjs orders concurrent inserts there by
+      // client id, so the reading's lower id puts it first and leaves [paragraph, reading,
+      // paragraph], which the decision's own rule refuses. y-prosemirror deletes from the shared
+      // document every element it cannot build, so the decision must be built all the same.
+      const agent = peerOf(ydoc);
+      agent.clientID = 1;
+      const person = peerOf(ydoc);
+      person.clientID = 2;
+      const atAgent = requireYDecision(agent);
+      atAgent.insert(atAgent.length, [yReading("The agent reads it as Friday.")]);
+      const atPerson = requireYDecision(person);
+      const added = new Y.XmlElement("paragraph");
+      added.insert(0, [new Y.XmlText("And we say so.")]);
+      atPerson.insert(atPerson.length, [added]);
+      deliver(agent, ydoc);
+      deliver(person, ydoc);
+
+      expect(
+        requireYDecision(ydoc)
+          .toArray()
+          .map((child) => (child as Y.XmlElement).nodeName)
+      ).toEqual(["paragraph", "reading", "paragraph"]);
+      let decision: ProseMirrorNode | undefined;
+      view.state.doc.descendants((node) => {
+        if (node.type.name === "decision") decision = node;
+        return decision === undefined;
+      });
+      expect(decision).toBeDefined();
+      expect(blocks(decision as ProseMirrorNode)).toEqual([
+        ["paragraph", "We ship on Friday."],
+        ["reading", "The agent reads it as Friday."],
+        ["paragraph", "And we say so."],
+      ]);
+      for (const words of [
+        "We ship on Friday.",
+        "The agent reads it as Friday.",
+        "And we say so.",
+      ]) {
+        expect(ydoc.getXmlFragment("prosemirror").toString()).toContain(words);
+      }
     },
     { blockSchema }
   );

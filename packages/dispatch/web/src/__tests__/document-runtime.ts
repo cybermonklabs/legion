@@ -23,6 +23,7 @@ import {
   type StoredMark,
 } from "../features/doc/editor";
 import type { PendingState } from "../features/doc/pending-sync";
+import { DEFAULT_FRAGMENT_NAME } from "../features/doc/roots";
 import type { DocumentRuntimeValue } from "../features/doc/runtime";
 
 export interface FakeEditor {
@@ -102,7 +103,11 @@ export function markedText(tree: DocumentJSON | undefined, type: string): string
   return (tree.content ?? []).flatMap((child) => markedText(child, type));
 }
 
-export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentRuntime {
+/** `seed.text` is the document the server holds, in the fragment of its room `seed.fragment`
+ *  names: the one the document's artifact read names, `prosemirror` for a read that names none. */
+export function fakeDocumentRuntime(
+  seed: { fragment?: string; text?: string } = {}
+): FakeDocumentRuntime {
   const callbacks: ConnectionCallbacks[] = [];
   const connections: FakeConnection[] = [];
   const editors: FakeEditor[] = [];
@@ -111,7 +116,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     if (seed.text !== undefined) {
       const paragraph = new Y.XmlElement("paragraph");
       paragraph.insert(0, [new Y.XmlText(seed.text)]);
-      doc.getXmlFragment("prosemirror").insert(0, [paragraph]);
+      doc.getXmlFragment(seed.fragment ?? DEFAULT_FRAGMENT_NAME).insert(0, [paragraph]);
     }
     const connection: FakeConnection = {
       awareness: new Awareness(doc),
@@ -152,7 +157,10 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       selectedBlock: null,
       viewProps: { nodeViews: {} },
     };
-    root.textContent = options.ydoc.getXmlFragment("prosemirror").toString();
+    // The real editor binds the fragment it is handed, else `prosemirror` (`@legion/proof-editor`).
+    root.textContent = options.ydoc
+      .getXmlFragment(options.fragment ?? DEFAULT_FRAGMENT_NAME)
+      .toString();
     const handle = {
       applyRemoteMarks(metadata: Record<string, StoredMark>) {
         editor.remoteMarks.push(metadata);

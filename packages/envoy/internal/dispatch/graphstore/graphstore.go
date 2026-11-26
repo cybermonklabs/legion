@@ -13,6 +13,7 @@ package graphstore
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,13 +21,32 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Visibility and state values, the two base attributes every node carries.
+// Visibility and state values, the two base attributes every node carries. A node is visible to
+// its project or to its author alone. Its state is live, which every node a write makes starts
+// in, gone, which a node no longer held is stated, or one of proposed, settled and overtaken,
+// which a request's write of the node's state marks it with (api's writeNodeState). Each
+// attribute takes these values and no other: a write stating any other is refused
+// (InvalidAttributeValueError), since a node at a value nobody declared is drawn by no view and
+// counted by no census.
 const (
 	VisibilityProject = "project"
 	VisibilityAuthor  = "author"
 	StateLive         = "live"
 	StateGone         = "gone"
+	StateProposed     = "proposed"
+	StateSettled      = "settled"
+	StateOvertaken    = "overtaken"
 )
+
+// nodeStates and visibilities are the values each of the two attributes takes, held once:
+// NodeStates answers the first, and CheckAttributeValue holds a write to both.
+var (
+	nodeStates   = [...]string{StateLive, StateGone, StateProposed, StateSettled, StateOvertaken}
+	visibilities = [...]string{VisibilityProject, VisibilityAuthor}
+)
+
+// NodeStates is every value the node state takes, a fresh slice for each caller.
+func NodeStates() []string { return slices.Clone(nodeStates[:]) }
 
 // KindValue is the to_kind of an attribute tuple: its ToID holds the value itself rather than
 // an address.
@@ -59,30 +79,62 @@ func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
 
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the
-// row's first write left them, and the state, the visibility and the attributes a write that
-// Restates the node keeps.
+// row's first write left them, Project, which never moves once a write has stated it
+// (ErrProjectMoved), and the state, the visibility and the attributes a write that Restates the
+// node keeps.
+//
+// Project is the key of the project the node belongs to, and Parties the parties a node no
+// project owns is between (PartyPerson, PartySession). Both are base attributes, stated by the
+// write that stores the node and projected to graph_nodes.project_key and graph_nodes.parties;
+// the empty string and nil state nothing, and leave what the row holds as it is. A node of a
+// person, a session or the block schema carries neither.
 type Node struct {
 	Kind, ID, Supertag, Visibility, State string
+	Project                               string
+	Parties                               []string
 	Attributes                            map[string]any
 	MadeAt                                time.Time
 	MadeBy                                model.Actor
 	SourceEvent                           int64
 	// Restates says the write restates a node whose state, visibility and attributes its writer
 	// does not own: the writer writes the node again for what it does own - a block's text, a
-	// comment's anchor - and says of the state only whether the node is there (StateLive) or not
-	// (StateGone). Over a node the store holds, such a write keeps the stored visibility and
-	// attributes, and every stored state but gone: a write that marked the node - a later
-	// release's, which marks a requirement proposed or reserves a node for its author, and beside
-	// which this release serves during a roll and alone after a rollback - is not this writer's to
-	// undo. It writes its state only over a node stored gone, which comes back live, and writes
-	// gone whenever it says gone. A node the store does not hold is made as the writer states it.
-	// Every writer that writes a node again for facts of its own restates it: the block index
-	// (refs.IndexBlocks), CommentFacts, the backfill (internal/dispatch/graphcensus), and the
-	// seed (cmd/dispatch-seed), which writes its author's node and its followers' session nodes
-	// again in later batches. A write that means to move a node's state, visibility or attributes
-	// leaves it false. WriteArms reads none of it: its upsert moves nothing on a node already
-	// there.
+	// comment's anchor, a document's address - and says of the state only whether the node is
+	// there (StateLive) or not (StateGone). Over a node the store holds, such a write keeps the
+	// stored visibility and attributes, and keeps a stored state of live, proposed, settled or
+	// overtaken, since a write that marked the node so - a later release's, which marks a
+	// requirement proposed or reserves a node for its author, and beside which this release serves
+	// during a roll and alone after a rollback - is not this writer's to undo: it writes its state
+	// only over a node stored gone, which comes back live, and writes gone whenever it says gone.
+	// A node the store does not hold is made as the writer states it. Every writer that writes a
+	// node again for facts of its own restates it: the block index (refs.IndexBlocks),
+	// CommentFacts, IssueNode, ArtifactNode, AskNode and MessageNode, the backfill
+	// (internal/dispatch/graphcensus), and the seed (cmd/dispatch-seed), which writes its author's
+	// node and its followers' session nodes again in later batches. A write that means to move a
+	// node's state, visibility or attributes leaves it false. WriteArms reads none of it: its
+	// upsert moves nothing on a node already there.
 	Restates bool
+	// KeepsCause says the write keeps the cause the store holds of a node already there, its
+	// row's source_event, whatever else of the row it moves. It is for a write that moves only a
+	// base attribute of a node another write caused: a request's write of a node's state (api's
+	// writeNodeState), at NoEvent. That write is no cause of the node's other facts, and a row it
+	// put at the sentinel would take the event of the next held write QueueCaused moves onto it
+	// - the next index pass of a block's document, for a version that changed nothing of the
+	// block. The base attributes it states still carry its own SourceEvent, so one at NoEvent
+	// states each at the sentinel, which no repeat key drops: proposed, live and proposed again
+	// are three tuples; its node write states them itself, in its move, since the row carries no
+	// mark in place of the cause it keeps (nodeMark). A node the store does not hold is made at
+	// the write's own SourceEvent, since it has no cause to keep.
+	KeepsCause bool
+	// Changed marks a node this write created or changed, which a write made for a run names as
+	// changed by it (store.WithRun): QueueWrite and QueueCaused, on a write phase made for a run,
+	// append one TupleChangedByRun from it to that run's interaction, dated and signed as the
+	// node is. Its writer sets it, because the store cannot infer it: a block's words are no
+	// column of its node, so an edit of them moves nothing a node write compares. A node a write
+	// only names - an author's person or session node, a block row a pass gives the node it
+	// lacked - is never marked. A writer that changes a node it writes as another write made it,
+	// so that the tuple is dated and signed otherwise than the node, names it through
+	// PlanChangedForRun instead. No read answers it.
+	Changed bool
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is
@@ -99,6 +151,10 @@ type Tuple struct {
 	SourceEvent      int64
 	LegacySourceSeq  *int64
 	Asserted         bool
+	// Changes marks a fact that changes the node it goes out of - a pointer a request appends,
+	// retracts or moves - so a write made for a run names that node as changed by it, as
+	// Node.Changed names a node the write itself writes. No read answers it.
+	Changes bool
 }
 
 // Queryer is the query surface shared by a pool and a transaction, as internal/dispatch/refs has

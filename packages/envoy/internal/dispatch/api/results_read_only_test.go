@@ -438,7 +438,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		derived := checkOf(t, first.writer, "c1")
 		assertCI(t, derived, ciCheckRun, model.CIStatePass, ciConclusionSuccess,
 			ciVerdictLineOf("c1", ciCheckRun, model.CIStatePass, headCommit))
-		assertDerived(t, derived, 11, ciCheckRun, ciConclusionSuccess, model.CIStatePass, headCommit)
+		assertDerived(t, pair.writer.rig.database, derived, 11, ciCheckRun, ciConclusionSuccess, model.CIStatePass, headCommit)
 		first.calls(t, parityPulls, 1)
 		first.calls(t, parityCheckRuns, 1)
 	})
@@ -770,7 +770,7 @@ func TestACheckCIProvesIsAnsweredFromTheHeadItsFirstReadLearned(t *testing.T) {
 			ci := checkOf(t, read, "c1")
 			assertCI(t, ci, ciCheckRun, model.CIStatePass, ciConclusionSuccess,
 				ciVerdictLineOf("c1", ciCheckRun, model.CIStatePass, headCommit))
-			derived := assertDerived(t, ci, 11, ciCheckRun, ciConclusionSuccess, model.CIStatePass, headCommit)
+			derived := assertDerived(t, stack.rig.database, ci, 11, ciCheckRun, ciConclusionSuccess, model.CIStatePass, headCommit)
 			if basis := derived.CommitStands.Basis; basis == nil || parityBasisName(basis) != atHead {
 				t.Errorf("%s stands c1's derived result at %+v, want %s", stack.who, basis, atHead)
 			}

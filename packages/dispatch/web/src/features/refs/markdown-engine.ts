@@ -980,10 +980,11 @@ export interface MarkdownHeadline {
  * a place that shows the opening line of a text and no more of it. A text read from `markdown`
  * is parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first
  * line is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a
- * space, so only a hard break ends that line. Only a closed row of the priorities table asks for
- * it today (`priorities-columns.tsx`); every other caller reads the whole text, which is the
- * default. `cut` still says only whether the projected words were cut to `max`, and `addresses`
- * holds only the line's own.
+ * space, so only a hard break ends that line. Only a node's line on the new issue page asks for
+ * it today, for a stored text it reads from its markdown (`node-line.tsx`, through
+ * `usePlainHeadline`); every other caller reads the whole text, which is the default. `cut` still
+ * says only whether the projected words were cut to `max`, and `addresses` holds only the line's
+ * own.
  *
  * `undefined` where neither is given, until the engine has answered (one pre-paint commit once
  * it is loaded on the page, and for a parsed body until the worker's answer lands), and for a

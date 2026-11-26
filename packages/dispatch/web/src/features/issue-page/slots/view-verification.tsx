@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
-import { primarySpec } from "../../../api/issue-cache";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
@@ -13,6 +13,8 @@ import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
+import { type TreeBlocksRead, useBlocksRunning } from "../tree-read/tree-read";
+import { NextViewPage } from "../tree-read/view-read";
 import {
   type FailedRead,
   queryTyped,
@@ -22,6 +24,7 @@ import {
 } from "../verification-filter/VerificationFilterBody";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
+import { usePublishViewParents } from "./view-parents";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
 export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
@@ -36,8 +39,14 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // (`published`), so none of them reads a reference the page asks for; and the outline's names
   // line while those reads stand failed (`names`), which the body draws over its tree, since
   // every reference its rows draw waits on those names.
-  const { failed, names, published, readsSettled, root } = useOutlineReads(issue);
-  const { checks, documentId, reads } = useVerificationReads(issue.key);
+  const { blocksOf, names, published, readsSettled, refused, root } = useOutlineReads(issue);
+  // Whether the read that holds the Verification document's blocks runs, from an observer of its
+  // own (`useBlocksRunning`): under this filter its own view read.
+  const running = useBlocksRunning(issue.key, "verification");
+  const { checks, reads } = useVerificationReads(issue.key, {
+    ...blocksOf("verification"),
+    isFetching: running,
+  });
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
   // it (`useAddressTarget`).
@@ -46,6 +55,9 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
   );
+  // The other statements a check serves are named by the page's names, which the view names where
+  // only its own tree holds them (`PresetView.parents`).
+  usePublishViewParents(view.parents);
   // The view with no words query, where a query is typed (`queryTyped`, the body's one rule): what
   // the issue holds whatever the query left of it. A query of spaces alone draws as no query does;
   // with none typed the body reads the view itself, and nothing is built a second time.
@@ -56,8 +68,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   );
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
-  // coverage read, the results read and, where the results read holds a check, its document's
-  // blocks (`useVerificationReads`'s `documentId`). Where the view may tell, the body says whether
+  // coverage read, the results read and, whether or not the results read holds a check, the blocks
+  // read (`useVerificationReads`'s `blocks`). Where the view may tell, the body says whether
   // it draws the node, with the reader's chip applied (`addressed`, one value while the node and
   // the call stay the same): a statement, a check under a statement it draws, a check that serves
   // none or a row of its own, but under a chip only that state's statements and their checks, and
@@ -65,9 +77,9 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // before the browser paints, so where the reads were held as the view was drawn, as on Back to
   // its address, the table is never painted in the outline's place.
   const tells = useTellsAddressDrawn(
-    failed,
+    refused,
     readsSettled,
-    ["coverage", "results", ...(documentId === undefined ? [] : [blocksKey(documentId)])],
+    ["coverage", "results", blocksKey(roleDocument(issue, "verification")?.id ?? "")],
     onAddressDrawn
   );
   const addressed = useMemo(() => ({ named, tell: onAddressDrawn }), [named, onAddressDrawn]);
@@ -94,6 +106,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           view={view.root}
           whole={whole}
         />
+        {/* While the view read answers a next page, the control that reads it (R15). */}
+        <NextViewPage filter="verification" issueKey={issue.key} />
       </div>
       {panels}
     </NoTooltips>
@@ -103,14 +117,15 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
 /**
  * The reads the Verification view is drawn from, as its body takes them (the `checks` and
  * `reads` of `VerificationFilterBody`): the coverage read, the results read with the issue's
- * checks, and the blocks read of the Verification document, and how the three stand. They are
+ * checks, the Verification document's blocks it is handed, and how the three stand. Both reads are
  * the slot's own observers, apart from `useIssueTree`'s of the same keys, so what they fetch is
  * read by their own options alone.
  */
-export function useVerificationReads(issueKey: string): {
+export function useVerificationReads(
+  issueKey: string,
+  blocks: TreeBlocksRead & { readonly isFetching: boolean }
+): {
   checks: readonly CheckBlock[];
-  /** The document whose blocks are read: none where the results read holds no check. */
-  documentId: string | undefined;
   reads: VerificationReads;
 } {
   // The coverage read, and the issue's checks with the results recorded against them, under the
@@ -124,23 +139,20 @@ export function useVerificationReads(issueKey: string): {
   const results = useQuery({ ...issueResultsQuery(issueKey), ...EVENT_FRESH });
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The blocks read of the Verification document too: a check learns the statements it serves
-  // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
+  // from its block's `serves` pointer, which only that read carries (`tree-nodes.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
   // statement, every statement would read Unknown, and the line that counts a statement's checks
   // elsewhere would call the issue's own checks "elsewhere". The results read answers the checks
   // of one document, the issue's Verification document (`api/results.go`'s
   // `verificationDocument`), and names it in a field of its own (`verification_artifact_id`),
-  // which is read where the read holds a check. It must agree with the document whose blocks
+  // which no line here reads. It must agree with the document whose blocks
   // `useIssueTree` reads, which that hook finds from the issue read (`roleDocument`); no other
-  // document's blocks place a check. The slot watches that read under the same key with an
-  // observer that is never enabled, so it sends no request of its own and sees whatever
+  // document's blocks place a check. The slot hands those blocks in (`blocks`, the view read's),
+  // with whether that read runs, so it sends no request of its own and sees whatever
   // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
-  // Where the results read holds no check no blocks read is needed, and the observer of no
-  // document never fetches. It is this one read and not `useIssueTree`'s `blocksHeld`, which
-  // counts all four of the tree's documents: a refused plan or decisions read must not hold this
-  // view empty, and the failed line needs this read's own error and Retry.
-  const documentId = checks.length === 0 ? undefined : results.data?.verification_artifact_id;
-  const blocks = useQuery({ ...artifactBlocksQuery(documentId ?? ""), enabled: false });
+  // That read holds the statements too, so the view waits on it whether or not the results
+  // read holds a check, and a read of it refused before it first answered is a line of its own,
+  // with that read's own error and Retry.
   // Each read has answered where it holds data, and not by its status: a background refetch
   // that fails sets TanStack Query's status to error and keeps the data it last answered, and
   // the query cache keeps that data when the stage mounts this slot again as the reader comes
@@ -154,22 +166,20 @@ export function useVerificationReads(issueKey: string): {
   // failed it says which, each with a Retry that asks that read alone again, rather than draw an
   // empty view that gives the reader nothing to act on.
   const answered =
-    coverage.data !== undefined &&
-    results.data !== undefined &&
-    (documentId === undefined || blocks.data !== undefined);
+    coverage.data !== undefined && results.data !== undefined && blocks.data !== undefined;
   // Each read that failed with no answer held, by its name, with the press that asks that read
   // alone again and whether it runs again; the body says them in an order of its own.
   const failed: Partial<Record<VerificationRead, FailedRead>> = {};
   if (standsFailed(coverage)) failed.coverage = failedRead(coverage);
   if (standsFailed(results)) failed.results = failedRead(results);
-  if (documentId !== undefined && standsFailed(blocks)) failed.blocks = failedRead(blocks);
+  if (standsFailed(blocks)) failed.blocks = failedRead(blocks);
   const reads: VerificationReads =
     Object.keys(failed).length > 0
       ? { failed, state: "failed" }
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
-  return { checks, documentId, reads };
+  return { checks, reads };
 }
 
 /** What the line of a read that failed is given: which refusal it says, the read's own count of

@@ -36,6 +36,7 @@ func specGates(gate record.DesignGate) map[record.DesignStep]record.DesignGate {
 // decideAwait is the whole rule for whether a root waits on a person, checked in one order and
 // from the record alone. Each row below is one reason it does not, and the last is the wait.
 func TestDecideAwaitsTable(t *testing.T) {
+	t.Parallel()
 	confirmed := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
@@ -117,6 +118,7 @@ func TestDecideAwaitsTable(t *testing.T) {
 // daemon's own notice told it, a handout), and an open gate, a gate off, or a request on the
 // agent's turn asks the person for nothing.
 func TestDecideAwaitsOnTheGate(t *testing.T) {
+	t.Parallel()
 	approved := 4
 	gateView := func() awaitView {
 		view := awaitRootView()
@@ -170,6 +172,7 @@ func TestDecideAwaitsOnTheGate(t *testing.T) {
 // where it stands rather than starting a wait nothing would answer: the act on the subject
 // question is named as that question's, one on any other ask as a reply in its thread.
 func TestAnActAlreadyRecordedTellsTheArchitectInPlace(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		ask    record.RootAsk
@@ -202,6 +205,7 @@ func TestAnActAlreadyRecordedTellsTheArchitectInPlace(t *testing.T) {
 // document of the step in question stands now, what waits on the architect and what is still with
 // the person.
 func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	version := 3
 	asks := []record.RootAsk{
@@ -226,15 +230,15 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 				"Waiting on you: ask ask-yours", "Still with the person: ask ask-still", "Continue."},
 		},
 		{
-			// A deployment that gates the decisions step first stands on that step, not on the
-			// spec: the task names the decisions document, whose version it prints.
-			name:    "an approval of the decisions document, the step the work stands on",
+			// A deployment that gates the criteria step first stands on that step, not on the
+			// spec: the task names the Verification document, whose version it prints.
+			name:    "an approval of the Verification document, the step the work stands on",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"},
-			step:    record.DesignStepDecisions,
-			gate: &record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepDecisions, ArtifactID: "artifact-decisions",
+			step:    record.DesignStepCriteria,
+			gate: &record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria",
 				LatestVersion: 3, ApprovedVersion: &version},
-			want: []string{"Your decisions document version 3 on LEGION-208 was approved.",
-				"Your decisions document is approved at version 3", DesignApprovedWake},
+			want: []string{"Your Verification document version 3 on LEGION-208 was approved.",
+				"Your Verification document is approved at version 3", DesignApprovedWake},
 			not: []string{"spec"},
 		},
 		{
@@ -292,6 +296,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 // With the design gate off, no approval is asked for, so the resume task never advises registering
 // one.
 func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	waiting := record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
@@ -306,6 +311,7 @@ func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
 // hand-back — the request's own thread only while the request is open, re-requesting approval and
 // registering it otherwise.
 func TestTheResumeTaskOfAGateWait(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 5}
 	for _, tc := range []struct {

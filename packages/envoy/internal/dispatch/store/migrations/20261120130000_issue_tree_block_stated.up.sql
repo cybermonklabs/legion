@@ -1,0 +1,32 @@
+-- 20261120130000_issue_tree_block_stated.up.sql — which pass of the block index last stated a
+-- document, in two columns only this release writes.
+--
+-- store_version (20261116221539) is the version whose blocks a pass of this release's store last
+-- stated. A build of an earlier rule of the block index writes it too, for each version it
+-- indexes, and states none of what this build's pass states of each block of that version: its
+-- rank, its text, its placement, its size and the supertag of its type. So store_version alone no
+-- longer tells this build that it owes a version those values. The row records the pass beside it:
+--
+--   stated_version  the version a pass of rule 2 or a later rule last stated the document at, in
+--                   the statement that writes store_version (refs' queueStand), or where it clears
+--                   the marks of a document that holds no version it indexes (docs'
+--                   indexOwedDocument and indexOwedRoom). Null where no such pass has stated it.
+--   stated_rule     the rule of that pass (refs.BlockIndexMarkingRule). Null where stated_version
+--                   is.
+--
+-- The graph backfill and the block-index tick mark owed each document that holds no mark and whose
+-- stated_version is not its version or whose stated_rule is below the rule of this build, a null on
+-- either side counted as not equal (refs.UnstatedBlockIndexSQL). Both columns are null in every row
+-- this migration leaves, so the first run of the backfill after it marks every document once, and
+-- a later run marks only what no pass has stated since.
+--
+-- Rolling deploy. The columns are additive and nullable with no default, so the ALTER is a
+-- catalog change that rewrites no row. The release before this one names neither, so its upsert
+-- of the row and 0122's trigger leave both as they stand, which is what keeps a version that
+-- release indexes owed to this build. Rolling back past this migration is an image rollback alone;
+-- the columns left behind are read by nothing that release runs.
+--
+-- The ALTER takes ACCESS EXCLUSIVE on document_block_versions for the catalog write alone, as
+-- 20261116221539 took it over the same table: 9,881 rows on the load-test deployment and fewer in
+-- production.
+alter table document_block_versions add column stated_version integer, add column stated_rule integer;

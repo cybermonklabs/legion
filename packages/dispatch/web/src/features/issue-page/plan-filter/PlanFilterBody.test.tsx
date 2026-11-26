@@ -8,18 +8,14 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
-import {
-  artifactBlocksQuery,
-  issueCoverageQuery,
-  issueResultsQuery,
-  whoAmIQuery,
-} from "../../../api/queries";
-import type { Artifact, ArtifactBlock, IssueDetails } from "../../../api/types";
+import { issueCoverageQuery, issueResultsQuery, whoAmIQuery } from "../../../api/queries";
+import type { Artifact, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
+import type { IssueRoute } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -53,7 +49,9 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { outlineQuery, type TreeAnswerNode, viewQuery } from "../tree-read/tree-read";
+import { issueAskThreadsQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -80,8 +78,8 @@ const KEY = "CORE-1";
 const PLAN = "plan-md";
 const SPEC = "spec-md";
 
-/** happy-dom answers every media query against its own window; the tree reads one to tell the
- *  width it is read at (`IssueTree.tsx`'s `ZOOMED_TREE_QUERY`), so a test sets it. */
+/** happy-dom answers every media query against its own window; the page reads them to tell the
+ *  width it is read at, so a test sets it. */
 function setViewport(width: number): void {
   window.matchMedia = ((query: string) => {
     const max = /max-width:\s*([\d.]+)px/.exec(query)?.[1];
@@ -289,8 +287,8 @@ type DrawnBody = RenderResult & {
  *  order and the chart's places are worked out from (`slots/view-plan.tsx`): the view's own
  *  tasks unless a case draws the view a words filter leaves. `reveal` is the chain down to the
  *  node the address names. `written` is the block ids of the plan document in the order they
- *  are written, as the page's own blocks read holds them (`useIssueTree.ts`); where a case gives
- *  none the page holds no document, as on a tree drawn before that read answered. `reads` is
+ *  are written, as the tree read holds them (`useIssueTree`'s `blocksOf("plan")`); where a case
+ *  gives none the page holds no document, as on a tree drawn before that read answered. `reads` is
  *  how the plan's and the spec's blocks reads stand, as the slot hands them on
  *  (`slots/view-plan.tsx`): answered unless a case gives another. `published` is what the page
  *  publishes of its batched names read, which is published to the names store the body is drawn
@@ -328,10 +326,6 @@ function renderBody(
   const artifacts = new Map<string, Artifact>();
   if (written !== undefined) {
     artifacts.set(PLAN, { id: PLAN_ARTIFACT, slug: PLAN } as Artifact);
-    client.setQueryData(
-      ["artifact", PLAN_ARTIFACT, "blocks"],
-      written.map((id) => ({ id }))
-    );
   }
   const publications = new WeakMap<TreeNode, PublishedReferences>();
   const publishedFor = (shown: TreeNode): PublishedReferences => {
@@ -354,13 +348,13 @@ function renderBody(
                     artifacts={artifacts}
                     context={new Set()}
                     emptyLine={EMPTY_STATE_LINES.plan}
-                    filtering
                     focusReveal
                     holdsEscape={false}
                     isClosed={false}
                     namesLine={NO_FAILED_READS}
                     onEditing={() => {}}
                     plan={plan ?? shown.children}
+                    planBlocks={written?.map((id) => ({ id }))}
                     published={names}
                     reads={held}
                     reveal={reveal}
@@ -736,6 +730,40 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
   }
 });
 
+// Down and Up scroll the page from the page's body, as the outline's do: the chart takes them
+// only from a row or a link inside one, where they move as `j` and `k` do, while `j` from the
+// page's body still goes to the first bar.
+test("Plan: an arrow with the focus on the page's body is not taken", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderBody(
+    issue([task("t1"), task("t2", { needs: ["t1"] }), task("t3", { needs: ["t2"] })])
+  );
+  try {
+    // The stage gives the chart's first bar the focus nobody holds; Escape leaves the chart from
+    // there for the page's body.
+    await waitFor(() => expect(focusedRow()).toBe(D("t1")));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(document.body);
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.body.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented, `the chart took ${key} from the page's body`).toBe(false);
+      expect(document.activeElement, `${key} from the page's body moved the focus`).toBe(
+        document.body
+      );
+    }
+    await user.keyboard("j");
+    expect(focusedRow(), "j from the page's body did not go to the first bar").toBe(D("t1"));
+    await user.keyboard("{ArrowDown}");
+    expect(focusedRow(), "Down from a bar did not go to the next").toBe(D("t2"));
+  } finally {
+    view.unmount();
+  }
+});
+
 // An address that names a step lands on it, in the view the filter opens on. The landing focuses
 // the row in the frame after the commit that draws it (`IssueTree.tsx`'s `landOnRow`).
 test("an address naming a step puts the focus on its bar's row", async () => {
@@ -992,29 +1020,17 @@ function issueRead(verification?: Artifact): IssueDetails {
   };
 }
 
-/** A plan task's block, as the plan document's blocks read holds it. */
-function taskBlock(id: string): ArtifactBlock {
-  return {
-    attributes: [],
-    from: 0,
-    id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type: "plan_task",
-  };
+/** A plan task of the plan document as the tree read answers it, at `position` in it. */
+function taskBlock(id: string, position: number): TreeAnswerNode {
+  return treeNode(id, "plan_task", KEY, {
+    document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
+  });
 }
 
 /** A query client holding every read the issue's tree is built from (`useIssueTree.ts`), each
- *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, either
- *  of which a case may leave unheld for its read to go to `api.getArtifactBlocks`. */
-function slotClient({
-  planHeld = true,
-  specHeld = true,
-}: {
-  planHeld?: boolean;
-  specHeld?: boolean;
-} = {}): QueryClient {
+ *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, which
+ *  a case may leave unheld for the tree read, which holds both, to go to `api.getIssueTree`. */
+function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1036,15 +1052,14 @@ function slotClient({
     document: null,
     open_questions: [],
   });
-  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
-  if (planHeld) {
-    client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
-      taskBlock("t1"),
-      taskBlock("t2"),
-    ]);
+  if (specHeld) {
+    client.setQueryData(
+      outlineQuery(KEY, "conversation").queryKey,
+      treeAnswer([taskBlock("t1", 0), taskBlock("t2", 1)])
+    );
   }
-  if (specHeld) client.setQueryData(artifactBlocksQuery(SPEC_ARTIFACT).queryKey, []);
   return client;
 }
 
@@ -1053,11 +1068,17 @@ type DrawnSlot = RenderResult & { readonly redraw: (issue: IssueDetails) => void
 
 /** Draws the Plan view's slot (`slots/view-plan.tsx`) for `shown` over `client`, in the stage the
  *  page draws a view in (`slots/stage.tsx`), with the providers the page draws every slot under
- *  (`slots/providers.tsx`). */
-function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
-  const route = { key: KEY, kind: "issue" } as const;
+ *  (`slots/providers.tsx`). `at` is the address the router holds and the slot's route for it,
+ *  where a case gives one; where none is given the router holds no address the page reads, and
+ *  the slot is handed the issue's own route. */
+function renderSlot(
+  client: QueryClient,
+  shown: IssueDetails,
+  at?: { readonly path: string; readonly route: IssueRoute }
+): DrawnSlot {
+  const route = at?.route ?? ({ key: KEY, kind: "issue" } as const);
   const draw = (issue: IssueDetails): ReactNode => (
-    <MemoryRouter>
+    <MemoryRouter {...(at === undefined ? {} : { initialEntries: [at.path] })}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
@@ -1075,6 +1096,37 @@ function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
   const view = render(draw(shown));
   return { ...view, redraw: (issue) => view.rerender(draw(issue)) };
 }
+
+test("a Plan block address focuses the task from the view even when the outline has no task", async () => {
+  setViewport(1440);
+  const client = slotClient({ specHeld: false });
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeAnswer([treeNode(KEY, "issue", null)])
+  );
+  client.setQueryData(
+    viewQuery(KEY, "plan").queryKey,
+    treeAnswer([
+      { ...taskBlock("t1", 0), role: "query" },
+      { ...taskBlock("t2", 1), role: "query" },
+    ])
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan#b-t2`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => expect(rowOf(view, "t2")).toHaveFocus());
+    await userEvent.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(view.getByRole("button", { name: PLAN_WORDS.steps })).toHaveFocus();
+    expect(rowOf(view, "t2")).not.toHaveFocus();
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    client.clear();
+  }
+});
 
 // A Verification or decisions document made while the reader is on Plan rebuilds the issue's
 // tree and opens a read of its blocks that holds nothing yet, and the slot draws the same body
@@ -1096,7 +1148,10 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     view.redraw(
       issueRead({ ...artifact(VERIFICATION_ARTIFACT, "verification-md"), role: "verification" })
     );
-    await waitFor(() => expect(blocks).toHaveBeenCalledWith(VERIFICATION_ARTIFACT));
+    expect(
+      blocks,
+      "a new document opens no read of its blocks: the tree read holds them"
+    ).not.toHaveBeenCalled();
     expect(
       steps().getAttribute("aria-pressed"),
       "the body drawn again over the same tasks is back on the chart"
@@ -1114,7 +1169,7 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
 // that it could not load the spec, with a Retry that asks the spec's blocks again.
 test("a refused read of the spec's blocks says so, with a Retry that reads them again", async () => {
   setViewport(1440);
-  const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
+  const blocks = spyOn(api, "getIssueTree").mockRejectedValue(new Error("refused"));
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const view = renderSlot(slotClient({ specHeld: false }), issueRead());
   try {
@@ -1125,13 +1180,77 @@ test("a refused read of the spec's blocks says so, with a Retry that reads them 
     });
     expect(line.querySelector("p")?.textContent).toBe(STATE_LINES.spec_unreadable);
     expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
-    const asked = () => blocks.mock.calls.filter(([id]) => id === SPEC_ARTIFACT).length;
+    const asked = () => blocks.mock.calls.filter(([, query]) => query?.view === undefined).length;
     const before = asked();
     expect(before, "the tree sends no read of the spec's blocks").toBe(1);
     await userEvent.click(retryOf(view, "statements"));
     await waitFor(() =>
       expect(asked(), "Retry on the statements line does not read the spec's blocks").toBe(
         before + 1
+      )
+    );
+  } finally {
+    view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// At the Plan view's own address the plan's blocks are Plan's own view read and the spec's the
+// outline read (`tree-read/tree-read.ts`'s `blocksOf`). With both refused the view draws one line,
+// the statements', whose one Retry reads each of the two again, and is busy while either runs:
+// while Plan's view read runs on after the outline read was refused again.
+test("at the Plan view's address the one Retry reads both refused reads again, busy while either runs", async () => {
+  setViewport(1440);
+  const outlineAgain = Promise.withResolvers<never>();
+  const viewAgain = Promise.withResolvers<unknown>();
+  const sent = { outline: 0, view: 0 };
+  // Each read's first answer is a refusal, and each later read of it is out until the case ends it.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    const read = query?.view === undefined ? "outline" : "view";
+    sent[read] += 1;
+    if (sent[read] === 1) return Promise.reject(new Error("refused"));
+    return read === "outline" ? outlineAgain.promise : viewAgain.promise;
+  }) as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const client = slotClient({ specHeld: false });
+  // Plan's view read refused before the view is drawn, as the load leaves it, which the stage
+  // sends (`ViewReadProvider`) and this case draws no stage for.
+  await client.prefetchQuery(viewQuery(KEY, "plan"));
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => {
+      if (view.container.querySelector('[data-plan-unreadable="statements"]') === null) {
+        throw new Error("the view says nothing of the refused statements read");
+      }
+    });
+    expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
+    expect(sent).toEqual({ outline: 1, view: 1 });
+    await userEvent.click(retryOf(view, "statements"));
+    await waitFor(() =>
+      expect(sent, "Retry did not read each refused read again").toEqual({ outline: 2, view: 2 })
+    );
+    expect(retryOf(view, "statements")).toHaveAttribute("aria-busy", "true");
+    await act(async () => outlineAgain.reject(new Error("refused")));
+    await waitFor(() =>
+      expect(client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.fetchStatus).toBe(
+        "idle"
+      )
+    );
+    expect(
+      retryOf(view, "statements"),
+      "the Retry is not busy while Plan's view read runs"
+    ).toHaveAttribute("aria-busy", "true");
+    await act(async () => viewAgain.resolve(treeAnswer([taskBlock("t1", 0)])));
+    await waitFor(() =>
+      expect(retryOf(view, "statements"), "the Retry is busy with no read out").not.toHaveAttribute(
+        "aria-busy"
       )
     );
   } finally {
@@ -1149,8 +1268,13 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
   setViewport(1440);
   const again = Promise.withResolvers<never>();
   let specReads = 0;
-  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) => {
-    if (id !== SPEC_ARTIFACT) return again.promise;
+  // The spec's blocks are the tree read's (`useIssueTree`'s `blocksOf`): its first read is the
+  // one refused, and every later read of it is out.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    if (query?.view !== undefined) return again.promise;
     specReads += 1;
     return specReads === 1 ? Promise.reject(new Error("refused")) : again.promise;
   }) as never);
@@ -1168,18 +1292,15 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
     await settled();
     expect(line(), "the statements line leaves while its read runs again").not.toBeNull();
     const retry = retryOf(view, "statements");
-    expect(retry.getAttribute("aria-busy"), "the Retry of a read running again is not busy").toBe(
+    expect(retry, "the Retry of a read running again is not busy").toHaveAttribute(
+      "aria-busy",
       "true"
     );
     expect(
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy"),
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the view's empty tree is not busy while its refused read runs again"
-    ).toBe("true");
-    expect(document.activeElement, "the focus leaves the Retry while its read runs again").toBe(
-      retry
-    );
+    ).toHaveAttribute("aria-busy", "true");
+    expect(retry, "the focus leaves the Retry while its read runs again").toHaveFocus();
     await userEvent.click(retry);
     await settled();
     expect(specReads, "a second press of a busy Retry asks the spec's blocks again").toBe(2);
@@ -1199,8 +1320,12 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
   setViewport(1440);
   const again = Promise.withResolvers<never>();
   let specReads = 0;
-  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) => {
-    if (id !== SPEC_ARTIFACT) return again.promise;
+  // The spec's blocks are the tree read's, as above.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    if (query?.view !== undefined) return again.promise;
     specReads += 1;
     return specReads === 1 ? Promise.reject(new Error("refused")) : again.promise;
   }) as never);
@@ -1214,7 +1339,7 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
     });
     onlineManager.setOnline(false);
     await userEvent.click(retryOf(view, "statements"));
-    const state = () => client.getQueryState(artifactBlocksQuery(SPEC_ARTIFACT).queryKey);
+    const state = () => client.getQueryState(outlineQuery(KEY, "conversation").queryKey);
     await waitFor(() =>
       expect(state()?.fetchStatus, "Retry offline does not hold the spec's blocks read").toBe(
         "paused"
@@ -1241,11 +1366,9 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
       "the statements line drops its Retry while its Retry waits for the network"
     ).toBe(CONTROL_LABELS.retry);
     expect(
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy"),
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the view's empty tree reads busy while its refused read waits for the network"
-    ).toBe("false");
+    ).toHaveAttribute("aria-busy", "false");
   } finally {
     view.unmount();
     // Back online once the view is gone: its query client no longer listens for the network
@@ -1591,44 +1714,39 @@ test("a focus moved onto the view's tree from its Retry stays on the tree", asyn
 // A read still out beside one that was refused - here the spec's blocks not yet answered, and
 // the plan's refused - leaves the view's tree busy: it holds nothing because a read has not
 // answered yet. Once the spec's answer is in, only the refused read is left, waiting for its
-// Retry, and the tree is not busy.
+// Retry, and the tree is not busy. The plan's and the spec's blocks are the one tree read on the
+// page (`slots/view-plan.tsx`), so the body is drawn with the reads as a slot hands them on.
 test("the view's tree reads busy while a read is out beside a refused one, and not once it answers", async () => {
   setViewport(1440);
-  const spec = Promise.withResolvers<ArtifactBlock[]>();
-  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) =>
-    id === PLAN_ARTIFACT ? Promise.reject(new Error("refused")) : spec.promise) as never);
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = renderSlot(slotClient({ planHeld: false, specHeld: false }), issueRead());
+  const root = issue([task("t1")]);
+  const view = renderBody(root, {
+    reads: failedAs([], [{ failure: 1, read: "plan", retrying: false }], true),
+  });
   try {
-    const busy = () =>
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy");
+    const tree = view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`);
     const lines = () =>
       [...view.container.querySelectorAll("[data-plan-unreadable]")].map((line) =>
         line.getAttribute("data-plan-unreadable")
       );
-    await waitFor(() =>
-      expect(lines(), "the view says nothing of the refused plan read").toEqual(["plan"])
-    );
+    // jest-dom: the failed lines are read as the list of the reads they name, in their order.
+    expect(lines(), "the view says nothing of the refused plan read").toEqual(["plan"]);
     await settled();
     expect(
-      busy(),
+      tree,
       "the tree of a view whose spec read is out beside a refused one is not busy"
-    ).toBe("true");
-    spec.resolve([]);
-    await waitFor(() =>
-      expect(busy(), "the tree of a view whose one read not answered is refused reads busy").toBe(
-        "false"
-      )
-    );
+    ).toHaveAttribute("aria-busy", "true");
+    view.redraw(root, failed([], "plan"));
+    await settled();
+    expect(
+      tree,
+      "the tree of a view whose one read not answered is refused reads busy"
+    ).toHaveAttribute("aria-busy", "false");
+    // jest-dom: the failed lines are read as the list of the reads they name, in their order.
     expect(lines(), "the refused plan read's line leaves once the spec's blocks answer").toEqual([
       "plan",
     ]);
   } finally {
     view.unmount();
-    blocks.mockRestore();
-    names.mockRestore();
   }
 });
 
@@ -1904,18 +2022,17 @@ test("the written order reads the cached blocks and sends no blocks read of its 
   setViewport(1440);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   const read = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  const view = renderBody(issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2")]), {
-    client,
-    written: ["t1", "t2", "t3"],
-  });
+  const root = issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2")]);
+  // The plan's blocks as the tree read holds them, which the slot hands the body again when the
+  // tree's read changes them.
+  const written = ["t1", "t2", "t3"];
+  const view = renderBody(root, { client, written });
   try {
     expect(read, "the body sends a read of the plan's blocks of its own").not.toHaveBeenCalled();
     expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
     await act(async () => {
-      client.setQueryData(
-        ["artifact", PLAN_ARTIFACT, "blocks"],
-        ["t3", "t1", "t2"].map((id) => ({ id }))
-      );
+      written.splice(0, written.length, "t3", "t1", "t2");
+      view.redraw(root, ANSWERED);
       const { promise, resolve } = Promise.withResolvers<void>();
       setTimeout(resolve, 0);
       await promise;

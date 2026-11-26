@@ -44,12 +44,10 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
-  branchMoreRows,
   expectActivePreset,
   focusedNodeId,
   focusInside,
   onScreen,
-  openEveryDeeperBranch,
   pickPreset,
 } from "./issue-page-i";
 import {
@@ -93,11 +91,12 @@ import { asUser } from "./users";
  * the verification document, named by its `-g` string: rows (1) to (4) are
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
  * its Spec view half. Row (10) is R12's: the conversation's current point, which the outline
- * marks on one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that
- * the reader causes, beside the row of `issue-page-i.e2e.ts` for the other half. A reading that a
- * check owes on a part not yet under this part's head is a row of its own beside its check's
- * rows, skipped with an annotation naming that part and tagged `@owed`: four of c-replies, one of
- * c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
+ * marks on one row (`r-current-point` of the spec). Row (11) is R13's c-outline-focus under a key
+ * of the reader's, beside the row of `issue-page-i.e2e.ts` for a read the reader did nothing
+ * toward. A reading that a check owes on a part not yet under this part's head is a row of its
+ * own beside its check's rows, skipped with an annotation naming that part and tagged `@owed`:
+ * four of c-replies, one of c-box, one of c-mark, two of c-statement-reply, (9) among them, and
+ * one of the current point.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
@@ -372,14 +371,20 @@ function owedRing(page: Page, ring: RingClass): Promise<Ring> {
   }, ring);
 }
 
+/** The rows that each draw the next page of a node's children, after its first 50 (R15,
+ *  `TreeRows.tsx`'s `PageControl`). */
+function childPages(page: Page): Locator {
+  return issuePage(page).locator("[data-tree-page]");
+}
+
 // c-replies (1): a reply is drawn
 // under the entry it answers, at any depth, a resolved question's reply included; every node
 // that takes a reply draws the control; a reply from the box lands under its target; and a
 // comment with no target is drawn at the outline's top level, where the issue's own nodes are.
-// On a phone a branch below the first level is one line counting its nodes, which opens them in
-// place.
-// SLOW(>=2s): a thread four levels deep unfolded press by press, three writes from the box each
-// read back from the server and the outline, and a second load at the phone's width.
+// On a phone the outline draws the same rows, the thread's head with what it holds under it
+// (R11); folded by its control, the head counts the nodes it holds, which unfolding draws again.
+// SLOW(>=2s): a thread four levels deep read row by row, three writes from the box each read back
+// from the server and the outline, and a second load at the phone's width.
 test("a reply is drawn under the entry it answers, and every node takes a reply @phone", async ({
   browser,
 }) => {
@@ -398,21 +403,8 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    // From 1024 px up the outline draws three levels and a branch deeper than them as one line
-    // saying how many nodes it holds, which opens them in place: the reply that answers `second`
-    // is the fourth level of the tree. The thread's folds are opened by their fold controls
-    // alone, since G's `unfoldEveryBranch` also presses that line.
-    const folds = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
-    // The outline's rows were drawn with their fold controls in one render (the wait above), and
-    // each press redraws before the next count, so a count of none means every fold is open.
-    for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
-      await folds.first().click();
-    }
-    const deeper = branchMoreRows(page);
-    await expect(deeper, "the fourth level is not folded to one line").not.toHaveCount(0);
-    await expect(deeper.first()).toContainText("1");
-    await expect(nodeRow(page, seeded.third)).toHaveCount(0);
-    await openEveryDeeperBranch(page);
+    // The outline draws every level unfolded (R11): the reply that answers `second`, the fourth
+    // level of the tree, is drawn as a row of its own under it, with no line standing for it.
     await expect(nodeRow(page, seeded.third)).not.toHaveCount(0);
     expect(await parentOfRow(page, seeded.third)).toBe(seeded.second);
 
@@ -447,7 +439,6 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
      *  every branch is open. */
     const drawnUnder = async (id: string, parent: string | null, what: string) => {
       await unfoldEveryBranch(page);
-      await openEveryDeeperBranch(page);
       await expect.poll(() => parentOfRow(page, id), { message: what }).toBe(parent);
     };
 
@@ -480,27 +471,32 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
       "the composer's comment is not drawn under the issue"
     );
 
-    // On a phone the outline draws one level below the node it is read from (R16): opening the
-    // thread's head draws what it holds as one line saying how many nodes that is, and pressing
-    // the line draws them in its place, under the head.
+    // On a phone the outline draws the same rows (R11): the thread's head opens unfolded, what it
+    // holds drawn under it; folded by its control, the head counts the nodes it holds, and
+    // unfolded again it draws them in their place, under the head.
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    await nodeRow(page, seeded.head)
-      .first()
-      .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-      .click();
-    const counted = branchMoreRows(page);
-    await expect(
-      counted,
-      "the branch below the first level is not one line counting its nodes on a phone"
-    ).toHaveCount(1);
-    await expect(counted).toContainText(/\d+/);
-    await expect(nodeRow(page, seeded.first)).toHaveCount(0);
-    await counted.getByRole("button").click();
     await expect(
       nodeRow(page, seeded.first),
-      "pressing the counted line draws none of the nodes it holds"
+      "the thread's head opens folded on a phone"
+    ).not.toHaveCount(0);
+    expect(await parentOfRow(page, seeded.first)).toBe(seeded.head);
+    const head = nodeRow(page, seeded.head).first();
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+    await expect(head, "the thread's head does not fold on a phone").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(
+      head,
+      "the folded head does not count the nodes it holds on a phone"
+    ).toHaveAttribute("data-folded-count", /^\d+$/);
+    await expect(nodeRow(page, seeded.first)).toHaveCount(0);
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+    await expect(
+      nodeRow(page, seeded.first),
+      "unfolding the head draws none of the nodes it holds"
     ).not.toHaveCount(0);
     expect(await parentOfRow(page, seeded.first)).toBe(seeded.head);
   });
@@ -528,9 +524,9 @@ test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => 
     expect(reply, "Dispatch did not store the reply with the question's ask_id").toMatchObject({
       ask_id: seeded.resolvedAsk,
     });
-    // A resolved question is no path to anything open, so its branch arrives folded (R1).
+    // Every branch opens unfolded (R11), and the row reads the reply's branch with every fold
+    // open, as G's rows read a branch.
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
     await expect.poll(() => parentOfRow(page, reply.id)).toBe(seeded.resolvedAsk);
     await expect(nodeRow(page, reply.id).first()).toContainText(
       "Still worth a word after it was resolved."
@@ -555,7 +551,6 @@ test("a reply typed at once after the mention the box writes for an agent is sto
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
-    await openEveryDeeperBranch(page);
     const row = await focusRow(page, agents.id);
     await rowAct(row, "reply").click();
     const field = composerField(page).first();
@@ -588,10 +583,10 @@ test("a reply typed at once after the mention the box writes for an agent is sto
 // drawn at once, its branch unfolded, on screen clear of the box and with the focus on it,
 // whether it is a reply under a thread the reader folded with its head's own fold control, a
 // reply under an answered question, or a new comment or question on the issue, which both land
-// at the outline's end. The page folds nothing itself, but the outline it draws now still opens
-// the thread folded, so the row first unfolds it and then folds it with its head's control.
-// SLOW(>=2s): the thread unfolded and folded again, and four writes from the box, each waited on
-// until the outline draws and focuses it.
+// at the outline's end. The page folds nothing itself and opens the thread unfolded (R11), so the
+// row folds it with its head's control.
+// SLOW(>=2s): the thread folded with its head's control, and four writes from the box, each
+// waited on until the outline draws and focuses it.
 test("what the reader sends from the box is drawn, in view and focused, wherever it lands", async ({
   browser,
 }) => {
@@ -616,12 +611,11 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
     };
 
     // A reply under a thread the reader folded with its head's own fold control: `r`, the words,
-    // Enter. The outline opens the thread folded, so its head unfolds it first.
+    // Enter. The outline opens the thread unfolded, its reply drawn under its head.
     const head = nodeRow(page, seeded.head).first();
-    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
     await expect(
       nodeRow(page, seeded.first),
-      "the thread's head draws no reply once its fold control unfolds it"
+      "the thread's head opens with no reply drawn under it"
     ).not.toHaveCount(0);
     await head.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
     await expect(
@@ -685,7 +679,7 @@ test("a send with the keyboard leaves the focus on the reader's row of the outli
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    // The answered question is the outline's second row: the thread's head is its first.
+    // The answered question follows the thread, whose head is the outline's first row.
     const words = "A reply sent with the keys alone.";
     await sendWithKeys(page, seeded.answeredAsk, words);
     const reply = (await commentWithBody(seeded.key, undefined, words)).id;
@@ -725,7 +719,7 @@ test.skip("what the reader sends from the box past the first 50 rows is drawn, i
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect(
-      branchMoreRows(page),
+      childPages(page),
       "an outline of more than 50 top-level rows draws no control for the rest"
     ).toHaveCount(1);
     const words = "A new comment past the first fifty rows.";
@@ -1047,7 +1041,7 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
           rest?.width ?? 0,
           `the field at rest is ${rest?.width.toFixed(0)} px wide ${at}`
         ).toBeGreaterThanOrEqual(240);
-        // The box's placeholders in their phone words: on the issue, under a row, beside a
+        // The box's placeholders in their phone words: on the issue, under a row, on a
         // statement, and over the reader's own comment.
         for (const words of [
           CONTROL_LABELS.issue_placeholder_phone,
@@ -1595,7 +1589,7 @@ test.skip("the end of the outline on screen for a second marks the issue read, a
     await gotoIssue(page, `/issues/${key}`);
     await expectIssuePageDrawn(page);
     await expect(composerField(page)).toBeVisible();
-    const more = branchMoreRows(page);
+    const more = childPages(page);
     await expect(
       more,
       "an outline of more than 50 top-level rows ends in no control that shows more rows"
@@ -1673,8 +1667,8 @@ function statementCases(seeded: StatementsSeed): {
  * spec to the statement's block, or a block inside it, with that quote, as `blocks`, the spec's
  * blocks, which the caller reads once, since no comment changes them; the focus is back on the
  * statement's row; and, once the page's read of the issue's comments holds the comment, no row of
- * it is drawn under the statement, since the margin beside a statement draws a comment on its
- * text.
+ * it is drawn under the statement. The outline draws it as a row under the issue, at its end, and
+ * no margin beside the statement draws it yet; neither is checked here.
  */
 async function commentOnStatement(
   page: Page,
@@ -1772,7 +1766,7 @@ async function commentOnStatement(
 // statement's words - not its first line, not the issue it cites, no address - since the
 // statement stands whole in its own row; the placeholder is the statement's own. What is sent is
 // a comment on the statement's text, anchored in the spec to its block by its whole words and no
-// occurrence, drawn in no row under it, the margin beside it being the comment's place; the focus
+// occurrence, drawn in no row under it but under the issue at the outline's end; the focus
 // is back on the statement's row, and the box then writes on the issue again. A statement of two
 // paragraphs is anchored to the statement itself, and one whose words the spec holds twice is
 // refused, in the page's words and with no Retry, the draft and the target kept. The row after
@@ -2010,7 +2004,7 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
 // carries a lighter ring; a new act takes the mark with it - an answer a second login writes to
 // the open question after a comment of the reader's, then another comment; and no filter draws
 // the mark: the Spec filter, opened at the same point, marks no row.
-// SLOW(>=2s): a seeded thread and three questions, the thread opened press by press twice, two
+// SLOW(>=2s): a seeded thread and three questions, the thread's head folded and unfolded, two
 // replies aimed and ended, two comments written from the box and an answer through the API, each
 // waited on until the outline marks it, and the Spec filter opened.
 test("the outline marks the current point of the conversation on one row, and the mark follows the box and each new act @phone", async ({
@@ -2057,28 +2051,14 @@ test("the outline marks the current point of the conversation on one row, and th
       "once Escape ended the reply to the thread's head"
     );
 
-    /** Opens the thread's folds by their fold controls and the line its fourth level is folded
-     *  to at this width, as the first row of this file does, so `third`'s row is drawn. */
-    const openThread = async (): Promise<void> => {
-      const folds = nodeRows(page).getByRole("button", {
-        exact: true,
-        name: CONTROL_LABELS.unfold,
-      });
-      // Each press redraws before the next count, so a count of none means every fold is open.
-      for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
-        await folds.first().click();
-      }
-      await openEveryDeeperBranch(page);
-      await expect(
-        nodeRow(page, seeded.third),
-        "the thread's fourth level is not drawn once its branches are open"
-      ).not.toHaveCount(0);
-    };
-
     // The folded path: with the box replying to the fourth level, folding the thread's head folds
     // the point's own row away. No row is then the current location, and the head, the one row
-    // of its path still drawn, carries the path's lighter ring, outside its folded halo.
-    await openThread();
+    // of its path still drawn, carries the path's lighter ring, outside its folded halo. The
+    // outline draws every level unfolded (R11), so the fourth level's row is drawn from the load.
+    await expect(
+      nodeRow(page, seeded.third),
+      "the thread's fourth level is not drawn with every level unfolded"
+    ).not.toHaveCount(0);
     await focusRow(page, seeded.third);
     await page.keyboard.press("r");
     await expect(
@@ -2119,15 +2099,14 @@ test("the outline marks the current point of the conversation on one row, and th
       .toEqual(pathRing);
     // Unfolded again, the point's own row is drawn and carries the mark once more.
     await head.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
-    await openThread();
     await expectPointOn(
       page,
       seeded.third,
       "the fourth level's row",
       "once the thread's head is unfolded again"
     );
-    // A press on the deeper line's control, where that line came back, takes the focus from the
-    // box, as a press on a fold control does not, so the caret is put back in the box for Escape.
+    // The caret is put back in the box, wherever the presses above left the focus, so Escape is
+    // the box's.
     await composerField(page).focus();
     await page.keyboard.press("Escape");
     await expect(
@@ -2220,7 +2199,7 @@ test.skip("the current point stays on the newest act past a result recorded afte
   await phase(browser, seedPastFifty, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    const more = branchMoreRows(page);
+    const more = childPages(page);
     await expect(
       more,
       "an outline of more than 50 top-level rows draws no control for the rest"
@@ -2240,31 +2219,24 @@ test.skip("the current point stays on the newest act past a result recorded afte
   });
 });
 
-// (11) A row that holds the focus and leaves the tree hands the focus on only where the reader
-// caused it to leave, since the page would otherwise choose the reader's next place for them.
-// This row is the half the reader causes: a key of the reader's that takes the focused row out of
-// the view hands the focus to the nearest row still drawn, as a key's move gives it - the row now
-// at the dropped row's place among the rows the tree draws, or the last row where the tree now
-// ends before that place. The key is the cycle key `z`, pressed in its last state, which draws
-// every branch, to go back to its first, which draws the reader's own folds: the thread's fourth
-// level, which holds the focus, is folded away under the thread. The other half, a read the
-// reader did nothing toward, is the row of `issue-page-i.e2e.ts` that leaves the focus on the
-// page's body.
-// SLOW(>=2s): a seeded thread and three questions, the tree cycled to every branch and back.
-test("a key of the reader's that drops the focused row from the view hands the focus to the nearest row", async ({
+// (11) The focused row under a key of the reader's: the cycle key `z` unfolds only what the
+// reader folded (R11), so it takes no row out of the view, and the row that holds the focus keeps
+// it. Every branch arrives unfolded, the thread's fourth level among them, and `z` pressed with
+// that level's row holding the focus leaves the rows the tree draws as they were, that row among
+// them, and the focus on it. A row that does leave the tree hands the focus on only where the
+// reader caused it to leave; a read the reader did nothing toward is the row of
+// `issue-page-i.e2e.ts` that leaves the focus on the page's body.
+// SLOW(>=2s): a seeded thread and three questions, the tree read before and after the key.
+test("the cycle key keeps the focused row, the thread's fourth level, drawn and the focus on it", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    await focusRow(page, seeded.head);
-    // The cycle's last state draws every branch, the thread's fourth level among them.
-    await page.keyboard.press("z");
-    await page.keyboard.press("z");
     await expect(
       nodeRow(page, seeded.third),
-      "the cycle's last state does not draw the thread's fourth level"
+      "the outline does not draw the thread's fourth level unfolded at load"
     ).not.toHaveCount(0);
     await focusRow(page, seeded.third);
     /** The keys of the rows the tree draws, in order, and the key of the one that holds the
@@ -2284,26 +2256,15 @@ test("a key of the reader's that drops the focused row from the view hands the f
       });
     // One read is enough: focusRow above waited until the fourth level's row held the focus.
     const before = await drawn();
-    const place = before.focused === null ? -1 : before.keys.indexOf(before.focused);
-    expect(place, "the thread's fourth level does not hold the focus").not.toBe(-1);
+    expect(before.focused, "the thread's fourth level does not hold the focus").not.toBeNull();
 
     await page.keyboard.press("z");
-    await expect(
-      nodeRow(page, seeded.third),
-      "the cycle's first state still draws the thread's fourth level"
-    ).toHaveCount(0);
-    await expect
-      .poll(
-        async () => {
-          const after = await drawn();
-          const nearest = after.keys[Math.min(place, after.keys.length - 1)];
-          return after.focused !== null && after.focused === nearest;
-        },
-        {
-          message:
-            "the key that dropped the focused row left the focus on no row of the tree, or not on the row now at its place or the last row",
-        }
-      )
-      .toBe(true);
+    // The key's handler, the render it asks for and any focus handed on after that render are
+    // done by the end of these frames.
+    await nextFrames(page);
+    expect(
+      await drawn(),
+      "the cycle key took the focused row out of the view, drew other rows, or moved the focus off it"
+    ).toEqual(before);
   });
 });

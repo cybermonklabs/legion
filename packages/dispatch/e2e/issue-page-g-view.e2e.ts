@@ -4,25 +4,22 @@ import { createComment, createIssue, createProject } from "./api";
 import {
   DESKTOP,
   longWords,
-  nodeRow,
   nodeRows,
   openIssue,
   PHONE,
   phase,
   plannerActor,
-  rowMore,
   unfoldEveryBranch,
 } from "./issue-page-g";
 import { expect, test } from "./test";
 
 /**
- * Part G of the new issue page, decision 261: no cut changes a row the reader can see. A slice
- * cuts only rows wholly outside the view, and a row in view keeps its length until it lies wholly
- * outside it. The row of decision 260 that a slice holds is not enough for this: when the held
- * row is taller than the view, its top stays and its cut takes away the words the reader was
- * reading, and when it stands wholly in view, its cut moves every row under it. So this row reads
- * what the reader sees - the words under the middle of the view, and the top of the element that
- * holds them - for 60 frames after each jump, and allows no change at all.
+ * Part G of the new issue page, decision 261 as R11 leaves it: nothing changes a row the reader
+ * can see. Every row is drawn whole, so no row changes its length once drawn, and a jump of the
+ * view lands on rows that hold still: the words the reader was reading stay where they are, when
+ * the row holding them is taller than the view and when it stands wholly in view. So this row
+ * reads what the reader sees - the words under the middle of the view, and the top of the element
+ * that holds them - for 60 frames after each jump, and allows no change at all.
  */
 
 const PROJECT = "VIEW";
@@ -47,9 +44,9 @@ interface TallRowsSeed {
 
 /**
  * One issue whose conversation is the reader's comment and, under it, `ROWS` replies of the
- * planner's: most of 160 words, which a row cuts at six lines, and three of 1,500 to 2,000 words,
- * which are taller than the view at both widths when drawn whole. Every word is told apart by its
- * row and its place, so the words under one point of the view name where the reader is.
+ * planner's: most of 160 words, and three of 1,500 to 2,000 words, which are taller than the view
+ * at both widths. Every word is told apart by its row and its place, so the words under one point
+ * of the view name where the reader is.
  */
 async function seedTallRows(): Promise<TallRowsSeed> {
   await createProject({ key: PROJECT, name: "View" });
@@ -71,8 +68,8 @@ async function seedTallRows(): Promise<TallRowsSeed> {
   return { key, rows, tallest };
 }
 
-/** Opens issue `key` at `size` on a fresh load, waits until it draws every row the seed wrote,
- *  and until the rows drawn at load are cut, so no cut of theirs lands during a reading. */
+/** Opens issue `key` at `size` on a fresh load, and waits until it draws every row the seed
+ *  wrote. */
 async function openTallRows(
   page: Page,
   seeded: TallRowsSeed,
@@ -90,16 +87,12 @@ async function openTallRows(
       { message: `${where} the page never drew every row` }
     )
     .toBeGreaterThan(ROWS);
-  await expect(
-    rowMore(nodeRow(page, seeded.rows[0] ?? "")),
-    `${where} the first row was not cut`
-  ).toHaveCount(1);
 }
 
 /** What the reader saw at the middle of the view after a jump, and for 60 frames after it. */
 interface ViewRead {
-  /** How many rows stood in view, uncut, in the task of the jump: rows no batch had measured. */
-  readonly uncutInView: number;
+  /** How many rows stood in view in the task of the jump. */
+  readonly inView: number;
   /** The words at the point read at the middle of the view (`jumpAndWatch` says which) in the
    *  task of the jump, and after 60 frames. */
   readonly before: string | null;
@@ -110,10 +103,9 @@ interface ViewRead {
 
 /** Jumps the page, as a fast drag of the scrollbar does, either so the middle of row `row`
  *  stands at the middle of the view or to `share` of the page's height, and reads in the same
- *  task, then for 60 frames, the words the reader reads at the middle of the view. Where the
- *  middle falls depends on the page's height, which the cuts of earlier batches still change, so
- *  it can fall on a row's byline or between two rows: the point read is the middle of the line
- *  of words that spans the view's middle, or of the line in view nearest it. */
+ *  task, then for 60 frames, the words the reader reads at the middle of the view. The middle can
+ *  fall on a row's byline or between two rows, so the point read is the middle of the line of
+ *  words that spans the view's middle, or of the line in view nearest it. */
 function jumpAndWatch(page: Page, to: { row: string } | { share: number }): Promise<ViewRead> {
   return page.evaluate(async (target): Promise<ViewRead> => {
     if ("row" in target) {
@@ -139,7 +131,7 @@ function jumpAndWatch(page: Page, to: { row: string } | { share: number }): Prom
       .map((element) => ({ box: element.getBoundingClientRect(), element }))
       .sort((a, b) => distance(a.box) - distance(b.box))[0];
     // Its line that spans the middle, else its line nearest it, among the lines drawn inside both
-    // the box, which clips a cut row's words, and the view.
+    // the box and the view.
     let line: DOMRect | undefined;
     if (words !== undefined) {
       const walker = document.createTreeWalker(words.element, NodeFilter.SHOW_TEXT);
@@ -175,14 +167,7 @@ function jumpAndWatch(page: Page, to: { row: string } | { share: number }): Prom
     };
     const held = document.elementFromPoint(x, y);
     const top = held?.getBoundingClientRect().top ?? 0;
-    const read = {
-      before: wordsAtMiddle(),
-      uncutInView: inView.filter(
-        (row) =>
-          row.querySelector("[data-node-words]") != null &&
-          row.querySelector("[data-node-more]") == null
-      ).length,
-    };
+    const read = { before: wordsAtMiddle(), inView: inView.length };
     let moved = 0;
     for (let at = 0; at < 60; at += 1) {
       const next = Promise.withResolvers<void>();
@@ -195,14 +180,11 @@ function jumpAndWatch(page: Page, to: { row: string } | { share: number }): Prom
   }, to);
 }
 
-/** Fails unless the jump landed on rows no batch measured, with words under the middle of the
- *  view, and records a failure, without stopping the row, when those words or the element that
- *  holds them moved, so one run reports every jump. */
+/** Fails unless the jump landed on rows in view, with words under the middle of the view, and
+ *  records a failure, without stopping the row, when those words or the element that holds them
+ *  moved, so one run reports every jump. */
 function expectViewHeld(read: ViewRead, where: string): void {
-  expect(
-    read.uncutInView,
-    `${where} the jump landed on no row a batch had not measured`
-  ).toBeGreaterThan(0);
+  expect(read.inView, `${where} the jump landed on no row in view`).toBeGreaterThan(0);
   expect(read.before, `${where} no words stand at the middle of the view`).not.toBeNull();
   expect
     .soft(
@@ -223,8 +205,8 @@ function expectViewHeld(read: ViewRead, where: string): void {
 // for the reason the decision-252 row gives: the phone project lays the page out at three device
 // pixels to the CSS pixel.
 // SLOW(>=2s): forty-five long rows seeded, three of them taller than the view, loaded six times at
-// two widths, each load waited out until its rows are drawn and the rows at load are cut.
-test("no cut moves the words at the middle of the view after a long jump or a landing inside the tallest row @phone", async ({
+// two widths, each load waited out until its rows are drawn.
+test("the words at the middle of the view hold still after a long jump or a landing inside the tallest row @phone", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -245,26 +227,7 @@ test("no cut moves the words at the middle of the view after a long jump or a la
       );
 
       await openTallRows(page, seeded, size, at);
-      // At the foot the last row is in view, which decision 261 keeps whole, so the foot's batch
-      // is waited out on the row lying wholly above the view, which it cuts.
-      const above = await page.evaluate((rows) => {
-        window.scrollTo(0, document.documentElement.scrollHeight);
-        return (
-          [...rows]
-            .reverse()
-            .find(
-              (id) =>
-                (document
-                  .querySelector(`[data-node-row][data-node-id="${id}"]`)
-                  ?.getBoundingClientRect().bottom ?? 0) < 0
-            ) ?? null
-        );
-      }, seeded.rows);
-      expect(above, `${at} no row lies wholly above the view at the foot`).not.toBeNull();
-      await expect(
-        rowMore(nodeRow(page, above ?? "")),
-        `${at} the row wholly above the view at the foot was not cut`
-      ).toHaveCount(1);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       expectViewHeld(
         await jumpAndWatch(page, { share: 0.3 }),
         `${at}, a jump from the foot up to a third of the way down:`

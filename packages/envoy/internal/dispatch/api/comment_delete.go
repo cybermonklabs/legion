@@ -9,7 +9,8 @@
 // of the reply but its own delete, written before this one - keep the preview they froze. The
 // delete's own comment.deleted, of a comment that is itself a reply, carries no text of the post
 // it answers (commentCorrectionPayload). A pending suggestion's proof is in the document itself,
-// so the same transaction rejects it before the clear, and where that reject takes an insert's
+// so the same transaction rejects it before the clear, except in a retired document, which keeps
+// it in its frozen text (docs.ErrRetiredDocumentKeepsText), and where that reject takes an insert's
 // words out of the document, writes the document's next version as its settlement would
 // (docs.SettleVersion), so every store built from the latest version is written without the words
 // before it commits. The document's history keeps them, as it keeps the words of every reject:
@@ -25,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -79,7 +81,11 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// owner lock this transaction holds: a closed issue still takes the delete of its comment,
 	// so its document takes this reject too, where the accept and the reject routes are refused.
 	// An orphaned mark is already out of the document: the delete records that on the anchor and
-	// stands, where an accept and a reject answer 409.
+	// stands, where an accept and a reject answer 409. A retired document takes no new text, so
+	// its suggestion can never apply there and stays in its frozen text
+	// (docs.ErrRetiredDocumentKeepsText): the delete rejects nothing and writes no version, clears
+	// the suggestion off the row alone, and decides the quote by the stored kind as for an
+	// orphaned mark, recording no orphaning on the anchor, whose mark stays in the frozen text.
 	//
 	// An insert suggestion's mark wraps the text it inserted, so its anchor's quote is that text
 	// (resolveAnchor), the comment's own words; a replace's and a delete's wrap document text,
@@ -127,14 +133,18 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		}
 		var kind string
 		markGone := comment.Suggestion.Accepted != nil
+		// retired is that the anchor's document is retired, so the reject read no kind.
+		retired := false
 		if !markGone {
 			kind, err = s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
-			if err != nil {
+			if errors.Is(err, docs.ErrRetiredDocumentKeepsText) {
+				retired = true
+			} else if err != nil {
 				if !errors.Is(err, docs.ErrAnchorOrphaned) {
 					s.writeHandlerError(w, err)
 					return
 				}
-				if err := recordOrphanedCommentAnchor(ledger, &comment); err != nil {
+				if err := orphanCommentAnchor(r.Context(), tx, ledger, &comment, actor); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
@@ -143,7 +153,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		}
 		rejectedInsert = kind == "insert"
 		quoteIsBody = rejectedInsert || storedKind == "insert" ||
-			(markGone && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
+			((markGone || retired) && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions
@@ -212,6 +222,25 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		if written.Wrote {
 			settled = &written
 		}
+	}
+	// A delete made for a run (store.WithRun, which withinGoingRun puts on a request naming its
+	// run) names the comment as changed by that run (spec requirement r-interaction), as an edit of
+	// its words does. The clear writes the comment's row alone and no node (clearDeletedPostBody),
+	// so the delete writes the comment's node for the run (planCommentChangedForRun), queued after
+	// the row's clear, its mark and every document write the reject and the settle above made, and
+	// what it states right after comment.deleted (graphstore.QueueCaused over
+	// graphstore.LatestEvent, below).
+	commentNode, err := planCommentChangedForRun(r.Context(), tx, comment, deletedAt, actor)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, commentNode)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The answer is read here, in the read phase, with the attempts as they stand: the settle
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
@@ -285,10 +314,22 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
+	// The stamp queueLoggedEvent queues with the event appends no event, so the id sequence still
+	// names comment.deleted here, before the settled version's event below. The comment's own head
+	// rows hold its body and its delete mark (graphstore.HeadRowsSQL), which the clear moved, so they
+	// are written again, last of the comment's writes, whether or not a node write was planned.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, append(graphstore.HeldHeads(commentNode), graphstore.NodeKey{Kind: graphstore.KindComment, ID: comment.ID}))
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The settled version's artifact.version follows the delete's own event, as the settlement's
 	// would have, and carries no diff, as the settlement's carries none.
 	if settled != nil {
-		versionEvent, err := s.commitArtifactVersionEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, *settled, nil)
+		versionEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, *settled, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

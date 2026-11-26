@@ -5,15 +5,15 @@ import (
 	"testing"
 )
 
-// theDecisionBlock is a decision block as a writer writes one into a body: a question and its
+// theDecisionBlock is an ask block as a writer writes one into a body: a question and its
 // options inside an `ask` directive, which the reader draws a decision card for and nobody can
 // answer where it stands.
 const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
 	"Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::"
 
-// A caller outside this module refuses its own caller differently for a decision block than for
+// A caller outside this module refuses its own caller differently for an ask block than for
 // a bound — the text is not too long, and shortening it changes nothing — so it must read the
-// two apart. IsDecisionBlock answers the decision block alone: not a block over the unit bound,
+// two apart. IsDecisionBlock answers the ask block alone: not a block over the unit bound,
 // not a body of more blocks than the count bound, not a body Dispatch takes, and not the nil
 // Check answers that one with.
 func TestIsDecisionBlockAnswersTheDecisionBlockRefusalAlone(t *testing.T) {
@@ -22,7 +22,7 @@ func TestIsDecisionBlockAnswersTheDecisionBlockRefusalAlone(t *testing.T) {
 		body              string
 		refused, decision bool
 	}{
-		{"a body holding a decision block", "Lead text.\n\n" + theDecisionBlock + "\n", true, true},
+		{"a body holding an ask block", "Lead text.\n\n" + theDecisionBlock + "\n", true, true},
 		{"a body whose one block passes the unit bound", strings.Repeat("x", BlockUnits+1), true, false},
 		{"a body of one block more than the count bound", strings.TrimSuffix(strings.Repeat("y\n\n", ItemBlocks+1), "\n\n"), true, false},
 		{"a body Dispatch takes", "Lead text.\n\n- REST: the platform's own\n- gRPC: streaming\n", false, false},
@@ -44,15 +44,15 @@ func TestIsDecisionBlockAnswersTheDecisionBlockRefusalAlone(t *testing.T) {
 
 // The refusal the reader reads is the server's own, worded by itemblocks and nowhere else, over
 // the field name every Dispatch body route passes. A caller quotes it whole, so it is pinned
-// whole here: the block it names is the body's second, the one the decision block stands at.
+// whole here: the block it names is the body's second, the one the ask block stands at.
 func TestCheckAnswersTheServersOwnDecisionBlockRefusal(t *testing.T) {
 	err := Check("Lead text.\n\n" + theDecisionBlock + "\n")
 	if err == nil {
-		t.Fatal("Check = nil, want the decision block refused")
+		t.Fatal("Check = nil, want the ask block refused")
 	}
-	want := "body block 2 (ask) holds a decision block, which nobody can answer where it stands: " +
-		"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+	want := "body block 2 (ask) holds an ask block, which nobody can answer where it stands: " +
+		"ask the question in the issue's own document, as an ask block there, or open an ask with " +
+		"`dispatch ask`; to show an ask block as an example, put it in a fenced code block"
 	if err.Error() != want {
 		t.Fatalf("Check = %q, want %q", err, want)
 	}

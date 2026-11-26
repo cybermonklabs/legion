@@ -25,7 +25,7 @@ func TestOffsetBlocksCarriesTheAttributesTheRenderFound(t *testing.T) {
 		{ID: "p1", Type: "paragraph", From: 10, To: 20},
 	}
 
-	blocks := offsetBlocks(offsets)
+	blocks := offsetBlocks(offsets, nil)
 
 	if len(blocks) != len(offsets) {
 		t.Fatalf("offsetBlocks returned %d blocks, want %d", len(blocks), len(offsets))

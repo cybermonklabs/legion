@@ -406,11 +406,15 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 }
 
 // An upload of the text a person approved carries his approval to the version it writes
-// (docs.CarryRestoredApproval). Everything that carry is decided on - the document's newest
+// (docs.CarryUploadedApproval). Everything that carry is decided on - the document's newest
 // review, the approved version's text, its decision blocks' rows and the open approval request -
 // is read in the route's read phase, and what it writes - the request's answer, when one is open,
-// and the review - is queued with the route's own writes, so the window is that one batch and the
-// commit ending it.
+// and the review - is queued with the route's own writes. The restore checks the record before its
+// COMMIT (R14): its window is root R29's second exception the owner approved, 18 statements, the
+// batch up to the version's insert, the savepoint the write phase takes before it, the batch from
+// it on with the version's version_renders row pinned to the approval's digest, the read of the
+// spec query's record at one cut, the update giving the pinned row its cut, the savepoint's
+// release, the settlement credit's batch and the COMMIT (restoreWindowStatements).
 func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f := newXidFixture(t, testServerOptions{}, "")
@@ -426,15 +430,48 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+1)
 	// The restore names the token of the version it replaces, read before the measured request.
 	base := uploadBase(t, f.handler, f.specID)
-	f.measureBatched(t, http.StatusCreated, func(h http.Handler) *httptest.ResponseRecorder {
+	report := f.measure(t, http.StatusCreated, storetest.XidWindowOf(18,
+		"the write phase's batch up to the restored version's insert, the savepoint the write phase takes before that insert, "+
+			"the batch from the insert on - the version's version_renders row pinned to the approval's digest, the carried review and its artifact.approved before the version's artifact.version - "+
+			"the read of the spec query's record at one cut once the batch has run - the cut, the reads of the issue's conversation, the read of the items' rows, the one read of the tree, the read of the issues above the issue and that of the issue a view shows - "+
+			"the update giving the pinned version_renders row the cut (R14, R15), the release of the savepoint where the record is the approval's digest, "+
+			"the batch of the settlement credit's statements, and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
 			"name": "spec.md", "content": approved, "actor": sessionActor(), "precondition": base,
 		})
 	})
+	requireRestoreWindowStatements(t, report)
 	// The measured request is the restore only while it carries the approval: a window measured
 	// over a route that carried nothing would report a window this write path never ran in.
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+2)
 	requireReviewCarriedWith(t, f.handler, f.specID, approval.Version+2, approval.Version, restoreSentence(approval.Version), nil)
+}
+
+// restoreWindowStatements are the statements that tell the restore's window from every other
+// write's (R14): the savepoint the write phase takes before the restored version's insert, the
+// update giving the version_renders row pinned to the approval's digest its cut once the record
+// has been read, and the savepoint's release. The pin itself goes in the batch from the insert on,
+// which the rig shows by its first statement.
+var restoreWindowStatements = []string{"savepoint ", "update version_renders set at", "release savepoint"}
+
+// requireRestoreWindowStatements fails t unless one window of report holds each of
+// restoreWindowStatements, in that order: a restore that checked no record before its COMMIT ran
+// outside the window the owner approved for it.
+func requireRestoreWindowStatements(t *testing.T, report *storetest.XidReport) {
+	t.Helper()
+	for _, window := range report.Windows {
+		next := 0
+		for _, statement := range window.Statements {
+			if next < len(restoreWindowStatements) && strings.Contains(strings.ToLower(strings.TrimSpace(statement.SQL)), restoreWindowStatements[next]) {
+				next++
+			}
+		}
+		if next == len(restoreWindowStatements) {
+			t.Logf("the restore's window holds %d statements: %s", len(window.Statements), window.Summary())
+			return
+		}
+	}
+	t.Errorf("no window of the restore holds, in order, %q: the restore did not pin the version's row and check its record before its COMMIT", restoreWindowStatements)
 }
 
 // A named version of a document changed since its last version captures and renders the live
@@ -462,14 +499,14 @@ func TestXidWindowDocumentRebuild(t *testing.T) {
 	var broken *invalidLoadOnceStore
 	f := newXidFixture(t, testServerOptions{
 		persistence: func(database *store.Store) docs.VersionedStore {
-			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+			broken = newInvalidLoadOnceStore(database)
 			return broken
 		},
 	}, "")
 	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), f.specID); err != nil {
 		t.Fatalf("evict the spec: %v", err)
 	}
-	broken.failNextLoad(f.specID)
+	broken.failNextLoad(t, f.specID)
 	f.revise()
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/rebuild", map[string]any{"markdown": f.spec}, "alice")

@@ -403,13 +403,14 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five controls are named in the order the row draws them, and none is called Tree", () => {
+test("the view row's controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
     "Conversation",
     "Spec",
     "Verification",
     "Plan",
     "Decisions",
+    "Graph",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
@@ -429,6 +430,21 @@ test("the five controls are named in the order the row draws them, and none is c
       .flatMap(phrasesOf)
       .filter((phrase) => /requirement/iu.test(phrase)),
     "a declared phrase other than BLOCK_TYPE_NAMES.requirement says requirement"
+  ).toEqual([]);
+});
+
+// R22: the Spec view draws Statement, never Requirement (R7), so no word of the list is
+// the model's name for a statement. The list is lowercase, so its words cannot tell where a
+// word came from: they are read from every declaration but one entry, let through by name,
+// `BLOCK_TYPE_NAMES.requirement`, the tag of a requirement block in a document other than the
+// spec, which is no statement.
+test("no word of the list is requirement", () => {
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
+  expect(
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => /^requirements?$/iu.test(word))
   ).toEqual([]);
 });
 

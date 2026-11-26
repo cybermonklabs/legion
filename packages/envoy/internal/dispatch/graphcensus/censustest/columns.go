@@ -54,6 +54,17 @@ var ProjectedColumns = map[string]map[string]string{
 		// the backfill takes as the cause of every tuple it states for the comment
 		// (graphcensus's readCommentRows).
 		"issue_key": "the comment's tuples, as the event that is their cause",
+		// A comment's node anchor is its anchored_in tuple to the lens, finding, risk, constraint
+		// or result it names and, for a comment that answers nothing, its part_of to the same
+		// node, while the anchor is not orphaned (graphstore.CommentAnchoredInSQL, this issue's
+		// spec R31).
+		"node_anchor": "the comment's anchored_in and part_of tuples to the node its anchor quotes",
+		// Whether a comment answers something - a comment in answers or reply_to, an ask in
+		// ask_id - decides whether its anchor states a part_of beside its anchored_in
+		// (graphstore.CommentAnswersNothingSQL). The comment's insert is the one write of each.
+		"answers":  "the comment's part_of to the node its anchor quotes, which only a comment that answers nothing states",
+		"reply_to": "the comment's part_of to the node its anchor quotes, which only a comment that answers nothing states",
+		"ask_id":   "the comment's part_of to the node its anchor quotes, which only a comment that answers nothing states",
 	},
 	"document_blocks": {
 		"node_kind":    "the row's node",
@@ -75,6 +86,13 @@ var ProjectedColumns = map[string]map[string]string{
 		// backfill takes as the cause of the block's in_document, visibility and state tuples
 		// (graphcensus's readBlockRows).
 		"changed_version": "the block's in_document, visibility and state tuples, as the event that is their cause",
+		// A block's type is its node's supertag, and the rank, the placement and the size the
+		// pass states of the block are of a block of that type (refs' blockNode); the census's
+		// block, block_size and block_author kinds read it.
+		"type": "the block's node, as its supertag",
+		// A block's text_sha256 is the digest of the text the pass states as the block's text
+		// value tuple (refs' blockTexts); the census's block_text kind reads it.
+		"text_sha256": "the block's text value tuple",
 	},
 	"block_refs": {
 		"node_kind":    "the row's node",

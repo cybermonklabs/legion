@@ -72,8 +72,9 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 		}},
 		{"AcceptSuggestion", func() error { return service.AcceptSuggestion(unjoined, artifactID, "s1", "red", alice) }},
 		{"RejectSuggestion", func() error { return service.RejectSuggestion(unjoined, artifactID, "s1", alice) }},
-		{"SetBlockAttributes", func() error {
-			return service.SetBlockAttributes(unjoined, artifactID, "ask-1", map[string]any{"state": "answered", "answer": "Yes."}, alice)
+		{"KeepAskBlockInStep", func() error {
+			block, answer := "ask-1", model.AskAnswer{User: "alice", Selected: []string{}, At: time.Now().UTC()}
+			return service.KeepAskBlockInStep(unjoined, model.Ask{ID: "ask", State: "answered", Answer: &answer, BlockID: &block, BlockArtifactID: &artifactID}, alice)
 		}},
 		{"SetAskBlockText", func() error {
 			_, err := service.SetAskBlockText(unjoined, artifactID, "ask-1", AskBlockEdit{Question: new("Ship it now?")}, alice)
@@ -882,10 +883,12 @@ func TestReplaceTextAcceptsUnchangedEmptyDocument(t *testing.T) {
 // transaction's fork for the transaction's next write. That holds for an ask-state write naming
 // the state the block already holds and for any rewrite whose edit changes nothing. The write
 // that first resolved the block changed the document, and appended its update and marked the
-// settlement owed.
+// settlement owed. The ask-state writes are made while another build serves (serveTwoBuilds):
+// on a fleet of one build an issue's close writes no ask's state into a document at all.
 func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSettlementMark(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
+	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 	settleCurrentGeneration(t, service, artifactID)
@@ -909,8 +912,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			return err
 		}},
 		{name: "a rewrite whose edit changes nothing", answers: ygws.ErrNoChanges, write: func(ctx context.Context) error {
-			return service.applyLive(ctx, artifactID, closer, func(doc *crdt.Doc, _ pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
-				_, err := rewriteLive(doc, nil, func(*pmdoc.Node) bool { return false })
+			return service.applyLive(ctx, artifactID, closer, func(doc liveDoc, _ pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+				_, err := doc.rewrite(func(*pmdoc.Node) bool { return false })
 				return err
 			})
 		}},

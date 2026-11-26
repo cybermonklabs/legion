@@ -97,6 +97,57 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
+/** The issue page's tree read's key (`GET /api/v1/issues/{key}/tree`), each view of the tree
+ *  under it (`["issue-tree", key, view]`). It is not under `["issue", key]`, so a write that
+ *  refreshes the issue's key by prefix does not reach it; every event of the issue names it
+ *  (`event-refresh.ts`). */
+export function issueTreeKey(key: string): readonly ["issue-tree", string] {
+  return ["issue-tree", key];
+}
+
+/** The kinds Conversation's read names (`?kind=`, repeated, one each), in the one order every
+ *  load writes them in, so its key is the same in every load (`conversationTreeKey`): root R1's
+ *  kinds, each by the name the read's `kind` filter gives it - the asks, the comments, the
+ *  readings, the lenses with their findings and risks, the criteria, the requirements, the
+ *  checks, the decisions, the child issues (`issue`) and the blocks written in the conversation
+ *  (`prose`) - and the memo's callout (`callout`), which the three sentences draw and no row does.
+ *  None is `block`, the supertag every untyped block holds, which the filter takes no value of. */
+export const CONVERSATION_KINDS = [
+  "ask",
+  "comment",
+  "reading",
+  "lens",
+  "finding",
+  "risk",
+  "criterion",
+  "requirement",
+  "check",
+  "decision",
+  "issue",
+  "prose",
+  "callout",
+] as const;
+
+/** Conversation's read's key: the tree read with `kind` repeated for `CONVERSATION_KINDS`, under
+ *  the tree's key (`issueTreeKey`), so every event of the issue reaches it as it reaches the tree
+ *  read and each view (`event-refresh.ts`). The kinds it reads are its last member, in their one
+ *  order, so no view's name (`["issue-tree", key, view]`) is it. */
+export function conversationTreeKey(
+  key: string
+): readonly ["issue-tree", string, { readonly kind: typeof CONVERSATION_KINDS }] {
+  return [...issueTreeKey(key), { kind: CONVERSATION_KINDS }];
+}
+
+/** The filters that read a view of the tree, in this order. Decisions reads none: its view is
+ *  the decisions read (`issueDecisionsQuery`), which the load reads already. */
+export const TREE_FILTERS = ["spec", "verification", "plan"] as const;
+
+/** The views of the tree a filter reads (`?view=`), each under the tree's key
+ *  (`["issue-tree", key, view]`). Each is the query of the document of the same role, so the name
+ *  says which role's blocks a caller asks for as well (`blocksOfRole`). The type is the members
+ *  of `TREE_FILTERS`, so that list holds every filter. */
+export type TreeFilter = (typeof TREE_FILTERS)[number];
+
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,
@@ -413,11 +464,13 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
- *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
- *  leaves the closed issues out, as the project listing's own flag does. */
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, only
+ *  those whose own row names it where it asks for that (`own`), in the statuses it names, with
+ *  their move into backlog or icebox where it asks for that. `open` leaves the closed issues
+ *  out, as the project listing's own flag does. */
 export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
   advances: [listing.advances],
+  ...(listing.own ? { own: true } : {}),
   ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
   ...(listing.moved ? { moved: true } : {}),
   ...(open ? { open: true } : {}),
@@ -438,6 +491,7 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
       "issues",
       "advances",
       listing.advances,
+      ...(listing.own ? ["own"] : []),
       ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
       ...(listing.moved ? ["moved"] : []),
       ...(open ? ["open"] : []),

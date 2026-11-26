@@ -46,13 +46,12 @@ import (
 //     current blocks most links end at. The before side is main's statement for the same Query,
 //     held in graph_test.go letter for letter as b459fa923705 wrote it and bound with the
 //     arguments its comment names; the after side is the statement readEdgeRows sends at the
-//     head, recorded as it sent it, and it must bind the arguments the head binds for that same
-//     Query (timedEdgesRead.headArgs): the node's id, the acting credential of somebody who
-//     proves no author, and the same kinds. Both texts run on this release's schema, so one
-//     database holds both sides. Each is strict because the earlier builds Job that measured
-//     these pairs read the head at least 8 times main's own spread below main's lowest median
-//     there, the closest being the root message, 141.6 ms below 147.248 ms against a spread of
-//     17.6 ms.
+//     head, recorded as it sent it, and it must bind the node, the ids and the lists main's binds,
+//     in its own order and with the acting credential (headArgs). Both texts run on
+//     this release's schema, so one database holds both sides. Each is strict because the earlier
+//     builds Job that measured these pairs read the head at least 8 times main's own spread below
+//     main's lowest median there, the closest being the root message, 141.6 ms below 147.248 ms
+//     against a spread of 17.6 ms.
 //   - The same document's in read as refs.ReferencedBy sends it (WholeDocuments, Kinds mentions)
 //     is a bounded pair (PairWithin), built the same way. It is bounded because the head's 4.715
 //     ms there was 0.482 ms below main's lowest median, 5.197 ms, while two runs of main's own
@@ -181,8 +180,8 @@ func TestStatementTimings(t *testing.T) {
 		from artifacts a where a.id = $1::uuid`, subjects.AnchoredDocument)
 
 	part := []string{"part_of"}
-	// The acting credential the head's reads bind: somebody who proves no author, for whom no
-	// node of the seed is reserved.
+	// The acting credential every head statement binds: somebody who proves no author, as the
+	// pairs read the seed, none of whose nodes is reserved for one.
 	seen := VisibilityArg(model.Actor{})
 	// The root message's and the anchored document's in reads as the route reads them: the edges
 	// pairs measure their statements, and their loaders' statements bind the loaders' lists below.
@@ -208,8 +207,8 @@ func TestStatementTimings(t *testing.T) {
 	referencedBy := timedEdgesRead{"refs.Edges in, the anchored document as refs.ReferencedBy reads it",
 		Query{Direction: "in", Kind: "artifact", ID: document, Kinds: []string{"mentions"}, WholeDocuments: true},
 		mainEdgesInWholeDocument, []any{"artifact", document, []string{"mentions"}}, []any{document, seen, []string{"mentions"}}}
-	// Every side is recorded and checked before any is measured, so a read whose head side binds
-	// other arguments than its Query's stops the run before it spends its time on the others.
+	// Every side is recorded and checked before any is measured, so a read whose two sides bind
+	// different arguments stops the run before it spends its time on the others.
 	strictSides := make([][2]benchtime.Statement, len(strict))
 	for index, read := range strict {
 		strictSides[index][0], strictSides[index][1] = read.sides(t, runner)
@@ -359,10 +358,8 @@ func itemBlocksSubject(t *testing.T, runner *benchtime.Runner, kind ItemKind) st
 
 // timedEdgesRead is one edges pair: its name, the Query the head's read is for, main's held
 // statement for that Query with the arguments its comment in graph_test.go names, in order, and
-// the arguments the head's statement binds for the same Query, in order: the node's id, the id
-// again where the read keys the node's blocks by it, the acting credential (VisibilityArg), and
-// the kinds or the exclusions. The head writes the node's kind into its text rather than binding
-// it (readEdgeRows), so the two lists differ in shape and name the same node.
+// the arguments the head's statement binds for the same Query: the same node, ids and lists, the
+// node's kind written into its text and not bound, and the acting credential beside them.
 type timedEdgesRead struct {
 	name     string
 	query    Query
@@ -372,9 +369,10 @@ type timedEdgesRead struct {
 }
 
 // sides are read's two sides: main's held statement with its arguments, and the statement
-// readEdgeRows sends for read.query at the head, as somebody who proves no author, recorded as it
-// sent it, text and arguments. The run fails unless the head's statement binds read.headArgs,
-// since sides that read different nodes measure no change of text.
+// readEdgeRows sends for read.query at the head, as somebody who proves no author reads it,
+// recorded as it sent it, text and arguments. The run fails unless the head binds read.headArgs,
+// the node and the lists main's statement is bound with, since sides that read different nodes
+// measure no change of text.
 func (read timedEdgesRead) sides(t *testing.T, runner *benchtime.Runner) (benchtime.Statement, benchtime.Statement) {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: runner.Conn()}
@@ -386,7 +384,8 @@ func (read timedEdgesRead) sides(t *testing.T, runner *benchtime.Runner) (bencht
 	}
 	head := recorder.statements[0]
 	if !reflect.DeepEqual(head.args, read.headArgs) {
-		t.Fatalf("%s: the head's statement binds %#v, and the pair names %#v for its Query", read.name, head.args, read.headArgs)
+		t.Fatalf("%s: the head's statement binds %#v, and not %#v, the node and the lists main's held statement is bound with (%#v)",
+			read.name, head.args, read.headArgs, read.mainArgs)
 	}
 	return benchtime.Statement{SQL: read.main, Args: read.mainArgs}, benchtime.Statement{SQL: head.sql, Args: head.args}
 }
@@ -427,7 +426,7 @@ func linksIntoIssue(issue string) string {
 }
 
 // closureBudgetStatement is the statement the route's budget sends before each statement of the
-// references read (setStatementBudget, api/references.go; api imports this package, so the text
+// references read (setStatementBudget, api/references_budget.go; api imports this package, so the text
 // after ClosureTag is written again here), with the whole of the read's 2 s bound. The route sets
 // what is left of the bound, a value that changes from one statement to the next but not what a
 // statement reads: the earlier builds Job read the whole read with these statements at -3.3% and
@@ -443,10 +442,10 @@ type closureRead struct {
 }
 
 // readClosure reads issue's references through a statementRecorder on the runner's connection,
-// as the route reads them for somebody who proves no author, and logs the subject: its link rows
-// in (linksIntoIssue), the links out and in the read answers, and the rows mainClosureQuery
-// answers for it. It fails unless the read sent its out statement and then its in statement
-// first, which the out and the in measurements read alone.
+// as the route reads them, and logs the subject: its link rows in (linksIntoIssue), the links
+// out and in the read answers, and the rows mainClosureQuery answers for it. It fails unless the
+// read sent its out statement and then its in statement first, which the out and the in
+// measurements read alone.
 func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string) closureRead {
 	t.Helper()
 	ctx := context.Background()
@@ -490,61 +489,48 @@ func (read closureRead) measure(t *testing.T, runner *benchtime.Runner) {
 	runner.AfterSeries(t, "refs.Closure's in statement over "+read.name, []benchtime.Statement{{SQL: in.sql, Args: in.args}})
 }
 
-// timedGraphRead is a read of refs.Edges whose statements bind the loaders' lists: name, the list
-// as the loaders' pairs name it; query, the read; and sent, every statement Edges sent for it, as
-// it sent them. (visibility_census_test.go's graphRead is the census's record of a read.)
-type timedGraphRead struct {
+// recordedGraphRead is a read of refs.Edges whose statements bind the loaders' lists: name, the
+// list as the loaders' pairs name it; query, the read; and sent, every statement Edges sent for
+// it, as it sent them. (visibility_census_test.go's graphRead is a read of the census.)
+type recordedGraphRead struct {
 	name  string
 	query Query
 	sent  []recordedStatement
 }
 
 // recordGraphRead reads query's edges through a statementRecorder on the runner's connection, as
-// a graph read of the seed reads them, for somebody who proves no author.
-func recordGraphRead(t *testing.T, runner *benchtime.Runner, name string, query Query) timedGraphRead {
+// a graph read of the seed reads them.
+func recordGraphRead(t *testing.T, runner *benchtime.Runner, name string, query Query) recordedGraphRead {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: runner.Conn()}
 	if _, err := Edges(context.Background(), recorder, model.Actor{}, query); err != nil {
 		t.Fatalf("%s, refs.Edges' %s read of %s %s: %v", name, query.Direction, query.Kind, query.ID, err)
 	}
-	return timedGraphRead{name: name, query: query, sent: recorder.statements}
+	return recordedGraphRead{name: name, query: query, sent: recorder.statements}
 }
 
 // timedLoader is one of the four loaders the change keys: its name; the node kind resolveNodes
-// calls it for; the function; main's statement, held in graph_test.go; the table, with the
-// loader's id as an expression over it, that fills the loader's list of 256 ids; and bound, the
-// arguments the head's statement binds for ids, read as somebody who proves no author: the ids
-// and the acting credential (VisibilityArg), the block loader's as blockNodesAddressed writes
-// them.
+// calls it for; the function; main's statement, held in graph_test.go; and the table, with the
+// loader's id as an expression over it, that fills the loader's list of 256 ids.
 type timedLoader struct {
 	name, kind string
 	load       nodeLoader
 	main       string
 	table, id  string
-	bound      func(ids []string) []any
-}
-
-// idsAndCredential is the arguments the comment, ask and message loaders bind for ids, read as
-// somebody who proves no author.
-func idsAndCredential(ids []string) []any { return []any{ids, VisibilityArg(model.Actor{})} }
-
-// blockNodesBound is the arguments loadBlockNodes binds for ids, read as somebody who proves no
-// author (blockNodesAddressed).
-func blockNodesBound(ids []string) []any {
-	_, args := blockNodesAddressed(ids, model.Actor{})
-	return args
 }
 
 var (
-	commentLoader = timedLoader{"loadCommentNodes", "comment", loadCommentNodes, mainLoadCommentNodes, "comments", "id::text", idsAndCredential}
-	askLoader     = timedLoader{"loadAskNodes", "ask", loadAskNodes, mainLoadAskNodes, "asks", "id::text", idsAndCredential}
-	messageLoader = timedLoader{"loadMessageNodes", "message", loadMessageNodes, mainLoadMessageNodes, "messages", "id::text", idsAndCredential}
-	blockLoader   = timedLoader{"loadBlockNodes", "block", loadBlockNodes, mainLoadBlockNodes, "document_blocks", "node_id", blockNodesBound}
+	commentLoader = timedLoader{"loadCommentNodes", "comment", loadCommentNodes, mainLoadCommentNodes, "comments", "id::text"}
+	askLoader     = timedLoader{"loadAskNodes", "ask", loadAskNodes, mainLoadAskNodes, "asks", "id::text"}
+	messageLoader = timedLoader{"loadMessageNodes", "message", loadMessageNodes, mainLoadMessageNodes, "messages", "id::text"}
+	blockLoader   = timedLoader{"loadBlockNodes", "block", loadBlockNodes, mainLoadBlockNodes, "document_blocks", "node_id"}
 )
 
-// statement is the one statement loader sends for ids, read as somebody who proves no author,
-// recorded as it sent it. It fails unless the loader sends one statement that binds the ids and
-// the acting credential as loader.bound names them.
+// statement is the one statement loader sends for ids, as somebody who proves no author reads
+// them, recorded as it sent it. It fails unless the loader sends one statement that binds the
+// ids, as main's statement binds them, and the acting credential, and nothing else: the ids as
+// their array, which the block loader binds as the one id itself where it is passed one, under
+// the plan mode it names for more (blockNodesAddressed).
 func (loader timedLoader) statement(t *testing.T, runner *benchtime.Runner, ids []string) recordedStatement {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: runner.Conn()}
@@ -555,8 +541,12 @@ func (loader timedLoader) statement(t *testing.T, runner *benchtime.Runner, ids 
 		t.Fatalf("%s sent %d statements; its pairs measure its one", loader.name, len(recorder.statements))
 	}
 	head := recorder.statements[0]
-	if !reflect.DeepEqual(head.args, loader.bound(ids)) {
-		t.Fatalf("%s binds %d arguments, and not the ids it was passed with the acting credential", loader.name, len(head.args))
+	want := []any{ids, VisibilityArg(model.Actor{})}
+	if loader.kind == BlockNodeKind {
+		_, want = blockNodesAddressed(ids, model.Actor{})
+	}
+	if !reflect.DeepEqual(head.args, want) {
+		t.Fatalf("%s binds %d arguments, and not the ids it was passed and the acting credential alone", loader.name, len(head.args))
 	}
 	return head
 }
@@ -570,10 +560,10 @@ type loaderList struct {
 }
 
 // passedBy is the list read passed loader: the ids loader's statement bound, found among the
-// statements read sent by the text loader sends, as the one list of ids among its arguments. It
-// logs how many, and fails naming the read and the loader when the read passed the loader no id,
-// since the seed then holds no list a graph read passes it.
-func (loader timedLoader) passedBy(t *testing.T, runner *benchtime.Runner, read timedGraphRead) loaderList {
+// statements read sent by the text loader sends for a list. It logs how many, and fails naming the
+// read and the loader when the read passed the loader no id, since the seed then holds no list a
+// graph read passes it.
+func (loader timedLoader) passedBy(t *testing.T, runner *benchtime.Runner, read recordedGraphRead) loaderList {
 	t.Helper()
 	text := loader.statement(t, runner, nil).sql
 	for _, statement := range read.sent {

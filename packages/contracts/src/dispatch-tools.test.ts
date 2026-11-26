@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+import document from "../schemas/dispatch-openapi.json";
 import {
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
@@ -21,9 +22,13 @@ import {
   ISSUE_STATUS_OPTIONS,
   ISSUE_STATUSES,
   ISSUE_UPDATE_PATCH_FIELDS,
+  NODE_VISIBILITIES,
+  POINTER_ACTIONS,
+  POINTER_KINDS,
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
+  WRITABLE_NODE_STATES,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
 
@@ -130,15 +135,15 @@ const ASK_RULE =
 const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
 
 /**
- * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
+ * The sentence `BODY_BLOCK_RULE` gives about an ask block in a body, written once in
  * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
  * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
  * stands (INFRA-1201).
  */
 const DECISION_BLOCK_RULE =
-  "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
+  "A body holding an ask block (`:::ask`) is refused however short it is, since nobody can " +
   "answer a question put in a comment or a message: ask the question in the issue's own " +
-  "document, as a decision block there, or open an ask with `dispatch ask`.";
+  "document, as an ask block there, or open an ask with `dispatch ask`.";
 
 /** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
 const SKILL_DECISION_BLOCK_RULE =
@@ -214,17 +219,30 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_project_update: { project: "CORE", proven_sessions: "off" },
   dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_api: specFor("dispatch_api").example,
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_steps: { issue: "DSP-1" },
   dispatch_plans: { project: "INFRA" },
   dispatch_inbox: {},
+  dispatch_lens: specFor("dispatch_lens").example,
+  dispatch_finding: specFor("dispatch_finding").example,
+  dispatch_risk: specFor("dispatch_risk").example,
+  dispatch_constraint: specFor("dispatch_constraint").example,
+  dispatch_constraints: { issue: "DSP-1" },
+  dispatch_pointer: specFor("dispatch_pointer").example,
+  dispatch_lenses: { on: "dispatch://DSP-1/spec" },
+  dispatch_state: specFor("dispatch_state").example,
+  dispatch_settle: specFor("dispatch_settle").example,
+  dispatch_proposed: { issue: "DSP-1" },
+  dispatch_premortem_convert: specFor("dispatch_premortem_convert").example,
 } as const;
 
 function schemaFor(name: keyof typeof validCalls) {
@@ -244,7 +262,7 @@ function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string,
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, duplicate_of, filed_from, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -335,17 +353,30 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_project_update",
       "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_api",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_steps",
       "dispatch_plans",
       "dispatch_inbox",
+      "dispatch_lens",
+      "dispatch_finding",
+      "dispatch_risk",
+      "dispatch_constraint",
+      "dispatch_constraints",
+      "dispatch_pointer",
+      "dispatch_lenses",
+      "dispatch_state",
+      "dispatch_settle",
+      "dispatch_proposed",
+      "dispatch_premortem_convert",
     ]);
 
     for (const [name, args] of Object.entries(validCalls) as Array<
@@ -420,6 +451,28 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  test("dispatch_project_update takes a project key and on or off, and nothing else", () => {
+    const schema = schemaFor("dispatch_project_update");
+
+    for (const proven_sessions of ["on", "off"]) {
+      expect(schema.safeParse({ project: "CORE", proven_sessions }).success, proven_sessions).toBe(
+        true
+      );
+    }
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: true }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "on", name: "Core" }).success).toBe(
+      false
+    );
+    // An empty key would send `PUT /api/v1/projects//proven-sessions`, so it is refused like any
+    // other.
+    expectNotAProjectKey(schema, [
+      { project: "core", proven_sessions: "on" },
+      { project: "", proven_sessions: "off" },
+    ]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -686,6 +739,39 @@ describe("dispatchToolSpecs", () => {
     expect(refusal(partial)).toEqual([
       "recording a result needs role, commit. Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it.",
     ]);
+  });
+
+  // A retarget names the far end the pointer moves from, and no other action names one; the
+  // refusal is the one rule, whichever half of it the call broke, and it names both halves.
+  test("dispatch_pointer takes from with a retarget alone, and refuses a call that breaks either half", () => {
+    const schema = schemaFor("dispatch_pointer");
+    const retarget: Record<string, unknown> = validCalls.dispatch_pointer;
+    const { from: _from, ...withoutFrom } = retarget;
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+
+    expect(schema.safeParse(retarget).success).toBe(true);
+    expect(schema.safeParse({ ...withoutFrom, action: "append" }).success).toBe(true);
+    const rules = refusal(withoutFrom) ?? [];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/\bfrom\b/);
+    expect(rules[0]).toMatch(/\bretarget\b/);
+    expect(refusal({ ...retarget, action: "append" })).toEqual(rules);
+    expect(refusal({ ...retarget, action: "retract" })).toEqual(rules);
+  });
+
+  // Each list is typed from the generated contract, so a value the server does not take fails
+  // the type check; this holds the other half, that no list leaves out a value the server's
+  // document takes.
+  test("the reasoning tools' lists hold every value the server's document takes", () => {
+    const schemas = document.components.schemas;
+    const sorted = (values: readonly string[]) => [...values].sort();
+    expect(sorted(NODE_VISIBILITIES)).toEqual(sorted(schemas.GraphNode.properties.visibility.enum));
+    expect(sorted(POINTER_KINDS)).toEqual(sorted(schemas.PointerInput.properties.kind.enum));
+    expect(sorted(POINTER_ACTIONS)).toEqual(sorted(schemas.PointerInput.properties.action.enum));
+    expect(sorted(WRITABLE_NODE_STATES)).toEqual(
+      sorted(schemas.NodeStateInput.properties.state.enum)
+    );
   });
 
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
@@ -1742,7 +1828,7 @@ describe("dispatchToolSpecs", () => {
   // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
   // session reads before its first `dispatch` command says it too, in the section the ask blocks
   // are defined in.
-  test("the Dispatch skill says a body holding a decision block is refused", () => {
+  test("the Dispatch skill says a body holding an ask block is refused", () => {
     expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
   });
 
@@ -1762,7 +1848,7 @@ describe("dispatchToolSpecs", () => {
 
   test.each(
     BODY_WRITING_TOOLS
-  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
+  )("%s says an ask block in its %s is refused, and where the question belongs", (name, field) => {
     const fields = specFor(name).arguments(schemaApi) as unknown as Record<
       string,
       { description?: string; unwrap?: () => { description?: string } }

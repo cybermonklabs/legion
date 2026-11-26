@@ -117,7 +117,7 @@ export function useNewIssuePageFreshness(): typeof EVENT_FRESH | undefined {
 /**
  * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
  * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
- * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
+ * back to 0 only when the read is reset or made afresh, never with an answer - so a
  * failure it counts came after the read last held an answer.
  *
  * The read's status is not the rule, for two reasons. A read that holds an answer and whose
@@ -163,9 +163,8 @@ export interface ReferenceTarget {
   readonly known: boolean;
 }
 
-/** What a target shows of itself, which each kind reads its own way; `missing` and `known` are
- *  answered once for every kind (`useReferenceTarget`). */
-type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
+/** What each kind shows of itself, without the marks and status assigned once at the return. */
+type ShownTarget = Omit<ReferenceTarget, "deleted" | "edited" | "missing" | "known">;
 
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
@@ -1000,8 +999,6 @@ export function useReferenceTarget(
     shown = {
       title: headline?.text,
       description: message?.message.body,
-      deleted,
-      edited,
       descriptionTree: message?.message.body_tree,
       picture: undefined,
     };
@@ -1010,8 +1007,6 @@ export function useReferenceTarget(
     shown = {
       title: sessionTitle,
       description: undefined,
-      deleted,
-      edited,
       descriptionTree: undefined,
       picture: undefined,
     };
@@ -1022,8 +1017,6 @@ export function useReferenceTarget(
     shown = {
       title: component?.title,
       description: component?.prose,
-      deleted,
-      edited,
       descriptionTree: component?.prose_tree,
       picture: undefined,
     };
@@ -1031,8 +1024,6 @@ export function useReferenceTarget(
     shown = {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
-      deleted,
-      edited,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
     };
@@ -1044,8 +1035,6 @@ export function useReferenceTarget(
     shown = {
       title: roleKnown ? route.role : undefined,
       description: undefined,
-      deleted,
-      edited,
       descriptionTree: undefined,
       picture: undefined,
     };
@@ -1055,8 +1044,6 @@ export function useReferenceTarget(
     shown = {
       title: personKnown ? route.login : undefined,
       description: undefined,
-      deleted,
-      edited,
       descriptionTree: undefined,
       picture: undefined,
     };
@@ -1066,8 +1053,6 @@ export function useReferenceTarget(
     shown = {
       title: issueOrDocumentTitle(route, issue, artifact),
       description: text ?? (artifact === undefined ? issue?.status : undefined),
-      deleted,
-      edited,
       descriptionTree: text === undefined ? undefined : markdownTree,
       picture: named === undefined ? undefined : picturePath(named, artifact),
     };
@@ -1075,6 +1060,8 @@ export function useReferenceTarget(
   // Only a session can exist with no title of its own: every other target's title says it does.
   return {
     ...shown,
+    deleted,
+    edited,
     missing,
     known: kind === "session" && sessionKnown && sessionTitle === undefined,
   };

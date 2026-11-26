@@ -29,8 +29,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -577,6 +580,101 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 	}
 }
 
+// TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
+// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
+// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
+// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
+// a proof signed for either is accepted, and one for an origin neither setting names is refused.
+// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
+// scheme, each refuse the start naming it.
+func TestDispatchReadsItsProofOrigins(t *testing.T) {
+	const (
+		public    = "https://dispatch.example"
+		inCluster = "http://dispatch.internal.example:8766"
+		elsewhere = "https://dispatch.elsewhere.example"
+		route     = "/api/v1/whoami"
+		token     = "a-session-token-the-broker-issued"
+	)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	broker.Says(token, ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_proof_origins",
+		Person:       "alice",
+		ProjectScope: ciphertoken.ProjectScopeNamed,
+		Projects:     []string{"INFRA"},
+		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   caller.JKT(),
+	})
+	accountToken := writeFile(t, "account-token", "dispatchs-own-account-token")
+	// start is what main does with values: the boot config, the server URL, the verifier.
+	start := func(t *testing.T, values map[string]string) ([]string, *ciphertoken.Verifier) {
+		t.Helper()
+		values["DISPATCH_SERVER_URL"] = public
+		values["DISPATCH_AGENT_SECRETS_URL"] = broker.Server.URL
+		values["DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"] = accountToken
+		env := bootEnvironment(values)
+		boot, err := resolveBootConfig(env)
+		if err != nil {
+			t.Fatalf("resolve boot config: %v", err)
+		}
+		envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
+		if err != nil {
+			t.Fatalf("load envoy config: %v", err)
+		}
+		serverURL := envoyConfig.Dispatch.ServerURL
+		verifier, err := brokerTokenVerifier(boot, storetest.Open(t), serverURL)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+	}
+	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
+		t.Helper()
+		_, err := verifier.Verify(t.Context(), caller.Signed(t, http.MethodGet, origin+route, token))
+		return err
+	}
+
+	t.Run("production's shape", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "})
+		if !slices.Equal(origins, []string{public, inCluster}) {
+			t.Fatalf("the verifier's origins are %q, want %q and %q, each once", origins, public, inCluster)
+		}
+		for _, origin := range []string{public, inCluster} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("unset", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{})
+		if !slices.Equal(origins, []string{public}) {
+			t.Fatalf("the verifier's origins are %q, want DISPATCH_SERVER_URL's %q alone", origins, public)
+		}
+		if err := verify(t, verifier, public); err != nil {
+			t.Errorf("a proof for DISPATCH_SERVER_URL's origin was refused: %v", err)
+		}
+		if err := verify(t, verifier, inCluster); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("unset, a proof for %s answered %v, want ErrProofInvalid", inCluster, err)
+		}
+	})
+
+	t.Run("an entry that is no origin", func(t *testing.T) {
+		for entry, naming := range map[string]string{
+			inCluster + "/dispatch":           `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + inCluster + `/dispatch"`,
+			"ftp://dispatch.internal.example": `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + redact.NotPrinted + `"`,
+		} {
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "," + entry}, naming)
+		}
+	})
+}
+
 // The issuer and the audience are one setting in two variables: half of it is a
 // misconfiguration a deployment must not boot with, and neither means the server
 // verifies no service-account token at all.
@@ -625,7 +723,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 
 func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 	t.Parallel()
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, nil, issuers{}, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -644,7 +742,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, nil, issuers{}, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -673,7 +771,7 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
 	response := httptest.NewRecorder()
-	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("GET /livez status = %d, want %d", response.Code, http.StatusNoContent)
 	}
@@ -696,7 +794,7 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	failures.Inc([2]string{"reason", "denied"})
 
 	response := httptest.NewRecorder()
-	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /metrics status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -718,7 +816,7 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -749,7 +847,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, configured, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -789,7 +887,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, nil, issuers{}, nil)
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -828,7 +926,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	t.Parallel()
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
@@ -938,7 +1036,7 @@ type gitHubReadsHealth struct {
 func probeGitHubReads(t *testing.T, database *store.Store, reads *gitHubReads) (int, gitHubReadsHealth) {
 	t.Helper()
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, issuers{}, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health gitHubReadsHealth
 	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
 		t.Fatalf("decode health response %s: %v", response.Body.String(), err)
@@ -1021,7 +1119,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		go func() { publisher.Run(ctx); close(done) }()
 		stop := func() { cancel(); <-done }
 		t.Cleanup(stop)
-		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil), stop: stop}
+		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, nil, issuers{}, nil), stop: stop}
 	}
 	probe := func(p *process) bool {
 		t.Helper()
@@ -1086,7 +1184,7 @@ func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 		"no database":       {nil, http.StatusServiceUnavailable},
 	} {
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if response.Code != probe.status {
 			t.Errorf("healthz with %s: status %d, want %d", name, response.Code, probe.status)
 		}
@@ -1148,7 +1246,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		defer connection.Release()
 	}
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, issuers{}, nil))
 	defer server.Close()
 	client := &http.Client{Timeout: 3 * time.Second}
 	started := time.Now()
@@ -1201,7 +1299,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, nil, issuers{}, nil))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -1263,7 +1361,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		database.Pool.Close()
 	})
 	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, nil, issuers{}, nil))
 	defer server.Close()
 
 	client := &http.Client{Timeout: 3 * time.Second}
@@ -1547,6 +1645,9 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		-- delivery_settings.production_job_name; a database at 52 still has both.
 		create table users (login text primary key);
 		alter table delivery_settings add column production_job_name text;
+		-- CORE's default assignee has signed in, so 20261116015736's census counts no project
+		-- the owner fill would leave without an owner, and 0053's is the one refusal.
+		insert into people (email) values ('alice');
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');
@@ -2096,12 +2197,14 @@ func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
 	seedBackfillFile(t, database)
 	var bucketless, older string
 	// The bucketless process is this build's, started without DISPATCH_FILE_STORE_BUCKET, so its
-	// row names this build's owner lock protocol; the older one's, like its build, names none.
+	// row names this build's owner lock protocol (processes.Register).
 	if err := database.Pool.QueryRow(ctx, `
 		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol)
-		values (gen_random_uuid(), 'bucketless0commit', '{fingerprint}', 1, 1, false, $1) returning instance::text`, store.OwnerLockProtocol).Scan(&bucketless); err != nil {
+		values (gen_random_uuid(), 'bucketless0commit', '{fingerprint}', 1, 1, false, $1) returning instance::text`,
+		store.OwnerLockProtocol).Scan(&bucketless); err != nil {
 		t.Fatalf("add a bucketless server process: %v", err)
 	}
+	// A build that predates the fleet columns predates the owner lock protocol too: its row reads 0.
 	if err := database.Pool.QueryRow(ctx, `
 		insert into server_processes (instance, commit, signing_keys) values (gen_random_uuid(), 'older0commit', '{fingerprint}')
 		returning instance::text`).Scan(&older); err != nil {

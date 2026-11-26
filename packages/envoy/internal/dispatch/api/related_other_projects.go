@@ -2,12 +2,13 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -20,9 +21,11 @@ import (
 // It reads the windows of embeddings of kind ask_part and joins asks as the same-project ask arm
 // joins them (meaning_ask_candidates in search.go), then issues and artifacts for the owner. A
 // row qualifies when the ask is a question, somebody answered it, the answer carries text, and
-// the ask belongs to another project than the one that asks. The project test has two parts, and
-// the `is not null` part is necessary: `null <> $2` is unknown, so an ask that belongs to no
-// project would drop out of the answer and nothing would say so.
+// the ask belongs to another project than the one that asks. Whether somebody answered it and
+// what the answer says are the ask's node's (askNodeStateOf, askNodeAnswerTextOf), as every read
+// of an answer reads them (R3), and so is the answer the row carries (askNodeAnswerOf). The
+// project test has two parts, and the `is not null` part is necessary: `null <> $2` is unknown,
+// so an ask that belongs to no project would drop out of the answer and nothing would say so.
 //
 // Those tests sit inside the candidate CTE, before its LIMIT. The transaction that runs the
 // statement sets hnsw.iterative_scan = relaxed_order (searchMeaningScan), which keeps the index
@@ -44,11 +47,12 @@ import (
 // and name), the project of the row, the document the ask stands on (its slug, its name and
 // whether it is the issue's primary document, which the href reads), the ask's id, the ask's
 // typed block while that block is a node of the reference graph (askBlockNodeSQL), the ask's
-// state, its answer and its cosine score.
+// state and its answer as its row holds them, the ask's answer as its node holds it
+// (askNodeAnswerOf), and its cosine score.
 var relatedOtherProjectsSQL = `with candidates as (
-  select k.id, k.issue_key, k.state, k.answer,
-         case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) end as owner_artifact_id,
-         coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
+  select k.id, k.issue_key, k.state, k.answer, k.node_kind,
+         case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) end as owner_artifact_id,
+         coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
          ` + askBlockNodeSQL + ` as block_id,
          i.title as issue_title, i.status as issue_status,
          coalesce(i.project_key, a.project_key) as project,
@@ -58,10 +62,10 @@ var relatedOtherProjectsSQL = `with candidates as (
     from embeddings e
     join asks k on k.id = ` + windowItemUUID + `
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $3
-     and k.kind = 'question' and k.state = 'answered'
-     and btrim(coalesce(k.answer->>'text', '')) <> ''
+     and k.kind = 'question' and ` + askNodeStateOf("k") + ` = '` + asks.StateAnswered + `'
+     and btrim(coalesce(` + askNodeAnswerTextOf("k") + `, '')) <> ''
      and coalesce(i.project_key, a.project_key) is not null
      and coalesce(i.project_key, a.project_key) <> $2
    order by e.embedding <=> $1::vector
@@ -74,7 +78,7 @@ best as (
 )
 select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.owner_slug, b.owner_name,
        b.project, ar.slug, ar.name, coalesce(ar.is_primary, false), b.id::text, b.block_id,
-       b.state, b.answer, b.r
+       b.state, b.answer, ` + askNodeAnswerOf("b") + `, b.r
   from best b
   left join artifacts ar on ar.id = b.artifact_id
  order by b.r desc, b.id
@@ -97,7 +101,8 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // row for every row, an issue's as well as a project document's, so that a reader of the item
 // knows which project answered the question; the shared scan (scanSearchRows) fills it for a
 // document owner alone, and the items of the asking project keep that shape. The row carries its
-// own state and answer, so this leg reads no ask state a second time (attachAskStates).
+// own state and answer, read off its node (askAnswerRead), so this leg reads no ask state a second
+// time (attachAskStates).
 //
 // reader is the display tree reader each answer's text is registered with, which is the leg's
 // own and never the request's: this runs on a goroutine the check may abandon at its grace, and
@@ -131,11 +136,11 @@ func (s *server) relatedOtherProjects(
 		var slug, name, blockID *string
 		var rowProject, id, state string
 		var primary bool
-		var answer []byte
+		var answer, nodeAnswer []byte
 		var rank float64
 		if err := rows.Scan(
 			&issueKey, &issueTitle, &issueStatus, &ownerArtifactID, &ownerSlug, &ownerName,
-			&rowProject, &slug, &name, &primary, &id, &blockID, &state, &answer, &rank,
+			&rowProject, &slug, &name, &primary, &id, &blockID, &state, &answer, &nodeAnswer, &rank,
 		); err != nil {
 			return nil, fmt.Errorf("scan an answered question of another project: %w", err)
 		}
@@ -160,23 +165,20 @@ func (s *server) relatedOtherProjects(
 		if slug != nil {
 			result.Artifact = &model.SearchArtifact{Slug: *slug, Name: deref(name)}
 		}
-		result.Ask = &model.SearchAsk{State: state}
-		if len(answer) > 0 {
-			var value model.AskAnswer
-			if err := json.Unmarshal(answer, &value); err != nil {
-				return nil, fmt.Errorf("decode the answer of an ask of another project: %w", err)
-			}
-			// The answer carries the shape a read gives it, with the display tree of its text
-			// where the request asked for the trees and without one where it did not. Which of
-			// them it is does not follow from the path. This leg runs for a write that asks a
-			// person a question - an ask create, a new decision block - and for the POST form
-			// of the related route, which writes nothing and is the read `dispatch related`
-			// makes; the GET form of that route, which the dashboard reads under
-			// `Dispatch-Trees: 1`, runs the one-project leg of the same check. So the header
-			// the request carries decides the tree, on either leg (relatedInput.trees), and the
-			// one-project items register theirs the same way (fillRelatedItems).
-			result.Ask.Answer = newAskAnswerWithTree(&value, reader)
+		ask, err := askAnswerRead(id, state, answer, nodeAnswer)
+		if err != nil {
+			return nil, fmt.Errorf("read the answer of an ask of another project: %w", err)
 		}
+		// The answer carries the shape a read gives it, with the display tree of its text where
+		// the request asked for the trees and without one where it did not. Which of them it is
+		// does not follow from the path. This leg runs for a write that asks a person a question -
+		// an ask create, a new ask block - and for the POST form of the related route, which
+		// writes nothing and is the read `dispatch related` makes; the GET form of that route,
+		// which the dashboard reads under `Dispatch-Trees: 1`, runs the one-project leg of the
+		// same check. So the header the request carries decides the tree, on either leg
+		// (relatedInput.trees), and the one-project items register theirs the same way
+		// (fillRelatedItems).
+		result.Ask = &model.SearchAsk{State: ask.State, Answer: newAskAnswerWithTree(ask.Answer, reader)}
 		// The href of an ask, as the same-project ask rows build it. The query text is empty
 		// because an ask's href holds none (searchHref writes it for a document alone), and the
 		// matched block is nil because this leg ranks no block of the window it found: it offers

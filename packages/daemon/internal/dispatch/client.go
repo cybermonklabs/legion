@@ -19,22 +19,59 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
+// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
+// transport it was made with (New).
 type HTTPClient struct {
 	baseURL    string
-	token      string
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
-func New(baseURL, token string) *HTTPClient {
+// New creates a client for one Dispatch server whose every request goes through transport, which
+// presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
+// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
+// client sets no Authorization of its own.
+func New(baseURL string, transport http.RoundTripper) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		token:      token,
 		timeout:    requestTimeout,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: transport},
 	}
+}
+
+// BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
+// when nil) with `Authorization: Bearer <token>` and changes nothing else, so a request goes on the
+// wire as it did when the client set the header itself. A redirect to another host name than the
+// request was made to is sent without it, as Go's client sent no Authorization header its caller
+// set on such a redirect: the bearer reaches Dispatch's host and no other. Go's client also kept
+// it on a redirect to a subdomain of that host; this does not.
+func BearerTransport(token string, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return bearerTransport{authorization: "Bearer " + token, base: base}
+}
+
+type bearerTransport struct {
+	authorization string
+	base          http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	if strings.EqualFold(r.URL.Hostname(), firstRequest(r).URL.Hostname()) {
+		presented.Header.Set("Authorization", b.authorization)
+	}
+	return b.base.RoundTrip(presented)
+}
+
+// firstRequest is the request the caller made that r is a redirect of, or r itself: Go's client
+// sets each redirect's Response to the answer that redirected it, whose Request is the one before.
+func firstRequest(r *http.Request) *http.Request {
+	for r.Response != nil && r.Response.Request != nil {
+		r = r.Response.Request
+	}
+	return r
 }
 
 // ListIssues reads GET /api/v1/issues?project=<project>. Dispatch accepts one status filter, so
@@ -71,7 +108,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
-			BlockedBy:    issue.BlockedBy,
+			BlockedBy:    WaitsOf(issue.Needs, issue.BlockedBy),
 			ClaimedBy:    issue.Claim.holder(),
 			ClaimUnread:  issue.Claim.unread(),
 		})
@@ -241,6 +278,27 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 		StepWrite:  write,
 		PlanRating: rating,
 		Actor:      daemonActor(key),
+	}, nil)
+}
+
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          daemonActor(key),
 	}, nil)
 }
 
@@ -471,8 +529,8 @@ func (c *HTTPClient) messageBody(ctx context.Context, key, id string) (string, e
 }
 
 // Approval reads GET /api/v1/artifacts/{id} and returns the document's derived approval state,
-// the issue carrying it, and what the document is on that issue: its primary flag, its role and
-// its slug, which is how a design-gate step finds the document it binds to.
+// the issue carrying it, and what the document is on that issue: its primary flag and its role,
+// which is how a design-gate step finds the document it binds to.
 func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval, error) {
 	var response artifactResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &response); err != nil {
@@ -493,7 +551,6 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 		Reason:        response.Approval.Reason,
 		Primary:       response.Primary,
 		Role:          response.Role,
-		Slug:          response.Slug,
 	}
 	if response.Approval.At != nil {
 		at, err := time.Parse(time.RFC3339Nano, *response.Approval.At)
@@ -641,6 +698,16 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
+// it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
+func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
+		return Caller{}, err
+	}
+	return caller, nil
+}
+
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -658,7 +725,6 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -753,8 +819,20 @@ type issueSummaryResponse struct {
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
+	Needs        *[]string      `json:"needs"`
 	BlockedBy    []string       `json:"blocked_by"`
 	Claim        *claimResponse `json:"claim"`
+}
+
+// WaitsOf is the issues an issue answer says the issue waits on: its needs, which a Dispatch of
+// the issue-tree spec's release on answers, and else its blocked_by, which the Dispatch of the
+// release before answers alone, since a new daemon can meet an old Dispatch. An answer holding
+// needs is read by it, whatever blocked_by holds beside it.
+func WaitsOf(needs *[]string, blockedBy []string) []string {
+	if needs != nil {
+		return *needs
+	}
+	return blockedBy
 }
 
 type issueResponse struct {
@@ -769,6 +847,7 @@ type issueResponse struct {
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
 	ResolvedRepo      *string        `json:"resolved_repo"`
+	Needs             *[]string      `json:"needs"`
 	BlockedBy         []string       `json:"blocked_by"`
 	Claim             *claimResponse `json:"claim"`
 }
@@ -788,7 +867,7 @@ func (r issueResponse) issue() Issue {
 		PrimaryArtifactID: r.PrimaryArtifactID,
 		LastSeq:           r.LastSeq,
 		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
+		BlockedBy:         WaitsOf(r.Needs, r.BlockedBy),
 		Claim:             r.Claim.claim(),
 		ClaimUnread:       r.Claim.unread(),
 	}
@@ -827,7 +906,6 @@ type issueEventResponse struct {
 
 type artifactResponse struct {
 	IssueKey *string           `json:"issue_key"`
-	Slug     string            `json:"slug"`
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`
@@ -953,6 +1031,14 @@ type stepWrite struct {
 type stepRatingWrite struct {
 	StepWrite
 	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
+// variant, and the daemon's actor.
+type stepExperimentWrite struct {
+	StepWrite
+	StepExperiment
 	Actor actor `json:"actor"`
 }
 

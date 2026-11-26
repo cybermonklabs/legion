@@ -1,10 +1,10 @@
 {
-  "anchoredAskId": "3f0d8139-46d8-4624-9aae-e72ee18209ee",
-  "approvalArtifactId": "6a818625-3258-4e7b-95a8-f95aafbaf148",
-  "approvalAskId": "2b683aad-80c8-44d4-b08d-81e9542ed6da",
-  "decisionAskId": "e69f862b-81ea-4858-916f-9a85ae7973c1",
-  "decisionIssueKey": "PANE-3",
-  "documentAskId": "8379eab2-60e9-455e-8687-aa5e58d8c6e8",
-  "firstApprovalAskId": "ac3fdc7b-608c-4289-8d84-5e56dffcdb3b",
-  "plainAskId": "c2a22cb0-31b8-448e-9c92-655b077de700"
+  "anchoredAskId": "78107b0c-caa9-4755-881a-57ff47f64b6c",
+  "approvalArtifactId": "33e3267c-95ca-4d89-aadf-36cf88999877",
+  "approvalAskId": "cc5003db-fce2-4354-8999-f1ec6b55b259",
+  "decisionAskId": "0b8c1260-9b52-4a67-8017-7652cfca2a6d",
+  "decisionIssueKey": "PANE-1",
+  "documentAskId": "a05067b4-d9d5-4b8e-81b4-31291ee9a4eb",
+  "firstApprovalAskId": "d567384d-ec8c-4391-9263-84b90e5e8399",
+  "plainAskId": "28b6cabe-fea6-44d8-b93e-97d1b07a67e8"
 }

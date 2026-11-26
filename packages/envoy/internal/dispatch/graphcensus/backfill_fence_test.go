@@ -73,12 +73,27 @@ type backfillAnswer struct {
 	err    error
 }
 
+// backfillRun is a run a test starts on a connection of its own (startRun): the whole Backfill
+// (wholeBackfill), or one pass of it.
+type backfillRun func(ctx context.Context, database *store.Store) (BackfillReport, error)
+
+// wholeBackfill is Backfill as a run, writing its report nowhere.
+func wholeBackfill(ctx context.Context, database *store.Store) (BackfillReport, error) {
+	return Backfill(ctx, database, io.Discard)
+}
+
 // startBackfill runs Backfill on a pool of one connection, off the test's goroutine, and answers
 // that connection's backend process id and the channel the run's answer arrives on. One
 // connection is what lets the test watch the run's own backend: every statement of the run
 // goes through it, and a session queued on the same lock with anything else is never taken for
 // it.
 func startBackfill(t *testing.T, database *store.Store) (uint32, <-chan backfillAnswer) {
+	t.Helper()
+	return startRun(t, database, wholeBackfill)
+}
+
+// startRun is startBackfill of run.
+func startRun(t *testing.T, database *store.Store, run backfillRun) (uint32, <-chan backfillAnswer) {
 	t.Helper()
 	backfiller := storetest.SingleConnection(t, database)
 	var pid uint32
@@ -87,7 +102,7 @@ func startBackfill(t *testing.T, database *store.Store) (uint32, <-chan backfill
 	}
 	answered := make(chan backfillAnswer, 1)
 	go func() {
-		report, err := Backfill(context.Background(), backfiller, io.Discard)
+		report, err := run(context.Background(), backfiller)
 		answered <- backfillAnswer{report, err}
 	}()
 	return pid, answered
@@ -202,10 +217,11 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 	}
 
 	// The report counts what the run wrote: one row, one node, its in_document tuple and the
-	// two base attributes its insert stated, and one document owed a block index.
-	if blocks := blockKind(t, report); blocks.Rows != 1 || blocks.Nodes != 1 || blocks.Tuples != 3 ||
+	// three base attributes its insert stated - visibility, state and the document's project -
+	// and one document owed a block index.
+	if blocks := blockKind(t, report); blocks.Rows != 1 || blocks.Nodes != 1 || blocks.Tuples != 4 ||
 		blocks.Owed != 1 || !blocks.Complete {
-		t.Errorf("the backfill reports %#v for blocks, want 1 row, 1 node, 3 tuples, 1 document owed and the cutover complete", blocks)
+		t.Errorf("the backfill reports %#v for blocks, want 1 row, 1 node, 4 tuples, 1 document owed and the cutover complete", blocks)
 	}
 
 	// The lock it waited at is the owner lock, the first of the two R23 names, which is the one

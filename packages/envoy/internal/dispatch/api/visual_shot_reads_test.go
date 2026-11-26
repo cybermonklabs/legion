@@ -613,10 +613,13 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	sockets := &servedSockets{finished: make(map[string]chan struct{})}
 	roomServer := httptest.NewServer(sockets.serve(documents.ServeHTTP))
 	t.Cleanup(roomServer.Close)
+	// The page binds the fragment the artifact read answers for the spec, as the page does: the
+	// spec's own fragment of its issue's room, since an issue is born converted (connectBrowserPeer).
+	fragment := artifactFragment(t, asShotPerson(t, handler, cookie), corpus.spec)
 	statements.watch()
 	page := &syncedPeer{
 		wsURL: "ws" + strings.TrimPrefix(roomServer.URL, "http") + "/ws/doc/" + corpus.spec, sockets: sockets,
-		headers: http.Header{"Cookie": {cookie.String()}}, artifactID: corpus.spec, doc: crdt.New(),
+		headers: http.Header{"Cookie": {cookie.String()}}, artifactID: corpus.spec, fragment: fragment, doc: crdt.New(),
 	}
 	page.connect(t)
 	page.closeAndWait(t)

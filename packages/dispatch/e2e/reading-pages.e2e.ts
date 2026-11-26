@@ -1,29 +1,25 @@
 /**
  * The reading list's walk (`e2e/reading-rows.ts`) over the pages whose text is
  * no record of the reference graph and still reads through the one renderer: a component's prose
- * on its project's Architecture page, a priority's description on the priority's own page, and
- * an issue's reason for touching no component, on the Architecture page's Not architectural list
- * and in the issue header's Components line. None of these texts is a `TextSource`, so a `#id`
- * in it names nothing, as each row of the list says (`cannotCarry`), but the five other forms a
- * text names a node by are read in it as every stored text reads them (R6): each draws as its
- * node's current name, the party as `@` and the session's current name, and none is left as
- * the characters written. Every host here is a page a reader reads, not a link or a button, so
- * each reference is a link there.
+ * on its project's Architecture page, and an issue's reason for touching no component, on the
+ * Architecture page's Not architectural list and in the issue header's Components line. None of
+ * these texts is a `TextSource`, so a `#id` in it names nothing, as each row of the list says
+ * (`cannotCarry`), but the five other forms a text names a node by are read in it as every
+ * stored text reads them (R6): each draws as its node's current name, the party as `@` and the
+ * session's current name, and none is left as the characters written. Every host here is a page
+ * a reader reads, not a link or a button, so each reference is a link there. A priority's
+ * description is no row of this walk: the documents' editor draws it whole, and its closed row's
+ * excerpt is the projection's, whose unit tests the list's `priority-description` row names
+ * (`proof`).
  *
  * A person's page is walked here too: each of its rows draws a node by the first line of its
  * text, which is a record, so that line carries every form, a `#id` among them.
  *
  * Each row writes `readingText` where its page reads it from: into the component model file the
- * fake GitHub serves, whose body is the component's prose, into the priority's description and
- * the issue's reason through the API, and into comments a person writes through the API.
+ * fake GitHub serves, whose body is the component's prose, into the issue's reason through the
+ * API, and into comments a person writes through the API.
  */
-import {
-  createComment,
-  createPriority,
-  patchIssue,
-  putArchitectureSource,
-  syncArchitectureSource,
-} from "./api";
+import { createComment, patchIssue, putArchitectureSource, syncArchitectureSource } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   expectReadsReferences,
@@ -66,25 +62,6 @@ test("component-prose: a component's prose draws every form but a question id th
   // The prose is the one rendered body of the details: the Code & definition section's text,
   // with the repository, the paths and the dependencies drawn beside it rather than in it.
   await expectReadsReferences(details.locator(RENDERED_BODY), world, "link");
-});
-
-// SLOW(>=2s): the reading world and the priority's own page drawn with its description.
-test("priority-description: a priority's description draws every form but a question id through the renderer", async ({
-  page,
-}) => {
-  const world = await seedReadingWorld();
-  const priority = await createPriority({
-    description: readingText(world),
-    owner: "alice",
-    title: "Keep one build",
-  });
-
-  await page.goto(`/priorities/${priority.id}`);
-  // The group the description is drawn in for a person who may write it, which the default
-  // context's alice is: the rendered text and the button that opens its editor, which is drawn
-  // only while it holds the focus. The rendered text is no control, so its links stay links.
-  const description = page.getByRole("group", { exact: true, name: "Description of P1" });
-  await expectReadsReferences(description, world, "link");
 });
 
 // SLOW(>=2s): the reading world, the fake GitHub's model read in by a source sync, the host

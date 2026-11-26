@@ -133,7 +133,7 @@ func plannerHolderNews() News {
 		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}}
 }
 
-// decisionOnlyHolderNews is the one news task of a version whose only difference is decision
+// decisionOnlyHolderNews is the one news task of a version whose only difference is ask
 // blocks: the gate closed on it, its holder was told so, and a person approved it later, so the
 // opening is owed and nothing else is.
 func decisionOnlyHolderNews() News {
@@ -227,7 +227,7 @@ func everyNewsForm() map[string]string {
 		"the holder whose taken version could not be read":   RenderNews(unreadBaselineHolderNews()),
 		"the sub-architect of an accepting child":            RenderNews(acceptingHolderNews()),
 		"the planner of a child":                             RenderNews(plannerHolderNews()),
-		"the holder of a decision-only version":              RenderNews(decisionOnlyHolderNews()),
+		"the holder of an ask-only version":                  RenderNews(decisionOnlyHolderNews()),
 		"the holder of an unchanged version":                 RenderNews(unchangedHolderNews()),
 		"the root architect's tree summary":                  RenderNews(treeSummaryNews()),
 		"the root architect of a merged root":                RenderNews(mergedRootSummaryNews()),
@@ -288,6 +288,7 @@ func newsLine(t *testing.T, text, opening string) string {
 // quotes as what releases a merge, so a merger released by its news task reads the release it
 // waits for. A holder that was told the opening already reads no gate sentence.
 func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
 	opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5)
@@ -305,6 +306,7 @@ func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) 
 // naming the version with its reviewer, and never the opening that no longer stands: the gate
 // sentence is said of the gate at send.
 func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
 	closed := mergerQuote(t, "closed", "spec", "artifact-spec", 6)
@@ -325,6 +327,7 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 // prove, and none of its other blocks. Each item ends with the command that prints its new version,
 // and the news ends with the rule the holder's prompt carries.
 func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	spec := newsItem(t, text, "The spec document (artifact-spec)")
 	for _, want := range []string{"version 5, since version 3, which your phase last took",
@@ -366,6 +369,7 @@ func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 // A pair Dispatch could not read names the versions, says the change list could not be read and
 // why, and still names the command that prints the new version.
 func TestNewsOfAnUnreadPairNamesTheReasonAndTheCommandThatPrintsIt(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(unreadHolderNews())
 	t.Logf("the news of an unread pair:\n%s", text)
 	item := newsItem(t, text, "The spec document (artifact-spec)")
@@ -388,6 +392,7 @@ func TestNewsOfAnUnreadPairNamesTheReasonAndTheCommandThatPrintsIt(t *testing.T)
 // way, and lists the item as an entry of its own beside the first approval of the same version,
 // which another member read from the history, so the one is never folded into the other.
 func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(unreadBaselineHolderNews())
 	t.Logf("the news of an item whose review history could not be read:\n%s", text)
 	item := newsItem(t, text, "The spec document (artifact-spec)")
@@ -430,6 +435,7 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 // The architect holding a child in accepting answers its news as its prompt says it answers
 // accepting: by its sign-off, or by a move back to planning, implementing or testing.
 func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(acceptingHolderNews())
 	t.Logf("the news of an accepting child:\n%s", text)
 	rule := lastParagraph(text)
@@ -447,6 +453,7 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 // answer, as its prompt gives it (prompts/go/planner.md): a stale plan is revised in place and its
 // plan review run again, and a current one gets a comment. No move back is named.
 func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(plannerHolderNews())
 	t.Logf("the news of a planner:\n%s", text)
 	rule := lastParagraph(text)
@@ -464,12 +471,13 @@ func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	}
 }
 
-// A version whose only difference is decision blocks, owed only for its opening, tells the holder
+// A version whose only difference is ask blocks, owed only for its opening, tells the holder
 // the gate opened and that nothing its issue holds changed since the version its phase took: no
 // change list, no command and no rule, since nothing asks for an answer.
 func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(decisionOnlyHolderNews())
-	t.Logf("the news of a decision-only version:\n%s", text)
+	t.Logf("the news of an ask-only version:\n%s", text)
 	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
@@ -478,17 +486,18 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	}
 	for _, unwanted := range []string{"Sections:", "Requirements:", "doc-read", "request_backward_move", "dispatch comment"} {
 		if strings.Contains(text, unwanted) {
-			t.Errorf("the news of a decision-only version says %q:\n%s", unwanted, text)
+			t.Errorf("the news of an ask-only version says %q:\n%s", unwanted, text)
 		}
 	}
 }
 
 // A version that holds the same text as the one before it, owed only for its opening, tells the
 // holder the gate opened, that nothing its issue holds changed since the version its phase took,
-// and why: the new version holds the same text. It names no change list, empty or not, no decision
+// and why: the new version holds the same text. It names no change list, empty or not, no ask
 // blocks, which did not change either, and no command and no rule, since nothing asks for an
 // answer.
 func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
 	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
@@ -498,7 +507,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 		"Version 5 of its spec document (artifact-spec) holds the same text as version 4."; !strings.Contains(text, want) {
 		t.Fatalf("the news does not say %q:\n%s", want, text)
 	}
-	for _, unwanted := range []string{"Sections:", "Requirements:", "Dispatch named no", "decision blocks", "doc-read", "request_backward_move",
+	for _, unwanted := range []string{"Sections:", "Requirements:", "Dispatch named no", "ask blocks", "doc-read", "request_backward_move",
 		"dispatch comment"} {
 		if strings.Contains(text, unwanted) {
 			t.Errorf("the news of an unchanged version says %q:\n%s", unwanted, text)
@@ -512,6 +521,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 // true of a version that holds the same text. The control is the changed pair, whose change list
 // each form still names.
 func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
+	t.Parallel()
 	unchangedChecks := NewsChange{Step: record.DesignStepCriteria, Changes: record.DesignChanges{
 		VersionPair: record.VersionPair{ArtifactID: "artifact-checks", From: 2, To: 3}, State: record.DesignChangesRead, Unchanged: true}}
 	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
@@ -540,7 +550,7 @@ func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
 		t.Errorf("the summary's entry of the changed pair = %q, want its change list", changed)
 	}
 	if line, want := newsLine(t, summary, "- LEGION-212, in reviewing: "), "- LEGION-212, in reviewing: told nothing: the approved version "+
-		"holds the same text as the one it took, apart from decision blocks."; line != want {
+		"holds the same text as the one it took, apart from ask blocks."; line != want {
 		t.Errorf("the summary's line of the member owed nothing else = %q, want %q", line, want)
 	}
 	for name, text := range map[string]string{"holder's news": holder, "summary": summary} {
@@ -557,6 +567,7 @@ func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
 // heading has no words is a section, never the text outside every section. Each unit keeps
 // Dispatch's word for how it changed.
 func TestNewsNamesEachRunOfTheTextOutsideTheSectionsWhereItStands(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Reviewing,
 		Steps: newsSteps, Gates: newsGates(),
 		Items: []NewsChange{{Step: record.DesignStepSpec, Changes: record.DesignChanges{
@@ -587,13 +598,14 @@ func TestNewsNamesEachRunOfTheTextOutsideTheSectionsWhereItStands(t *testing.T) 
 // of versions it names comes once with its change list, the architect's own marked as what it
 // last took.
 func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(treeSummaryNews())
 	t.Logf("the root architect's summary:\n%s", text)
 	for opening, want := range map[string]string{
 		"- LEGION-208, in awaiting_person: ": "told nothing while it waits on a person",
 		"- LEGION-209, in implementing: ":    "owed version 5 of the spec document, since version 3, which its phase last took; a task tells its implementer now.",
 		"- LEGION-210, in testing: ":         "owed version 5 of the spec document, since version 4, which its phase last took; the next start of its tester carries it.",
-		"- LEGION-212, in reviewing: ":       "told nothing: the approved version holds the same text as the one it took, apart from decision blocks.",
+		"- LEGION-212, in reviewing: ":       "told nothing: the approved version holds the same text as the one it took, apart from ask blocks.",
 		"- LEGION-213, in planning: ":        "told nothing: its phase already took the approved version.",
 		"- LEGION-214, in admitted: ":        "told nothing: it has not started, and its first phase starts from the approved version.",
 		"- LEGION-215, in held: ":            "told nothing while it is held: the release that moves it back into a phase carries what it is owed then.",
@@ -625,6 +637,7 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 // owes no member anything, and names why each other member is told nothing. Its opening names the
 // approval that opened the gate, the Verification document's, which Dispatch recorded last.
 func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
 	if opened := mergerQuote(t, "opened", "criteria", "artifact-checks", 3); !strings.HasPrefix(text, opened) {
@@ -651,6 +664,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 // A member in accepting that the root architect owns is named as the architect's own to answer:
 // what it is owed, then its sign-off or a move back to planning, implementing or testing.
 func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(treeSummaryNews())
 	line := newsLine(t, text, "- LEGION-211, in accepting: ")
 	for _, want := range []string{"owed version 5 of the spec document, since version 4", "you answer it yourself", "`sign_off`",
@@ -665,6 +679,7 @@ func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T)
 // its news was owed to is told nothing yet, and why: no task carries that news and no start will
 // while the gate is closed, so no line says a task or a start carries it.
 func TestTheSummarySentAfterTheGateClosedAgainTellsAnOwedMemberNothingYet(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(closedSummaryNews())
 	line := newsLine(t, text, "- LEGION-209, in implementing: ")
 	if want := "told nothing yet: the gate closed again before this was sent; what it is owed goes once a person approves " +
@@ -683,6 +698,7 @@ func TestTheSummarySentAfterTheGateClosedAgainTellsAnOwedMemberNothingYet(t *tes
 // the news waits for that task, naming the role that holds it. It never says that a task tells the
 // member now, that its next start carries the news, or that the root architect answers it.
 func TestTheSummarySaysAMembersNewsWaitsWhileItsHolderHoldsATaskItHasNotTaken(t *testing.T) {
+	t.Parallel()
 	text := RenderNews(waitingSummaryNews())
 	t.Logf("the summary of waiting news:\n%s", text)
 	const owed = "owed version 5 of the spec document, since version 4, which its phase last took; "
@@ -710,6 +726,7 @@ func TestTheSummarySaysAMembersNewsWaitsWhileItsHolderHoldsATaskItHasNotTaken(t 
 // The kinds are the record's own, asked of its validation one word at a time (noticeKind), so a
 // kind added to the record is held here with no list to keep.
 func TestNewsNamesNoNoticeKind(t *testing.T) {
+	t.Parallel()
 	if !noticeKind("phase-finished") || !noticeKind("triage") || noticeKind("approved") {
 		t.Fatal("the record's validation no longer tells a notice kind from another word, so this test cannot read the kinds")
 	}

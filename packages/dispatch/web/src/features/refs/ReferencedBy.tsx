@@ -12,7 +12,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
-import { blockFragment, isBlockItemKind } from "./block-reference";
+import { type BlockItemKind, blockFragment, isBlockItemKind } from "./block-reference";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { DeletedBody, EditedMark } from "./PostMarks";
@@ -24,21 +24,38 @@ import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";
 import { type TextSource, textSourceKind, textSourceOf } from "./text-references";
 
+/** Every node kind a read of the graph answers, which `GraphNode.kind` names, each with the
+ *  word the panel reads it under. A kind a newer build adds is skipped where it is met, since no
+ *  read answers a node of a kind its own build does not resolve. */
 const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   artifact: "Artifact",
   ask: "Ask",
+  // A part of an ask, and a block of a comment or a message, read as the item that holds it, as
+  // the `block` below does (`blockItem`); the server answers each as a node of kind `block`.
+  ask_block: "Ask",
   // A block of a document that cites a node shows as the document holding it, linked to the
   // block; a part of an ask, or a block of a comment or message, shows as its item
   // (`blockItem`).
   block: "Artifact",
   comment: "Comment",
+  comment_block: "Comment",
   component: "Component",
+  // A constraint, a run of the command bar, a kind of the lens catalogue, a lens, a finding of a
+  // lens and a risk read under the kind's own name until cybermonklabs/legion#2813 gives them the
+  // words a person reads.
+  constraint: "constraint",
+  interaction: "interaction",
   issue: "Issue",
+  lens: "lens",
+  lens_block: "lens_block",
+  lens_kind: "lens_kind",
   message: "Message",
+  message_block: "Message",
   // The page of a role, or of a session that claimed none: it reads as whose page it is,
   // because a reader opens the agent and not the page.
   page: "Agent page",
   person: "Person",
+  risk: "risk",
   // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
   role: "Agent",
   session: "Session",
@@ -48,12 +65,17 @@ const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   anchored_to: "Anchored item",
   answers: "Answer",
   attached_to: "Attached document",
+  // An issue's wait as a Dispatch of the release before names it; this Dispatch answers it as
+  // needs, below.
   blocked_by: "Blocked issue",
   child_of: "Child issue",
+  duplicate_of: "Duplicate issue",
+  filed_from: "Issue filed from it",
   followed_by: "Follower",
-  // The two kinds a typed block's `block[]` attributes make (`blocks.json`): a check or a plan
-  // task that names a requirement in `serves`, and a plan task that names another in `needs`.
-  // Read from the named block, the edge says what the citing block does for it.
+  // A wait, one relation however its ends are (R10 of the issue-tree spec): an issue's on an issue,
+  // and the `needs` a plan task's `block[]` attribute makes on another (`blocks.json`), as a
+  // check's or a plan task's `serves` names a requirement. Read from the node waited on, the edge
+  // says what the citing node does for it.
   needs: "needed by",
   owned_by: "Owned item",
   replies_to: "Reply",
@@ -66,14 +88,23 @@ const RENDERED_EDGE_KINDS: Record<GraphEdge["kind"], true> = {
   anchored_to: true,
   answers: true,
   attached_to: true,
+  authored_by: true,
   blocked_by: true,
+  changed_by_run: true,
   child_of: true,
+  constrained_by: true,
   depends_on: true,
+  duplicate_of: true,
+  filed_from: true,
   followed_by: true,
+  has_kind: true,
   mentions: true,
+  needs: true,
   owned_by: true,
   part_of: true,
+  prevented_by: true,
   replies_to: true,
+  triggered_by: true,
 };
 
 /** The other kinds the page renders: the edge kinds the `block[]` attributes of the manifest
@@ -98,9 +129,15 @@ const CLAMP_CHARACTERS = 240;
  *  other node, as the read itself carries null for a node with no parent. A part of an ask reads
  *  as its ask, as a block of a comment reads as its comment: one set of item kinds says which
  *  (`isBlockItemKind`). */
-function blockItem(node: GraphEdge["node"]): GraphEdge["node"]["parent"] {
-  return node.kind === "block" && node.document === undefined && isBlockItemKind(node.parent?.kind)
-    ? node.parent
+function blockItem(
+  node: GraphEdge["node"]
+): (NonNullable<GraphEdge["node"]["parent"]> & { kind: BlockItemKind }) | null {
+  const parent = node.parent;
+  return node.kind === "block" &&
+    node.document === undefined &&
+    parent !== null &&
+    isBlockItemKind(parent.kind)
+    ? { ...parent, kind: parent.kind }
     : null;
 }
 

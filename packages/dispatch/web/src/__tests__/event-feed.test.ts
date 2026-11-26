@@ -54,8 +54,7 @@ beforeAll(async () => {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
-  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
-  // row and the priority's own page.
+  // The work under one priority, as a scoped issues table reads it: the priority's own page.
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
   // icebox, with its move there, as that page's Issues table reads it.
@@ -1088,23 +1087,7 @@ const rules: Record<string, Rule> = {
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
   },
-  "the first upload of an issue's decisions document refreshes the issue's decisions": {
-    event: event("artifact.created", {
-      artifact: { id: "artifact-4", name: "decisions.md", role: "decisions", slug: "decisions-md" },
-    }),
-    refreshes: ["decisions", "summary", "detail"],
-    spares: ["projects", "inbox", "docSummary"],
-  },
-  // A server built before document roles sends the decisions document with no role, and names it
-  // by its slug alone.
-  "the first upload of a decisions document with no role refreshes the issue's decisions": {
-    event: event("artifact.created", {
-      artifact: { id: "artifact-4", name: "decisions.md", slug: "decisions-md" },
-    }),
-    refreshes: ["decisions", "summary", "detail"],
-    spares: ["projects", "inbox", "docSummary"],
-  },
-  "the upload of another document of the issue leaves the issue's decisions alone": {
+  "the upload of a document of the issue leaves the issue's decisions alone": {
     event: event("artifact.created", {
       artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },
     }),
@@ -1703,6 +1686,8 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
   ]);
   const child = event("result.recorded", {
@@ -1717,6 +1702,8 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);
@@ -1737,6 +1724,8 @@ test("a retracted result refreshes the results of the check's issue and of the r
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);
@@ -1872,6 +1861,13 @@ test("a priority.updated of a deleted priority refetches no issue read that does
   ]);
 });
 
+// No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
+// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
+// every query.
+test("a project.access_changed refreshes no read", () => {
+  expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1944,6 +1940,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     "priority.updated",
     { change: "updated", id: "linkage-closure" },
     { issue_key: null, project: undefined }
+  ),
+  "project.access_changed": event(
+    "project.access_changed",
+    { change: "owner", project: "PROJ" },
+    { issue_key: null, project: "PROJ" }
   ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),

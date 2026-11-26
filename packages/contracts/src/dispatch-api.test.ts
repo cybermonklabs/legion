@@ -46,8 +46,10 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
+  type IssueCoverage,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
+  type IssueTreeRead,
   type ItemBlocks,
   inboxThreadRow,
   type Message,
@@ -58,6 +60,7 @@ import {
   type MyAnswersResponse,
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
+  ProjectAccessChangedEventPayloadSchema,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -87,6 +90,22 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+test("a project.access_changed payload names the project and the change, and no access list", () => {
+  // The event is read by every reader of the project's events, so it carries no email, group name
+  // or channel id, nor the time the channels changed.
+  const change = { project: "CORE", change: "slack_channels" } as const;
+  expect(ProjectAccessChangedEventPayloadSchema.parse(change)).toEqual(change);
+  for (const extra of [
+    { owner: "alice@example.com" },
+    { slack_channels: ["C012345678"] },
+    { slack_channels_changed_at: "2026-11-18T18:12:30Z" },
+  ]) {
+    expect(ProjectAccessChangedEventPayloadSchema.safeParse({ ...change, ...extra }).success).toBe(
+      false
+    );
+  }
 });
 
 test("delivery modes are exactly the closed capability list", () => {
@@ -1470,6 +1489,38 @@ test("keeps document read tokens optional for older Dispatch servers", () => {
   expect("token" in text).toBe(false);
 });
 
+test("keeps owed_documents optional on the coverage and tree reads for older Dispatch servers", () => {
+  // A server names each document of the issue that owes its block index, by its id and the version
+  // whose blocks wait; an issue that owes none, and a server of the release before, answer no
+  // member at all, which a reader takes as nothing owed.
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [],
+    spec_artifact_id: "spec",
+  };
+  const tree: IssueTreeRead = {
+    converted: false,
+    cursor: null,
+    documents: null,
+    issue: "CORE-1",
+    nodes: [],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "",
+    view_of: null,
+  };
+  expect("owed_documents" in coverage).toBe(false);
+  expect("owed_documents" in tree).toBe(false);
+  const owed: IssueTreeRead = {
+    ...tree,
+    owed_documents: [{ artifact_id: "verification", version: 2 }],
+  };
+  expect(owed.owed_documents ?? []).toEqual([{ artifact_id: "verification", version: 2 }]);
+});
+
 test("models a comment's and a direct message's blocks", () => {
   const comment = "11111111-1111-4111-8111-111111111111";
   const commentBlocks: ItemBlocks = {
@@ -1484,6 +1535,8 @@ test("models a comment's and a direct message's blocks", () => {
       changed_at: "2026-10-28T00:00:00Z",
       parent: { kind: "issue", id: "CORE-1", ref: "dispatch://CORE-1" },
       parent_version: null,
+      state: "live",
+      visibility: "project",
     },
     revision: 2,
     indexed: true,
@@ -1513,6 +1566,8 @@ test("models a comment's and a direct message's blocks", () => {
       // A direct message belongs to no issue, so its node has no parent.
       parent: null,
       parent_version: null,
+      state: "live",
+      visibility: "project",
     },
     indexed: true,
     blocks: [

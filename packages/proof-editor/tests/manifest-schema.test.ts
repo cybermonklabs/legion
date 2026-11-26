@@ -261,3 +261,54 @@ test("an HTML paste drops each element the editor cannot create yet and keeps it
     { blockSchema: laterManifest }
   );
 });
+
+/** The manifest as the Dispatch page gives it to the editor of a document of an issue that is a
+ *  view on its ancestor's spec: a requirement is read and drawn, and created only from the version
+ *  after the manifest's (`creatable_since`), so this editor creates none. */
+const viewManifest = {
+  ...manifest,
+  types: manifest.types.map((type) =>
+    type.name === "requirement" ? { ...type, creatable_since: manifest.version + 1 } : type
+  ),
+} as BlockSchema;
+
+/** Whether `doc` holds a node of the type `typeName`. */
+function holdsType(doc: ProseMirrorNode, typeName: string): boolean {
+  let held = false;
+  doc.descendants((node) => {
+    held ||= node.type.name === typeName;
+    return !held;
+  });
+  return held;
+}
+
+test("an editor that may not create a requirement makes no block of a pasted one, and a pasted callout is still a block", async () => {
+  await withMarksEditor(
+    "Before",
+    ({ view }) => {
+      // The markdown paste is refused by the editor's creation gate, which leaves the clipboard's
+      // text to the browser to insert as text (`liveTypedBlocksRemarkPlugin` says so): nothing of
+      // it is a requirement.
+      expect(() =>
+        withHTMLElementGlobal(() =>
+          pastePlainText(view, ":::requirement{#r1}\nThe pasted work.\n:::")
+        )
+      ).toThrow('this editor cannot create typed block "requirement" yet');
+      expect(holdsType(view.state.doc, "requirement")).toBe(false);
+
+      // A copied requirement block's HTML keeps its words, without the block.
+      withHTMLElementGlobal(() =>
+        pasteHtml(
+          view,
+          '<section data-proof-block-type="requirement"><p>The copied work.</p></section>'
+        )
+      );
+      expect(view.state.doc.textContent).toContain("The copied work.");
+      expect(holdsType(view.state.doc, "requirement")).toBe(false);
+
+      withHTMLElementGlobal(() => pastePlainText(view, ':::callout{kind="warning"}\nFine\n:::'));
+      expect(blockOfType(view.state.doc, "callout").attrs.kind).toBe("warning");
+    },
+    { blockSchema: viewManifest }
+  );
+});

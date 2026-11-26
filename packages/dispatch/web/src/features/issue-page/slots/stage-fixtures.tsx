@@ -13,14 +13,16 @@ import {
 } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
-import type { IssueDetails } from "../../../api/types";
+import type { Artifact, Comment, IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { Preset } from "../page-words";
+import { commentNode, treeAnswer, treeNode, wholeTreeOnly } from "../tree-read/tree-fixtures";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { FAILED_READ_RETRY } from "./failed-read-line";
 import { ProvidersSlot } from "./providers";
 import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
@@ -192,16 +194,18 @@ export async function rowTakesFocus(
 /** A refusal of a read, as Dispatch answers one it cannot serve now. */
 export const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
 
-/** Waits for the outline, drawn in a view's place, to draw the failed read's line that says
- *  `message` with the focus on its Retry, saying what `what` drew where it does not. */
+/** Waits for the slot `within` finds - the outline, drawn in a view's place, where none is given -
+ *  to draw the failed read's line that says `message` with the focus on its Retry, saying what
+ *  `what` drew where it does not. */
 export async function retryTakesFocus(
   view: RenderResult,
   message: string,
-  what: string
+  what: string,
+  within = "[data-issue-body]"
 ): Promise<void> {
   await waitFor(() => {
-    const line = [...view.container.querySelectorAll("[data-issue-body] [data-failed-read]")].find(
-      (each) => each.textContent?.includes(message)
+    const line = [...view.container.querySelectorAll(`${within} [data-failed-read]`)].find((each) =>
+      each.textContent?.includes(message)
     );
     expect(
       line,
@@ -235,6 +239,37 @@ export function commentGone(): Mock<typeof api.getComment> {
   );
 }
 
+/** The tree read's answer for the issue holding `nodes` under it, each named as a case names it
+ *  (`tree-read/tree-fixtures.ts`), with `tuples` between them, and no node at all where `nodes`
+ *  is empty. */
+export function treeOf(
+  nodes: readonly TreeAnswerNode[],
+  tuples: readonly TreeTuple[] = []
+): TreeAnswer {
+  return treeAnswer(nodes.length === 0 ? [] : [treeNode(KEY, "issue", null), ...nodes], tuples);
+}
+
+/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree at once, and each
+ *  view of it never (`wholeTreeOnly`). The spy is the one `stubReads` set, which `spyOn` hands
+ *  back, so the `afterEach` that restores those restores it. */
+export function answerTree(
+  nodes: readonly TreeAnswerNode[],
+  tuples: readonly TreeTuple[] = []
+): void {
+  spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf(nodes, tuples)));
+}
+
+/** Each of `comments` as the tree read answers it (`commentNode`). */
+export function commentNodes(comments: readonly Comment[]): TreeAnswerNode[] {
+  return comments.map((comment) => commentNode(comment));
+}
+
+/** Where a block written in `document` stands in the tree read's answer: in that document, at
+ *  `position` among its blocks. */
+export function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0) {
+  return { document: { artifact_id: document.id, position, slug: document.slug } };
+}
+
 /** Every read the page's tree is built from, answered with nothing, and who is reading. */
 export function stubReads(): { mockRestore(): void }[] {
   return [
@@ -245,11 +280,7 @@ export function stubReads(): { mockRestore(): void }[] {
       requirements: [],
       spec_artifact_id: "",
     }),
-    spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    }),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({
       checks: [],
       issue: KEY,
@@ -257,9 +288,10 @@ export function stubReads(): { mockRestore(): void }[] {
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];

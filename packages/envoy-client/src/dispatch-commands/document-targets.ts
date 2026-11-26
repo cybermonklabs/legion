@@ -281,28 +281,36 @@ function boundedEditDistance(a: readonly string[], b: readonly string[], limit: 
 export function anchor(
   artifact: Artifact,
   args: Record<string, unknown>
-): { artifact: string; quote: string; occurrence?: number } | undefined {
+): { artifact: string; quote: string; occurrence?: number; block_id?: string } | undefined {
   const quote = optionalString(args, "quote");
   if (quote === undefined) return undefined;
   const occurrence = optionalNumber(args, "occurrence");
-  return { artifact: artifact.id, quote, ...(occurrence === undefined ? {} : { occurrence }) };
+  const blockId = optionalString(args, "block_id");
+  return {
+    artifact: artifact.id,
+    quote,
+    ...(occurrence === undefined ? {} : { occurrence }),
+    ...(blockId === undefined ? {} : { block_id: blockId }),
+  };
 }
 /** Whether a document is its issue's plan, read off the artifact as Dispatch answers it: its role
- *  is `plan`, or it is an issue's document that carries no role and its slug is `plan-md`. It is
- *  the server's own rule, `documentPlays(artifact, model.ArtifactRolePlan)` in
- *  packages/envoy/internal/dispatch/api/artifacts.go, slug fallback included: an issue's row whose
- *  role column is still null, because the build that created it did not know the column, is a
- *  plan by its slug there and so here. A role belongs to an issue's documents alone, so a project
- *  document named plan.md (`issue_key` null) plays no role and is a plain document, there and
- *  here. It is what decides whether Dispatch refuses a request for a person's approval of the
- *  document (409 PLAN_APPROVED_BY_REVIEW): it refuses one on every plan, whoever approved it. */
+ *  is `plan`, or it is an issue's markdown document (`kind` `doc`) that carries no role and its
+ *  slug is `plan-md`. It is the server's own rule, `documentPlays(artifact, model.ArtifactRolePlan)`
+ *  in packages/envoy/internal/dispatch/api/artifacts.go, slug fallback included: an issue's row
+ *  whose role column is still null, because the build that created it did not know the column, is
+ *  a plan by its slug there and so here. A role belongs to an issue's markdown documents alone, so
+ *  a project document named plan.md (`issue_key` null) plays no role and is a plain document, and
+ *  so is a file uploaded as plan.md (`kind` `file`), there and here. It is what decides whether
+ *  Dispatch refuses a request for a person's approval of the document (409
+ *  PLAN_APPROVED_BY_REVIEW): it refuses one on every plan, whoever approved it. */
 export function documentPlaysPlan(
-  artifact: Pick<Artifact, "role" | "slug" | "issue_key">
+  artifact: Pick<Artifact, "role" | "slug" | "issue_key" | "kind">
 ): boolean {
   return (
     artifact.role === "plan" ||
     ((artifact.role ?? "") === "" &&
       typeof artifact.issue_key === "string" &&
+      artifact.kind === "doc" &&
       artifact.slug === "plan-md")
   );
 }
@@ -317,7 +325,7 @@ export function documentPlaysPlan(
  *  (409 ISSUE_CLOSED), so on the document of a closed issue (`issueClosed`) the stale line names
  *  no command and says the issue is closed instead. */
 export function approvalLine(
-  artifact: Pick<Artifact, "approval" | "role" | "slug" | "issue_key">,
+  artifact: Pick<Artifact, "approval" | "role" | "slug" | "issue_key" | "kind">,
   issueClosed: boolean
 ): string | undefined {
   const approval = artifact.approval;
@@ -343,7 +351,7 @@ export function approvalLine(
       if (documentPlaysPlan(artifact)) {
         return `${changed} - a plan review of this version records a new approval with dispatch plan-approve${content}`;
       }
-      return `${changed} - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
+      return `${changed} - request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     }
     case "changes_requested":
       return `Approval: changes requested on v${approval.version} by ${by}: ${approval.reason ?? ""}${content}`;

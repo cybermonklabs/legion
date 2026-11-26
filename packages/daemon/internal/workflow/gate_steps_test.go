@@ -23,15 +23,11 @@ import (
 )
 
 // The documents of the steps these tests gate. gateDoc is the root's primary document, which the
-// spec step binds to; criteriaDoc is its Verification document and decisionsDoc its decisions
-// document. register_gate carries no step of its own yet, so a registration writes the row the
-// document it names already holds and records the spec step for a document no row holds: a step
-// other than spec is given its row once with PutGate, to bind the document to the step, and every
-// fact after that is the engine's own.
-const (
-	criteriaDoc  = "artifact-criteria"
-	decisionsDoc = "artifact-decisions"
-)
+// spec step binds to, and criteriaDoc is its Verification document. register_gate carries no step
+// of its own yet, so a registration writes the row the document it names already holds and
+// records the spec step for a document no row holds: a step other than spec is given its row once
+// with PutGate, to bind the document to the step, and every fact after that is the engine's own.
+const criteriaDoc = "artifact-criteria"
 
 // gatedRoot is the root whose tree these tests gate.
 const gatedRoot = "LEGION-208"
@@ -286,6 +282,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 // driven, because the step the work stands on is the first of the configured list that is closed,
 // whichever a person approved first.
 func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
+	t.Parallel()
 	orders := []struct {
 		name                   string
 		approvedDoc, closedDoc string
@@ -384,6 +381,7 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 // both steps open, a changes request on the Verification document closes the criteria step,
 // leaves the spec step open, and tells the architect once with the reason the person gave.
 func TestGatedStepsAChangesRequestOnOneStepLeavesTheOtherOpen(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
@@ -442,6 +440,7 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 // catch-up says the gate was carried and names both steps, and the approval of the old root's
 // Verification document opens the copy that was closed, which starts the new root's first phase.
 func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
@@ -497,21 +496,22 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 // that answered to one reference would replace each other's decision. The spec step keeps the
 // reference it has always had, so a one-step deployment's decisions are keyed as before.
 func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
-	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
+	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
 	seedGatedTree(t, pool)
-	bindStep(t, pool, record.DesignStepDecisions, decisionsDoc)
+	bindStep(t, pool, record.DesignStepCriteria, criteriaDoc)
 
-	apply("register-decisions", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepDecisions, ArtifactID: decisionsDoc, Version: 3})
+	apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 3})
 	apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
-	apply("approve-decisions", stepApproval(gatedRoot, decisionsDoc, 3, record.EventMark{Seq: 7}))
+	apply("approve-criteria", stepApproval(gatedRoot, criteriaDoc, 3, record.EventMark{Seq: 7}))
 	apply("changes-on-the-spec", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactChangesRequested,
 		Version: 4, Reason: "say what it does not do", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 8}})
 
 	approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
-	if len(approved) != 1 || approved[0].Ref != "dispatch://"+gatedRoot+"/artifact/decisions-md" {
-		t.Fatalf("design-approved notices = %#v, want one naming the decisions document", approved)
+	if len(approved) != 1 || approved[0].Ref != "dispatch://"+gatedRoot+"/artifact/verification-md" {
+		t.Fatalf("design-approved notices = %#v, want one naming the Verification document", approved)
 	}
 	changes := noticesOfKind(t, pool, gatedRoot, "design-changes-requested")
 	if len(changes) != 1 || changes[0].Ref != "dispatch://"+gatedRoot+"/spec" {
@@ -525,7 +525,8 @@ func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
 // does wait, which is what tells the two apart, and it starts once that step is registered and
 // approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
-	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
+	t.Parallel()
+	steps := twoSteps()
 	t.Run("the step nobody registered", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepsEngine(steps, nil)
@@ -533,12 +534,12 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		seedGatedTree(t, pool)
 
 		// The spec step alone is registered and approved, each through its own fact; the
-		// decisions step has no row at all.
+		// criteria step has no row at all.
 		apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4,
 			RequestAsk: "ask-spec", Since: record.EventMark{Seq: 5}})
 		apply("approve-spec", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 6}))
 		if got := phaseOf(t, pool, gatedRoot); got != phase.Admitted {
-			t.Fatalf("the root = %s with the decisions step unregistered, want it admitted", got)
+			t.Fatalf("the root = %s with the criteria step unregistered, want it admitted", got)
 		}
 
 		reconcileAwaiting(t, pool, engine)
@@ -549,15 +550,15 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 			t.Fatalf("awaiting-person notices = %q, want none for a step nobody registered", got)
 		}
 
-		bindStep(t, pool, record.DesignStepDecisions, decisionsDoc)
-		apply("register-decisions", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepDecisions, ArtifactID: decisionsDoc, Version: 3})
+		bindStep(t, pool, record.DesignStepCriteria, criteriaDoc)
+		apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 3})
 		if got := phaseOf(t, pool, gatedRoot); got != phase.Admitted {
-			t.Fatalf("the root = %s with the decisions step registered and closed, want it admitted", got)
+			t.Fatalf("the root = %s with the criteria step registered and closed, want it admitted", got)
 		}
-		apply("approve-decisions", stepApproval(gatedRoot, decisionsDoc, 3, record.EventMark{Seq: 8}))
+		apply("approve-criteria", stepApproval(gatedRoot, criteriaDoc, 3, record.EventMark{Seq: 8}))
 		admissionPass(t, pool, engine)
 		if got := phaseOf(t, pool, gatedRoot); got != phase.Planning {
-			t.Fatalf("the root = %s once the decisions step is registered and approved, want planning", got)
+			t.Fatalf("the root = %s once the criteria step is registered and approved, want planning", got)
 		}
 	})
 
@@ -566,20 +567,20 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		engine := stepsEngine(steps, nil)
 		apply := applyFacts(t, pool, engine)
 		seedGatedTree(t, pool)
-		bindStep(t, pool, record.DesignStepDecisions, decisionsDoc)
+		bindStep(t, pool, record.DesignStepCriteria, criteriaDoc)
 
 		apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4,
 			RequestAsk: "ask-spec", Since: record.EventMark{Seq: 5}})
 		apply("approve-spec", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 6}))
-		apply("register-decisions", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepDecisions, ArtifactID: decisionsDoc, Version: 3,
-			RequestAsk: "ask-decisions", Since: record.EventMark{Seq: 7}})
+		apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 3,
+			RequestAsk: "ask-criteria", Since: record.EventMark{Seq: 7}})
 
 		if entered := reconcileAwaiting(t, pool, engine); len(entered) != 1 || entered[0] != gatedRoot {
-			t.Fatalf("the pass returned %v, want the root, which handed its decisions document to a person", entered)
+			t.Fatalf("the pass returned %v, want the root, which handed its Verification document to a person", entered)
 		}
 		waiting := recordedRoot(t, pool)
-		if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != decisionsDoc {
-			t.Fatalf("the root = %#v, want it waiting on the decisions document", waiting.Awaiting)
+		if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != criteriaDoc {
+			t.Fatalf("the root = %#v, want it waiting on the Verification document", waiting.Awaiting)
 		}
 		if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
 			t.Fatalf("awaiting-person notices = %q, want the one a registered closed step raises", got)
@@ -588,14 +589,15 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 }
 
 // A step nobody has registered holds the work, and that is all it does: the wait a registered
-// step after it raised still reaches the person. Under the decisions step and the spec, with the
-// decisions step unregistered and the spec registered, unapproved and its approval request with
+// step after it raised still reaches the person. Under the criteria step and the spec, with the
+// criteria step unregistered and the spec registered, unapproved and its approval request with
 // the person, the root enters the wait on its primary document and the controller is told.
 // Reading the unregistered step as the step the person has would leave the root with nothing to
 // answer the wait that never began, while the person holds its request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
-	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
+	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
 	seedGatedTree(t, pool)
 
@@ -623,6 +625,7 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 // document the deployment no longer gates is ignored. Both directions are driven from the one
 // stored tree.
 func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	spec := stepsEngine([]record.DesignStep{record.DesignStepSpec}, nil)
 	seedGatedTree(t, pool)
@@ -631,8 +634,8 @@ func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
 		t.Fatalf("the root = %s under the one step it holds unapproved, want it admitted", got)
 	}
 
-	// The next boot gates the decisions step as well, which this tree has never registered.
-	longer := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
+	// The next boot gates the criteria step as well, which this tree has never registered.
+	longer := stepsEngine(twoSteps(), nil)
 	applyMirrored(t, pool, longer, "child-todo", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
 		Type: "issue.updated", Status: "todo", Title: "child", Parent: gatedRoot, Rank: "V"})
 	applyFacts(t, pool, longer)("approve-spec", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 7}))
@@ -687,6 +690,7 @@ func assertRootWaitsOnItsChild(t *testing.T, pool *pgxpool.Pool, root string) {
 // is told once, a changes request is told once with the person's reason, and a carried copy opens
 // on an approval of the old root's document.
 func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
+	t.Parallel()
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	t.Run("the registration opens the one step and tells the architect once", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -747,6 +751,7 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 // records the spec step and opens it at once, with no person asked, and the root's first phase
 // starts at the admission pass after it.
 func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
@@ -773,6 +778,7 @@ func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
 // second approval starts the child, and the root's own first phase then waits for that open child
 // (children-first), its row given back for the wait.
 func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		first, second intake.DispatchArtifact
@@ -830,6 +836,7 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 // before, so each is owed the new one's news, and the task that carries it leads with the opening,
 // its told row recording the opening as owed in place of the opened message (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
@@ -871,6 +878,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 // gate registered before register_gate took criteria is: a version of that document reaches no
 // row, and the spec's approval opens the tree.
 func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -895,6 +903,7 @@ func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
 // holds nothing, closed as it stands: the spec's registration opens the tree at once, and a new
 // version of the kept document moves no row and tells nobody.
 func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
@@ -921,6 +930,7 @@ func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
 // Registered after the gate already opened, it joins a tree its gate released: the row is
 // written as ever opened, and the tree reads opened once and closed.
 func TestAVerificationDocumentReadsEverOpenedByWhenItWasRegistered(t *testing.T) {
+	t.Parallel()
 	t.Run("registered before the first opening", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)

@@ -30,9 +30,26 @@ import (
 func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) error {
 	slices.Sort(documents)
 	documents = slices.Compact(documents)
+	if err := lockDocumentOwners(ctx, tx, `id = any($1::uuid[])`, documents); err != nil {
+		return err
+	}
+	for _, document := range documents {
+		if _, err := tx.Exec(ctx, `
+			select 1 from document_block_versions where artifact_id = $1 for no key update
+		`, document); err != nil {
+			return fmt.Errorf("lock the block index row of document %s: %w", document, err)
+		}
+	}
+	return nil
+}
+
+// lockDocumentOwners takes the owner row of each document whose artifacts row where picks, an SQL
+// predicate over artifacts with $1 bound to documents: each once, in the order of its owner key
+// (events.LockOwnerRows), the one order over owner rows. A document no row is left of has no owner
+// row to take.
+func lockDocumentOwners(ctx context.Context, tx pgx.Tx, where string, documents []string) error {
 	rows, err := tx.Query(ctx, `
-		select id::text, coalesce(issue_key, '') from artifacts where id = any($1::uuid[])
-	`, documents)
+		select id::text, coalesce(issue_key, '') from artifacts where `+where, documents)
 	if err != nil {
 		return fmt.Errorf("load the owners of a batch's documents: %w", err)
 	}
@@ -48,15 +65,5 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 	for _, document := range owned {
 		owners.Add(document[1], document[0])
 	}
-	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
-		return err
-	}
-	for _, document := range documents {
-		if _, err := tx.Exec(ctx, `
-			select 1 from document_block_versions where artifact_id = $1 for no key update
-		`, document); err != nil {
-			return fmt.Errorf("lock the block index row of document %s: %w", document, err)
-		}
-	}
-	return nil
+	return events.LockOwnerRows(ctx, tx, owners)
 }

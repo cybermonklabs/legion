@@ -26,7 +26,7 @@ const agentOwnsFilesOnly = "an agent's conversation holds files and images; a do
 // artifactOwnerKey's session arm is built from, rather than that expression, which no index holds,
 // so the partial index artifacts_session_id (0071) serves both lookups every upload makes under the
 // conversation's lock instead of a scan of every owner's artifacts.
-const (
+var (
 	agentArtifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1 and $2 in (name, slug)
 		order by slug = $2 desc limit 1`
 	agentArtifactSlugTakenSQL = `select exists(select 1 from artifacts where session_id = $1 and slug = $2)`
@@ -91,15 +91,16 @@ func (target artifactTarget) ownsEvents() bool {
 	return target.Session == ""
 }
 
-// loadAgentArtifact reads the artifact the request's session_id and slug name. A conversation
-// holds no document, so its artifacts are read by slug alone, with no filename falling back to a
-// document as an issue's or a project's reference does (loadArtifactByDocumentReference).
-func (s *server) loadAgentArtifact(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
+// agentArtifactRow reads the row of the artifact the request's session_id and slug name. A
+// conversation holds no document, so its artifacts are read by slug alone, with no filename
+// falling back to a document as an issue's or a project's reference does
+// (resolveDocumentReference).
+func agentArtifactRow(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
 	session, err := requestSessionID(r)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	return s.loadArtifactByRefKey(ctx, q, agentOwnerKey(session)+"/"+r.PathValue("slug"))
+	return artifactRowByRefKey(ctx, q, agentOwnerKey(session)+"/"+r.PathValue("slug"))
 }
 
 // POST /api/v1/agents/{session_id}/artifacts

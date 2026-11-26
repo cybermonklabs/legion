@@ -11,12 +11,15 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
@@ -27,7 +30,11 @@ import (
 type askTransition struct {
 	EventType      string
 	ReplacesAnswer *time.Time
-	Apply          func(context.Context, pgx.Tx, *docs.Ledger, model.Ask) (model.Ask, error)
+	// Apply writes the transition's answer state through the one writer of an ask's answer state
+	// (docs.Ledger.PlanSettle, queued on ledger), and leaves what that write states on the ask's
+	// node in held: closeAskTx queues its append under the transition's event, right after that
+	// event.
+	Apply func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error)
 	// Payload builds the event's payload from the one every transition carries (the ask after
 	// the transition, whose thread_logins the event's insert reads); nil appends that payload as
 	// it is.
@@ -70,7 +77,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 	return askTransition{
 		EventType:      "ask.answered",
 		ReplacesAnswer: options.ReplacesAnswer,
-		Apply: func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
+		Apply: func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
 			if options.Revision != nil && !stringPointersEqual(options.Revision.EditedAt, ask.EditedAt) {
 				return model.Ask{}, errorf(
 					http.StatusConflict,
@@ -128,15 +135,20 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 					return model.Ask{}, err
 				}
 			}
-			answerJSON, err := encodeJSON(answer)
+			// The answer goes through the one writer of an ask's answer state, planned here under
+			// the ask's owner lock, from the last settle of this ask the ledger holds where this
+			// transaction made one (Ledger.PlanSettle), and queued on the ledger: its facts on the
+			// ask's node, held for the ask.answered event closeAskTx queues, then the row.
+			change := asks.Answered(answer)
+			change.Who, change.At, change.Held = actor, answer.At, held
+			settled, err := ledger.PlanSettle(ctx, ask.ID, change)
 			if err != nil {
 				return model.Ask{}, err
 			}
-			if err := queueExec(ledger, `update asks set state = 'answered', answer = $2 where id = $1`, ask.ID, answerJSON); err != nil {
+			if err := ledger.Queue(settled.Queue); err != nil {
 				return model.Ask{}, err
 			}
-			ask.State = "answered"
-			ask.Answer = &answer
+			ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
 			return ask, nil
 		},
 		Payload: func(payload model.AskEventPayload) any {
@@ -239,28 +251,20 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			if ask.BlockID == nil {
 				return nil
 			}
-			blockArtifact, err := blockArtifactOf(ask)
-			if err != nil {
-				return err
-			}
 			// A copy of this ask on another document of its owner shows its state, so the
 			// answer settles each copy again; the copies' pending rows are taken before this
 			// document's (docs.SettleCopiesOf).
 			if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 				return err
 			}
-			var answerText any
-			if answer.Text != nil {
-				answerText = *answer.Text
-			}
-			attributes := map[string]any{
-				"state":       "answered",
-				"answered_by": answer.User,
-				"answered_at": timestampValue(answer.At),
-				"selected":    answer.Selected,
-				"answer":      answerText,
-			}
-			return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, attributes, actor)
+			// The answer is held on the ask's node alone. While a process of the release before
+			// serves, whose page reads it from the block, the block is kept in step with it.
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
+			ask.State, ask.Answer = asks.StateAnswered, &answer
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
+			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
 	})
 	// Answering an approval request approves its document, so it needs the approve scope beside
@@ -272,12 +276,12 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
 	// writeHandlerError gives the challenge header.
 	recordAnswer := transition.Apply
-	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
+	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 			return model.Ask{}, missingScopeError(model.ScopeApprove,
 				"this request's credential does not hold the approve scope, which answering an approval request requires")
 		}
-		return recordAnswer(ctx, tx, ledger, ask)
+		return recordAnswer(ctx, tx, ledger, ask, held)
 	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
@@ -361,15 +365,22 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
+	// Read before closeAsk opens its transaction (specWriterOf), for the check in Apply.
+	writer := s.specWriterOf(r, actor)
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
-		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
+		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
+			// The check of who writes an issue's spec or Verification document, on the block's
+			// document and each copy of the ask, before the first document call.
+			if err := s.refuseSpecWriterOfAsk(ctx, tx, writer, ask); err != nil {
+				return model.Ask{}, err
+			}
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
-			// ctx is joined to the transaction's ledger (closeAsk), so the resolution's update
-			// is queued there, after the block's writes.
-			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor)
+			// ctx is joined to the transaction's ledger (closeAsk), so the resolution's write is
+			// queued there, after the block's writes.
+			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor, held)
 		},
 	})
 	if err != nil {
@@ -379,25 +390,24 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
-// writeClosedBlockState writes a closed block ask's state into its document, as the resolve and
-// the decline both must: a block ask's closed state belongs in its block too, written by
-// whoever closed it, since left to settlement the repair lands on whoever next touches the
-// document. A copy of the ask on another document of its owner shows its state as well, so each
-// copy is settled again (docs.SettleCopiesOf). An ask with no block writes nothing.
+// writeClosedBlockState settles again each copy of a closed block ask on another document of its
+// owner, which shows its state (docs.SettleCopiesOf), as the resolve and the decline both must,
+// and keeps the ask's own block in step with its resolution while a process of the release before
+// serves, whose page reads the state from the block (docs.KeepAskBlockInStep). An ask with no
+// block writes nothing.
 func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {
 		return nil
 	}
-	blockArtifact, err := blockArtifactOf(ask)
-	if err != nil {
-		return err
-	}
 	if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 		return err
 	}
-	return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, map[string]any{
-		"state": "resolved",
-	}, actor)
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
+	ask.State = asks.StateResolved
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
+	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }
 
 // declineAskInput is the body of POST /api/v1/asks/{id}/decline. Both fields are optional: a
@@ -446,7 +456,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// person's words is refused for how they open.
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
-		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
+		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
 			// The kind is refused here, inside Apply, for the reason answerAsk states for its
 			// own kind-dependent refusal: an ask's kind is known only once its row is read, and
 			// a read before the transaction would decide on a row another writer could still
@@ -460,7 +470,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
-			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor)
+			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor, held)
 		},
 	})
 	if err != nil {
@@ -502,7 +512,9 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 // copy lock's order requires (docs.lockProjectCopies), and the events are filled in once Commit
 // has run the write phase (appendedEvents).
 func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, actor model.Actor, transition askTransition) (model.Ask, []*model.Event, error) {
-	ask, err := s.transitionAskTx(ctx, tx, ledger, id, transition)
+	// What the transition states on the ask's node waits for its event, queued below.
+	var held graphstore.Uncaused
+	ask, err := s.transitionAskTx(ctx, tx, ledger, id, transition, &held)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -533,6 +545,14 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
+	// What the transition stated on the ask's node learns the event the step before appended.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
+		return nil
+	}); err != nil {
+		return model.Ask{}, nil, err
+	}
 	events := []*model.Event{event}
 	if transition.After != nil {
 		more, err := transition.After(ctx, tx, ledger, ask)
@@ -545,8 +565,8 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 }
 
 // transitionAskTx reads an open ask under its owner's lock and applies a transition inside the
-// caller's transaction; it appends no event.
-func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition) (model.Ask, error) {
+// caller's transaction, leaving in held what it states on the ask's node; it appends no event.
+func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition, held *graphstore.Uncaused) (model.Ask, error) {
 	unlockedAsk, err := s.loadAsk(ctx, tx, id)
 	if err != nil {
 		return model.Ask{}, err
@@ -577,7 +597,7 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	default:
 		return model.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
 	}
-	return transition.Apply(ctx, tx, ledger, ask)
+	return transition.Apply(ctx, tx, ledger, ask, held)
 }
 func selectedOptions(options []model.AskOption, selected []string) bool {
 	labels := make(map[string]struct{}, len(options))

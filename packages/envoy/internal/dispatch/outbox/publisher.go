@@ -938,7 +938,10 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 	args = append(args, stored...)
 	var holds bool
 	if err := deps.lanes.statement(func() error {
-		return deps.Store.Pool.QueryRow(ctx, `
+		heads := append(graphstore.HeadsOf(reached.nodes, reached.tuples), graphstore.HeadsOfClaims(reached.claims)...)
+		writeHeads := func(tx pgx.Tx) error { return graphstore.WriteHeads(ctx, tx, heads) }
+		return recordWithHeads(ctx, deps.Store.Pool, len(heads) > 0, writeHeads, func(q rowQuerier) error {
+			return q.QueryRow(ctx, `
 		with hold as (
 			select exists (
 				select 1 from duty_holds where name = $1 and holder = $2 and expires_at > now()
@@ -988,10 +991,34 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 		)`+arms+`
 		select mine from hold
 	`, args...).Scan(&holds)
+		})
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}
 	return holds, nil
+}
+
+// rowQuerier is what a record runs its one statement on: the pool, or a transaction of it.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// recordWithHeads runs record's one statement on pool where it writes no node and no tuple of the
+// store, and otherwise in a transaction of its own followed by writeHeads, its caller's head write of
+// the nodes it wrote (graphstore.WriteHeads), so the head rows of those nodes commit with them.
+func recordWithHeads(ctx context.Context, pool interface {
+	rowQuerier
+	Begin(ctx context.Context) (pgx.Tx, error)
+}, writes bool, writeHeads func(pgx.Tx) error, record func(rowQuerier) error) error {
+	if !writes {
+		return record(pool)
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := record(tx); err != nil {
+			return err
+		}
+		return writeHeads(tx)
+	})
 }
 
 // resolveDestinations gives every event of a batch that has an owner and can be read its envelope

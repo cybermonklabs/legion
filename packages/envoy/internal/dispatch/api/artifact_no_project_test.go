@@ -99,8 +99,8 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 	}
 	read, err := s.loadArtifact(ctx, database.Pool, photoID)
 	wantNoProject("loadArtifact of the conversation's file", read, err, photoID)
-	read, err = s.loadArtifactByRefKey(ctx, database.Pool, photoRefKey)
-	wantNoProject("loadArtifactByRefKey of the conversation's file", read, err, photoID)
+	read, err = artifactRowByRefKey(ctx, database.Pool, photoRefKey)
+	wantNoProject("artifactRowByRefKey of the conversation's file", read, err, photoID)
 	read, err = s.findArtifactByNameOrSlug(ctx, database.Pool, artifactTarget{Session: conversationSession}, "photo.png")
 	wantNoProject("findArtifactByNameOrSlug in the conversation", read, err, photoID)
 

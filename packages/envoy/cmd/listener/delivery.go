@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -120,6 +121,14 @@ type listenerDeliveryHandlerConfig struct {
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
+	// consumerGrant answers whether this listener's NATS user holds the session consumers' calls,
+	// which decides whether it runs takeover passes (passRecords). It is required, but it is refused
+	// only when first asked, not when a handler is built: a configuration without it panics at its
+	// first claim handover or sweep pass (holdsConsumerGrant). main.go makes it inside this
+	// configuration's literal and sets its answer to its session delivery's holdsConsumerGrant once
+	// that is open, so every copy of the configuration reads that one answer. A test rig sets an
+	// answer of its own, and may set it again over an earlier one.
+	consumerGrant *consumerGrantAnswer
 	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
 	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
 	// client.PublishStoredAck, and so does every test that builds a config, while a test that
@@ -175,6 +184,39 @@ type listenerDeliveryHandlerConfig struct {
 func wireRoleForwarder(cfg listenerDeliveryHandlerConfig) listenerDeliveryHandlerConfig {
 	cfg.roleForwards = newRoleForwarder(cfg)
 	return cfg
+}
+
+// holdsConsumerGrant is cfg.consumerGrant's answer (passRecords). A configuration without one is
+// refused, since no answer a listener makes up for itself is the one main.go wires.
+func (cfg listenerDeliveryHandlerConfig) holdsConsumerGrant(ctx context.Context) bool {
+	if cfg.consumerGrant == nil {
+		panic("listener configuration without its consumer-grant answer (consumerGrant)")
+	}
+	return cfg.consumerGrant.holds(ctx)
+}
+
+// consumerGrantAnswer is where every copy of a listener's configuration reads whether its NATS
+// user holds the session consumers' calls (listenerDeliveryHandlerConfig.consumerGrant). main.go
+// makes it inside the configuration's literal, which its role forwarder copies at once, and sets
+// the answer once the session delivery it reads from is open, before /v1 opens and before the
+// sweep starts, which are the two callers (passRecords). A later set replaces the answer for every
+// copy; a test rig uses that to put its own session delivery's answer over the harness's.
+type consumerGrantAnswer struct {
+	answer atomic.Pointer[func(context.Context) bool]
+}
+
+// set makes holds the answer.
+func (a *consumerGrantAnswer) set(holds func(context.Context) bool) { a.answer.Store(&holds) }
+
+// holds is the answer. One asked before any is set is refused: a listener that answered no would
+// run no takeover pass anywhere and say nothing, and one that answered yes would run passes its
+// user may be refused, so a lost set in main.go fails at the first claim or sweep that asks.
+func (a *consumerGrantAnswer) holds(ctx context.Context) bool {
+	holds := a.answer.Load()
+	if holds == nil {
+		panic("listener consumer-grant answer asked before main.go set it (consumerGrantAnswer.set)")
+	}
+	return (*holds)(ctx)
 }
 
 type deliveryMode uint8
@@ -901,7 +943,13 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
 	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
-	// capture is the deployed stream's, which the session's consumer filter is judged on too.
+	// capture is the deployed stream's as the listener's client last read it: a topic the stream
+	// stored is in the session's consumer, whose filter holds every topic of the session's row
+	// whatever the deployed stream captures (sessionConsumerFilter). A read of a narrowing that
+	// falls between this message's publish and this judgement judges the stored copy uncaptured,
+	// so this path reports a failure (listener agent delivery failed, a delivery_failed exception
+	// where the stream captures its lane) and NAKs the copy, while the session's consumer still
+	// hands the session the message once.
 	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr,
 		gone, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
@@ -1109,7 +1157,10 @@ func fanoutRefusalOutcome(sessionID string, item contracts.Envelope, verdict fol
 
 // fanoutDelivery delivers a general-topic envelope to every session that
 // registered interest in it (registry.Match), aggregating per-recipient
-// failures into a single NAK/ACK decision for the underlying message.
+// failures into a single NAK/ACK decision for the underlying message. A session whose row matches
+// the topic only through a topic its consumer filter leaves out, an earlier build's row, is no
+// recipient and is skipped with its WARN line (skipLeftOutInterest), where it would otherwise be
+// read as a session whose own consumer relays the message.
 func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	items := cfg.registry.Match(cfg.machineID, item.Topic)
 	if len(items) == 0 {
@@ -1125,6 +1176,9 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 	var failed bool
 	var deadDeliveries int
 	for _, interest := range items {
+		if skipLeftOutInterest(cfg.logger, interest, item.Topic) {
+			continue
+		}
 		verdict, target, _ := judgeFollowedTopic(cfg.followedTopicRules(), interest.SessionID, item, mode, modeErr)
 		// The caches, the echo rule and an unreadable delivery mode judge the message before the
 		// session's own state does, as they always have; what is left is a message this path
@@ -1154,9 +1208,13 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		deliveryTimer := metrics.NewTimer()
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own. The capture is the deployed stream's, which the session's consumer filter is
-		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
-		// is one that consumer relays.
+		// of its own. The capture is the deployed stream's as the listener's client last read it,
+		// so a topic only a newer build's subjects capture is one the session's consumer relays;
+		// that consumer's filter holds every topic of the session's row whatever the deployed
+		// stream captures (sessionConsumerFilter). A read of a narrowing that falls between the
+		// message's publish and this resolution judges the stored copy uncaptured, so this path
+		// logs listener delivery failed and NAKs it for a session whose entry it holds, while the
+		// session's consumer still hands the session the message once.
 		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// Refusals are decided before the take case, since the session whose own consumer relays

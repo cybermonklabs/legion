@@ -13,7 +13,11 @@ import (
 // order every other list of steps in this record takes, so a publication reads as the gate runs.
 // An issue whose gates record no document gives an empty set rather than none, which is the set
 // that clears what Dispatch holds, and which every path writes the same way, so a cleared issue
-// and one published empty again queue the same payload.
+// and one published empty again queue the same payload. A `decisions` row an earlier release
+// wrote is in no set, the boot's (the daemon's queueRecordedGatesPublish) included, because no
+// read of the store hands one over (Postgres.GatesOf): the outbox never carries a step that
+// Dispatch would refuse, and a publication of a changed set takes that issue's `decisions` row
+// off Dispatch by the write's own rule, since it replaces the whole set.
 //
 // Each pair says whether it holds the issue's tree (DesignGateDocument.Holds): whether the steps
 // that tree is gated on (TreeSteps over steps, the deployment's list, and gates, the issue's own

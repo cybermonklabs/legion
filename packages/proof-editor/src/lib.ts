@@ -165,10 +165,13 @@ export interface ProofEditorUser {
 }
 
 export interface CreateProofEditorOptions {
-  /** Host-owned Yjs document. Must contain (or will lazily grow) an XmlFragment
-   *  named 'prosemirror' — see CollabService#bindDoc, which calls
-   *  `doc.getXmlFragment('prosemirror')` for us. */
+  /** Host-owned Yjs document. Must contain (or will lazily grow) the XmlFragment
+   *  `fragment` names — see CollabService#bindXmlFragment, which is handed
+   *  `doc.getXmlFragment(fragment)` for us. */
   ydoc: Y.Doc;
+  /** The XmlFragment of `ydoc` the editor binds: the one holding its document, where the
+   *  host's Yjs document holds several. Defaults to 'prosemirror'. */
+  fragment?: string;
   /** Host-owned awareness instance (e.g. from HocuspocusProvider#awareness).
    *  Pass null/undefined to run without collaborative cursors. */
   awareness?: Awareness | null;
@@ -201,11 +204,21 @@ export interface CreateProofEditorOptions {
   renderBlock?: HostBlockRenderer;
   /** The open document's unversioned Dispatch reference (`dispatch://<ISSUE>/spec`, or
    *  `dispatch://<ISSUE or PROJECT>/artifact/<slug>`), so the typed-block commands refuse a
-   *  `block[]` pointer to one of its own blocks whose type the attribute does not allow. */
+   *  `block[]` pointer to one of its own blocks whose type the attribute does not allow, and the
+   *  commands and a paste refuse a typed block naming something of another issue than its own
+   *  (`otherIssueRefusal`). */
   documentRef?: string;
   /** The host's Mermaid renderer, which draws each mermaid code block's diagram. Without one a
    *  document's mermaid blocks show their source. */
   drawMermaid?: MermaidDrawer;
+  /** Whether the editor writes Proof's marks of its own. Defaults to true. Turned off, it
+   *  offers no mark action - neither the selection bar's Comment, Suggest and Ask, nor the mark
+   *  popover's actions, nor the " ->" comment shortcut, nor the popover hook - and records no
+   *  authorship (`proofAuthored`) on what a person types, so no selection is offered one, no
+   *  mark is written from one, `commentOnSelection` answers false and `getMarkdown` carries no
+   *  mark the editor wrote: for a host whose text takes no comment, suggestion or ask - a field
+   *  it saves as markdown. */
+  proofMarks?: boolean;
 }
 
 /**
@@ -261,8 +274,9 @@ export interface ProofEditorHandle extends TypedBlockCommands {
     placement: RecordMarkPlacement | null
   ): RemarkOutcome;
   /** Starts a comment on the current selection exactly as the selection bar's Comment button
-   *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
-   *  while the document is read-only and takes no comments, where the bar offers no Comment. */
+   *  does, `onMarkAction` included, and answers whether it did: false for an empty selection,
+   *  while the document is read-only and takes no comments, where the bar offers no Comment, and
+   *  in an editor built with `proofMarks: false`, which has no bar. */
   commentOnSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
@@ -422,6 +436,7 @@ export async function createProofEditor(
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
+  const proofMarks = opts.proofMarks ?? true;
 
   const builder = Editor.make()
     .config((ctx) => {
@@ -445,7 +460,7 @@ export async function createProofEditor(
     // of plugins — is an argument Milkdown accepts but its own signature cannot express.
     .use(codeBlockExtPlugins as unknown as MilkdownPlugin[])
     // Every block carries a stable blockId (see ./editor/schema/block-ids.ts).
-    .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock) as unknown as MilkdownPlugin[]) : [])
+    .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock, opts.documentRef) as unknown as MilkdownPlugin[]) : [])
     .use(blockIdPlugins)
     .use(history)
     .use(listener)
@@ -474,7 +489,7 @@ export async function createProofEditor(
     .use(heatmapCtx)
     .use(agentCursorCtx)
     // Register plugins
-    .use(authoredTrackerPlugin)
+    .use(proofMarks ? authoredTrackerPlugin : [])
     .use(heatmapPlugin)
     .use(agentCursorPlugin)
     .use(suggestionsPlugins);
@@ -482,15 +497,15 @@ export async function createProofEditor(
   const marginMode = Boolean(opts.onMarkClick || opts.onMarkHover);
   if (marginMode) {
     builder.use(dispatchMarkEventsPlugin({ onMarkClick: opts.onMarkClick, onMarkHover: opts.onMarkHover }));
-  } else {
+  } else if (proofMarks) {
     builder.use(markPopoverPlugin).use(arrowCommentPlugin);
   }
+  // This library's own Comment/Suggest/Ask bar replaces upstream's
+  // markSelectionBarPlugin, which has no extension point for Ask or a hook
+  // for Comment/Suggest.
+  if (proofMarks) builder.use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }));
 
   const editor = await builder
-    // This library's own Comment/Suggest/Ask bar replaces upstream's
-    // markSelectionBarPlugin, which has no extension point for Ask or a hook
-    // for Comment/Suggest.
-    .use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }))
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
@@ -547,10 +562,12 @@ export async function createProofEditor(
   // mapping is populated.
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
-    // Before the shared document renders: an ask two collaborators left off its content rule
-    // must not be deleted from it (see ./ask-content.ts).
+    // Before the shared document renders: an ask or a decision two collaborators left off its
+    // content rule must not be deleted from it (see ./ask-content.ts).
     relaxAskContentCheck(ctx.get(schemaCtx));
-    collabService.bindDoc(opts.ydoc);
+    // This package's own edit of the copied file: upstream calls bindDoc, which binds the
+    // 'prosemirror' fragment, and an issue's room holds one fragment per document.
+    collabService.bindXmlFragment(opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
     collabService.mergeOptions({
       yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
     });
@@ -564,7 +581,7 @@ export async function createProofEditor(
     }
   });
 
-  const unregisterPopoverHook = marginMode
+  const unregisterPopoverHook = marginMode || !proofMarks
     ? () => {}
     : registerPopoverHookInstance(view, opts.onMarkAction);
 

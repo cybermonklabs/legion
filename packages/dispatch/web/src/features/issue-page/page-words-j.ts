@@ -14,7 +14,17 @@
 import type { PartWords } from "./page-words-parts";
 
 export default {
-  add: {},
+  add: {
+    STATE_LINES: {
+      /** What the Spec view says over its columns, on load as much as later, of a group of its
+       *  reads that stands failed, beside one Retry for the group
+       *  (`spec-filter/SpecFilterBody.tsx`): the spec's blocks and their coverage, and the results
+       *  and the Verification document's blocks. The second is not the outline's
+       *  `results_unreadable`, which names the results read alone. */
+      statements_unreadable: "Could not load the statements.",
+      spec_results_unreadable: "Could not load the results.",
+    },
+  },
   unasked: [],
   answers: [],
 } as const satisfies PartWords;

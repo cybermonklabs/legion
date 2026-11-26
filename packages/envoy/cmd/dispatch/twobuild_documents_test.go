@@ -7,12 +7,12 @@
 package main
 
 // The two-build suite's stored-document half reads this tree's side of what each build holds
-// (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+// (documentSides, tree ../../internal/dispatch); the previous build's side is the copy
 // packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
 //ci:reads packages/envoy/internal/dispatch/pmdoc/schema/blocks.json documentSides readManifest (os.ReadFile) of the current build's block manifest
 //ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md documentSides the current build's corpus: corpusFiles os.ReadDir, and requireCorpusCrossesBuilds os.ReadFile of each .md file it lists
-//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json documentSides the current build's reference fixtures, read by referencesMarkdown os.ReadFile
-//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json documentSides the current build's reference fixtures, read by referencesMarkdown os.ReadFile
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json documentSides the current build's reference fixtures, read by referencesMarkdown and readsTabAddresses through readReferenceTables and readFixture os.ReadFile
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json documentSides the current build's reference fixtures, read by referencesMarkdown through readReferenceTables and by hrefsReadApart, each through hrefTable and readFixture os.ReadFile
 
 import (
 	"bytes"
@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,6 +41,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ───── stored documents ─────────────────────────────────────────────────────
@@ -114,6 +117,9 @@ type manifestType struct {
 	Name       string                       `json:"name"`
 	Content    string                       `json:"content"`
 	Attributes map[string]manifestAttribute `json:"attributes"`
+	// Parents are the typed blocks this type stands in, at the end of that block's own content; a
+	// type that names none is a block of its own wherever a block stands.
+	Parents []string `json:"parents"`
 }
 
 // blockManifest is a build's pmdoc/schema/blocks.json.
@@ -439,17 +445,18 @@ func corpusFiles(t *testing.T, dir string) []string {
 }
 
 // A document either build wrote reads and edits on the other. For each writer X and each file of
-// X's own corpus: a document created on X answers /text on Y and takes an append edit there, and X
-// then renders it as its first render with the appended paragraph after it; on Y, a document socket
-// opened with X's page parameters is admitted writable and stays open. A version X wrote holding
-// every typed block of X's manifest is approved, the answer to its decision block makes Y write the
-// next version, and the approval is carried to it. A body holding every reference form of X's
-// text/testdata that Y's own table holds too keeps its refs rows after Y rewrites it, but for the
-// edges a Y from before the unknown-kind guard drops, which it logs (requireRefsKept); a body
-// holding the forms only X's table holds has every row X wrote back, its blocks' edges included,
-// within two block-index intervals of Y's rewrite (requireWriterOnlyReferencesBack). Where Y reads
-// no tab address and X does, each trigger that owes X a document Y re-indexed is shown needed on
-// its own: a version Y writes, Y's rebuild-refs' delete from refs, and Y's block index's delete from
+// X's own corpus: a document created on X and settled answers /text on Y and takes an append edit
+// there, and X then renders it as its first render with the appended paragraph after it; on Y, a
+// document socket opened with X's page parameters is admitted writable and stays open. A version X
+// wrote holding every typed block of X's manifest is approved, the answer to its ask block
+// makes Y write the next version, and the approval is carried to it. A body holding every
+// reference form of X's text/testdata that Y's own table holds too keeps its refs rows after Y
+// rewrites it, but for the edges a Y from before the unknown-kind guard drops and the rows D10's
+// grammar change makes Y add, each of which it logs (requireRefsKept); a body holding the forms
+// only X's table holds has every row X wrote back, its blocks' edges included, within two
+// block-index intervals of Y's rewrite (requireWriterOnlyReferencesBack). Where Y reads no tab
+// address and X does, each trigger that owes X a document Y re-indexed is shown needed on its own:
+// a version Y writes, Y's rebuild-refs' delete from refs, and Y's block index's delete from
 // block_refs (requireEachTriggerOwesTheDocument), a row that stops and restarts both processes and
 // so runs last.
 func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
@@ -501,9 +508,19 @@ func corpusSkips(file string, markdown []byte) bool {
 	return bytes.ContainsRune(markdown, 0)
 }
 
+// requireCorpusCrossesBuilds creates every corpus document of the writer's on the writer, then
+// waits for each to settle before any build reads it: while two builds serve, an ask block's state
+// reaches its markdown at its document's settlement alone, which keeps it in step with the ask's
+// row for the earlier build's pages (docs' rollWindowAskAttributes), since this build gives a
+// server attribute no written default (pmdoc's writtenDefault) and the earlier build writes the
+// default `state="open"` into every ask block it renders. So the writer's first render, taken once
+// the document has settled, is the document as the roll window keeps it, and the reader's append
+// changes nothing else in it. The documents are all created before the first wait, so their
+// settle delays run together.
 func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	fleet := builds.fleet(t)
-	var sockets []*documentSocket
+	type corpusDocument struct{ file, artifactID string }
+	var created []corpusDocument
 	files := corpusFiles(t, writer.corpus)
 	for _, file := range files {
 		markdown, err := os.ReadFile(filepath.Join(writer.corpus, file))
@@ -514,6 +531,14 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 			continue
 		}
 		_, artifactID := createDocument(t, writer.process, project, "Corpus "+file, string(markdown))
+		created = append(created, corpusDocument{file: file, artifactID: artifactID})
+	}
+	for _, document := range created {
+		waitForSettlementOwed(t, builds.database, document.artifactID, false)
+	}
+	var sockets []*documentSocket
+	for _, document := range created {
+		file, artifactID := document.file, document.artifactID
 		first := writer.process.documentText(t, artifactID)
 		reader.process.documentText(t, artifactID)
 
@@ -545,17 +570,52 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 func typedBlockID(name string) string { return "tb-" + name }
 
 // typedBlocksMarkdown is a document holding one block of every typed block both manifests
-// declare, each with its id and every attribute a writer sets at its default. A decision block
+// declare, each with its id and every attribute a writer sets at its default. An ask block
 // (the ask type) is given two choices, First and Second. A type only the writer's manifest
 // declares is left out: the reader could not read such a document at all, which is the point of
 // the manifest's own staging tests and not of this row, which is about what both builds read.
+//
+// Where each block stands is the manifest's to say. A type that names no parents is a block of
+// the document's own, in manifest order. A type that names parents, as the reading names the
+// decision and the ask, stands only at the end of a block of one of them, so it is written there:
+// in the block of the first of its parents the document writes, after that block's own content,
+// in manifest order among that parent's other such types. A parent's fence is one colon longer
+// than the longest fence inside it, which is how markdown closes the inner block before the outer
+// one. A type none of whose parents the document writes fails the test, as does one the document
+// reaches through no block of its own. So a document of types that name no parents, as every
+// manifest before the reading's is, is each type's three-colon block in manifest order, under the
+// document's heading.
 func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 	t.Helper()
-	blocks := []string{"# Every typed block\n"}
+	var written []manifestType
 	for _, typed := range manifest.Types {
-		if !slices.ContainsFunc(reader.Types, func(other manifestType) bool { return other.Name == typed.Name }) {
+		if slices.ContainsFunc(reader.Types, func(other manifestType) bool { return other.Name == typed.Name }) {
+			written = append(written, typed)
+		}
+	}
+	writes := func(name string) bool {
+		return slices.ContainsFunc(written, func(typed manifestType) bool { return typed.Name == name })
+	}
+	// own are the types written as blocks of the document's own, and inside the types written at
+	// the end of each parent's block.
+	var own []manifestType
+	inside := map[string][]manifestType{}
+	for _, typed := range written {
+		if len(typed.Parents) == 0 {
+			own = append(own, typed)
 			continue
 		}
+		at := slices.IndexFunc(typed.Parents, writes)
+		if at < 0 {
+			t.Fatalf("the %s block stands only at the end of a block of %q, none of which both manifests declare; teach typedBlocksMarkdown where to write it", typed.Name, typed.Parents)
+		}
+		inside[typed.Parents[at]] = append(inside[typed.Parents[at]], typed)
+	}
+	placed := 0
+	// block is typed's block, the blocks inside it included, and the length of its fence.
+	var block func(typed manifestType) (string, int)
+	block = func(typed manifestType) (string, int) {
+		placed++
 		attributes := []string{"#" + typedBlockID(typed.Name)}
 		for _, name := range slices.Sorted(maps.Keys(typed.Attributes)) {
 			attribute := typed.Attributes[name]
@@ -590,7 +650,22 @@ func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 				t.Fatalf("the harness writes no %q content, as the %s block takes; teach typedBlocksMarkdown to write it", token, typed.Name)
 			}
 		}
-		blocks = append(blocks, ":::"+typed.Name+"{"+strings.Join(attributes, " ")+"}\n"+strings.Join(content, "\n\n")+"\n:::\n")
+		fence := 3
+		for _, child := range inside[typed.Name] {
+			markdown, childFence := block(child)
+			content = append(content, strings.TrimSuffix(markdown, "\n"))
+			fence = max(fence, childFence+1)
+		}
+		colons := strings.Repeat(":", fence)
+		return colons + typed.Name + "{" + strings.Join(attributes, " ") + "}\n" + strings.Join(content, "\n\n") + "\n" + colons + "\n", fence
+	}
+	blocks := []string{"# Every typed block\n"}
+	for _, typed := range own {
+		markdown, _ := block(typed)
+		blocks = append(blocks, markdown)
+	}
+	if placed != len(written) {
+		t.Fatalf("the document reaches %d of the %d typed blocks both manifests declare: a type whose parents stand only inside one another is in no block of the document's own; teach typedBlocksMarkdown where to write it", placed, len(written))
 	}
 	return strings.Join(blocks, "\n")
 }
@@ -604,7 +679,7 @@ type servedReview struct {
 
 func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSide, project string) {
 	if !slices.ContainsFunc(writer.manifest.Types, func(typed manifestType) bool { return typed.Name == "ask" }) {
-		t.Fatalf("the %s's manifest declares no ask block, the decision block an approval is carried by", writer.name)
+		t.Fatalf("the %s's manifest declares no ask block, the block an approval is carried by", writer.name)
 	}
 	issueKey, artifactID := createDocument(t, writer.process, project, "Every typed block", typedBlocksMarkdown(t, writer.manifest, reader.manifest))
 	askID := waitForBlockAsk(t, writer.process, issueKey, typedBlockID("ask"))
@@ -633,14 +708,14 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
+			t.Fatalf("the answer on the %s to the ask block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
 				reader.name, writer.name, dispatchTestLogin, approval.Version, reviews, reader.name, reader.process.Output.String())
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-// waitForBlockAsk waits for the ask settlement indexed from the decision block blockID of the
+// waitForBlockAsk waits for the ask settlement indexed from the ask block blockID of the
 // issue's documents, and returns its id.
 func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string) string {
 	t.Helper()
@@ -670,24 +745,14 @@ type referenceTables struct {
 		Body   string `json:"body"`
 		Origin string `json:"origin"`
 	}
-	hrefs []struct {
-		Href string `json:"href"`
-		Ref  string `json:"ref"`
-	}
+	hrefs []hrefRow
 }
 
 func readReferenceTables(t *testing.T, fixtures string) referenceTables {
 	t.Helper()
 	var tables referenceTables
-	for name, into := range map[string]any{"dispatch-text-references.json": &tables.texts, "dispatch-href-references.json": &tables.hrefs} {
-		raw, err := os.ReadFile(filepath.Join(fixtures, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if err := json.Unmarshal(raw, into); err != nil {
-			t.Fatalf("decode %s: %v", name, err)
-		}
-	}
+	readFixture(t, fixtures, "dispatch-text-references.json", &tables.texts)
+	tables.hrefs = hrefTable(t, fixtures)
 	return tables
 }
 
@@ -746,6 +811,117 @@ func referencesMarkdown(t *testing.T, writer, reader string) (shared, writerOnly
 		writerOnly = strings.Join(only, "\n\n") + "\n"
 	}
 	return shared, writerOnly
+}
+
+// hrefRow is a row of a build's text/testdata/dispatch-href-references.json: a dashboard link's
+// path and the reference that build reads it as.
+type hrefRow struct {
+	Href string `json:"href"`
+	Ref  string `json:"ref"`
+}
+
+// hrefTable is the href table of a build's text/testdata.
+func hrefTable(t *testing.T, fixtures string) []hrefRow {
+	t.Helper()
+	var hrefs []hrefRow
+	readFixture(t, fixtures, "dispatch-href-references.json", &hrefs)
+	return hrefs
+}
+
+// readFixture decodes the JSON file name of a build's text/testdata into into.
+func readFixture(t *testing.T, fixtures, name string, into any) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(fixtures, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatalf("decode %s: %v", name, err)
+	}
+}
+
+// hrefReadApart is an href the writer's and the reader's href tables both hold and map to
+// different references: the reference grammar changed between the two builds. writerRow and
+// readerRow are the refs rows the two references name (`kind id`, as documentRefs reads them), and
+// d10 is whether the two readings are D10's (decisionsReadings).
+type hrefReadApart struct {
+	href, writerRef, readerRef string
+	writerRow, readerRow       string
+	d10                        bool
+}
+
+// decisionsPage is D10's href form, the Decisions tab of an issue: `/issues/KEY/decisions`, with
+// or without a fragment.
+var decisionsPage = regexp.MustCompile(`^/issues/([A-Z][A-Z0-9]*-[1-9][0-9]*)/decisions(#.*)?$`)
+
+// decisionsReadings reports whether href is the Decisions tab of an issue (decisionsPage) and
+// readings are exactly the two readings of it D10 names, in either order: the issue KEY,
+// `dispatch://KEY/decisions`, in a build that carries D10, and the issue's decisions document,
+// `dispatch://KEY/artifact/decisions-md`, in a build before it.
+func decisionsReadings(href string, readings ...string) bool {
+	match := decisionsPage.FindStringSubmatch(href)
+	if match == nil || len(readings) != 2 {
+		return false
+	}
+	issue, document := "dispatch://"+match[1]+"/decisions", "dispatch://"+match[1]+"/artifact/"+refs.RetiredDecisionsSlug
+	return (readings[0] == issue && readings[1] == document) || (readings[0] == document && readings[1] == issue)
+}
+
+// hrefsReadApart is each href the reader's own href table maps to another reference than the
+// writer's table does, keyed by both refs rows it reads as: the writer's reading and the reader's.
+// Either build rewrites a body holding that href with its own reading, and so does either build's
+// block-index pass that re-indexes it (awaitReferencesSettled). The one such href is D10's grammar
+// change: the Decisions tab's `/issues/KEY/decisions` reads as the issue KEY in a build that
+// carries it, and as the document KEY/decisions-md in a build before it.
+func hrefsReadApart(t *testing.T, writer, reader documentSide) map[string]hrefReadApart {
+	t.Helper()
+	writerRefs := map[string]string{}
+	for _, row := range hrefTable(t, writer.fixtures) {
+		writerRefs[row.Href] = row.Ref
+	}
+	apart := map[string]hrefReadApart{}
+	for _, row := range hrefTable(t, reader.fixtures) {
+		writerRef, both := writerRefs[row.Href]
+		if !both || writerRef == row.Ref {
+			continue
+		}
+		href := hrefReadApart{
+			href: row.Href, writerRef: writerRef, readerRef: row.Ref,
+			writerRow: refRow(t, writer, row.Href, writerRef), readerRow: refRow(t, reader, row.Href, row.Ref),
+			d10: decisionsReadings(row.Href, writerRef, row.Ref),
+		}
+		apart[href.writerRow], apart[href.readerRow] = href, href
+	}
+	return apart
+}
+
+// refRow is the refs row the reference ref names, `kind id`, as documentRefs reads it; side's href
+// table maps href to ref.
+func refRow(t *testing.T, side documentSide, href, ref string) string {
+	t.Helper()
+	parsed, ok := text.ParseRef(ref, "")
+	if !ok {
+		t.Fatalf("the %s's href table maps %s to %s, which names no reference", side.name, href, ref)
+	}
+	return parsed.Kind + " " + text.TargetID(parsed)
+}
+
+// documentReading is, for D10's href, the refs row of the reading that names the decisions
+// document: the reading of a build before D10, which only that reading of the href writes.
+func (href hrefReadApart) documentReading() string {
+	if strings.HasPrefix(href.writerRow, "artifact ") {
+		return href.writerRow
+	}
+	return href.readerRow
+}
+
+// otherReading is, for a refs row that is one build's reading of an href the two builds read
+// apart, the row the other build reads that href as.
+func (href hrefReadApart) otherReading(row string) string {
+	if row == href.writerRow {
+		return href.readerRow
+	}
+	return href.writerRow
 }
 
 // opensTypedBlock reports whether a line of body starts with the `:::` of a typed block's fence.
@@ -832,16 +1008,56 @@ func queryRows(t *testing.T, builds *twoBuilds, what, query string, args ...any)
 	return read
 }
 
-// referencesSettle is how long the references row waits after Y's edit before it reads the refs
-// rows again: past the default two-second settle delay, so a settlement that rewrites the document
-// after the edit has rewritten it too.
+// referencesSettleWait bounds awaitReferencesSettled: the block-index tick of each build comes
+// every docs.BlockIndexReconcileInterval, and the re-index a version owes takes two of them, the
+// one that drains the document's scope row and the one whose batch indexes the document it owed.
+const referencesSettleWait = 3*docs.BlockIndexReconcileInterval + 30*time.Second
+
+// awaitReferencesSettled waits until the document owes no pass that rewrites its refs rows, and
+// fails once referencesSettleWait passes. Every version either build writes owes the document's
+// scope a re-index (refs_grammar_owed, migration 20261103205041). The block-index tick of
+// whichever build takes it next drains that row by owing the document a block index (docs'
+// reindexScope), and a batch of the same build indexes the document's latest version whole,
+// its references with that build's own grammar (indexOwedDocument). So the rows after a write
+// stand only once that queue holds no row naming the document and its block index is at its
+// latest version with no store mark owed (document_block_versions). A wait of fixed length reads
+// the rows before a tick that is due, or between a tick of the one build and one of the other.
+func awaitReferencesSettled(t *testing.T, builds *twoBuilds, artifactID string) {
+	t.Helper()
+	deadline := time.Now().Add(referencesSettleWait)
+	for {
+		var queued, indexed bool
+		var owed string
+		if err := builds.database.Pool.QueryRow(context.Background(), `
+			select exists (select 1 from refs_grammar_owed where id = $1::uuid),
+			       coalesce((select b.version = (select max(v.number) from artifact_versions v where v.artifact_id = $1::uuid)
+			                   and b.store_owed_at is null
+			                 from document_block_versions b where b.artifact_id = $1::uuid), false),
+			       coalesce((select string_agg(kind, ', ' order by kind) from refs_grammar_owed where id = $1::uuid), '')
+		`, artifactID).Scan(&queued, &indexed, &owed); err != nil {
+			t.Fatalf("read what the document %s owes: %v", artifactID, err)
+		}
+		if !queued && indexed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after %s the document %s still owes a re-index: re-index queue rows %q, block index at its latest version with no store mark %v",
+				referencesSettleWait, artifactID, owed, indexed)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// referencesSettle is how long a row waits after Y's edit before it reads the refs rows again:
+// past the default two-second settle delay, so a settlement that rewrites the document after the
+// edit has rewritten it too.
 const referencesSettle = 4 * time.Second
 
 // requireReferencesKeptAcrossBuilds creates the reference forms of X's text/testdata on X as two
 // bodies, split by Y's own tables (referencesMarkdown), appends a paragraph to each on Y, and
 // checks each body's refs rows:
-//   - the forms Y's tables hold too, after the rewrite and after it settled, as this row always
-//     has (requireRefsKept);
+//   - the forms Y's tables hold too, after the rewrite and after every pass it owed has rewritten
+//     them, as this row always has (awaitReferencesSettled, requireRefsKept);
 //   - the forms only X's table holds, every row X wrote, its blocks' edges included, back within
 //     two block-index intervals of Y's rewrite (requireWriterOnlyReferencesBack), where Y may drop
 //     the rows of those forms on its rewrite. When Y's tables hold every form of X's, as the
@@ -864,10 +1080,11 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	if len(written) == 0 {
 		t.Fatalf("the %s wrote no refs rows for the body holding every reference form of its text/testdata", writer.name)
 	}
+	apart := hrefsReadApart(t, writer, reader)
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
-	requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+" rewrote the body", writer.name, reader)
-	time.Sleep(referencesSettle)
-	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
+	requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+" rewrote the body", writer.name, reader)
+	awaitReferencesSettled(t, builds, artifactID)
+	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
 	t.Logf("%d of the %d refs rows the %s wrote survived the %s's rewrite", len(written)-len(dropped), len(written), writer.name, reader.name)
 	if writerOnly == "" {
 		t.Logf("the %s's tables hold every reference form of the %s's: no body of forms only the %s reads", reader.name, writer.name, writer.name)
@@ -1119,8 +1336,14 @@ func refRowsMoved(got, written []string) (lost, added []string) {
 // It may add rows, but only of a kind that written holds no row of: a kind it extracts and the
 // writer does not, such as `block` from a `#b-` link when the writer is a build before the block
 // graph. A row it adds of a kind the writer wrote means the two builds read one reference form as
-// different targets. It returns the edges the reader dropped.
-func requireRefsKept(t *testing.T, got, written []string, when, writer string, reader documentSide) []string {
+// different targets, unless that row is one build's reading of an href the two builds read apart
+// (apart, hrefsReadApart): that is D10's grammar change, which is logged. D10's href stands in the
+// rows by the reading of whichever build last indexed the body - the writer's own write, the
+// reader's rewrite, or the block-index pass of either build that re-indexes it after each - so the
+// row of written that is its document reading (`artifact KEY/decisions-md`, which only a build
+// before D10 writes from it, documentReading) is kept while the issue reading's row is held. No
+// other row of written is kept by another row. It returns the edges the reader dropped.
+func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefReadApart, when, writer string, reader documentSide) []string {
 	t.Helper()
 	keepsUnknownKinds := len(reader.manifest.Nodes) > 0
 	kinds := map[string]bool{}
@@ -1133,9 +1356,17 @@ func requireRefsKept(t *testing.T, got, written []string, when, writer string, r
 		kind, _, _ := strings.Cut(row, " ")
 		extracted[kind] = true
 	}
-	var lost, dropped, added []string
+	regrammar := func(row string, href hrefReadApart) string {
+		return fmt.Sprintf("\t%s: %s reads as %s in the %s and as %s in the %s\n",
+			row, href.href, href.writerRef, writer, href.readerRef, reader.name)
+	}
+	var lost, dropped, added, regrammared []string
 	for _, row := range written {
 		if slices.Contains(got, row) {
+			continue
+		}
+		if href, ok := apart[row]; ok && href.d10 && row == href.documentReading() && slices.Contains(got, href.otherReading(row)) {
+			regrammared = append(regrammared, regrammar(href.otherReading(row), href))
 			continue
 		}
 		if kind, _, _ := strings.Cut(row, " "); !keepsUnknownKinds && !extracted[kind] {
@@ -1145,13 +1376,24 @@ func requireRefsKept(t *testing.T, got, written []string, when, writer string, r
 		lost = append(lost, row)
 	}
 	for _, row := range got {
-		if kind, _, _ := strings.Cut(row, " "); kinds[kind] && !slices.Contains(written, row) {
-			added = append(added, row)
+		if kind, _, _ := strings.Cut(row, " "); !kinds[kind] || slices.Contains(written, row) {
+			continue
 		}
+		if href, ok := apart[row]; ok {
+			if !slices.Contains(regrammared, regrammar(row, href)) {
+				regrammared = append(regrammared, regrammar(row, href))
+			}
+			continue
+		}
+		added = append(added, row)
 	}
 	if len(dropped) > 0 {
 		t.Logf("%s, the %s dropped %d of the %d edges the %s wrote, each to a node kind it extracts none of and keeps no edge to:\n%s",
 			when, reader.name, len(dropped), len(written), writer, refRowsText(dropped))
+	}
+	if len(regrammared) > 0 {
+		t.Logf("%s, %d rows are the reading of an href the two builds read apart by D10's grammar change, other than the one written holds:\n%s",
+			when, len(regrammared), strings.Join(regrammared, ""))
 	}
 	if len(lost) > 0 || len(added) > 0 {
 		t.Fatalf("%s, the body's refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s",

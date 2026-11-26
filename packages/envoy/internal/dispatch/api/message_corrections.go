@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -163,14 +164,28 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of a message's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the message as changed by that run where it changed them
+	// (spec requirement r-interaction), as an edit of a comment's words does (editComment). Nothing
+	// else this route writes reaches the message's node, so it writes that node for the run
+	// (planMessageChangedForRun), planned here in the read phase.
+	var messageNode graphstore.Uncaused
+	if previousBody != message.Body {
+		if messageNode, err = planMessageChangedForRun(r.Context(), tx, message, editedAt, actor); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// The answer lists the attempts as a read of the message lists them: the edit writes none,
 	// so they are read here, in the read phase, and a read that fails writes nothing.
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The history row, the update, the index, the event and its stamp go in one batch: the
-	// event's id is the one the stamp names as the id sequence left it (refs.QueueStamp).
+	// The history row, the update, the index, the message's node, the event, its stamp and what
+	// the node states go in one batch: the event's id is the one the stamp and the node's cause
+	// name as the id sequence left it (refs.QueueStamp, graphstore.LatestEvent), since the stamp
+	// appends no event.
 	var event model.Event
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		if err := history(b); err != nil {
@@ -184,7 +199,13 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		if err := index(b); err != nil {
 			return err
 		}
-		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, func(appended model.Event) { event = appended })
+		graphstore.QueueNodes(b, messageNode)
+		if err := s.queueLoggedEventOn(b, correction, logins, "message", message.ID, func(appended model.Event) { event = appended }); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(messageNode))
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -234,6 +255,16 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A delete made for a run (store.WithRun, which withinGoingRun puts on a request naming its
+	// run) names the message as changed by that run (spec requirement r-interaction), as a
+	// comment's delete does (deleteComment): the clear writes the message's row alone and no node
+	// (clearDeletedPostBody), so the delete writes the message's node for the run
+	// (planMessageChangedForRun), planned here in the read phase.
+	messageNode, err := planMessageChangedForRun(r.Context(), tx, message, deletedAt, actor)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	message.Body = ""
 	message.DeletedAt = &deletedAt
 	message.DeletedBy = &actor
@@ -261,8 +292,11 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		attempt.State, attempt.Error = deliveryOutcome(deletedPostDeliveryError, false)
 		receipts = append(receipts, messageDeliveryReceipt(message, message.Author, *attempt, ""))
 	}
-	// The clear, the settle, its receipts, the event and its stamp go in one batch, in the order
-	// the delete makes them.
+	// The clear, the settle, the message's node, the receipts, the event, its stamp and what the
+	// node states go in one batch, in the order the delete makes them: the node after the rows
+	// the delete writes and before any event, and what it states right after message.deleted,
+	// whose id the id sequence still names there (graphstore.LatestEvent), since the stamp appends
+	// no event.
 	appended := make([]model.Event, 0, len(receipts)+1)
 	collect := func(event model.Event) { appended = append(appended, event) }
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
@@ -270,12 +304,18 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		queueDeletedPostSettlement(b, message.ID, messageAttemptsRead(pending))
+		graphstore.QueueNodes(b, messageNode)
 		for _, receipt := range receipts {
 			if err := s.deps.Events.QueueAppend(b, receipt, collect); err != nil {
 				return err
 			}
 		}
-		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, collect)
+		if err := s.queueLoggedEventOn(b, correction, logins, "message", message.ID, collect); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(messageNode))
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -329,4 +369,26 @@ func (s *server) messageCorrectionEvent(
 		payload.ReplyBlock = deleteEventReplyBlock(payload.ReplyBlock)
 	}
 	return messageEvent(*message, eventType, actor, payload), events.ThreadLoginsOf(root), nil
+}
+
+// planMessageChangedForRun plans the write of message's node that names it changed at at by by,
+// for the run ctx carries (graphstore.PlanChangedForRun), for a correction of the message's row
+// that reaches no node of the store: an edit of its words (editMessage) and its delete
+// (deleteMessage), each made for a run (store.WithRun, which withinGoingRun puts on a request
+// naming its run). The message is an issue message, which a correction alone takes
+// (lockedMessageForCorrection), so its node is the one its create and the backfill write
+// (planMessageNode, graphcensus' readObjectNodes): in its issue's project (graphstore.ScopeOf,
+// read here, in the caller's read phase and for a run alone, under the issue's owner lock every
+// writer of the message holds), made by its author at its created_at. It answers the zero
+// Uncaused, for which QueueNodes and QueueCaused queue nothing, for no run. The caller queues
+// the node write (graphstore.QueueNodes) after the rows it writes and before its events, and what
+// it states right after its own event (graphstore.QueueCaused over graphstore.LatestEvent).
+func planMessageChangedForRun(ctx context.Context, tx pgx.Tx, message model.Message, at time.Time, by model.Actor) (graphstore.Uncaused, error) {
+	return graphstore.PlanChangedForRun(ctx, at, by, func() (graphstore.Node, error) {
+		project, _, err := graphstore.ScopeOf(ctx, tx, message.IssueKey, nil)
+		if err != nil {
+			return graphstore.Node{}, err
+		}
+		return graphstore.MessageNode(message.ID, project, nil, message.Author, message.CreatedAt), nil
+	})
 }

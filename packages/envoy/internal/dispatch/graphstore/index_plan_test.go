@@ -114,7 +114,8 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 //
 // The current value of one attribute is held to more than that: to graph_tuples_values alone,
 // the one read index partial on to_kind = 'value'. The current reads out of and into one node
-// are held to graph_tuples_as_of_out and graph_tuples_as_of_in alone (storeReads says why).
+// are held to graph_tuples_as_of_out and graph_tuples_as_of_in alone, and so is the walk of the
+// nodes beneath one node, every step of it a read into a node it reached (storeReads says why).
 //
 // The one read held to the opposite is the inbox read naming no kind (requireWholeInbox), the
 // control: with no kind to scan by it reads the crowded node's whole inbox under either mode,
@@ -133,6 +134,7 @@ func TestEveryCurrentStoreReadRunsThroughTheTupleIndexes(t *testing.T) {
 	writeSupertagIntoTheCrowdedNode(t, ctx, pool)
 	writeProbeTuples(t, ctx, pool)
 	longValue := writeOneLongValue(t, ctx, pool)
+	writeSubtree(t, ctx, pool)
 	// The planner reads row counts and column statistics off the catalog, and a table just
 	// filled has neither until it is analysed; without this every plan below is built for a
 	// table Postgres still believes is empty.
@@ -273,14 +275,15 @@ type storeRead struct {
 }
 
 // storeReads runs each read the package states, checks its answer against the reference walk and
-// returns the statement each one sent. The seven reads are the five current and as-of reads of
-// one node, the history of one of its relations, and the inbox read of the crowded node naming
-// every kind the store holds into it; the eighth, the inbox read naming no kind, is the negative
-// control that shows the kind list is what keeps that read off the whole inbox.
+// returns the statement each one sent. The eight reads are the five current and as-of reads of
+// one node, the history of one of its relations, the walk of the nodes beneath the subtree's root,
+// and the inbox read of the crowded node naming every kind the store holds into it; the ninth, the
+// inbox read naming no kind, is the negative control that shows the kind list is what keeps that
+// read off the whole inbox.
 func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference logReference) []storeRead {
 	t.Helper()
 	recorder := &recordedQueryer{Queryer: pool}
-	reads := make([]storeRead, 0, 8)
+	reads := make([]storeRead, 0, 9)
 	record := func(name string, wantWholeInbox bool, wantIndexScans int, merged bool) {
 		t.Helper()
 		reads = append(reads, storeRead{
@@ -346,6 +349,18 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	}
 	requireSameOrder(t, "History", history, reference.history)
 	record("History", false, 1, false)
+
+	// The walk beneath a node is one recursive statement, each step of it the current part_of
+	// tuples into a node the step before reached, read by that node's kind and id as CurrentIn's
+	// read into a node is: no index keys the far end with the near end after it, so every step
+	// walks this one.
+	beneath, err := nodesBeneath(ctx, recorder, subtreeKind, subtreeRoot)
+	if err != nil {
+		t.Fatalf("nodesBeneath: %v", err)
+	}
+	requireSameNodes(t, "nodesBeneath", beneath, reference.beneath)
+	record("nodesBeneath", false, 1, false)
+	reads[len(reads)-1].wantOnlyIndex = "graph_tuples_as_of_in"
 
 	kinds := inboxKindsInTheStore(t, ctx, pool)
 	inbox, err := TuplesIntoNode(ctx, recorder, crowdedKind, crowdedID, kinds, inboxLimit)
@@ -538,6 +553,16 @@ func asLiteral(t *testing.T, argument any) string {
 			quotedValues = append(quotedValues, quoted(element))
 		}
 		return "array[" + strings.Join(quotedValues, ", ") + "]"
+	case []*string:
+		quotedValues := make([]string, 0, len(value))
+		for _, element := range value {
+			if element == nil {
+				quotedValues = append(quotedValues, "null")
+				continue
+			}
+			quotedValues = append(quotedValues, quoted(*element))
+		}
+		return "array[" + strings.Join(quotedValues, ", ") + "]::text[]"
 	case int:
 		return strconv.Itoa(value)
 	case time.Time:
@@ -893,6 +918,86 @@ func writeOneLongValue(t *testing.T, ctx context.Context, pool *store.Pool) stri
 	return value
 }
 
+// The subtree nodesBeneath is read on, which writeSubtree states through Write. Its root, a lens,
+// holds a finding and a lens; the finding holds a lens, whose part_of names the finding by its
+// address kind as a lens invoked on a finding does, with a finding of its own, which holds a lens
+// whose part_of names that finding as a block, three levels further down; a gone lens under the
+// root holds a lens that is not gone; a lens moved from under the root to another node holds a
+// lens of its own; and the lens on the finding is a parent of the root too, so the walk meets the
+// root again and has to end there.
+const (
+	subtreeKind          = KindLens
+	subtreeRoot          = "GRAPH-tree-root"
+	subtreeFinding       = "lens/GRAPH-tree-root#finding"
+	subtreeOnRoot        = "GRAPH-tree-on-root"
+	subtreeOnFinding     = "GRAPH-tree-on-finding"
+	subtreeDeepFinding   = "lens/GRAPH-tree-on-finding#finding"
+	subtreeOnDeepFinding = "GRAPH-tree-on-deep-finding"
+	subtreeGone          = "GRAPH-tree-gone"
+	subtreeUnderGone     = "GRAPH-tree-under-gone"
+	subtreeMoved         = "GRAPH-tree-moved"
+	subtreeUnderMoved    = "GRAPH-tree-under-moved"
+)
+
+// subtreeBeneath is what nodesBeneath answers of the subtree's root, each node as `<kind>/<id>`,
+// sorted: every node under it but the gone lens, which the walk goes on through, and the moved
+// lens with the lens under it, which stand under the root no more.
+func subtreeBeneath() []string {
+	beneath := []string{
+		"block/" + subtreeFinding, "block/" + subtreeDeepFinding, KindLens + "/" + subtreeOnRoot,
+		KindLens + "/" + subtreeOnFinding, KindLens + "/" + subtreeOnDeepFinding, KindLens + "/" + subtreeUnderGone,
+	}
+	slices.Sort(beneath)
+	return beneath
+}
+
+// writeSubtree states the subtree through Write in two transactions: its nodes and their part_of
+// tuples, then the move of the moved lens, which retracts its part_of at the root and states one
+// at another node. Every node is live but the gone lens.
+func writeSubtree(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	at := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	who := model.Actor{Kind: "user", ID: "alice"}
+	const placed, moved = 9300001, 9300002
+	node := func(kind, id, state string) Node {
+		return Node{
+			Kind: kind, ID: id, Supertag: kind, Visibility: VisibilityProject, State: state,
+			MadeAt: at, MadeBy: who, SourceEvent: placed,
+		}
+	}
+	partOf := func(fromKind, fromID, toKind, toID string, event int64, asserted bool) Tuple {
+		return Tuple{
+			FromKind: fromKind, FromID: fromID, Kind: TuplePartOf, ToKind: toKind, ToID: toID,
+			At: at, Who: who, SourceEvent: event, Asserted: asserted,
+		}
+	}
+	writeInOneTransaction(t, ctx, pool, []Node{
+		node(KindLens, subtreeRoot, StateLive), node("block", subtreeFinding, StateLive),
+		node(KindLens, subtreeOnRoot, StateLive), node(KindLens, subtreeOnFinding, StateLive),
+		node("block", subtreeDeepFinding, StateLive), node(KindLens, subtreeOnDeepFinding, StateLive),
+		node(KindLens, subtreeGone, StateGone), node(KindLens, subtreeUnderGone, StateLive),
+		node(KindLens, subtreeMoved, StateLive), node(KindLens, subtreeUnderMoved, StateLive),
+	}, []Tuple{
+		partOf(KindLens, subtreeRoot, KindIssue, "GRAPH-1", placed, true),
+		partOf("block", subtreeFinding, KindLens, subtreeRoot, placed, true),
+		partOf(KindLens, subtreeOnRoot, KindLens, subtreeRoot, placed, true),
+		partOf(KindLens, subtreeOnFinding, KindLensBlock, subtreeFinding, placed, true),
+		partOf("block", subtreeDeepFinding, KindLens, subtreeOnFinding, placed, true),
+		partOf(KindLens, subtreeOnDeepFinding, "block", subtreeDeepFinding, placed, true),
+		partOf(KindLens, subtreeRoot, KindLens, subtreeOnFinding, placed, true),
+		partOf(KindLens, subtreeGone, KindLens, subtreeRoot, placed, true),
+		partOf(KindLens, subtreeUnderGone, KindLens, subtreeGone, placed, true),
+		partOf(KindLens, subtreeMoved, KindLens, subtreeRoot, placed, true),
+		partOf(KindLens, subtreeUnderMoved, KindLens, subtreeMoved, placed, true),
+	}, "the subtree")
+	// The root and the move are to an issue's node: a lens placed on a document at whose address no
+	// artifacts row stands is refused (NoDocumentRowError), and this store holds no artifacts row.
+	writeInOneTransaction(t, ctx, pool, nil, []Tuple{
+		partOf(KindLens, subtreeMoved, KindLens, subtreeRoot, moved, false),
+		partOf(KindLens, subtreeMoved, KindIssue, "GRAPH-1", moved, true),
+	}, "the moved lens's move")
+}
+
 // valueAlphabet is what randomValue draws from: a text column holds text, and these are the
 // characters a value is written in with no escaping anywhere between here and the index.
 const valueAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -931,7 +1036,7 @@ func writeInOneTransaction(t *testing.T, ctx context.Context, pool *store.Pool, 
 // logReference is every read's answer as a walk of the whole log in Go computes it: the slow
 // reference each index-served read is held to. It carries sequences rather than whole tuples,
 // since a sequence names one row of the log and an index that answers fewer rows answers fewer
-// sequences.
+// sequences; beneath, the answer of the one read of nodes, carries each node as `<kind>/<id>`.
 type logReference struct {
 	currentOut        []int64
 	currentIn         []int64
@@ -941,6 +1046,7 @@ type logReference struct {
 	asOfIn            []int64
 	history           []int64
 	inboxAnyKind      []int64
+	beneath           []string
 }
 
 // loggedFact is what the walk keeps of one row: enough to decide every read under test.
@@ -969,6 +1075,7 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	asOfOut := newestOfEachGroup{by: byTimeThenSeq}
 	asOfIn := newestOfEachGroup{by: byTimeThenSeq}
 	inboxAnyKind := topOfInbox{limit: inboxLimit}
+	partOf := newestOfEachGroup{by: bySeq}
 	var history []int64
 	supertagTuple := int64(0)
 
@@ -1016,6 +1123,10 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 				supertagTuple = fact.seq
 			}
 		}
+		// The walk beneath a node reads the newest part_of tuple of each relation into a node.
+		if fact.kind == TuplePartOf && fact.toKind != KindValue {
+			partOf.offer([3]string{fact.fromKind + "\x00" + fact.fromID, fact.toKind, fact.toID}, fact)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("walk the whole log: %v", err)
@@ -1037,6 +1148,7 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 		asOfIn:            asOfIn.assertedSeqs(),
 		history:           history,
 		inboxAnyKind:      inboxAnyKind.seqs(),
+		beneath:           nodesBeneathInTheLog(t, ctx, pool, partOf),
 	}
 	t.Logf("walked %d tuples in %s; the reference holds %d current out, %d current in, %d as-of out, %d as-of in, %d of history",
 		walked, time.Since(started).Round(time.Millisecond), len(reference.currentOut), len(reference.currentIn),
@@ -1052,6 +1164,13 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	}
 	if !reference.currentValueFound {
 		t.Fatal("the reference answers no current value for the probe, so comparing CurrentValue with it proves nothing")
+	}
+	// The walk beneath the subtree's root answers what the subtree holds beneath it: a walk that
+	// stopped at the gone lens, kept the moved lens or looped at the cycle through the root would
+	// answer otherwise, and holding nodesBeneath to it would hold the read to that.
+	if want := subtreeBeneath(); !slices.Equal(reference.beneath, want) {
+		t.Fatalf("the walk of the whole log answers the nodes beneath %s/%s as %v, and the subtree writeSubtree wrote holds %v beneath it",
+			subtreeKind, subtreeRoot, reference.beneath, want)
 	}
 	// The supertag's tuple heads the crowded node's inbox, so a read that left its kind out
 	// answers a different inbox; were it outside the newest inboxLimit rows, the two would
@@ -1159,6 +1278,73 @@ func requireSameTuples(t *testing.T, name string, answered []Tuple, want []int64
 	}
 }
 
+// nodesBeneathInTheLog is nodesBeneath's answer for the subtree's root as a walk in Go computes
+// it: the current part_of relations, each the newest part_of tuple of its relation where that one
+// asserts, walked breadth first from the root to every node they reach, each once, a node reached
+// through the tuples into it under its own kind and under its address kind (AddressKind); and of
+// those, each node graph_nodes holds and not gone, but for the root, as `<kind>/<id>`, sorted.
+func nodesBeneathInTheLog(t *testing.T, ctx context.Context, pool *store.Pool, partOf newestOfEachGroup) []string {
+	t.Helper()
+	under := map[[2]string][][2]string{}
+	for _, fact := range partOf.groups {
+		if fact.asserted {
+			parent := [2]string{fact.toKind, fact.toID}
+			under[parent] = append(under[parent], [2]string{fact.fromKind, fact.fromID})
+		}
+	}
+	root := [2]string{subtreeKind, subtreeRoot}
+	reached := map[[2]string]bool{root: true}
+	for frontier := [][2]string{root}; len(frontier) > 0; {
+		var next [][2]string
+		for _, parent := range frontier {
+			for _, spelled := range []string{parent[0], AddressKind(parent[0], parent[1])} {
+				for _, child := range under[[2]string{spelled, parent[1]}] {
+					if !reached[child] {
+						reached[child] = true
+						next = append(next, child)
+					}
+				}
+			}
+		}
+		frontier = next
+	}
+	rows, err := pool.Query(ctx, `select kind, id, state from graph_nodes`)
+	if err != nil {
+		t.Fatalf("read the node rows: %v", err)
+	}
+	defer rows.Close()
+	var beneath []string
+	for rows.Next() {
+		var held [2]string
+		var state string
+		if err := rows.Scan(&held[0], &held[1], &state); err != nil {
+			t.Fatalf("read the node rows: %v", err)
+		}
+		if reached[held] && held != root && state != StateGone {
+			beneath = append(beneath, held[0]+"/"+held[1])
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the node rows: %v", err)
+	}
+	slices.Sort(beneath)
+	return beneath
+}
+
+// requireSameNodes holds a node read's answer to the reference's, as the set of `<kind>/<id>`
+// each names, sorted in Go's byte order for the reason requireSameTuples gives.
+func requireSameNodes(t *testing.T, name string, answered []Node, want []string) {
+	t.Helper()
+	got := make([]string, len(answered))
+	for index, node := range answered {
+		got[index] = node.Kind + "/" + node.ID
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("%s answers the nodes %v, and a walk of the whole log answers %v", name, got, want)
+	}
+}
+
 // requireSameOrder holds an inbox read's answer to the reference's row for row and in order: an
 // inbox read answers newest first by time and then by log order, both of them numbers, so the
 // order is the same on either side.
@@ -1259,6 +1445,32 @@ var requiredGraphIndexes = []requiredGraphIndex{
 	},
 }
 
+// laterGraphNodesIndexes are the indexes of graph_nodes a migration after the first declares. A
+// table of a deployment already holds rows by then, so each is held to the one build that does not
+// stop the store's writers while it scans: `create index concurrently` in a migration of its own
+// that runs outside the runner's transaction (`-- pgmigrate:non-transactional`,
+// pgmigrate/nontransactional.go). graph_nodes_project is the read of one project's nodes by kind
+// (20261116015042 gave graph_nodes its project_key), graph_nodes_proposed the read of the
+// nodes at proposed under one issue (api/node_state.go, issueProposedQuery), which holds the few
+// rows at that state alone, and graph_nodes_interaction_live the sweep's read of the runs past the
+// hour whose row is gone (api/going.go, goingRowlessRuns), which holds the interaction nodes of
+// the source going_requests not gone, about an hour of runs.
+var laterGraphNodesIndexes = []requiredGraphIndex{
+	{
+		name: "graph_nodes_project", table: "graph_nodes",
+		keys: "project_key, kind", predicate: "project_key is not null",
+	},
+	{
+		name: "graph_nodes_proposed", table: "graph_nodes",
+		keys: "kind, id", predicate: "state = 'proposed'",
+	},
+	{
+		name: "graph_nodes_interaction_live", table: "graph_nodes",
+		keys:      "made_at",
+		predicate: "kind = 'interaction' and state <> 'gone' and attributes->>'source' = 'going_requests'",
+	},
+}
+
 // declaredIndex is one create index a migration file holds, with the statement that declares
 // it. An index declared under no name of its own has the empty name: Postgres makes one up.
 type declaredIndex struct {
@@ -1266,6 +1478,9 @@ type declaredIndex struct {
 	name, table          string
 	keys, predicate      string
 	unique               bool
+	// concurrent is a build `create index concurrently` in a migration whose first line is
+	// `-- pgmigrate:non-transactional`, the one way such a build reaches the database.
+	concurrent bool
 }
 
 // called is how a failure names the index: by its name, or as one Postgres names.
@@ -1288,8 +1503,10 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 	declared := map[string][]declaredIndex{}
 	graphNodesTable := ""
 	for _, file := range files {
-		body := withoutLineComments(readMigration(t, file))
-		for _, index := range indexesOf(file, body) {
+		raw := readMigration(t, file)
+		firstLine, _, _ := strings.Cut(raw, "\n")
+		body := withoutLineComments(raw)
+		for _, index := range indexesOf(file, body, firstLine) {
 			declared[index.name] = append(declared[index.name], index)
 		}
 		if table := graphNodesCreateTable.FindStringSubmatch(body); table != nil {
@@ -1320,6 +1537,24 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		if index.migration != graphStoreMigration {
 			t.Errorf("%s is declared in %s, not in %s: an existing deployment would build it on a full graph_tuples",
 				want.name, index.migration, graphStoreMigration)
+		}
+		if index.table != want.table || index.keys != want.keys || index.predicate != want.predicate || index.unique != want.unique {
+			t.Errorf("%s is declared as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
+				want.name, index.unique, index.table, index.keys, wherePart(index.predicate),
+				want.unique, want.table, want.keys, wherePart(want.predicate))
+		}
+	}
+	for _, want := range laterGraphNodesIndexes {
+		found := declared[want.name]
+		if len(found) != 1 {
+			t.Errorf("%s is declared %d times, want once, in a migration of its own", want.name, len(found))
+			continue
+		}
+		index := found[0]
+		if index.migration == graphStoreMigration || !index.concurrent {
+			t.Errorf("%s is declared in %s with concurrent=%v, want a concurrent build in a later, non-transactional migration:"+
+				" graph_nodes holds a row for every block by then, and a plain build stops every writer of the store while it scans",
+				want.name, index.migration, index.concurrent)
 		}
 		if index.table != want.table || index.keys != want.keys || index.predicate != want.predicate || index.unique != want.unique {
 			t.Errorf("%s is declared as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
@@ -1495,10 +1730,10 @@ func readMigration(t *testing.T, file string) string {
 // Postgres takes one in: in either case; unique or not; concurrently or not; if not exists or
 // not; under a name of its own, or none, which Postgres then makes up; on the table, or on only
 // the table; and with the table under its schema or not. Each name is a SQL identifier, bare or
-// quoted (sqlIdentifier, read through sqlName). It captures whether the index is unique, its
-// name, its table and what follows the table. No index of this tree writes a semicolon inside
-// its own definition.
-var indexDeclaration = regexp.MustCompile(`(?is)\bcreate\s+(unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?` +
+// quoted (sqlIdentifier, read through sqlName). It captures whether the index is unique, whether
+// it is built concurrently, its name, its table and what follows the table. No index of this tree
+// writes a semicolon inside its own definition.
+var indexDeclaration = regexp.MustCompile(`(?is)\bcreate\s+(unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?` +
 	`(?:(` + sqlIdentifier + `)\s+)?on\s+(?:only\s+)?(?:` + sqlIdentifier + `\s*\.\s*)?(` + sqlIdentifier + `)\s*([^;]*);`)
 
 // sqlIdentifier matches one SQL identifier: a bare one, or a quoted one, inside which a doubled
@@ -1530,19 +1765,23 @@ func withoutLineComments(body string) string { return lineComment.ReplaceAllStri
 
 // indexesOf is every index one migration file declares, with its key list and predicate written
 // the way requiredGraphIndexes writes them, its name and its table as Postgres reads them
-// (sqlName), the table without its schema, and the statement as it is written, on one line.
-func indexesOf(migration, body string) []declaredIndex {
+// (sqlName), the table without its schema, and the statement as it is written, on one line. body
+// is the file with its comments taken out, so whether the file runs outside the runner's
+// transaction is read off firstLine, the file's own.
+func indexesOf(migration, body, firstLine string) []declaredIndex {
+	nonTransactional := strings.TrimSpace(firstLine) == "-- pgmigrate:non-transactional"
 	var indexes []declaredIndex
 	for _, match := range indexDeclaration.FindAllStringSubmatch(body, -1) {
-		keys, predicate := splitIndexBody(match[4])
+		keys, predicate := splitIndexBody(match[5])
 		indexes = append(indexes, declaredIndex{
-			migration: migration,
-			statement: strings.TrimSpace(whitespaceRun.ReplaceAllString(match[0], " ")),
-			name:      sqlName(match[2]),
-			table:     sqlName(match[3]),
-			keys:      keys,
-			predicate: predicate,
-			unique:    strings.TrimSpace(match[1]) != "",
+			migration:  migration,
+			statement:  strings.TrimSpace(whitespaceRun.ReplaceAllString(match[0], " ")),
+			name:       sqlName(match[3]),
+			table:      sqlName(match[4]),
+			keys:       keys,
+			predicate:  predicate,
+			unique:     strings.TrimSpace(match[1]) != "",
+			concurrent: nonTransactional && strings.TrimSpace(match[2]) != "",
 		})
 	}
 	return indexes
@@ -1611,7 +1850,7 @@ func TestIndexesOfReadsEveryCreateIndexSpelling(t *testing.T) {
 		},
 	} {
 		const migration = "0_spelling.up.sql"
-		read := indexesOf(migration, "create table unrelated (id bigint);\n"+row.statement+"\nselect 1;\n")
+		read := indexesOf(migration, "create table unrelated (id bigint);\n"+row.statement+"\nselect 1;\n", "")
 		if len(read) != 1 {
 			t.Errorf("%s: indexesOf reads %d indexes out of %q, want one", row.spelling, len(read), row.statement)
 			continue

@@ -75,6 +75,10 @@ type Client interface {
 	// issue, with the record's identity in write, on the record's rating route. Dispatch writes
 	// each field once, so a rating sent again changes nothing.
 	PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error
+	// PutStepExperiment writes the experiment and the variant of the record's issue onto the
+	// record id of the issue, with the run's identity in write, on the record's experiment route.
+	// Dispatch writes each field once, so a pair sent again changes nothing.
+	PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error
 	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
 	// issue. Its source, document, version and tasks are one fact: a write whose version is above
 	// the version Dispatch holds replaces all four, and one at or below it changes nothing (a
@@ -86,12 +90,12 @@ type Client interface {
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
-// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, ArtifactID the
-// document that step's gate recorded, and Holds whether the issue's tree is gated on that step,
-// which Dispatch's advice reads in place of the project's gated steps. Holds is sent as null only
-// for an entry an older daemon queued without it, which Dispatch answers by the project's list.
-// The step is a string here rather than the record's own type, because this package names
-// Dispatch's wire shapes and imports no record of the daemon's.
+// takes and answers it: Step is `criteria` or `spec`, ArtifactID the document that step's gate
+// recorded, and Holds whether the issue's tree is gated on that step, which Dispatch's advice
+// reads in place of the project's gated steps. Holds is sent as null only for an entry an older
+// daemon queued without it, which Dispatch answers by the project's list. The step is a string
+// here rather than the record's own type, because this package names Dispatch's wire shapes and
+// imports no record of the daemon's.
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
@@ -111,7 +115,8 @@ type RoleHolder struct {
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
 // leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
 // because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
-// StepRecord, the rating aside, because this package imports no record of the daemon's.
+// StepRecord, the rating and the experiment aside, because this package imports no record of the
+// daemon's.
 type StepWrite struct {
 	Task       string     `json:"task"`
 	Step       int        `json:"step"`
@@ -137,6 +142,16 @@ type StepWrite struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// StepExperiment is the experiment a draw put an issue in and the variant it drew there, as the
+// record's experiment route takes them beside the run's identity (HTTPClient.PutStepExperiment),
+// both written or neither. It mirrors the record's own StepExperiment, which the outbox converts to
+// it, because this package imports no record of the daemon's; internal/daemon's
+// TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type StepExperiment struct {
+	Experiment string `json:"experiment"`
+	Variant    string `json:"variant"`
 }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
@@ -210,7 +225,9 @@ type IssueSummary struct {
 	// nearest ancestor's, else its project's default; empty when it resolves to none.
 	ResolvedRepo string
 	// BlockedBy is the keys of the issues that this issue waits on, in the order Dispatch lists
-	// them; none when it waits on nothing. A key may belong to another project.
+	// them; none when it waits on nothing. A key may belong to another project. It is read from
+	// the answer's needs, and from its blocked_by where a Dispatch of the release before answers
+	// that alone (WaitsOf).
 	BlockedBy []string
 	// ClaimedBy is who Dispatch shows holding the issue's claim, as Claim.Holder writes it, or
 	// empty for nobody. ClaimUnread says Dispatch showed a claim naming no actor: neither nobody
@@ -291,7 +308,7 @@ func (a Actor) Name() string {
 	return a.Kind + ":" + a.ID
 }
 
-// SettlementActor is Dispatch's document settlement, which closes an ask whose decision block left
+// SettlementActor is Dispatch's document settlement, which closes an ask whose ask block left
 // its document in its own name (Dispatch's docs.SettlementActor).
 var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 
@@ -305,10 +322,9 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
 //
-// Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
-// finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
-// Role the part it plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, or "" for
-// none) and Slug the name Dispatch filed it under.
+// Primary and Role are what the document is on its issue, which is how a design-gate step finds
+// the document it binds to (api's gateRegister): Primary is the issue's primary document, and Role
+// the part it plays beside it (ArtifactRoleVerification, or "" for none).
 type Approval struct {
 	IssueKey      string
 	State         string
@@ -322,18 +338,14 @@ type Approval struct {
 	By            Actor
 	Primary       bool
 	Role          string
-	Slug          string
 }
 
-// ArtifactRoleVerification and ArtifactRoleDecisions are two of the parts Dispatch records a
-// document playing on its issue (model.Artifact.Role), and DecisionsSlug and VerificationSlug the
-// names it files those two documents under, which a reference to either names
-// (workflow's stepRef). No mechanism shares a value between this module and Dispatch's, so the
-// spellings change together.
+// ArtifactRoleVerification is the part Dispatch records a Verification document playing on its
+// issue (model.Artifact.Role), and VerificationSlug the name it files that document under, which a
+// reference to it names (workflow's stepRef). No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
 const (
 	ArtifactRoleVerification = "verification"
-	ArtifactRoleDecisions    = "decisions"
-	DecisionsSlug            = "decisions-md"
 	VerificationSlug         = "verification-md"
 )
 
@@ -403,7 +415,7 @@ var ErrNoBlocks = errors.New("Dispatch answered the document version without its
 // ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
 // GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it
 // stands, as DesignGateDocument names its route's shape. Both versions are compared with their
-// decision blocks cut out, so an answer a person gave, or an ask added or moved, changes no
+// ask blocks cut out, so an answer a person gave, or an ask added or moved, changes no
 // section and no block. Dispatch makes exactly one of three things true of an answer:
 // DecisionOnly, the cut is the whole change (the stored texts differ and cut to the same text);
 // Unchanged, the two versions differ in nothing any section, run or block holds (their stored
@@ -411,7 +423,8 @@ var ErrNoBlocks = errors.New("Dispatch answered the document version without its
 // one item. So an answer that names nothing says which of the first two it is. A Dispatch from
 // before Unchanged sends no such field, so an identical version from it decodes as an answer that
 // names nothing and is neither. Two versions of a document never change, so the answer for one
-// pair never goes stale.
+// pair never goes stale. DecisionOnly is the route's field decision_only, which names ask blocks:
+// the cut keeps every `decision` block, so a change to one is a change of the work.
 type ArtifactChanges struct {
 	ArtifactID   string `json:"artifact_id"`
 	From         int    `json:"from"`
@@ -531,6 +544,17 @@ type HandoffAuthor struct {
 // IsSession says whether the record's author is the session id.
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
+// Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
+// not a person's browser session (its whoamiAgent): Session is the session the credential proved,
+// Project the one project it lets its holder write, and Owner the person it acts for, each nil
+// where Dispatch names none. A broker token Dispatch serves every write of the daemon's for names
+// the daemon's session (DaemonSession), its project and a person.
+type Caller struct {
+	Session *string `json:"session"`
+	Project *string `json:"project"`
+	Owner   *string `json:"owner"`
+}
+
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
 // carry Dispatch's normal error body.
 type Error struct {
@@ -644,8 +668,9 @@ func PermanentRefusal(err error) (*Error, bool) {
 // name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
 // it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
 // serves only a Dispatch from before that change; a field whose loss would change a write ships as
-// a route of its own instead (the record's rating route, HTTPClient.PutStepRating). Any other malformed
-// body stays a permanent refusal.
+// a route of its own instead (the record's rating route, HTTPClient.PutStepRating, and its
+// experiment route, HTTPClient.PutStepExperiment). Any other malformed body stays a permanent
+// refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
 func unknownNewerField(message string) bool {

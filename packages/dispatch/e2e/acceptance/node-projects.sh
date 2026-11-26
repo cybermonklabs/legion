@@ -1,0 +1,444 @@
+#!/usr/bin/env bash
+# Drives the project of every node, which a read limited to a project depends on: every issue,
+# document, ask, message, comment and block a create writes is a node of the store that names its
+# project, written by its kind's own writer in the create's transaction.
+#
+# It creates one object of each kind through the API - an issue (whose spec is a document with
+# blocks), a document uploaded to the issue, a document of the project, an ask, a comment and a
+# message on the issue - and reads each one's node in graph_nodes: in the project, with the
+# `project` value tuple that states it. It then writes the three things no project owns - a file
+# sent in an agent's conversation, a direct message to that agent and a broadcast's copy to it -
+# and reads each one's node between its parties, with the `parties` value tuple that states them:
+# the conversation's session for the file, and for each message the session that sent it and the
+# one it went to. It removes an empty document and reads its node gone. It then runs
+# `envoy-dispatch backfill-graph-store` and `envoy-dispatch census --store` and holds the census to
+# `missing=0 gone=0 differs=0 unscoped=0 orphaned=0` for every project-owned kind. Then the control:
+# it takes the ask's node away and holds the census to naming exactly that ask, `missing=1` on the
+# ask kind and `census: project incomplete ask <id>: missing; run envoy-dispatch backfill-graph-store`, so the zeros before are read from an
+# instrument that sees a missing node; then the backfill writes the node again and the census reads
+# zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
+# creates a document's row at the removed document's address, which the census names `gone` and
+# the backfill gives a live node, then removes that row, which leaves the live node with no row:
+# the census names it `orphaned`, with no in-band cure, and the backfill leaves it, and the run
+# ends there.
+#
+# Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
+# here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
+# server's Envoy listener lists, which takes direct messages and broadcasts), DEV_SIGNIN_LOGIN (a
+# login the server's dev sign-in route signs in: a direct message and a broadcast are a person's
+# writes, which an agent's bearer may not make), DATABASE_URL (the database that server serves,
+# which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on PATH. It reads
+# this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
+# not loopback, and the node it deletes is the ask's this run made.
+#
+# Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
+# DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
+# it (c-a-node-projects) is one command: it
+# addresses the harness's server with the agent bearer the harness pins (`e2e-token`), signs in
+# `alice`, whom the harness seeds, creates a project of its own, adds an agent session of its own
+# to the fake Envoy's session list and puts the list back when it ends, and builds
+# `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
+#
+# The node writers' own grep, where a reader wants one:
+# `graphstore\.(Write|QueueWrite|PlanUncaused|WriteArms|WriteArmsUncaused)\(|graphstore\.Node\{`, with
+# api/comment_create.go as its control (its commentStoreWrite plans its node with PlanUncaused). A
+# writer whose event follows its node row plans the node with PlanUncaused and queues it with
+# QueueNodes; one with its cause in hand queues it with QueueWrite, or runs it at once with Write.
+# `graphstore.Caused` and `graphstore.QueueCaused` are left out on purpose: they name every
+# deferred write of the store, a block index's and a follow's among them, so they cannot tell a
+# node writer from the cause of another write.
+#
+# Each passing check prints `PASS: <section> <what>`; the first failing one prints
+# `FAIL: <section> <what>: <observed>` and the script exits 1.
+
+set -euo pipefail
+set +x
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/db DISPATCH_URL=http://127.0.0.1:8777 \
+         DISPATCH_TOKEN=e2e-token PROJECT=CORE AGENT_SESSION=s1 node-projects.sh
+       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; the built
+       `envoy-dispatch` must be on PATH, DATABASE_URL must name the database that server
+       serves, on this machine, and AGENT_SESSION a session its listener lists)
+USAGE
+}
+
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+harness=""
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
+if [[ -z "${DISPATCH_URL:-}" && -n "${DISPATCH_E2E_PORT:-}" && -n "${FAKE_ENVOY_PORT:-}" ]]; then
+  harness=1
+  DISPATCH_URL="http://127.0.0.1:$DISPATCH_E2E_PORT"
+  DISPATCH_TOKEN=e2e-token
+  DEV_SIGNIN_LOGIN=alice
+  PROJECT="NODE$(printf '%05d' "$((RANDOM % 100000))" | tr 0-9 A-J)"
+  AGENT_SESSION="node-projects-agent-$$"
+fi
+readonly harness
+require_env DISPATCH_URL PROJECT AGENT_SESSION DEV_SIGNIN_LOGIN DATABASE_URL
+require_commands curl jq psql
+command -v envoy-dispatch >/dev/null || [[ -n "$harness" ]] || require_commands envoy-dispatch
+read_bearer
+
+readonly base="${DISPATCH_URL%/}"
+# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
+# authenticates must name it (enforceCookieOrigin).
+base_host="${base#*://}"
+readonly origin="${base%%://*}://${base_host%%/*}"
+readonly person="$DEV_SIGNIN_LOGIN"
+# shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
+readonly project="$PROJECT" database_url="$DATABASE_URL"
+if ! loopback_database_url "$database_url"; then
+  printf 'node-projects.sh: DATABASE_URL names no loopback host or overrides its host; this driver deletes a node and runs only on its own test database\n' >&2
+  exit 2
+fi
+stamp="$(date +%s)-$$"
+readonly stamp
+readonly session="node-projects-$stamp"
+
+umask 077
+work="$(mktemp -d)"
+readonly work
+printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
+key=""
+fixture_saved=""
+cleanup() {
+  local code=$?
+  if [[ -n "$key" ]]; then
+    send PATCH "/api/v1/issues/$key" \
+      "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
+    [[ "$status" == 200 ]] || printf 'node-projects.sh: could not close %s: HTTP %s\n' "$key" "$status" >&2
+  fi
+  if [[ -n "$fixture_saved" ]]; then
+    curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
+      --data-binary "@$work/sessions.json" "http://127.0.0.1:$FAKE_ENVOY_PORT/__fixture/sessions" ||
+      printf 'node-projects.sh: could not put the fake Envoy session list back\n' >&2
+  fi
+  rm -rf "$work"
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# send METHOD PATH [JSON]: sends METHOD PATH with the agent's bearer; send_as_person does the same
+# with the person's cookie and the dashboard's origin. The answer's body goes to $work/body and
+# its status to $status.
+send() { request "$work/auth.args" "$@"; }
+send_as_person() { request "$work/person.args" "$@"; }
+request() {
+  local -a auth data=()
+  mapfile -t auth <"$1"
+  shift
+  [[ $# -lt 3 ]] || data=(-H 'Content-Type: application/json' --data-binary "$3")
+  status="$(curl -sS -X "$1" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
+    "$base$2" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+}
+printf '%s\n' -H "@$work/auth" >"$work/auth.args"
+printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
+
+actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
+
+# Under the harness the driver makes what its inputs would otherwise name (the header says what).
+# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and
+# puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
+# the one under test.
+if [[ -n "$harness" ]]; then
+  require_commands go
+  mkdir "$work/bin"
+  go -C "$script_dir/../../../envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch 2>"$work/build" ||
+    fail setup "build envoy-dispatch from this checkout" "$(tail -n 5 "$work/build")"
+  # shellcheck disable=SC2031 # this shell's own PATH, which every command after it reads
+  PATH="$work/bin:$PATH"
+  [[ "$(command -v envoy-dispatch)" == "$work/bin/envoy-dispatch" ]] ||
+    fail setup "run this checkout's envoy-dispatch" "PATH finds $(command -v envoy-dispatch)"
+  pass setup "built envoy-dispatch from this checkout"
+  curl -sS -o /dev/null -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$person")" 2>"$work/curl" ||
+    fail setup "sign $person in" "$(<"$work/curl")"
+  send POST /api/v1/projects "$(jq -cn --arg k "$project" --arg p "$person" --argjson a "$(actor)" \
+    '{key: $k, name: "Node projects", default_assignee: $p, actor: $a}')"
+  want_status 201 setup "create project $project"
+  curl -sS -o "$work/sessions.json" "http://127.0.0.1:$FAKE_ENVOY_PORT/v1/sessions" 2>"$work/curl" ||
+    fail setup "read the fake Envoy's sessions" "$(<"$work/curl")"
+  jq -e 'type == "array"' "$work/sessions.json" >/dev/null ||
+    fail setup "read the fake Envoy's sessions" "$(head -c 300 "$work/sessions.json")"
+  jq -c --arg s "$AGENT_SESSION" \
+    '[.[] | {session_id, title, dir, machine_id, host, roles, capabilities}]
+     + [{session_id: $s, title: "Node projects agent", machine_id: "acceptance", roles: [],
+         capabilities: ["aside", "btw", "steer"]}]' "$work/sessions.json" >"$work/fixture.json"
+  fixture_saved=1
+  curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
+    --data-binary "@$work/fixture.json" "http://127.0.0.1:$FAKE_ENVOY_PORT/__fixture/sessions" 2>"$work/curl" ||
+    fail setup "add $AGENT_SESSION to the fake Envoy's sessions" "$(<"$work/curl")"
+  pass setup "made project $project and agent session $AGENT_SESSION on the harness"
+fi
+
+# quotable SECTION WHAT VALUE...: fails unless each VALUE holds no single quote, the one character
+# that ends the SQL string literal a statement names it in, as the checks below name an id or a
+# party.
+quotable() {
+  local section="$1" what="$2" value
+  shift 2
+  for value in "$@"; do
+    [[ "$value" != *"'"* ]] || fail "$section" "$what" "'$value' holds a single quote, which would end the SQL string that names it"
+  done
+}
+
+# node_names_project SECTION KIND ID: the node KIND/ID is in the project, and its `project` value
+# tuple says so.
+node_names_project() {
+  quotable "$1" "the $2 node of $3 names $project" "$3"
+  query "$1" "the $2 node of $3 names $project" \
+    "select coalesce((select project_key from graph_nodes where kind = '$2' and id = '$3'), '(no node)')"
+  [[ "$answer" == "$project" ]] || fail "$1" "the $2 node of $3 names $project" "it names '$answer'"
+  query "$1" "the $2 node of $3 states its project" \
+    "select count(*) from graph_tuples where from_kind = '$2' and from_id = '$3' and kind = 'project' and to_kind = 'value' and to_id = '$project'"
+  [[ "$answer" == 1 ]] || fail "$1" "the $2 node of $3 states its project" "it states it $answer time(s)"
+  pass "$1" "the $2 node of $3 names $project"
+}
+
+# node_names_parties SECTION KIND ID PARTY...: the node KIND/ID is in no project and between the
+# PARTYs, and its `parties` value tuple names them sorted, each once, as the store writes them.
+node_names_parties() {
+  local section="$1" kind="$2" id="$3" want
+  shift 3
+  want="$(printf '%s\n' "$@" | LC_ALL=C sort -u | paste -sd' ' -)"
+  quotable "$section" "the $kind node of $id is between $want" "$id" "$want"
+  query "$section" "the $kind node of $id is between $want" \
+    "select coalesce((select coalesce(project_key, '-') || '|' || coalesce(array_to_string(parties, ' '), '-') from graph_nodes where kind = '$kind' and id = '$id'), '(no node)')"
+  [[ "$answer" == "-|$want" ]] || fail "$section" "the $kind node of $id is between $want" "it holds '$answer' (project|parties)"
+  query "$section" "the $kind node of $id states its parties" \
+    "select count(*) from graph_tuples where from_kind = '$kind' and from_id = '$id' and kind = 'parties' and to_kind = 'value' and to_id = '$want'"
+  [[ "$answer" == 1 ]] || fail "$section" "the $kind node of $id states its parties" "it states them $answer time(s)"
+  pass "$section" "the $kind node of $id is between $want"
+}
+
+# census_line KIND: the census's project line of KIND, from the last census run.
+census_line() { grep -E "^census: project kind=$1 " "$work/census" || true; }
+
+# census_complete SECTION WHEN: runs the census and holds it to naming no incomplete row and to
+# zeros over the rows it read for every project-owned kind, WHEN saying at which point of the run.
+# The census's exit is not read: on a database with no role, page, person or block reference the
+# store census refuses those kinds for having no row to check, which says nothing of the projects.
+census_complete() {
+  local kind line
+  envoy-dispatch census --store >"$work/census" 2>&1 || true
+  ! grep -q '^census: project incomplete' "$work/census" ||
+    fail "$1" "the census $2 names no incomplete row" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+  for kind in issue artifact ask message comment block; do
+    line="$(census_line "$kind")"
+    [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+      fail "$1" "the $kind census $2 reads zeros over rows it read" "${line:-no line for $kind}"
+    pass "$1" "the $kind census $2 reads zeros: ${line#census: project }"
+  done
+}
+
+section=create
+send POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
+  '{project: $p, title: "Every node names its project", spec: "First paragraph.\n\nSecond paragraph.\n", actor: $a}')"
+want_status 201 "$section" "create an issue"
+key="$(jq -r .key "$work/body")"
+# Each value read from the server's answer goes into the SQL text query passes to psql, or into a
+# request's path, so each is checked before a statement or a path names it: the issue key, the
+# ask's id and the empty document's id and address are held to their shapes, and
+# node_names_project, node_names_parties and sender_party refuse an id or a party that holds a
+# single quote (quotable).
+readonly uuid_shape='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+[[ "$key" =~ ^[A-Z][A-Z0-9]{1,9}-[0-9]+$ ]] || fail "$section" "create an issue" "the answer's key is '$key', not an issue key"
+pass "$section" "created $key"
+node_names_project "$section" issue "$key"
+node_names_project "$section" artifact "$key/spec"
+query "$section" "the spec's blocks name $project" \
+  "select count(*) filter (where project_key is distinct from '$project') || '/' || count(*) from graph_nodes where kind = 'block' and starts_with(id, '$key/spec#')"
+[[ "$answer" =~ ^0/[1-9] ]] || fail "$section" "the spec's blocks name $project" "blocks naming another / all: $answer"
+pass "$section" "the spec's blocks name $project"
+
+send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --argjson a "$(actor)" '{name: "notes.md", content: "# Notes\n", actor: $a}')"
+want_status 201 "$section" "upload an issue document"
+node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
+
+send POST "/api/v1/projects/$project/artifacts" "$(jq -cn --argjson a "$(actor)" --arg n "Playbook $stamp.md" '{name: $n, content: "# Playbook\n", actor: $a}')"
+want_status 201 "$section" "upload a project document"
+node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
+
+send POST "/api/v1/issues/$key/asks" "$(jq -cn --argjson a "$(actor)" '{question: "Does every node name its project?", actor: $a}')"
+want_status 201 "$section" "open an ask"
+ask="$(jq -r .id "$work/body")"
+[[ "$ask" =~ $uuid_shape ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
+node_names_project "$section" ask "$ask"
+
+send POST "/api/v1/issues/$key/comments" "$(jq -cn --argjson a "$(actor)" '{body: "A remark.", actor: $a}')"
+want_status 201 "$section" "write a comment"
+node_names_project "$section" comment "$(jq -r .id "$work/body")"
+
+send POST "/api/v1/issues/$key/messages" "$(jq -cn --argjson a "$(actor)" '{body: "A message.", actor: $a}')"
+want_status 201 "$section" "write a message"
+node_names_project "$section" message "$(jq -r .id "$work/body")"
+
+section=parties
+readonly agent="$AGENT_SESSION"
+curl -sS -o /dev/null -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$person")" 2>"$work/curl" ||
+  fail "$section" "sign $person in" "$(<"$work/curl")"
+[[ -s "$work/jar" ]] || fail "$section" "sign $person in" "the dev sign-in route left no cookie"
+pass "$section" "signed $person in"
+send GET /api/v1/agents
+want_status 200 "$section" "list the agents"
+jq -e --arg s "$agent" 'any(.. | objects | select(has("session_id")); .session_id == $s)' "$work/body" >/dev/null ||
+  fail "$section" "the listener lists $agent" "it lists $(jq -c '[.. | objects | .session_id? // empty]' "$work/body")"
+pass "$section" "the listener lists $agent"
+
+printf '\x89PNG\r\n\x1a\nnode-projects %s' "$stamp" >"$work/photo.png"
+status="$(curl -sS -X POST -o "$work/body" -w '%{http_code}' -H "@$work/auth" \
+  -F "name=photo-$stamp.png" -F "actor=$(actor)" -F "file=@$work/photo.png;type=image/png" \
+  "$base/api/v1/agents/$(q "$agent")/artifacts" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+want_status 201 "$section" "send a file in $agent's conversation"
+node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")" "session:$agent"
+
+# sender_party ID: the party the message row's own author names - a person by the canonical login
+# the server stored for them, lower-cased and trimmed as graphstore.AuthorOf reads it - into
+# $answer. It reads the row the create wrote, not the node under test.
+sender_party() {
+  quotable "$section" "read the sender of $1" "$1"
+  query "$section" "read the sender of $1" \
+    "select case when author->>'kind' = 'user' then 'person:' || lower(btrim(author->>'id')) else '(not a person)' end from messages where id = '$1'"
+}
+
+send_as_person POST "/api/v1/agents/$(q "$agent")/messages" "$(jq -cn --arg b "Direct $stamp." '{body: $b, delivery: "btw"}')"
+want_status 201 "$section" "$person sends $agent a direct message"
+direct="$(jq -r .id "$work/body")"
+sender_party "$direct"
+node_names_parties "$section" message "$direct" "$answer" "session:$agent"
+
+send_as_person POST /api/v1/broadcasts "$(jq -cn --arg s "$agent" --arg b "Broadcast $stamp." \
+  '{body: $b, delivery: "btw", session_ids: [$s]}')"
+want_status 201 "$section" "$person broadcasts to $agent"
+query "$section" "read the broadcast's copy" \
+  "select coalesce((select id::text from messages where broadcast_id is not null and body = 'Broadcast $stamp.'), '(no copy)')"
+copy="$answer"
+sender_party "$copy"
+node_names_parties "$section" message "$copy" "$answer" "session:$agent"
+
+section=removal
+send_as_person POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "Scratch $stamp.md" '{name: $n}')"
+want_status 201 "$section" "$person makes an empty document"
+scratch="$(jq -r .artifact.id "$work/body")"
+scratch_ref="$(jq -r .artifact.ref_key "$work/body")"
+[[ "$scratch" =~ $uuid_shape ]] || fail "$section" "$person makes an empty document" "the answer's id is '$scratch', not a uuid"
+[[ "$scratch_ref" =~ ^"$key"/[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+  fail "$section" "$person makes an empty document" "the answer's ref_key is '$scratch_ref', not a document address of $key"
+send_as_person DELETE "/api/v1/artifacts/$scratch"
+want_status 204 "$section" "$person removes the empty document"
+query "$section" "the removed document's node is gone" \
+  "select coalesce((select state from graph_nodes where kind = 'artifact' and id = '$scratch_ref'), '(no node)')"
+[[ "$answer" == gone ]] || fail "$section" "the removed document's node is gone" "it reads '$answer'"
+pass "$section" "the node of removed document $scratch_ref is gone"
+
+section=census
+envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+  fail "$section" "backfill-graph-store runs" "$(tail -n 5 "$work/backfill")"
+pass "$section" "backfill-graph-store runs"
+census_complete "$section" "after the backfill"
+
+# The server's block-index tick runs the object pass on every tick while a process of another
+# build serves and the first tick after one did, on the first tick that joins the build's cursor,
+# on a tick whose events name a row with no node (graphcensus.EventsOweObjectPass), and once 10
+# minutes have passed since its last pass finished (docs' objectPassInterval). This driver does
+# not start the server it reads; it needs that server - the harness's own under with-harness.sh,
+# or the one DISPATCH_URL names - to be the only build serving the database, since with another
+# build serving every tick owes the pass, and the sections below hold no quiet interval. The pass
+# writes the node of every row that names none and cures every node no row stands behind (docs'
+# writeObjectNodesAnotherBuildWrote). The sections below take a row's node away or remove a row as
+# an earlier build would, and read the census before any backfill, so a pass among them would cure
+# what they read first. So, as an earlier build would, a direct message is sent here with its event
+# and no node, and the sections wait until the pass that event owes has written its node and
+# cleared the debt: with this build serving alone, the next pass is then 10 minutes away, and no
+# event below names a row with no node. A cursor row whose event_id has reached that event was
+# moved by a tick of this server after it - a cursor an earlier server left on a reused database
+# stands behind it - and with the debt clear there and the message's node written, that tick's
+# pass has finished.
+section=pass
+query "$section" "an earlier build sends a direct message with its event and no node" "
+  with message as (
+    insert into messages (issue_key, author, body, target)
+    values (null, '{\"kind\":\"user\",\"id\":\"$person\"}', 'Before the control $stamp.', 'session:$agent')
+    returning id
+  ), event as (
+    insert into events (seq, type, actor, payload, notify)
+    select 0, 'message.created', '{\"kind\":\"user\",\"id\":\"$person\"}', jsonb_build_object('id', message.id::text), false
+    from message
+    returning id
+  )
+  select message.id::text || ' ' || event.id from message, event"
+read -r before written <<<"$answer"
+for attempt in $(seq 1 180); do
+  query "$section" "read whether the server's object pass has run after event $written" "
+    select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
+       and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
+  [[ "$answer" == t ]] && break
+  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt, and no node of message $before, within 180 s"
+  sleep 1
+done
+pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
+
+section=control
+query "$section" "take the ask's node away" "
+  with tuples as (delete from graph_tuples where from_kind = 'ask' and from_id = '$ask' returning 1),
+       inbound as (delete from graph_tuples where to_kind = 'ask' and to_id = '$ask' returning 1)
+  delete from graph_nodes where kind = 'ask' and id = '$ask' returning (select count(*) from tuples)"
+pass "$section" "took the ask's node away"
+envoy-dispatch census --store >"$work/census" 2>&1 && fail "$section" "the census refuses" "it exited 0" || true
+line="$(census_line ask)"
+[[ "$line" =~ missing=1\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads one missing node" "${line:-no line for ask}"
+pass "$section" "the ask census reads one missing node"
+grep -qxF "census: project incomplete ask $ask: missing; run envoy-dispatch backfill-graph-store" "$work/census" ||
+  fail "$section" "the census names the ask" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+pass "$section" "the census names ask $ask"
+
+# The backfill writes the ask's node again, so the database is left as complete as the run found
+# it, and a later census over it reads no project finding with no backfill of its own.
+envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+  fail "$section" "backfill-graph-store writes the ask's node again" "$(tail -n 5 "$work/backfill")"
+census_complete "$section" "after the ask's node is written again"
+
+# A build before this one serves beside this one during a roll and after a rollback, and writes no
+# node: the two statements below are its writes, a document's create and its removal, each the
+# row alone. The census's exit is not read, for the reason census_complete gives.
+section=roll
+query "$section" "an earlier build makes a document at $scratch_ref, whose node is gone" "
+  insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+  values ('$key', '$project', '${scratch_ref#*/}', 'Scratch again', 'doc', '{\"kind\":\"user\",\"id\":\"$person\"}')
+  returning ref_key"
+[[ "$answer" == "$scratch_ref" ]] || fail "$section" "an earlier build makes a document at $scratch_ref" "it made '$answer'"
+envoy-dispatch census --store >"$work/census" 2>&1 || true
+line="$(census_line artifact)"
+[[ "$line" =~ missing=0\ gone=1\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+  fail "$section" "the artifact census reads one row whose node is gone" "${line:-no line for artifact}"
+grep -qxF "census: project incomplete artifact $scratch_ref: gone; run envoy-dispatch backfill-graph-store" "$work/census" ||
+  fail "$section" "the census names $scratch_ref gone" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+pass "$section" "the census names the row an earlier build made at $scratch_ref gone"
+envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+  fail "$section" "backfill-graph-store gives $scratch_ref a live node" "$(tail -n 5 "$work/backfill")"
+query "$section" "the node of $scratch_ref is live" \
+  "select coalesce((select state from graph_nodes where kind = 'artifact' and id = '$scratch_ref'), '(no node)')"
+[[ "$answer" == live ]] || fail "$section" "the backfill gives $scratch_ref a live node" "it reads '$answer'"
+census_complete "$section" "after the backfill made $scratch_ref live"
+
+query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning ref_key"
+[[ "$answer" == "$scratch_ref" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed '$answer'"
+for run in census backfill; do
+  if [[ "$run" == backfill ]]; then
+    envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+      fail "$section" "backfill-graph-store runs over the orphaned node" "$(tail -n 5 "$work/backfill")"
+  fi
+  envoy-dispatch census --store >"$work/census" 2>&1 || true
+  line="$(census_line artifact)"
+  [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
+    fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned, with no in-band cure" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+done
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with no in-band cure, and the backfill leaves it"

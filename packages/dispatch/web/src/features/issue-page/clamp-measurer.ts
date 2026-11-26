@@ -94,17 +94,6 @@ interface Watched {
  * branch's opening draws in view. Every other row is measured in the batches, a frame after it
  * comes near, never in the frame it arrives in.
  *
- * A row's words can be drawn after the row: a statement is drawn from its document's blocks
- * before the coverage read brings its words, and any row's words can change with a later read.
- * Its mount measured the words it held then - none, for that statement - and the batches hold a
- * row in view at its length, so the words that came after were drawn whole in the first view
- * and stayed whole there (a statement 472 px tall at 390 px, still whole 59 frames after its
- * words arrived). So the row says when it draws other words (`redrawn`), and a row measured
- * before is measured again as one that mounts: where it stands in view, once the commit's layout
- * effects have run and before the page is painted, so the reader never sees those words whole
- * either. A row never measured is left as it was: one outside the view to the batches, and one
- * in view at the length the reader sees.
- *
  * A long jump into the middle of the page, such as a fast drag of the scrollbar, lands on rows
  * not measured yet, and their cuts the frame after moved the content in view (-1,141 px once in
  * five jumps from 60,000 px to 15,000 px): the browser's own scroll anchoring holds the view only
@@ -206,15 +195,6 @@ class ClampMeasurer {
     return () => this.#unwatch(element);
   }
 
-  /** Measures `element`'s words again as they mount (`#measureMounted`), now that the row draws
-   *  other words than it was measured with. Called from the row's layout effect. A row never
-   *  measured keeps what it has: it is due to the mount's pass or to the batches, or it stands
-   *  whole in view, where a cut would shrink what the reader sees. */
-  redrawn(element: HTMLElement): void {
-    if (this.#rows.get(element)?.face === undefined) return;
-    this.#measureAsMounted(element);
-  }
-
   /** Whether no row is watched any more. */
   get idle(): boolean {
     return this.#rows.size === 0;
@@ -269,8 +249,8 @@ class ClampMeasurer {
     if (this.#due.size > 0) this.#frame ??= window.requestAnimationFrame(this.#measure);
   };
 
-  /** The rows handed over since the commit that mounted them, or that drew other words in it
-   *  (`redrawn`), measured where they stand in view once that commit's layout effects have all
+  /** The rows handed over since the commit that mounted them, measured where they stand in view
+   *  once that commit's layout effects have all
    *  run, and before the page is painted: every read of them comes first, after the writes of
    *  every layout effect, so the page is laid out for them once; then their cuts are drawn at
    *  once (`flushSync`). A row outside the view is left to the batches. */
@@ -377,12 +357,6 @@ export function watchClamp(element: HTMLElement, report: Report): () => void {
     held.stop();
     if (measurer === held) measurer = undefined;
   };
-}
-
-/** Tells the page's one measurer that `element`'s words are drawn from other words than it
- *  measured them on (`ClampMeasurer.redrawn`). */
-export function clampRedrawn(element: HTMLElement): void {
-  measurer?.redrawn(element);
 }
 
 /** Whether the words' box, as the slice read it, is laid out within `NEAR_BAND` of the viewport.

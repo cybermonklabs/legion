@@ -2,8 +2,11 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +68,11 @@ const (
 	// and documentHeadChannel would announce a head of 0, which a catch-up reads as a room
 	// already at the stored head and closes nothing.
 	documentRemovedChannel = "dispatch_doc_removed"
+	// documentRoomsChannel carries, as JSON, the room documents were moved into and those documents
+	// (documentRooms), sent inside the transaction that wrote their document_rooms rows
+	// (AnnounceDocumentRooms), so every process closes its rooms of those documents and its room of
+	// the issue's tree, whose layout the move changed (Service.documentRoomsMoved).
+	documentRoomsChannel = "dispatch_doc_rooms"
 	// documentQueryChannel carries one process's question about a room to every other member,
 	// and documentAnswerChannel each member's answer to it; room_query.go has their wire format.
 	documentQueryChannel  = "dispatch_doc_query"
@@ -217,6 +225,10 @@ func (r *roomSync) handlers() []roomSyncHandler {
 		{
 			channels:  []roomSyncChannel{{name: documentRemovedChannel, notified: r.service.documentRemoved}},
 			connected: r.service.recheckRemovedRooms,
+		},
+		{
+			channels:  []roomSyncChannel{{name: documentRoomsChannel, notified: r.service.documentRoomsMoved}},
+			connected: r.service.recheckMovedRooms,
 		},
 		{channels: []roomSyncChannel{{name: documentQueryChannel, notified: r.service.roomQueries.query}}},
 		{channels: []roomSyncChannel{{name: documentAnswerChannel, notified: r.service.roomQueries.answer}}},
@@ -521,7 +533,8 @@ func queueAnnounceDocumentChange(b *store.WriteBatch, room, processID string) {
 const announceDocumentRemovedStatement = `select pg_notify('` + documentRemovedChannel + `', $1::text)`
 
 // AnnounceDocumentRemoved tells every envoy-dispatch process to close its room of artifactID, the
-// document whose row tx has just deleted. The removal's transaction is package api's
+// document whose row tx has just deleted, or just retired (RetireDocument), whose row stays and
+// whose socket is refused from then on. The removal's transaction is package api's
 // (removeArtifact), so this is the seam it sends through: a package function taking that
 // transaction, as the other document work a removal or an upload runs inside its own transaction
 // is (MoveApprovalAsk, WriteAskResolution, RecordTaskProgress). It needs no room and no state of
@@ -542,4 +555,137 @@ func AnnounceDocumentRemoved(ctx context.Context, tx pgx.Tx, artifactID string) 
 		return fmt.Errorf("announce the document's removal: %w", err)
 	}
 	return nil
+}
+
+// documentRooms is a documentRoomsChannel payload: the room documents were moved into, and the
+// documents.
+type documentRooms struct {
+	Room      string   `json:"room"`
+	Documents []string `json:"documents"`
+}
+
+// announceDocumentRoomsStatement announces the payload $1 (text, a documentRooms) on
+// documentRoomsChannel. The channel is named in the statement, as announceDocumentRemovedStatement
+// names its own.
+const announceDocumentRoomsStatement = `select pg_notify('` + documentRoomsChannel + `', $1::text)`
+
+// AnnounceDocumentRooms tells every envoy-dispatch process that documents now have their
+// document_rooms rows naming room, which tx has just written: the conversion of an issue into its
+// issue room (R6 of the issue-tree spec), or a document joining an issue room. Every process then
+// closes its room of each of those documents, whose sockets reconnect and are admitted to room
+// (ServeHTTP), and its room of room itself, whose layout the move changed and whose next load reads
+// the new one (documentRoomsMoved). The process whose transaction seeded a joining document's
+// first text closes its own room of room at that commit, before its writer answers
+// (Ledger.closeJoinedRooms), so the writer's next write is not left to this notice. It is the seam
+// the conversion's transaction sends through, as AnnounceDocumentRemoved is a removal's: a package
+// function taking that transaction, needing no room and no state of this process.
+//
+// Inside that transaction, for the reason AnnounceDocumentRemoved gives: Postgres delivers a
+// notification only if the transaction that sent it commits, so a conversion that rolled back
+// closes nobody's room. An append a room of one of those documents makes after the commit and
+// before its close meets the gate's refusal (ErrRoomMoved).
+//
+// The rule every writer of a document_rooms row keeps: its transaction takes the issue's owner
+// row (`select ... from issues where key = $1 for no key update`, as lockArtifactOwner takes it)
+// before it writes the row, and holds it to its commit. An issue room's settlement reads the room's
+// documents again under that row (settlement.readLocked) and closes a room loaded over others, so
+// a notice this process missed costs a reload rather than a settlement over the wrong fragments;
+// a join that wrote its row without the issue's row could commit between that read and the
+// settlement's commit, and the settlement would version and index the room without the joined
+// fragment, removing that document's blocks. The issue's row comes before the room's advisory
+// lock, as for every writer of a room (lockDocumentRoom).
+func AnnounceDocumentRooms(ctx context.Context, tx pgx.Tx, room string, documents ...string) error {
+	payload, err := json.Marshal(documentRooms{Room: room, Documents: documents})
+	if err != nil {
+		return fmt.Errorf("encode the moved documents: %w", err)
+	}
+	if _, err := tx.Exec(ctx, announceDocumentRoomsStatement, string(payload)); err != nil {
+		return fmt.Errorf("announce the moved documents: %w", err)
+	}
+	return nil
+}
+
+// documentRoomsMoved is documentRoomsChannel's handler, on its room-sync lane (roomSync.handlers):
+// the documents the payload names were moved into its room, in a transaction of any process whose
+// commit announced it (AnnounceDocumentRooms). Each room this process holds of one of them is
+// closed (closeMovedRoom), and so is its room of the issue room itself, which loaded the layout the
+// move changed. A process holding none of them closes nothing.
+func (s *Service) documentRoomsMoved(ctx context.Context, payload string) {
+	var moved documentRooms
+	if err := json.Unmarshal([]byte(payload), &moved); err != nil {
+		slog.Error("dispatch: read a moved documents notification", "payload", payload, "error", err)
+		return
+	}
+	for _, room := range append(moved.Documents, moved.Room) {
+		s.closeMovedRoom(ctx, room)
+	}
+}
+
+// closeMovedRoom closes this process's room of room, if it holds one, through the eviction a
+// removed document's room takes (documentRemoved): every socket of it ends, and connects again.
+func (s *Service) closeMovedRoom(ctx context.Context, room string) {
+	if s.srv.GetDoc(room) == nil {
+		return
+	}
+	if err := s.Evict(ctx, room); err != nil && ctx.Err() == nil {
+		// The room stays open until its next close: a moved document's appends meet the gate's
+		// refusal (ErrRoomMoved), which fails it, an issue room's settlement finds its layout
+		// stale and closes it (errRoomLayoutMoved), and the lane's pass after the next LISTEN
+		// reads it again (recheckMovedRooms).
+		slog.Error("dispatch: close the room of a document moved into its issue's room", "room", room, "error", err)
+	}
+}
+
+// residentMovedRoom is one row of residentMovedStatement: a resident room, whether it is a
+// document that moved into another room, and, for an issue room, its layout as the room holds it
+// now.
+type residentMovedRoom struct {
+	room   string
+	moved  bool
+	layout []string
+}
+
+// residentMovedStatement reads, of the rooms in $1, each that is a document moved into another
+// room (document_rooms), and each issue's tree with the layout of its room (roomLayoutSQL).
+var residentMovedStatement = `
+	select a.id::text, moved.artifact_id is not null, case when a.kind = 'tree' then ` + roomLayoutSQL("a.id") + ` end
+	from artifacts a
+	left join document_rooms moved on moved.artifact_id = a.id
+	where a.id = any($1::uuid[]) and (moved.artifact_id is not null or a.kind = 'tree')`
+
+// recheckMovedRooms is the moved-rooms lane's work after each LISTEN stands: a move notified while
+// the hub had no connection reached nobody, and nothing announces it again. It reads, in one
+// statement, which rooms this process holds are of documents that moved, and the documents of
+// each issue room it holds, and closes (closeMovedRoom) each moved document's room and each issue
+// room whose documents differ from the layout its instance loaded (layoutOf), so its next load
+// reads them.
+func (s *Service) recheckMovedRooms(ctx context.Context) {
+	rooms := s.residentLoadedRooms()
+	if len(rooms) == 0 {
+		return
+	}
+	rows, err := s.store.Pool.Query(ctx, residentMovedStatement, rooms)
+	var read []residentMovedRoom
+	if err == nil {
+		read, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (residentMovedRoom, error) {
+			var held residentMovedRoom
+			err := row.Scan(&held.room, &held.moved, &held.layout)
+			return held, err
+		})
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Error("dispatch: read which of the resident documents moved into an issue room", "rooms", len(rooms), "error", err)
+		}
+		return
+	}
+	for _, held := range read {
+		if !held.moved {
+			live := s.srv.GetDoc(held.room)
+			if live == nil || slices.Equal(held.layout, s.layoutOf(live)) {
+				continue
+			}
+		}
+		s.closeMovedRoom(ctx, held.room)
+	}
 }

@@ -47,7 +47,7 @@ func TestDeletingAnOrphanedInsertSuggestionLeavesNoneOfItsWords(t *testing.T) {
 		t.Fatalf("the comment before the delete reads %s, want its anchor quoting %q", before, words)
 	}
 	// A browser edit takes the inserted words out of the live document, orphaning the mark.
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The brown fox\n")
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, "The brown fox\n")
 
 	beforeDelete := lastEventID(t, database)
 	deleteThreadComment(t, handler, comment.ID, "alice")

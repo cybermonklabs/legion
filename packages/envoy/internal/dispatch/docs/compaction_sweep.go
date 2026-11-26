@@ -105,8 +105,21 @@ func (s *Service) compactionSweepPass(ctx context.Context) {
 // gave a row after their first that no compaction has folded since (appendUpdatesStatement,
 // through appendWrites; writeCompaction). It reads that table alone, so the pass reads no row of a
 // document with nothing to fold, and it drains the list before it returns.
+//
+// The same statement deletes the entry of each document converted into its issue's room, and lists
+// none of them (R6 of the issue-tree spec): the rows that document's own room left stay as they
+// stood, so nothing of them is folded (writeCompaction), and the issue's room is named by its tree
+// artifact, whose own appends gave it an entry of its own. The gate refuses every append to such a
+// document's room (ErrRoomMoved), so no append names it again.
 func compactionCandidates(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
-	rows, err := pool.Query(ctx, `select artifact_id::text from doc_compaction_owed`)
+	rows, err := pool.Query(ctx, `
+		with moved as (
+			delete from doc_compaction_owed owed using document_rooms room
+			where room.artifact_id = owed.artifact_id
+			returning owed.artifact_id
+		)
+		select owed.artifact_id::text from doc_compaction_owed owed
+		where owed.artifact_id not in (select artifact_id from moved)`)
 	if err != nil {
 		return nil, fmt.Errorf("list the documents to compact: %w", err)
 	}

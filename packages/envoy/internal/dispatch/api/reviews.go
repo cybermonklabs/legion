@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,10 +25,15 @@ import (
 
 // Document approval: a human review pinned to a document version. Approve, or
 // request changes with a reason. A later version makes an approval stale, unless
-// it is the version a human's own answer to a decision block writes and that
-// answer is the whole change since the version he approved, or a version whose
-// text is byte for byte the approved version's with no decision block in it
-// decided since; then Dispatch carries the approval to it (docs writes that carry).
+// a carry case of docs takes the change since the version he approved - a version
+// whose text is byte for byte the approved version's with no ask block in it
+// decided since, among others; then Dispatch carries the approval to it (docs
+// writes that carry). A person's answer, resolve, decline, close or reopen of an ask writes one
+// version. When the answer, resolve, decline, close or reopen is that version's whole change
+// (docs' changesAskAttributesAlone: text a person was editing in the browser can settle into the
+// same version), the version changes only the server-owned attributes of the ask's block -
+// `state`, and `answered_by` and `answered_at` where the ask is answered - and R10's carry
+// carries a standing approval across it.
 // A request for approval is an ask of kind "approval" with fixed options, so it reaches the
 // human through the Inbox like any question; one opened on a document with an
 // earlier approval carries that approval's version, time and approver
@@ -59,13 +65,13 @@ func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (in
 }
 
 // loadReviews is every review of the document, newest first in the order its events committed
-// (docs.ReviewOrder).
+// (model.ReviewOrder).
 func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) ([]model.ArtifactReview, error) {
-	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
+	rows, err := q.Query(ctx, `select `+docs.ReviewReadColumns+` from artifact_reviews where artifact_id = $1 order by `+model.ReviewOrder, artifactID)
 	if err != nil {
 		return nil, err
 	}
-	reviews, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.ArtifactReview, error) { return docs.ScanReview(row) })
+	reviews, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.ArtifactReview, error) { return docs.ScanReviewWithCarry(row) })
 	if err != nil {
 		return nil, err
 	}
@@ -76,22 +82,25 @@ func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) 
 }
 
 // latestReviewsStatement reads the newest review of every document in $1, one row each
-// (docs.ReviewOrder decides which); scanLatestReviews reads its rows.
+// (model.ReviewOrder decides which); scanLatestReviews reads its rows.
 const latestReviewsStatement = `
-		select distinct on (artifact_id) ` + docs.ReviewColumns + `
+		select distinct on (artifact_id) ` + docs.ReviewReadColumns + `
 		from artifact_reviews where artifact_id = any($1::uuid[])
-		order by artifact_id, ` + docs.ReviewOrder + `
+		order by artifact_id, ` + model.ReviewOrder + `
 	`
 
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
-// and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
+// and its Verification document is found by either and reported on both. A request is open as the
+// Inbox picks an ask (askOpenOf): the row's state keeps the read on the indexes of open asks, and
+// the node's decides. It is a var, not a const, because askOpenOf builds its read of the ask's
+// node from graphstore.CurrentTupleRead.
+var openApprovalAsksStatement = `
 		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
 		from asks a` + lastReplyJoin + `
 		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
-		where a.kind = 'approval' and a.state = 'open'
+		where a.kind = 'approval' and ` + askOpenOf("a") + `
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
 	`
@@ -129,7 +138,7 @@ func scanLatestReviews(rows pgx.Rows, latestReviews map[string]model.ArtifactRev
 		return fmt.Errorf("load latest reviews: %w", err)
 	}
 	for rows.Next() {
-		review, err := docs.ScanReview(rows)
+		review, err := docs.ScanReviewWithCarry(rows)
 		if err != nil {
 			return err
 		}
@@ -172,7 +181,10 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 }
 
 // applyApprovals fills each document's Approval from its latest review and its open request, the
-// rule queueApprovals's apply runs once both statements have been read.
+// rule queueApprovals's apply runs once both statements have been read. A retired document's
+// approval is superseded by its retirement (docs.RetireDocument), which writes no version, so it
+// reads stale at its latest version as an approval a later version left behind reads: a gate or
+// a reader that asks whether the document stands approved hears that it does not.
 func applyApprovals(
 	byID map[string]*model.Artifact,
 	latestReviews map[string]model.ArtifactReview,
@@ -199,10 +211,11 @@ func applyApprovals(
 			approval.Kind = review.Kind
 			approval.ContentSHA256 = review.ContentSHA256
 			approval.ContentSHA256Source = review.ContentSHA256Source
+			approval.CarriedFromVersion = review.CarriedFromVersion
 			switch {
 			case review.State == "changes_requested":
 				approval.State = "changes_requested"
-			case review.Version == latest:
+			case review.Version == latest && !artifact.Retired:
 				approval.State = "approved"
 			default:
 				approval.State = "stale"
@@ -549,8 +562,10 @@ type approvalRequestResponse struct {
 	Approval   artifactApprovalRead `json:"approval"`
 	// Coverage is one line per requirement of the spec with no check, as the approver reads
 	// them (coverage.go); never a missing plan task, since the plan comes after the
-	// approval, and empty for any document that is not an issue's spec. A gap refuses
-	// nothing: the request is recorded as it always was.
+	// approval, and empty for any document that is not an issue's spec. While a document of
+	// the issue owes its block index it names no requirement as lacking a check, and carries
+	// one line per such document in their place (owedGap). A gap refuses nothing: the request
+	// is recorded as it always was.
 	Coverage []string `json:"coverage"`
 	// CoverageUnread says the spec's coverage could not be read, so the empty Coverage is
 	// no answer about it. The request is recorded either way.
@@ -660,10 +675,21 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
+	// The approval before this request, and the transaction's now() beside it in the same batch:
+	// a request that opens an approval ask dates its node and its row by that now(), the row's
+	// created_at column default, which its insert writes explicitly (openApprovalAsk), and reading
+	// it here costs that request no round trip of its own. A request that renews the open one
+	// dates its requester's follow by it (renewApprovalAsk), and one that does neither reads it
+	// for nothing.
+	var now time.Time
+	batch := &pgx.Batch{}
+	applyApproval := queueApprovals(batch, []*model.Artifact{&artifact})
+	batch.Queue(`select now()`).QueryRow(func(row pgx.Row) error { return row.Scan(&now) })
+	if err := tx.SendBatch(r.Context(), batch).Close(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	applyApproval()
 	// An approval of every document this request names, each at its current version, needs no
 	// request: return the named document's as it stands.
 	settled, err := docs.NamedDocumentsApproved(r.Context(), tx, documents, artifact.ID,
@@ -714,12 +740,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	var appended []*model.Event
 	var opened *model.Event
 	if open != nil {
-		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary); err != nil {
+		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary, now); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	} else {
-		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question); err != nil {
+		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question, now); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -799,6 +825,7 @@ func approvalAfterRequest(approval model.ArtifactApproval, ask model.Ask) model.
 // document a human approved before carries that approval's version, time and approver on the
 // request (approval.approved), so the human reads what the re-approval follows; a first request
 // carries none. The approval named is the first document's, the one the request was opened on.
+// createdAt is the transaction's now(), which the caller read with the approval before the write.
 // The event is filled in once Commit has run the write phase (queueLoggedEvent), and so is the
 // ask's OpenedEventID, which its caller takes from the event then.
 func (s *server) openApprovalAsk(
@@ -810,15 +837,14 @@ func (s *server) openApprovalAsk(
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
 	question string,
+	createdAt time.Time,
 ) (*model.Ask, *model.Event, error) {
-	// The row's created_at is the transaction's now(), its column default, read with its id and
-	// written explicitly, so the request this route answers with carries the time the row will
-	// hold.
-	var rowID string
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
-		return nil, nil, err
-	}
+	// The request's id, drawn here as createAskBlock draws an ask block's, because the node goes
+	// in before the row; the node, its relations and the row are dated by createdAt, the
+	// transaction's now(), which the insert writes explicitly as the row's created_at, so they
+	// are dated as the row is, by the database's clock, and the request this route answers with
+	// carries the time the row will hold. Neither costs a round trip.
+	rowID := uuid.NewString()
 	approval := &model.AskApproval{Documents: documents}
 	approved, err := docs.LatestApprovedReview(ctx, tx, artifact.ID)
 	if err != nil {
@@ -854,10 +880,33 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
+	// The request's node goes in before its row, in the project of the document it is asked on,
+	// which the issue that owns the request is in too (an issue's document carries its issue's
+	// project), with the document a request on no issue belongs to and who requested it
+	// (graphstore.AskFacts); its write is queued before the row's insert, which names the node,
+	// and what it states waits for the ask.opened event below. The document is read already, so
+	// its project costs no round trip of its own.
+	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
+	places, err := graphstore.ReadAskPlaces(ctx, tx, nil, owner.ArtifactID, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
+	// The approval request's ask is the node this write makes, first of the nodes AskFacts
+	// answers (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
+	askNode := graphstore.PlanUncaused(nodes, facts)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	nodeKind, nodeAddress := graphstore.AskRowNode(ask.ID, marked)
 	if err := queueExec(ledger, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, created_at)
-		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8)
-	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval, ask.CreatedAt); err != nil {
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8, $9, $10)
+	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval, ask.CreatedAt, nodeKind, nodeAddress); err != nil {
 		return nil, nil, err
 	}
 	// The request's own references and its parts - its question and its two review options -
@@ -876,13 +925,19 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
-	// The requester follows the request it opened, right after the ask.opened that records it,
-	// so a session requester's node is caused by that event in the follow's own statement and
-	// the request pays no second statement to move it there. Nothing before the event reads the
-	// follower row: its payload's logins are the thread's (events.ThreadLogins), and the outbox
-	// reads the followers after the commit.
+	// The request's node learns the ask.opened that records it, and the requester follows the
+	// request it opened, both right after that event. The session's node is the request's
+	// author's, which the node write above wrote (graphstore.AuthorFacts), so the follow makes
+	// none and states its followed_by under that event in the statement after its own. Nothing
+	// before the event reads the follower row: its payload's logins are the thread's
+	// (events.ThreadLogins), and the outbox reads the followers after the commit. The request is
+	// new, so its follower row is too, and the follow is planned with no read
+	// (asks.PlanFollowNewAsk), dated by the request's created_at.
+	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		_, err := asks.QueueFollowAuthor(b, ask.ID, actor, ask.CreatedAt, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
+		_, err := follow.Queue(b, graphstore.LatestEvent)
 		return err
 	}); err != nil {
 		return nil, nil, err
@@ -895,7 +950,8 @@ func (s *server) openApprovalAsk(
 // "" when it named none, which keeps the open request's own; documents are the documents this
 // request names, which are added to the open request's, each at its current version. A request
 // that names fewer documents than the open one takes nothing away: the open request's documents
-// stand until it is answered.
+// stand until it is answered. now is the transaction's now(), which the route read beside the
+// approval.
 //
 // The turn decides, read once before anything is written. A request waiting on its agent - moved
 // to a later version, or answered in its thread - goes back to the human: a new summary, or a
@@ -914,6 +970,7 @@ func (s *server) renewApprovalAsk(
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
 	summary string,
+	now time.Time,
 ) ([]*model.Event, error) {
 	openSummary, err := docs.ApprovalAskSummary(*open)
 	if err != nil {
@@ -934,7 +991,7 @@ func (s *server) renewApprovalAsk(
 	switch {
 	case waitingOn == "human" && changed:
 		return nil, errorf(http.StatusConflict, "APPROVAL_WAITS_ON_HUMAN",
-			"the approval request already waits on the human, asking %q, and a different summary or another document would rewrite the card they are reading, so nothing was changed; raise what changed with the human first, in the request's thread or as a decision block in the document, and once they have agreed to every point in it and a reply or a new version leaves the request waiting on you, hand it back with the new summary",
+			"the approval request already waits on the human, asking %q, and a different summary or another document would rewrite the card they are reading, so nothing was changed; raise what changed with the human first, in the request's thread or as an ask block in the document, and once they have agreed to every point in it and a reply or a new version leaves the request waiting on you, hand it back with the new summary",
 			open.Question)
 	case waitingOn == "agent":
 		if changed {
@@ -948,15 +1005,18 @@ func (s *server) renewApprovalAsk(
 		}
 		appended = append(appended, handedBack)
 	}
-	// The requester follows the request again. A renewal that appended no event above - an
-	// unchanged request that already waits on the human - and adds the requester as a follower
-	// records that as ask.follower_added, in this transaction, as the follower route does: a
-	// follower is a destination of the issue's later ask events, and an earlier event of the issue
-	// that now reaches it must hold a later comment's mention to it until the outbox has read the
-	// change, which a new event of the issue does (model.MentionCopyHolderSQL). Whether the follow
-	// is new is read here, in the read phase: the follower route takes the owner lock this route
-	// holds, so no other follow of this ask commits between this read and this transaction's
-	// commit. The events are dated by the transaction's now(), their column's default.
+	// The requester follows the request again. The follow is planned here, in the read phase,
+	// under the owner lock this request holds (asks.PlanFollowAuthor), whose read of the
+	// requester's follower row also says whether the follow is new (PlannedFollow.Added), so no
+	// second read asks it. A renewal that appended no event above - an unchanged request that
+	// already waits on the human - and adds the requester as a follower records that as
+	// ask.follower_added, in this transaction, as the follower route does: a follower is a
+	// destination of the issue's later ask events, and an earlier event of the issue that now
+	// reaches it must hold a later comment's mention to it until the outbox has read the change,
+	// which a new event of the issue does (model.MentionCopyHolderSQL). The follower route takes
+	// the owner lock this route holds, so no other follow of this ask commits between the plan's
+	// read and this transaction's commit. The plan needs nothing of that event but its time, which
+	// is now: the events are dated by the transaction's now(), their column's default.
 	//
 	// A renewal that appended events queues the follow right after them, so a session
 	// requester's node is caused by the last of them. One that appends ask.follower_added queues
@@ -966,31 +1026,24 @@ func (s *server) renewApprovalAsk(
 	// given no cause states no base attribute of its own and holds the node's two for the step
 	// after it, which appends them at the cause it is handed, the sentinel included
 	// (asks.Followed).
-	follows := true
-	if len(appended) == 0 && actor.Kind == "session" && actor.ID != "" {
-		if follows, err = asks.Follows(ctx, tx, open.ID, actor.ID); err != nil {
-			return nil, err
-		}
+	follow, err := asks.PlanFollowAuthor(ctx, tx, open.ID, actor, now)
+	if err != nil {
+		return nil, err
 	}
-	followCause, at := graphstore.NoEvent, open.CreatedAt
-	if len(appended) > 0 || !follows {
-		if at, err = ledger.Now(ctx); err != nil {
-			return nil, err
-		}
-	}
+	followCause := graphstore.NoEvent
 	if len(appended) > 0 {
 		followCause = graphstore.LatestEvent
 	}
 	var held graphstore.Uncaused
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		var err error
-		held, err = asks.QueueFollowAuthor(b, open.ID, actor, at, followCause)
+		held, err = follow.Queue(b, followCause)
 		return err
 	}); err != nil {
 		return nil, err
 	}
 	heldCause := followCause
-	if !follows {
+	if len(appended) == 0 && follow.Added {
 		followed, err := s.queueEvent(ledger, ownerOf(open.IssueKey, open.ArtifactID).event(
 			"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
 		))
@@ -1002,6 +1055,7 @@ func (s *server) renewApprovalAsk(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return nil, err

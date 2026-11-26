@@ -45,8 +45,9 @@ function ownTarget(owner: ComposerOwner): string | null {
 
 /** `mentions` written in front of `body`, each followed by one space. The space after the last
  *  one is there even where `body` is empty, which is the draft a seed or a reply's prefill
- *  starts, so a word the reader types at once starts a word of its own rather than running on
- *  from that link's closing `)`. With no mention, `body` is the text as it stands. */
+ *  starts, so a word the reader types at once stands as a word of its own after the mention, as
+ *  a renderer draws it, rather than joined to the link's words. With no mention, `body` is the
+ *  text as it stands. */
 function writtenInFront(mentions: readonly string[], body: string): string {
   return mentions.map((mention) => `${mention} `).join("") + body;
 }

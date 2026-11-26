@@ -5,9 +5,9 @@ body: |-
   When a person approves a new version of a gated document, each worker that holds an affected
   issue's phase gets a task. The task names the version its phase last took, the new version, the
   `##` sections, the text outside them by where it stands, and the requirements or checks that
-  changed, and the `dispatch doc-read` command that prints the new version. A `spec` or `decisions`
-  version affects every issue of the tree, and a `criteria` version the root alone. A version that
-  changes only decision blocks, or holds the same text as the version before, sends no task,
+  changed, and the `dispatch doc-read` command that prints the new version. A `spec` version
+  affects every issue of the tree, and a `criteria` version the root alone. A version that
+  changes only ask blocks, or holds the same text as the version before, sends no task,
   except at an opening, where the task says that nothing changed. The tree's root architect gets
   one task that names every issue of the tree and what it is told, an issue whose holder holds a
   task it has not taken yet named as waiting for that task, and an issue in `accepting` is told
@@ -47,7 +47,8 @@ body: |-
   a number, so a task that carried an opening before the gate closed and opened again does not
   clear the new opening, and the holder gets a task that tells it. The opened message and the
   close settle the opening too, so a holder told the opening by message is not sent it again with
-  a later decision-only version. What a turn records is that delivery's own credit, and what a
+  a later version that changes only ask blocks. What a turn records is that delivery's own
+  credit, and what a
   holder took is read from the credits that stand: a credit counts only from the version its news
   started from. So a news task that a newer task replaces while its turn runs, or whose turn ends
   with no result the daemon waited on, gives back exactly its own news, and anything counted from

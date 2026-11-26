@@ -48,12 +48,15 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
-/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
- *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
- *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
- *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
- *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
- *  `ActorActSchema` keep `person` and `approve` alone. */
+/** The scope words a personal token can carry, which the agent token list names and `scopes` in
+ *  `GET /api/v1/whoami` names for it: the two of `DISPATCH_SCOPES` and `read`. A token that holds
+ *  `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or beside
+ *  `person`, never beside `approve`. `read` is a mark on the token and not a scope a credential
+ *  acts under, so no act records it, and `DISPATCH_SCOPES` and `ActorActSchema` keep `person` and
+ *  `approve` alone. `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
+ *  broker token, which holds it alone (`WhoamiResponse`): it is that token's leave to write a
+ *  Legion issue's status where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, so no act
+ *  records it either, and no personal token can hold it. */
 export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
 export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
 
@@ -61,7 +64,8 @@ export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
  *
- *  `scopes` is the set that credential held at the act, recorded with it and never read back
+ *  `scopes` is the set of `DISPATCH_SCOPES` that credential held at the act (a Legion daemon's
+ *  `legion-status` is never recorded), recorded with it and never read back
  *  from the token: a person who narrows a token afterwards narrows what it may do next, and
  *  does not un-approve what it approved while it held `approve`.
  *
@@ -261,9 +265,10 @@ export const ExternalLinkSchema = z
 
 export type ExternalLink = z.output<typeof ExternalLinkSchema>;
 
-/** A design-gate step a Legion deployment gates, as Dispatch stores it: `decisions` names the
- *  root issue's decisions document, `criteria` its Verification document, `spec` its primary
- *  document. */
+/** A design-gate step a Legion deployment gates, as Dispatch stores it: `criteria` names the root
+ *  issue's Verification document, `spec` its primary document. `decisions`, the step that named
+ *  its decisions document, is still read from a Dispatch of the release before; this build
+ *  writes it nowhere. */
 export type GatedStep = (typeof GATED_STEPS)[number];
 
 /** `project.created` and `project.updated` carry the project row itself. */
@@ -275,13 +280,19 @@ export const ProjectSchema = z
     /** The design-gate steps the Legion deployment that serves this project gates, in the order
      *  it gates them, as its daemon last published them. The empty list is a deployment that
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
-     *  a person. */
+     *  a person. A Dispatch of the release before may still answer `decisions`. */
+    // kept for one release: contract-read-side
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
     /** The project's default repository, `owner/name`: an issue that names no repository, and
      *  whose parent chain names none, resolves to it.
      *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
      *  project has none, and from a Dispatch older than the field. */
     default_repo: z.string().optional(),
+    /** Whether the project needs a credential that proves the session: when it is on, an
+     *  architect's write of an issue's spec or Verification document passes only on a credential
+     *  that proves the architect's session, and a role-holder publication only on one that proves
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();
@@ -409,3 +420,26 @@ export const PriorityUpdatedEventPayloadSchema = z
   .readonly();
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
+
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It names the project and which change it was, and nothing else: no email,
+ *  group name or channel id, since every reader of the project's events reads it. It is owned by
+ *  the project and wakes nobody. */
+export const ProjectAccessChangedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    change: z.enum([
+      "owner",
+      "visibility",
+      "person_added",
+      "person_removed",
+      "group_added",
+      "group_removed",
+      "slack_channels",
+    ]),
+  })
+  .readonly();
+
+export type ProjectAccessChangedEventPayload = z.output<
+  typeof ProjectAccessChangedEventPayloadSchema
+>;

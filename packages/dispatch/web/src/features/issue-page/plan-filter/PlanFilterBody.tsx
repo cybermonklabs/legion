@@ -1,4 +1,3 @@
-import { useQueries } from "@tanstack/react-query";
 import {
   type ComponentProps,
   memo,
@@ -14,7 +13,7 @@ import {
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { artifactBlocksQuery } from "../../../api/queries";
+import type { ArtifactBlock } from "../../../api/types";
 
 import {
   focusVisibleRing,
@@ -122,7 +121,7 @@ export type PlanReads =
  *
  * - **The plan's own order** is the order the tasks are written in (`plan-order.ts`'s
  *   `writtenOrder`), read from the blocks of the plan document the page already holds
- *   (`useIssueTree.ts` reads them under the same key, so this costs no request): the filter's
+ *   (`useIssueTree`'s `blocksOf("plan")`, so this costs no request): the filter's
  *   view hands the tasks over grouped by the statement each serves, which is the spec's order
  *   and not the plan's.
  * - **A bar's place** is worked out here from the `needs` the plan document holds, since no read
@@ -140,6 +139,7 @@ export function PlanFilterBody({
   emptyLine,
   namesLine,
   plan,
+  planBlocks,
   published,
   reads,
   root,
@@ -157,6 +157,10 @@ export function PlanFilterBody({
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
    *  `root`, the view, chooses which of those places are drawn. */
   plan: readonly TreeNode[];
+  /** The plan document's typed blocks in the order it writes them, or undefined while the tree
+   *  read is out (`slots/view-plan.tsx`, from `useIssueTree`'s `blocksOf("plan")`): the plan's
+   *  own order (`writtenOrder`). */
+  planBlocks: readonly Pick<ArtifactBlock, "id">[] | undefined;
   /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
    *  which the body hands every row it draws, the chart's and the steps', in the render that
    *  draws it (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a
@@ -175,11 +179,12 @@ export function PlanFilterBody({
   // A document whose read has not answered is left out, so its tasks keep the places the view
   // gives them.
   const documentIds = useMemo(() => taskDocumentIds(plan, artifacts), [artifacts, plan]);
-  // Observers that fetch nothing, by the slot's rule (`slots/view-plan.tsx`).
-  const written = useQueries({
-    combine: blockIdsOf,
-    queries: documentIds.map((id) => ({ ...artifactBlocksQuery(id), enabled: false })),
-  });
+  // The tree read answers the order of the plan document alone (`planBlocks`), so each document
+  // is read against the plan's block ids.
+  const written = useMemo(
+    () => blockIdsOf(documentIds.map(() => ({ data: planBlocks }))),
+    [documentIds, planBlocks]
+  );
   const entries = useMemo(() => {
     const held = new Map<string, readonly string[]>();
     for (const [rank, id] of documentIds.entries()) {
@@ -393,8 +398,7 @@ const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
 };
 
 /** Each document's block ids in the order they are written, or undefined while its read is
- *  out. It is one function for every render, so the reads' answer is one value until a read
- *  changes (`useQueries`' `combine`). */
+ *  out. */
 function blockIdsOf(
   answers: readonly { readonly data?: readonly { readonly id: string }[] | undefined }[]
 ): readonly (readonly string[] | undefined)[] {
@@ -757,6 +761,14 @@ function PlanChart({
     const target = held[index];
     if (target !== undefined) moveToRow(target, { preventScroll: true });
   };
+  /** The outline's move keys on the chart (`useTreeKeymap.ts`'s `tree-next`, `tree-previous` and
+   *  `tree-arrows`): from a row to the nearest bar's row the way `by` goes (`barFrom`), and from
+   *  the page itself to the first bar, whichever way the key goes. */
+  const step = (by: 1 | -1): void => {
+    const held = items();
+    const on = at(held);
+    moveTo(held, on === -1 ? barFrom(held, -1, 1) : barFrom(held, on, by));
+  };
   useKeymap("issue", [
     // The chart is one tab stop: Tab from the page itself enters it at that stop, the row the
     // reader last stood on, by the outline's own key (`useTreeKeymap.ts`'s `treeEnterKey`), so
@@ -764,27 +776,30 @@ function PlanChart({
     treeEnterKey({ moveTo: (index) => moveTo(items(), index), rows: items }),
     {
       id: "tree-next",
-      keys: ["j", "ArrowDown"],
+      keys: "j",
       label: "Move to the next row",
       palette: false,
-      run: () => {
-        const held = items();
-        moveTo(held, barFrom(held, at(held), 1));
-      },
+      run: () => step(1),
       when: () => reading() && items().length > 0,
     },
     {
-      // Up from the page itself goes to the first bar, as down does.
+      // `k` from the page itself goes to the first bar, as `j` does.
       id: "tree-previous",
-      keys: ["k", "ArrowUp"],
+      keys: "k",
       label: "Move to the previous row",
       palette: false,
-      run: () => {
-        const held = items();
-        const on = at(held);
-        moveTo(held, on === -1 ? barFrom(held, -1, 1) : barFrom(held, on, -1));
-      },
+      run: () => step(-1),
       when: () => reading() && items().length > 0,
+    },
+    {
+      // Down and Up scroll the page from the page itself, so they move through the chart only
+      // while the reader is on a row or on a link inside one, as the outline's do.
+      id: "tree-arrows",
+      keys: ["ArrowDown", "ArrowUp"],
+      label: "Move to the next / previous row while one is focused",
+      palette: false,
+      run: (event) => step(event.key === "ArrowDown" ? 1 : -1),
+      when: () => at(items()) !== -1,
     },
     {
       id: "tree-first",

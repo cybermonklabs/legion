@@ -1,7 +1,12 @@
 import type { IssueDecisions, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import { type ChangeComment, decisionChanges, inReviewList } from "./decision-review";
-import type { DocumentBlocks } from "./issue-tree";
+import {
+  type ChangeComment,
+  decisionChangeComments,
+  deletedPostIds,
+  inReviewList,
+} from "./decision-review";
+import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
  * What waits on the reader, as the header's count counts it: each open ask of the issue whose
@@ -22,10 +27,12 @@ import type { DocumentBlocks } from "./issue-tree";
  * (`tree-drafts.ts`), the rule the tree's review list reads, so the count counts the decisions
  * the tree marks as waiting and no other.
  *
- * A decision the reader asked to change waits on its agent and is not counted
- * (`decisionChanges`): `comments` are the issue's comments, and `documents` the blocks of its
- * documents the page has read (`undefined` where it has read none), which name the decision a
- * Change was written under, as the tree reads them.
+ * A decision the reader asked to change waits on its agent and is not counted, by the outline's
+ * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
+ * (`tree`) hangs under it, whether or not the comments read holds that comment yet, and the
+ * Change of a decision the read holds no node for is a comment of the issue's (`comments`) whose
+ * quote its words hold, so the count reads no block of a document. A person's decision is the
+ * answered ask, which waits for no review and is never counted here.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -41,12 +48,12 @@ export interface WaitingOnReader {
 }
 
 export function waitingOnReader(
-  issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
   isCoverageStatement: (reference: string) => boolean,
   comments: readonly ChangeComment[] | undefined,
-  documents: readonly DocumentBlocks[] | undefined
+  tree: TreeAnswer | undefined
 ): WaitingOnReader {
   const open =
     viewer === undefined
@@ -63,12 +70,21 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  const changes = decisionChanges(decisions, comments, issue.artifacts, documents);
+  // The decisions a Change waits on, each by its address: a decision node's from the tree read
+  // alone, as the outline finds it, so the two agree while the comments read is out or older. A
+  // Change its author deleted asks nothing any more, as in the outline (`decisionNodeChanges`).
+  const deleted = deletedPostIds(comments);
+  const changed = new Set(
+    [...decisionChangeComments(decisions, comments, issue, undefined, tree)]
+      .filter(([comment]) => !deleted.has(comment))
+      .map(([, decision]) => decision)
+  );
+  // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
   const reviewing =
     viewer === undefined
       ? 0
-      : (decisions?.decisions ?? []).filter((decision) =>
-          inReviewList(decision, isCoverageStatement, changes.has(decision.ref))
+      : (decisions?.entries ?? []).filter((decision) =>
+          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }

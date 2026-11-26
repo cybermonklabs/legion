@@ -130,11 +130,12 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 		t.Fatalf("the backfill wrote %#v, want every one of the %d blocks, %d documents marked owed and the cutover complete",
 			blocks, len(before), len(documents))
 	}
-	// The tuples the backfill wrote: one in_document per block and the two base attributes of
-	// each node its insert made, which is what its report counts.
-	if blocks.Tuples != 3*blocks.Rows {
-		t.Errorf("the backfill reports %d tuples for %d blocks, want %d: one in_document and two base attributes a block",
-			blocks.Tuples, blocks.Rows, 3*blocks.Rows)
+	// The tuples the backfill wrote: one in_document per block and the three base attributes of
+	// each node its insert made - its visibility, its state and its document's project, every
+	// document here being an issue's - which is what its report counts.
+	if blocks.Tuples != 4*blocks.Rows {
+		t.Errorf("the backfill reports %d tuples for %d blocks, want %d: one in_document and three base attributes a block",
+			blocks.Tuples, blocks.Rows, 4*blocks.Rows)
 	}
 	requireOneInDocumentPerBlock(t, database)
 
@@ -362,11 +363,11 @@ func requireOneInDocumentPerBlock(t *testing.T, database *store.Store) {
 }
 
 // takeStoreCensus runs `census --store` over the test's own database, on a connection of its
-// own, exactly as the subcommand runs it. It takes no growth pass: that is `--sizing`, and
-// nothing here reads it.
+// own, exactly as the subcommand runs it, with the restore's test of the returns it declines. It
+// takes no growth pass: that is `--sizing`, and nothing here reads it.
 func takeStoreCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

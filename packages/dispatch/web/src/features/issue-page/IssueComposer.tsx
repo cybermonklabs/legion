@@ -133,8 +133,9 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
  * A row's Write a criterion sets it to write a criterion under that row (`CriterionLine`).
  *
  * Once a write lands, the outline takes the reader to it (`Landing`): the row of what they wrote,
- * its branch unfolded, on screen and focused (R4); a comment on a statement has no row of its
- * own, so the reader is taken back to the statement's. Under a view no outline is drawn to
+ * its branch unfolded, on screen and focused (R4). A comment on a statement is drawn as a row
+ * under the issue, at the outline's end, and the reader is taken back to the statement's own
+ * row; no margin beside the statement draws it yet. Under a view no outline is drawn to
  * consume a landing, so the box asks for none there and gives the focus back to where the reader
  * came to it from. Either way the focus never falls to the page's body as a line's controls
  * unmount.

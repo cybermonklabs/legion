@@ -746,7 +746,7 @@ func TestDeleteCommentWithAnOrphanedSuggestionStands(t *testing.T) {
 	// the service settles no version here (Settle is an hour), so nothing has refreshed the
 	// comment's own anchor and the row still reads as anchored, which the delete is left to
 	// find out for itself.
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The quick fox\n")
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, "The quick fox\n")
 	if before := readThreadComment(t, handler, comment.ID); before.Anchor == nil || before.Anchor.Orphaned {
 		t.Fatalf("the comment before the delete = %#v, want an anchor not yet known to be orphaned", before.Anchor)
 	}

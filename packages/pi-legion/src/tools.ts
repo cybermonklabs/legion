@@ -1,4 +1,4 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { DESIGN_GATE_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
@@ -21,6 +21,7 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -33,8 +34,9 @@ import pkg from "../package.json";
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
  * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
- * build on every pod made from an older image. */
-const BUILD = pluginBuildOf(pkg);
+ * build on every pod made from an older image. Its contract is `daemonContract`'s, read as the
+ * module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -392,14 +394,14 @@ function toolSchema(pi: PiApi): unknown {
       )
       .optional(),
     version: z.number().optional(),
-    // The steps are `GATED_STEPS`, the one tuple the contracts package holds them in, so this
-    // schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same words
-    // and a step added to the contract reaches both. The tuple is what crosses, not a zod
+    // The steps are `DESIGN_GATE_STEPS`, the one tuple the contracts package holds them in, so
+    // this schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same
+    // words and a step added to the contract reaches both. The tuple is what crosses, not a zod
     // schema: this schema is built with the host's own zod instance (`pi.zod`).
     step: z
-      .enum(GATED_STEPS)
+      .enum(DESIGN_GATE_STEPS)
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: criteria for the issue's Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
       )
       .optional(),
     issues: z.array(z.string()).optional(),
@@ -423,6 +425,7 @@ function toolSchema(pi: PiApi): unknown {
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    check_opened_at: phaseOp.check_opened_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,
@@ -526,7 +529,7 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
+  /** Told of each successful step completion or backward move, never a look's report. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
@@ -759,15 +762,16 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
+          // A successful phase completion or backward move closes phase input. A report with
+          // check_opened_at leaves it open for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
+          const effect = phaseInputAfter(operation, parameters);
+          if (effect === "phase-closed") {
             onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
+          } else if (effect === "update-answered") {
             onUpdateAnswered(context);
           }
           return jsonSuccess(answer);
@@ -865,7 +869,7 @@ export function createLegionTool(deps: {
             // registration without it, and one that gates several refuses it.
             const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
             if (!named.success) {
-              throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
+              throw new Error(`register_gate's step is one of ${DESIGN_GATE_STEPS.join(", ")}`);
             }
             const step = named.data;
             // The fact is keyed by the gate's issue, generation, step, document, version and

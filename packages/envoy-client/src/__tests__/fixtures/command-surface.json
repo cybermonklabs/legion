@@ -1,6 +1,6 @@
 {
-  "commands": 41,
-  "refusals": 29,
+  "commands": 54,
+  "refusals": 31,
   "runs": [
     {
       "tool": "dispatch_answers",
@@ -20,6 +20,28 @@
       "outcome": "result",
       "text": [
         "No person wrote to this session in the last 72 hours."
+      ]
+    },
+    {
+      "tool": "dispatch_api",
+      "call": "valid",
+      "args": {
+        "path": "/api/v1/issues/DSP-1/events?limit=200"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/events?limit=200",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
       ]
     },
     {
@@ -247,7 +269,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment posts on the issue unless quote anchors it in a document, so document spec would be dropped: add --quote to comment on a passage of it, or name only the issue",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -264,7 +286,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- issue DSP-2 and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --issue DSP-2 alone acts on DSP-2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -281,7 +303,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- artifact is required when quote is supplied",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -299,7 +321,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to and reply_to_ask cannot both be set",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -316,7 +338,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1 names a block of an ask, but a comment reply answers a block of a comment (dispatch://KEY/comment/<id>#b-<block id>); answer it with dispatch comment --reply-to-ask 'dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -333,7 +355,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to_ask dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1 names a block of a comment, but reply_to_ask answers a part of the ask it names (dispatch://KEY/ask/<id>#b-<block id>); answer it with dispatch comment --reply-to 'dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -350,7 +372,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --block-id, --block-id-file, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -388,6 +410,67 @@
       "outcome": "result",
       "text": [
         "Posted comment 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_constraint",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "reference": "section 9.2.2, idempotent methods",
+        "standard": "RFC 9110"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/constraints",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "reference": "section 9.2.2, idempotent methods",
+            "standard": "RFC 9110"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Wrote a constraint under DSP-1: dispatch://constraint/01234567-0000-4000-8000-000000000002 (standard \"RFC 9110\", reference \"section 9.2.2, idempotent methods\")"
+      ]
+    },
+    {
+      "tool": "dispatch_constraints",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/constraints",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1 holds 1 constraint you may see:",
+        "- dispatch://constraint/01234567-0000-4000-8000-000000000002: standard \"RFC 9110\", reference \"section 9.2.2, idempotent methods\"; written by person person@example.com; live"
       ]
     },
     {
@@ -812,6 +895,43 @@
       ]
     },
     {
+      "tool": "dispatch_finding",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "lens": "dispatch://lens/<id>",
+        "text": "The cache doubles the write path's cost."
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2Flens%2F01234567-0000-4000-8000-000000000001/findings",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "text": "The cache doubles the write path's cost."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Added a finding to dispatch://lens/01234567-0000-4000-8000-000000000001: dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002"
+      ]
+    },
+    {
       "tool": "dispatch_follow",
       "call": "refusal: ask that is not an ask reference",
       "args": {
@@ -1128,6 +1248,81 @@
       ]
     },
     {
+      "tool": "dispatch_lens",
+      "call": "valid",
+      "args": {
+        "findings": [
+          "A second region doubles the write path's cost."
+        ],
+        "issue": "DSP-1",
+        "kind": "trade-off",
+        "on": "dispatch://DSP-1/spec"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/lenses",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "findings": [
+              "A second region doubles the write path's cost."
+            ],
+            "kind": "trade-off",
+            "on": "dispatch://DSP-1/spec"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Invoked a trade-off lens on dispatch://DSP-1/spec: dispatch://lens/01234567-0000-4000-8000-000000000001, written by person person@example.com",
+        "- finding dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002: A second region doubles the write path's cost."
+      ]
+    },
+    {
+      "tool": "dispatch_lenses",
+      "call": "valid",
+      "args": {
+        "on": "dispatch://DSP-1/spec"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/lenses?on=dispatch://DSP-1/spec",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "dispatch://DSP-1/spec holds 2 lenses you may see, in the order they were invoked:",
+        "- dispatch://lens/01234567-0000-4000-8000-000000000001: trade-off (trade-off analysis) on dispatch://DSP-1/spec, invoked by person person@example.com; live",
+        "  verdict: Keep one region.",
+        "  triggered dispatch://lens/01234567-0000-4000-8000-000000000002",
+        "  - finding dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002: A second region doubles the write path's cost.",
+        "- dispatch://lens/01234567-0000-4000-8000-000000000002: pre-mortem (the pre-mortem over failure modes) on dispatch://DSP-1/spec, invoked by person person@example.com; live",
+        "  triggered by dispatch://lens/01234567-0000-4000-8000-000000000001",
+        "  - risk dispatch://risk/01234567-0000-4000-8000-000000000001: The migration locks the table for minutes. (no check prevents it)",
+        "Chain of 2 triggered lenses: dispatch://lens/01234567-0000-4000-8000-000000000001, dispatch://lens/01234567-0000-4000-8000-000000000002"
+      ]
+    },
+    {
       "tool": "dispatch_limits",
       "call": "valid",
       "args": {},
@@ -1324,6 +1519,155 @@
       ]
     },
     {
+      "tool": "dispatch_pointer",
+      "call": "refusal: from beside an append",
+      "args": {
+        "action": "append",
+        "from": "trade-off",
+        "issue": "DSP-1",
+        "kind": "has_kind",
+        "node": "dispatch://lens/<id>",
+        "to": "botec"
+      },
+      "requests": [],
+      "outcome": "error",
+      "text": [
+        "dispatch pointer was not called: 1 problem",
+        "- from goes with action retarget, and a retarget names it: the far end the node's pointer is at now.",
+        "- Allowed flags: --issue, --issue-file, --node, --node-file, --kind, --kind-file, --action, --action-file, --to, --to-file, --from, --from-file, --help, --dry-run",
+        "- Example: dispatch pointer --issue DSP-1 --node dispatch://lens/01234567-0000-4000-8000-000000000001 --kind has_kind --action retarget --to botec --from trade-off"
+      ]
+    },
+    {
+      "tool": "dispatch_pointer",
+      "call": "refusal: retarget with no from",
+      "args": {
+        "action": "retarget",
+        "issue": "DSP-1",
+        "kind": "has_kind",
+        "node": "dispatch://lens/<id>",
+        "to": "botec"
+      },
+      "requests": [],
+      "outcome": "error",
+      "text": [
+        "dispatch pointer was not called: 1 problem",
+        "- from goes with action retarget, and a retarget names it: the far end the node's pointer is at now.",
+        "- Allowed flags: --issue, --issue-file, --node, --node-file, --kind, --kind-file, --action, --action-file, --to, --to-file, --from, --from-file, --help, --dry-run",
+        "- Example: dispatch pointer --issue DSP-1 --node dispatch://lens/01234567-0000-4000-8000-000000000001 --kind has_kind --action retarget --to botec --from trade-off"
+      ]
+    },
+    {
+      "tool": "dispatch_pointer",
+      "call": "valid",
+      "args": {
+        "action": "retarget",
+        "from": "trade-off",
+        "issue": "DSP-1",
+        "kind": "has_kind",
+        "node": "dispatch://lens/<id>",
+        "to": "botec"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2Flens%2F01234567-0000-4000-8000-000000000001/pointers",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "action": "retarget",
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "from": "trade-off",
+            "kind": "has_kind",
+            "to": "botec"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Retargeted the has_kind pointer of dispatch://lens/01234567-0000-4000-8000-000000000001 from dispatch://lens_kind/trade-off to dispatch://lens_kind/botec"
+      ]
+    },
+    {
+      "tool": "dispatch_premortem_convert",
+      "call": "valid",
+      "args": {
+        "artifact": "premortem-md",
+        "issue": "DSP-1",
+        "prevented_by": [
+          {
+            "checks": [
+              "dispatch://DSP-1/artifact/verification-md#b-k1"
+            ],
+            "reason": "k1 fails a slice that ships nothing a user sees.",
+            "risk": 0
+          },
+          {
+            "checks": [],
+            "reason": "No check covers a second indexer yet.",
+            "risk": 1
+          }
+        ],
+        "preview": true
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/artifacts/premortem-md/premortem-convert",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "dry_run": true,
+            "prevented_by": [
+              {
+                "checks": [
+                  "dispatch://DSP-1/artifact/verification-md#b-k1"
+                ],
+                "reason": "k1 fails a slice that ships nothing a user sees.",
+                "risk": 0
+              },
+              {
+                "checks": [],
+                "reason": "No check covers a second indexer yet.",
+                "risk": 1
+              }
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Dry run, nothing written: converting dispatch://DSP-1/artifact/premortem-md (version 1) writes one pre-mortem lens under DSP-1 with 2 risks and moves the document's address to that lens.",
+        "- risk 0: Risk 0, the rewrite eats the quarter; prevented by dispatch://DSP-1/artifact/verification-md#b-k1",
+        "- risk 1: 1\\. Two indexers, one truth; prevented by nothing"
+      ]
+    },
+    {
       "tool": "dispatch_priorities",
       "call": "valid",
       "args": {},
@@ -1347,8 +1691,8 @@
         "Work under no priority (1: DSP 1):",
         "- DSP-7 [in_progress] Rotate the broker keys · DSP · person@example.com · changed 2026-01-02T03:04:05Z",
         "",
-        "Priority work parked (1: ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
+        "Priority work in backlog or icebox (1: ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · moved to backlog 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
       ]
     },
     {
@@ -1389,6 +1733,41 @@
       ]
     },
     {
+      "tool": "dispatch_project_update",
+      "call": "valid",
+      "args": {
+        "project": "CORE",
+        "proven_sessions": "on"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/CORE/proven-sessions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Project CORE (Core): proven sessions on."
+      ]
+    },
+    {
       "tool": "dispatch_projects",
       "call": "valid",
       "args": {},
@@ -1406,6 +1785,29 @@
       "outcome": "result",
       "text": [
         "DSP Dispatch"
+      ]
+    },
+    {
+      "tool": "dispatch_proposed",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/proposed",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1 holds 1 proposed node you may see:",
+        "- block dispatch://DSP-1/spec#b-r-cache: The cache holds every read for a minute."
       ]
     },
     {
@@ -1576,7 +1978,7 @@
         "Priority: P1",
         "Labels: infra",
         "Components: none live",
-        "Advances: ship-the-daemon (own), legion-first (inherited)",
+        "Advances: ship-the-daemon (own), legion-first (inherited); revision 7",
         "Route: none",
         "Repository: owner/repo (own)",
         "Progress: none",
@@ -1666,7 +2068,7 @@
       ],
       "outcome": "result",
       "text": [
-        "Approval requested for spec.md (document id 01234567-0000-4000-8000-00000000000a) at version 1 (ask 01234567-0000-4000-8000-000000000001). The human's Inbox asks: \"Which way should the release go?\". The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then."
+        "Approval requested for spec.md (document id 01234567-0000-4000-8000-00000000000a) at version 1 (ask 01234567-0000-4000-8000-000000000001). The human's Inbox asks: \"Which way should the release go?\". The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the ask blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when: an approval carries across it, and this request stays with whoever holds its turn. The version carries an approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent."
       ]
     },
     {
@@ -1795,6 +2197,7 @@
         "check": "k1",
         "commit": "1111111111111111111111111111111111111111",
         "issue": "DSP-1",
+        "negative_control": "Removed the guard and the test failed.",
         "role": "implementer",
         "verdict": "pass"
       },
@@ -1820,6 +2223,7 @@
             },
             "check": "k1",
             "commit": "1111111111111111111111111111111111111111",
+            "negative_control": "Removed the guard and the test failed.",
             "role": "implementer",
             "verdict": "pass"
           }
@@ -1897,6 +2301,49 @@
       ]
     },
     {
+      "tool": "dispatch_risk",
+      "call": "valid",
+      "args": {
+        "early_warning": "Writes queue behind the migration's lock.",
+        "heading": "The migration locks the table for minutes.",
+        "issue": "DSP-1",
+        "lens": "dispatch://lens/<id>",
+        "prevention": "Build the index concurrently."
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/risks",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "early_warning": "Writes queue behind the migration's lock.",
+            "heading": "The migration locks the table for minutes.",
+            "lens": "dispatch://lens/<id>",
+            "prevention": "Build the index concurrently."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Wrote a risk under dispatch://lens/01234567-0000-4000-8000-000000000001: dispatch://risk/01234567-0000-4000-8000-000000000002",
+        "No check prevents it yet."
+      ]
+    },
+    {
       "tool": "dispatch_search",
       "call": "valid",
       "args": {
@@ -1947,6 +2394,78 @@
       ]
     },
     {
+      "tool": "dispatch_settle",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "node": "dispatch://DSP-1/spec#b-r-cache"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2FDSP-1%2Fspec%23b-r-cache/settle",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Settled block dispatch://DSP-1/spec#b-r-cache: proposed -> settled"
+      ]
+    },
+    {
+      "tool": "dispatch_state",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "node": "dispatch://DSP-1/spec#b-r-cache",
+        "state": "proposed"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2FDSP-1%2Fspec%23b-r-cache/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "state": "proposed"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Wrote the state of block dispatch://DSP-1/spec#b-r-cache: live -> proposed"
+      ]
+    },
+    {
       "tool": "dispatch_steps",
       "call": "valid",
       "args": {
@@ -1983,7 +2502,7 @@
       "text": [
         "dispatch suggest was not called: 1 problem",
         "- dispatch suggest acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --replace-with, --replace-with-file, --body, --body-file, --occurrence, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --replace-with, --replace-with-file, --body, --body-file, --occurrence, --block-id, --block-id-file, --help, --dry-run",
         "- Example: dispatch suggest --issue DSP-1 --artifact spec --quote 'old wording' --replace-with 'new wording'"
       ]
     },

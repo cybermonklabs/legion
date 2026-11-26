@@ -119,7 +119,7 @@ var readRowDrives = map[string]rowDrive{
 	// shown to nobody would answer P, its own reader, an empty 200, which the list's absence alone
 	// tells apart.
 	"GET /api/v1/people/{login}/nodes": {target: "/api/v1/people/$person/nodes",
-		statement: statementOf(`\bjoin\s+comments\s+c\s+on\s+r\.from_kind\b`)},
+		statement: statementOf(`\bjoin\s+comments\s+c\s+on\s+h\.from_kind\b`)},
 	"GET /api/v1/whoami": {target: "/api/v1/whoami", fromMemory: "it answers the credential the request resolved", credential: &credentialAnswer{
 		reason:  "whoami answers the credential's own scopes: a read-only one's hold read and never approve, its writer's do not hold read",
 		members: []string{"scopes"},
@@ -128,7 +128,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/dashboard/builds":        {target: "/api/v1/dashboard/builds", statement: statementOf(`\bfrom\s+dashboard_builds\b`)},
 	"GET /api/v1/priorities":              {target: "/api/v1/priorities", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+state\b`)},
 	"GET /api/v1/priorities/{id}/history": {target: "/api/v1/priorities/$priority/history", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+id\b`)},
-	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_stated\s+as\b`)},
+	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_relations\s+as\b`)},
 	"GET /api/v1/issues/resolve":          {target: "/api/v1/issues/resolve?ref=$issue", statement: statementOf(`\bselect\s+key\s+from\s+issues\s+where\s+key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},
@@ -140,10 +140,11 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/references":           {target: "/api/v1/references?to=$issueRef&since=0", statement: statementOf(`\bfrom\s+graph_edges\s+g\b`)},
 	"GET /api/v1/references/questions": {target: "/api/v1/references/questions?kind=artifact&id=$spec", statement: statementOf(`\bfrom\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1::uuid\s+and\s+markdown\s+is\s+not\s+null\b`)},
 	"GET /api/v1/reference-targets":    {target: "/api/v1/reference-targets?ref=$issueRef&ref=$specRef", statement: statementOf(`\ba\.ref_key,\s*a\.issue_key\b`)},
-	"GET /api/v1/block-links":          {target: "/api/v1/block-links?from=$decisionsRef&to=$specRef", statement: statementOf(`\bblock_refs\b`)},
+	"GET /api/v1/block-links":          {target: "/api/v1/block-links?from=$linksRef&to=$specRef", statement: statementOf(`\bblock_refs\b`)},
+	"GET /api/v1/lenses":               {target: "/api/v1/lenses?on=$issueRef", statement: statementOf(`\bt\.to_kind\s*=\s*\$1\s+and\s+t\.to_id\s*=\s*\$2\s+and\s+t\.kind\s*=\s*'part_of'\s+and\s+t\.from_kind\s*=\s*'lens'`)},
 	"GET /api/v1/issues/{key}/subscribers": {target: "/api/v1/issues/$issue/subscribers",
 		fromMemory: "it lists the listener's interests and sessions, and reads no row"},
-	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
+	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+and\s+retired_at\s+is\s+null\s+order\s+by\b`)},
 	// The after_merge and default_branch checks' read of whether a commit is on their branch.
 	"GET /api/v1/issues/{key}/results": {target: "/api/v1/issues/$issue/results", statement: statementOf(`\bfrom\s+branch_commits\s+where\s+repo\b`),
 		volatile: []volatileMember{
@@ -157,6 +158,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {target: "/api/v1/issues/$issue/handoffs/$phase/latest",
 		statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+and\s+phase\b`)},
 	"GET /api/v1/issues/{key}/steps":        {target: "/api/v1/issues/$issue/steps", statement: statementOf(`\bfrom\s+workflow_tuples\s+t\s+join\s+workflow_nodes\s+n\b`)},
+	"GET /api/v1/issues/{key}/constraints":  {target: "/api/v1/issues/$issue/constraints", statement: statementOf(`\bt\.to_kind\s*=\s*'issue'\s+and\s+t\.to_id\s*=\s*\$1\s+and\s+t\.kind\s*=\s*'part_of'\s+and\s+t\.from_kind\s*=\s*'constraint'`)},
+	"GET /api/v1/issues/{key}/proposed":     {target: "/api/v1/issues/$issue/proposed", statement: statementOf(`\bfrom\s+graph_nodes\s+held\s+where\s+held\.state\s*=\s*'proposed'`)},
 	"GET /api/v1/issues/{key}/role-holders": {target: "/api/v1/issues/$issue/role-holders", statement: statementOf(`\bleft\s+join\s+issue_role_holders\b`)},
 	"GET /api/v1/issues/{key}/legion":       {target: "/api/v1/issues/$issue/legion", statement: statementOf(`\bfrom\s+workflow_tuples\s+t,\s*lateral\b`)},
 	"GET /api/v1/handoffs/{id}":             {target: "/api/v1/handoffs/$handoff", statement: statementOf(`\bfrom\s+handoffs\s+where\s+id\s*=\s*\$1\b`)},
@@ -193,6 +196,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/broadcasts/{id}":        {target: "/api/v1/broadcasts/$broadcast", statement: statementOf(`\bfrom\s+broadcasts\s+where\s+id\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/asks":      {target: "/api/v1/issues/$issue/asks?thread=1", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
 	"GET /api/v1/issues/{key}/decisions": {target: "/api/v1/issues/$issue/decisions", statement: statementOf(`\bfrom\s+decision_keeps\b`)},
+	// The tree read's one read of the issue's tree artifact and role documents
+	// (issueTreeIssueStatement), which every page of every read sends for the issue read.
+	"GET /api/v1/issues/{key}/tree": {target: "/api/v1/issues/$issue/tree",
+		statement: statementOf(`\bwith\s+tree\s+as\s*\(\s*select\s+t\.artifact_id::text\s+as\s+id\s+from\s+issue_trees\s+t\s+where\s+t\.issue_key\s*=\s*\$1\s*\)`)},
 	"GET /api/v1/asks/open": {target: "/api/v1/asks/open?project=$project", statement: statementOf(`\bwith\s+mine\s+as\b`),
 		volatile: []volatileMember{{"as_of", readTime}, {"asks.*.age_seconds", "each ask's age, counted to the moment of the read"}}},
 	"GET /api/v1/asks/{id}":             {target: "/api/v1/asks/$ask", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*\$1\b`)},
@@ -244,6 +251,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/signins":                  {target: "/api/v1/signins", fromMemory: noBroker, status: http.StatusNotFound},
 	"GET /api/v1/credentials/capabilities": {target: "/api/v1/credentials/capabilities", fromMemory: noBroker},
 	"GET /api/v1/artifacts/_test/rooms":    {target: "/api/v1/artifacts/_test/rooms", fromMemory: testHookRead},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes": {target: "/api/v1/artifacts/$spec/_test/ask-attributes",
+		fromMemory: documentHookRead, status: http.StatusNotFound},
 	"GET /api/v1/artifacts/{id}/_test/room-counters": {target: "/api/v1/artifacts/$spec/_test/room-counters",
 		fromMemory: documentHookRead, status: http.StatusNotFound},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {target: "/api/v1/artifacts/$spec/_test/live-write-pauses/after-commit?wait=100ms",

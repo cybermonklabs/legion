@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -30,10 +32,10 @@ const answerSurvivesSpec = "Context\n\n" +
 	":::ask{#rollout urgency=\"med\" multiple=\"false\"}\n" + answerSurvivesRemovedQuestion + "\n:::\n"
 
 // answerSurvivesComposedOpener is the opener an agent composing the body writes in place of the
-// one the settlement wrote: the block names no id of its own, since a body written rather than
-// rendered names none, and none of the server attributes the settlement keeps, since the agent
-// cannot know the answer a person gave. Both ask blocks of the document are written with it,
-// their urgency and their multiple being the same.
+// one it reads: the block names no id of its own, since a body written rather than rendered names
+// none, and none of the attributes the server keeps, which the text it reads prints none of (a
+// person's answer is held once, on the ask, and the text read answers it in its asks member). Both
+// ask blocks of the document are written with it, their urgency and their multiple being the same.
 const answerSurvivesComposedOpener = `:::ask{urgency="med" multiple="false"}`
 
 // An agent that composes a document's body again writes each ask it holds from the question
@@ -41,8 +43,8 @@ const answerSurvivesComposedOpener = `:::ask{urgency="med" multiple="false"}`
 // the server keeps, since the agent cannot know the answer a person gave. Driven over the routes
 // the agent and the person use, that upload leaves the answered ask where it stands: the issue
 // holds the ask rows it held, the person's row still answered and still carrying her answer, on
-// the block of the document it was answered on; no second row opens, and no second item appears
-// in her Inbox.
+// the block of the document it was answered on, and her answer still on the ask's node and in the
+// asks member of the text read; no second row opens, and no second item appears in her Inbox.
 func TestAnAgentsComposedUploadLeavesTheAnsweredAskAndOpensNoSecondInboxItem(t *testing.T) {
 	t.Parallel()
 	fixture := seedAnswerSurvives(t)
@@ -83,8 +85,13 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskAndOpensNoSecondInboxItem(t *
 		t.Errorf("alice's Inbox holds the asks %v after the upload, want the %v it held before it, the upload opening no question of its own\n%s", got, want, state)
 	}
 	if state.text != before.text {
-		t.Errorf("the document after the upload and its settlement reads\n%s\nwant the answer written onto its block again, as it read before the upload\n%s", state.text, before.text)
+		t.Errorf("the document after the upload and its settlement reads\n%s\nwant it as it read before the upload, each ask block under its id\n%s", state.text, before.text)
 	}
+	if !state.holdsAlicesAnswer("transport") || !reflect.DeepEqual(state.asks, before.asks) {
+		t.Errorf("the text read after the upload answers the asks %s, want the person's answer still answered for the block transport, as before the upload: %s\n%s",
+			textAskLines(state.asks), textAskLines(before.asks), state)
+	}
+	requireTheAnswerOnTheNode(t, fixture.database, "after the agent's composed upload", fixture.answeredAsk, "ask.answered")
 }
 
 // A question the body an agent uploads removes on purpose is still retracted. That body drops one
@@ -136,8 +143,8 @@ type answerSurvivesFixture struct {
 	artifactID  string
 	answeredAsk string
 	removedAsk  string
-	// answered is what the issue and its document read once the person's answer was written onto
-	// its block, which is the state the upload must leave as it is.
+	// answered is what the issue and its document read once the person's answer was held on its
+	// ask and the text read answered it, which is the state the upload must leave as it is.
 	answered answerSurvivesState
 }
 
@@ -165,8 +172,8 @@ func seedAnswerSurvives(t *testing.T) answerSurvivesFixture {
 	if answered.Code != http.StatusOK {
 		t.Fatalf("answer the ask as the person: status=%d body=%s", answered.Code, answered.Body.String())
 	}
-	fixture.answered = fixture.await(t, "the person's answer written onto the block she answered", func(state answerSurvivesState) bool {
-		return strings.Contains(state.text, `state="answered" answered_by="alice"`)
+	fixture.answered = fixture.await(t, "the person's answer held for the block she answered", func(state answerSurvivesState) bool {
+		return state.holdsAlicesAnswer("transport")
 	})
 	seeded := []string{fixture.answeredAsk, fixture.removedAsk}
 	slices.Sort(seeded)
@@ -210,7 +217,8 @@ func (f answerSurvivesFixture) await(t *testing.T, what string, holds func(answe
 }
 
 // measure reads what every assertion above is made of: every ask row of the issue, the ask block
-// ids its document holds, that document's markdown, and the asks alice's Inbox shows her.
+// ids its document holds, that document's markdown and the asks member of its text read, whether
+// it owes a settlement, and the asks alice's Inbox shows her.
 func (f answerSurvivesFixture) measure(t *testing.T) answerSurvivesState {
 	t.Helper()
 	asks := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/issues/"+f.issueKey+"/asks?state=all", nil, "alice")
@@ -225,10 +233,21 @@ func (f answerSurvivesFixture) measure(t *testing.T) answerSurvivesState {
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("read alice's Inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
+	owed := documentOwesSettlement(t, f.database, f.artifactID)
+	read := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/artifacts/"+f.artifactID+"/text", nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the document's text: status=%d body=%s", read.Code, read.Body.String())
+	}
+	text := decodeBody[struct {
+		Markdown string          `json:"markdown"`
+		Asks     []model.TextAsk `json:"asks"`
+	}](t, read)
 	state := answerSurvivesState{
 		rows:  decodeBody[[]model.Ask](t, asks),
 		inbox: decodeBody[[]model.Ask](t, inbox),
-		text:  documentMarkdown(t, f.handler, f.artifactID),
+		text:  text.Markdown,
+		asks:  text.Asks,
+		owed:  owed,
 	}
 	tree, err := pmdoc.ParseRendering(state.text)
 	if err != nil {
@@ -239,19 +258,34 @@ func (f answerSurvivesFixture) measure(t *testing.T) answerSurvivesState {
 }
 
 // answerSurvivesState is what a case measured at one moment: every ask row of the issue, the ask
-// block ids its document holds in document order, that document's markdown, and the asks alice's
-// Inbox shows her. Every failure message above prints it, so a run that reads something else says
-// what it read.
+// block ids its document holds in document order, that document's markdown and the asks member of
+// its text read, whether it owes a settlement, and the asks alice's Inbox shows her. Every failure
+// message above prints it, so a run that reads something else says what it read.
 type answerSurvivesState struct {
 	rows   []model.Ask
 	blocks []string
 	text   string
+	asks   []model.TextAsk
+	owed   bool
 	inbox  []model.Ask
 }
 
 func (state answerSurvivesState) String() string {
-	return fmt.Sprintf("the issue's ask rows: %s\nthe document's ask blocks: %v\nalice's Inbox: %s\nthe document:\n%s",
-		askRowLines(state.rows), state.blocks, askRowLines(state.inbox), state.text)
+	return fmt.Sprintf("the issue's ask rows: %s\nthe document's ask blocks: %v\nits asks member: %s\nit owes a settlement: %t\nalice's Inbox: %s\nthe document:\n%s",
+		askRowLines(state.rows), state.blocks, textAskLines(state.asks), state.owed, askRowLines(state.inbox), state.text)
+}
+
+// holdsAlicesAnswer reports whether the text read answers the ask block blockID with alice's
+// answer selecting REST, which is where an agent reads a person's answer: the asks member, read
+// from the ask, since the markdown holds none of it.
+func (state answerSurvivesState) holdsAlicesAnswer(blockID string) bool {
+	for _, entry := range state.asks {
+		if entry.BlockID == blockID {
+			return entry.State == "answered" && entry.AnsweredBy == "alice" &&
+				entry.Selected != nil && slices.Equal(*entry.Selected, []string{"REST"})
+		}
+	}
+	return false
 }
 
 // row is the ask row of the issue with this id, and whether the issue holds one.
@@ -319,6 +353,15 @@ func rowIDs(asks []model.Ask) []string {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// textAskLines names the entries of a text read's asks member in a failure message.
+func textAskLines(asks []model.TextAsk) string {
+	encoded, err := json.Marshal(asks)
+	if err != nil {
+		return fmt.Sprintf("%v (unencodable: %v)", asks, err)
+	}
+	return string(encoded)
 }
 
 // askRowLines names every ask of a set in a failure message.

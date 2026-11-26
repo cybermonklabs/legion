@@ -7,6 +7,7 @@ import {
   createComment,
   createIssueArtifact,
   dashboardOrigin,
+  editComment,
   getArtifactText,
   listMyAnswers,
   userHeaders,
@@ -268,10 +269,10 @@ async function issueStatus(key: string): Promise<number> {
 
 /**
  * The world's precondition, a setup error when it fails: every key a row needs exists, every
- * other key it writes where the grammar could read it names no issue, and each short id the
- * table writes to name nothing still names nothing once it has been rewritten into this world
- * (the real ids are minted, so a value the table chose to miss by one character could in
- * principle hit).
+ * other key it writes where the grammar could read it names no issue, every issue it links that
+ * this world holds is one its case expects drawn, and each short id the table writes to name
+ * nothing still names nothing once it has been rewritten into this world (the real ids are
+ * minted, so a value the table chose to miss by one character could in principle hit).
  */
 async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): Promise<void> {
   const statuses = new Map<string, Promise<number>>();
@@ -295,6 +296,21 @@ async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): 
     for (const key of standaloneKeys(item.body)) {
       if (!(item.row.issues ?? []).includes(key) && (await status(key)) !== 404) {
         throw new Error(`setup: ${rowName(item)} needs ${key} to name no issue`);
+      }
+    }
+    // The world holds issues `casesFor` does not expect drawn: ACME-1 to ACME-11 stand before
+    // ACME-12 only to give it its number. The live editor draws a title for every issue that
+    // exists, so a row that links one of them fails as though the editor drew too much. A key
+    // longer than a key can be names no issue and is not asked about.
+    for (const link of item.links) {
+      if (item.drawn.includes(link)) {
+        continue;
+      }
+      const key = /^dispatch:\/\/([A-Z][A-Z0-9]{0,9}-[1-9]\d{0,8})$/.exec(link)?.[1];
+      if (key !== undefined && (await status(key)) === 200) {
+        throw new Error(
+          `setup: ${rowName(item)} cites ${key}, which exists in this world but is not in drawn`
+        );
       }
     }
     // A row whose reference names nothing must still name nothing: its written id is no prefix
@@ -402,6 +418,17 @@ test("a margin thread's replies link each reference the shared table links and n
         issueKey: world.host.key,
         replyTo: root.id,
       });
+      continue;
+    }
+    if (item.row.refs.includes("dispatch://agent/a(b)c")) {
+      // The balanced-parentheses row is a readable session reference but not a delivery target.
+      // An edit stores text without delivering it, so this row can still exercise the renderer.
+      const reply = await createComment(
+        world.host.key,
+        { body: "Text before the edit.", reply_to: root.id },
+        referenceAgent
+      );
+      await editComment(reply.id, { body: item.body }, referenceAgent);
       continue;
     }
     await createComment(world.host.key, { body: item.body, reply_to: root.id }, referenceAgent);

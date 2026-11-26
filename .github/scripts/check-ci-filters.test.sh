@@ -20,7 +20,7 @@
 # dispatch of any ref but exactly refs/heads/main apart, no other job may carry one, the ci-ok
 # job's reconcile step must carry its one if:, the changes job's ref step must test the ref with
 # the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
-# on.push.paths must equal its filter, no `if:` of ci.yaml may test for a push event or compare
+# on.push.paths must equal its filter, no if: condition of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
@@ -66,6 +66,11 @@ trap 'rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
 
 # Importing ci_job_reads.py walks the repository and runs go list. The cases at the end of this
 # file that read its race walk and its files_but_tests ask it fourteen questions, and as fourteen
@@ -115,7 +120,16 @@ def refused(root, spelling):
     return ""
 
 
-questions = {"derived": derived, "listed": listed, "refused": refused}
+def legs_held(text):
+    import yaml
+    try:
+        reads.hold_daemon_legs(yaml.safe_load(text))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held}
 
 
 def field():
@@ -175,7 +189,8 @@ ask() {
 # which PUSH_WORKFLOWS pairs with it, runs on a push whose paths are that filter. The root
 # package.json has the one workspace packages/widget, which WORKSPACES names, since rule 13 holds
 # those two lists to each other; no job here runs Bun, so that manifest is nothing the app gate
-# reads. Echoes the fixture root.
+# reads. The changes job has the scope step, and every output but ref_is_main opens with the
+# every-job term that reads it, as ci.yaml's do and rule 19 requires. Echoes the fixture root.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -253,9 +268,9 @@ jobs:
     if: (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     outputs:
-      app: ${{ steps.filter.outputs.app }}
-      image: ${{ steps.filter.outputs.image }}
-      site: ${{ steps.filter.outputs.site }}
+      app: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.app }}
+      image: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.image }}
+      site: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.site }}
       ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
       - run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
@@ -267,6 +282,9 @@ jobs:
       - name: Read whether this run's ref is exactly refs/heads/main
         id: ref
         run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"
+      - name: Read whether this run selects every job
+        id: scope
+        run: echo every_job= >> "$GITHUB_OUTPUT"
   app:
     needs: changes
     if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -309,7 +327,7 @@ jobs:
           job-status: ${{ job.status }}
   pr-title:
     name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check the pull request's text
@@ -344,6 +362,10 @@ YAML
   git -C "$root" init -q
   echo "$root"
 }
+
+# every_job_output <name>: the changes output <name> as the fixture writes each of its outputs, the
+# every-job term in front of the paths filter's verdict of that name, on one line.
+every_job_output() { printf "      %s: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.%s }}" "$1" "$1"; }
 
 # run_check <root> [mode]: the check in the fixture, in its ordinary mode unless a mode is given.
 run_check() {
@@ -1545,8 +1567,7 @@ check "names the line and the kinds it reads" \
 
 echo "case: an output of the changes job naming a filter no gate declares"
 root=$(fixture output-unknown)
-replace "$root/.github/workflows/ci.yaml" "      site: \${{ steps.filter.outputs.site }}" \
-  $'      site: ${{ steps.filter.outputs.site }}\n      gone: ${{ steps.filter.outputs.gone }}'
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output site)" "$(every_job_output site)"$'\n'"$(every_job_output gone)"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the output and says no gate declares the filter" \
@@ -1814,7 +1835,7 @@ check "and the command nothing claims" "$(contains "$out" 'runs `go test ./...`,
 
 echo "case: a gate whose filter the changes job does not hand on"
 root=$(fixture no-filter)
-replace "$root/.github/workflows/ci.yaml" "      app: \${{ steps.filter.outputs.app }}" "      app: \${{ steps.filter.outputs.application }}"
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output app)" "$(every_job_output app | sed 's/outputs\.app }}$/outputs.application }}/')"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job and the filter" "$(contains "$out" 'app has no filter app in the changes job')"
@@ -1912,7 +1933,7 @@ check "and says what the value must be" \
 
 # A value that names the changes job nowhere carries no filter, so this rule has nothing to
 # resolve and leaves it alone; what refuses the fixture is the gate on that step, whose `if:`
-# then tests no filter. That is the shape dispatch-browser.yaml's `lane` takes in the real
+# then tests no filter. That is the shape `.github/workflows/dispatch-browser.yaml#lane` takes in the real
 # tree, where no gate is declared on such a condition and the check passes over it.
 echo "case: a called step's input the caller passes a literal for"
 root=$(fixture called-input-literal)
@@ -1957,11 +1978,13 @@ check "reads the one gate on app" \
 
 # list_gate <root>: the called step reads its filter out of the changes job's one list of the
 # filters that matched, as the test job's harness steps do: ci.yaml's changes job hands on the
-# paths filter's own `changes` output as matched_filters, `all` on a dispatched run and on one whose
+# paths filter's own `changes` output as matched_filters, `all` on a run that selects every job
+# (the scope step's every_job, the every-job term every output opens with) and on one whose
 # filters fell open (the generate step's every_filter output), the calling job passes it as one
 # input, and the step reads `"app"` out of it beside the `all` term and the changes result
-# (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
-list_value="\${{ (github.event_name == 'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}"
+# (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates). list_value is the one value rule
+# 19 holds the list to, word for word as ci.yaml writes it.
+list_value="\${{ steps.scope.outputs.every_job && 'all' || steps.generate.outputs.every_filter == 'true' && 'all' || steps.filter.outputs.changes }}"
 list_gate() {
   called_input_gate "$1"
   replace "$1/.github/workflows/called.yaml" "      ci-ok-changes:" \
@@ -2057,8 +2080,7 @@ check "names the output, the step id and the run it must have" \
 echo "case: a filter named after another filter's count, which the paths filter writes under that name too"
 root=$(fixture filter-count-name)
 printf 'EXCLUDED = excluded("app_count", "a filter named after app'"'"'s count", ["docs/readme.md"])\n' > "$root/.github/ci-gates/app_count.py"
-replace "$root/.github/workflows/ci.yaml" "      site: \${{ steps.filter.outputs.site }}" \
-  $'      site: ${{ steps.filter.outputs.site }}\n      app_count: ${{ steps.filter.outputs.app_count }}'
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output site)" "$(every_job_output site)"$'\n'"$(every_job_output app_count)"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the filter and the output it shares a name with" \
@@ -2067,8 +2089,7 @@ check "names the filter and the output it shares a name with" \
 echo "case: a filter named changes, with no list output"
 root=$(fixture changes-filter-no-list)
 printf 'EXCLUDED = excluded("changes", "a filter of that name", ["docs/readme.md"])\n' > "$root/.github/ci-gates/changes.py"
-replace "$root/.github/workflows/ci.yaml" "      site: \${{ steps.filter.outputs.site }}" \
-  $'      site: ${{ steps.filter.outputs.site }}\n      changes: ${{ steps.filter.outputs.changes }}'
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output site)" "$(every_job_output site)"$'\n'"$(every_job_output changes)"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says the fallback file leaves the name out" \
@@ -2189,7 +2210,7 @@ check "fails" "$(is "$status" 1)"
 check "names the step and the spelling" \
   "$(contains "$out" "job called step \"Test the library\" reads an input as inputs. matched-filters")"
 
-echo "case: a list output that is not all on a dispatched run"
+echo "case: a list output that is not all on a run that selects every job"
 root=$(fixture list-gate-no-dispatch)
 list_gate "$root"
 replace "$root/.github/workflows/ci.yaml" "$list_value" \
@@ -2205,11 +2226,11 @@ echo "case: a list output that is not all on a run whose filters fell open"
 root=$(fixture list-gate-no-fall-open)
 list_gate "$root"
 replace "$root/.github/workflows/ci.yaml" "$list_value" \
-  "\${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}"
+  "\${{ steps.scope.outputs.every_job && 'all' || steps.filter.outputs.changes }}"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the output and the value it must have" \
-  "$(contains "$out" "the changes job's output matched_filters is \${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}, and it must be exactly $list_value")"
+  "$(contains "$out" "the changes job's output matched_filters is \${{ steps.scope.outputs.every_job && 'all' || steps.filter.outputs.changes }}, and it must be exactly $list_value")"
 
 echo "case: a filter named changes, under which the paths filter writes no list"
 root=$(fixture list-gate-changes-filter)
@@ -2693,12 +2714,24 @@ done
 echo "case: a job named for a required check holding the re-run term"
 root=$(fixture pr-title-rerun-guard)
 replace "$root/.github/workflows/ci.yaml" \
-  "    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'" \
+  "    if: \${{ !github.event.pull_request.draft }}" \
   "    if: (github.event_name != 'merge_group' || github.run_attempt == '1')"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says a skipped required check passes" \
   "$(contains "$out" "job pr-title is named for a check main's ruleset requires and its if: holds a term that skips it on a re-run attempt of a merge-group run")"
+
+echo "case: pr-title skipped on a dispatch, so its check run carries the name expression's text"
+# The shape before #5231: a dispatched run skipped pr-title, and GitHub, which evaluates a skipped
+# job's name nowhere, named its check run by the expression's literal text.
+root=$(fixture pr-title-skips-dispatch)
+replace "$root/.github/workflows/ci.yaml" \
+  "    if: \${{ !github.event.pull_request.draft }}" \
+  "    if: \${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the if: it must carry and why" \
+  "$(contains "$out" "job pr-title carries \`if: \${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}\`: give it \`if: \${{ !github.event.pull_request.draft }}\`, so that it runs on a dispatch too")"
 
 echo "case: the verdict job holding the re-run term"
 root=$(fixture ci-ok-rerun-guard)
@@ -2721,7 +2754,7 @@ check "and asks the verdict to need it" \
 
 echo "case: the file has no pr-title job"
 root=$(fixture pr-title-absent)
-replace "$root/.github/workflows/ci.yaml" $'  pr-title:\n    name: ${{ github.event_name == \'workflow_dispatch\' && \'pr-title (dispatch)\' || \'pr-title\' }}\n    if: github.event_name == \'pull_request\' || github.event_name == \'merge_group\'\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Check the pull request\'s text\n        run: echo text\n' ""
+replace "$root/.github/workflows/ci.yaml" $'  pr-title:\n    name: ${{ github.event_name == \'workflow_dispatch\' && \'pr-title (dispatch)\' || \'pr-title\' }}\n    if: ${{ !github.event.pull_request.draft }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Check the pull request\'s text\n        run: echo text\n' ""
 replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" "CI_OK_EXEMPT: '[\"ci-ok\"]'"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -2857,8 +2890,7 @@ check "with the tag step's files covered" \
 # PROGRAMS pairs it with, and TAG_RUNS pairing the step with the app job.
 listed_tag_run() {
   local root=$1
-  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
-    $'      image: ${{ steps.filter.outputs.image }}\n      tagged: ${{ steps.filter.outputs.tagged }}'
+  replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" "$(every_job_output image)"$'\n'"$(every_job_output tagged)"
   replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
     '{"app": "app", "image": "image", "tagged": "tagged"}'
   replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
@@ -2987,8 +3019,7 @@ check "names the step, its job and the file that does not have it" \
 # builds ./cmd/app, with the output, the ci-ok map entry and the gate that go with it.
 calls_workflow() {
   local root=$1
-  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
-    $'      image: ${{ steps.filter.outputs.image }}\n      suite: ${{ steps.filter.outputs.suite }}'
+  replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" "$(every_job_output image)"$'\n'"$(every_job_output suite)"
   replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
     '{"app": "app", "image": "image", "suite": "suite"}'
   # The verdict job waits for every job of the file, and a job of ci.yaml carries the term that
@@ -3285,8 +3316,7 @@ check "and says no report goes out under the caller's own id" \
 # pins that step there.
 split_callers() {
   local root=$1
-  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
-    $'      image: ${{ steps.filter.outputs.image }}\n      fast: ${{ steps.filter.outputs.fast }}'
+  replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" "$(every_job_output image)"$'\n'"$(every_job_output fast)"
   replace "$root/.github/workflows/ci.yaml" $'  tooling-checks:\n    needs: changes\n    if: needs.changes.outputs.app ' \
     $'  tooling-checks:\n    needs: changes\n    if: needs.changes.outputs.fast '
   replace "$root/.github/workflows/ci.yaml" '"tooling-checks": "app"' '"tooling-checks": "fast"'
@@ -4058,8 +4088,7 @@ GATE = gate("app_step", "app", step="Test the app", exact=[
     ]),
 ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")])
 PY
-  replace "$1/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
-    $'      image: ${{ steps.filter.outputs.image }}\n      app_step: ${{ steps.filter.outputs.app_step }}'
+  replace "$1/.github/workflows/ci.yaml" "$(every_job_output image)" "$(every_job_output image)"$'\n'"$(every_job_output app_step)"
   replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
     $'      - name: Test the app\n        if: needs.changes.outputs.app_step == \'true\''
 }
@@ -4924,30 +4953,33 @@ COMPILERS = (
 # cannot hold the filter to it.
 READS = (
     ("broker_client", "packages/envoy/internal/cipherclient/testdata/wire.json",
-     "packages/cipher-client/src/__tests__/wire.test.ts:25-26"),
+     "`packages/cipher-client/src/__tests__/wire.test.ts#CORPUS_PATH`"),
     ("contracts", "packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json",
-     "packages/contracts/src/dispatch-block-ref.test.ts:98-102"),
+     "`packages/contracts/src/dispatch-block-ref.test.ts#the Go encoder's table is the same table`"),
     ("contracts", "packages/daemon/internal/intake/testdata/dispatch/server-started.json",
-     "packages/contracts/src/dispatch-api.test.ts:293-300"),
+     "`packages/contracts/src/dispatch-api.test.ts#the envelope Dispatch publishes for an announcement carries a payload this schema reads`"),
     ("dispatch_ui", "packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json",
-     "packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275"),
+     "`packages/proof-editor/tests/ask-concurrent-edit.test.ts#the server's block node types and the schema's typed blocks naming no parents are the live schema's block group`"),
     ("claude_envoy", "packages/envoy-client/test/stall-proxy.ts",
-     "packages/claude-envoy/tests/envoy-channel-stall.test.ts:9-11"),
+     "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#startStallProxy`"),
     ("pi_legion", "packages/dispatch/e2e/harness-processes.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
+     "`packages/pi-legion/src/skills-guard.test.ts#PLUGIN_BUILDER`, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "
+     "that builder's `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS`, bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
     ("test", "packages/dispatch/web/src/fonts/inter/package.json",
-     "scripts/third-party-notices.test.ts:102-105 (thirdPartyNotices over the font file's path)"),
+     "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
+     "(thirdPartyNotices over the font file's path)"),
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
+    ("dispatch_browser", "packages/contracts/fixtures/priority-ids.json",
+     "`packages/dispatch/e2e/priorities.e2e.ts#idFixture`"),
 )
 
 # Every JSON file a test of one of these packages imports from outside the package by a
@@ -5123,8 +5155,7 @@ references_lane() {
   mkdir -p "$1/web/e2e"
   echo 'one' > "$1/web/e2e/one.e2e.ts"
   echo 'two' > "$1/web/e2e/two.e2e.ts"
-  replace "$1/.github/workflows/ci.yaml" '      site: ${{ steps.filter.outputs.site }}' \
-    $'      site: ${{ steps.filter.outputs.site }}\n      dispatch_references: ${{ steps.filter.outputs.dispatch_references }}'
+  replace "$1/.github/workflows/ci.yaml" "$(every_job_output site)" "$(every_job_output site)"$'\n'"$(every_job_output dispatch_references)"
   cat > "$1/.github/ci-gates/dispatch-references.py" <<'PY'
 EXCLUDED = excluded("dispatch_references", "a preview of the reference rows", ["web/e2e/one.e2e.ts", "web/e2e/two.e2e.ts"])
 PY
@@ -5204,8 +5235,8 @@ root=$(fixture references-lane-no-filter)
 references_lane "$root"
 rm "$root/.github/ci-gates/dispatch-references.py"
 replace "$root/.github/workflows/ci.yaml" \
-  $'      site: ${{ steps.filter.outputs.site }}\n      dispatch_references: ${{ steps.filter.outputs.dispatch_references }}' \
-  '      site: ${{ steps.filter.outputs.site }}'
+  "$(every_job_output site)"$'\n'"$(every_job_output dispatch_references)" \
+  "$(every_job_output site)"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "naming the filter and where it is declared" \
@@ -5336,7 +5367,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nvar smaller = raceEnabled\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than dropping a test from the step" \
-  "$(contains "$out" 'RAISED: .*x_test.go:3: raceEnabled is read where no top-level test encloses it')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}3: raceEnabled is read where no top-level test encloses it")"
 
 # The read a helper holds is the bug this refusal answers: the test before it need not be the one
 # that calls it, so the plain step would run a test that is no smaller under the detector and
@@ -5347,7 +5378,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nimport "testing"\n\nfunc TestEarlier(t *testing.T) {}\n\nfunc helperLater() bool {\n\treturn raceEnabled\n}\n\nfunc TestLater(t *testing.T) {\n\tif helperLater() {\n\t\tt.Skip("smaller")\n\t}\n}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than naming the test before the helper" \
-  "$(contains "$out" 'RAISED: .*x_test.go:8: raceEnabled is read where no top-level test encloses it')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}8: raceEnabled is read where no top-level test encloses it")"
 check "and names neither test" "$(is "$(contains "$out" 'TestEarlier')" false)"
 
 # A one-line body writes no closing brace in column 0, so a rule that ended a body at the next
@@ -5362,7 +5393,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nimport "testing"\n\nfunc TestOneLine(t *testing.T) { run(t, sizes) }\n\nvar sizes = func() int {\n\tif raceEnabled {\n\t\treturn 2\n\t}\n\treturn 4\n}()\n\nfunc run(t *testing.T, n int) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than naming the one-line test above it" \
-  "$(contains "$out" 'RAISED: .*x_test.go:8: raceEnabled is read where no top-level test encloses it')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}8: raceEnabled is read where no top-level test encloses it")"
 check "and names no test" "$(is "$(contains "$out" 'TestOneLine')" false)"
 
 # A body ends at the brace that closes it, counted from the declaration's own `{`, so a
@@ -5374,7 +5405,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nimport "testing"\n\nfunc TestUnclosed(t *testing.T) {\n\tif raceEnabled {\n\nfunc TestAfter(t *testing.T) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than taking the rest of the file for the body" \
-  "$(contains "$out" 'RAISED: .*x_test.go:5: the braces of this top-level declaration never balance')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}5: the braces of this top-level declaration never balance")"
 check "and names no test" "$(is "$(contains "$out" 'TestUnclosed')" false)"
 
 echo "case: a //go:build that names race in a form the walk does not read"
@@ -5383,7 +5414,7 @@ mkdir -p "$root/pkg"
 printf '//go:build !race && !windows\n\npackage pkg\n\nfunc TestKappa(t *testing.T) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than guessing what the race build compiles" \
-  "$(contains "$out" 'RAISED: .*x_test.go: `//go:build !race && !windows` names race in a form ci_job_reads.py does not read')"
+  "$(contains "$out" 'RAISED: .*x_test.go'"$colon"' `//go:build !race && !windows` names race in a form ci_job_reads.py does not read')"
 
 echo "case: the lane names a package that is not there"
 out=$(derived "$work/race-unattributable" "pkg/gone")
@@ -5504,8 +5535,8 @@ check "the filter keeps the line off the unread package's test" "$(contains "$(f
 
 echo "case: an output naming a step the changes job does not have"
 root=$(fixture output-absent-step)
-replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
-  '      image: ${{ steps.absent.outputs.image }}'
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" \
+  "$(every_job_output image | sed 's/steps\.filter\.outputs\.image/steps.absent.outputs.image/')"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the output and the step the job has not got" \
@@ -5513,14 +5544,101 @@ check "names the output and the step the job has not got" \
 
 echo "case: an output naming a step of the job that is no paths-filter step"
 root=$(fixture output-other-step)
-replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
-  '      image: ${{ steps.note.outputs.image }}'
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" \
+  "$(every_job_output image | sed 's/steps\.filter\.outputs\.image/steps.note.outputs.image/')"
 replace "$root/.github/workflows/ci.yaml" "    steps:"$'\n'"      - run: .github/scripts/ci-filters-generate.sh" \
   $'    steps:\n      - id: note\n        run: echo note\n      - run: .github/scripts/ci-filters-generate.sh'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the output and says that step writes no filter's verdict" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.note.outputs.image, and step note is no dorny/paths-filter step of the job, so it writes no filter's verdict and the output is empty on every run")"
+
+# no_scope <root>: the fixture's changes job without its scope step.
+no_scope() {
+  replace "$1/.github/workflows/ci.yaml" \
+    $'      - name: Read whether this run selects every job\n        id: scope\n        run: echo every_job= >> "$GITHUB_OUTPUT"\n' ""
+}
+# What rule 19 says of a changes job without the scope step.
+scope_refusal="::error file=.github/workflows/ci.yaml::the changes job has no step of id scope that writes every_job"
+# regex_of <text>: <text> as a grep pattern matching it alone.
+regex_of() { printf '%s' "$1" | sed 's|[.*$[^\\]|\\&|g'; }
+echo "case: the every-job term reads the scope step, the one other step an output may read"
+# The fixture itself: every output opens with the term, and the job has the step.
+root=$(fixture output-every-job)
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+echo "case: an output without the every-job term in front fails"
+# The hand fix a rebase invites: an output added on main with the old dispatch term, which
+# selects its job on every dispatch of a branch.
+for shape in "\${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.app }}" \
+  '${{ steps.filter.outputs.app }}'; do
+  n=$((${n:-0} + 1))
+  root=$(fixture "output-no-every-job-$n")
+  replace "$root/.github/workflows/ci.yaml" "$(every_job_output app)" "      app: $shape"
+  run_check "$root"
+  check "$shape: fails" "$(is "$status" 1)"
+  check "$shape: names app and the term it lacks" \
+    "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output app does not open with the every-job term")"
+  check "$shape: and only app" \
+    "$(is "$(contains "$out" "the changes job's output \(image\|site\) does not open with the every-job term")" false)"
+done
+root=$(fixture output-scope-other)
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" \
+  "$(every_job_output image | sed 's/steps\.scope\.outputs\.every_job/steps.scope.outputs.other/')"
+run_check "$root"
+check "another output of the scope step fails" "$(is "$status" 1)"
+check "  naming it" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.scope.outputs.other, and step scope is no dorny/paths-filter step of the job")"
+root=$(fixture output-every-job-only)
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" '      image: ${{ steps.scope.outputs.every_job }}'
+run_check "$root"
+check "the every-job term with no filter beside it fails" "$(is "$status" 1)"
+check "  naming the output and what it lost" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.scope.outputs.every_job and no filter's verdict")"
+
+echo "case: a changes job with no scope step fails, naming the step"
+root=$(fixture output-every-job-no-scope)
+no_scope "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step the job must have" "$(contains "$out" "$scope_refusal")"
+check "  and each output that reads it" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.scope.outputs.every_job, and the job has no step scope, so the output is empty on every run")"
+
+# #5309's list, `all` on every dispatch, which runs every harness step on a dispatch of a branch
+# whatever its diff reaches. 2aa89c01's rule 19 held a changes job without the scope step to it.
+all_dispatch_list="\${{ (github.event_name == 'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}"
+echo "case: a changes job with no scope step, its outputs on the dispatch term and the all-dispatch list, is refused"
+# The shape #5309 merged, whole: what a hand merge that keeps main's side of the changes job
+# writes. Every dispatch of a branch selects every job and runs every harness step there.
+root=$(fixture list-gate-no-scope-all-dispatch)
+list_gate "$root"
+no_scope "$root"
+for output in app image site; do
+  replace "$root/.github/workflows/ci.yaml" "$(every_job_output "$output")" \
+    "$(every_job_output "$output" | sed "s/steps\.scope\.outputs\.every_job/github.event_name == 'workflow_dispatch'/")"
+done
+replace "$root/.github/workflows/ci.yaml" "      matched_filters: $list_value" "      matched_filters: $all_dispatch_list"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the scope step the job must have" "$(contains "$out" "$scope_refusal")"
+check "names the list and the one value it must have" \
+  "$(contains "$out" "the changes job's output matched_filters is $(regex_of "$all_dispatch_list"), and it must be exactly $(regex_of "$list_value")")"
+for output in app image site matched_filters; do
+  check "  and $output, which lacks the every-job term" \
+    "$(contains "$out" "the changes job's output $output does not open with the every-job term")"
+done
+echo "case: with the scope step, the all-dispatch list still fails"
+root=$(fixture list-gate-every-dispatch)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "      matched_filters: $list_value" "      matched_filters: $all_dispatch_list"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the list and the value it must have" \
+  "$(contains "$out" "the changes job's output matched_filters is $(regex_of "$all_dispatch_list"), and it must be exactly $(regex_of "$list_value")")"
+check "and the every-job term it lacks" \
+  "$(contains "$out" "the changes job's output matched_filters does not open with the every-job term")"
+check "  and nothing else" "$(contains "$out" '^::error::2 CI filter problem(s)$')"
 
 echo "case: an output naming a filter no gate declares"
 # Renaming the filter leaves the image job gated on a filter no file declares as well, which is
@@ -5608,12 +5726,12 @@ for spelling in ./pkg pkg/ "$root/pkg"; do
 done
 
 # A run of any mode may change no file of the tree it checks but those its mode writes, and fails
-# naming each other file it changed. The go commands of go_build_tags.py run under the
-# machine's own GOPROXY and module cache, so in a workspace one can record a checksum the
-# committed go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
-# repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the real go.
-# Writing on every command, it writes at the engine's `go env GOROOT`, which comes after the
-# engine has listed the repository's files and before its first go list; writing on `go list`
+# naming each other file it changed. A go command that fetches a module records its checksum in
+# the go.work.sum of its workspace, as go_build_tags.py's go list did under the machine's own
+# GOPROXY before it ran with GOPROXY=off, which the cases plant: a go first on PATH that appends
+# the line this repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the
+# real go. Writing on every command, it writes at the engine's `go env GOROOT`, which comes after
+# the engine has listed the repository's files and before its first go list; writing on `go list`
 # alone, it writes only at go_build_tags.py's go list, which a table can run as it is imported.
 # The controls that a clean run and a write of a push workflow's paths alone still pass are the
 # green and push-paths-extra cases above, and the ones below that change nothing.
@@ -5813,6 +5931,29 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says the reading was empty rather than passing over it" \
   "$(contains "$out" '^::error::this check could not read the files of the tree it checks (git lists none), so whether this run changed one is unknown')"
+
+# ci_job_reads.py's hold on .github/go-legs.yaml's entry for packages/daemon: go_legs.py, in each
+# leg, sees only its own job's legs, so a package filed under a job key no matrix job runs would be
+# in the file once, pass every leg, and run in no job. The import refuses that entry, and with it
+# the changes job's filters. Each case hands the hold an entry and reads what it answered.
+legs_held() { ask legs_held "$1"; }
+real_legs=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/daemon"]))')
+echo "case: the repository's go-legs.yaml entry for the daemon is held"
+check "passes" "$(is "$(legs_held "$real_legs")" held)"
+
+echo "case: a go-legs.yaml job key no matrix job runs"
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["daemon-go-typo"] = {"1": [e["daemon-go"]["2"].pop()]}; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$typo")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the key and the jobs whose legs run" \
+  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, and the jobs whose legs ci-job-daemon-go.yaml runs are daemon-go and daemon-go-race, beside elsewhere: a package under daemon-go-typo runs in no job")"
+
+echo "case: a go-legs.yaml entry with no race legs"
+norace=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["daemon-go-race"]; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$norace")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the missing key and the race set it lost" \
+  "$(contains "$out" "its keys are daemon-go, elsewhere, .*a package under a missing key runs in no job, so file it under one of those; its daemon-go-race legs run \[\]")"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH

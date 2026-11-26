@@ -67,7 +67,7 @@ import {
   type ResultCommitStands,
 } from "@legion/contracts";
 
-import type { Actor } from "../../api/types";
+import type { Actor, IssueCoverage } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
 import { POST_MARK_WORDS } from "../refs/post-marks";
@@ -99,16 +99,17 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the eight typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
- * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
- * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
- * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
+ * `criterion` are the block type names in
+ * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
+ * because the page draws it inside its own sentences and rows, where a capital would read as a
+ * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
@@ -119,6 +120,9 @@ export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `criterion` block: what a person wants to be able to do, in their own words, which a
+   *  statement answers. The schema's own word is a plain one, so the page draws it. */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   handoff: "handoff",
@@ -126,6 +130,9 @@ export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
+   *  written at the end of the block it reads. */
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -289,6 +296,10 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  // Root R2's one list of views holds Graph last, the whole tree read, a view and no filter (R10,
+  // R12). Dashboard (first), Threads and Documents (after Decisions) are each one line of this
+  // list that its own part adds with its view, at its place in root R2's order.
+  "graph",
 ] as const);
 
 /** One control of the filter row, by its own token: `conversation`, which turns every filter
@@ -300,6 +311,7 @@ export type Preset = (typeof PRESET_ORDER)[number];
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
   decisions: "Decisions",
+  graph: "Graph",
   plan: "Plan",
   spec: "Spec",
   verification: "Verification",
@@ -529,9 +541,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
+ * present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -549,12 +560,6 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
   spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -620,10 +625,50 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
  * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing.
+ * gap the page draws (R10), so that line answers nothing, and so does the line of a document
+ * still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
+}
+
+/**
+ * The line the coverage read writes for a document of the issue that owes its block index, in
+ * place of every missing check and plan task while it does (the server's `owedGap`): `<file
+ * name> version <n> is still being indexed; its coverage shows once that ends.`.
+ */
+const OWED_COVERAGE_LINE =
+  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
+
+/**
+ * What the page draws for one line of the coverage read (`IssueCoverage.gaps`), where it draws
+ * one: the sentence of the gap the line names (`coverageGapKind`, `GAP_LINES`), and for the line
+ * of a document still being indexed, the line's own words. While a document owes its block
+ * index the server names no requirement as lacking a check, so the page draws none as lacking
+ * one either, and says instead which document's coverage waits and at which version; that line
+ * names a file, which the server's words name and no word of the page could. Any other line
+ * draws nothing.
+ */
+export function coverageLineWords(line: string): string | undefined {
+  const kind = coverageGapKind(line);
+  if (kind !== undefined) return GAP_LINES[kind];
+  return OWED_COVERAGE_LINE.test(line) ? line : undefined;
+}
+
+/**
+ * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
+ * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
+ * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
+ * document still being indexed, which says why no requirement is drawn as lacking a check: the
+ * outline draws these in the body of each statement (`TreeNode.coverageNotes`). Today's Spec tab
+ * draws the same lines with words of its own (`SpecRequirements`), since no file today's pages
+ * load imports this one.
+ */
+export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
+  return (coverage?.gaps ?? []).flatMap((line) => {
+    const words = coverageGapKind(line) === undefined ? coverageLineWords(line) : undefined;
+    return words === undefined ? [] : [words];
+  });
 }
 
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
@@ -638,7 +683,7 @@ export const PROGRESS_NOUNS = joinWords("PROGRESS_NOUNS", {
 
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
  *  issue, whose writes the identity block refuses, and an issue that advances as many
- *  priorities as one may, whose priority row offers no control that adds another
+ *  priorities as one may, whose priorities' picker refuses a further choice with this line
  *  (`features/priorities/IssuePriorityLine.tsx`). One line each, saying what is so. */
 export const STATE_LINES = joinWords("STATE_LINES", {
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
@@ -658,8 +703,10 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays. */
+   *  questions, the comments and the messages. The spec's, the plan's and the verification
+   *  document's lines, last, are what the Plan and the Verification views say of a tree read
+   *  refused before it first answered, each named by the part the document whose blocks the view
+   *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",
@@ -670,7 +717,6 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
-  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**
@@ -835,8 +881,10 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The labels control's word where the issue has no label yet, as `add_priority` is the
    *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
-  /** The control that places an issue under a priority, where the issue advances none: the
-   *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
+  /** What the priorities' picker trigger draws in a row of Details while the issue advances
+   *  none, and the words its name begins with, which `IssuePriorityLine.tsx`'s
+   *  `addPriorityControlName` writes out with `control_name_to` and the issue's key ("Add a
+   *  priority to CORE-1"). */
   add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
    *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
@@ -888,15 +936,15 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   control_name_of: "of",
   /** The word between the labels control's `add_label` and the issue's key, in the name it
    *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
-   *  (`labelsControlName`). */
+   *  (`labelsControlName`). `IssuePriorityLine.tsx`'s `addPriorityControlName` writes this word
+   *  out as a literal in the name of the priorities' trigger in a row of Details while the issue
+   *  advances none ("Add a priority to CORE-1"). */
   control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
   count_of: "of",
   count_done: "done",
-  /** The priority picker's first choice, which picks nothing. */
-  choose_priority: "Choose a priority",
   /** Closes the Details panel and the Outline sheet, each in its own head (R14); Escape does
    *  the same. */
   close: "Close",
@@ -937,9 +985,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The one panel of the issue's properties, which opens over the right of the page, and the
    *  control at the right of the header's first row that opens it (R14). */
   details: "Details",
-  /** The one row a branch below the three drawn levels folds to, which opens it in place: the
-   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1), and the
-   *  words agree with it: "1 more row below", "3 more rows below". A node is a row to the
+  /** What the row a branch below the three drawn levels folded to said, when the outline drew
+   *  three levels: every level is drawn now (R11), and no row of the page draws these words.
+   *  They agree with their count: "1 more row below", "3 more rows below". A node is a row to the
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
@@ -959,6 +1007,11 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** The name of the priorities' picker trigger, which adds one and takes one off alike, as the
+   *  labels' control beside it is named "Edit labels". `IssuePriorityLine.tsx`'s
+   *  `priorityTriggerName` says the same words inside `NoTooltips` and outside it; in a row of
+   *  Details, while the issue advances none, the trigger is named by `add_priority` instead. */
+  edit_priorities: "Edit priorities",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is
@@ -970,8 +1023,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
   /** What a folded branch says it holds, after the count of the rows under it (R1): they are
-   *  not gone, they are out of sight until the branch is opened. It agrees with its count, as
-   *  `deeper_row` does. */
+   *  not gone, they are out of sight until the branch is opened. It agrees with its count. */
   folded_row: "row hidden inside",
   folded_rows: "rows hidden inside",
   /** Draws one branch of the outline at a time, the Contents pane's current one, by zooming the
@@ -1176,9 +1228,10 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
    *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
-  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
-   *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
-   *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
+  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task
+   *  and a note, whose reads carry none, and a decision whose entry in the decisions read names
+   *  no decider (`DecisionEntry.decided_by`). It is the page's own word, drawn with a shape of
+   *  its own (`AuthorKind`), so no reader takes it for somebody's name. */
   unknown_author: "Author unknown",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */
@@ -1216,22 +1269,47 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
+  decided_by: "decided by",
+  /** The repository paths a plan task's implementer should read. */
+  docs: "docs to read",
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
+  kept_by: "kept by",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The question, comment or message a statement, a criterion, a check or a plan task hangs
+   *  under, by the plain word the page's own parent controls use. */
+  parent: "parent",
+  /** Whether a newer decision stands in this one's place. */
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
+  shaped: "shaped",
+  /** How long a plan task takes, in minutes, which the plan's chart draws as its bar's length;
+   *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
+  size: "size",
+  /** The skills a plan task's implementer should read. */
+  skills: "skills to read",
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
+  uncertainty: "uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1385,6 +1463,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     handoff: "handoff",
@@ -1392,6 +1471,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },

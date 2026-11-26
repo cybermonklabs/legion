@@ -13,6 +13,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -839,31 +840,44 @@ func TestEditNoticeSweepSkipsDeletedArtifact(t *testing.T) {
 	}
 }
 
-// answerDecision answers the harness's ask as the answer route does: the row first, then the
-// block's server-owned attributes, written as the person who answered.
+// answerDecision answers the harness's ask as the answer route does, as the person who answered.
 func answerDecision(t *testing.T, service *Service, artifactID, askID string, person model.Actor) {
 	t.Helper()
 	answeredAt := time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)
-	answerJSON, err := json.Marshal(model.AskAnswer{User: person.ID, Selected: []string{"REST"}, At: answeredAt})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.store.Pool.Exec(context.Background(), `update asks set state = 'answered', answer = $2 where id = $1`, askID, answerJSON); err != nil {
-		t.Fatalf("answer the indexed ask: %v", err)
-	}
-	if err := joinedSetBlockAttributes(service, artifactID, "decision", map[string]any{
-		"state": "answered", "answered_by": person.ID, "answered_at": answeredAt.Format(time.RFC3339Nano), "selected": []string{"REST"},
-	}, person); err != nil {
-		t.Fatalf("write the answered block's attributes: %v", err)
+	change := asks.Answered(model.AskAnswer{User: person.ID, Selected: []string{"REST"}, At: answeredAt})
+	change.Who, change.At = person, answeredAt
+	settleAskAs(t, service, artifactID, "decision", askID, person, change)
+}
+
+// settleAskAs writes change on askID, the ask of the block blockID on artifactID, as the answer
+// and resolve routes write theirs, in one transaction, as person: on the ask's node and its row
+// (asks.Settle), then into the ask's block (KeepAskBlockInStep) - while another build serves the
+// attributes that build's pages read, and on a fleet of one build the ones a version keeps - so
+// the document's next settlement writes the one version the answer or resolve writes (R3).
+func settleAskAs(t *testing.T, service *Service, artifactID, blockID, askID string, person model.Actor, change asks.Change) {
+	t.Helper()
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		tx, _ := txFromContext(ctx)
+		ask, err := asks.Settle(ctx, tx, askID, change)
+		if err != nil {
+			return err
+		}
+		ask.BlockID, ask.BlockArtifactID = &blockID, &artifactID
+		return service.KeepAskBlockInStep(ctx, ask, person)
+	}); err != nil {
+		t.Fatalf("settle the ask of block %s: %v", blockID, err)
 	}
 }
 
 // A person's answer to an ask block changes only the block's server state, and its own event
 // (ask.answered) already reaches the spec's writers: the version it leaves sends no edit notice,
-// and the window it opened goes.
+// and the window it opened goes. An answer writes one version, which changes only the
+// server-owned attributes of the ask's block (R3); while another build serves (serveTwoBuilds)
+// that block carries the answer's words for that build's pages too.
 func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
 	t.Parallel()
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
+	serveTwoBuilds(t, service.store)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	answerDecision(t, service, artifactID, askID, alice)
 	settle()
@@ -882,21 +896,16 @@ func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
 	}
 }
 
-// A person's resolve of an ask block changes only its server state too, and sends no notice.
+// A person's resolve of an ask block changes only its server state too, and sends no notice. As
+// an answer's, its one version changes only the server-owned attributes of the ask's block (R3).
 func TestEditNoticeAResolveAloneSendsNone(t *testing.T) {
 	t.Parallel()
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
+	serveTwoBuilds(t, service.store)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	resolution, err := json.Marshal(model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: alice, At: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.store.Pool.Exec(context.Background(), `update asks set state = 'resolved', resolution = $2 where id = $1`, askID, resolution); err != nil {
-		t.Fatalf("resolve the indexed ask: %v", err)
-	}
-	if err := joinedSetBlockAttributes(service, artifactID, "decision", map[string]any{"state": "resolved"}, alice); err != nil {
-		t.Fatalf("resolve the block: %v", err)
-	}
+	change := asks.Resolved(model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: alice, At: time.Now().UTC()})
+	change.Who, change.At = alice, time.Now().UTC()
+	settleAskAs(t, service, artifactID, "decision", askID, alice, change)
 	settle()
 	if _, open := readEditNotice(t, service, artifactID); !open {
 		t.Fatal("the resolve's version opened no window; this test needs one to show the sweep drops it")

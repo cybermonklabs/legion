@@ -9,15 +9,17 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 )
 
 // TestAPersonPageDecidesAndListsInOneSnapshot holds the person page to deciding 200 or 404 and
 // listing its rows in one snapshot (listPersonNodes). alice writes one comment through the
 // route, project-visible, which is the one node of hers bob may see, and bob reads her page.
 // Between the route's decision and its list (server.betweenPersonPageReads), the test commits a
-// write on another connection that reserves that comment for alice, as a later release's
-// author-private write marks one: the store's own writer (graphstore.Write) moves the comment's
-// node to visibility author and states that attribute beside it. The route decided on a snapshot
+// write on another connection that reserves that comment for alice: its node moved to visibility
+// author with that attribute stated beside it. The store's writers take no comment reserved for
+// its author (graphstore.ErrVisibilityNotAdmitted), so the move is seeded straight into the store
+// as such a write would store it (graphseedtest.SeedAuthorOnly). The route decided on a snapshot
 // in which bob may see the comment, so it answers 200 with that comment on its row, and never 200
 // with no rows, which is what a list read outside the decision's snapshot answers. bob's next read
 // of the page answers 404, which proves the write committed and took the comment out of his view.
@@ -48,8 +50,7 @@ func TestAPersonPageDecidesAndListsInOneSnapshot(t *testing.T) {
 			if !found {
 				return fmt.Errorf("the store holds no node of the comment")
 			}
-			node.Visibility = graphstore.VisibilityAuthor
-			return graphstore.Write(ctx, tx, []graphstore.Node{node}, nil)
+			return graphseedtest.SeedAuthorOnly(ctx, tx, node)
 		}); err != nil {
 			t.Errorf("reserve %s's comment %s for her between the route's two reads: %v", person, comment, err)
 		}

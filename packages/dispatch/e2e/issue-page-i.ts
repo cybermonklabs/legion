@@ -23,16 +23,14 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * - **A row's bullet** `[data-node-bullet]`: its column, or its fold control where its node holds
  *   others; its tag `[data-node-tag]` in its margin; and a link its words draw for a reference,
  *   `a[data-row-reference]` naming the reference it links.
- * - **A node's body** `[data-node-body]`, drawn for the focused row and each row pinned open
- *   (`[data-node-body][data-pinned]`), and for no other row.
- * - **A branch deeper than the drawn levels**, one row `[data-branch-more]` whose text says how
- *   many nodes it holds and whose `button` opens them in place.
+ * - **A node's body** `[data-node-body]`, the facts, gaps, counts and author line that every
+ *   unfolded row's face draws whatever the focus, and that a row with none of them draws none of.
  * - **A gap the page names** `[data-gap]` with `data-gap-kind`.
  * - **What a key reports** where it has nowhere to go: `[data-row-report]`, a `role="status"`
  *   drawn at the row the key was pressed on.
- * - **The children**: rows of the outline, `[data-node-type="child_issue"]`, one group; and the
- *   section the page drew above the outline before the children became its rows,
- *   `[data-testid="issue-children"]`, which no address draws now.
+ * - **The children**: the section above the outline, `[data-children-section]`, with its one
+ *   control `[data-children-toggle]` and an entry `[data-child-entry]` for each child; and each
+ *   child's row of the outline, `[data-node-type="child_issue"]`, where the tree places it.
  * - **What stays at the top of the screen**: the header's band `[data-identity-block]` from
  *   761 px up, and the view row's band at 760 px and below.
  * - **What stays at the foot of the screen**: the box to write in, whose height the page
@@ -44,7 +42,6 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
 
 /** The selectors the readers pass into the browser. */
 const SELECTORS = {
-  branchMore: "[data-branch-more]",
   /** The part of the header that stays at the top of the screen from 761 px up. */
   identityBand: "[data-identity-block]",
   gap: "[data-gap]",
@@ -83,30 +80,30 @@ export function rowsOfType(page: Page, type: string): Locator {
   });
 }
 
-export function nodeBodies(page: Page): Locator {
-  return issuePage(page).locator(SELECTORS.nodeBody);
-}
-
-export function pinnedBodies(page: Page): Locator {
-  return issuePage(page).locator(`${SELECTORS.nodeBody}[data-pinned]`);
-}
-
-export function branchMoreRows(page: Page): Locator {
-  return issuePage(page).locator(SELECTORS.branchMore);
-}
-
 /** The gaps drawn on one row. */
 export function rowGaps(row: Locator): Locator {
   return row.locator(SELECTORS.gap);
 }
 
-/** The children's section the page drew above the outline before the architect ruled that the
- *  children are rows of it: no view draws one now, and a row reads this to say so. */
+/** The children's section at the top of the body, above the outline, which Conversation, each
+ *  filter and Graph draw once (`children-section.tsx`). */
 export function childrenSection(page: Page): Locator {
-  return page.getByTestId("issue-children");
+  return issuePage(page).locator("[data-children-section]");
 }
 
-/** The children as the page draws them: rows of the outline, one group of them. */
+/** The section's one control, which opens and closes its list, and which the children's
+ *  address and `t h` put the focus on. */
+export function childrenToggle(page: Page): Locator {
+  return childrenSection(page).locator("[data-children-toggle]");
+}
+
+/** The section's entry for the child `key`: its key as a link to its page, its title and its
+ *  facts. */
+export function childEntry(page: Page, key: string): Locator {
+  return childrenSection(page).locator(`[data-child-entry="${cssValue(key)}"]`);
+}
+
+/** The children's rows of the outline, each where the tree places it. */
 export function childRows(page: Page): Locator {
   return tree(page).locator('[data-node-row][data-node-type="child_issue"]');
 }
@@ -205,51 +202,6 @@ export function bulletBoxes(
             right: box?.right ?? -1,
           };
         }),
-    SELECTORS
-  );
-}
-
-/** Every item the tree draws, in order, with its `aria-level`: a node's row by its node's id,
- *  and the one line a branch below the drawn levels folds to by its text, which counts what it
- *  holds. */
-export function drawnItems(
-  page: Page
-): Promise<
-  { readonly id: string | null; readonly level: string | null; readonly more: string | null }[]
-> {
-  return page.evaluate(
-    (selectors) =>
-      [
-        ...document.querySelectorAll(
-          `${selectors.issuePage} ${selectors.tree} :is(${selectors.nodeRow}, ${selectors.branchMore})`
-        ),
-      ].map((item) => ({
-        id: item.getAttribute("data-node-id"),
-        level: item.getAttribute("aria-level"),
-        more: item.matches(selectors.branchMore)
-          ? (item.textContent ?? "").replace(/\s+/g, " ").trim()
-          : null,
-      })),
-    SELECTORS
-  );
-}
-
-/** Each deeper branch's one line: the `--row-depth` it is drawn at and its computed left
- *  padding, in pixels, which is its indent (`TreeRows.tsx`'s `BranchMore`). */
-export function branchMoreIndents(
-  page: Page
-): Promise<{ readonly depth: number; readonly padding: number }[]> {
-  return page.evaluate(
-    (selectors) =>
-      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.branchMore}`)].map(
-        (line) => {
-          const style = getComputedStyle(line);
-          return {
-            depth: Number.parseFloat(style.getPropertyValue("--row-depth")),
-            padding: Number.parseFloat(style.paddingLeft),
-          };
-        }
-      ),
     SELECTORS
   );
 }
@@ -680,36 +632,11 @@ export async function standInControlBelow(page: Page): Promise<{
   };
 }
 
-/** How many presses `openEveryDeeperBranch` makes before it gives up: well past the branches any
- *  seeded issue holds, so a tree that draws the control whatever is pressed ends as the
- *  caller's own failed reading rather than as this helper running until the row's deadline. */
-const BRANCHES_OPENED_AT_MOST = 200;
-
-/** Opens every branch the tree folded to one line because it sits below the drawn levels
- *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a row reads the nodes such a branch holds as rows of
- *  their own, as `issue-page-g.ts`'s `unfoldEveryBranch` does with a fold control. It opens the
- *  tree as it stands, so a caller first waits for the tree it means to open to be drawn. No row
- *  of this part calls it: it is the later parts' (their rows import it from this file). */
-export async function openEveryDeeperBranch(page: Page): Promise<void> {
-  const controls = branchMoreRows(page).getByRole("button");
-  for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
-    const first = controls.first();
-    // The first count reads the tree as its caller waited for it, and each press draws the
-    // branch it opens before its click resolves, so none left is every deeper branch open.
-    if ((await first.count()) === 0) return;
-    await first.click();
-  }
-  expect(
-    await controls.count(),
-    `the tree still draws a deeper branch after ${BRANCHES_OPENED_AT_MOST} openings`
-  ).toBe(0);
-}
-
 /**
  * Moves to the view `name` by pressing the view row itself, however that row draws at the width
- * a row runs at: five toggles from 1280 px, and one control opening a menu of five below it. A
- * toggle already pressed is left as it is, since pressing it again turns it off. `openPreset`
- * goes to the control's own address instead, which is a load.
+ * a row runs at: a toggle for each of its controls from 1280 px, and one control opening a menu
+ * of them below it. A toggle already pressed is left as it is, since pressing it again turns it
+ * off. `openPreset` goes to the control's own address instead, which is a load.
  */
 export async function pickPreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);

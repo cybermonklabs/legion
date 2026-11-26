@@ -179,11 +179,13 @@ func (s *server) computeWriteAdvice(
 	if err := s.runAdviceQueryHook(ctx, tx, "your_open_asks"); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
+	// An ask is open as its node holds it (askNodeStateOf), as every read of an answer reads it
+	// (R3): the read takes one issue's asks, so it picks by the node alone.
 	rows, err := tx.Query(ctx, `
-		select id::text, question from asks
+		select id::text, question from asks a
 		where issue_key = $1
 		  and author->>'kind' = 'session' and author->>'id' = $2
-		  and ((state = 'open' and id::text <> all(coalesce($3::text[], '{}')))
+		  and ((`+askNodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
 		    or id::text = any(coalesce($5::text[], '{}')))
 		order by created_at, id
 		limit $4
@@ -322,9 +324,12 @@ func declinedAskHead(text string) string {
 	return flat
 }
 
-// declinedAsk is the SQL predicate, on asks, that holds for an ask a person declined to answer
-// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew.
-const declinedAsk = `state = 'resolved' and resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+// declinedResolution is the SQL predicate, on resolution, an ask's resolution as its node holds it
+// (askNodeResolutionOf), that holds for an ask a person declined to answer
+// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew. The
+// resolution is read off the node, as every read of an answer reads it (R3); it is none on an ask
+// the node holds other than resolved.
+const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
 
 // readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
 // savepoint they were read on is released. Nil, not an empty list, where the issue holds no
@@ -343,9 +348,11 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 	}
 	// The note is the resolution's reason, which a person who wrote none leaves empty.
 	rows, err := tx.Query(ctx, `
-		select id::text, question, coalesce(resolution->>'reason', '') from asks
-		where issue_key = $1 and `+declinedAsk+`
-		order by created_at, id
+		select a.id::text, a.question, coalesce(r.resolution->>'reason', '')
+		from asks a
+		cross join lateral (select `+askNodeResolutionOf("a")+` as resolution) r
+		where a.issue_key = $1 and r.`+declinedResolution+`
+		order by a.created_at, a.id
 	`, issueKey)
 	if err != nil {
 		return nil, err
@@ -548,7 +555,7 @@ type editBlocks struct {
 	DecisionBlockChecks []decisionBlockCheck `json:"decision_block_checks,omitempty"`
 }
 
-// decisionBlockCheck is one added decision block's related-item check: the block, its
+// decisionBlockCheck is one added ask block's related-item check: the block, its
 // question, and the check's result.
 type decisionBlockCheck struct {
 	BlockID     string             `json:"block_id"`
@@ -594,14 +601,17 @@ type supersededApproval struct {
 // the one the advice is about, so the row names it nowhere.
 type supersededApprovalGate struct {
 	Issue string `json:"issue"`
-	Step  string `json:"step" enum:"decisions,criteria,spec"`
+	// kept for one release: steps-write-admits
+	Step string `json:"step" enum:"decisions,criteria,spec"`
 }
 
-// supersededApprovalAdvice reports the approval the write of version just made stale, or nil when
-// it made none, which is every write of a document nobody has approved. It runs in the write's
-// read phase, where the version row and the approval carry (docs.carryApproval) are queued rather
-// than written, so the carry's own review comes off the ledger (docs.Ledger.PendingReview) and
-// everything else from the table: a carried approval is pinned to version itself and reports
+// supersededApprovalAdvice reports the approval the write of version made stale as the document's
+// reviews stand before its write phase, or nil when they make none stale, which is every write of a
+// document nobody has approved. It runs in the write's read phase, where the table holds none of
+// the transaction's own writes, so it reads the reviews stored before it; the review the
+// transaction writes - the approval carry's own (docs.carryApproval), which the write phase keeps
+// or drops as only it decides (a restore's carry) - is set over it once Commit has returned, with
+// no statement (supersededAsWritten). A carried approval is pinned to version itself and reports
 // nothing, which is right - the gate reopens on that carry's own artifact.approved event.
 //
 // The read is the newest review of the document (docs.NewestReview), one entry of
@@ -619,17 +629,11 @@ type supersededApprovalGate struct {
 func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
-	ledger *docs.Ledger,
 	route string,
 	issueKey string,
 	artifactID string,
 	version int,
 ) *supersededApproval {
-	// A review this transaction queued is newer than every stored one and no read of the table
-	// can see it before the write phase runs, so it answers for the newest review by itself.
-	if review, queued := ledger.PendingReview(artifactID); queued {
-		return supersededBy(&review, version)
-	}
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "superseded_approval")
 	if !ok {
 		return nil
@@ -694,7 +698,10 @@ func (s *server) supersededApprovalAdvice(
 // working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
-// model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
+// model.GatedStepsKnown), the order the issue read lists an issue's own gates in. A row of a step
+// outside that list, the retired `decisions` step a daemon of the release before wrote, is left
+// out, and a project's stored list of that step alone reads as [spec], as every read of a stored
+// list does (gatedStepsWithout).
 func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
 	rows, err := q.Query(ctx, `
 		select g.issue, g.step
@@ -702,9 +709,12 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
 		where g.artifact_id = $1 and not (i.status = any($3::text[]))
-			and coalesce(g.holds, g.step = any(p.gated_steps))
+		  and g.step = any($2::text[]) -- kept for one release: design-gate-rows
+		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[])) -- kept for one release: check-narrowings
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow,
+		// kept for one release: check-narrowings
+		model.GatedStepSpec, retiredDecisionsStep)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}
@@ -718,6 +728,18 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		gates = append(gates, gate)
 	}
 	return gates, rows.Err()
+}
+
+// supersededAsWritten is the approval the write of version made stale as the transaction wrote the
+// document's reviews, once Commit has returned: the rule over the review the transaction wrote
+// (docs.Ledger.WrittenReview), the approval carry's own, newer than every stored one, where the
+// write phase kept it, and else stored, what the read phase read off the table
+// (supersededApprovalAdvice). It runs no statement.
+func supersededAsWritten(ledger *docs.Ledger, artifactID string, version int, stored *supersededApproval) *supersededApproval {
+	if review, wrote := ledger.WrittenReview(artifactID); wrote {
+		return supersededBy(&review, version)
+	}
+	return stored
 }
 
 // newestReviewAsApproval is supersededApprovalAdvice's rule, over whatever queryer the caller
@@ -778,17 +800,25 @@ type movedApprovalDocument struct {
 	Version          int    `json:"version"`
 }
 
-// movedApprovalRequestAdvice reports the open approval request the write just took back from the
-// person, or nil when it took none: a document with no open request, and a request still at the
-// version its agent handed over, which is what a write whose own carry answered the request
-// leaves. It runs in the write's read phase, where the version row, the request's move
-// (docs.MoveApprovalAsk) and the approval carry are queued and not yet written, so it reads the
-// request as this transaction leaves it off the ledger (docs.Ledger.PendingApproval) and the
-// stored row only where the transaction queued no write of the request at all.
-//
-// The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
-// the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
-// write left it.
+// movedApprovalRequestRead is what movedApprovalRequestAdvice reads in the write's read phase: the
+// open approval request naming the document as the table holds it before the write phase, nil
+// where none does, and the artifacts row of each document it names. read says the reads ran; a
+// write whose reads failed reports no request.
+type movedApprovalRequestRead struct {
+	artifactID string
+	read       bool
+	stored     *model.Ask
+	rows       map[string]model.Artifact
+}
+
+// movedApprovalRequestAdvice reads, in the write's read phase, what the report of the open approval
+// request the write took back from the person is built from (movedApprovalRequestRead.asWritten):
+// the request as the table holds it before the write phase, and the artifacts rows of the documents
+// it names. The request the transaction writes - moved by the version (docs.MoveApprovalAsk), and
+// answered where the approval carry's answer stands, which the write phase keeps or drops as only it
+// decides (a restore's carry) - is set over it once Commit has returned, with no statement. A move
+// changes the versions the request names and an answer its state, never the documents it names, so
+// the rows read here are the rows of the request the transaction leaves.
 //
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write
@@ -798,40 +828,58 @@ type movedApprovalDocument struct {
 func (s *server) movedApprovalRequestAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
-	ledger *docs.Ledger,
 	route string,
 	issueKey string,
 	artifactID string,
-) *movedApprovalRequest {
+) movedApprovalRequestRead {
+	read := movedApprovalRequestRead{artifactID: artifactID}
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "moved_approval_request")
 	if !ok {
-		return nil
+		return read
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	ask, queued := ledger.PendingApproval(artifactID)
-	if !queued {
-		stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
-		if err != nil {
-			s.logAdviceError(route, issueKey, "moved_approval_request", err)
-			return nil
-		}
-		if stored == nil {
-			return nil
-		}
-		ask = *stored
+	stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+		return read
 	}
-	if ask.State != "open" || ask.Approval == nil {
-		// A request this write's own carry answered is the person's no longer, so it took
-		// nothing back from them.
+	if stored != nil && stored.Approval != nil {
+		if read.rows, err = movedApprovalArtifacts(ctx, adviceTx, stored.Approval.Documents); err != nil {
+			s.logAdviceError(route, issueKey, "moved_approval_request", err)
+			return read
+		}
+	}
+	read.read, read.stored = true, stored
+	return read
+}
+
+// asWritten reports the open approval request the write took back from the person, once Commit has
+// returned, or nil when it took none: a document with no open request, and a request still at the
+// version its agent handed over, which is what a write whose own carry answered the request
+// leaves. The request is the one the transaction wrote (docs.Ledger.WrittenApproval): moved by the
+// version, and answered only where the write phase kept the carry's answer, not where it dropped the
+// carry because the version's record was not the approved one, nor the answer decided on such a
+// carry's review. Where the transaction wrote no request naming the document, it is the one the read
+// phase read. It runs no statement.
+//
+// The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
+// the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
+// write left it.
+func (read movedApprovalRequestRead) asWritten(ledger *docs.Ledger) *movedApprovalRequest {
+	if !read.read {
+		return nil
+	}
+	ask := read.stored
+	if written, wrote := ledger.WrittenApproval(read.artifactID); wrote {
+		ask = &written
+	}
+	if ask == nil || ask.State != "open" || ask.Approval == nil {
+		// No request names the document, or this write's own carry answered it: it is the
+		// person's no longer, so the write took nothing back from them.
 		return nil
 	}
 	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
 		// The request still waits on the person, so this write took nothing back from them.
-		return nil
-	}
-	rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
 		return nil
 	}
 	moved := &movedApprovalRequest{
@@ -839,9 +887,9 @@ func (s *server) movedApprovalRequestAdvice(
 		Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
 	}
 	// The owner is the first document's, because that is the document the request was opened on
-	// and the one a hand-back command names. A document whose row this read did not return
-	// leaves the request unplaced rather than placing it wrongly.
-	if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
+	// and the one a hand-back command names. A document whose row the read did not return leaves
+	// the request unplaced rather than placing it wrongly.
+	if lead, ok := read.rows[ask.Approval.Documents[0].ArtifactID]; ok {
 		if lead.IssueKey != nil {
 			moved.Issue = *lead.IssueKey
 		} else {
@@ -858,7 +906,7 @@ func (s *server) movedApprovalRequestAdvice(
 			RequestedVersion: document.RequestedVersion,
 			Version:          document.Version,
 		}
-		if artifact, ok := rows[document.ArtifactID]; ok {
+		if artifact, ok := read.rows[document.ArtifactID]; ok {
 			entry.Name = artifact.Name
 			entry.Primary = artifact.Primary
 			entry.Role = documentRoleOf(artifact)
@@ -936,7 +984,7 @@ var typedOpening = regexp.MustCompile(`:{3,}[A-Za-z0-9_-]+\{`)
 func readDocumentBlocks(markdown string) *documentBlocks {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		slog.Warn("dispatch: decision block count failed", "error", err)
+		slog.Warn("dispatch: ask block count failed", "error", err)
 		return nil
 	}
 	return documentBlocksOf(tree)

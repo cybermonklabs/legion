@@ -4,18 +4,29 @@ import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
-import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import {
+  type FakeDocumentRuntime,
+  fakeDocumentRuntime as fakeSpecRuntime,
+} from "../../__tests__/document-runtime";
 import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
-  artifact,
+  artifactRecordHandler,
   createQueryClient,
   documentSurfaceHandlers,
-  renderProofDocument,
+  renderProofDocument as renderSpec,
+  artifact as spec,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
+import type {
+  Artifact,
+  ArtifactText,
+  Ask,
+  IssueDetails,
+  IssueReferenceSummary,
+  Version,
+} from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -31,9 +42,34 @@ beforeAll(async () => {
 answerTextReadsWithTheSeededText();
 
 /**
- * The document surface's own shared reads (`documentSurfaceHandlers`), and the read this file
- * adds to them: a reference link the pointer rests on opens a preview card, which reads the
- * issue the reference names and the documents it holds.
+ * Every case of this file opens the issue's spec where an issue's room holds it: in a fragment of
+ * the issue's one Yjs document named by the server, which the artifact the page is handed and the
+ * artifact read both answer (the issue-tree spec), never `prosemirror`. So each case passes only
+ * where the page binds the fragment the server names. The other ProofDocument suites open a spec
+ * whose answers name none, as a server without issue rooms answers it.
+ */
+const ROOM_FRAGMENT = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
+const artifact = { ...spec, fragment: ROOM_FRAGMENT };
+
+/** The harness's runtime, its text held in the spec's fragment of the room. */
+function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentRuntime {
+  return fakeSpecRuntime({ ...seed, fragment: ROOM_FRAGMENT });
+}
+
+/** The harness's page, opening the spec in its room. */
+function renderProofDocument(options: Parameters<typeof renderSpec>[0] = {}) {
+  return renderSpec({
+    document: artifact,
+    ...options,
+    fake: options.fake ?? fakeDocumentRuntime({ text: "The live document" }),
+  });
+}
+
+/**
+ * The document surface's own shared reads (`documentSurfaceHandlers`), the artifact read answering
+ * this file's spec with the fragment it names, and the read this file adds to them: a reference
+ * link the pointer rests on opens a preview card, which reads the issue the reference names and
+ * the documents it holds.
  */
 beforeEach(() => {
   answerRequests(
@@ -55,21 +91,25 @@ beforeEach(() => {
         title: "Review the spec",
       } satisfies IssueReferenceSummary)
     ),
+    artifactRecordHandler((id) => (id === artifact.id ? artifact : undefined)),
     ...documentSurfaceHandlers()
   );
 });
 
 test("ProofDocument creates the editor on the synced document as the signed-in user", async () => {
-  const { connections, editors, sync, toolbar, view } = renderProofDocument();
+  const { callbacks, connections, editors, sync, toolbar, view } = renderProofDocument();
 
   try {
     expect(toolbar.current?.connection).toBe("connecting");
     await sync();
     expect(connections).toHaveLength(1);
+    // The connection's pending sync compares the fragment the editor binds.
+    expect(callbacks[0]?.fragment).toBe(ROOM_FRAGMENT);
     await waitFor(() => expect(editors).toHaveLength(1));
     expect(editors[0]?.options).toMatchObject({
       access: "edit",
       awareness: connections[0]?.awareness,
+      fragment: ROOM_FRAGMENT,
       heatMapMode: "hidden",
       user: { color: colorForLogin("alice"), name: "alice" },
       ydoc: connections[0]?.doc,
@@ -78,6 +118,158 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
     expect(editors[0]?.root.getAttribute("aria-label")).toBe("Document editor");
     expect(editors[0]?.root.getAttribute("aria-multiline")).toBe("true");
     expect(editors[0]?.root.getAttribute("role")).toBe("textbox");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("ProofDocument binds prosemirror once an artifact read that names no fragment answers", async () => {
+  answerRequests(artifactRecordHandler((id) => (id === spec.id ? spec : undefined)));
+  const { callbacks, editors, sync, view } = renderSpec({ document: spec });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(callbacks[0]?.fragment).toBe("prosemirror");
+    expect(editors[0]?.options.fragment).toBe("prosemirror");
+    expect(editors[0]?.root.textContent).toContain("The live document");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The artifact read, answered with `record` (this file's artifact unless named) once `release` is
+ *  called; `requested` once the page made it. */
+function heldArtifactRead(record: Artifact = artifact): {
+  release(): void;
+  requested(): boolean;
+} {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  let requested = false;
+  answerRequests(
+    http.get("/api/v1/artifacts/:id", async () => {
+      requested = true;
+      await promise;
+      return Response.json(record);
+    })
+  );
+  return { release: resolve, requested: () => requested };
+}
+
+test("ProofDocument connects nothing before the artifact read answers when the artifact it was handed names no fragment", async () => {
+  const read = heldArtifactRead();
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const { view } = renderProofDocument({ document: spec, fake });
+
+  try {
+    await waitFor(() => expect(read.requested()).toBe(true));
+    await act(async () => {});
+    // Nothing the reader types can reach the issue's own fragment, or any other, while the
+    // page does not know which fragment is its document.
+    expect(fake.callbacks).toEqual([]);
+    expect(fake.editors).toEqual([]);
+
+    read.release();
+    await waitFor(() => expect(fake.callbacks).toHaveLength(1));
+    expect(fake.callbacks[0]?.fragment).toBe(ROOM_FRAGMENT);
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    expect(fake.editors[0]?.options.fragment).toBe(ROOM_FRAGMENT);
+    expect(fake.editors[0]?.options.ydoc).toBe(fake.connections[0]?.doc);
+    expect(fake.editors[0]?.root.textContent).toContain("The live document");
+  } finally {
+    read.release();
+    view.unmount();
+  }
+});
+
+for (const [named, bound] of [
+  [ROOM_FRAGMENT, ROOM_FRAGMENT],
+  [null, "prosemirror"],
+] as const) {
+  test(`ProofDocument connects at once on ${bound} when the artifact it was handed names ${named === null ? "null" : "it"}`, async () => {
+    const read = heldArtifactRead();
+    const fake = fakeDocumentRuntime({ text: "The live document" });
+    // The generated Artifact holds `fragment` as a name or nothing; an answer naming `null` is the
+    // shape the page also reads as naming none, which no field of that type spells.
+    const handed = { ...spec, fragment: named } as unknown as Artifact;
+    const { view } = renderProofDocument({ document: handed, fake });
+
+    try {
+      await waitFor(() => expect(fake.callbacks).toHaveLength(1));
+      expect(fake.callbacks[0]?.fragment).toBe(bound);
+      act(() => fake.sync());
+      await waitFor(() => expect(fake.editors).toHaveLength(1));
+      expect(fake.editors[0]?.options.fragment).toBe(bound);
+    } finally {
+      read.release();
+      view.unmount();
+    }
+  });
+}
+
+// The admission reads the text afresh before it connects (`admit`), and that read is the page's
+// own read of the text as well: one load of a document reads `/text` once, whether the page
+// connects at once on the fragment the artifact it was handed names, or waits for its own
+// artifact read to name one.
+test("ProofDocument reads the text once for a document whose artifact read names no fragment", async () => {
+  const read = heldArtifactRead(spec);
+  const getArtifactText = spyOn(api, "getArtifactText");
+  const queryClient = createQueryClient();
+  const { editors, sync, view } = renderSpec({ document: spec, queryClient });
+
+  try {
+    await waitFor(() => expect(read.requested()).toBe(true));
+    await act(async () => {});
+    read.release();
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.fragment).toBe("prosemirror");
+    expect(editors[0]?.root.textContent).toContain("The live document");
+    const liveText = queryClient.getQueryData<ArtifactText>(["artifact", spec.id, "text"]);
+    expect(liveText?.markdown).toBe("The live document");
+    await act(async () => {});
+    expect(getArtifactText.mock.calls).toEqual([[spec.id]]);
+  } finally {
+    read.release();
+    view.unmount();
+  }
+});
+
+test("ProofDocument reads the text once for a document handed with its fragment", async () => {
+  const getArtifactText = spyOn(api, "getArtifactText");
+  const queryClient = createQueryClient();
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.fragment).toBe(ROOM_FRAGMENT);
+    expect(editors[0]?.root.textContent).toContain("The live document");
+    const liveText = queryClient.getQueryData<ArtifactText>(["artifact", artifact.id, "text"]);
+    expect(liveText?.markdown).toBe("The live document");
+    await act(async () => {});
+    expect(getArtifactText.mock.calls).toEqual([[artifact.id]]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("ProofDocument shows a failed artifact read as its load failure and opens no connection", async () => {
+  answerRequests(
+    http.get("/api/v1/artifacts/:id", () =>
+      Response.json({ code: "INTERNAL", error: "the store is down" }, { status: 500 })
+    )
+  );
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const { toolbar, view } = renderProofDocument({ document: spec, fake });
+
+  try {
+    const alert = await within(view.container).findByRole("alert");
+    expect(alert.textContent).toBe("This document could not load: the store is down");
+    await waitFor(() => expect(toolbar.current?.connection).toBe("failed"));
+    expect(fake.callbacks).toEqual([]);
+    expect(fake.editors).toEqual([]);
   } finally {
     view.unmount();
   }
@@ -259,7 +451,7 @@ test("ProofDocument highlights a routed search term again after route and docume
     const routeHighlight = highlights.get("dispatch-search");
 
     editors[0]?.root.replaceChildren(document.createTextNode("The compass reads altitude."));
-    act(() => connections[0]?.doc.getXmlFragment("prosemirror").delete(0, 1));
+    act(() => connections[0]?.doc.getXmlFragment(ROOM_FRAGMENT).delete(0, 1));
     await waitFor(() => {
       const highlight = highlights.get("dispatch-search");
       expect(highlight).not.toBe(routeHighlight);
@@ -1066,7 +1258,7 @@ test("mark placements are published to the margin after document changes", async
       throw new Error("The editor state was not captured.");
     }
     editorState.doc = changedDocument;
-    act(() => connections[0]?.doc.getXmlFragment("prosemirror").delete(0, 1));
+    act(() => connections[0]?.doc.getXmlFragment(ROOM_FRAGMENT).delete(0, 1));
     await waitFor(() => {
       expect(margin.current?.markPlacements.get("c-1")).toBeUndefined();
       expect(margin.current?.markPlacements.get("a-1")).toEqual({ pos: 5, top: 72 });
@@ -1272,7 +1464,7 @@ test("a pane writes no dispatch-search highlight, where the page writes one for 
       // Each of the three ways a page writes the registry: the bind, a routed term, a document
       // change.
       pane.rerender({ highlightTerm: "altitude" });
-      act(() => pane.connections[0]?.doc.getXmlFragment("prosemirror").delete(0, 1));
+      act(() => pane.connections[0]?.doc.getXmlFragment(ROOM_FRAGMENT).delete(0, 1));
       expect(highlights.has("dispatch-search")).toBe(false);
     } finally {
       pane.view.unmount();

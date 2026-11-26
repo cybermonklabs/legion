@@ -271,13 +271,15 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	}
 }
 
-// An answer is written into its ask's block, and the answer itself - its words, and the options it
-// selects, whose labels are the asker's text and render escaped, a `>` as seven bytes - is caller
-// text. Where the document has no room for it the ask still takes the answer whole, and its block
-// is written without it, saying who answered and when, so no answer grows the document past what
-// one upload may hold: one choice of a 1,000,000-character option took a 1 MB document to 8 MB,
-// and an answer of 900 KB to a document with no room for it was refused and recorded nowhere.
-func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *testing.T) {
+// An answer is held on its ask's node, and the answer itself - its
+// words, and the options it selects, whose labels are the asker's text and render escaped, a `>`
+// as seven bytes - is caller text. The text an agent reads, and uploads back, holds no answer: it
+// answers each beside the markdown, in its asks member (docs.TextWithAsks), whole, so an answer to
+// a document with no room for it is taken and kept whole, and the text stays within what one
+// upload may hold. Before: one choice of a 1,000,000-character option took a 1 MB document to
+// 8 MB, and an answer of 900 KB to a document with no room for it was refused and recorded
+// nowhere.
+func TestAnAnswerTheDocumentHasNoRoomForIsKeptWholeOnItsAskAndBesideTheText(t *testing.T) {
 	t.Parallel()
 	t.Run("words", func(t *testing.T) {
 		prose := boundedAnswer()
@@ -299,12 +301,10 @@ func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *te
 		if len(text) > 1<<20 {
 			t.Fatalf("the answers left a %d-byte document, past the 1 MiB one upload may hold", len(text))
 		}
-		if line := askDirective(t, text, "ask-0"); !strings.Contains(line, `answer="`+prose) {
-			t.Fatalf("the block of the answer the document had room for reads %.300s, want the answer", line)
-		}
-		for _, blockID := range []string{"ask-1", "ask-2"} {
-			if line := askDirective(t, text, blockID); !strings.Contains(line, `state="answered" answered_by="alice" answered_at="`) || strings.Contains(line, "answer=") {
-				t.Fatalf("the block of an answer the document had no room for reads %.300s, want who answered and when, without the answer", line)
+		shown := agentText(t, handler, issue.PrimaryArtifactID)
+		for index := range asks {
+			if !strings.Contains(shown, fmt.Sprintf(`#ask-%d state="answered" answered_by="alice" answered_at="`, index)) || strings.Count(shown, ` answer="`+prose+`"`) != asks {
+				t.Fatalf("the asks the text answers read %.600s, want each answered by alice with the whole answer", shown[strings.Index(shown, "\nasks:\n"):])
 			}
 		}
 	})
@@ -341,8 +341,9 @@ func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *te
 		if len(text) > 1<<20 {
 			t.Fatalf("one choice left a %d-byte document, past the 1 MiB one upload may hold", len(text))
 		}
-		if line := askDirective(t, text, "ask-0"); !strings.Contains(line, `state="answered" answered_by="alice" answered_at="`) || strings.Contains(line, "selected=") {
-			t.Fatalf("the block of the choice reads %.300s, want who answered and when, without the selection", line)
+		selected, _ := json.Marshal([]string{label})
+		if shown := agentText(t, handler, issue.PrimaryArtifactID); !strings.Contains(shown, `#ask-0 state="answered" answered_by="alice" answered_at="`) || !strings.Contains(shown, " selected="+string(selected)+"\n") {
+			t.Fatalf("the asks the text answers read %.300s, want ask-0 answered by alice choosing the long option", shown[strings.Index(shown, "\nasks:\n"):])
 		}
 	})
 }
@@ -520,140 +521,6 @@ func refusedTooLarge(t *testing.T, response *httptest.ResponseRecorder) bool {
 		t.Fatalf("decode the refusal %.300s: %v", response.Body.String(), err)
 	}
 	return body.Code == "CAP_EXCEEDED" && strings.HasPrefix(body.Error, "document too large to store: ")
-}
-
-// An answer is stored on its ask as well as in its block, and when a deleted block returns to the
-// document settlement writes the stored answer back into it, so it is caller text in the document
-// as the answer route's is: settlement writes it back where the document has room for it, and where
-// the document would pass what one upload may hold and grow, it restores the block's state and
-// withholds the answer's text, which the ask keeps. A 75-byte insert of an answered ask's block
-// left a 225 KB document, and twenty-four answers of 900 KB, each weighed against a document their
-// deleted blocks had left small, came back in one 1,852-byte edit as a 21.6 MB document. The
-// document here has room for one answer at the bound and not for two (roomForOneAnswer).
-func TestSettlementCannotGrowADocumentPastWhatOneUploadMayHoldByRestoringAnswers(t *testing.T) {
-	t.Parallel()
-	handler, _ := blockAskHandler(t)
-	prose := boundedAnswer()
-	block := func(index int) string {
-		return fmt.Sprintf(":::ask{#ask-%d urgency=\"med\" multiple=\"false\"}\nQuestion %d?\n:::\n", index, index)
-	}
-	issue := createInteractionIssue(t, handler, "TEST", "Restored answers", roomForOneAnswer()+"\n\n"+block(0)+"\n"+block(1))
-	ids := make([]string, 2)
-	for index := range ids {
-		blockID := fmt.Sprintf("ask-%d", index)
-		awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, blockID, fmt.Sprintf("Question %d?", index))
-		ids[index] = blockAskID(t, handler, issue.Key, blockID)
-	}
-	settled := 0
-	edit := func(op map[string]string) {
-		t.Helper()
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{"ops": []map[string]string{op}}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("edit %v: status=%d body=%.300s", op, response.Code, response.Body.String())
-		}
-		settled++
-		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, fmt.Sprintf("settled-%d", settled))
-	}
-	answer := func(index int) {
-		t.Helper()
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ids[index]+"/answer", map[string]any{"text": prose}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("answer ask-%d: status=%d body=%.300s", index, response.Code, response.Body.String())
-		}
-	}
-	// directive is ask-0's directive line as the document holds it.
-	directive := func() (string, int) {
-		t.Helper()
-		text := documentMarkdown(t, handler, issue.PrimaryArtifactID)
-		for line := range strings.SplitSeq(text, "\n") {
-			if strings.HasPrefix(line, ":::ask{#ask-0 ") {
-				return line, len(text)
-			}
-		}
-		t.Fatalf("the document holds no ask-0 block:\n%.500s", text)
-		return "", 0
-	}
-
-	answer(0)
-	edit(map[string]string{"op": "delete", "block": "ask-0"})
-	edit(map[string]string{"op": "insert", "after": "end", "markdown": block(0)})
-	if line, size := directive(); !strings.Contains(line, `state="answered"`) || !strings.Contains(line, `answer="`+prose) {
-		t.Fatalf("the returned block of an answer the %d-byte document has room for reads %.300s, want its state and its answer", size, line)
-	}
-
-	edit(map[string]string{"op": "delete", "block": "ask-0"})
-	answer(1)
-	edit(map[string]string{"op": "insert", "after": "end", "markdown": block(0)})
-	line, size := directive()
-	if size > 1<<20 {
-		t.Fatalf("returning an answered ask's 75-byte block left a %d-byte document, past the 1 MiB one upload may hold", size)
-	}
-	if !strings.Contains(line, `state="answered"`) || !strings.Contains(line, `answered_by="alice"`) || strings.Contains(line, "answer=") || strings.Contains(line, "selected=") {
-		t.Fatalf("the returned block of an answer the document has no room for reads %.300s, want its state and who answered, without the answer's text", line)
-	}
-	if ask := readBlockAsk(t, handler, ids[0]); ask.State != "answered" || ask.Answer == nil || ask.Answer.Text == nil || *ask.Answer.Text != prose {
-		t.Fatalf("the ask whose answer settlement withheld from its block = %#v, want it answered with its text", ask)
-	}
-	for _, read := range []string{"/text", "/blocks"} {
-		if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+read, nil, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("%s after the withheld answer: status=%d body=%.300s", read, response.Code, response.Body.String())
-		}
-	}
-
-	edit(map[string]string{"op": "delete", "block": "ask-1"})
-	if line, size := directive(); !strings.Contains(line, `answer="`+prose) {
-		t.Fatalf("once the %d-byte document has room again, ask-0's block reads %.300s, want its answer back", size, line)
-	}
-}
-
-// Settlement weighs each answer it writes back into a returning block on its own, in document
-// order: two answers at the ask bound returned in one edit to a document with room for one leave
-// the first block with its answer and the second saying who answered and when without it, and the
-// second's answer comes back once the document has room for it. Withheld together, neither came
-// back until both fit.
-func TestSettlementGivesBackEachReturnedAnswerTheDocumentHasRoomFor(t *testing.T) {
-	t.Parallel()
-	handler, _ := blockAskHandler(t)
-	prose := roomForOneAnswer()
-	answerText := boundedAnswer()
-	block := func(index int) string {
-		return fmt.Sprintf(":::ask{#ask-%d urgency=\"med\" multiple=\"false\"}\nQuestion %d?\n:::\n", index, index)
-	}
-	issue := createInteractionIssue(t, handler, "TEST", "Returned answers", prose+"\n\n"+block(0)+"\n"+block(1))
-	ids := make([]string, 2)
-	for index := range ids {
-		blockID := fmt.Sprintf("ask-%d", index)
-		awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, blockID, fmt.Sprintf("Question %d?", index))
-		ids[index] = blockAskID(t, handler, issue.Key, blockID)
-	}
-	settled := 0
-	edit := func(op map[string]string) {
-		t.Helper()
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{"ops": []map[string]string{op}}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("edit %v: status=%d body=%.300s", op, response.Code, response.Body.String())
-		}
-		settled++
-		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, fmt.Sprintf("settled-%d", settled))
-	}
-	for index := range ids {
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ids[index]+"/answer", map[string]any{"text": answerText}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("answer ask-%d: status=%d body=%.300s", index, response.Code, response.Body.String())
-		}
-		edit(map[string]string{"op": "delete", "block": fmt.Sprintf("ask-%d", index)})
-	}
-	edit(map[string]string{"op": "insert", "after": "end", "markdown": block(0) + "\n" + block(1)})
-	text := documentMarkdown(t, handler, issue.PrimaryArtifactID)
-	if len(text) > 1<<20 {
-		t.Fatalf("returning both blocks left a %d-byte document, past the 1 MiB one upload may hold", len(text))
-	}
-	if line := askDirective(t, text, "ask-0"); !strings.Contains(line, `answer="`+answerText) {
-		t.Fatalf("the first returned block, whose answer the document has room for, reads %.300s, want its answer", line)
-	}
-	if line := askDirective(t, text, "ask-1"); !strings.Contains(line, `state="answered" answered_by="alice" answered_at="`) || strings.Contains(line, "answer=") {
-		t.Fatalf("the second returned block, whose answer the document has no room for beside the first, reads %.300s, want who answered and when, without the answer", line)
-	}
-	edit(map[string]string{"op": "delete", "block": "ask-0"})
-	if line := askDirective(t, documentMarkdown(t, handler, issue.PrimaryArtifactID), "ask-1"); !strings.Contains(line, `answer="`+answerText) {
-		t.Fatalf("once the document has room, the second block reads %.300s, want its answer back", line)
-	}
 }
 
 // An anchor mark carries the id of whoever anchored it, which no rendering carries and every load of

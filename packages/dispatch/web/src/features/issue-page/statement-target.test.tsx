@@ -74,7 +74,6 @@ function PageBody({ held, root }: { held: { writer?: OutlineWriter }; root: Tree
       artifacts={new Map()}
       context={new Set()}
       emptyLine="Nothing here."
-      filtering={false}
       focusReveal={false}
       holdsEscape={false}
       isClosed={false}
@@ -101,7 +100,7 @@ function renderPage(
   })
 ) {
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(["asks", KEY], asks);
+  client.setQueryData(["asks", KEY, "thread"], asks);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(["agents"], []);
   const held: { writer?: OutlineWriter } = {};

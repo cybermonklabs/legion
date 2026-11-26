@@ -34,7 +34,7 @@ func TestBlocksListATablesRowsAndCellsWhereTheBlockRoutePlacesThem(t *testing.T)
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Table rows",
 		"Intro.\n\n| # | Line | Due |\n| --- | --- | --- |\n| 1 | Backfill | Oct 1 |\n| 2 | Red-team loop | Today |\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, spannedCellsTable())
@@ -85,7 +85,7 @@ func TestBlocksListATablesRowsAndCellsWhereTheBlockRoutePlacesThem(t *testing.T)
 func TestBlocksOfAHeldDocumentShareOneSpanBudget(t *testing.T) {
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Spanned tables", "Intro.\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, spannedCellsTable())
@@ -163,7 +163,7 @@ func TestDeleteColumnWithAListedColumnRemovesThatCell(t *testing.T) {
 	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Listed column", "Intro.\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, spannedCellsTable())

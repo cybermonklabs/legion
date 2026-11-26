@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -40,16 +41,19 @@ func getDashboardBuildsAs(t *testing.T, handler http.Handler, credential string)
 	return response.Code, body, string(raw.Live)
 }
 
-// registerProcess writes a registry row for a process serving build whose last heartbeat was
-// ageSeconds ago by the database's clock. The process is of this build's binary, so the row names
-// its owner lock protocol, as processes.Register writes it.
+// registerProcess writes a registry row for a process of this build's binary serving the dashboard
+// build build, whose last heartbeat was ageSeconds ago by the database's clock. It carries this
+// build's schema numbers and owner lock protocol, as processes.Register writes them: a row without
+// the schema numbers reads as a build that predates the fleet columns, which the document service
+// reads as another build (docs' anotherBuildServes), and one without the owner lock protocol as a
+// build before it (store.OwnerLockProtocol).
 func registerProcess(t *testing.T, database *store.Store, build string, ageSeconds float64) string {
 	t.Helper()
 	var instance string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, dashboard_build, signing_keys, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2), $3)
-		returning instance::text`, build, ageSeconds, store.OwnerLockProtocol).Scan(&instance); err != nil {
+		insert into server_processes (instance, dashboard_build, signing_keys, heartbeat_at, schema_version, schema_creatable, owner_lock_protocol)
+		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2), $3, $4, $5)
+		returning instance::text`, build, ageSeconds, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("register a process on build %q: %v", build, err)
 	}
 	return instance

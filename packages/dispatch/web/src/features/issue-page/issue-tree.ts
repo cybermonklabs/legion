@@ -1,3 +1,4 @@
+import type { TreeFilter } from "../../api/queries";
 import type {
   Actor,
   ArtifactBlock,
@@ -22,72 +23,47 @@ import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { chipWords } from "./node-row-chip";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, titleReading, treeContext, treeDrafts } from "./tree-drafts";
+import { storedReading } from "./stored-reading";
+import { addDecisions, type Draft, titleReading, treeContext } from "./tree-drafts";
+import { askNodeIds, nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
+import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else.
  *
  * `buildIssueTree` is pure: it takes one value holding the page's reads and answers the issue's
  * root node. It sends no request, reads no document's text and holds no React, so the fold
- * (`tree-fold.ts`), the rows (`IssueTree.tsx`) and the unit tests all read the same model. The
- * placement and the names are that one function with that one input, so the day the chain read
- * lands it is the only thing that changes.
+ * (`tree-fold.ts`), the rows (`IssueTree.tsx`) and the unit tests all read the same model.
  *
- * ## The spine
+ * ## The tree read
  *
- * The `from` edge is the single placement authority: a decision sits under the question it
- * answers, a requirement under the node its `from` names, a check and a plan task under each
- * requirement their `serves` names (edited under the first, transcluded under the rest), and a
- * result under its check. A decision's `shaped` edge - today its links, below - is that
- * decision's chip and places nothing; where a requirement's `from` names one node and a decision
- * that is not that node says it shaped the requirement, the two disagree, the node is placed by
- * `from` and the disagreement is drawn as a gap. A node whose spine parent is absent sits under
- * the issue, as a node like any other and never as an error: no gap says so, because under
- * today's reads every node of its kind lacks one, and a lack every sibling shares tells none of
- * them apart (R10). Every edge that is not the spine is a chip naming its target, and a node is
- * drawn again only under another parent its own edge names.
+ * The outline draws the issue's tree read (`GET /api/v1/issues/{key}/tree`): each node under
+ * the `parent` the read answers, in the read's order, its words from its `text_tree`
+ * (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`). The page places and orders no node itself and
+ * gives none a second parent, but for the one transcluded
+ * placement: the read gives every node one parent, and a check and a plan task stand again under
+ * each other requirement their `serves` tuples name (R4). A node whose parent is a kind the page
+ * does not draw stands under its nearest drawn ancestor, and under the issue where it has none,
+ * as a node like any other and never as an error. Every tuple that places nothing is a chip
+ * naming its target.
  *
  * The tree is the issue's conversation (R1, R3): a document, an artifact and a handoff are nodes
- * of the issue and no node of this tree, and a typed block of a document sits under the issue
- * unless the model gives it a parent of its own (R4). The issue's children are one group of rows,
- * each child a node, under the issue (R12).
- *
- * ## What today's reads hold, and what they do not
- *
- * Today's input forces three departures from the rules above, each read at the file and line
- * named, and each one `tree-drafts.ts` says again where it acts:
- *
- * - **No `from` on a requirement.** The `requirement` block carries no attributes at all
- *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05), so
- *   every requirement of the issue's spec sits under the issue. A `requirement` block of any
- *   other document sits there too: the model holds no `from` for it and no coverage row either,
- *   so it is a block and nothing more, and no statement (`isStatement`); so is a `check` block of
- *   any document but the Verification document, which is no check (`isCheck`).
- * - **No `shaped` on a decision.** The decisions read answers `kind` and a boolean `unsure`
- *   (`packages/contracts/src/dispatch-api.ts:2519-2534`) and no `shaped` edge, so today a
- *   decision's links to spec blocks stand for it: they are its chips, and they are what the
- *   `shaped_disagreement` gap reads, drawn on a requirement whose `from` names a node other than
- *   a decision that links to it. No requirement carries a `from` (above), so no disagreement is
- *   found in today's data. What places a decision is the asks its blocks mention
- *   (`Decision.asks`), which is the question it answers.
- * - **No identities behind a requirement's coverage.** The coverage read counts the serving
- *   checks and plan tasks without naming them
- *   (`packages/contracts/src/dispatch-api.ts:805-816`), so a requirement draws those two counts
- *   and coverage's own gaps; what serves it is placed from each check's and each plan task's own
- *   `serves` pointer instead, which is the same edge read from the other end.
+ * of the issue and no node of this tree, and a typed block of a document stands where the read
+ * places it, its `document` member naming the document it is written in. The issue's children
+ * are rows of it, each a node, where the read places them (R12).
  *
  * ## The reads
  *
- * The issue read, the coverage read, the decisions read, the results read, the conversation,
- * the blocks of the spec and of the plan, Verification and decisions documents, and the one
- * batched reference read. A document's blocks answer block ids, types and attributes and never
- * text (`ArtifactBlock`), which is how the tree holds a `serves` edge without reading a document
- * the reader has not opened; a block's own words come from the batched reference read, whose
- * `name` for a block is that block's stored excerpt and whose `text_tree` is the server's
- * reading of the block's whole text. It is one read per document, never one per node.
+ * The tree read (`IssueTreeReads.tree`), whose answer the page keeps whole, and the reads that
+ * tell what the answer does not, each matched to its node by its address: the issue read, the
+ * coverage read, the decisions read, the results read, the asks, and the one batched reference
+ * read, which names what a chip points at outside the answer. The decisions read also draws each
+ * agent's decision no node of the answer holds - a section of `decisions.md` a server of the
+ * release before answers - as the outline drew it from that read (`tree-drafts.ts`'s
+ * `addDecisions`). No document's blocks are read.
  */
 
-/** One edge of a node that is not the spine, drawn beside the node as its target's name. */
+/** One tie of a node that places nothing, drawn beside the node as its target's name. */
 export interface NodeChip {
   /** Whether the batched reference read could not tell which of several targets a short
    *  reference names: two or more carry the id it writes short, and the read answers it gone and
@@ -263,6 +239,11 @@ export interface TreeNode {
   readonly chips: readonly NodeChip[];
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
+  /** The coverage read's own lines a requirement draws in its body where its gaps are, each in the
+   *  page's words (`coverageNotes`): while a document of the issue is still being indexed, that
+   *  document's line, which the server writes in place of every missing check, so the requirement
+   *  is drawn lacking none and says why. Absent where the read holds none. */
+  readonly coverageNotes?: readonly string[];
   /** When its author deleted this comment or message, as its read stores the time
    *  (`deleted_at`); absent on every other node. A deleted post keeps its place in the tree and
    *  holds no part of its body: its `text` is the deleted line (`tree-drafts.ts`'s
@@ -294,11 +275,20 @@ export interface TreeNode {
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
+  /** Whether the read the tree is drawn from holds nodes no page read yet holds: its answer names
+   *  a next page (`cursor`, R15), so a count the page draws over the tree counts the nodes loaded
+   *  and carries "+" (`presets.ts`' `filterSignals`, a folded row's count, a Contents entry's
+   *  marks). On the issue's own node alone, as `views` is, and absent once no page is left. */
+  readonly moreToRead?: true;
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
+  /** The id the tree read gives the node this one was drawn from (`tree-read/tree-nodes.ts`), on
+   *  each of its placements, so a later part finds a node by the read's own id; absent on a node
+   *  drawn from another read. */
+  readonly readId?: string;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
   /** The parent a filter draws as no row, where it draws this node as one (R2): every parent
@@ -323,41 +313,32 @@ export interface TreeNode {
   /** Whether this requirement is a statement of the issue's spec (`isStatement`). Absent on
    *  every other node, a `requirement` block of any other document among them. */
   readonly statement?: true;
-  /** The node's words as the read that carried them holds them, which is not the same for every
-   *  kind: the issue's title, its key being its id (`assemble`); a child issue's title; an ask's
-   *  question, a comment's and a message's body, and a decision's section of `decisions.md`
-   *  (`Decision.text`), each as stored; a deleted comment's and message's deleted line in place
-   *  of its body (`deletedAt`);
-   *  a result's `observed`, as recorded; a statement's the coverage read's plain words of its
-   *  block, and a check's the results read's, each block's text runs joined by single spaces with
-   *  the words of every link and every `dispatch://` reference left out (`blockWords`,
-   *  `packages/envoy/internal/dispatch/api/results.go`); and every other block's - a statement's
-   *  and a check's too until their read answers - the batched reference read's stored excerpt of
-   *  it (`ReferenceTarget.name`), its source cut at 480 runes with a typed block's directive left
-   *  out (`TreeContext.excerptOf`), and `""` until that read answers for it or where its target is
-   *  gone. `""` where the model holds none. */
+  /** The node's words as the read that carried them holds them: the tree read's `text` for every
+   *  node it answers, and a decision's own words, its `decision` block's content (its entry's
+   *  `text` with the lines that open and close the block left out), for a decision of the
+   *  decisions read, as stored; a deleted comment's and message's deleted line in place of its
+   *  body (`deletedAt`); the issue's title for the issue itself, its key being its id
+   *  (`assemble`). `""` where the model holds none. */
   readonly text: string;
-  /** The server's reading of the node's words, where the read that carried them sends one. For
-   *  an ask, a comment, a message and a decision it is the reading of `text` itself: the question
-   *  (`question_tree`), the body (`body_tree`), the section (`Decision.text_tree`). For a block it
-   *  is the reading of the block's whole stored text and never of `text`, which for a block is an
-   *  excerpt or plain words with its references left out: a statement's on the coverage read and
-   *  a check's on the results read (`text_tree`), else the one its block carried, and every other
-   *  block's on the batched reference read (`ReferenceTarget.text_tree`). The row draws the node's
-   *  words from it, so stored markdown is drawn as what it says and the browser parses none of it
-   *  (R20). A result's is the reading of its observed text (`observed_tree`), which a server of
-   *  the build before sends none of; a result whose read sent none draws its stored `text` read
-   *  as markdown. A deleted comment or message carries none (`deletedAt`): its `text` is the
-   *  deleted line, and no reading of its body. Neither the issue nor a child issue carries one:
-   *  its `text` names it by its title, which is no markdown, so such a node draws `text` as
-   *  written, and its one line is projected from that text read as one text run
-   *  (`lineReading`). */
+  /** The server's reading of `text`, where the read that carried the text sends one: the tree
+   *  read's `text_tree` for every node it answers, and a decision's own content (its entry's
+   *  `text_tree` with its block's content at the top level) for a decision of the decisions read.
+   *  The row draws the node's words from it, so stored markdown is drawn as what it says and the
+   *  browser parses none of it (R20). A node whose read sends none draws `text` as stored. A
+   *  deleted comment or message carries none (`deletedAt`): its `text` is the deleted line, and
+   *  no reading of its body. Neither the issue nor a child issue carries one: its `text`
+   *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
+   *  one line is projected from that text read as one text run (`lineReading`). */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
   readonly type: NodeType;
   /** Whether the model marks this decision unsure, which its row says in one word (R9). */
   readonly unsure?: true;
+  /** The view reads the page holds (`?view=`), with the decisions read, on the issue's own node
+   *  alone: what each filter draws once its view has answered (`presets.ts`). Absent on every
+   *  other node, and on the issue's until a view is held. */
+  readonly views?: TreeViews;
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
    *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
    *  whose turn is the reader's own - it waits on a person, and that person
@@ -367,15 +348,29 @@ export interface TreeNode {
   readonly waiting: boolean;
 }
 
+/** The view answers the page holds, by filter, and the decisions read the Decisions filter
+ *  draws (`TreeNode.views`). */
+export interface TreeViews {
+  readonly decisions?: IssueDecisions;
+  readonly plan?: TreeAnswer;
+  readonly spec?: TreeAnswer;
+  /** The tree each view answer held builds alone (`buildIssueTree` over the same reads, with that
+   *  answer as the tree read's), by filter: its filter draws a node of the view as this tree's
+   *  node where the outline's tree holds no node of that id - where the outline read is not sent,
+   *  as on Spec loaded cold below 1024 px (R13), or holds no such node (R4). */
+  readonly trees?: Readonly<Partial<Record<TreeFilter, TreeNode>>>;
+  readonly verification?: TreeAnswer;
+}
+
 /**
  * Whether `node` is a statement: a `requirement` block of the issue's own spec, the document the
  * issue read names by `primary_artifact_id`, drawn before the coverage read answers as after it,
- * or a requirement that read holds. A `requirement` block of the plan, Verification or
- * decisions document keeps its type and is a block and nothing more: no row of the Spec filter
- * and none of its count, no context row of the Verification filter and none of its statements,
- * and nothing placed under it (`tree-drafts.ts`'s `servePlacements`, which reads the same field
- * on its drafts). The review list is no reader of this rule: it reads a requirement the
- * coverage read holds (`inReviewList`'s callers).
+ * or a requirement that read holds. A `requirement` block of the plan, of the Verification
+ * document or of any other document keeps its type and is a block and nothing more: no row of
+ * the Spec filter and none of its count, no context row of the Verification filter and none of
+ * its statements, and nothing placed under it (`tree-read/tree-nodes.ts`' `draftServing`, which
+ * reads the same rule on the tree read's nodes). The review list is no reader of this rule: it
+ * reads a requirement the coverage read holds (`inReviewList`'s callers).
  */
 export function isStatement(node: Pick<TreeNode, "statement">): boolean {
   return node.statement === true;
@@ -384,16 +379,17 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
 /**
  * Whether `node` is a check: a `check` block of the issue's Verification document, the one the
  * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
- * draws a state - `no-result` until the results read answers (`tree-drafts.ts`'s
- * `addDocumentBlocks`) - and a `check` block of any other document draws none and is a block and
- * nothing more: no row and no count of the Verification filter, no check of a statement, and no
- * open check of the fold's frontier (`tree-fold.ts`).
+ * draws a state - `no-result` until the results read answers (`tree-read/tree-nodes.ts`'
+ * `draftServing`) - and a `check` block of any other document draws none and is a block and
+ * nothing more: no row and no count of the Verification filter, and no check of a statement.
  */
 export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;
 }
 
-/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them. */
+/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them: what the
+ *  Decisions filter reads its Changes' sections from (`decision-review.ts`), while decisions are
+ *  sections of `decisions.md`. */
 export interface DocumentBlocks {
   readonly artifactId: string;
   readonly blocks: readonly ArtifactBlock[];
@@ -411,18 +407,29 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
+  /** The decisions read. The tree reads its `entries` and nothing else of it: the review state of
+   *  each decision node of the tree read (`tree-read/tree-nodes.ts`' `draftDecision`), and each
+   *  agent's decision no node holds, which it draws itself (`tree-drafts.ts`'s `addDecisions`,
+   *  `isDecisionEntry`), with who decided it (`decided_by`), which is the decision's author, and
+   *  the questions it settles (`from_ask`). */
   readonly decisions?: IssueDecisions;
-  /** The issue's comments, each a node of the tree (`addTurns`), with each body's reading. */
+  /** The issue's comments with each body's reading: what a Change of a decision the tree read
+   *  holds no node for is found among (`addDecisions`). */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
-  /** One entry per document of the issue whose blocks the page has read. */
-  readonly documents?: readonly DocumentBlocks[];
   readonly issue: IssueDetails;
-  /** The issue's messages with their replies, each a node of the tree (`addTurns`). */
+  /** The issue's messages with their replies: what a message's author did to one - deleted it or
+   *  last replaced its body - which the tree read answers no mark of
+   *  (`tree-read/tree-nodes.ts`'s `postMarksOf`). The tree read answers each message as a node. */
   readonly messages?: readonly MessageRead[];
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
   readonly targets?: readonly ReferenceTarget[];
+  /** The tree read's answer, every page merged (`tree-read/tree-read.ts`), kept whole: every node
+   *  and tuple, those of a kind the page draws no row for among them, which later parts read
+   *  from here. Undefined until the last page answers, and while it is, the tree is the issue
+   *  alone. */
+  readonly tree?: TreeAnswer;
   /** The reader's login, which an open question waits on where its turn is theirs
    *  (`TreeNode.waiting`); undefined until the login resolves, and while it is, nothing waits. */
   readonly viewer?: string;
@@ -440,23 +447,124 @@ export const FIRST_LINE_LIMIT = 100;
  */
 export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
+/** A closing quote or bracket, which belongs to the sentence whose end mark it follows. */
+const CLOSING_MARK = /[)\]"'\u201d\u2019]/u;
+
+/** A numbered label at the start of a word: digits and one full stop, before a space or where
+ *  the text stops. */
+const NUMBERED_LABEL = /^\d+\.(?=\s|$)/u;
+
 /**
- * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
- * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
- * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
- * part of the line and no sentence end, so a statement's line runs on to the first sentence end
- * after its label. `lead` is the page's own word the line opens with, before the node's own
- * words `text` and none of them - the issue's key before its title (`lineReading`) - which is
- * written before them here and counts towards the limit, and the label is read at the start of
- * `text`: `CORE-1 1. Migrate the table` keeps its `1.`. A line held to the limit that holds no
- * space past its label - one unbroken token, a URL or an identifier - is cut at the limit
- * itself, because there is no word boundary to cut at and the limit is the row's whole budget,
- * and one unit short of it where the limit falls inside a surrogate pair, as `textHead` cuts.
- * `cut` says whether the text carries on past the line, and `sentence` whether the line ends at
- * a sentence end, the first one after any label: the two are what the row draws its ellipsis by
- * (`drawnLine`). A line the limit cut, at a word or at the limit itself, ends at none, whatever
- * its last character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as
- * `x.yyyy` cut after its dot does.
+ * The abbreviations a number may follow inside a sentence, each written in lower case and read
+ * in any case (`firstSentenceLength`): a full stop after one of these words, before a word that
+ * opens with a digit, ends no sentence, as in `see p. 4`, `See Fig. 3` or `Keep v. 1.2`. A text
+ * that uses another abbreviation before a number becomes a new row of the table that pins the
+ * rule (`SENTENCE_TABLE` in `sentence-table.ts`), not a new rule.
+ */
+const NUMBER_ABBREVIATIONS: ReadonlySet<string> = new Set([
+  "art",
+  "cf",
+  "ch",
+  "eq",
+  "eqs",
+  "fig",
+  "figs",
+  "no",
+  "nos",
+  "p",
+  "para",
+  "pp",
+  "sec",
+  "v",
+  "vol",
+  "vs",
+]);
+
+/** A letter or a decimal digit: what a whole word is made of, so that the word before a full
+ *  stop starts where the text does or after a character that is neither. */
+const WORD_CHARACTER = /[\p{L}\p{Nd}]/u;
+
+/**
+ * How many characters of `text` its first sentence takes, its leading label included, or
+ * undefined where `text` holds no sentence end. Every place that splits words into sentences
+ * reads it: the one line drawn for a node (`firstLineOf`), the issue's three sentences
+ * (`IssueThreeThings.tsx`) and a person's quoted first sentence (`spec-decided-by.ts`'s
+ * `firstSentenceOf`), so the same words are split one way wherever the page draws them.
+ *
+ * A leading label (`LEADING_LABEL`) opens the first sentence and ends none, so the scan starts
+ * after it. A sentence end is a full stop, a question mark or an exclamation mark, with whatever
+ * closing quote or bracket the writer put after it, which belongs to the sentence it ends. A
+ * mark ends the sentence where the text stops after it, trailing whitespace aside, and ends none
+ * where no whitespace follows it, inside a token such as `x.yyyy`, `1.2` or `example.com`. A
+ * question or exclamation mark before a word ends the sentence whatever the word is, in lower
+ * case too. A full stop before a word in lower case ends an abbreviation (`e.g. in`), not the
+ * sentence. A full stop before a word that opens with a digit ends the sentence, unless the word
+ * before the full stop is one of the abbreviations a number follows (`NUMBER_ABBREVIATIONS`),
+ * read in any case and standing as a whole word, as in `(see p. 4)`: there the number is part
+ * of the sentence and opens no label, and the scan goes on. A full stop before any other word,
+ * one in upper case or one that opens with a symbol, ends the sentence. A colon ends no
+ * sentence, and a numbered label (`NUMBERED_LABEL`) right after a colon and whitespace is a
+ * label: its full stop ends nothing, and the scan goes on after it, so `Steps: 1. Open it. 2.`
+ * ends at `it.`.
+ *
+ * One table pins this rule: each row of `SENTENCE_TABLE` (`sentence-table.ts`) is one text and
+ * the first sentence the page must find in it, and every reader of the rule is tested over every
+ * row. The rule has two accepted misses. `The answer is no. 3 rows changed.` runs as one
+ * sentence, since `no.` before a number is far more often "number" than a sentence's last word.
+ * `Ask Dr. Smith. Then more.` ends at `Ask Dr.`, since the list holds abbreviations before a
+ * number only, and a full stop before a word in upper case ends the sentence whatever word
+ * stands before it.
+ */
+export function firstSentenceLength(text: string): number | undefined {
+  const label = LEADING_LABEL.exec(text)?.[0] ?? "";
+  for (let at = label.length; at < text.length; at += 1) {
+    const mark = text.charAt(at);
+    if (mark === ":") {
+      let word = at + 1;
+      while (/\s/u.test(text.charAt(word))) word += 1;
+      const numbered = word === at + 1 ? null : NUMBERED_LABEL.exec(text.slice(word));
+      if (numbered !== null) at = word + numbered[0].length - 1;
+      continue;
+    }
+    if (mark !== "." && mark !== "?" && mark !== "!") continue;
+    let end = at + 1;
+    while (CLOSING_MARK.test(text.charAt(end))) end += 1;
+    let word = end;
+    while (/\s/u.test(text.charAt(word))) word += 1;
+    if (word === text.length) return end;
+    if (word === end) continue;
+    if (mark !== ".") return end;
+    const next = text.slice(word);
+    if (/^\p{Ll}/u.test(next)) continue;
+    if (/^\d/u.test(next) && abbreviationEndsAt(text, at)) continue;
+    return end;
+  }
+  return undefined;
+}
+
+/** Whether the whole word that ends at `at` in `text`, before the full stop there, is one of the
+ *  abbreviations a number follows (`NUMBER_ABBREVIATIONS`), in any case. */
+function abbreviationEndsAt(text: string, at: number): boolean {
+  let start = at;
+  while (start > 0 && WORD_CHARACTER.test(text.charAt(start - 1))) start -= 1;
+  return NUMBER_ABBREVIATIONS.has(text.slice(start, at).toLowerCase());
+}
+
+/**
+ * The node's own text, its white space collapsed, to the end of its first sentence, which ends
+ * where `firstSentenceLength` says, or to `FIRST_LINE_LIMIT` characters, whichever comes first,
+ * cut at a word wherever the limit falls near one. `lead` is the page's own word the line opens
+ * with, before the node's own words `text` and none of them - the issue's key before its title
+ * (`lineReading`) - which is written before them here and counts towards the limit, and the
+ * label and the first sentence are read from the start of `text`: `CORE-1 1. Migrate the table`
+ * keeps its `1.`. A line held to the limit that holds no space past its leading label
+ * (`LEADING_LABEL`) - one unbroken token, a URL or an identifier - is cut at the limit itself,
+ * because there is no word boundary to cut at and the limit is the row's whole budget, and one
+ * unit short of it where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says
+ * whether the text carries on past the line, and `sentence` whether the line ends at its first
+ * sentence's end: the two are what the row draws its ellipsis by (`drawnLine`). A line the limit
+ * cut, at a word or at the limit itself, ends at none, whatever its last character: a token cut
+ * at the limit may end on a `.`, `!` or `?` of its own, as `x.yyyy` cut after its dot does.
  */
 export function firstLineOf(
   text: string,
@@ -470,8 +578,9 @@ export function firstLineOf(
   const opening = lead === "" ? "" : `${lead} `;
   const whole = `${opening}${own}`.trimEnd();
   const head = `${opening}${LEADING_LABEL.exec(own)?.[0] ?? ""}`;
-  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(head.length))?.[0];
-  const first = rest === undefined ? undefined : `${head}${rest}`;
+  const sentenceLength = firstSentenceLength(own);
+  const first =
+    sentenceLength === undefined ? undefined : whole.slice(0, opening.length + sentenceLength);
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
     return { cut: first.length < whole.length, line: first, sentence: true };
   }
@@ -552,8 +661,9 @@ export type LineReading =
  *   word of it, so `## # 1 rule` reads `# 1 rule`. A block that holds no words - a horizontal
  *   rule, a paragraph that is only an image - is passed over, or the line would be empty while
  *   the node has words, and a reading none of whose blocks holds a word reads as none (`none`).
- *   A decision's reading opens with its own `##` heading, and a line cut from the whole reading
- *   ran the heading into its body: "Keep it Keep the model pure.".
+ *   A decision's content opens with its own heading where it has one, and a line cut from the
+ *   whole reading ran the heading into its body: "Keep it Keep the model pure.". A decision
+ *   passes as its own content (`decision-review.ts`'s `decisionContent`).
  * - **The issue and a child issue** by its title, which is no markdown and carries no reading:
  *   read as one text run (`titleReading`), so nothing in it is parsed and `1. Migrate the table`
  *   keeps its label, ``Add `x` flag`` its backticks and `Fix <script> handling` its tag. The
@@ -590,10 +700,98 @@ export function chipName(route: DispatchReferenceRoute | undefined, name: string
   return chipWords(block ? drawnLine(firstLineOf(name)) : name);
 }
 
-/** The issue's whole tree, from the reads it was given. */
+/**
+ * The words a node's one line is cut from by a place that names each reference in it itself
+ * (`one-line.ts`'s `referenceStandIns`), with each bare address as its author wrote it, since
+ * that place needs the address to name: the words its reading opens with (`firstWords`), and
+ * where the node has no reading the same of its stored text's reading (`storedReading`), in the
+ * shape of the server's reading. A heading's marker is no word of it, so `## # 1 rule` reads
+ * `# 1 rule`, and a stored text's marks are no word of it either: a plan task stored as
+ * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`. A title
+ * node's line is its title read as one text run (`titleReading`), so nothing in it is parsed.
+ * White space collapses to single spaces. A `TreeNode` passes as it is, and a decision as its
+ * own content (`decision-review.ts`'s `decisionContent`). The node holds its stored text's
+ * reading, so it is remembered while the node lives.
+ */
+export function lineWordsRaw(node: {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+  readonly type?: NodeType;
+}): string {
+  if (node.type === "issue" || node.type === "child_issue") {
+    return firstBlockWordsRaw(titleReading(node.text)).replace(/\s+/gu, " ").trim();
+  }
+  if (node.tree !== undefined) return firstBlockWordsRaw(node.tree);
+  return firstBlockWordsRaw(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
+}
+
+/** The words a reading opens with (`firstWords`), each bare address as written (`wordsOf`): a
+ *  caller that names each reference itself reads these, since a name in an address's place
+ *  leaves it no address to name: a node's line (`lineWordsRaw`) and a person's quote
+ *  (`spec-decided-by.ts`). */
+export function firstBlockWordsRaw(reading: DisplayTree): string {
+  return firstWords(reading, wordsOf);
+}
+
+/** The blocks `firstWords` walks into rather than reads whole. */
+const CONTAINER_BLOCKS: ReadonlySet<string> = new Set([
+  "blockquote",
+  "bullet_list",
+  "list_item",
+  "ordered_list",
+]);
+
+/**
+ * The words a reading opens with, by the page's one first-block rule: the words of the reading's
+ * first block that holds any, alone, each block read whole by `read`. A bulleted or a numbered
+ * list, a list item and a block quote are containers, each read as its own first block that
+ * holds words by this same walk, so a list's later items, an item's nested list or later
+ * paragraphs and a block quote's later paragraphs are no part of their words: `- one` over an
+ * indented `- inner` reads `one`, and a block quote of two paragraphs, `> Yes` over `>` and
+ * `> Keep the old page.`, reads `Yes`. A block that holds no words - a horizontal rule, a
+ * paragraph that is only an image or a piece of HTML - is passed over, or a line would be empty
+ * while its node has words. `""` for a reading none of whose blocks holds a word.
+ *
+ * So a first sentence never runs from one block into the next. A decision's content opens with
+ * its own heading where it has one, and `wordsOf` joins a heading and the paragraph after it with
+ * one space, so a line cut from the whole reading ran the heading into its body: "Keep it Keep
+ * the model pure.". Markdown reads a leading `1. ` or `- ` as a list's marker, which is no word,
+ * and a list's items are read as items before any sentence end is looked for: a text typed as a
+ * list on one line is one item, and one typed on two lines, `1. Keep the old page.` over `2. Then
+ * drop it.`, is two, and reads `Keep the old page.`. A list that follows a paragraph with no
+ * blank line ends that paragraph, so the paragraph alone is the first block.
+ */
+function firstWords(reading: DisplayTree, read: (block: DisplayTree) => string): string {
+  const blocks = Array.isArray(reading.content) ? (reading.content as DisplayTree[]) : [];
+  for (const block of blocks) {
+    const words = CONTAINER_BLOCKS.has(block.type) ? firstWords(block, read) : read(block);
+    if (words.trim() !== "") return words;
+  }
+  return "";
+}
+
+/** What the tree's drafts are read by (`treeDraftsFrom`): the reads' names (`treeContext`) with
+ *  the word rule of this module a draft's line is cut by (`lineWordsRaw`). */
+export function treeWordsOf(reads: IssueTreeReads): TreeWords {
+  return { ...treeContext(reads), lineWords: lineWordsRaw };
+}
+
+/**
+ * The issue's whole tree, from the reads it was given: the drafts of the tree read
+ * (`treeDraftsFrom`), each where the read places it, with the outline's drafts of each decision
+ * of today's decisions read that no node of the answer holds (`addDecisions`, while decisions are
+ * sections of `decisions.md`). Until the tree read has answered its first page
+ * (`IssueTreeReads.tree`), the tree is the issue alone. While the answer names a next page the
+ * issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
+ */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = treeContext(reads);
-  return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
+  const words = treeWordsOf(reads);
+  const tree = reads.tree;
+  if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
+  const drafts = treeDraftsFrom(tree, reads, words);
+  addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
+  const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
+  return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }
 
 /**
@@ -675,16 +873,14 @@ function drawOrder(one: Draft, other: Draft): number {
 /**
  * The drafts as one tree under the issue: one node per placement, each naming the parents it is
  * also drawn under and counting the nodes it holds. A placement that would sit under itself, or
- * under a node it already holds, is dropped, so a `from` edge that ever points in a circle still
- * draws a tree.
+ * under a node it already holds, is dropped, so placements that ever point in a circle still
+ * draw a tree.
  *
- * A parent no draft answers to is no placement at all: a reply to a turn the page never read,
- * or a `from` naming a node the tree holds no draft for. Rather than dropping the
- * node with its missing parent, it sits under the issue, which is where every node whose parent
- * is absent goes (R4). A draft the issue cannot reach is the same case one step further out,
- * and `bringHome` answers it the same way.
+ * A parent no draft answers to is no placement at all: a decision naming a question the tree
+ * holds no draft for. Rather than dropping the node with its missing parent, it sits under the
+ * issue, which is where every node whose parent is absent goes (R4).
  */
-function assemble(
+export function assemble(
   issue: IssueDetails,
   drafts: readonly Draft[],
   chipOf: (reference: string) => NodeChip
@@ -698,13 +894,13 @@ function assemble(
   const placements = new Map<string, readonly string[]>();
   for (const draft of drafts) {
     references.set(draft.id, draft.reference ?? draft.id);
-    // A parent named twice is one placement: a decision whose paragraphs each cite the same
-    // question arrives naming it once per paragraph (`api/decisions.go`), and drawing it twice
-    // there would count it twice in `held` and give both rows one key (`tree-keys.ts`).
+    // A parent named twice is one placement: a decision may name the same question twice - the
+    // read of the release before named it once for each paragraph of a section that cited it -
+    // and drawing it twice there would count it twice in `held` and give both rows one key
+    // (`tree-keys.ts`).
     const named = [...new Set(draft.parents)].filter((parent) => known.has(parent));
     placements.set(draft.id, named.length === 0 ? [key] : named);
   }
-  bringHome(key, drafts, placements);
   for (const draft of drafts) {
     for (const parent of placements.get(draft.id) ?? []) {
       const siblings = byParent.get(parent);
@@ -729,6 +925,7 @@ function assemble(
       children,
       chips: draft.chips,
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
+      ...(draft.coverageNotes === undefined ? {} : { coverageNotes: draft.coverageNotes }),
       ...(draft.deletedAt === undefined ? {} : { deletedAt: draft.deletedAt }),
       ...(draft.deletedBy === undefined ? {} : { deletedBy: draft.deletedBy }),
       ...(draft.editedAt === undefined ? {} : { editedAt: draft.editedAt }),
@@ -741,6 +938,7 @@ function assemble(
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
+      ...(draft.readId === undefined ? {} : { readId: draft.readId }),
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
       ...(draft.source === undefined ? {} : { source: draft.source }),
@@ -777,75 +975,4 @@ function assemble(
     type: "issue",
     waiting: false,
   };
-}
-
-/**
- * Puts back under the issue every draft the walk from the issue cannot reach, so that nothing
- * the reads hold is lost (R1): the tree is built downwards from the issue, so a ring of
- * placements nothing above it holds would be drawn nowhere, and every node inside it with it.
- * A `from` edge that points in a circle makes one.
- *
- * The ring is opened at one draft and no more, and that draft is a member of the ring itself:
- * the first of the ring members the issue cannot reach, in the order the tree draws siblings
- * in - its own order, then its id - comes home to the issue, and whatever that lets the issue
- * reach keeps the place its edge gave it, so the same reads always draw the same tree.
- *
- * It is the ring's own member and never the lowest order among the drafts the issue cannot
- * reach, because a node hanging off a ring is unreachable too and may sort before every member
- * of it: a block's order is its place among the issue's documents, and a requirement's is
- * `ROOT_ORDER.requirement` and up, so a plan task serving a requirement of a ring is the
- * first of them. Re-rooting that task would tear it off the requirement it serves and leave
- * the ring to be opened anyway.
- */
-function bringHome(
-  key: string,
-  drafts: readonly Draft[],
-  placements: Map<string, readonly string[]>
-): void {
-  const below = new Map<string, string[]>();
-  for (const draft of drafts) {
-    for (const parent of placements.get(draft.id) ?? []) {
-      const siblings = below.get(parent);
-      if (siblings === undefined) below.set(parent, [draft.id]);
-      else siblings.push(draft.id);
-    }
-  }
-  const reached = new Set<string>([key]);
-  const walk = (from: string): void => {
-    const queue = [from];
-    for (;;) {
-      const id = queue.pop();
-      if (id === undefined) return;
-      for (const child of below.get(id) ?? []) {
-        if (reached.has(child)) continue;
-        reached.add(child);
-        queue.push(child);
-      }
-    }
-  };
-  walk(key);
-  const ordered = [...drafts].sort(drawOrder);
-  /** Whether `id` is a member of a ring: a draft its own placements lead back to. */
-  const inRing = (id: string): boolean => {
-    const seen = new Set<string>();
-    const queue = [...(placements.get(id) ?? [])];
-    for (;;) {
-      const above = queue.pop();
-      if (above === undefined) return false;
-      if (above === id) return true;
-      if (seen.has(above)) continue;
-      seen.add(above);
-      queue.push(...(placements.get(above) ?? []));
-    }
-  };
-  // Nothing the reads hold is lost (R1): every draft the issue cannot reach sits under a ring,
-  // since a draft whose placements run out sits under the issue and is reached, so the rings
-  // this opens answer for them all.
-  for (;;) {
-    const member = ordered.find((draft) => !reached.has(draft.id) && inRing(draft.id));
-    if (member === undefined) break;
-    placements.set(member.id, [key]);
-    reached.add(member.id);
-    walk(member.id);
-  }
 }

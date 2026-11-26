@@ -348,6 +348,9 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	}
 	// The cursor is read here, after the opening pipeline returned, under the lock that pipeline
 	// took: neither it nor the head can move while this transaction holds it.
+	if err := refuseMovedRoom(room, read.movedTo); err != nil {
+		return 0, err
+	}
 	heldThrough, gated := appendingThrough(ctx, room, flush)
 	var updates []BrowserUpdate
 	var taking []*queuedClass
@@ -362,7 +365,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	head, admitted := read.latest, len(updates)
 	if gated {
 		var replaced bool
-		head, admitted, replaced, err = gateAppend(ctx, conn, room, heldThrough, appendBrowser, updates, read, p.maxPendingItems)
+		head, admitted, replaced, err = gateAppend(ctx, conn, room, heldThrough, appendBrowser, updates, read, p.maxPendingItems, p.closeMargin)
 		if err != nil {
 			return 0, err
 		}

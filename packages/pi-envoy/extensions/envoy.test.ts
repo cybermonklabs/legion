@@ -106,7 +106,9 @@ import {
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -1938,7 +1940,7 @@ async function withEnvoyTimings<T>(
 }
 
 const UNASKED_WAIT_NUDGE =
-  "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: a decision block in the document it concerns (dispatch doc-edit with an ask block), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
+  "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: an ask block in the document it concerns (dispatch doc-edit), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
 
 /** Custom-message type of the nudge itself, which a session hears amid other deliveries. */
 const ASK_REMINDER_TYPE = "dispatch-ask-reminder";
@@ -3735,7 +3737,7 @@ describe("envoy OMP extension", () => {
   // Whether a document edit opened an ask is the server's reading of the document it wrote
   // (`advice.decision_blocks_added`), never a reading of the operations' markdown here: whether an
   // opener is a block depends on where it lands, as code or inside a blockquote or a list item.
-  test("a dispatch doc-edit spends the check exactly when the server reports a decision block it added", async () => {
+  test("a dispatch doc-edit spends the check exactly when the server reports an ask block it added", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
     const { default: envoyExtension }: EnvoyModule = await import(
       "./envoy.ts?ask-nudge-document-block"
@@ -3849,7 +3851,7 @@ describe("envoy OMP extension", () => {
     }
   });
 
-  test("a document written through dispatch issue or dispatch artifact spends the check only when it holds a decision block", async () => {
+  test("a document written through dispatch issue or dispatch artifact spends the check only when it holds an ask block", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
     const { default: envoyExtension }: EnvoyModule = await import(
       "./envoy.ts?ask-nudge-document-upload"
@@ -15879,34 +15881,95 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({ body: answer });
       }, 20_000);
 
+      // The limit is the module's own timer, so the row holds it on Bun's fake clock from before
+      // the message is pushed, and judges it from both sides: once the command has printed and
+      // written its mark, the clock moves to 1 ms short of the limit and the command must still
+      // answer a ping, and only then does the clock move past the limit. A limit that fires early
+      // - at half of it, say - kills the command before that answer, and the row fails naming it.
+      // The message, Dispatch's answers and the command itself still run on the real event loop
+      // (`@legion/test-fixtures/fake-clock`). On the real clock a 1,000 ms limit decided this row:
+      // a shell that starts later than that is stopped before it has printed anything. The one
+      // wait's bound is the row's deadline, read before the clock is held.
       test("stops a command past its limit and says when, keeping what it printed", async () => {
-        const { agent, delivered, replied, replies } = await bootShellSession(
-          "shell-command-stopped",
-          { accept: () => ({ accepted: true, body: "!printf early; sleep 600" }), limitMs: 1_000 }
-        );
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
-        await delivered(1);
-        await replied(1);
-
-        expect(replies[0]?.body).toMatchObject({
-          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
+        const command =
+          "!printf early; : > printed;" +
+          " while :; do if [ -f ping ]; then rm -f ping; : > pong; fi; sleep 0.01; done";
+        const { agent, replies, work } = await bootShellSession("shell-command-stopped", {
+          accept: () => ({ accepted: true, body: command }),
+          limitMs: 1_000,
         });
-      }, 20_000);
+        const boundMs = Math.floor(timeLeft());
+        const moments = [
+          "the command's mark that it printed",
+          "the command's answer to a ping 1 ms short of its limit",
+        ];
+        let taken = 0;
+        jest.useFakeTimers();
+        try {
+          agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
+          await turnsUntil(() => replies.length > 0, "the reply to the command", {
+            boundMs,
+            state: () => `waiting for ${moments[taken] ?? "the reply after its limit"}`,
+            each: () => {
+              if (taken === 0 && existsSync(join(work, "printed"))) {
+                taken = 1;
+                jest.advanceTimersByTime(999);
+                writeFileSync(join(work, "ping"), "");
+              } else if (taken === 1 && existsSync(join(work, "pong"))) {
+                taken = 2;
+                jest.advanceTimersByTime(1);
+              }
+            },
+          });
+        } finally {
+          // A wait that failed leaves the command running: its held limit ends it.
+          if (replies.length === 0) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
+
+        if (taken < moments.length) {
+          throw new Error(
+            `the command was answered before ${moments[taken]}: ${Bun.inspect(replies[0]?.body)}`
+          );
+        }
+        expect(replies[0]?.body).toMatchObject({
+          body: `${command}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
+        });
+      });
 
       // One command runs for a session at a time. The pump hands one frame at a time, so the
-      // second message is taken while the first command still runs.
+      // second message is taken while the first command still runs. The first command's limit is
+      // held on Bun's fake clock until the second has been answered, so the first is still running
+      // then however late the second is taken; the clock then moves to the limit, and the first is
+      // answered as stopped. On the real clock a 1,000 ms limit could end the first command before
+      // the second was taken.
       test("answers a second command naming the one still running", async () => {
-        const { agent, replied, replies } = await bootShellSession("shell-command-busy", {
+        const { agent, replies } = await bootShellSession("shell-command-busy", {
           accept: (count) => ({ accepted: true, body: count === 1 ? "!sleep 600" : "!printf hi" }),
           limitMs: 1_000,
         });
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
-        agent.push(
-          directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
-        );
-        await replied(2);
+        const boundMs = Math.floor(timeLeft());
+        let limited = false;
+        jest.useFakeTimers();
+        try {
+          agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
+          agent.push(
+            directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
+          );
+          await turnsUntil(() => replies.length >= 2, "the replies to both commands", {
+            boundMs,
+            state: () => (limited ? "the first's limit had passed" : "the second had no reply"),
+            each: () => {
+              if (limited || !replies.some((reply) => reply.path.includes(NEXT_MESSAGE_ID))) return;
+              limited = true;
+              jest.advanceTimersByTime(1_000);
+            },
+          });
+        } finally {
+          // A wait that failed leaves the first command running: its held limit ends it.
+          if (replies.length < 2) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
           body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
@@ -15916,7 +15979,7 @@ console.log(JSON.stringify(args));
             body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
-      }, 20_000);
+      });
 
       test("cuts output past the bound and says so", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession("shell-command-cut", {
@@ -16549,6 +16612,12 @@ console.log(JSON.stringify(args));
       // resolved for the session open when it goes out (`currentSessionID`) would be signed
       // with the token minted for ses_after_shell, and the person's own message would be
       // answered under the credential of the conversation they never wrote to.
+      //
+      // The row waits for its reply up to its own deadline rather than under a 20 s guard of its
+      // own: a shell that starts later than that ran the command past the guard, bun failed the
+      // row and started the next while this row's session still ran, and the command then
+      // answered into the row below, under the same session id - a third trade on that row's
+      // broker, or a second reply presented to it - and this row's cleanup never ran.
       test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
         const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
         workDirectories.push(secrets);
@@ -16575,7 +16644,7 @@ console.log(JSON.stringify(args));
           process.env.ENVOY_TOKEN = LISTENER_TOKEN;
           let live = "ses_delivery";
           let switched: Promise<unknown> | undefined;
-          const { accepts, agent, fixture, replied, replies } = await bootShellSession(
+          const { accepts, agent, fixture, replies } = await bootShellSession(
             "shell-command-broker-signed-reply",
             {
               accept: () => ({ accepted: true, body: "!printf hi" }),
@@ -16630,7 +16699,11 @@ console.log(JSON.stringify(args));
           };
 
           agent.push(directDispatchEnvelope("steer", "shell-command-broker-signed-reply"));
-          await replied(1);
+          await until(
+            () => replies.length >= 1,
+            "the reply to the command",
+            Math.floor(timeLeft())
+          );
           // The hand-over happened, so the move was made in the window this row is about and
           // not after the reply had gone out.
           expect(switched).toBeDefined();
@@ -16667,7 +16740,7 @@ console.log(JSON.stringify(args));
           // A token this process traded is held under its session for the life of the process.
           forgetBrokerClients();
         }
-      }, 20_000);
+      });
 
       // The window between the accept and the reply: the host leaves while the command runs, and
       // the move's pass runs to its end before the command does. The session the message was

@@ -261,10 +261,19 @@ function hintWords(box: DispatchWritingBox, write: DispatchWriting): string {
   return `${HINT_DOORS} ${HINT_QUIET} ${told}`;
 }
 
+/** The hosts that draw the picker in an editor of their own, by the test id of the line they
+ *  draw under it (`DocumentRefPicker`, which a document's body and a priority's description
+ *  mount, and the agent live conversation's composer). */
+const EDITOR_HINTS: Partial<Record<DispatchWritingBox, string>> = {
+  "agent-live-composer": "agent-message-hint",
+  "document-body": "document-body-hint",
+  "priority-description": "priority-description-hint",
+};
+
 /** The line under the box, which the box reads from its row of the list at the mount, held to
  *  the words that row must say (`hintWords`): the element the box points `aria-describedby` at.
- *  The two hosts that draw the picker in an editor of their own carry their hint on a test id
- *  instead, since their box is no `<label>` of the shared field's. */
+ *  The hosts that draw the picker in an editor of their own carry their hint on a test id
+ *  instead (`EDITOR_HINTS`), since their box is no `<label>` of the shared field's. */
 export async function expectHint(
   page: Page,
   field: Locator,
@@ -272,8 +281,8 @@ export async function expectHint(
   write: DispatchWriting
 ): Promise<void> {
   const hint = hintWords(box, write);
-  if (box === "document-body" || box === "agent-live-composer") {
-    const testid = box === "document-body" ? "document-body-hint" : "agent-message-hint";
+  const testid = EDITOR_HINTS[box];
+  if (testid !== undefined) {
     await expect(page.getByTestId(testid), `${box} writing ${write}: its hint`).toHaveText(hint);
     return;
   }

@@ -400,7 +400,14 @@ attempt was refused: the message may or may not have arrived. The error names it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
-still sees it twice). A send
+still sees it twice). One 5xx is not such an attempt: the listener's `503` whose `error` opens
+with `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`), which says the message bus refused the
+message before anything went out, because the deployed stream does not capture its topic for
+now, as during a hub move. It is sent again like any 5xx, under the same key, and a send or a
+publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
+whose message is the listener's: nothing was stored, so the message may be sent again later.
+After an earlier attempt that got no answer or another 5xx, a send is unconfirmed as above, and a
+publish's error says that attempt may have stored the message, with `notSent` false. A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
@@ -817,7 +824,7 @@ refusal settles the write. A final refusal is one of these:
   pattern, its path values, the query, the content type less its boundary, and the body
   (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
   call. That needs the client never to send one key for two different writes: `#writeCall`
-  (`src/dispatch-http.ts:2176`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  (`src/dispatch-http.ts:2310`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
   Idempotency-Key per write call") shows five writes going under five keys, and
   `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
   names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
@@ -953,7 +960,7 @@ Dispatch first gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
-with no decision blocks, three or more session writes without a human response (with stronger
+with no ask blocks, three or more session writes without a human response (with stronger
 wording from six), a write while the issue is still in triage, and up to two still-open asks owned
 by the session. Ask replies do not trigger the write-cadence pointer and suppress an open-ask
 pointer when replying to that ask; a status-setting issue update does not trigger the triage
@@ -1049,10 +1056,13 @@ later wherever that half is over the minute. A file with no `access_life_seconds
 build writes it, keeps the minute alone until the next refresh. A refusal of the trade's session or
 projects is not refreshed: a refresh cures none of those. A refresh the broker did not answer is
 sent once more at once: the broker redeems the spent refresh token again within its five-minute
-grace, and past it the login ends. The broker's `invalid_grant` to a refresh is final
-(`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out, and only a new
-`dispatch login --device` cures it. A trade whose time ran out while another process of the
-machine held the lock says so (`LockHeldError`), and not that the broker did not answer.
+grace, and past it the login ends. The broker's 400 or 401 `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`, decided by `endsGrant` in `oauth-refusal.ts`): the
+login was revoked or ran out, and only a new `dispatch login --device` cures it. An
+`invalid_grant` at another status, a 403 or a 429, is a refusal like any other
+(`BrokerRefusedError`), and a later refresh gets past a 429. A trade whose time ran out while
+another process of the machine held the lock says so (`LockHeldError`), and not that the broker
+did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1077,7 +1087,7 @@ next one:
 |---|---|
 | a token | answers every caller, and both schedules start over |
 | a pod session not registered yet | trades again 2 s later, doubling to 30 s, so the trade after a registration lands is at most 30 s away; that trade has its own 30 s |
-| no answer within 30 s, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
+| no answer within 30 s, no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no OAuth error, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
 | a refusal no trade cures | ends; a call before the next slot is told the same refusal with no trade |
 
 The loop logs through `console.warn`, as the Go client does: a pod session not registered yet
@@ -1088,10 +1098,14 @@ registration at that deadline fails with `RegistrationPendingError`, which names
 Once a renewal has failed, a call made while the token in hand is live goes on with that token.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
-no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
-one this process makes, and the session name is the caller's own session, else
-`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
-trades that person, as the Go client does:
+no sign-in, the client trades the machine. The machine's identity is the subject, and the session
+name is the caller's own session, else `AGENT_SECRETS_SESSION`. In a pod, where
+`AGENT_SECRETS_MACHINE_IDENTITY` is `kubernetes` and `AGENT_SECRETS_KEY_DIR` names the role's own
+directory, the DPoP key is the role's own agent-secrets key, the `key.pem` that
+`agent-secrets keygen` wrote there, which the broker holds the pod session's trade to; when that
+file cannot be read, the call fails naming the path. Everywhere else the DPoP key is one this
+process makes. Where a person ran `agent-secrets login` on the machine, the client trades that
+person, as the Go client does:
 
 - The subject is the person's Google identity token. The client renews it at every trade, from
   the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
@@ -1163,10 +1177,11 @@ since is kept; the next presentation uses the token the client holds now, tradin
 where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
 for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
 made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
-the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the
-broker refuses the new trade, the call fails in the broker's words, unless an attempt of the
-write may have landed: then the write asks again on its pacing, and with no ask left it is
-`DispatchWriteUnsettledError`.
+the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`).
+`dispatch api`'s read is one send, which Dispatch's answer of no route does not repeat, and the
+command prints that refusal as it came. If the broker refuses the new trade, the call fails in
+the broker's words, unless an attempt of the write may have landed: then the write asks again
+on its pacing, and with no ask left it is `DispatchWriteUnsettledError`.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1297,13 +1312,25 @@ exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ub
 not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
-the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
-and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
+the broker refuses the login, the person denies it, its code expires, the broker answers a code
+that would lapse before its first poll (refused before the code is printed, naming the broker's
+interval and its codes' lifetime, or the hour this machine polls a code at most, and what must
+change at the broker), or the broker answers a poll with any other 4xx, with another OAuth error
+or without one (a proxy's page, a bare challenge), naming its status. The status decides first
+(`oauth-refusal.ts` in `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429
+and a 5xx are polled again, whatever OAuth error they name, and only in another
+4xx does a deciding error count: `access_denied`, which the broker answers 403, is the denial,
+`expired_token` and `invalid_grant` the expiry, and `authorization_pending` and `slow_down` poll
+again. It polls at the broker's interval, 1 s at least, and 5 s where it names none; each
+`slow_down` adds 5 s, at whatever status it comes, and so does each poll the broker did not answer
+or answered 408, 429 or 5xx, once for a poll that is both, as RFC 8628 has it. Such an answer's
+`Retry-After`, in seconds or as a date, is waited before the next poll where it asks longer,
+though never past the code's lifetime, which no wait passes and which is kept on the monotonic
+clock, so a step of the system clock does not move it; a code that lapses after such polls says
+how many came in a row before it. It then writes no file. It
+exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
+the broker holds live, and says to revoke it in Machine logins on the page the code was typed
+into. Where it wrote a copy of the login whole,
 the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
 names that suffix, whatever fails after it, letting go of the lock included: moved over the file,
 the copy is the login and its credential needs no revoke; unused, the person deletes it, since it
@@ -1479,7 +1506,7 @@ arguments and asks Dispatch nothing.
 `dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
 parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
-name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
+name (the document's latest, `approval.latest_version`) holds an ask block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown
 and the owner's asks (the issue's for an issue document, since the artifact route refuses those),
 and judges each block by its `state` on every line of the version that opens it, so a line quoting
@@ -1526,3 +1553,13 @@ answers that request and records the same verdict on every document the request 
 the version the request names. The output names the state, the version and the actor that
 Dispatch recorded, and says when the review also answered an open request. A refusal starts with
 Dispatch's code.
+
+`dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
+reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
+session's own credential as every command presents it, and prints Dispatch's JSON answer for
+`jq`. It takes no method and no body: a write goes through the command named for it. The spec
+refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
+backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
+plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A
+refusal of the read is Dispatch's error with its code and, where Dispatch gives one, its hint,
+exit 1.

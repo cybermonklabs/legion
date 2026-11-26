@@ -62,6 +62,18 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyProjectGatedSteps, window: storetest.XidWindowOf(3,
 			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
 	},
+	// The read of the project the two proven-sessions routes answer with runs after their
+	// transaction has ended, so it is outside the window.
+	{
+		name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOn, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
+	{
+		name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOff, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
 	{
 		name: "the handoff route", route: "POST /api/v1/issues/{key}/handoffs/{phase} (recordHandoff)",
 		ready: readyHandoff, window: storetest.XidWindowOf(3,
@@ -85,11 +97,13 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	},
 	// A create naming a repository writes it in the issue row's insert and reads or locks no other
 	// row for it. Its read phase, under the project's owner lock, holds its spec's seed, task count
-	// and reference index, all of the harness's size, and its write advice.
+	// and reference index, all of the harness's size, and its write advice. Its spec's
+	// version_renders row goes in the queued batch with its record's digest owed, which the fill
+	// after the COMMIT records in a transaction of its own (R15, docs' fillOwedDigests).
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
 		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(10,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
 	},
 	// A near copy whose refusal's near_copy_checks row could not be written goes in unchecked
@@ -102,7 +116,7 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	{
 		name: "the issue create of a near copy whose refusal was not recorded", route: "POST /api/v1/issues past an unrecorded refusal (createIssue, writeNearCopyCheck)",
 		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(11,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch and its COMMIT"),
 	},
 	// A patch stating a relation to a priority decides the revision rule on the issue it read
@@ -125,7 +139,7 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	{
 		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeBlockedBy)",
 		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(14,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, "+
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, "+
 				"the target's project read, the wait walk, the blocked_by delete and insert and its artifact row - "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
 				"the queued batch and its COMMIT"),

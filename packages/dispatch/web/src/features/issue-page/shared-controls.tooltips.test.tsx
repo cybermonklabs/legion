@@ -71,7 +71,6 @@ import {
   CLAIMED_AT,
   classOf,
   colourOf,
-  DECISIONS_ID,
   doc,
   draw,
   FOCUS_VARIANTS,
@@ -95,6 +94,7 @@ import {
   threadOf,
   tokens,
   undraw,
+  VERIFICATION_ID,
 } from "./shared-controls-fixture";
 
 /**
@@ -289,7 +289,12 @@ function answerDefaults(): void {
     read_at: null,
     version: null,
   }));
-  stubs.getIssueDecisions.mockResolvedValue({ decisions: [], document: null, open_questions: [] });
+  stubs.getIssueDecisions.mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [],
+    open_questions: [],
+  });
   stubs.getIssueSubscribers.mockResolvedValue([]);
   stubs.getReferences.mockResolvedValue({
     edges: [],
@@ -346,14 +351,16 @@ function notesWith(approval: ArtifactApproval): Artifact {
   return { ...notes, approval };
 }
 
-/** The gate's steps as Details draws them: the spec waits on a request for its version 1, the
- *  decisions were sent back with a reason, and the verification has no document yet. `values`
- *  names the two documents and gives the reason, which the wrap case makes long. */
+/** The gate's two steps as Details draws them: the spec waits on a request for its version 1,
+ *  and the verification was `sent back` with a reason or is `not requested`, with no document
+ *  yet. A gate has two steps, so the mounts draw a gate for each. `values` names the two
+ *  documents and gives the reason, which the wrap case makes long. */
 function stepEntries(
+  verification: "not requested" | "sent back",
   values = {
-    decisions: "decisions.md",
-    reason: "The second decision cites no evidence.",
+    reason: "The checks name no command.",
     spec: "spec.md",
+    verification: "verification.md",
   }
 ): StepEntry[] {
   return [
@@ -366,18 +373,19 @@ function stepEntries(
       label: "Spec",
       step: "spec",
     },
-    {
-      document: doc(DECISIONS_ID, values.decisions, {
-        by: { id: "bob", kind: "user" },
-        latest_version: 3,
-        reason: values.reason,
-        state: "changes_requested",
-        version: 3,
-      }),
-      label: "Decisions",
-      step: "decisions",
-    },
-    { document: undefined, label: "Verification", step: "criteria" },
+    verification === "sent back"
+      ? {
+          document: doc(VERIFICATION_ID, values.verification, {
+            by: { id: "bob", kind: "user" },
+            latest_version: 3,
+            reason: values.reason,
+            state: "changes_requested",
+            version: 3,
+          }),
+          label: "Verification",
+          step: "criteria",
+        }
+      : { document: undefined, label: "Verification", step: "criteria" },
   ];
 }
 
@@ -703,13 +711,7 @@ const MOUNTS: readonly Mount[] = [
         issue={{ advances: [], advances_revision: 1, key: "CORE-1" }}
       />
     ),
-    settle: async (view, user) => {
-      await user.click(
-        within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
-      );
-      await within(view.container).findByRole("combobox", { name: "Priority to advance" });
-      await settleReads();
-    },
+    settle: pressing(CONTROL_LABELS.edit_priorities),
   },
   {
     name: "IssuePriorityLine, in a row of Details",
@@ -781,7 +783,17 @@ const MOUNTS: readonly Mount[] = [
     name: "ApprovalSteps, Details' size with versions and reasons",
     node: () => (
       <ApprovalSteps
-        entries={stepEntries()}
+        entries={stepEntries("sent back")}
+        primaryArtifactId={SPEC_ID}
+        versions={{ asks: [specRequest], issueKey: "CORE-1" }}
+      />
+    ),
+  },
+  {
+    name: "ApprovalSteps, Details' size with versions and a step not requested",
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries("not requested")}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
       />
@@ -791,7 +803,18 @@ const MOUNTS: readonly Mount[] = [
     name: "ApprovalSteps, the header's compact size",
     node: () => (
       <ApprovalSteps
-        entries={stepEntries()}
+        entries={stepEntries("not requested")}
+        primaryArtifactId={SPEC_ID}
+        reasons={false}
+        size="compact"
+      />
+    ),
+  },
+  {
+    name: "ApprovalSteps, the header's compact size with a step sent back",
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries("sent back")}
         primaryArtifactId={SPEC_ID}
         reasons={false}
         size="compact"
@@ -1208,9 +1231,9 @@ const priorityLineLoading: Mount = {
   },
   settle: async (view, user) => {
     await user.click(
-      within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
+      within(view.container).getByRole("button", { name: CONTROL_LABELS.edit_priorities })
     );
-    await within(view.container).findByRole("combobox", { name: "Priority to advance" });
+    await within(view.baseElement).findByText(ANSWER_LINES.loading_priorities);
   },
 };
 
@@ -1225,6 +1248,7 @@ const repoNothingResolved: Mount = {
         key: "CORE",
         name: "Core",
         open_asks: 0,
+        proven_sessions: false,
       },
     ]);
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
@@ -1476,23 +1500,21 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Add a reason to send Request changes",
     ],
   ],
+  // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
+  // whole title as its `title`, and says so of one inherited from an issue above; while the
+  // picker is open its options carry theirs, as `MultiSelect` draws them.
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
     [
-      "P2 Rocq and Lean speed work restarted",
-      "P1 Evals collecting data now",
-      "Add a priority to CORE-1",
+      "Rocq and Lean speed work restarted",
+      "Evals collecting data now, inherited from an issue above",
     ],
   ],
-  [mountNamed("IssuePriorityLine, adding a priority"), []],
   [
-    mountNamed("IssuePriorityLine, in a row of Details"),
-    [
-      "P2 Rocq and Lean speed work restarted",
-      "Add a priority to CORE-1",
-      "Add a priority to CORE-2",
-    ],
+    mountNamed("IssuePriorityLine, adding a priority"),
+    ["#1 Evals collecting data now", "#2 Rocq and Lean speed work restarted"],
   ],
+  [mountNamed("IssuePriorityLine, in a row of Details"), ["Rocq and Lean speed work restarted"]],
   [priorityLineAtCap, PRIORITIES_AT_CAP],
   [priorityLineLoading, []],
   [
@@ -1523,7 +1545,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [mountNamed("Timestamp, exact"), [localTime(CLAIMED_AT)]],
   [mountNamed("ApprovalSteps, Details' size with versions and reasons"), []],
+  [mountNamed("ApprovalSteps, Details' size with versions and a step not requested"), []],
   [mountNamed("ApprovalSteps, the header's compact size"), []],
+  [mountNamed("ApprovalSteps, the header's compact size with a step sent back"), []],
   [mountNamed("AssigneeControl, both variants, assigned and not"), []],
   [mountNamed("PriorityControl and PriorityEditor, both variants, set and not"), []],
   [
@@ -1687,7 +1711,7 @@ const LONG = {
   liveTitle: "Implementer-of-the-new-issue-page-whose-title-runs-on-past-its-row",
   login: "a-person-whose-login-runs-on-past-the-row@example.com",
   question: "Should-we-ship-the-new-issue-page-before-its-header-is-done?",
-  reason: "The-second-decision-cites-no-evidence-for-its-claim-at-all.",
+  reason: "The-checks-name-no-command-to-run-and-no-result-to-read-at-all.",
   repository: "acme/the-repository-with-a-44-character-name",
   retired: "a-retired-component-whose-identifier-runs-on",
   route: "role:an-architect-role-whose-address-runs-on-past-its-row",
@@ -1831,10 +1855,10 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   withLongValues(mountNamed("ApprovalSteps, Details' size with versions and reasons"), {
     node: () => (
       <ApprovalSteps
-        entries={stepEntries({
-          decisions: `decisions-${LONG.document}`,
+        entries={stepEntries("sent back", {
           reason: LONG.reason,
           spec: LONG.document,
+          verification: `verification-${LONG.document}`,
         })}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
@@ -1910,6 +1934,13 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
       />
     ),
     values: [LONG.label],
+  }),
+  // The priorities' picker, open, draws each priority's title in its options, which no mark finds.
+  withLongValues(mountNamed("IssuePriorityLine, adding a priority"), {
+    values: [
+      "Evals collecting data now-under-a-title-that-runs-on-past-its-row",
+      "Rocq and Lean speed work restarted-under-a-title-that-runs-on-past-its-row",
+    ],
   }),
   withLongValues(labelsEmptyAndSaving, {
     node: () => (
@@ -2816,17 +2847,16 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [...root.querySelectorAll("[data-approval-artifact]")].map((chip) =>
           chip.getAttribute("data-approval-artifact")
         )
-      ).toEqual([SPEC_ID, DECISIONS_ID]);
+      ).toEqual([SPEC_ID, VERIFICATION_ID]);
       expectMarks(root, [
-        [CONTROL_LABELS.not_requested, "page-chrome"],
         // The line's own words, the step and the review, around the reviewer and the reason.
-        ["Decisions: requested changes on v3 ·", "page-chrome"],
+        ["Verification: requested changes on v3 ·", "page-chrome"],
         ["bob", "author-text"],
-        ["The second decision cites no evidence.", "author-text"],
+        ["The checks name no command.", "author-text"],
       ]);
       expect(
         root
-          .querySelector("[data-approval-step-reason='decisions']")
+          .querySelector("[data-approval-step-reason='criteria']")
           ?.hasAttribute(PAGE_CHROME_ATTRIBUTE)
       ).toBe(true);
       expectMarks(within(root).getByRole("link", { name: "spec.md, version 1" }), [
@@ -2834,6 +2864,14 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [CONTROL_LABELS.version.toLowerCase(), "page-chrome"],
         ["1", "author-text"],
       ]);
+    }
+  );
+  // A gate has two steps, so the step with no request is read in the gates of its own.
+  await readDrawn(
+    mountNamed("ApprovalSteps, Details' size with versions and a step not requested"),
+    "inside",
+    (view) => {
+      expectMarks(view.container, [[CONTROL_LABELS.not_requested, "page-chrome"]]);
     }
   );
   await readDrawn(mountNamed("ApprovalSteps, the header's compact size"), "inside", (view) => {
@@ -2983,45 +3021,38 @@ test("inside NoTooltips the words come from the page's word list and carry their
     (view) => {
       expectMarks(view.container, [
         [PROPERTY_LABELS.advances, "page-chrome"],
-        ["P2 Rocq and Lean speed work restarted", "author-text"],
-        ["P1 Evals collecting data now", "author-text"],
+        ["#2 Rocq and Lean speed work restarted", "author-text"],
+        ["#1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
         ["+", "page-chrome"],
       ]);
-      // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
-      // name.
-      const remove = within(view.container).getByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
-      });
-      expect(markOf(remove)).toBe("page-chrome");
     }
   );
   await readDrawn(mountNamed("IssuePriorityLine, in a row of Details"), "inside", (view) => {
     // A row of Details draws the label, so the line draws none of its own.
     expectMarks(view.container, [
       [CONTROL_LABELS.add_priority, "page-chrome"],
-      ["P2 Rocq and Lean speed work restarted", "author-text"],
+      ["#2 Rocq and Lean speed work restarted", "author-text"],
     ]);
     expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toHaveLength(0);
+    // The trigger of an issue that advances none is named by the words it draws, then the word
+    // list's joining word and the issue's key (WCAG 2.5.3).
+    const add = within(view.container).getByRole("button", {
+      name: `${CONTROL_LABELS.add_priority} ${CONTROL_LABELS.control_name_to} CORE-2`,
+    });
+    expect(add.textContent).toBe(CONTROL_LABELS.add_priority);
   });
   await readDrawn(mountNamed("IssuePriorityLine, adding a priority"), "inside", (view) => {
-    expectMarks(view.container, [
-      [CONTROL_LABELS.priority_to_advance, "page-chrome"],
-      [CONTROL_LABELS.add, "page-chrome"],
-      [CONTROL_LABELS.cancel, "page-chrome"],
-    ]);
+    expectMarks(view.container, [["+", "page-chrome"]]);
     expect(
-      within(view.container).getByRole("option", { name: CONTROL_LABELS.choose_priority })
+      within(view.baseElement).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
     ).toBeTruthy();
   });
   await readDrawn(priorityLineLoading, "inside", (view) => {
-    expect(
-      within(view.container).getByRole("option", { name: ANSWER_LINES.loading_priorities })
-    ).toBeTruthy();
+    expect(within(view.baseElement).getByText(ANSWER_LINES.loading_priorities)).toBeTruthy();
   });
   await readDrawn(priorityLineAtCap, "inside", (view) => {
     expectMarks(view.container, [
-      [STATE_LINES.advances_at_cap, "page-chrome"],
       [ANSWER_LINES.priorities_unreadable, "page-chrome"],
       ["priority-1", "author-text"],
     ]);
@@ -3045,7 +3076,13 @@ test("inside NoTooltips the words come from the page's word list and carry their
     },
     settle: async (view, user) => {
       await within(view.container).findByRole("link", { name: /Rocq and Lean/ });
-      await user.click(within(view.container).getByRole("button", { name: /^Remove / }));
+      await user.click(
+        within(view.container).getByRole("button", { name: CONTROL_LABELS.edit_priorities })
+      );
+      await user.click(
+        await within(view.baseElement).findByRole("option", { name: /Rocq and Lean/ })
+      );
+      await user.keyboard("{Escape}");
       await within(view.container).findByRole("alert");
     },
   };
@@ -3444,7 +3481,7 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
 test("inside NoTooltips ApprovalSteps' version link draws in the page's colours", async () => {
   const node = () => (
     <ApprovalSteps
-      entries={stepEntries()}
+      entries={stepEntries("sent back")}
       primaryArtifactId={SPEC_ID}
       versions={{ asks: [specRequest], issueKey: "CORE-1" }}
     />

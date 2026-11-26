@@ -16,17 +16,28 @@ import {
   askReadBody,
   checkResultRecordedBody,
   commentBody,
+  constraintBody,
   coverageBody,
+  findingBody,
   handoffBody,
   ISSUE,
   issueBody,
   issueResultsBody,
+  LENS,
+  lensBody,
+  lensesBody,
   messageBody,
+  nodeStateBody,
   OTHER_UUID,
   planReviewBody,
   plansBody,
+  pointerBody,
+  premortemReportBody,
   prioritiesBody,
+  projectBody,
+  proposedBody,
   reviewBody,
+  riskBody,
   SESSION,
   stepsBody,
   UUID,
@@ -156,6 +167,8 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       });
     case "GET /api/v1/references":
       return response({ node: { kind: "issue", id: ISSUE }, edges: [] });
+    case "GET /api/v1/lenses":
+      return response(lensesBody());
     // The Inbox's two lists, both empty: every line the summary prints from a row carries the
     // row's own age, which the record must not date against the wall clock.
     case "GET /api/v1/inbox":
@@ -224,6 +237,24 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "handoffs") return response([]);
     if (segments[4] === "handoffs" && method === "POST") return response(handoffBody(), 201);
     if (segments[4] === "handoffs") return response(handoffBody());
+    if (rest === "lenses" && method === "POST") return response(lensBody(), 201);
+    if (rest === "risks" && method === "POST") return response(riskBody(), 201);
+    if (rest === "constraints" && method === "POST") return response(constraintBody(), 201);
+    if (rest === "constraints") return response({ issue: ISSUE, constraints: [constraintBody()] });
+    if (segments[4] === "nodes" && segments[6] === "findings") {
+      return response(findingBody("The cache doubles the write path's cost."), 201);
+    }
+    if (segments[4] === "nodes" && segments[6] === "pointers") return response(pointerBody());
+    if (segments[4] === "nodes" && segments[6] === "state") {
+      return response(nodeStateBody("live", "proposed"));
+    }
+    if (segments[4] === "nodes" && segments[6] === "settle") {
+      return response(nodeStateBody("proposed", "settled"));
+    }
+    if (rest === "proposed") return response(proposedBody());
+    if (segments[4] === "artifacts" && segments[6] === "premortem-convert") {
+      return response(premortemReportBody());
+    }
     if (rest === "steps") return response(stepsBody());
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
@@ -275,6 +306,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
+    if (rest === "proven-sessions") return response(projectBody(method === "PUT"));
   }
   throw new Error(`unexpected request: ${route}`);
 }
@@ -546,6 +578,23 @@ const refusals: readonly RefusalCase[] = [
     tool: "dispatch_issues",
     call: "all beside limit and offset",
     args: { project: "PROJ", all: true, limit: 50, offset: 100 },
+  },
+  {
+    tool: "dispatch_pointer",
+    call: "retarget with no from",
+    args: { issue: ISSUE, node: LENS, kind: "has_kind", action: "retarget", to: "botec" },
+  },
+  {
+    tool: "dispatch_pointer",
+    call: "from beside an append",
+    args: {
+      issue: ISSUE,
+      node: LENS,
+      kind: "has_kind",
+      action: "append",
+      from: "trade-off",
+      to: "botec",
+    },
   },
 ];
 

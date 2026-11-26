@@ -341,8 +341,8 @@ type Assignment struct {
 	// record.DesignStep), so an import of config here would close a cycle.
 	Unit string
 	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
-	// off, which draws for no unit, and the answer a hand-over settles a child at for an
-	// experiment the tree it left held no row for.
+	// off, which gives every new unit no arm, and the answer a hand-over settles a child at for
+	// an experiment the tree it left held no row for.
 	Variant string
 	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
 	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
@@ -439,7 +439,7 @@ const (
 	// AnsweredByAsk is a person's answer, resolution or reply on the ask the root waits on.
 	AnsweredByAsk Answer = "ask"
 	// AnsweredByRetraction is Dispatch's settlement retracting the last ask of the root's wait still
-	// with the person, whose decision block left the spec: no person can answer it any more.
+	// with the person, whose ask block left the spec: no person can answer it any more.
 	AnsweredByRetraction Answer = "retracted"
 	// AnsweredByClosed is a close, by anyone who is not a person, of the last ask of the root's wait
 	// still with the person: the question is gone, so nobody will answer it.
@@ -812,12 +812,19 @@ type PhaseEntry struct {
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // review said: the head and GitHub's merge state an approval of this decision was last reported
 // stuck on, in the review-stuck notice an approval GitHub will not merge from writes (workflow's
-// settleRound, stuckMergeState). They are what makes that notice once for each head and state
-// rather than once for each fact: GitHub answers one head `blocked`, then `unknown` while it
-// recomputes, then `blocked` again, and the mark is the only thing that survives the answer in
-// between. They live with the decision because the notice is of the approval this decision is: a
-// review that decides the round afresh replaces the decision and the mark with it, and the next
-// head the new approval sticks on is told in its turn. Empty until a notice goes out.
+// settleRound, stuckMergeState), which the state build shows. ToldStuck is every finding already
+// told for ToldStuckHead: a state, or what held the head beside its state (a StuckHold). Together
+// they make that notice once for each head and finding rather than once for each fact or for each
+// turn findings take: GitHub answers one head `blocked`, then `unknown` while it recomputes, then
+// `blocked` again, and a head held on a review request is held on a null `mergeable` for a while
+// after each push to its base, then on the review request again - and the mark is the only thing
+// that survives the answers in between. A mark that kept only the last finding would tell each
+// finding again every time another came between. A decision an earlier release marked carries no
+// list, and its ToldStuckState stands as the one finding told, for the check and for the next
+// append alike (workflow's toldFindings), so the upgrade forgets no finding. They live with
+// the decision because the notice is of the approval this decision is: a review that decides the
+// round afresh replaces the decision and the mark with it, and the next head the new approval
+// sticks on is told in its turn. Empty until a notice goes out.
 //
 // Refused is the daemon's own mark too, and the one case where a decision row holds no decision:
 // why the daemon set aside a review that would otherwise have decided the round (workflow's
@@ -828,13 +835,32 @@ type PhaseEntry struct {
 // no round inherits the refusal of the round before it. The decision column is jsonb, so a row
 // an older daemon wrote simply has none.
 type ReviewDecision struct {
-	State          string     `json:"state"`
-	Body           string     `json:"body,omitempty"`
-	Head           string     `json:"head,omitempty"`
-	Refused        string     `json:"refused,omitempty"`
-	ToldStuckHead  string     `json:"toldStuckHead,omitempty"`
-	ToldStuckState MergeState `json:"toldStuckState,omitempty"`
+	State          string      `json:"state"`
+	Body           string      `json:"body,omitempty"`
+	Head           string      `json:"head,omitempty"`
+	Refused        string      `json:"refused,omitempty"`
+	ToldStuckHead  string      `json:"toldStuckHead,omitempty"`
+	ToldStuckState MergeState  `json:"toldStuckState,omitempty"`
+	ToldStuck      []StuckTold `json:"toldStuck,omitempty"`
 }
+
+// StuckTold is one finding a review-stuck notice told for a head (ReviewDecision.ToldStuck): what
+// held the head when GitHub's merge state was beside a hold, or else the state itself.
+type StuckTold struct {
+	State MergeState `json:"state,omitempty"`
+	Hold  StuckHold  `json:"hold,omitempty"`
+}
+
+// StuckHold is what holds a head GitHub answers `blocked` or `unknown` for, when the daemon can read
+// it (classify.MergeOutcome.Hold): a finding of its own, whatever state GitHub gives beside it.
+type StuckHold string
+
+// The holds a review-stuck notice names: GitHub has not computed whether the head merges
+// (`mergeable` null), or it holds a review request open on the pull request.
+const (
+	StuckHoldMergeableNull   StuckHold = "mergeable-null"
+	StuckHoldReviewRequested StuckHold = "review-requested"
+)
 
 // ReviewOrder is where a review falls among the pull request's reviews: when it was submitted, then
 // GitHub's review id. The id alone is not enough, since GitHub assigns it when a review is created
@@ -990,6 +1016,47 @@ type PullRequest struct {
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// ReviewsRequested is how many review requests GitHub holds open on the pull request, people,
+	// Apps and teams alike, as the read that recorded MergeState found them: a base's GraphQL batch
+	// reads `reviewRequests { totalCount }` beside the merge state, a REST read of a `blocked`,
+	// MERGEABLE head takes its whole answer from the same GraphQL query, and any other REST read
+	// counts its `requested_reviewers` and `requested_teams`. Nil means no read has counted them:
+	// a row written before migration 20261124130001, a head no read has answered for, or a GraphQL
+	// answer that left the count null or named it in an error. It speaks of the read at
+	// EvidenceReadAt alone. A review GitHub asked for and that is not given yet is the one cause of
+	// a `blocked` head the daemon can read without a ruleset (classify.MergeOutcomeOf). GitHub does
+	// not ask again after it dismisses an approval, so 0 does not say that no review is required;
+	// the merger's merge names any review still required.
+	ReviewsRequested *int
+	// HeadChecks is whether a check or a commit status of this head was still running when the
+	// read that recorded MergeState was made: GitHub's `statusCheckRollup` of the head commit,
+	// counted by state, which that read carries (a base's GraphQL batch asks for it beside the
+	// merge state, and a REST read that answers `blocked` and MERGEABLE takes its whole answer from
+	// the same query). It is current evidence, where the head's settlement (ChecksConcludedOnHead)
+	// is only the last one the daemon applied: a check re-run on the same head, a workflow queued
+	// before it makes a run and a commit status set back to pending leave that settlement standing
+	// while GitHub holds the head `blocked`. The unread value is a row written before migration
+	// 20261124130001, or a read that gave no rollup for this head. It speaks of the read at
+	// EvidenceReadAt alone.
+	HeadChecks HeadChecks
+	// NullMergeableReads is how many reads of this head in a row GitHub answered `mergeable` null,
+	// the answer it gives while it computes whether the head merges, whatever merge state it gave
+	// beside it (`blocked` or `unknown`), and NullMergeableSince is when the first of them was read
+	// (its StateReadAt). The round waits quietly while the run is younger than
+	// classify.NullMergeableFloor, read to read, which is routine after a push, and tells the
+	// architect once a null read of the run comes at least that long after its first, or once the
+	// first is classify.NullMergeableTellAfter old by the clock, whichever comes first
+	// (classify.MergeOutcomeOf). A computed answer (MERGEABLE or CONFLICTING), another head, or a
+	// reopen, sets both back to zero.
+	NullMergeableReads int
+	NullMergeableSince time.Time
+	// EvidenceReadAt is the StateReadAt of the read that wrote ReviewsRequested, HeadChecks and the
+	// null reads. They speak of that read alone, and classify reads them as unread unless
+	// EvidenceReadAt equals StateReadAt (classify.EvidenceStands): a release before migration
+	// 20261124130001 writes its own read time beside a new head or a new read of the same head and
+	// leaves them where they stood, so after a rollback and a roll-forward they can be an older
+	// read's. The zero time means no read wrote them.
+	EvidenceReadAt time.Time
 	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
 	// head this record stands at, taken from the reader's own clock when that answer was in hand.
 	// This is the one full account of the stamp; every other comment that needs part of it points
@@ -1297,6 +1364,14 @@ type Judgement struct {
 	Moves        []Move         `json:"moves,omitempty"`
 	Mergeability Mergeability   `json:"mergeability,omitempty"`
 	MergeState   MergeState     `json:"mergeState,omitempty"`
+	// omitempty and omitzero, so a run anchored before any of these fields reads as it did, and a
+	// nil count, no read of it, stays nil (PullRequest.ReviewsRequested, HeadChecks, the null reads
+	// and EvidenceReadAt).
+	ReviewsRequested   *int       `json:"reviewsRequested,omitempty"`
+	HeadChecks         HeadChecks `json:"headChecks,omitempty"`
+	NullMergeableReads int        `json:"nullMergeableReads,omitempty"`
+	NullMergeableSince time.Time  `json:"nullMergeableSince,omitzero"`
+	EvidenceReadAt     time.Time  `json:"evidenceReadAt,omitzero"`
 	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
 	// anchored before any read answered carries none, and so does one anchored before migration
 	// 20261112070503 (PullRequest.StateReadAt says what that means).
@@ -1454,6 +1529,25 @@ func (m MergeState) Mergeable() bool {
 	return m == MergeStateClean || m == MergeStateUnstable || m == MergeStateHasHooks
 }
 
+// HeadChecks is what the read that recorded a pull request's merge state found of its head's
+// checks and commit statuses, from GitHub's `statusCheckRollup` of the head commit counted by
+// state (PullRequest.HeadChecks): whether any of them was still running then. Unlike the head's
+// settlement, which is the last one the daemon applied, it is GitHub's answer at the moment of the
+// read. "" (the zero value) means no read gave it for the head the record stands at.
+type HeadChecks string
+
+// The three values of HeadChecks: unread; running, a check run of the head QUEUED, IN_PROGRESS,
+// PENDING or WAITING, or a commit status PENDING, when GitHub answered; and concluded, none of
+// them, or no rollup on a commit with no check or status at all. The rollup's own state is not
+// enough: GitHub answers FAILURE as soon as one context fails, while others still run. A status
+// GitHub counts EXPECTED, required and never reported, is not running: nothing is under way to
+// report it, and the merger's merge names it.
+const (
+	HeadChecksUnread    HeadChecks = ""
+	HeadChecksRunning   HeadChecks = "running"
+	HeadChecksConcluded HeadChecks = "concluded"
+)
+
 // ProductionCheck is an issue's production check: the work after the close in which the role the
 // project's `production_check` named at the open, which Role records, drives the merged change in
 // production and reports what it saw. There is one record
@@ -1473,7 +1567,9 @@ func (m MergeState) Mergeable() bool {
 // LastWakeAt when; WakeAt is when the check is next looked at — the time the checking agent
 // named on a pending report, or the retry of a look nobody reported — and is nil when neither
 // stands. Last marks the bound's look, after which no look starts. A closed check has ClosedAt
-// and its Outcome.
+// and its Outcome. FailedLooks counts the looks in a row whose checking role's claim failed, in
+// the look or after it ended, since the role last reported a look: what the next look's backoff
+// doubles by (workflow.failedLookRetry), and 0 again once a look is reported.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1500,6 +1596,7 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	FailedLooks    int
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -1536,11 +1633,11 @@ const (
 )
 
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
-// steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
-// DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a root registers, keyed by the issue and the step:
-// each step the deployment gates, and criteria where its architect registers the Verification
-// document beside a deployment that gates spec alone of the two (TreeSteps).
+// steps it holds the tree's work on. DesignStepCriteria names the issue's Verification document,
+// and DesignStepSpec its primary document. The record keeps one DesignGate for each step a root
+// registers, keyed by the issue and the step: each step the deployment gates, and criteria where
+// its architect registers the Verification document beside a deployment that gates spec alone of
+// the two (TreeSteps).
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1549,8 +1646,6 @@ const (
 type DesignStep string
 
 const (
-	// DesignStepDecisions is the root issue's decisions document.
-	DesignStepDecisions DesignStep = "decisions"
 	// DesignStepCriteria is the root issue's Verification document.
 	DesignStepCriteria DesignStep = "criteria"
 	// DesignStepSpec is the root issue's primary document, the one document the gate held before a
@@ -1558,9 +1653,10 @@ const (
 	DesignStepSpec DesignStep = "spec"
 )
 
-// DesignSteps is every step, in the order a deployment that gates all three takes them: the
-// decisions first, then the criteria they are judged by, then the spec built on both.
-var DesignSteps = []DesignStep{DesignStepDecisions, DesignStepCriteria, DesignStepSpec}
+// DesignSteps is every step, in the order a deployment that gates both takes them: the criteria
+// first, then the spec they judge. The `decisions` step is gone, since a person's decisions are
+// nodes of the spec (`gates.design` refuses it by name, config's readDesignSteps).
+var DesignSteps = []DesignStep{DesignStepCriteria, DesignStepSpec}
 
 // OrSpec is step itself, and DesignStepSpec when step is empty. A fact, a request or a row built
 // with no step is of the spec step: spec is the step every deployment requires — `root-issues`
@@ -1574,22 +1670,20 @@ func (step DesignStep) OrSpec() DesignStep {
 	return step
 }
 
-// Valid says whether step is one of the three steps. The stored column admits those three names
-// alone, so a value this refuses is one no record can hold.
+// Valid says whether step is one of DesignSteps. The stored columns admit `decisions` as well, a
+// step this refuses: the store keeps the rows an earlier release wrote of it and hands none of them
+// to a reader (Postgres.GatesOf).
 func (step DesignStep) Valid() bool {
 	return slices.Contains(DesignSteps, step)
 }
 
 // Document is the document of its issue the step records, as a refusal or a task names it: the
-// words the architect's own guide uses for the three (skill://legion-architect/references/
+// words the architect's own guide uses for the steps (skill://legion-architect/references/
 // design-gate.md, "Which steps are gated"). The caller supplies the possessive it needs - the
 // issue's, or the architect's own.
 func (step DesignStep) Document() string {
-	switch step {
-	case DesignStepCriteria:
+	if step == DesignStepCriteria {
 		return "Verification document"
-	case DesignStepDecisions:
-		return "decisions document"
 	}
 	return "primary document"
 }
@@ -1605,10 +1699,10 @@ func StepNames(steps []DesignStep) []string {
 	return names
 }
 
-// StepWords is the three step names as a refusal spells them: each quoted, the last after "or".
+// StepWords is the step names as a refusal spells them: each quoted, the last after "or".
 // Every refusal of a value that is not one of them - the `gates.design` list a config file names,
-// the step list a daemon answers the controller with - says this, so no refusal spells the three
-// names of its own.
+// the step list a daemon answers the controller with - says this, so no refusal spells the names
+// of its own.
 func StepWords() string {
 	quoted := StepNames(DesignSteps)
 	for i, name := range quoted {
@@ -2634,6 +2728,12 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
+	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
+	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
+	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it
+	// queues the row that replaces the check's wake (failedBetweenLooks). A row the runner has leased
+	// is dropped too; its fact is the one applying, and its finish then finds nothing to delete.
+	DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)

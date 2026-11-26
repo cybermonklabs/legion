@@ -16,8 +16,9 @@
 //
 // Each row also records what the decisions over the fleet read (migration 20261101030537): the
 // document schema numbers the process reads and creates, which the document socket's admission
-// takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket;
-// and the owner lock protocol it serialises an owner's writers by (migration 20261115100924),
+// takes (docs.Service.authorize), its embedder's identity, whether it stores files in a bucket,
+// and what its build serves (Capabilities, migration 20261117045607); and the owner lock protocol
+// it serialises an owner's writers by (migration 20261115100924),
 // which every owner lock's fleet read takes (store.LockOwner): a row at 0 counts there until it is
 // deregistered or pruned (store.OwnerLockLegacyWindow, PruneAge), and its insert, an earlier
 // build's registration or the return of its lapsed row, takes the owner lock gate (migration
@@ -87,6 +88,23 @@ const pruneLease = "server-processes"
 // names the other process.
 var ErrKeySetMismatch = errors.New("this process's signing key set does not match a live server process's")
 
+// CapabilityIssueRoom is the capability of a build that serves the issue room (R5 of the issue-tree
+// spec): it admits a converted document's socket to its issue's room and settles that room, so an
+// issue is born converted only while every live process lists it (decision 7 of that plan).
+const CapabilityIssueRoom = "issue_room"
+
+// CapabilityTypedBlockSupertags is the capability of a build whose every writer of a block node
+// gives the node its type's supertag (R26 of the issue-tree spec, `r-block-type-supertag`): the
+// boot step that restates block_pointer_targets and block_node_listed to read a block's type from
+// its node runs only where the newest announcement that names another commit lists it, or on a
+// database the boot created from empty.
+const CapabilityTypedBlockSupertags = "typed_block_supertags"
+
+// Capabilities is what this build serves, as Register writes it into
+// server_processes.capabilities and the build's announcement lists it (refs.TupleKinds). A process
+// of a build before the column holds null there, which lists nothing.
+var Capabilities = []string{CapabilityIssueRoom, CapabilityTypedBlockSupertags}
+
 // Instance is what a process registers: the build it serves, the keys it signs and verifies with,
 // and what the decisions over the fleet read (migration 20261101030537).
 type Instance struct {
@@ -127,7 +145,13 @@ type Process struct {
 	SchemaCreatable  int
 	EmbedderIdentity string
 	FileStore        bool
+	// Capabilities is what the process's build serves (Capabilities), as it registered it; none
+	// for a process of a build before the column.
+	Capabilities []string
 }
+
+// Lists reports whether p's build serves capability (Capabilities).
+func (p Process) Lists(capability string) bool { return slices.Contains(p.Capabilities, capability) }
 
 // PredatesFleetColumns reports whether p is a process of a build that predates the columns migration
 // 20261101030537_server_processes_schema added, whose row holds their defaults: no build that
@@ -150,7 +174,8 @@ type Querier interface {
 // the oldest process first.
 const selectLive = `
 	select instance::text, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
-		schema_version, schema_creatable, embedder_identity, coalesce(file_store, false)
+		schema_version, schema_creatable, embedder_identity, coalesce(file_store, false),
+		coalesce(capabilities, '{}')
 	from server_processes
 	where heartbeat_at > now() - make_interval(secs => $1)
 	order by started_at, instance`
@@ -167,7 +192,7 @@ func Live(ctx context.Context, db Querier) ([]Process, error) {
 	for rows.Next() {
 		var p Process
 		if err := rows.Scan(&p.ID, &p.Commit, &p.DashboardBuild, &p.SigningKeys, &p.StartedAt, &p.HeartbeatAt,
-			&p.SchemaVersion, &p.SchemaCreatable, &p.EmbedderIdentity, &p.FileStore); err != nil {
+			&p.SchemaVersion, &p.SchemaCreatable, &p.EmbedderIdentity, &p.FileStore, &p.Capabilities); err != nil {
 			return nil, fmt.Errorf("read the live server processes: %w", err)
 		}
 		live = append(live, p)
@@ -324,8 +349,9 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // admit is the registry's admission check, made in tx under registryLock, which its caller holds:
 // against every live process but id itself, it returns the refusal of the first whose key set does
 // not share instance's (keySetsShared) and writes nothing; when each shares, it writes id's row as
-// instance, or, where the row is there already (a lapsed heartbeat, Registration.renew), stamps its
-// heartbeat. The second result is a failure to reach a decision. The caller commits.
+// instance, with this build's Capabilities, or, where the row is there already (a lapsed
+// heartbeat, Registration.renew), stamps its heartbeat. The second result is a failure to reach a
+// decision. The caller commits.
 //
 // The row names this build's owner lock protocol, store.OwnerLockProtocol, which no Instance
 // carries: the column's default, 0, is an earlier build's, whose insert takes the owner lock gate
@@ -347,11 +373,11 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			schema_version, schema_creatable, embedder_identity, file_store, capabilities, owner_lock_protocol)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
-		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
+		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore, Capabilities,
 		store.OwnerLockProtocol); err != nil {
 		return nil, err
 	}

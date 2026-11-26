@@ -41,7 +41,7 @@ const fallbackClaim = time.Minute
 // unanswered role:X is a lane of its own, keyed by its string (mentionSend.lane, one FIFO lane
 // per recipient and mentionSendLanes = 8 of them sending at once), so the comment's send waits
 // out every send queued ahead of it there, each bounded by the listener client's own 5 s window
-// (defaultTimeout in internal/dispatch/envoy/client.go), and the sender holds up to
+// (CallWindow in internal/dispatch/envoy/client.go), and the sender holds up to
 // maxQueuedMentionSends = 4096 sends queued: the pathological burst owes that one lane hours. A
 // copy that waits holds its key, so the holder of the role receives nothing further of the
 // issue while the forward waits (planChains), which is the starvation this bounds.
@@ -2060,7 +2060,11 @@ func recordFallbackCopies(ctx context.Context, deps Deps, instance uuid.UUID, re
 	}
 	args = append(args, stored...)
 	var holds bool
-	if err := deps.Store.Pool.QueryRow(ctx, fallbackRecordWrites+arms+fallbackRecordAnswer, args...).Scan(&holds); err != nil {
+	heads := graphstore.HeadsOf(reached.nodes, reached.tuples)
+	writeHeads := func(tx pgx.Tx) error { return graphstore.WriteHeads(ctx, tx, heads) }
+	if err := recordWithHeads(ctx, deps.Store.Pool, len(heads) > 0, writeHeads, func(q rowQuerier) error {
+		return q.QueryRow(ctx, fallbackRecordWrites+arms+fallbackRecordAnswer, args...).Scan(&holds)
+	}); err != nil {
 		return false, err
 	}
 	return holds, nil

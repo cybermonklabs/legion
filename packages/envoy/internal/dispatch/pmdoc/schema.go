@@ -25,7 +25,9 @@ import (
 // one does, and cannot run twice unchanged, so only the type migrations before the backfill
 // (typeMigrations in cmd/dispatch/supertag_nodes_test.go) run a second time, and a new one joins no
 // list there; TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs it over a
-// store the backfill filled.
+// store the backfill filled. It joins store.TypeMigrations
+// (internal/dispatch/store/type_migrations.go), which refs' plan test and cmd/dispatch's block
+// schema bump test read.
 //
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
@@ -45,7 +47,8 @@ var blockSchemaJSON []byte
 
 // LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
-// (model.GraphEdgeKinds).
+// (model.GraphEdgeKinds) but needs (model.EdgeKindNeeds), the one relation an issue and a plan
+// node both wait by (R10 of the issue-tree spec).
 func LinkKinds() []string {
 	return slices.Clone(active.Load().linkKinds)
 }
@@ -66,6 +69,22 @@ func SchemaJSON() []byte {
 func IsTypedBlock(name string) bool {
 	_, ok := typedBlock(name)
 	return ok
+}
+
+// BlockTypeAttributes is the attributes the installed schema declares for the typed block name,
+// in declaration order, and false for a type it does not declare. The block index reads a
+// decision's from it to tell a tie its caller writes from one the server derives (refs'
+// DecisionFacts): the schema's `server` flag is what says whose a value is.
+func BlockTypeAttributes(name string) (BlockAttributes, bool) {
+	typ, ok := typedBlock(name)
+	return typ.Attributes, ok
+}
+
+// TypedBlockNames is the name of every typed block the installed schema declares, sorted: each
+// type of schema/blocks.json until the store's nodes are installed over it. The block index reads
+// it where it marks gone every typed block a version removes (refs' unheldTypedNodes).
+func TypedBlockNames() []string {
+	return typedBlockNames()
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
@@ -125,7 +144,8 @@ func validateBlockSchema(value BlockSchema) error {
 			}
 		}
 	}
-	// A target names a type of the whole schema, so it is checked once every name is known.
+	// A target names a type of the whole schema, so it is checked once every name is known, and so
+	// is a parent.
 	for _, typ := range value.Types {
 		for _, attr := range typ.Attributes {
 			for _, target := range attr.Targets {
@@ -134,6 +154,28 @@ func validateBlockSchema(value BlockSchema) error {
 				}
 			}
 		}
+		if err := validateParents(typ, seenTypes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateParents refuses a type's parents (BlockTypeSchema.Parents) that no block could stand
+// in: a name the schema declares no type of, the type itself, and a name given twice.
+func validateParents(typ BlockTypeSchema, declared map[string]struct{}) error {
+	seen := make(map[string]struct{}, len(typ.Parents))
+	for _, parent := range typ.Parents {
+		if _, typed := declared[parent]; !typed {
+			return fmt.Errorf("type %q names the parent %q, which is no type the schema declares", typ.Name, parent)
+		}
+		if parent == typ.Name {
+			return fmt.Errorf("type %q names itself as its parent", typ.Name)
+		}
+		if _, repeated := seen[parent]; repeated {
+			return fmt.Errorf("type %q names the parent %q twice", typ.Name, parent)
+		}
+		seen[parent] = struct{}{}
 	}
 	return nil
 }
@@ -195,10 +237,17 @@ func normalizeSchemaDefaults(value *BlockSchema) error {
 // every structural edge kind matches, and nothing a `?kind=` comma list would split.
 var linkKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// ParentAttribute is the name of the attribute that places a typed block in its issue's tree
+// where its rendering cannot (R2 and R3 of the issue-tree spec): a `block[]` attribute
+// holding at most one reference, because a node has one parent, which the block index turns into
+// the block's `part_of` tuple. It is the one attribute whose `items` name the conversation's kinds
+// (ask, comment, message).
+const ParentAttribute = "parent"
+
 func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeBool, BlockAttributeEnum, BlockAttributeStringList,
-		BlockAttributeBlockList, BlockAttributeActor, BlockAttributeTimestamp:
+		BlockAttributeBlockList, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeMinutes:
 	default:
 		return fmt.Errorf("type %q attribute %q has unknown kind %q", typeName, name, attr.Kind)
 	}
@@ -206,11 +255,28 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 		if !linkKindPattern.MatchString(name) {
 			return fmt.Errorf("type %q attribute %q is a block[] attribute, whose name is the kind of the links it makes and must match %s", typeName, name, linkKindPattern)
 		}
-		if slices.Contains(model.GraphEdgeKinds, name) {
-			return fmt.Errorf("type %q attribute %q is a block[] attribute named after a structural edge kind (%s)", typeName, name, strings.Join(model.GraphEdgeKinds, ", "))
+		if name != model.EdgeKindNeeds && slices.Contains(model.GraphEdgeKinds, name) {
+			return fmt.Errorf("type %q attribute %q is a block[] attribute named after a structural edge kind (%s; %s alone is both)",
+				typeName, name, strings.Join(model.GraphEdgeKinds, ", "), model.EdgeKindNeeds)
 		}
 	} else if attr.Targets != nil {
 		return fmt.Errorf("type %q attribute %q has targets, which only a block[] attribute may carry", typeName, name)
+	}
+	if attr.Kind != BlockAttributeBlockList && attr.Items != nil {
+		return fmt.Errorf("type %q attribute %q has items, which only a block[] attribute may carry", typeName, name)
+	}
+	if name == ParentAttribute && attr.Kind != BlockAttributeBlockList {
+		return fmt.Errorf("type %q attribute %q places a block in its tree, so it must be a block[] attribute", typeName, name)
+	}
+	for index, item := range attr.Items {
+		switch item {
+		case BlockItemAsk, BlockItemComment, BlockItemMessage, BlockItemIssue:
+		default:
+			return fmt.Errorf("type %q attribute %q names the item kind %q; items are ask, comment, message and issue", typeName, name, item)
+		}
+		if slices.Index(attr.Items, item) != index {
+			return fmt.Errorf("type %q attribute %q names the item kind %q twice", typeName, name, item)
+		}
 	}
 	if attr.Kind == BlockAttributeEnum {
 		if len(attr.Choices) == 0 {
@@ -228,7 +294,7 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 		}
 	}
 	if attr.Default != nil {
-		if err := validateAttributeValue(attr, attr.Default); err != nil {
+		if err := validateAttributeValue(name, attr, attr.Default); err != nil {
 			return fmt.Errorf("type %q attribute %q default: %w", typeName, name, err)
 		}
 		if items, _ := stringSlice(attr.Default); attr.Kind == BlockAttributeBlockList && len(items) > 0 {
@@ -238,12 +304,21 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 	return nil
 }
 
-func validateAttributeValue(attr BlockAttributeSchema, value any) error {
+// validateAttributeValue refuses value, a tree's value of the attribute name declared as attr,
+// unless it is one of attr's kind. ParentAttribute holds at most one reference.
+func validateAttributeValue(name string, attr BlockAttributeSchema, value any) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeActor:
 		if _, ok := value.(string); !ok {
 			return fmt.Errorf("must be a string, got %T", value)
 		}
+	case BlockAttributeMinutes:
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("must be a duration in minutes, got %T", value)
+		}
+		_, err := Minutes(text)
+		return err
 	case BlockAttributeTimestamp:
 		text, ok := value.(string)
 		if !ok {
@@ -290,19 +365,97 @@ func validateAttributeValue(attr BlockAttributeSchema, value any) error {
 		if !ok {
 			return fmt.Errorf("must be an array of block references, got %T", value)
 		}
-		return validateBlockPointerValues(items)
+		if err := validateBlockPointerValues(items, attr.Items); err != nil {
+			return err
+		}
+		return parentCount(name, items)
+	case BlockAttributeAsk:
+		reference, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("must be an ask reference, got %T", value)
+		}
+		return validateAskReference(reference)
 	}
 	return nil
 }
 
+// validateAskReference refuses the value of an `ask` attribute unless it is one ask of an issue,
+// written whole as every writer writes an ask's address (`dispatch://<ISSUE>/ask/<id>`), with
+// nothing before or after it. A part of an ask (`dispatch://<ISSUE>/ask/<id>#b-<block>`) is
+// refused with a reason of its own: it names a block of the ask's text, not the ask a decision
+// settles. Whether the ask is one of the block's own issue only the store can say, so that is no
+// rule of the schema's.
+func validateAskReference(value string) error {
+	ref, ok := text.ParseRef(value, "")
+	if ok && ref.Kind == "block" && ref.Item == "ask" {
+		return fmt.Errorf("%q is a part of an ask: an ask attribute names the ask itself, dispatch://<ISSUE>/ask/<id>", value)
+	}
+	if !ok || ref.Kind != "ask" || ref.IssueKey == "" || "dispatch://"+ref.IssueKey+"/ask/"+ref.ID != value {
+		return fmt.Errorf("%q is not an ask of an issue as Dispatch writes one: dispatch://<ISSUE>/ask/<id>", value)
+	}
+	return nil
+}
+
+// MaxMinutes is the longest duration a `minutes` attribute holds: 10,000 minutes, about 21
+// working days of eight hours, past which a plan task is not one task (R18 of the issue tree's
+// spec).
+const MaxMinutes = 10000
+
+// minutesPattern is a duration as markdown writes one: a whole number of hours, a whole number of
+// minutes, or both with the hours first, each number positive, with no sign and no leading zero.
+// It also matches the empty string, which Minutes refuses.
+var minutesPattern = regexp.MustCompile(`^(?:([1-9][0-9]*)h)?(?:([1-9][0-9]*)m)?$`)
+
+// minutesDigits is the most digits a number of a duration may have: a number of six is past
+// MaxMinutes whatever its unit, so a longer one is refused before it is read as a number, which
+// therefore never overflows.
+const minutesDigits = 5
+
+// Minutes is the whole number of minutes value, a `minutes` attribute as its author wrote it,
+// stands for, and refuses a value of another shape: `45m` is 45, `2h` is 120, `1h30m` is 90 and
+// `1h90m` is 150, the hours and the minutes each a whole number; `0m`, `1h0m`, `-5m`, `2d`,
+// `1.5h`, `90`, `30m1h` and `045m` are refused, and so is a duration past MaxMinutes, `10001m` or
+// `166h41m`, while `10000m` and `166h40m` are taken. The block's text keeps the value as its
+// author wrote it, so it reads back character for character; the block's node holds this number
+// (refs' planBlockValues). Its twin is minutesValueProblem in @legion/proof-editor, which gives a
+// refusal in this function's wording, quoting a value as JSON.stringify does where this uses %q.
+func Minutes(value string) (int, error) {
+	match := minutesPattern.FindStringSubmatch(value)
+	if value == "" || match == nil {
+		return 0, fmt.Errorf("%q is not a duration: a whole number of hours, a whole number of minutes, or both with the hours first, such as 45m, 2h or 1h30m", value)
+	}
+	total := 0
+	for index, unit := range [...]int{60, 1} {
+		digits := match[index+1]
+		if len(digits) > minutesDigits {
+			return 0, minutesPast(value)
+		}
+		count := 0
+		for _, digit := range digits {
+			count = count*10 + int(digit-'0')
+		}
+		total += count * unit
+	}
+	if total > MaxMinutes {
+		return 0, minutesPast(value)
+	}
+	return total, nil
+}
+
+// minutesPast is Minutes' refusal of value, a duration of its shape longer than MaxMinutes.
+func minutesPast(value string) error {
+	return fmt.Errorf("%q is more than %d minutes, the longest a duration may be", value, MaxMinutes)
+}
+
 // ParseBlockPointerValue reads a `block[]` attribute as markdown writes it: the empty string for
-// no pointers, else canonical block references (text.CanonicalBlockRef) joined by exactly one
-// space, with none leading or trailing and none repeated. Anything else is refused, never
-// normalised, so the server and the editor never disagree on a value. Its twin is
-// parseBlockPointerValue in @legion/contracts, whose blockPointerValueProblem gives its refusal's
-// reason in this function's wording, quoting a value as JSON.stringify does where this uses %q;
-// both are tested against `testdata/block-pointer-values.json`.
-func ParseBlockPointerValue(raw string) ([]string, error) {
+// no pointers, else references joined by exactly one space, with none leading or trailing and
+// none repeated, each one a canonical block of a document (text.CanonicalBlockRef) or one of the
+// item kinds items declares (validateBlockPointer). Anything else is refused, never normalised,
+// so the server and the editor never disagree on a value. Its twin is parseBlockPointerValue in
+// @legion/contracts, whose blockPointerValueProblem gives its refusal's reason in this
+// function's wording, quoting a value as JSON.stringify does where this uses %q; both are tested
+// against `testdata/block-pointer-values.json`.
+func ParseBlockPointerValue(raw string, items []BlockItemKind) ([]string, error) {
 	if raw == "" {
 		return []string{}, nil
 	}
@@ -310,31 +463,20 @@ func ParseBlockPointerValue(raw string) ([]string, error) {
 		return nil, fmt.Errorf("%q must be block references separated by exactly one space, with none leading or trailing", raw)
 	}
 	values := strings.Split(raw, " ")
-	if err := validateBlockPointerValues(values); err != nil {
+	if err := validateBlockPointerValues(values, items); err != nil {
 		return nil, err
 	}
 	return values, nil
 }
 
-// validateBlockPointerValues refuses a list of block pointers holding a part of an ask or a block
-// of a comment or a message (text.Ref.Item), which a pointer never names: a `block[]` attribute
-// points at blocks of documents, whose types its targets limit, and an item's block has no type.
-// It refuses one that is otherwise not a canonical block reference (text.CanonicalBlockRef), and
-// one named twice. Its twin is blockPointersProblem in @legion/contracts, which follows its
-// wording, quoting a value as JSON.stringify does.
-func validateBlockPointerValues(values []string) error {
+// validateBlockPointerValues refuses a list of block pointers holding one validateBlockPointer
+// refuses, and one named twice. Its twin is blockPointersProblem in @legion/contracts, which
+// follows its wording, quoting a value as JSON.stringify does.
+func validateBlockPointerValues(values []string, items []BlockItemKind) error {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		if ref, ok := text.ParseRef(value, ""); ok && ref.Kind == "block" && ref.Item != "" {
-			// The kind takes the article its noun does: an ask, a comment, a message.
-			article := "a"
-			if ref.Item == "ask" {
-				article = "an"
-			}
-			return fmt.Errorf("%q is a block of %s %s: a block[] attribute points only at a block of a document", value, article, ref.Item)
-		}
-		if _, ok := text.CanonicalBlockRef(value); !ok {
-			return fmt.Errorf("%q is not a block reference as Dispatch writes one: dispatch://<ISSUE>/spec#b-<id>, or dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>, the id percent-encoded in upper-case hex except ASCII letters, digits and -, optionally pinned @v<N>", value)
+		if err := validateBlockPointer(value, items); err != nil {
+			return err
 		}
 		if _, repeated := seen[value]; repeated {
 			return fmt.Errorf("names %q twice", value)
@@ -344,14 +486,131 @@ func validateBlockPointerValues(values []string) error {
 	return nil
 }
 
-func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
+// validateBlockPointer refuses one reference a `block[]` attribute declaring items holds unless
+// it is a block of a document written as text.CanonicalBlockRef reads one, or an item the
+// attribute declares: an issue's ask, comment or message, or a block of one, written as
+// text.CanonicalItemBlockRef reads it, or an issue written exactly `dispatch://<ISSUE>`. A block
+// of an ask, a comment or a message (text.Ref.Item) is refused with a reason of its own, which
+// names the kind with the article it takes: of a kind the attribute does not declare, or written
+// otherwise than FormatItemBlockRef writes it; so is an ask, a comment or a message of a kind the
+// attribute declares, written otherwise. Whether a target is a block, an item or an issue the
+// write may name is the store's to say (CheckBlockPointers).
+func validateBlockPointer(value string, items []BlockItemKind) error {
+	if _, ok := pointerTarget(value, items); ok {
+		return nil
+	}
+	ref, read := text.ParseRef(value, "")
+	item := ref.Item
+	if ref.Kind != "block" {
+		item = ref.Kind
+	}
+	// The kind takes the article its noun does: an ask, a comment, a message.
+	article := "a"
+	if item == "ask" {
+		article = "an"
+	}
+	switch {
+	case read && ref.Kind == "block" && ref.Item != "" && !slices.Contains(items, BlockItemKind(ref.Item)):
+		return fmt.Errorf("%q is a block of %s %s: a block[] attribute points only at a block of a document%s", value, article, ref.Item, declaredItems(items))
+	case read && ref.Kind == "block" && ref.Item != "":
+		return fmt.Errorf("%q is not a block of %s %s as Dispatch writes one: %s, the item's whole lower-case uuid, the block id percent-encoded in upper-case hex except ASCII letters, digits and -, and no pin", value, article, ref.Item, itemForm(BlockItemKind(ref.Item)))
+	case read && (item == "ask" || item == "comment" || item == "message") && slices.Contains(items, BlockItemKind(item)):
+		return fmt.Errorf("%q is not %s %s as Dispatch writes one: %s, the item's whole lower-case uuid, and no pin", value, article, item, itemForm(BlockItemKind(item)))
+	}
+	return fmt.Errorf("%q is not a block reference as Dispatch writes one: dispatch://<ISSUE>/spec#b-<id>, or dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>, the id percent-encoded in upper-case hex except ASCII letters, digits and -, optionally pinned @v<N>%s", value, declaredItems(items))
+}
+
+// pointerTarget is what value names when it is a reference a `block[]` attribute declaring items
+// holds (validateBlockPointer): a block of a document, an item of a kind items names or a block
+// of one, or, where items names issue, an issue. ok is false for anything else.
+func pointerTarget(value string, items []BlockItemKind) (text.Ref, bool) {
+	if ref, ok := text.CanonicalBlockRef(value); ok {
+		return ref, true
+	}
+	if len(items) == 0 {
+		return text.Ref{}, false
+	}
+	if ref, ok := text.CanonicalItemBlockRef(value); ok && slices.Contains(items, BlockItemKind(ItemKindOf(ref))) {
+		return ref, true
+	}
+	if slices.Contains(items, BlockItemIssue) {
+		if ref, ok := text.ParseRef(value, ""); ok && ref.Kind == "issue" && value == "dispatch://"+ref.IssueKey {
+			return ref, true
+		}
+	}
+	return text.Ref{}, false
+}
+
+// ItemKindOf is the kind of the ask, comment or message ref names, itself or a block of it: ask,
+// comment or message, and "" for a reference to anything else.
+func ItemKindOf(ref text.Ref) string {
+	switch {
+	case ref.Kind == "block":
+		return ref.Item
+	case ref.Kind == "ask" || ref.Kind == "comment" || ref.Kind == "message":
+		return ref.Kind
+	}
+	return ""
+}
+
+// itemOf is the item kind of items a reference pointerTarget read names: ask, comment or
+// message for one of those or a block of one, issue for an issue, and false for a block of a
+// document.
+func itemOf(ref text.Ref) (BlockItemKind, bool) {
+	if ref.Kind == "issue" {
+		return BlockItemIssue, true
+	}
+	kind := ItemKindOf(ref)
+	return BlockItemKind(kind), kind != ""
+}
+
+// pointerItem is the item kind of items that value, one reference a `block[]` attribute holds,
+// names (itemOf), and false for a block of a document and for a value the attribute does not
+// hold. A canonical block of a document names its document by `/spec#` or `/artifact/`, which no
+// canonical item reference holds, so such a pointer is passed over unread: a walk of a document's
+// elements (eachElement) meets every pointer of a plan.
+func pointerItem(value string, items []BlockItemKind) (BlockItemKind, bool) {
+	if strings.Contains(value, "/spec#") || strings.Contains(value, "/artifact/") {
+		return "", false
+	}
+	ref, held := pointerTarget(value, items)
+	if !held {
+		return "", false
+	}
+	return itemOf(ref)
+}
+
+// itemForm is how a reference to an item of kind item is written where a `block[]` attribute
+// declares it: an issue's ask, comment or message, or a block of one, and an issue.
+func itemForm(item BlockItemKind) string {
+	if item == BlockItemIssue {
+		return "dispatch://<ISSUE>"
+	}
+	return "dispatch://<ISSUE>/" + string(item) + "/<id>[#b-<block id>]"
+}
+
+// declaredItems is what a refusal adds for an attribute declaring items: the form of each, as
+// ", or an item it declares: dispatch://<ISSUE>/comment/<id>#b-<block id>, dispatch://<ISSUE>".
+// An attribute declaring none adds nothing.
+func declaredItems(items []BlockItemKind) string {
+	if len(items) == 0 {
+		return ""
+	}
+	forms := make([]string, len(items))
+	for index, item := range items {
+		forms[index] = itemForm(item)
+	}
+	return ", or an item it declares: " + strings.Join(forms, ", ")
+}
+
+func parseTypedAttributeValue(name string, attr BlockAttributeSchema, raw any) (any, error) {
 	text, ok := raw.(string)
 	if !ok {
 		return nil, fmt.Errorf("must be encoded as a string, got %T", raw)
 	}
 	switch attr.Kind {
-	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp:
-		if err := validateAttributeValue(attr, text); err != nil {
+	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeMinutes:
+		if err := validateAttributeValue(name, attr, text); err != nil {
 			return nil, err
 		}
 		return text, nil
@@ -370,15 +629,32 @@ func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
 			}
 			value = legacy
 		}
-		if err := validateAttributeValue(attr, value); err != nil {
+		if err := validateAttributeValue(name, attr, value); err != nil {
 			return nil, err
 		}
 		return value, nil
 	case BlockAttributeBlockList:
-		return ParseBlockPointerValue(text)
+		values, err := ParseBlockPointerValue(text, attr.Items)
+		if err != nil {
+			return nil, err
+		}
+		if err := parentCount(name, values); err != nil {
+			return nil, err
+		}
+		return values, nil
 	default:
 		return nil, fmt.Errorf("has unknown kind %q", attr.Kind)
 	}
+}
+
+// parentCount refuses values, the references the attribute name holds, when name is
+// ParentAttribute and they are more than one: a block has one parent. Its twin is parentProblem in
+// @legion/proof-editor.
+func parentCount(name string, values []string) error {
+	if name == ParentAttribute && len(values) > 1 {
+		return fmt.Errorf("holds %d references; a block has one parent, so it holds at most one", len(values))
+	}
+	return nil
 }
 
 // stringListWrittenWithGoEscapes reads a `string[]` attribute a version stored before this reader
@@ -419,12 +695,36 @@ func defaultAttributes(typ BlockTypeSchema) Attrs {
 // default, and false when it has none or when this build may not create the attribute yet. A
 // block an earlier build wrote, before the attribute existed, reads with that default (readElement,
 // renderTypedAttributes), as the browser editor reads it. An attribute this build cannot create is
-// left out, so that no write of this build adds it.
+// left out, so that no write of this build adds it. A server attribute has no written default
+// either: the server writes it into a block or nobody does, and a block it is not written into -
+// an open ask's, whose `state` no write keeps once the fleet is one build (docs' keptAskState) -
+// is read, taken at an agent's boundary (StripServerOwnedAttrs) and rendered without it. That is
+// why an open ask keeps no `state`: an ask an agent's upload or `doc-edit` adds is stored in the
+// route's version before settlement opens it, so a `state="open"` written then would cost a
+// version of its own, whose only change is that attribute; an ask a browser adds has no version
+// until settlement, whose one version would carry both the block and its state.
 func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
-	if attr.Default == nil || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
+	if !hasWrittenDefault(typ, attr) {
 		return nil, false
 	}
 	return cloneSchemaValue(attr.Default), true
+}
+
+// hasWrittenDefault reports whether typ's attribute attr has a written default (writtenDefault).
+func hasWrittenDefault(typ BlockTypeSchema, attr BlockAttribute) bool {
+	return attr.Default != nil && !attr.Server && creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name})
+}
+
+// nullReadsAbsent reports whether value, what a block of typ holds for its attribute attr, is a
+// null that reads as the block not holding attr: a null where attr has no written default
+// (writtenDefault). The browser editor gives such an attribute no default either - a server
+// attribute, which the server writes into a block or nobody does, and one it may not create yet -
+// so its node holds it as undefined, which y-prosemirror writes into the live document whenever it
+// makes the node, as a paste does, and a read of the live document reads as null (readElement).
+// So an ask block a browser pasted holds `state` null, although the attribute's default is
+// `open`. A null where attr has a written default is no value of it, and is refused.
+func nullReadsAbsent(typ BlockTypeSchema, attr BlockAttribute, value any) bool {
+	return value == nil && !hasWrittenDefault(typ, attr)
 }
 
 // withWrittenDefaults is attrs, a typed block's attributes as a stored tree holds them, with the
@@ -460,21 +760,29 @@ func TypedBlockAttributes(node *Node) []model.BlockAttributeValue {
 	return values
 }
 
+// InMarkdown reports whether a typed block's markdown carries the attribute: its `markdown` field,
+// true where the manifest names none. One it is false for is never rendered (typedAttributeValues),
+// and markdown that names it is read as if it did not (typedDirectiveRefusal), since its value
+// lives on the block's node, where the server writes it.
+func (a BlockAttributeSchema) InMarkdown() bool {
+	return a.Markdown == nil || *a.Markdown
+}
+
 // typedAttributeValues is a typed block's declared attributes, their written values and the kind
 // its type declares each under, in declaration order, leaving out one the block does not hold and
-// one the markdown never carries.
+// one the markdown never carries (InMarkdown).
 func typedAttributeValues(n *Node, typ BlockTypeSchema) ([]model.BlockAttributeValue, error) {
 	values := make([]model.BlockAttributeValue, 0, len(typ.Attributes))
 	for _, attribute := range typ.Attributes {
 		name, definition := attribute.Name, attribute.BlockAttributeSchema
-		if name == "invalid" && definition.Server {
+		if !definition.InMarkdown() {
 			continue
 		}
 		value, present := n.Attrs[name]
 		if !present {
 			value, present = writtenDefault(typ, attribute)
 		}
-		if !present || (value == nil && definition.Default == nil) {
+		if !present || nullReadsAbsent(typ, attribute, value) {
 			continue
 		}
 		encoded, err := encodeTypedAttribute(n.Type, name, definition, value)
@@ -517,7 +825,7 @@ func renderTypedAttributes(n *Node, typ BlockTypeSchema) (string, []model.BlockA
 // quoting; it refuses a value whose kind is not the one the type declares.
 func encodeTypedAttribute(blockType, name string, definition BlockAttributeSchema, value any) (string, error) {
 	switch definition.Kind {
-	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp:
+	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeMinutes:
 		text, ok := value.(string)
 		if !ok {
 			return "", fmt.Errorf("%w: typed block %q attribute %q must be a string", ErrSchema, blockType, name)

@@ -341,13 +341,14 @@ ask_settled() {
   [[ "$(jq -c '[.[] | select(.block_id == "transport")] | length' "$work/body")" == 1 ]]
 }
 
-# block_answered ISSUE: the settlement has written the person's answer onto the document's block,
-# under the id the document gave it.
+# block_answered ISSUE: the document's block, under the id the document gave it, is the person's
+# answered ask. The text route's markdown holds no server-owned ask attribute, so the answer is
+# read from the route's `asks` member, which answers each ask block from the ask's node.
 block_answered() {
   get "/api/v1/issues/$1/artifacts/design-md/text"
   [[ "$status" == 200 ]] || return 1
   jq -e --arg who "$dev_login" \
-    '.markdown | test(":::ask\\{#transport .*state=\"answered\" answered_by=\"\($who)\"")' \
+    '[.asks[]? | select(.block_id == "transport" and .state == "answered" and .answered_by == $who)] | length == 1' \
     "$work/body" >/dev/null
 }
 
@@ -427,9 +428,9 @@ expect identity "the row still carries the person's answer" \
 
 get "/api/v1/issues/$carry/artifacts/design-md/text"
 want_status 200 identity "the document after the upload answers"
-expect identity "the uploaded block took the id the live block had, and the settlement wrote the person's answer onto it again" \
-  true \
-  '.markdown | test(":::ask\\{#transport .*state=\"answered\" answered_by=\"'"$dev_login"'\"")'
+expect identity "the uploaded block took the id the live block had, and its ask is still the person's answered one" \
+  "[\"answered\",\"$dev_login\"]" \
+  '[.asks[]? | select(.block_id == "transport") | .state, .answered_by]'
 
 # --- base: the base an upload names, and the two refusals ----------------------------------------
 

@@ -26,6 +26,7 @@ import type {
   CheckBlock,
   IssueCheckResults,
   IssueCoverage,
+  IssueDetails,
 } from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -61,8 +62,11 @@ import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { EditorBox } from "../StagedDocument";
 import { ViewStage } from "../slots/stage";
+import { drawStage, REFUSED, stubReads } from "../slots/stage-fixtures";
 import { useVerificationReads } from "../slots/view-verification";
 import { blockNodeId, treeContext } from "../tree-drafts";
+import { treeAnswer } from "../tree-read/tree-fixtures";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import type { OnEditing } from "../useNodeEditing";
 import { shortCommit } from "./statement-state";
 import {
@@ -634,6 +638,24 @@ test("a statement no check serves carries its gap in full", () => {
       ])
     ).toEqual([["no_check", GAP_LINES.no_check]]);
     expect(GAP_LINES.no_check).toBe("No check serves this statement.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// While a document of the issue is still being indexed no statement is drawn as lacking a check:
+// where its gap would be, the statement draws that document's line, in the server's own words.
+test("a statement whose coverage waits on a document still being indexed draws its line and no gap", () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const view = drawBody(
+    [{ ...statementNode("r1", "The page waits for the index.", []), coverageNotes: [owed] }],
+    []
+  );
+  try {
+    expect(view.container.querySelector("[data-gap]")).toBeNull();
+    expect(
+      [...view.container.querySelectorAll("[data-coverage-note]")].map((note) => note.textContent)
+    ).toEqual([owed]);
   } finally {
     view.unmount();
   }
@@ -2665,6 +2687,17 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
   }
 });
 
+/** The Verification document's blocks as the slot hands them to the view's reads
+ *  (`useVerificationReads`): the tree read's, its answer held. */
+const HELD_TREE = {
+  data: [],
+  errorUpdateCount: 0,
+  isError: false,
+  isFetching: false,
+  isSuccess: true,
+  refetch: () => Promise.resolve(),
+};
+
 // Staleness is per observer. The view's own observers of the coverage and the results
 // (`useVerificationReads`) hold what they read until an event refreshes it, so observers that
 // mount 31 s after the page read both, past the app's 30 s (`main.tsx`), as the stage mounts the
@@ -2685,7 +2718,7 @@ test("the view's own reads of the coverage and the results send no request when 
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   try {
-    const pressed = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+    const pressed = renderHook(() => useVerificationReads(ISSUE_KEY, HELD_TREE), { wrapper });
     try {
       await act(() => Bun.sleep(20));
       expect(pressed.result.current.reads).toEqual({ state: "answered" });
@@ -2704,16 +2737,14 @@ test("the view's own reads of the coverage and the results send no request when 
 /**
  * What the reads stand at, and how often each of the view's reads was asked, once the read
  * `refused` was refused before it first answered and the Retry `useVerificationReads` gives its
- * line was called: over an issue with no check, which needs no blocks read, so nothing asks the
- * blocks read but a Retry that asked the wrong read.
+ * line was called: over the Verification document's blocks held (`HELD_TREE`), so nothing asks
+ * the tree read again, which the blocks are in, but a Retry that asked the wrong read.
  */
 async function retried(
   refused: "coverage" | "results"
 ): Promise<{ asked: Record<VerificationRead, number>; reads: VerificationReads }> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const blocksRead = spyOn(api, "getArtifactBlocks").mockRejectedValue(
-    new Error("The blocks read was asked.")
-  );
+  const tree = { ...HELD_TREE, refetch: mock(() => Promise.resolve()) };
   const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(NO_COVERAGE);
   const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(NO_RESULTS);
   if (refused === "coverage") coverageRead.mockRejectedValueOnce(new Error("Refused."));
@@ -2721,7 +2752,7 @@ async function retried(
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY, tree), { wrapper });
   try {
     await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
     const before = hook.result.current.reads;
@@ -2731,7 +2762,7 @@ async function retried(
     await act(() => Bun.sleep(20));
     return {
       asked: {
-        blocks: blocksRead.mock.calls.length,
+        blocks: tree.refetch.mock.calls.length,
         coverage: coverageRead.mock.calls.length,
         results: resultsRead.mock.calls.length,
       },
@@ -2739,7 +2770,6 @@ async function retried(
     };
   } finally {
     hook.unmount();
-    blocksRead.mockRestore();
     coverageRead.mockRestore();
     resultsRead.mockRestore();
     client.clear();
@@ -2796,7 +2826,7 @@ async function refusedCoverage(): Promise<RefusedCoverage> {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY, HELD_TREE), { wrapper });
   const restore = () => {
     hook.unmount();
     coverageRead.mockRestore();
@@ -2853,6 +2883,55 @@ test("a refused read asked again reads as failed, with its Retry running, while 
     );
   } finally {
     restore();
+  }
+});
+
+// Under the Verification filter the Verification document's blocks are the view's own read
+// (`useTreeRead`'s `blocksOf`), and the blocks line runs by that read (`useBlocksRunning`), not by
+// Conversation's, which the page reads beside the view. On the page's own stage, with
+// Conversation's read out and the view read refused, the blocks line's Retry sends the view read
+// again, the line is busy while it runs, and it leaves once the view read answers.
+test("with Conversation's read out, the blocks line's Retry sends the refused Verification view read, and is busy while it runs", async () => {
+  const user = userEvent.setup();
+  const stubs = stubReads();
+  const base = issueDetails();
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), artifact("artifact-verification", VERIFICATION_SLUG)],
+    verification_artifact_id: "artifact-verification",
+  };
+  // Conversation's read never answers; the Verification view read is refused, and then answers
+  // when the case says.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view !== "verification") return Promise.withResolvers<never>().promise;
+    viewReads += 1;
+    return viewReads === 1 ? Promise.reject(REFUSED) : again.promise;
+  });
+  const view = drawStage("", { issue, preset: "verification" });
+  try {
+    const line = await waitFor(() => {
+      const drawn = view.container.querySelector<HTMLElement>(
+        '[data-verification-unreadable="blocks"]'
+      );
+      expect(drawn, "the view drew no line for its refused blocks").not.toBeNull();
+      return drawn as HTMLElement;
+    });
+    const retry = within(line).getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await waitFor(() => expect(viewReads, "the Retry sent no Verification view read").toBe(2));
+    expect(retry.getAttribute("aria-busy"), "the line is not busy while the view read runs").toBe(
+      "true"
+    );
+    await act(async () => again.resolve(treeAnswer([])));
+    await waitFor(() =>
+      expect(view.container.querySelector('[data-verification-unreadable="blocks"]')).toBeNull()
+    );
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
   }
 });
 
@@ -3295,6 +3374,7 @@ test("each control of the view is a tab stop", async () => {
       { named: [named.id] }
     );
     try {
+      // The page cuts only the words of rows near the viewport.
       await measureNearWords(near);
       // In document order the issue's row, the tree's one tab stop, comes before the chip All.
       expect(

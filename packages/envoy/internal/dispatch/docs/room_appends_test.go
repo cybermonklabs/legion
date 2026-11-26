@@ -541,7 +541,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 			browser := &browserOrigin{}
 			for index := range updates {
 				_, updates[index] = peerEdit(t, live, appendBlocks(t, fmt.Sprintf("Queued %d.\n", index)))
-				credits[index] = service.creditContentChange(artifactID, browser, &instance.hold, nil)
+				credits[index] = service.creditContentChange(artifactID, browser, &instance.hold, nil, nil)
 				service.queueUpdateClass(artifactID, updates[index],
 					documentUpdateClass{seq: uint64(index + 1), contentChanged: true, durable: true, credit: credits[index], cursor: &instance.cursor}, false)
 			}

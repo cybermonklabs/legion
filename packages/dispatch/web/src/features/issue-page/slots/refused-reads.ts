@@ -1,6 +1,6 @@
 import { useLayoutEffect } from "react";
 
-import type { FailedRead, ReadKey } from "../outline-reads";
+import type { ReadKey, RefusedLine } from "../outline-reads";
 import type { ViewSlotProps } from "./stage";
 
 /**
@@ -16,7 +16,7 @@ import type { ViewSlotProps } from "./stage";
  * refused.
  */
 export function useTellsAddressDrawn(
-  failed: readonly FailedRead[],
+  failed: readonly RefusedLine[],
   settled: boolean,
   own: readonly ReadKey[],
   onAddressDrawn: ViewSlotProps["onAddressDrawn"] | undefined

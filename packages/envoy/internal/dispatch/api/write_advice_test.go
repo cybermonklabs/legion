@@ -158,7 +158,7 @@ Which transport?
 		t.Fatalf("project decision_blocks = %d err=%v", projectCount, err)
 	}
 	issueUpload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+with.Key+"/artifacts", map[string]string{
-		"name": "decisions.md", "content": withBlocks,
+		"name": "questions.md", "content": withBlocks,
 	}, "alice")
 	issueUploadAdvice := adviceFromResponse(t, issueUpload.Code, issueUpload.Body.String())
 	if issueUploadAdvice.DecisionBlocks == nil || *issueUploadAdvice.DecisionBlocks != 2 {
@@ -268,7 +268,7 @@ func TestWriteAdviceReportsTypedBlockOpeningsStoredAsText(t *testing.T) {
 	asBlock := "Context\n\n:::ask{urgency=\"med\"}\nShip it?\n:::\n\nThe syntax is `:::ask{urgency=\"med\"}`.\n"
 	parsed := createAdviceIssue(t, handler, "OPENERS", "Opening as a block", &asBlock)
 	if parsed.Advice == nil || parsed.Advice.DecisionBlocks == nil || *parsed.Advice.DecisionBlocks != 1 || parsed.Advice.UnparsedOpeners != nil {
-		t.Fatalf("advice = %#v, want one decision block and no unparsed_openers", parsed.Advice)
+		t.Fatalf("advice = %#v, want one ask block and no unparsed_openers", parsed.Advice)
 	}
 
 	projectUpload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/OPENERS/artifacts", map[string]string{
@@ -751,7 +751,7 @@ func TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded(t *testing.T) {
 				if test.asks == nil {
 					return
 				}
-				// The spec's own decision block stands first, and the insert lands at its end.
+				// The spec's own ask block stands first, and the insert lands at its end.
 				want := append([]string{"decision"}, test.asks...)
 				var asks []string
 				for _, block := range decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice")) {
@@ -965,7 +965,7 @@ func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
 	})
 	advice := adviceFromResponse(t, edited.Code, edited.Body.String())
 	if advice.DecisionBlocksAdded == nil || *advice.DecisionBlocksAdded != 1 {
-		t.Fatalf("edit advice = %#v, want one added decision block: %s", advice, edited.Body.String())
+		t.Fatalf("edit advice = %#v, want one added ask block: %s", advice, edited.Body.String())
 	}
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(edited.Body.Bytes(), &body); err != nil {

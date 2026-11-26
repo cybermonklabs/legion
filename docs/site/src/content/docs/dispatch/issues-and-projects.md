@@ -332,6 +332,8 @@ agents using it stop working at once.
   the document the spec's requirements are listed, each flagged with what it lacks: a requirement
   no check serves reads `has no check`, and one no plan task serves reads `has no plan task` once
   the issue has a plan document.
+  While a document of the issue is still being indexed, no requirement is flagged, and the list
+  says instead which document and which version Dispatch is still indexing.
 - **Verification** is the issue's Verification document and, under it, each check the document
   marks, with every result recorded against that check, newest first. Each check says whether a
   pass stands and from which roles, and names what Dispatch compared the results with: each head
@@ -344,7 +346,9 @@ agents using it stop working at once.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
 - **Steps** lists each step Legion ran on the issue, one table per task: each run of a step with
-  its role, type, agent, model, attempt, start, end and result. A step that ran twice, after a
+  its role, type, agent, model, attempt, start, end and result.
+  Where the records of the issue's newest run name an experiment, the tab shows
+  `Experiment <experiment>: variant <variant>` once above its tables. A step that ran twice, after a
   review sent its task back, has a row for each run, and the second reads attempt 2; a run that
   failed or stopped and sent its task back says which step it returned to. A run that has not
   ended reads **running**, and a field Legion did not record reads `—`. Legion's daemon writes
@@ -367,9 +371,11 @@ agents using it stop working at once.
   message as it was posted, and everything else that happened to the issue — status moves,
   claims, document versions, uploads, subscriptions, changes to child issues. It has **Load
   older** at the bottom, a divider for each day, and a mark where your last read ends.
-- **Decisions** is a view of the issue's `decisions.md`, in order: the open questions its spec
-  asks, the agent decisions waiting for your review, each with **Keep** and **Change**, your own
-  decisions, and the ones since replaced. Each decision links the spec blocks it shaped.
+- **Decisions** lists the issue's decisions as Dispatch stores them, in order: the open questions
+  its spec asks, the agent decisions waiting for your review, each with **Keep** and **Change**,
+  your own decisions, and the ones since replaced. An agent's decision is a `decision` block in a
+  document of the issue, and yours is a question you answered. Each decision links the spec
+  blocks it shaped.
 - **Collaborators** lists everyone who has worked the issue: Legion's agents by role, each role's
   newest session first and a superseded session naming the one that replaced it; then every other
   agent session, the most recently active first; then the people, with why each is a collaborator

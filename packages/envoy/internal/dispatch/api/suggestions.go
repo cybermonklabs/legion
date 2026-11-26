@@ -71,7 +71,7 @@ const (
 	// for a reader's own dispatch search to find what the check found, few enough that search's
 	// AND of them still matches something.
 	relatedSearchQueryTerms = 3
-	// decisionBlockCheckLimit is how many of one edit's new decision blocks are checked; each past
+	// decisionBlockCheckLimit is how many of one edit's new ask blocks are checked; each past
 	// it answers that its check was not made (decisionBlockChecks).
 	decisionBlockCheckLimit = 5
 )
@@ -127,14 +127,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so an ask block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -167,7 +170,7 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 	return withRawAdvice(payload, suggestionsOnlyAdvice{Suggestions: suggestions})
 }
 
-// decisionBlockChecks runs the related-item check for each decision block a document edit added,
+// decisionBlockChecks runs the related-item check for each ask block a document edit added,
 // once the edit has committed, so a block whose question restates a decision already made or work
 // already filed is answered with it while the writer is still at the document. The first
 // decisionBlockCheckLimit blocks are checked at once, all under one allowance (relatedBounds), so
@@ -209,7 +212,7 @@ func (s *server) decisionBlockChecks(
 		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
 		if index >= decisionBlockCheckLimit {
-			suggestions := notMadeSuggestions("more than five new decision blocks in one edit")
+			suggestions := notMadeSuggestions("more than five new ask blocks in one edit")
 			checks[index].Suggestions = suggestions
 			overflow = append(overflow, relatedCheckRecord{
 				source: source, suggestions: suggestions,
@@ -238,15 +241,15 @@ func (s *server) decisionBlockChecks(
 }
 
 // suggestionSource identifies what a check was run for: a newly created issue, a newly created
-// ask on an issue or on an unlinked project document, or a decision block a document edit added.
+// ask on an issue or on an unlinked project document, or an ask block a document edit added.
 // At most one of issueKey and artifactID is set: the issue, or the project document the ask or
 // block sits on. A check run for no source (the no-write route) sets neither.
 type suggestionSource struct {
 	kind       string // "issue", "ask" or "decision_block"
 	issueKey   string
-	artifactID string // an ask or decision block on an unlinked project document
+	artifactID string // an ask or ask block on an unlinked project document
 	askID      string // set for an ask source alone
-	blockID    string // set for a decision block source alone
+	blockID    string // set for an ask block source alone
 	actor      model.Actor
 }
 
@@ -254,11 +257,11 @@ type suggestionSource struct {
 type relatedInput struct {
 	// project is the project to search; empty resolves it from source's owner.
 	project string
-	// text is what is checked: a new issue's title and spec, an ask's or decision block's question,
+	// text is what is checked: a new issue's title and spec, an ask's or ask block's question,
 	// or the no-write route's title and text.
 	text string
 	// title is the part of text the chosen terms are written as (relatedTerm.Surface): a new
-	// issue's or the no-write route's title, an ask's or decision block's question.
+	// issue's or the no-write route's title, an ask's or ask block's question.
 	title  string
 	source suggestionSource
 	// excludeIssue leaves that issue and everything it owns out of the results and out of the
@@ -273,7 +276,7 @@ type relatedInput struct {
 	excludeIssues []string
 	// keywordsOnly skips the meaning search.
 	keywordsOnly bool
-	// question says the write is a question to a person: an ask create, a new decision block, or
+	// question says the write is a question to a person: an ask create, a new ask block, or
 	// the POST form of the related route, which `dispatch related` calls. Such a check also
 	// offers the answered questions of the other projects (relatedOtherProjects). An issue
 	// create and the GET form of the related route leave it false, so they offer the items of
@@ -334,7 +337,7 @@ type relatedPick struct {
 	err   error
 }
 
-// relatedCheck is the related-item check every issue create, ask and new decision block runs
+// relatedCheck is the related-item check every issue create, ask and new ask block runs
 // as a write's, and the no-write related route. It never fails and never returns nil: what it did
 // not do, it says in the result. It waits at most relatedAllowance.
 //
@@ -382,8 +385,8 @@ func (s *server) runRelatedCheck(
 		return suggestions, record
 	}
 	timedOut := "the search behind it did not answer within " + allowance.String()
-	// callerGone reports a check stopped by its request going away, not by the allowance: a
-	// decision block's checks run under the edit's one allowance, which ends theirs with the same
+	// callerGone reports a check stopped by its request going away, not by the allowance: an
+	// ask block's checks run under the edit's one allowance, which ends theirs with the same
 	// cause as their own.
 	callerGone := func() bool {
 		return bounded.Err() != nil && !errors.Is(context.Cause(bounded), errRelatedAllowanceEnded)
@@ -1054,7 +1057,7 @@ const relatedCheckInsert = `
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
 // write, since the row belongs to a project. The rows go in one transaction of the same few round
-// trips however many there are (insertRelatedChecks), so an edit's decision blocks beyond
+// trips however many there are (insertRelatedChecks), so an edit's ask blocks beyond
 // decisionBlockCheckLimit, however many, cost no more than one.
 //
 // related_checks rows the first attempt could not write are tried once more in the background
@@ -1172,9 +1175,9 @@ func relatedRecordRetryable(err error) bool {
 //
 // recordRelatedChecks calls this for an issue source and an ask source alone, so an ask create's
 // cross-project offers are recorded, on an issue and on a project document alike, and a new
-// decision block's offers reach no row. That is what the table admits: it keys such a row by the
-// ask the offer was made on (source_ask_id, which every row of an ask source holds), and a
-// decision block's check holds the document block's own id and no ask id. So the role is written
+// ask block's offers reach no row. That is what the table admits: it keys such a row by the
+// ask the offer was made on (source_ask_id, which every row of an ask source holds), and an
+// ask block's check holds the document block's own id and no ask id. So the role is written
 // for an ask create alone, which is what lets the records route count the writes that offered
 // one by that column (relatedChecksOffersQuery).
 func (s *server) persistSuggestions(ctx context.Context, source suggestionSource, suggestions *model.Suggestions) {

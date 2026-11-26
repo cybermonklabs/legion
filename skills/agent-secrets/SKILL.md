@@ -20,6 +20,8 @@ agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <c
 - Each key says who decides a request for it: `agent-secrets secret show NAME` prints it on its `decides:` line, beside the `guidance:` a model judge decides by. Meet that guidance in `--reason`. The judge grants a request or refuses it for good (77); one it cannot decide goes to the key's person.
 - A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
   The same command run again (the same names, `--ttl` and `--target`) uses the live grant or joins the waiting request, and asks nobody again.
+- A request that waits for a person is already in that person's Dispatch Inbox, with a link to the broker's page that decides it (https://cybermonklabs.github.io/legion/broker/concepts/#approvals).
+  Open no Dispatch ask, comment or message that asks them to approve it: each one is a duplicate of that Inbox row. Continue your work, and read the decision with `agent-secrets status <request_id>`.
 - A GitHub App credential is a profile. `--target ACCOUNT`, or `--target ACCOUNT/REPOSITORY` for each repository of one account, narrows it in a run of that name alone.
   A profile of value `token` puts one token in the name; any other holds the JSON object of installations, which GitHub answers `401`.
   A line `the profile NAME left out …` names permissions the token lacks (calls needing them get `403`).

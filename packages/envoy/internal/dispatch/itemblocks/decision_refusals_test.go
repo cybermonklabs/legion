@@ -18,8 +18,8 @@ func tablePastThePaddingBudget(columns, rows int) string {
 }
 
 // decisionRefusalRows are the 44 bodies measured for INFRA-1201: every distinct reason
-// pmdoc/refusals.go and the parse around it refuse a body for, each with a decision block standing
-// in it, and every spelling of a decision block's opening line the browser reader opens an `ask`
+// pmdoc/refusals.go and the parse around it refuse a body for, each with an ask block standing
+// in it, and every spelling of an ask block's opening line the browser reader opens an `ask`
 // container on where this parser's own grammar reads no typed directive. Each row is named by the
 // reason its trigger raises, so a reader of a failure reads the class of body that broke, and
 // carries where that body's decision card was measured: position and blockType are the top-level
@@ -31,8 +31,8 @@ func tablePastThePaddingBudget(columns, rows int) string {
 // opener off the body's lines (pmdoc.FindDecisionCard). Three bodies are refused with no card
 // drawn, since the reader's container rule is the floor of the refusal and the ask's own content
 // rule decides nothing here - a question nobody can answer stands in the body whether or not a
-// card is finally drawn for it. A body that is still stored holds no such opener at all: a
-// decision block's text inside a fenced code block, or a container directive of another name
+// card is finally drawn for it. A body that is still stored holds no such opener at all: an
+// ask block's text inside a fenced code block, or a container directive of another name
 // (TestCheckStoresABodyTheReaderDrawsNoCardFor).
 //
 // A body too long to read as a literal is built here as the measurement built it: the 33 nested
@@ -41,7 +41,7 @@ func tablePastThePaddingBudget(columns, rows int) string {
 var decisionRefusalRows = []struct {
 	// reason is the refusal the body's trigger raises, "no refusal" where the parse reads it.
 	reason string
-	// trigger is what was written into the body beside the decision block.
+	// trigger is what was written into the body beside the ask block.
 	trigger string
 	body    string
 	// position and blockType are the top-level block the refusal names, which is the block the
@@ -49,7 +49,7 @@ var decisionRefusalRows = []struct {
 	position  int
 	blockType string
 	// parsed says the server's parse read the body: the control, and the two bodies the browser
-	// reader draws no card for though both parses read their decision block. Every other row
+	// reader draws no card for though both parses read their ask block. Every other row
 	// exists to drive the rule over a body the parse refuses.
 	parsed bool
 }{
@@ -286,10 +286,10 @@ var decisionRefusalRows = []struct {
 	},
 	{
 		reason:  "unsupportedDirective: malformedDirectiveReason (an unknown :::note container)",
-		trigger: "an unknown :::note container, the decision block standing inside it",
+		trigger: "an unknown :::note container, the ask block standing inside it",
 		body:    "Some **bold** text\n\n:::note\n:::ask{urgency=\"med\"}\nWhich transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::\n:::\n",
 		// The `:::note` line carries no attributes, so this parser opens no container on it and
-		// the decision block is a top-level block of its own, the third: the browser's parser
+		// the ask block is a top-level block of its own, the third: the browser's parser
 		// opens its note container there and draws the card inside it, at the body's second block.
 		// Both draw the one card, which is what the body is refused for; the place they name it at
 		// is the place each of them reads the body to hold it.
@@ -298,70 +298,70 @@ var decisionRefusalRows = []struct {
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (an opening line carrying no attributes)",
-		trigger:   "a decision block whose opening line carries no attributes",
+		trigger:   "an ask block whose opening line carries no attributes",
 		body:      ":::ask\nWhich one?\n\n- A: first\n- B: second\n:::\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (an opening line of four colons)",
-		trigger:   "a decision block opened with four colons and no attributes",
+		trigger:   "an ask block opened with four colons and no attributes",
 		body:      "::::ask\nWhich one?\n\n- A: first\n- B: second\n::::\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (the production probe of INFRA-1201)",
-		trigger:   "the attribute-less decision block written into production to measure what it does",
+		trigger:   "the attribute-less ask block written into production to measure what it does",
 		body:      ":::ask\nDoes production refuse this?\n\n- Yes: refused\n- No: stored\n:::\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line in a quote)",
-		trigger:   "a quoted decision block whose opening line carries no attributes",
+		trigger:   "a quoted ask block whose opening line carries no attributes",
 		body:      "Lead text.\n\n> :::ask\n> Which one?\n>\n> - A: first\n> - B: second\n> :::\n",
 		position:  2,
 		blockType: "blockquote",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line in a callout)",
-		trigger:   "a decision block inside a callout whose opening line carries no attributes",
+		trigger:   "an ask block inside a callout whose opening line carries no attributes",
 		body:      ":::callout{#c1 kind=\"note\"}\nA note.\n\n:::ask\nWhich one?\n\n- A: first\n- B: second\n:::\n:::\n",
 		position:  1,
 		blockType: "callout",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line in a list item)",
-		trigger:   "a decision block inside a list item whose opening line carries no attributes",
+		trigger:   "an ask block inside a list item whose opening line carries no attributes",
 		body:      "Lead text.\n\n- Context for the question\n\n  :::ask\n  Which one?\n  :::\n",
 		position:  2,
 		blockType: "bullet_list",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line with no closing fence)",
-		trigger:   "a decision block carrying no attributes and left unclosed at the body's end",
+		trigger:   "an ask block carrying no attributes and left unclosed at the body's end",
 		body:      ":::ask\nWhich one?\n\n- A: first\n- B: second\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (a space after the attributes)",
-		trigger:   "a decision block whose opening line ends in a space",
+		trigger:   "an ask block whose opening line ends in a space",
 		body:      ":::ask{#b1} \nWhich one?\n\n- A: first\n- B: second\n:::\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
 		reason:    "unsupportedDirective: malformedDirectiveReason (a label before the attributes)",
-		trigger:   "a decision block whose opening line carries a directive label",
+		trigger:   "an ask block whose opening line carries a directive label",
 		body:      ":::ask[Q]{#b1}\nWhich one?\n\n- A: first\n- B: second\n:::\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
-		reason:  "no refusal: a decision block holding a heading",
-		trigger: "a heading inside the decision block, which the browser reader draws no card for",
+		reason:  "no refusal: an ask block holding a heading",
+		trigger: "a heading inside the ask block, which the browser reader draws no card for",
 		body:    ":::ask{#b1}\n# A heading\n\nWhich one?\n:::\n",
 		// The browser editor's `ask` takes `paragraph+ bullet_list?`, so its reader draws this
 		// block's lines in place as text rather than as a card, where the server's parse reads
@@ -372,8 +372,8 @@ var decisionRefusalRows = []struct {
 		parsed:    true,
 	},
 	{
-		reason:    "no refusal: a decision block whose paragraph follows its list",
-		trigger:   "a paragraph after the decision block's list, which the browser reader draws no card for",
+		reason:    "no refusal: an ask block whose paragraph follows its list",
+		trigger:   "a paragraph after the ask block's list, which the browser reader draws no card for",
 		body:      ":::ask{#b1}\nWhich one?\n\n- A: first\n- B: second\n\nAfter the list\n:::\n",
 		position:  1,
 		blockType: "ask",
@@ -386,7 +386,7 @@ var decisionRefusalRows = []struct {
 const decisionRefusalReasons = 44
 
 // Every one of the measured bodies is refused with a *DecisionBlock naming the top-level block
-// the decision block stands in, which is the block the browser reader draws its card in wherever
+// the ask block stands in, which is the block the browser reader draws its card in wherever
 // it draws one. The parse's own verdict decides nothing, and neither does the ask's content rule:
 // a body the reader opens an `ask` container in is refused whatever that ask holds. Each row but
 // the control is a body the parse refuses, so the tree the rule reads is the one that refusal
@@ -415,7 +415,7 @@ func TestCheckRefusesEveryMeasuredBodyTheReaderOpensAnAskIn(t *testing.T) {
 	}
 }
 
-// carriageReturnRows are the bodies of INFRA-1201's second measurement: a decision block whose
+// carriageReturnRows are the bodies of the refusal's second measurement: an ask block whose
 // line endings are lone carriage returns, which a browser's own reader ends its lines at and
 // this parser ends none at, so the body reaches the parse here as one line holding no block
 // while the dashboard draws its decision card for it. The rule reads such a body as the reader
@@ -432,33 +432,33 @@ var carriageReturnRows = []struct {
 	blockType string
 }{
 	{
-		name:      "a decision block whose line endings are lone carriage returns",
+		name:      "an ask block whose line endings are lone carriage returns",
 		body:      ":::ask{#b1}\rWhich one?\r\r- A: first\r- B: second\r:::\r",
 		position:  1,
 		blockType: "ask",
 	},
 	{
-		name:      "a decision block carrying no attributes whose line endings are lone carriage returns",
+		name:      "an ask block carrying no attributes whose line endings are lone carriage returns",
 		body:      ":::ask\rWhich one?\r\r- A: first\r- B: second\r:::\r",
 		position:  1,
 		blockType: "ask",
 	},
 	{
-		name:      "a decision block whose line endings are CR LF pairs",
+		name:      "an ask block whose line endings are CR LF pairs",
 		body:      ":::ask{#b1}\r\nWhich one?\r\n\r\n- A: first\r\n- B: second\r\n:::\r\n",
 		position:  1,
 		blockType: "ask",
 	},
 	{
-		name: "a body of lone carriage returns holding no decision block",
+		name: "a body of lone carriage returns holding no ask block",
 		body: "Which one?\r\r- REST: the platform's own\r- gRPC: streaming\r",
 	},
 }
 
 // A body whose lines the browser reader ends where this parser ends none is read as the reader
-// ends them: a decision block written with lone carriage returns is refused, naming the block
+// ends them: an ask block written with lone carriage returns is refused, naming the block
 // the reader draws its card in, and so is one written with them and carrying no attributes,
-// while a body of those line endings holding no decision block is stored. The reading is the
+// while a body of those line endings holding no ask block is stored. The reading is the
 // rule's own: every row's blocks are still the body as it was written, carriage returns and all,
 // which is what Split hands the indexer and what a write path stores.
 func TestCheckReadsTheLineEndingsTheReaderReads(t *testing.T) {
@@ -487,13 +487,13 @@ func TestCheckReadsTheLineEndingsTheReaderReads(t *testing.T) {
 	}
 }
 
-// byteOrderMarkRows are the bodies of INFRA-1201's third measurement: a decision block whose
+// byteOrderMarkRows are the bodies of the refusal's third measurement: an ask block whose
 // opening line stands behind a byte-order mark, which the browser's own reader drops before it
 // reads the line and this parser reads as the line's first character, so the body reaches the
 // parse here as a paragraph holding no block while the dashboard draws its decision card for it.
 // The reader drops one mark and one alone, so a body written with two is read by it as the text
 // that second mark makes of the line, and is stored: the rows measure that, each against the
-// same body with one mark. The last row is a body behind one mark holding no decision block,
+// same body with one mark. The last row is a body behind one mark holding no ask block,
 // which is stored as it was written.
 var byteOrderMarkRows = []struct {
 	name string
@@ -504,13 +504,13 @@ var byteOrderMarkRows = []struct {
 	blockType string
 }{
 	{
-		name:      "a decision block behind one byte-order mark",
+		name:      "an ask block behind one byte-order mark",
 		body:      "\ufeff:::ask{#q urgency=\"med\"}\nWhich?\n\n- A: one\n:::",
 		position:  1,
 		blockType: "ask",
 	},
 	{
-		name:      "a decision block carrying no attributes behind one byte-order mark",
+		name:      "an ask block carrying no attributes behind one byte-order mark",
 		body:      "\ufeff:::ask\nWhich?\n\n- A: one\n:::",
 		position:  1,
 		blockType: "ask",
@@ -518,23 +518,23 @@ var byteOrderMarkRows = []struct {
 	{
 		// readerCopy drops the mark and then reads the lone carriage returns as line endings,
 		// so a body written with both is refused as either on its own is.
-		name:      "a decision block behind one byte-order mark whose line endings are lone carriage returns",
+		name:      "an ask block behind one byte-order mark whose line endings are lone carriage returns",
 		body:      "\ufeff:::ask\rWhich?\r:::",
 		position:  1,
 		blockType: "ask",
 	},
 	{
-		name: "a decision block behind two byte-order marks, whose second the reader reads as text",
+		name: "an ask block behind two byte-order marks, whose second the reader reads as text",
 		body: "\ufeff\ufeff:::ask{#q urgency=\"med\"}\nWhich?\n\n- A: one\n:::",
 	},
 	{
-		name: "a body behind a byte-order mark holding no decision block",
+		name: "a body behind a byte-order mark holding no ask block",
 		body: "\ufeffWhich one?\n\n- REST: the platform's own\n- gRPC: streaming\n",
 	},
 }
 
-// A body the browser reader reads a byte-order mark off is read as that reader reads it: a
-// decision block behind one mark is refused, naming the block the reader draws its card in, and
+// A body the browser reader reads a byte-order mark off is read as that reader reads it: an
+// ask block behind one mark is refused, naming the block the reader draws its card in, and
 // so is one behind one mark carrying no attributes, while the same body behind two marks is
 // stored, since the reader drops one mark alone and the second leaves it reading a paragraph.
 // The reading is the rule's own: every row's blocks are still the body as it was written, marks

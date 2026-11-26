@@ -65,10 +65,10 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 // above, so the query terminates even if a raced reparent ever commits a cycle. The key itself is
 // not in the answer. An issue with no child, an issue no row has, and the empty key answer [].
 // This is the server's one recursive descendant walk over whole subtrees that answers a reader:
-// api's coverage read is this query. IssueDescendantRows is the same walk for a rule of a write,
-// which answers no reader and so binds no visibility predicate. api's issueChildrenStatement is a
-// different read — one row per direct child, with a rollup over that child's own subtree — and
-// stays its own.
+// api's coverage read and the issue tree's read are this query. IssueDescendantRows is the same
+// walk for a rule of a write, which answers no reader and so binds no visibility predicate. api's
+// issueChildrenStatement is a different read — one row per direct child, with a rollup over that
+// child's own subtree — and stays its own.
 //
 // It answers for who: an issue who may not see is not in the answer, and the walk does not pass
 // below it, so neither it nor the issues it holds are reached through it (VisibleKind).
@@ -94,28 +94,32 @@ func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key strin
 }
 
 // IssueDescendant is an issue below another one on `child_of`, as IssueDescendantRows reads it:
-// its key, its parent, its status, and its depth, 1 for a child of the issue the walk starts at.
+// its key, its parent, its status, its depth, 1 for a child of the issue the walk starts at, and
+// its project, which may differ from its parent's.
 type IssueDescendant struct {
-	Key    string
-	Parent string
-	Status string
-	Depth  int
+	Key     string
+	Parent  string
+	Status  string
+	Depth   int
+	Project string
 }
 
 // IssueDescendantRows is every issue below the issue key on `child_of`, at any status, read
 // through q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor
 // walk above, so the query terminates even if a raced reparent ever commits a cycle. Each row
-// holds the issue's parent, its status and its depth. The rows are in the order of their depth,
-// and at one depth in the order of their numbers. The key itself is not in the answer. An issue
-// with no child, an issue no row has, and the empty key answer []. The read of a status change's
-// plan (api's readStatusChange) is this query.
+// holds the issue's parent, its status, its depth and its project. The rows come nearest first,
+// and at one depth in the order of their projects and numbers. The key itself is not in the
+// answer. An issue with no child, an issue no row has, and the empty key answer []. The read of a
+// status change's plan (api's readStatusChange) and the check of a move's subtree (api's
+// refuseSpecWriterOfMovedSubtree, spec_writer.go) are this query.
 //
 // It binds no visibility predicate and takes no acting person, for the reason IssueAncestors
 // gives. Every caller is a rule of a write: the plan of a status change, which moves or unlinks
 // every open issue under the parent so that the parent status rule (R24) holds, and a plan that
-// skipped an issue it may not see would leave that issue open under a done parent. The plan names
-// the issues it will move or unlink to the caller who asked to move or unlink them: its dry run
-// and its answer list them, and its 403 PROJECT_SCOPE names one that is in a project the caller's
+// skipped an issue it may not see would leave that issue open under a done parent; and the check
+// of a move, which must see every issue of the moved subtree that Legion runs. The plan names the
+// issues it will move or unlink to the caller who asked to move or unlink them: its dry run and
+// its answer list them, and its 403 PROJECT_SCOPE names one that is in a project the caller's
 // credential may not write.
 //
 // The walk carries each issue's project and number, which its order needs, from the row it reads
@@ -136,7 +140,7 @@ func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDes
 			from issues c join descendants d on c.parent_key = d.key
 			where d.depth < $2
 		)
-		select key, parent_key, status, depth from descendants
+		select key, parent_key, status, depth, project_key from descendants
 		order by depth, project_key, number
 	`, key, IssueDepthCap)
 	if err != nil {

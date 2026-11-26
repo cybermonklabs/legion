@@ -21,6 +21,7 @@ import (
 // make (dispatch://INFRA-714/spec R3). A later event under the same parent repeats nothing; a move
 // under another live tree is told anew.
 func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedLiveRoot(t, pool, "LEGION-208", 0)
 	seedLiveRoot(t, pool, "LEGION-300", 1)
@@ -77,6 +78,7 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 // A root that never ran is adopted rather than refused, so it is told nothing: the release of
 // children takes it into the tree, and a message saying it stays its own would be false.
 func TestARootThatNeverRanIsToldNothingWhenItIsReparented(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedLiveRoot(t, pool, "LEGION-208", 0)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-501", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

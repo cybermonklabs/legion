@@ -22,10 +22,12 @@ import (
 )
 
 // The identities of TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn: the role the
-// proved session holds, and a login one character from the person's own (brokerTestPerson).
+// proved session holds, a login one character from the person's own (brokerTestPerson), and the
+// person who files the issue the identity tests write in (seedRoutedIssue).
 const (
-	identityRole = "identity-reader"
-	identityTwin = "alicf"
+	identityRole  = "identity-reader"
+	identityTwin  = "alicf"
+	identityFiler = "carol"
 )
 
 // identityRow is one row of the identity table the test carries: an identity as a request
@@ -84,12 +86,18 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 	// The proved session's comment is the first write that names alice at all, and it makes her
 	// a person of the store beside the alias it ties her session to (graphstore.AuthorFacts). A
 	// thing a session wrote stays that session's, so the comment is on no person's page
-	// (personNodesTied), and alice holds no node another person may see yet. Her page then
-	// answers another person exactly what a login nobody holds answers, byte for byte, so it
-	// tells nobody that she exists or wrote anything (R15 of this change, which an
-	// earlier reading of this test answered 200); it answers alice herself 200.
+	// (personNodesHeld), and alice holds no node another person may see yet. Her page then answers
+	// another person exactly what a login nobody holds answers, byte for byte, so it tells nobody
+	// that she exists or wrote anything (R1 of the spec, which changes this branch's
+	// own earlier reading, a 200 here); it answers alice herself 200.
+	if _, found, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindPerson, brokerTestPerson); err != nil || !found {
+		t.Fatalf("the store holds no person node of %s once her proved session has written (%v), so her page would answer what a login nobody holds by the earlier rule too", brokerTestPerson, err)
+	}
 	early := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/"+brokerTestPerson+"/nodes", nil, identityTwin)
 	nobody := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/a-login-nobody-holds/nodes", nil, identityTwin)
+	if nobody.Code != http.StatusNotFound {
+		t.Fatalf("a login nobody holds answers %d %s, want 404, so the comparison proves nothing", nobody.Code, nobody.Body.String())
+	}
 	if early.Code != nobody.Code || early.Body.String() != nobody.Body.String() ||
 		early.Header().Get("Content-Type") != nobody.Header().Get("Content-Type") {
 		t.Fatalf("%s reading %s's page once only %s's proved session has written: status=%d body=%s, want what a login nobody holds answers, status=%d body=%s",
@@ -320,7 +328,7 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 			verifier, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: broker.Server.URL,
 				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
+				Origins:   []string{testServerURL},
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   auth.ForwardedAddress,
 			})
@@ -334,15 +342,21 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 }
 
 // seedRoutedIssue makes the project the broker's token is scoped to and an issue in it routed to
-// the role the proved session holds, as the person, and answers the issue's key.
+// the role the proved session holds, as identityFiler, and answers the issue's key. The filer is
+// not the person whose identity the tests read: an issue is born converted, and a block of its
+// room records its authors (refs.RecordsAuthorsSQL), so the issue's spec makes whoever files it a
+// person of the store, its blocks' author, before any test's own first write.
 func (r *identityRig) seedRoutedIssue(t *testing.T) string {
 	t.Helper()
-	if created := r.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+	asFiler := func(method, path string, body any) *httptest.ResponseRecorder {
+		return r.serve(withPerson(brokerRequest(t, method, path, body, "", ""), identityFiler))
+	}
+	if created := asFiler(http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",
 	}); created.Code != http.StatusCreated {
 		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
 	}
-	issue := r.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+	issue := asFiler(http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": brokerTestProject, "title": "Who is who", "spec": "# Spec\n\nA passage.",
 	})
 	if issue.Code != http.StatusCreated {
@@ -351,7 +365,7 @@ func (r *identityRig) seedRoutedIssue(t *testing.T) string {
 	key := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, issue).Key
-	if routed := r.asPerson(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"route": "role:" + identityRole}); routed.Code != http.StatusOK {
+	if routed := asFiler(http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"route": "role:" + identityRole}); routed.Code != http.StatusOK {
 		t.Fatalf("route the issue to the role: status=%d body=%s", routed.Code, routed.Body.String())
 	}
 	return key

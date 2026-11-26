@@ -165,12 +165,9 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 func uploadDocumentVersion(t *testing.T, database *store.Store, service *Service, artifactID, markdown string) {
 	t.Helper()
 	alice := model.Actor{Kind: "user", ID: "alice"}
+	base := liveDocumentToken(t, service, artifactID)
 	if err := joinedWrite(service, func(ctx context.Context) error {
-		precondition, err := replacementPrecondition(ctx, service, artifactID)
-		if err != nil {
-			return err
-		}
-		written, err := service.ReplaceText(ctx, artifactID, markdown, alice, precondition)
+		written, err := service.ReplaceText(ctx, artifactID, markdown, alice, base)
 		if err != nil {
 			return err
 		}

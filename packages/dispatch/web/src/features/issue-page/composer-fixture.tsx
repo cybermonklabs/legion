@@ -293,7 +293,6 @@ function Page({
           artifacts={new Map()}
           context={new Set()}
           emptyLine="Nothing here."
-          filtering={false}
           focusReveal={false}
           holdsEscape={false}
           isClosed={place.closed === true}
@@ -342,7 +341,7 @@ export function drawBoxPage(
   place: Place = {},
   root: TreeNode = outline()
 ): BoxPage {
-  client.setQueryData(["asks", KEY], reads.asks);
+  client.setQueryData(["asks", KEY, "thread"], reads.asks);
   client.setQueryData(["comments", KEY], reads.comments);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["agents"], [plannerAgent()]);
@@ -388,7 +387,7 @@ export function answerBoxReads(reads: BoxReads) {
   const commentsRead = spyOn(api, "listComments").mockImplementation(async () => reads.comments);
   const searchRead = spyOn(api, "search").mockResolvedValue(searchResponse([]));
   const others = [
-    spyOn(api, "listIssueAsks").mockImplementation(async () => reads.asks),
+    spyOn(api, "listIssueAskThreads").mockImplementation(async () => reads.asks as never),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]),
     spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators()),

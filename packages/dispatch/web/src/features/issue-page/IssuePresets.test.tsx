@@ -20,9 +20,10 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
+const SIGNALS: Readonly<Record<Preset, PresetSignal | undefined>> = {
   conversation: { count: 0 },
   decisions: { count: 0 },
+  graph: undefined,
   plan: { count: 0 },
   spec: { count: 2 },
   verification: { count: 1 },
@@ -69,10 +70,12 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowDown}", "verification"],
       ["{ArrowDown}", "plan"],
       ["{ArrowDown}", "decisions"],
+      ["{ArrowDown}", "graph"],
       ["{ArrowDown}", "conversation"],
-      ["{ArrowUp}", "decisions"],
+      ["{ArrowUp}", "graph"],
       ["{Home}", "conversation"],
-      ["{End}", "decisions"],
+      ["{End}", "graph"],
+      ["{ArrowUp}", "decisions"],
       ["{ArrowUp}", "plan"],
     ] as const) {
       await user.keyboard(key);

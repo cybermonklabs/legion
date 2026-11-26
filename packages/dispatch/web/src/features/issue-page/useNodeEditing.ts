@@ -3,7 +3,7 @@ import type { MouseEvent } from "react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { Artifact, DisplayTree } from "../../api/types";
-import { isCompositionKey } from "../refs/ref-picker";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
 import { useDocumentAdmissions } from "./document-admission";
@@ -939,7 +939,7 @@ export function useNodeEditing({
       (event) => {
         const to = event.target;
         if (!(to instanceof Element)) return;
-        // A row of the tree: a node's, or a branch's folded below the drawn levels.
+        // A row of the tree: a node's, or a control's that draws more of it (`TreeRows.tsx`).
         const entered = to.closest('[role="treeitem"]');
         if (entered === null) return;
         const row = box.querySelector<HTMLElement>(rowSelector);
@@ -991,14 +991,6 @@ export function useNodeEditing({
   }, [container, editingRow]);
 
   return { edit, editing, stopEditing };
-}
-
-/** Whether `event` is an input method's key, which acts on nothing of the page's: one pressed in
- *  a composition, or the one that ends it, which Safari sends after its compositionend with
- *  `isComposing` false and keyCode 229 (WebKit bug 165004), as the title's editor reads it
- *  (`IssueTitleRow.tsx`). */
-export function inputMethodKey(event: KeyboardEvent): boolean {
-  return isCompositionKey(event);
 }
 
 /** Whether `node` is inside the box the editor of `row` is drawn in (`EDITOR_BOX_ATTRIBUTE`),

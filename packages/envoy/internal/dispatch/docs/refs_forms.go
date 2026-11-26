@@ -30,11 +30,15 @@ type RefsFormsTick struct {
 	Gone int
 	// LiveAhead is how many owed documents it left owed because their live text is ahead of
 	// their latest version and differs from it (indexOwedDocument), those an earlier pass found
-	// so and that are still as it found them included, and Unindexed how many it left owed
-	// because its own index did not run: another process indexed the document first, or a write
-	// moved the document's latest version or the row's enqueued_at meanwhile.
-	LiveAhead int
-	Unindexed int
+	// so and that are still as it found them included, Unreadable how many it left owed because a
+	// fragment of their issue room did not read back (indexOwedRoom), counted as LiveAhead is, and
+	// Unindexed how many it left owed because its own index did not run: another process indexed
+	// the document first, or a write moved the document's latest version or the row's
+	// enqueued_at meanwhile. A room is counted once a pass, whichever of its documents' rows the
+	// pass lists, as the block index counts one.
+	LiveAhead  int
+	Unreadable int
+	Unindexed  int
 	// OwedTexts is what refs_forms_owed holds after the pass.
 	OwedTexts int
 	// Cursor is the row the next pass lists after (refs.ListOwedAfter): the last row this pass
@@ -85,10 +89,10 @@ func (s *Service) refsFormsTick(ctx context.Context, cursor refs.Owed, liveAhead
 		slog.Error("dispatch: refs forms reconciliation", "error", err)
 	}
 	if tick.Texts > 0 || tick.Documents > 0 || tick.Gone > 0 || tick.LiveAhead != logged.LiveAhead ||
-		tick.Unindexed != logged.Unindexed || tick.OwedTexts != logged.OwedTexts {
+		tick.Unreadable != logged.Unreadable || tick.Unindexed != logged.Unindexed || tick.OwedTexts != logged.OwedTexts {
 		slog.Info("dispatch: refs forms index", "texts", tick.Texts, "documents", tick.Documents,
-			"gone", tick.Gone, "live_ahead", tick.LiveAhead, "unindexed", tick.Unindexed,
-			"owed_texts", tick.OwedTexts)
+			"gone", tick.Gone, "live_ahead", tick.LiveAhead, "unreadable", tick.Unreadable,
+			"unindexed", tick.Unindexed, "owed_texts", tick.OwedTexts)
 		*logged = tick
 	}
 	if tick.Full {
@@ -102,18 +106,21 @@ func (s *Service) refsFormsTick(ctx context.Context, cursor refs.Owed, liveAhead
 // transaction of its own. A comment, an ask or an issue message goes through refs.ReindexOwed,
 // which re-indexes its text with this build's grammar and settles its row in the same
 // transaction. A document is indexed here, at its latest version, by the block index's own writer
-// (drainFormsDocument), at most blockIndexDocumentBatch of them a pass, the bound the block index
-// reads documents under; the pass ends at the first document past that bound, and the next pass,
-// which comes after blockIndexStep, starts there.
+// (drainFormsDocument), and a document of an issue room by that writer's pass over its room, once a
+// pass whichever of the room's documents' rows it lists (drainFormsRoomDocument), at most
+// blockIndexDocumentBatch of them a pass, the bound the block index reads documents under; the
+// pass ends at the first document past that bound, and the next pass, which comes after
+// blockIndexStep, starts there.
 //
 // The rows are listed by keyset, as the block index lists its documents, so a row this drain
-// leaves owed never holds back the rows past it: a document whose live text is ahead, one holding
-// an element this build does not know (ErrDocNewerContent), a row that fails for a reason of its
-// own, each logged and left owed. The pass's Cursor moves past every row it takes, drained or
-// not, and goes back to the start once a listing is not full, so the next walk of the queue
-// reads each such row again, once. liveAhead is the documents the calling loop's earlier passes
-// found live ahead, which this pass counts again without reading or owing them an index while
-// their version and their settlement's mark stand as found, and keeps up to date.
+// leaves owed never holds back the rows past it: a document whose live text is ahead, one whose
+// issue room holds a fragment that does not read back, one holding an element this build does not
+// know (ErrDocNewerContent), a row that fails for a reason of its own, each logged and left owed.
+// The pass's Cursor moves past every row it takes, drained or not, and goes back to the start once
+// a listing is not full, so the next walk of the queue reads each such row again, once. liveAhead
+// is the documents the calling loop's earlier passes found live ahead or unreadable, which this
+// pass counts again without reading or owing them an index while their version and their
+// settlement's mark stand as found, and keeps up to date.
 func (s *Service) ReconcileRefsForms(ctx context.Context, after refs.Owed, liveAhead formsLiveAhead) (RefsFormsTick, error) {
 	// A caller outside the loop can pass a zero memo, as the block index's can pass none: a
 	// throwaway one costs no more than reading again the documents this one pass finds live ahead.
@@ -128,6 +135,19 @@ func (s *Service) ReconcileRefsForms(ctx context.Context, after refs.Owed, liveA
 	tick.Full = len(owed) == blockIndexItemBatch
 	taken := owed
 	documents := 0
+	// An issue room is drained whole, once a pass, whichever of its documents' rows the pass lists
+	// (drainFormsRoomDocument): rooms holds how each room this pass indexed fared, and a room is
+	// counted once, as the block index counts one (ReconcileBlockIndex).
+	rooms := map[string]owedOutcome{}
+	counted := map[string]struct{}{}
+	counts := func(document owedDocument) bool {
+		if document.room == "" {
+			return true
+		}
+		_, done := counted[document.room]
+		counted[document.room] = struct{}{}
+		return !done
+	}
 rows:
 	for index, source := range owed {
 		switch source.Kind {
@@ -144,14 +164,21 @@ rows:
 			}
 		case "artifact":
 			document, err := s.latestDocumentVersion(ctx, source.ID)
+			remembered, still := s.stillLiveAhead(liveAhead.documents, document)
 			switch {
 			case ctx.Err() != nil:
 				return tick, ctx.Err()
 			case err != nil:
 				slog.Error("dispatch: refs forms index skipped a document it could not index",
 					"artifact", source.ID, "error", err)
-			case s.stillLiveAhead(liveAhead.documents, document):
-				tick.LiveAhead++
+			case still:
+				switch {
+				case !counts(document):
+				case remembered.unreadable:
+					tick.Unreadable++
+				default:
+					tick.LiveAhead++
+				}
 				liveAhead.rows[document.id] = source
 			case documents == blockIndexDocumentBatch:
 				// This document and the rows after it wait for the next pass, which starts here.
@@ -159,7 +186,7 @@ rows:
 				break rows
 			default:
 				documents++
-				drained, err := s.drainFormsDocument(ctx, source, document, liveAhead)
+				drained, err := s.drainFormsDocument(ctx, source, document, liveAhead, rooms)
 				switch {
 				case ctx.Err() != nil:
 					return tick, ctx.Err()
@@ -171,7 +198,7 @@ rows:
 				case err != nil:
 					slog.Error("dispatch: refs forms index skipped a document it could not index",
 						"artifact", source.ID, "error", err)
-				default:
+				case counts(document):
 					drained.count(&tick)
 				}
 			}
@@ -192,12 +219,14 @@ rows:
 }
 
 // formsLiveAhead is the forms drain's memo of the owed documents its passes found live ahead
-// (indexOwedDocument), kept as the block index keeps its own (liveAheadDocuments) and for its
+// (indexOwedDocument), or whose issue room they found live ahead or holding a fragment that did not
+// read back (indexOwedRoom), kept as the block index keeps its own (liveAheadDocuments) and for its
 // reasons. documents holds each such document as it was listed then, which stillLiveAhead reads as
 // the block index reads its memo: a document listed again with its version and its pending
-// settlement's marked_at unchanged still holds the stored live text a pass found ahead, so it is
-// counted live ahead without being read, locked or owed a block index. rows is the queue row each
-// was listed under, which says where in the queue's order forgetUnlisted looks for it.
+// settlement's marked_at unchanged - for a document of an issue room, its room's - still holds the
+// stored live text a pass found ahead, so it is counted live ahead, or unreadable, without being
+// read, locked or owed a block index. rows is the queue row each was listed under, which says where
+// in the queue's order forgetUnlisted looks for it.
 type formsLiveAhead struct {
 	documents liveAheadDocuments
 	rows      map[string]refs.Owed
@@ -254,6 +283,9 @@ const (
 	// formsDocumentLiveAhead: the document's live text is ahead of its latest version, and its
 	// row is left owed.
 	formsDocumentLiveAhead
+	// formsDocumentUnreadable: a fragment of the document's issue room did not read back, and its
+	// row is left owed.
+	formsDocumentUnreadable
 	// formsDocumentUnindexed: this drain's index did not run, and the row is left owed.
 	formsDocumentUnindexed
 )
@@ -267,6 +299,8 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 		tick.Gone++
 	case formsDocumentLiveAhead:
 		tick.LiveAhead++
+	case formsDocumentUnreadable:
+		tick.Unreadable++
 	case formsDocumentUnindexed:
 		tick.Unindexed++
 	}
@@ -295,8 +329,13 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 // A document that is gone, or holds no markdown version, owes no text and is owed no block index:
 // its row is settled while it holds the enqueued_at it was listed with. An older build's removal
 // of a document deletes its edges, which owes this queue the document (migration
-// 20261117025906), and settles only refs_grammar_owed.
-func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, document owedDocument, liveAhead formsLiveAhead) (formsDocumentDrain, error) {
+// 20261117025906), and settles only refs_grammar_owed. So is a document of an issue room that no
+// pass over its room reads, one retired from it (latestDocumentVersion).
+//
+// A document of an issue room is drained through its room's pass (drainFormsRoomDocument), since
+// no pass indexes one fragment of a room alone. rooms holds what each room this drain's pass
+// indexed did.
+func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, document owedDocument, liveAhead formsLiveAhead, rooms map[string]owedOutcome) (formsDocumentDrain, error) {
 	liveAhead.forget(document.id)
 	if document.version == 0 {
 		settled, err := refs.SettleOwed(ctx, s.store.Pool, source)
@@ -304,6 +343,9 @@ func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, docu
 			return formsDocumentUnindexed, err
 		}
 		return formsDocumentGone, nil
+	}
+	if document.room != "" {
+		return s.drainFormsRoomDocument(ctx, source, document, liveAhead, rooms)
 	}
 	if err := oweDocumentIndex(ctx, s.store.Pool, source.ID, s.markingRule); err != nil {
 		return formsDocumentUnindexed, err
@@ -324,19 +366,136 @@ func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, docu
 	return formsDocumentUnindexed, nil
 }
 
+// drainFormsRoomDocument drains the `artifact` row source of refs_forms_owed held by a document of
+// the issue room document.room, its tree artifact or a document its document_rooms rows hold,
+// through the block index's pass over the whole room (indexOwed, indexOwedRoom), at the room's
+// revision (latestDocumentVersion), which reads every fragment of the room with this build's
+// grammar: the room's references under its tree artifact, each fragment's blocks, the mentions
+// they hold and the excerpt each shows.
+//
+// The room is owed a block index first (oweDocumentIndex), of one artifact and no more: what its
+// pass needs to win its fence. The pass's re-read lists the room owed by a mark of any of its
+// artifacts, and its fence admits it where the row of a document it covers - a document of the
+// room's layout holding a markdown version, the tree artifact included where it holds one - stands
+// at no version. So the debt is document's own where the pass covers it, as it covers every other
+// document latestDocumentVersion reads with its room, and for a tree artifact holding no markdown
+// version, which the pass does not cover, the debt of a document the pass covers (roomPassDebt). A
+// room whose pass covers no document has no text to index, and the tree artifact's row is settled
+// as a gone document's is. The pass settles the forms rows of the room where it settles their rows
+// of the whole grammar's queue, in its own transaction and only where its block pass won the fence:
+// the tree artifact's with the room's references (replaceVersionRefs' blocksIndexed), and each
+// other document's it covers beside them (settleRoomDocumentsOwed). It settles them whatever
+// enqueued_at each holds, since it indexes every fragment at the newest version under the owner
+// lock every version write takes first. So it settles source's row and the row of every other
+// document of the room the queue holds.
+//
+// A room is indexed once a pass, whichever of its documents' rows the pass lists: rooms holds how
+// each room the pass indexed fared, and a later row of the same room takes that outcome with no
+// index or debt of its own. The outcomes are the block index's for a room (ReconcileBlockIndex): a
+// room live ahead, or one a fragment of which did not read back, is left owed and its document
+// remembered in liveAhead, keyed by the document, while no room of this server is resident for it.
+func (s *Service) drainFormsRoomDocument(ctx context.Context, source refs.Owed, document owedDocument, liveAhead formsLiveAhead, rooms map[string]owedOutcome) (formsDocumentDrain, error) {
+	cold := s.srv.GetDoc(document.resident()) == nil
+	outcome, read := rooms[document.room]
+	if !read {
+		debt := document.id
+		if document.id == document.room {
+			var err error
+			if debt, err = s.roomPassDebt(ctx, document.room); err != nil {
+				return formsDocumentUnindexed, err
+			}
+			if debt == "" {
+				settled, err := refs.SettleOwed(ctx, s.store.Pool, source)
+				if err != nil || !settled {
+					return formsDocumentUnindexed, err
+				}
+				return formsDocumentGone, nil
+			}
+		}
+		if err := oweDocumentIndex(ctx, s.store.Pool, debt, s.markingRule); err != nil {
+			return formsDocumentUnindexed, err
+		}
+		outcome = s.indexOwed(ctx, document)
+		rooms[document.room] = outcome
+	}
+	switch {
+	case outcome.err != nil:
+		return formsDocumentUnindexed, outcome.err
+	case outcome.ahead:
+		if cold && !document.markedAt.IsZero() && s.srv.GetDoc(document.resident()) == nil {
+			liveAhead.remember(source, document)
+		}
+		return formsDocumentLiveAhead, nil
+	case outcome.unreadable:
+		if cold && s.srv.GetDoc(document.resident()) == nil {
+			document.unreadable = true
+			liveAhead.remember(source, document)
+		}
+		return formsDocumentUnreadable, nil
+	case outcome.indexed:
+		return formsDocumentIndexed, nil
+	}
+	return formsDocumentUnindexed, nil
+}
+
+// roomPassDebt is the artifact of the issue room room whose block index the forms drain owes so
+// that the room's pass wins its fence (drainFormsRoomDocument): the tree artifact where it holds a
+// markdown version, else the document of the room's layout (roomLayoutSQL) with the lowest id that
+// holds one, and "" where no artifact the pass covers holds one.
+func (s *Service) roomPassDebt(ctx context.Context, room string) (string, error) {
+	var debt *string
+	if err := s.store.Pool.QueryRow(ctx, `
+		select coalesce(
+			(select a.id from artifacts a where a.id = $1::uuid
+			   and exists (select 1 from artifact_versions v where v.artifact_id = a.id and v.markdown is not null)),
+			(select d.id from document_rooms held join artifacts d on d.id = held.artifact_id
+			 where held.room = $1::uuid and d.retired_at is null
+			   and exists (select 1 from artifact_versions v where v.artifact_id = d.id and v.markdown is not null)
+			 order by d.id limit 1))::text
+	`, room).Scan(&debt); err != nil {
+		return "", fmt.Errorf("read the artifact room %s owes a block index: %w", room, err)
+	}
+	if debt == nil {
+		return "", nil
+	}
+	return *debt, nil
+}
+
 // latestDocumentVersion is document artifactID as indexOwedDocument takes it and the block index
 // lists it (owedDocuments): its latest markdown version, 0 for a document that holds none or is
 // gone, which has no text to index, and its pending settlement's marked_at, zero when it owes
 // none. indexOwedDocument reads that version again under the document's owner row, so a version
 // written after this read leaves the document unindexed and its row owed.
+//
+// A document of an issue room - one its document_rooms row holds, or an issue's tree artifact -
+// is read as owedDocuments reads one: its room, the room's revision (roomRevisionSQL) as its
+// version and the room's pending settlement's marked_at, which indexOwedRoom reads again under the
+// tree artifact's owner lock. A document of a room that no pass over the room reads, since it is
+// retired from the room (roomLayoutSQL) or holds no markdown version, reads as no room's, at
+// version 0: it has no text to index. The tree artifact is read with its room whatever it holds,
+// since the room's references are written under it.
 func (s *Service) latestDocumentVersion(ctx context.Context, artifactID string) (owedDocument, error) {
 	document := owedDocument{id: artifactID}
 	var markedAt *time.Time
 	if err := s.store.Pool.QueryRow(ctx, `
-		select coalesce((select max(v.number) from artifact_versions v
-		                 where v.artifact_id = $1::uuid and v.markdown is not null), 0),
-		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = $1::uuid)
-	`, artifactID).Scan(&document.version, &markedAt); err != nil {
+		select coalesce(placed.room::text, ''),
+		       case when placed.room is not null then `+roomRevisionSQL("placed.room")+`
+		            when placed.member is not null then 0
+		            else coalesce((select max(v.number) from artifact_versions v
+		                           where v.artifact_id = $1::uuid and v.markdown is not null), 0) end,
+		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = coalesce(placed.room, $1::uuid))
+		from (
+			select membership.room as member,
+			       case when membership.room = $1::uuid or exists (
+			                select 1 from artifacts a
+			                where a.id = $1::uuid and a.retired_at is null
+			                  and exists (select 1 from artifact_versions v where v.artifact_id = a.id and v.markdown is not null))
+			            then membership.room end as room
+			from (select coalesce(
+				(select moved.room from document_rooms moved where moved.artifact_id = $1::uuid),
+				(select tree.artifact_id from issue_trees tree where tree.artifact_id = $1::uuid)) as room) membership
+		) placed
+	`, artifactID).Scan(&document.room, &document.version, &markedAt); err != nil {
 		return owedDocument{}, fmt.Errorf("read the latest version of %s: %w", artifactID, err)
 	}
 	if markedAt != nil {

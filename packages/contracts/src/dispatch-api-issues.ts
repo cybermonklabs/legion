@@ -112,8 +112,21 @@ export const issueFields = {
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
-  /** Issue keys this issue waits on, of any project, sorted. */
+  /** Issue keys this issue waits on, of any project, sorted: the same list as `needs`, under the
+   *  spelling a reader of the release before reads. */
   blocked_by: z.array(z.string()),
+  /** Issue keys this issue waits on, of any project, sorted: its `needs` relation, one relation
+   *  with a plan node's wait. Absent from a Dispatch older than the issue tree, which answers
+   *  `blocked_by` alone. */
+  needs: z.array(z.string()).optional(),
+  /** The key of the issue of this issue's project it repeats; null when it names none. Absent
+   *  from a Dispatch older than the issue tree. */
+  duplicate_of: z.string().nullable().optional(),
+  /** The canonical reference of the public ask, comment or message of this issue's project it was
+   *  filed out of, `dispatch://<KEY>/<ask|comment|message>/<uuid>` or
+   *  `dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>`; null when it names none. Absent
+   *  from a Dispatch older than the issue tree. */
+  filed_from: z.string().nullable().optional(),
   /** Every priority this issue advances: the ones it states itself and, marked `inherited`, the
    *  ones an issue above it states. Absent from a Dispatch older than priorities. */
   advances: z
@@ -144,12 +157,14 @@ export const issueFields = {
   updated_at: z.string(),
   closed_at: z.string().nullable(),
   primary_artifact_id: z.string(),
-  /** The issue's Verification document, the one created as `verification.md`, its Plan, the one
-   *  created as `plan.md`, and its decisions document, the one created as `decisions.md`
-   *  (`Artifact.role`); `""` when the issue holds none. Absent from a Dispatch older than
-   *  document roles, and `decisions_artifact_id` from one older than the design gate's steps. */
+  /** The issue's Verification document, the one created as `verification.md`, and its Plan, the
+   *  one created as `plan.md` (`Artifact.role`); `""` when the issue holds none. Absent from a
+   *  Dispatch older than document roles. */
   verification_artifact_id: z.string().optional(),
   plan_artifact_id: z.string().optional(),
+  /** The id of the issue's decisions document while it stands, `""` once the decisions step
+   *  retires it. No reader of this build reads it; a page of the release before does. */
+  // kept for one release: compat-objects
   decisions_artifact_id: z.string().optional(),
   last_seq: z.number().int(),
 };
@@ -206,7 +221,8 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
    *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `blocked_by` and `external_links`; for `issue.created`, every field the new issue holds a
+   *  `advances`, `blocked_by` and `needs` (one relation under both spellings), `duplicate_of`,
+   *  `filed_from` and `external_links`; for `issue.created`, every field the new issue holds a
    *  value in. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */

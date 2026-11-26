@@ -134,7 +134,7 @@ const (
 	versionNewsCheckAgain  = "The read answers 200 with the page it read."
 )
 
-// versionNewsAsk is the decision block the A3 implementing root's spec carries open, whose answer
+// versionNewsAsk is the ask block the A3 implementing root's spec carries open, whose answer
 // alone is the next version's change.
 const versionNewsAsk = ":::ask{#wave urgency=\"med\" multiple=\"false\"}\nHow many regions take the first wave?\n\n" +
 	"- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n"
@@ -367,7 +367,7 @@ func (r *versionNewsLive) offFixture() {
 
 // tree makes one tree on Dispatch, its root first and each child under it, each in progress with
 // the legion label as a running daemon leaves them, the root's spec carrying a `## Summary` and a
-// `## Design` (and the open decision block, for decision), and, for verification, the root's
+// `## Design` (and the open ask block, for decision), and, for verification, the root's
 // Verification document holding one check.
 func (r *versionNewsLive) tree(name string, verification, decision bool, members ...versionNewsMember) {
 	tree := &versionNewsTree{name: name}
@@ -423,7 +423,7 @@ func (r *versionNewsLive) tree(name string, verification, decision bool, members
 	r.note("tree %s on Dispatch: %s; spec %s, Verification document %q", name, strings.Join(keys, ", "), tree.spec, tree.verification)
 }
 
-// versionNewsSpec is the root spec of tree, its `## Design` reading design, and its open decision
+// versionNewsSpec is the root spec of tree, its `## Design` reading design, and its open ask
 // block in a `## Decisions` section of its own when decision says so.
 func versionNewsSpec(tree, design string, decision bool) string {
 	spec := "# The " + tree + " tree\n\n## Summary\n\nWhat the " + tree + " tree of the approved version news proof builds.\n\n## Design\n\n" + design + "\n"
@@ -540,7 +540,7 @@ func (r *versionNewsLive) connect(member *versionNewsIssue, role claim.Role, bef
 		return state == string(supervise.StateShimConnected), "state " + state
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.fail("register %s = %d %s, want 200", token, status, body)

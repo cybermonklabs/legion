@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -11,10 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// An ask block's answer state is the attribute `state` in its markdown and the attribute node
-// ask/answer_state in the store (schemanodestest.StoreName), because `state` is a base attribute of
-// every node: a block node whose `state` tuple read `answered` would be a node with no live state,
-// which the census counts as a difference.
+// An ask block's answer state is the attribute node ask/answer_state in the store
+// (schemanodes.StoreName), because `state` is a base attribute of every node: a block node
+// whose `state` tuple read `answered` would be a node with no live state, which the census counts
+// as a difference. While another build serves (serveTwoBuilds), settlement also keeps the answer
+// state in the block's markdown as the attribute `state`, for that build's pages
+// (rollWindowAskAttributes), so a version can hold a block whose markdown says
+// `state="answered"`, as every version the release before wrote can.
 //
 // The document holds an open ask, which its first settlement indexes as an asks row. The row is
 // then answered, and the next settlement writes the answered state into the block and a version
@@ -29,6 +33,7 @@ import (
 func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 	t.Parallel()
 	service, document := newTestService(t)
+	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	database := service.store
 	ctx := context.Background()
@@ -90,6 +95,13 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 		t.Errorf("the ask block's node states no base state at all")
 	}
 
+	// The fixture's issue, document and first version are written by SQL (createIssueDocument), as
+	// a build before their nodes wrote them (the issue-tree spec): the backfill gives each its
+	// node and names no block, every one of which the block index named, so the census below
+	// reads the blocks as the index left them.
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the fixture's document: %v", err)
+	}
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {
 		for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
