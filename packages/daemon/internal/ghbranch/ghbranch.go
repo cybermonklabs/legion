@@ -24,15 +24,17 @@ import (
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
 // answer (a *githubrest.Answer, its status and body).
 //
-// The ref name passes the deployment's private-name rules before anything is sent: rules, the
-// rule set the daemon compiled from the deployment's rule file at boot, run alone
-// (leakguard.RuleSet.Check). A name they match, and a rule pass that could not be made to run, are
-// each an error, and the base is not even read. Nil rules are a deployment that names no rule
-// file, and no private-name rule runs. Either way the create reads no environment, so it depends
-// on nothing but what its caller hands it, and never on a rule file its process's environment may
-// point at. The check lives here rather than in the daemon that calls Create so that the
-// package's contract holds for every caller: a create of this package publishes no ref name the
-// rules it is handed refuse.
+// The ref name passes the deployment's private-name rules before anything is sent: rules, the rule
+// set the daemon compiled from the deployment's rule file at boot, run alone
+// (leakguard.RuleSet.Check). On a public repository, a name they match, and a rule pass that could
+// not be made to run, are each an error, and the base is not even read. Nil rules are a deployment
+// that names no rule file, and no private-name rule runs. Either way the create reads no
+// environment, so it depends on nothing but what its caller hands it, and never on a rule file its
+// process's environment may point at. The check lives here rather than in the daemon that calls
+// Create so that the package's contract holds for every caller: a create of this package publishes
+// no ref name the rules it is handed refuse to a public repository. A repository GitHub reports
+// private or internal takes any name, as a push or a gh call to it does (leakguard's scanThrough);
+// its visibility is read only when the rules refuse (notPublic).
 //
 // The rule pass alone runs, and no shared public leak check: a ref name is a branch name of the
 // daemon's own making, which can carry one of the deployment's private names and none of what the
@@ -42,7 +44,9 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	ref := "refs/heads/" + branch
 	if rules != nil {
 		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
-			return fmt.Errorf("create a branch of %s: %w", repo, err)
+			if private, readErr := notPublic(ctx, github); !private {
+				return fmt.Errorf("create a branch of %s: %w", repo, errors.Join(err, readErr))
+			}
 		}
 	}
 	var read struct {
@@ -113,6 +117,19 @@ func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository)
 		return Repository{}, err
 	}
 	return Repository{Name: name, DefaultBranch: info.DefaultBranch}, nil
+}
+
+// notPublic says whether GitHub reports the repository private or internal (`visibility` of
+// `GET /repos/{owner}/{repo}`). A read that fails, or names no visibility, counts as public; a
+// failed read also returns its error.
+func notPublic(ctx context.Context, github githubrest.Client) (bool, error) {
+	var info struct {
+		Visibility leakguard.Visibility `json:"visibility"`
+	}
+	if err := github.Get(ctx, "", &info); err != nil {
+		return false, fmt.Errorf("read the visibility: %w", err)
+	}
+	return info.Visibility == leakguard.Private || info.Visibility == leakguard.Internal, nil
 }
 
 // alreadyExists says whether a 422's body is GitHub's answer to a ref it already has. GitHub answers

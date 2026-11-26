@@ -24,14 +24,16 @@ import (
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 
 // github is a repository's REST API as Create and DefaultBranch call it: the repository itself,
-// naming defaultBranch, each branch of refs by its exact name, and a create of a ref answered with
-// create's status and body. It records each read and each create; any other request fails the
-// test, so a Create that reads the base's tree, or posts a tree or a commit of its own, is caught
-// by name.
+// naming defaultBranch and visibility (or answering repoStatus when it is set), each branch of refs
+// by its exact name, and a create of a ref answered with create's status and body. It records each
+// read and each create; any other request fails the test, so a Create that reads the base's tree,
+// or posts a tree or a commit of its own, is caught by name.
 type github struct {
 	refs          map[string]string
 	defaultBranch string
 	fullName      string
+	visibility    string
+	repoStatus    int
 	create        func() (int, string)
 	mu            sync.Mutex
 	read          []string
@@ -50,11 +52,16 @@ func (g *github) serve(t *testing.T) string {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
 			g.reading(r.URL.Path)
+			if g.repoStatus != 0 {
+				w.WriteHeader(g.repoStatus)
+				_, _ = io.WriteString(w, `{"message":"Server Error"}`)
+				return
+			}
 			fullName := g.fullName
 			if fullName == "" {
 				fullName = "acme/widgets"
 			}
-			_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+g.defaultBranch+`"}`)
+			_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+g.defaultBranch+`","visibility":"`+g.visibility+`"}`)
 		case r.Method == http.MethodGet && isRef:
 			g.reading(r.URL.Path)
 			commit, found := g.refs[branch]
@@ -299,12 +306,13 @@ func errorText(err error) string {
 }
 
 // The ref name passes the rules the caller hands Create, and no others. With the fixture's rules
-// (leakguardtest), a branch naming the fixture's invented host is refused before anything is
-// sent: GitHub is asked for nothing, no ref is created, and the refusal shows the ref name the
-// rule matched. A clean name of the same shape is created. With no rules, a deployment that names
-// no rule file, the same branch is created, even where the process's environment points
-// LEGION_PRIVATE_NAME_RULES_FILE at the fixture's file: the rules are what the daemon compiled at
-// boot, never a file the environment the create runs in names.
+// (leakguardtest), a branch naming the fixture's invented host is refused on a public repository
+// before anything is written: GitHub is asked for the repository's visibility alone, no ref is
+// created, and the refusal shows the ref name the rule matched. A clean name of the same shape is
+// created. With no rules, a deployment that names no rule file, the same branch is created, even
+// where the process's environment points LEGION_PRIVATE_NAME_RULES_FILE at the fixture's file: the
+// rules are what the daemon compiled at boot, never a file the environment the create runs in
+// names.
 func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 	rules, err := leakguard.LoadRules([]byte(leakguardtest.Rules))
 	if err != nil {
@@ -312,8 +320,8 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 	}
 	branch := "legion/" + leakguardtest.RulesHost
 
-	t.Run("refused with the rules", func(t *testing.T) {
-		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+	t.Run("refused with the rules on a public repository", func(t *testing.T) {
+		g := &github{visibility: "public", refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
 		api := g.serve(t)
 
 		err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
@@ -326,8 +334,8 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 		if !slices.Equal(refused.Lines, want) {
 			t.Errorf("the report is %q, want %q", refused.Lines, want)
 		}
-		if len(g.creates) != 0 || len(g.reads()) != 0 {
-			t.Errorf("GitHub was asked for %v and created %v, want nothing of either", g.reads(), g.creates)
+		if want := []string{"/repos/acme/widgets"}; len(g.creates) != 0 || !slices.Equal(g.reads(), want) {
+			t.Errorf("GitHub was asked for %v and created %v, want the visibility read alone", g.reads(), g.creates)
 		}
 
 		if err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", rules); err != nil {
@@ -335,6 +343,54 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 		}
 		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/legion/WIDGETS-12" || g.creates[0]["sha"] != baseCommit {
 			t.Errorf("creates = %v, want the one clean ref at the base", g.creates)
+		}
+	})
+
+	// A repository GitHub reports private or internal takes a name the rules match, as a push or
+	// a gh call to it does: no private name can leak to a destination the public cannot read.
+	for _, visibility := range []string{"private", "internal"} {
+		t.Run("created on a "+visibility+" repository", func(t *testing.T) {
+			g := &github{visibility: visibility, refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+
+			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", rules); err != nil {
+				t.Fatalf("Create on a %s repository: %v", visibility, err)
+			}
+			if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/"+branch || g.creates[0]["sha"] != baseCommit {
+				t.Errorf("creates = %v, want the one ref at the base", g.creates)
+			}
+		})
+	}
+
+	// A visibility GitHub does not answer counts as public: the rules refuse the name, nothing is
+	// created, and the refusal carries GitHub's answer to the read.
+	t.Run("refused when the visibility cannot be read", func(t *testing.T) {
+		g := &github{repoStatus: http.StatusInternalServerError, refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+
+		err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
+
+		if !errors.As(err, new(*leakguard.Refusal)) {
+			t.Fatalf("Create with no visibility = %v, want a leak guard refusal", err)
+		}
+		var answer *githubrest.Answer
+		if !errors.As(err, &answer) || answer.Status != http.StatusInternalServerError {
+			t.Errorf("Create with no visibility = %v, want it to carry GitHub's 500", err)
+		}
+		if len(g.creates) != 0 {
+			t.Errorf("created %v, want nothing", g.creates)
+		}
+	})
+
+	// An answer that names no visibility counts as public too.
+	t.Run("refused when GitHub names no visibility", func(t *testing.T) {
+		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+
+		err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
+
+		if !errors.As(err, new(*leakguard.Refusal)) {
+			t.Fatalf("Create with no visibility named = %v, want a leak guard refusal", err)
+		}
+		if len(g.creates) != 0 {
+			t.Errorf("created %v, want nothing", g.creates)
 		}
 	})
 
