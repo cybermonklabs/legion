@@ -393,8 +393,8 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 }
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
-// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
-// ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
+// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the statements its
+// header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. Before it, newest
@@ -448,15 +448,11 @@ func (r *stepRecordsRig) headerTransaction(suffix string) string {
 	return ""
 }
 
-// headerWayBack is the migration's parsed way back (migrations.WayBack), with <PROJECT> the
-// run's project.
+// headerWayBack is the way back migration's header gives from `begin;` to `commit;`, with
+// <PROJECT> the run's project.
 func (r *stepRecordsRig) headerWayBack(migration migrations.Migration) string {
 	r.t.Helper()
-	block, err := migrations.WayBack(migration.Version)
-	if err != nil {
-		r.t.Fatalf("read the way back of %s: %v", migration.Name, err)
-	}
-	return strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project)
+	return strings.ReplaceAll(r.headerBlock(migration), "<PROJECT>", r.cfg.Project)
 }
 
 // headerBlock is the way back migration's header gives, from its `begin;` to its `commit;`, each
