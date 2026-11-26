@@ -143,6 +143,12 @@ type testServerOptions struct {
 	// oidc is the service-account token verifier; nil is the unconfigured
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
+	// oidcAccounts and accessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts: the
+	// service-account subjects the deployment admits, and those that read the routes of the read
+	// class accessAccount. Nil is the deployment that names none.
+	oidcAccounts   []string
+	accessAccounts []string
+	busProjects    BusProjects
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -163,6 +169,12 @@ type testServerOptions struct {
 	// envoyTimeout shortens that client's window, so a test can exercise a receipt timeout
 	// without holding a stand-in listener for the production five seconds.
 	envoyTimeout time.Duration
+	// rosterUncached is Deps.ListenerRosterUncached: every read of the listener's session list asks
+	// the listener, as an end-to-end test process does (DISPATCH_TEST_ROSTER_UNCACHED).
+	rosterUncached bool
+	// routeRosterTTL is Deps.RouteRosterTTL: how long a stored listener answer serves reads before
+	// a read fetches it again. Zero keeps five seconds.
+	routeRosterTTL time.Duration
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
@@ -396,6 +408,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
+		ListenerRosterUncached: options.rosterUncached || options.listenerRosterUncached,
+		RouteRosterTTL:         options.routeRosterTTL,
 		// The horizon warns of a stall at horizontest.StallWarning rather than at the production
 		// five and thirty seconds, as a cmd/dispatch test process's does, so a row's output names
 		// whoever holds the horizon while it waits; the wait itself reads no warning
@@ -403,6 +417,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonStallAfter:      horizontest.StallWarning,
 		HorizonWarnEvery:       horizontest.StallWarning,
 		OIDC:                   options.oidc,
+		OIDCAccounts:           options.oidcAccounts,
+		AccessAccounts:         options.accessAccounts,
+		BusProjects:            options.busProjects,
 		BrokerTokens:           brokerTokens,
 		AgentSecretsURL:        options.agentSecretsURL,
 		AgentSecretsTokenFile:  agentSecretsTokenFile,

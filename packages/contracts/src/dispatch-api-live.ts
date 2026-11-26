@@ -130,9 +130,11 @@ export type DeliveryLiveBody =
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";
   readonly sub: string;
-  /** The change log position this answer reflects; a decimal string, since it is a bigint. */
+  /** The change log position this answer reflects, the newest change of a repository the caller
+   *  sees, so a change of one it does not see moves it no further; a decimal string, since it is a
+   *  bigint. */
   readonly seq: string;
-  /** When the newest change it reflects was recorded; null when the log is empty. */
+  /** When that change was recorded; null when there is none. */
   readonly changed_at: string | null;
   /** Exactly the matching GET route's body for the resolved window. */
   readonly body: DeliveryLiveBody;
@@ -175,9 +177,10 @@ export interface DeliveryLiveFreshness {
   readonly stale: readonly string[];
 }
 /** Sent once at the start of every events subscription, before any `event`: the id it starts
- *  after, which is the page's `since` clamped to the feed's head, or the head when the page sent
- *  none. A page holding no cursor adopts it, so a page that has applied no event still resumes
- *  without a gap. */
+ *  after, which is the page's `since` clamped to the feed's head, or, when the page sent none, the
+ *  head as the caller reads it, the newest event it can see, which no event of a project it cannot
+ *  see moves. A page holding no cursor adopts it, so a page that has applied no event still
+ *  resumes without a gap. */
 export interface LiveEventsStart {
   readonly type: "events_start";
   readonly sub: string;

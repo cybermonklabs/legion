@@ -525,7 +525,8 @@ type issueCheckResults struct {
 	VerificationArtifactID string             `json:"verification_artifact_id"`
 }
 
-// GET /api/v1/issues/{key}/results  (any authenticated caller)
+// GET /api/v1/issues/{key}/results  (a caller that sees the issue's project; to any other, the
+// issue is one nobody holds)
 //
 // The checks of the issue's Verification document in document order, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded

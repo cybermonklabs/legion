@@ -743,9 +743,10 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 // projects, each with a fake daemon, answers each project its own board and metrics", read
 // through one pass of the sampler over two daemons. Two facts here cross from LINUX to INFRA, and
 // neither is INFRA's: a LINUX worker files an issue into INFRA, which is a LINUX session's filing,
-// and the LINUX daemon's state names an INFRA issue in review, which is LINUX's record and nothing
-// INFRA's daemon reported. So each board shows its own daemon's read, and each project's metrics
-// count its own issue, its own sessions' filings and its own daemon's observations.
+// and the LINUX daemon's state names an INFRA issue in review, which nothing INFRA's daemon
+// reported and which LINUX's record leaves out, being no issue of LINUX's (legion.State's
+// keepProject). So each board shows its own daemon's read, and each project's metrics count its
+// own issue, its own sessions' filings and its own daemon's observations.
 func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -786,6 +787,11 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	}
 	if roles := legionCard(t, linuxBoard, "LINUX-1").Roles; !slices.Equal(roles, []string{"tester"}) {
 		t.Errorf("LINUX-1's roles on LINUX's board are %v, want LINUX's tester alone", roles)
+	}
+	// alice sees every object of this deployment, so her board leaves nothing out of its own
+	// (leaveOutHiddenIssues): what keeps INFRA-1 off LINUX's board is LINUX's record.
+	if got := legionColumnKeys(t, linuxBoard, legionColumnReviewing); len(got) != 0 {
+		t.Errorf("LINUX's reviewing column holds %v, want none: LINUX's daemon reported INFRA-1, which is no issue of LINUX's", got)
 	}
 
 	// Each project's issue closes after the reads, so the observations stand inside its life.

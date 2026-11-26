@@ -16,6 +16,7 @@ import (
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -58,7 +59,9 @@ func readPhaseWork(ctx context.Context, pool *store.Pool, issues []string) (map[
 	if err != nil {
 		return nil, err
 	}
-	titles, err := delivery.ResolveSessionTitles(ctx, pool, sessions)
+	// Read as the server (events.EveryEvent): a title only says whether a session's events are a
+	// role's work on an issue, and the answer is which issues carry that work, never a title.
+	titles, err := delivery.ResolveSessionTitles(ctx, pool, sessions, events.EveryEvent)
 	if err != nil {
 		return nil, fmt.Errorf("resolve the session titles of the Legion phase work: %w", err)
 	}

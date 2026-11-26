@@ -36,6 +36,7 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
+  AccessGroup,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
@@ -471,13 +472,16 @@ export function isAgentListRefilling(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "ENVOY_REFILLING";
 }
 
-// The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
-// definitive or too costly to send again at once; any other failure (dropped connection, a read
-// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
-// couple of automatic attempts before surfacing a Retry affordance to the user.
+// The retry policy every query in the app shares: an auth outcome (401), any 403, a missing
+// architecture source, an unconfigured credential broker or delivery timeline, a stored document
+// outside Proof's schema, a stored history that cannot load, or a reference closure cut at its
+// bound is definitive or too costly to send again at once; any other failure (dropped connection,
+// a read past its deadline, 5xx, a document holding content this build cannot read yet) is worth
+// a couple of automatic attempts before surfacing a Retry affordance to the user. A 403 is
+// Dispatch's permanent answer to the credential the request carried (a deployment read refused to
+// a restricted member, a role the caller does not hold), and a retry carries the same credential.
 export function isRetryableQueryError(error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 403) return false;
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
@@ -1097,6 +1101,18 @@ export class DispatchApiClient {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
   }
 
+
+  /** One page of the groups an access list can name, by name: at most 100 after the name `after`,
+   *  with `next` naming where the next page starts, absent on the last page. */
+  listAccessGroupsPage(after?: string) {
+    return this.read("/api/v1/access-groups", {}, after === undefined ? undefined : { after });
+  }
+
+  /** Every group an access list can name, by name, each with its owner and its members' emails:
+   *  every page of `listAccessGroupsPage`, read in turn. Settings → Groups and the Access tab's
+   *  group picker both read this whole list. A page's `next` is the last name it holds, so the
+   *  cursor only moves on; a `next` the read has already passed as `after` would read the same
+   *  pages again for good, so the read stops there and fails naming it. */
   /** Sets the repository an issue of the project resolves to when neither the issue nor an issue
    *  above it names one, `owner/name`. `{ repo: null }` clears it. The server stores the name in
    *  lower case with no `.git`, and its answer holds the stored value. A name GitHub could hold no
@@ -1173,14 +1189,15 @@ export class DispatchApiClient {
   }
 
   /** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
-   *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
-   *  itself is refused, as it is at the mint. */
-  setAgentTokenScopes(
+   *  replaces the set it holds now, and, when the body names them, the whole list of projects it
+   *  may use; a body with no `projects` leaves the list as it is. Answers the updated token. A
+   *  scope the caller does not hold itself is refused, as it is at the mint. */
+  updateAgentToken(
     id: string,
-    scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"],
+    input: Body<"/api/v1/me/agent-tokens/{id}", "patch">,
     bounds: WriteBounds
   ) {
-    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, { scopes }, bounds);
+    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, input, bounds);
   }
 
   async revokeAgentToken(id: string, bounds: WriteBounds): Promise<void> {

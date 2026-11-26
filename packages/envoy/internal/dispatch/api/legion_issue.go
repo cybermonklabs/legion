@@ -163,14 +163,14 @@ func (s *server) readLegionIssue(ctx context.Context, who model.Actor, key strin
 		}
 		return legionIssueResponse{}, err
 	}
-	_, err = legion.GetSettings(ctx, tx, answer.Project)
+	_, err = legion.GetSettings(ctx, tx, answer.Project, refs.VisibilityArg(who))
 	switch {
 	case errors.Is(err, legion.ErrNoSettings):
 	case err != nil:
 		return legionIssueResponse{}, err
 	default:
 		answer.Configured = true
-		read, err := readDaemonRead(ctx, tx, answer.Project)
+		read, err := readDaemonRead(ctx, tx, answer.Project, refs.VisibilityArg(who))
 		if err != nil {
 			return legionIssueResponse{}, err
 		}

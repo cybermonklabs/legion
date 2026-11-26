@@ -10,11 +10,12 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
 import { liveSocketFor } from "../api/live-socket";
 import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
+import { credentialGrantsQuery } from "../features/credentials/grants";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { quietConsoleError } from "./act-warnings";
 import { realClock, tick } from "./fake-clock";
@@ -441,6 +442,43 @@ test("the credential list held null is asked again after a gap", async () => {
   }
 });
 
+// A restricted member's Settings learns there is no broker from the grants list's 404 FEATURE_OFF,
+// which it does not ask again on a refresh (`SettingsPage`): the gap is the moment to.
+test("the grants list held at FEATURE_OFF is asked again after a gap, and a list held is not", async () => {
+  jest.useFakeTimers();
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockRejectedValue(
+    new ApiError(404, { code: "FEATURE_OFF", error: "this Dispatch has no secrets broker" })
+  );
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+  const queryClient = newClient();
+  let hook: { unmount: () => void } | undefined;
+  try {
+    await queryClient.prefetchQuery(credentialGrantsQuery());
+    await queryClient.prefetchQuery(credentialPendingQuery());
+    hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    openFeed();
+
+    rotate();
+    await advance(150);
+    expect(getCredentialGrants).toHaveBeenCalledTimes(1);
+
+    const before = sockets.sockets.length;
+    act(() => sockets.latest().restart());
+    await waitFor(() => expect(sockets.sockets).toHaveLength(before + 1));
+    openFeed("0", true);
+    await waitFor(() => expect(getCredentialGrants).toHaveBeenCalledTimes(2));
+    // A credential list that answered a list is no answer of no broker, and is not asked.
+    expect(getCredentialPending).toHaveBeenCalledTimes(1);
+  } finally {
+    hook?.unmount();
+    getCredentialGrants.mockRestore();
+    getCredentialPending.mockRestore();
+    realClock();
+  }
+});
+
 // While Dispatch cannot start the feed - its database does not answer - it ends each subscription
 // a second after it is sent. A refresh at each send would refetch every query of every tab for as
 // long as the outage lasts; the page refreshes once, when the feed starts again with a replay that
@@ -809,8 +847,9 @@ test("a refresh owed to a list removed mid-load is not paid by its replacement, 
 });
 
 // A resume Dispatch replays in full (`replay_complete`: the resume is at or below its head) missed
-// nothing, so the start refreshes nothing; each replayed event refreshes what it changed. A start
-// whose replay does not cover the gap refreshes everything, as before.
+// nothing an event carries, so the start refreshes nothing of the whole cache; each replayed event
+// refreshes what it changed. A start whose replay does not cover the gap refreshes everything, as
+// before.
 test("a resume whose replay Dispatch says is complete refreshes nothing, and one that is not refreshes everything", async () => {
   jest.useFakeTimers();
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
@@ -842,6 +881,39 @@ test("a resume whose replay Dispatch says is complete refreshes nothing, and one
     act(() => third.open());
     receive(third, { type: "events_start", sub, since: "2", replay_complete: false });
     await waitFor(() => expect(wholeCache.count()).toBe(1));
+  } finally {
+    hook.unmount();
+    wholeCache.restore();
+    realClock();
+  }
+});
+
+// An access change written by SQL alone appends no event: Dispatch's heartbeat finds it and ends
+// the feed, and the resume replays in full, since no event of the change is in the gap. So the
+// project list, which says which projects the caller sees, is read again at every start after a
+// gap however complete its replay; the first start, after the page's own reads, reads nothing.
+test("every start after a gap reads the project list again, and the first start does not", async () => {
+  jest.useFakeTimers();
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  const projects = ["projects"] as const;
+  queryClient.setQueryData(projects, [{ key: "CORE" }]);
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  const hook = renderHook(() => useEventFeed({ wholeCacheRefreshMs: 100 }), {
+    wrapper: wrapperFor(queryClient),
+  });
+  try {
+    const { socket, sub } = openFeed("4");
+    await advance(400);
+    expect(queryClient.getQueryState(projects)?.isInvalidated).toBe(false);
+
+    act(() => socket.restart());
+    await waitFor(() => expect(sockets.latest()).not.toBe(socket));
+    const again = sockets.latest();
+    act(() => again.open());
+    receive(again, { type: "events_start", sub, since: "4", replay_complete: true });
+    await waitFor(() => expect(queryClient.getQueryState(projects)?.isInvalidated).toBe(true));
+    // The list alone: a complete replay still refreshes nothing else.
+    expect(wholeCache.count()).toBe(0);
   } finally {
     hook.unmount();
     wholeCache.restore();

@@ -164,6 +164,8 @@ func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point me
 		if err := s.sendHeldMessageOn(ctx, message, point.Delivery); err != nil {
 			return model.Message{}, err
 		}
+		// The send waited on the listener, and the attempts are read by the session content rule.
+		s.refreshRosterBeforeReadBack(ctx, who)
 	}
 	if err := s.hydrateWrittenMessage(ctx, s.deps.Store.Pool, who, &message); err != nil {
 		return model.Message{}, err

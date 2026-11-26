@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -208,10 +210,9 @@ func TestAMentionWrittenAndRemovedEachMoveTheCommentListsValidator(t *testing.T)
 // The second read of an unchanged comment list builds nothing. It costs the statement its
 // validator is read with, beside the one that resolves what the caller sees (access.Resolve,
 // which every read that binds a viewer makes once), and nothing else: no comment row, no mention,
-// no delivery attempt, and
-// so no shape, no encode and no compression either. This is the whole point of the watermark -
-// the validator over the answer's own bytes could only be known by building the answer - and the
-// count below is the number that says the build is gone.
+// no delivery attempt, and so no shape, no encode and no compression either. This is the whole
+// point of the watermark - the validator over the answer's own bytes could only be known by
+// building the answer - and the count below is the number that says the build is gone.
 func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -249,6 +250,71 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 			len(counted), strings.Join(roundTripLines(counted), "\n"))
 	}
 	t.Logf("a warm comment-list read costs %d round trip: %s", len(counted), strings.Join(roundTripLines(counted), "\n"))
+}
+
+// Two people who see the same projects share one kept comment list only while no project is
+// private. Its bytes turn on its reader through the sessions its mentions and deliveries name
+// (leaveOutHiddenCommentSessions), which access.SessionClause decides from the reader's viewer and
+// from rows the key does not name - a session's pairs, its listener record, the fill marker - so
+// while PRIV is private no reader that does not see every object is handed a kept answer or keeps
+// one (keepsListAnswerFor, TestAKeptListServesNoReaderWhoseViewMovedUnderIt): alice and dana, open
+// members who see PUB alone, each read the list built, with the same bytes, and so do carol, who
+// sees PUB and PRIV, and bob, a restricted member. Once PRIV is public alice and dana see every
+// object and share one answer, the second read being the kept one, as every reader did before a
+// project could be private (R9); bob, who is not open and sees PRIV alone, keeps his own, filed
+// apart by the viewer part of the key (commentListViewOf).
+func TestTwoReadersWhoSeeTheSameShareAKeptCommentListOnlyWhileNoProjectIsPrivate(t *testing.T) {
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, hiddenPerson)
+	issue := seed.issue[seedPublic]
+	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": "A comment both readers read."}, http.StatusCreated)
+	target := commentListOf(issue)
+	keptOver := func(read func() *httptest.ResponseRecorder) (uint64, *httptest.ResponseRecorder) {
+		t.Helper()
+		answered := seed.server.listAnswers.answered()
+		response := read()
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: %d %s", target, response.Code, response.Body.String())
+		}
+		return seed.server.listAnswers.answered() - answered, response
+	}
+	asAlice := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, seed.handler, http.MethodGet, target, nil, seedAlice)
+	}
+	asDana := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, seed.handler, http.MethodGet, target, nil, hiddenPerson)
+	}
+	asBob := func() *httptest.ResponseRecorder {
+		return seed.request(t, callerBob, http.MethodGet, commentListOf(seed.issue[seedPrivate]), nil)
+	}
+	asCarol := func() *httptest.ResponseRecorder { return seed.request(t, callerCarol, http.MethodGet, target, nil) }
+
+	_, first := keptOver(asAlice)
+	for name, read := range map[string]func() *httptest.ResponseRecorder{"alice": asAlice, "dana": asDana, "carol": asCarol, "bob": asBob} {
+		for attempt := range 2 {
+			if kept, response := keptOver(read); kept != 0 {
+				t.Errorf("with PRIV private, %s's read %d was answered from the kept answers %d times, want none: %s sees part of the deployment",
+					name, attempt+1, kept, name)
+			} else if name == "dana" && response.Body.String() != first.Body.String() {
+				t.Errorf("dana reads %s as %s, want alice's answer %s", target, response.Body.String(), first.Body.String())
+			}
+		}
+	}
+
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	keptOver(asAlice)
+	if kept, second := keptOver(asDana); kept != 1 {
+		t.Errorf("with no private project dana's read of %s was answered from the kept answers %d times, want once: she sees what alice sees (R9)", target, kept)
+	} else if _, again := keptOver(asAlice); second.Body.String() != again.Body.String() {
+		t.Errorf("with no private project dana reads %s as %s, want alice's answer %s", target, second.Body.String(), again.Body.String())
+	}
+	if kept, _ := keptOver(asBob); kept != 0 {
+		t.Errorf("with no private project bob's first read of PRIV's comments was answered from the kept answers %d times, want none: no reader that sees what he sees read it", kept)
+	}
+	if kept, _ := keptOver(asBob); kept != 1 {
+		t.Errorf("with no private project bob's second read of PRIV's comments was answered from the kept answers %d times, want once (R9)", kept)
+	}
 }
 
 // No two comment lists of one deploy share a validator: not two issues standing at the same

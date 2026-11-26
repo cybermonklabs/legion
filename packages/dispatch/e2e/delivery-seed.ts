@@ -15,6 +15,12 @@ const SETTINGS = `INSERT INTO delivery_settings (
      '.github/workflows/pr-checks.yml', ARRAY['octocat'], ARRAY[]::text[], ${SEED_ACTOR}
    )`;
 
+/** The delivery settings every fixture here starts from, written alone, for a row that writes
+ *  pull requests and runs of its own under them. */
+export async function seedDeliverySettings(): Promise<void> {
+  await sql(SETTINGS);
+}
+
 /** The slice 1 timeline's fixture, in 2024-06-01: two population pull requests (#1 shipped by
  *  deploy run 500 and attributed to ACME-1, a P0 issue; #2 waiting, a rework, with no issue),
  *  the deploy run with its jobs, and a failed run (501). */

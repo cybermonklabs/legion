@@ -556,8 +556,8 @@ type whoamiAnswer struct {
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
-// event is final (api.Background's EventHead), read after the sign-in check and before the answer
-// is written. The page starts every read
+// event is final, read as the highest id of an event that person can see (api.Background's
+// EventHead), after the sign-in check and before the answer is written. The page starts every read
 // the event feed keeps current only once whoami has answered, and resumes its first events
 // subscription from event_head, so a change committed while it loads is replayed rather than
 // missed. A head it cannot answer is a 503, never a whoami without it: a page that took a missing
