@@ -32,7 +32,7 @@
 // Delivery timeline's first paint (GET /api/v1/delivery/timeline at 84 days with the compare
 // range's GET /api/v1/delivery/measures beside it, and at 28 days), followed by k2's six
 // statements and its refusals and controls, k13's run-jobs rule over every read of the paint, its
-// named-jobs read and P0 count, k16's hand folds, and the probe of the 84-day compare read's
+// named-jobs read and P0 list, k16's hand folds, and the probe of the 84-day compare read's
 // stored-figures statements (probe.go). In mode failure-day they are the Delivery timeline's reads
 // alone, over the same windows, one of which holds the failure day, with k13's run-jobs rule and
 // the failure day the database holds. At the base (-mode base) they are the base Delivery page's
@@ -42,23 +42,29 @@
 // attributed to an issue, by the issue's project, and the measures' per-PR total and deploys; the
 // base's control fails on a page that shows no pull request attributed to an issue, or none in its
 // measures. -info measures the first paint alone and judges no budget, for the round after a
-// Postgres restart that the Job records for information.
+// Postgres restart that the Job records for information: its lines are INFO lines, a rule it
+// misses is an INFO-FAIL line, which no verdict counts, and it exits 0.
 //
 // -run n tags each RESULT and FAIL line of the paint with run=n, one of the first paint's runs
 // (k8: run.sh paints this head's first paint EVALBENCH_PAINT_RUNS times, 8 by default, each as the
 // first requests after a fresh start of the server), and -runs-file appends the run's reads to a
-// file. k2's statements and controls, k13's named-jobs read and P0 count, k16's day rows by
-// repository and hand folds, the probe and k16's fallback are measured in run 1 alone, after its
-// paint; the reads of every run are judged by their budgets, and by k13's rules over their plans.
-// runs then prints, for each read and each group of reads, its database time in each run with the
-// median and the maximum of the runs, and fails one over its budget in any run (runs.go).
+// file. k2's statements and controls, k13's named-jobs read and P0 list, k16's day rows by
+// repository and hand folds, the probe, k16's fallback and its move of the default repository are
+// measured in run 1 alone, after its paint; the reads of every run are judged by their budgets,
+// and by k8's and k13's rules over their plans. runs then prints, for each read and each group of
+// reads, its database time in each run with the median and the maximum of the runs, and fails one
+// over its budget in any run (runs.go). -now is the day the paint's windows end on, the end of the
+// history the generator wrote (job.sh's EVALBENCH_NOW), and EVALBENCH_NODE, where the environment
+// sets it, the node the run is on, which the lines of k16's fallback and move name.
 //
 // The server runs background loops that touch the database between requests. Each read's
 // statements are told from theirs by a catalogue taken first: every statement the database ran in
-// a quiet window before any read, with no request in flight. A statement of that catalogue that
-// a read also runs is counted as background; each read's RESULT line names how many statements
-// and how much time it set aside that way, beside the total of everything that ran while it was
-// in flight.
+// a quiet window before any read, with no request in flight. A statement of that catalogue that a
+// read also runs is counted as the read's own where the statement log shows it on the read's own
+// backends, and as background where it shows it on others (ownAndBackground); each read's RESULT
+// line names how many catalogued statements it counted as its own, and how many statements and how
+// much time it set aside as background, beside the total of everything that ran while it was in
+// flight.
 package main
 
 import (
@@ -70,13 +76,14 @@ import (
 	"time"
 )
 
-// report collects what one invocation measured: each line it printed and whether any failed.
-// tag, where it is set, follows the prefix of every RESULT and FAIL line: " run=3" for the third
-// of the first paint's runs.
+// report collects what one invocation measured: each line it printed, and the text of each FAIL
+// line (fails). tag, where it is set, follows the prefix of every RESULT and FAIL line: " run=3"
+// for the third of the first paint's runs. An -info invocation's prefix is INFO, and it writes a
+// rule it misses as an INFO-FAIL line, which no verdict counts (job.yaml's reads `^FAIL`).
 type report struct {
 	prefix string
 	tag    string
-	failed int
+	fails  []string
 }
 
 // result prints one measurement.
@@ -86,8 +93,13 @@ func (r *report) result(format string, args ...any) {
 
 // fail prints one measurement that missed its budget or its rule, and marks the run failed.
 func (r *report) fail(format string, args ...any) {
-	r.failed++
-	fmt.Printf("FAIL"+r.tag+" "+format+"\n", args...)
+	line := fmt.Sprintf(format, args...)
+	r.fails = append(r.fails, line)
+	word := "FAIL"
+	if r.prefix == "INFO" {
+		word = "INFO-FAIL"
+	}
+	fmt.Printf("%s%s %s\n", word, r.tag, line)
 }
 
 // block prints text under a heading, each line indented, so a plan or a statement reads whole in
@@ -99,7 +111,7 @@ func (r *report) block(heading, text string) {
 	}
 }
 
-// options is one invocation's flags.
+// options is one invocation's flags, and the node the environment names (EVALBENCH_NODE).
 type options struct {
 	mode      string
 	database  string
@@ -115,6 +127,8 @@ type options struct {
 	run       int
 	runs      int
 	runsFile  string
+	now       time.Time
+	node      string
 }
 
 const usage = "usage: measure wait|paint|runs -mode head|failure-day|base -database <url> -url <server> [flags]"
@@ -141,9 +155,20 @@ func main() {
 	flags.IntVar(&o.run, "run", 0, "paint: which of the first paint's runs this is, from 1, which tags its lines run=<n>; the checks after the paint are run 1's; 0 for a paint measured once")
 	flags.StringVar(&o.runsFile, "runs-file", "", "paint: the file each run's reads are appended to; runs: the file it reads them from")
 	flags.IntVar(&o.runs, "runs", 0, "runs: how many runs the file holds, numbered 1 to this")
+	now := flags.String("now", "", "paint: the UTC midnight the history the generator wrote ends at, RFC3339, which the paint's windows end on (job.sh's EVALBENCH_NOW); the current UTC midnight where unset")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
 	}
+	o.now = time.Now().UTC().Truncate(24 * time.Hour)
+	if *now != "" {
+		at, err := time.Parse(time.RFC3339, *now)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "measure: -now is an RFC3339 time, not %q: %v\n", *now, err)
+			os.Exit(2)
+		}
+		o.now = at.UTC().Truncate(24 * time.Hour)
+	}
+	o.node = os.Getenv("EVALBENCH_NODE")
 	if o.mode != "head" && o.mode != "base" && o.mode != "failure-day" {
 		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day or base, not %q\n", o.mode)
 		os.Exit(2)
@@ -187,8 +212,12 @@ func main() {
 	if err != nil {
 		r.fail("%s: %v", command, err)
 	}
-	if r.failed > 0 {
-		fmt.Printf("%s%s %s: %d FAIL lines\n", r.prefix, r.tag, command, r.failed)
+	if len(r.fails) > 0 {
+		if o.info {
+			fmt.Printf("%s%s %s: %d INFO-FAIL lines, for information\n", r.prefix, r.tag, command, len(r.fails))
+			return
+		}
+		fmt.Printf("%s%s %s: %d FAIL lines\n", r.prefix, r.tag, command, len(r.fails))
 		os.Exit(1)
 	}
 	fmt.Printf("%s%s %s: no FAIL line\n", r.prefix, r.tag, command)

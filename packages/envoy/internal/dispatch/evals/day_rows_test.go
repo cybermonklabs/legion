@@ -518,21 +518,29 @@ func TestAWriteOfSeveralProjectsDaysDeletesWhatEachNoLongerHoldsAcrossItsRuns(t 
 	rows, items := 0, 0
 	for n := 100; n < 2000 && (rows == 0 || items == 0); n++ {
 		again := []ProjectDay{dayOf("P0", n, n, true), dayOf("P1", second, second, true)}
-		projects, _ := writtenDays(again)
-		var held []*DayRow
-		for i := range again {
-			for j := range again[i].Rows {
-				held = append(held, &again[i].Rows[j])
+		if rows == 0 {
+			sent := &sentExecs{}
+			if err := deleteStaleDays(ctx, sent, again, deliveryFamily.slugs); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range sent.sent {
+				if slices.Equal(args[11].([]string), dayRowKey(&again[1].Rows[0])) {
+					rows = n
+					break
+				}
 			}
 		}
-		for _, run := range staleRuns(held, paramBytes(11, writerComputation)+writtenReserve(projects, deliveryFamily.slugs), dayRowKeyBytes)[1:] {
-			if rows == 0 && rowKey(*run.rows[0]) == rowKey(again[1].Rows[0]) {
-				rows = n
+		if items == 0 {
+			sent := &sentExecs{}
+			if err := writeDayMembersIn(ctx, sent, again, deliveryFamily.families); err != nil {
+				t.Fatal(err)
 			}
-		}
-		for _, run := range memberRuns(again, deliveryFamily.families)[1:] {
-			if items == 0 && run.members[0].project == "P1" && run.members[0].RowKey == again[1].Members[0].RowKey {
-				items = n
+			want := []string{"P1", KindDelivery, "acme/deploy", again[1].Members[0].RowKey}
+			for _, args := range sent.sent {
+				if len(args) == 10 && slices.Equal(args[9].([]string), want) {
+					items = n
+					break
+				}
 			}
 		}
 	}
@@ -583,4 +591,78 @@ func TestAWriteOfSeveralProjectsDaysDeletesWhatEachNoLongerHoldsAcrossItsRuns(t 
 		}
 	}
 	t.Logf("%d rows and %d items of P0 and %d of each of P1, written again with the first and the last of each gone", rows, items, second)
+}
+
+func TestAChangedShippingMemberOwesTheOldRunUnderAnotherOwner(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const repo = "acme/web"
+	prOwner := OwnerKey(repo, nil, nil)
+	runOwner := OwnerKey(repo, []string{r.project}, nil)
+	prDay, runDay := at(3, 0, 0), at(4, 0, 0)
+	old := RunMember(repo, 101)
+	pr := Member{Family: KindDelivery, DeployRepo: repo, RowKey: PullRequestMember(repo, 1), Repo: repo, ShippedBy: old}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_day_owners (owner, repo) values ($1, $3), ($2, $3)`,
+		prOwner, runOwner, repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
+		values ($1, 'delivery', $3, $4, $5, $3, $6), ($2, 'delivery', $3, $6, $7, $3, '')`,
+		prOwner, runOwner, repo, pr.RowKey, prDay, old, runDay); err != nil {
+		t.Fatal(err)
+	}
+	pr.ShippedBy = RunMember(repo, 102)
+	days := []ProjectDay{{Project: prOwner, Day: prDay, Members: []Member{pr}}}
+	left, err := r.registry.leftDays(ctx, days, deliveryDayFamilies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []projectDay{{project: runOwner, day: runDay}}; !slices.Equal(left, want) {
+		t.Errorf("days left = %v, want %v", left, want)
+	}
+	// Commit just the PR's write, as a pass that fails before it can write the run's day.
+	if err := r.registry.writeProjectDays(ctx, deliveryFamily, days, testBuild, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.count(t, `select count(*) from eval_days_owed where project_key = $1 and family = 'delivery' and day = $2`, runOwner, runDay); n != 1 {
+		t.Errorf("%s owes %d writes of the old run's day, want one", runOwner, n)
+	}
+}
+
+func TestALargeNamedFigureReadBoundsItsDefinitionStatements(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ids := make([]string, 600)
+	for i := range ids {
+		slug := fmt.Sprintf("eval-%03d-", len(ids)-i) + strings.Repeat("x", 500)
+		ids[i] = EvalID(r.project, slug)
+		if i == 0 || i == len(ids)-1 {
+			r.write(t, slug, alice, row(t, map[string]any{
+				"series": "minutes", "row_kind": "run", "row_key": "one", "value": 1, "measured_at": at(3, 9, 0),
+			}))
+		}
+	}
+	trace := &sentStatements{}
+	pool := storetest.TracedStore(t, r.database, trace).Pool
+	entries, err := readEntries(t.Context(), pool, r.project, append(ids, ids[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range entries {
+		got = append(got, entry.Definition.EvalID)
+		if len(entry.Series) != 1 || entry.Series[0].Series != "minutes" {
+			t.Errorf("entry %.13q has %v, want the minutes series", entry.Definition.EvalID, entry.Series)
+		}
+	}
+	if !slices.Equal(got, []string{ids[len(ids)-1], ids[0]}) {
+		t.Error("the read did not return exactly the two stored entries in slug order")
+	}
+	largest, _ := largestStatement(r.measured(t, trace.take()))
+	if largest > 256<<10 {
+		t.Errorf("definition read sent %d parameter bytes, past 256 KiB", largest)
+	}
 }

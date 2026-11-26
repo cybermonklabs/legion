@@ -527,6 +527,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 // (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then one day's rows of the first
 // window are deleted, and the same comparison must differ.
 func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true})
 	leaveAttributionInputsUnread(t, database.Pool)
@@ -622,6 +623,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 // deploys, less the deploys that ship both, are the deployment-wide count. A delivery route that
 // answered the sum of the projects' rows would count the deploys of both twice, and fail here.
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
 	leaveAttributionInputsUnread(t, database.Pool)

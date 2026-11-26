@@ -2,7 +2,6 @@ package evals
 
 import (
 	"cmp"
-	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,13 +10,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/explaintest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // attributionDay is the day the hand-written delivery history of seedAttribution happens on.
@@ -162,11 +159,12 @@ func (r rig) stored(t *testing.T, project string) []DayRow {
 }
 
 // members reads every eval_day_members row of project as `<family> <row key> <repo> <day>`, and
-// ` as <deploy repo>` after it for an item counted under a deploy repository (deploy_repos.go).
+// ` as <deploy repo>` for an item counted under it, then ` shipped by <run key>` if shipped.
 func (r rig) members(t *testing.T, project string) []string {
 	t.Helper()
 	rows, err := r.database.Pool.Query(t.Context(), `
 		select family || ' ' || row_key || ' ' || repo || ' ' || day::text || case when deploy_repo <> '' then ' as ' || deploy_repo else '' end
+			|| case when shipped_by <> '' then ' shipped by ' || shipped_by else '' end
 		from eval_day_members where project_key = $1 order by family, row_key, deploy_repo
 	`, project)
 	if err != nil {
@@ -373,6 +371,44 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			"production-deploy minutes acme/alpha: n=1 via=0 samples=[17]",
 		},
 		"GAMMA": nil,
+		// Runs 102 and 103, which ship no pull request, through the repository OWNER's source reads
+		// (R12), and 102's and 103's production jobs.
+		"OWNER": {
+			"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=0",
+			"deploy-frequency deploys acme/alpha: n=1 via=1 sum=1 with_prs=0",
+			"deploy-run-success runs all: n=2 via=2 share=1/2",
+			"deploy-run-success runs acme/alpha: n=2 via=2 share=1/2",
+			"production-deploy minutes all: n=2 via=2 samples=[17 17]",
+			"production-deploy minutes acme/alpha: n=2 via=2 samples=[17 17]",
+		},
+		wantOwners[0]: {
+			"merge-to-production minutes all: n=1 via=1 samples=[39]",
+			"merge-to-production minutes acme/alpha: n=1 via=1 samples=[39]",
+			"open-to-production minutes all: n=1 via=1 samples=[99]",
+			"open-to-production minutes acme/alpha: n=1 via=1 samples=[99]",
+			"pr-open-to-merge minutes all: n=1 via=1 samples=[60]",
+			"pr-open-to-merge minutes acme/alpha: n=1 via=1 samples=[60]",
+			"rework-share prs all: n=1 via=1 share=0/1",
+			"rework-share prs acme/alpha: n=1 via=1 share=0/1",
+			"pr-ci minutes all: n=1 via=1 samples=[19]",
+			"pr-ci minutes acme/alpha: n=1 via=1 samples=[19]",
+			"pr-ci job:lint all: n=1 via=1 samples=[17]",
+			"pr-ci job:lint acme/alpha: n=1 via=1 samples=[17]",
+		},
+		wantOwners[1]: {
+			"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=1",
+			"deploy-frequency deploys acme/alpha: n=1 via=1 sum=1 with_prs=1",
+			"deploy-run-success runs all: n=1 via=1 share=1/1",
+			"deploy-run-success runs acme/alpha: n=1 via=1 share=1/1",
+			"production-deploy minutes all: n=1 via=1 samples=[17]",
+			"production-deploy minutes acme/alpha: n=1 via=1 samples=[17]",
+		},
+		wantOwners[2]: {
+			"pr-open-to-merge minutes all: n=1 via=1 samples=[60]",
+			"pr-open-to-merge minutes acme/zeta: n=1 via=1 samples=[60]",
+			"rework-share prs all: n=1 via=1 share=0/1",
+			"rework-share prs acme/zeta: n=1 via=1 share=0/1",
+		},
 	}
 	compared := 0
 	for _, project := range slices.Sorted(maps.Keys(want)) {
@@ -389,16 +425,36 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	wantMembers := map[string][]string{
 		"ALPHA": {
 			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha", "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha",
-			"delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03 as acme/alpha shipped by run:acme/alpha/101",
 			"delivery pull_request:acme/beta#1 acme/beta 2026-11-03", "delivery pull_request:acme/beta#1 acme/beta 2026-11-03 as acme/alpha",
 			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
 		},
 		"BETA": {
 			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
-			"delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03 as acme/alpha shipped by run:acme/alpha/101",
 			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
 		},
 		"GAMMA": nil,
+		// Runs 102 and 103 ship no pull request: OWNER's, whose source reads acme/alpha (R12).
+		"OWNER": {
+			"ci run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
+			"ci run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha",
+		},
+		wantOwners[0]: {
+			"ci run:acme/alpha/202 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03",
+			"delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha shipped by run:acme/alpha/101",
+		},
+		wantOwners[1]: {
+			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
+		},
+		wantOwners[2]: {
+			"delivery pull_request:acme/zeta#1 acme/zeta 2026-11-03",
+			"delivery pull_request:acme/zeta#1 acme/zeta 2026-11-03 as acme/alpha",
+		},
 	}
 	for _, project := range slices.Sorted(maps.Keys(wantMembers)) {
 		if got := r.members(t, project); !slices.Equal(got, wantMembers[project]) {
@@ -420,24 +476,6 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			t.Errorf("%s is counted %d times in OWNER's deploys, want once", owned, n)
 		}
 	}
-	// What no issue attributes is in its repository's owner-key rows, and every one of them
-	// reached its owner through the repository: its via_repository is its n.
-	for _, owner := range wantOwners {
-		facts := allFacts(r.stored(t, owner))
-		if len(facts) == 0 {
-			t.Errorf("%s holds no day row, want the rows no issue attributes", owner)
-		}
-		for _, fact := range facts {
-			n, via := -1, -2
-			if at := strings.Index(fact, "n="); at < 0 {
-				t.Errorf("%s holds %q, which states no count", owner, fact)
-			} else if _, err := fmt.Sscanf(fact[at:], "n=%d via=%d", &n, &via); err != nil || n != via {
-				t.Errorf("%s holds %q, want every row counted through the repository (via_repository = n)", owner, fact)
-			}
-		}
-		compared += len(facts)
-	}
-
 	// The same day written again holds the same values: no row is rewritten.
 	var newest time.Time
 	if err := r.database.Pool.QueryRow(ctx, `select max(updated_at) from eval_days`).Scan(&newest); err != nil {
@@ -454,6 +492,30 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		t.Fatalf("move acme/alpha#3 to BETA-1: %v", err)
 	}
 	r.refreshDays(t, nil, attributionDay)
+	wantBeta := []string{
+		"merge-to-production minutes all: n=2 via=0 samples=[49 29]",
+		"merge-to-production minutes acme/alpha: n=2 via=0 samples=[49 29]",
+		"open-to-production minutes all: n=2 via=0 samples=[109 89]",
+		"open-to-production minutes acme/alpha: n=2 via=0 samples=[109 89]",
+		"pr-open-to-merge minutes all: n=2 via=0 samples=[60 60]",
+		"pr-open-to-merge minutes acme/alpha: n=2 via=0 samples=[60 60]",
+		"rework-share prs all: n=2 via=0 share=0/2",
+		"rework-share prs acme/alpha: n=2 via=0 share=0/2",
+		"deploy-frequency deploys all: n=1 via=0 sum=1 with_prs=1",
+		"deploy-frequency deploys acme/alpha: n=1 via=0 sum=1 with_prs=1",
+		"deploy-run-success runs all: n=1 via=0 share=1/1",
+		"deploy-run-success runs acme/alpha: n=1 via=0 share=1/1",
+		"production-deploy minutes all: n=1 via=0 samples=[17]",
+		"production-deploy minutes acme/alpha: n=1 via=0 samples=[17]",
+		"pr-ci minutes all: n=1 via=0 samples=[19]",
+		"pr-ci minutes acme/alpha: n=1 via=0 samples=[19]",
+		"pr-ci job:lint all: n=1 via=0 samples=[17]",
+		"pr-ci job:lint acme/alpha: n=1 via=0 samples=[17]",
+	}
+	slices.Sort(wantBeta)
+	if got := allFacts(r.stored(t, "BETA")); !slices.Equal(got, wantBeta) {
+		t.Errorf("BETA's rows after the move:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(wantBeta, "\n"))
+	}
 	alpha := allFacts(r.stored(t, "ALPHA"))
 	gone := append(slices.Clone(leadTimeSlugs), SlugDeployFrequency, SlugDeployRunSuccess, SlugPRCI, SlugProductionDeploy)
 	for _, fact := range alpha {
@@ -479,12 +541,13 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	}) {
 		t.Errorf("ALPHA's items after the move: %v, want acme/beta#1's alone", got)
 	}
-	if got := r.members(t, "BETA"); !slices.Contains(got, "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03") ||
-		!slices.Contains(got, "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03 as acme/alpha") ||
-		!slices.Contains(got, "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha") {
-		t.Errorf("BETA's items after the move: %v, want acme/alpha#3 among them, under no deploy repository and under acme/alpha, and its PR-checks run 201", got)
+	wantBetaMembers := append(slices.Clone(wantMembers["BETA"]), "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha",
+		"delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03 as acme/alpha shipped by run:acme/alpha/101")
+	slices.Sort(wantBetaMembers)
+	if got := r.members(t, "BETA"); !slices.Equal(got, wantBetaMembers) {
+		t.Errorf("BETA's items after the move: %v, want %v", got, wantBetaMembers)
 	}
-	t.Logf("compared %d day rows of three projects; after acme/alpha#3 moved to BETA, ALPHA holds %d", compared, len(alpha))
+	t.Logf("compared %d day rows; after acme/alpha#3 moved to BETA, ALPHA holds %d", compared, len(alpha))
 }
 
 // A pull request's ranked candidates make its attribution list as the attribution passes over and
@@ -761,14 +824,14 @@ func TestAMoveAboveAnUnownedP0IssueMovesItsCount(t *testing.T) {
 }
 
 // TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce: each statement that finds what a day no
-// longer holds against the list its write gives it (leftDaysOwedStatement's and
-// goneMembersDeleteStatement's items, deleteStaleDaysStatement's and
-// deleteStaleSettingsDaysStatement's rows) reads that list once, with the write's values and under
+// longer holds against the list its write gives it (leftDaysStatement's,
+// leftDaysOwedStatement's and goneMembersDeleteStatement's items and deleteStaleDaysStatement's
+// rows) reads that list once, with the write's values and under
 // the generic plan a statement pgx caches can settle on after its fifth run, which estimates every
 // list at 10 rows: the list runs under no SubPlan, no nested loop runs it again for each row of
 // its other side, and the filter is a SetOp Except over the list or a hash or merge anti-join. The
-// two deletes of rows are explained as one statement of the whole list over every key (no bound
-// of its range, staleRuns), the most rows any of their statements holds. standingPartsQuery takes
+// delete of rows is explained as one statement of the whole list over every key (no bound
+// of its range, staleRuns), the most rows any of its statements holds. standingPartsQuery takes
 // no list of the write's own readings (standingParts leaves them out as it reads them, since their
 // ids grow with the batch), and its generic plan matches each reading to its keys by their day, as
 // a hash or merge join on it or an index condition, rather than testing each reading against every
@@ -872,8 +935,6 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	for _, filter := range []struct {
 		name      string
 		statement string
-		// settings are the `set local` statements the write runs the statement under.
-		settings []string
 		// lists is the CTEs a form of the statement holds its list in, whose scans are scans of
 		// the list as much as the function scan of unnest that fills them.
 		lists                []string
@@ -882,6 +943,15 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	}{
 		{
 			name: "leftDaysOwedStatement", statement: leftDaysOwedStatement, lists: []string{"given"},
+			arguments: []any{[]string{"EVAL"}, []time.Time{day}, memberProjects, memberDays, families, memberDeployRepos, keys, shippedBy,
+				deliveryDayFamilies, KindDelivery, []string(nil), []string(nil)},
+			parameters: []string{"text[]", "date[]", "text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "text[]", "text", "text[]", "text[]"},
+			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['EVAL']", "array[" + date + "]::date[]", "array['delivery']",
+				"array['acme/deploy-00']", "array['pull_request:acme/web#1']", "array['']", "array['delivery', 'ci']", "'delivery'", "null::text[]",
+				"null::text[]"},
+		},
+		{
+			name: "leftDaysStatement", statement: leftDaysStatement, lists: []string{"given"},
 			arguments: []any{[]string{"EVAL"}, []time.Time{day}, memberProjects, memberDays, families, memberDeployRepos, keys, shippedBy,
 				deliveryDayFamilies, KindDelivery, []string(nil), []string(nil)},
 			parameters: []string{"text[]", "date[]", "text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "text[]", "text", "text[]", "text[]"},
@@ -906,17 +976,6 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 				"array['EVAL/deploy-frequency']", "array['acme/deploy-00']", "array['deploys']", "array['acme/repo-00000']", "array[" + date + "]::date[]",
 				"null::text[]", "null::text[]"},
 		},
-		{
-			name: "deleteStaleSettingsDaysStatement", statement: deleteStaleSettingsDaysStatement,
-			settings: []string{"set local plan_cache_mode = force_custom_plan", "set local enable_mergejoin = off"},
-			arguments: []any{[]string{"EVAL"}, []time.Time{day}, projects, evals, series, repos, days, evalIDs, writerComputation,
-				rowDeployRepos, deployRepos, []string(nil), []string(nil)},
-			parameters: []string{"text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text", "text[]", "text[]",
-				"text[]", "text[]"},
-			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['EVAL']", "array['EVAL/deploy-frequency']", "array['deploys']",
-				"array['acme/repo-00000']", "array[" + date + "]::date[]", "array['EVAL/deploy-frequency']", "'computation'",
-				"array['acme/deploy-00']", "array['acme/deploy-00']", "null::text[]", "null::text[]"},
-		},
 	} {
 		t.Run(filter.name, func(t *testing.T) {
 			tx, err := r.database.Pool.Begin(ctx)
@@ -924,11 +983,6 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 				t.Fatalf("begin %s's transaction: %v", filter.name, err)
 			}
 			defer tx.Rollback(ctx)
-			for _, setting := range filter.settings {
-				if _, err := tx.Exec(ctx, setting); err != nil {
-					t.Fatalf("%s: %v", setting, err)
-				}
-			}
 			explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
 				filter.parameters, filter.literals, filter.lists...)
 		})
@@ -959,160 +1013,6 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 		r.count(t, `select count(*) from eval_days where project_key = 'EVAL' and writer = 'computation' and n = 0`); stored != items-1 || zero != 0 {
 		t.Errorf("eval_days holds %d rows of EVAL, %d of them zero rows, want %d and none: the row the day no longer holds deleted", stored, zero, items-1)
 	}
-}
-
-// TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay: deleteStaleSettingsDays
-// runs its statement under a plan whose read of what the days written no longer hold (gone)
-// matches the stored rows to those days by their project and their day at one node, a hash or
-// merge join or an index scan (explaintest.RequireJoinedOnAll), and gives enable_mergejoin back the
-// value it held. A merge join on the project alone, which the primary key's order gives the planner
-// for nothing, tests each row's day against every day written of its project: a settings change
-// that rewrote 200 days of one project tested 434,218 pairs to keep its 2,182 rows. The rows are
-// EVAL's of the six evals a production rule's change moves, in two repositories under one deploy
-// repository, on each of 200 days, beside 10 evals of six series each of EVAL and of another
-// project on the same days: 26,400 rows, fewer than the 30,000 ANALYZE samples, so it reads every
-// row and the statistics are the same on every run. They are written in one transaction that
-// commits synchronously, then vacuumed and analyzed, every page all-visible, so the primary key's
-// index-only scan reads eval_days in the project's order: with asynchronous commits, which the
-// pod's test server runs, a vacuum just after a commit can mark no page all-visible (as
-// embedqueue's TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap found).
-// Even after a synchronous commit, a vacuum marks a page all-visible only once the commit status
-// of its rows' transaction is hinted, which waits until the WAL is flushed past the newest commit
-// of any transaction whose id shares its commit-log group of 32: an asynchronous commit of a
-// neighbouring id, in another database of the same server (a test running beside this one), keeps
-// the pages unmarked until the WAL writer flushes it, at most a few hundred milliseconds later. So
-// the test vacuums again until every page is all-visible, for at most allVisibleBound.
-// The write rewrites those 200 days and holds every row but one, which it deletes, in a
-// transaction planned as rewriteSettings plans its own; its one statement (EVAL's, whose rows fit
-// in one) names EVAL's six evals. With merge joins on, the planner estimates the scan of eval_days
-// at a few hundred rows of its 2,400 and merges it with the days on the project alone, testing the
-// day of each row against all 200 days.
-//
-// The test reads the plan the statement runs under (explainingTx), not the clock.
-func TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *testing.T) {
-	r := newRig(t)
-	ctx := t.Context()
-	const days, deployRepo = 200, "acme/deploy"
-	slugs := []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugFirstCommitToProduction, SlugMergeToProduction,
-		SlugOpenToProduction, SlugProductionDeploy}
-	first := attributionDay.AddDate(0, 0, 1-days)
-	var stored []DayRow
-	for _, slug := range slugs {
-		for _, repo := range []string{"", "acme/web"} {
-			for day := range days {
-				stored = append(stored, DayRow{
-					ProjectKey: "EVAL", EvalID: EvalID("EVAL", slug), DeployRepo: deployRepo, Repo: repo, Listed: true,
-					DayPart: measures.DayPart{Series: "deploys", Day: first.AddDate(0, 0, day), N: 1, Sum: new(1.0)},
-				})
-			}
-		}
-	}
-	write, err := r.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the write of the day rows: %v", err)
-	}
-	defer write.Rollback(ctx)
-	if _, err := write.Exec(ctx, `set local synchronous_commit = on`); err != nil {
-		t.Fatalf("commit the write of the day rows synchronously: %v", err)
-	}
-	if err := upsertDays(ctx, write, stored, testBuild); err != nil {
-		t.Fatalf("write EVAL's rows of the moved evals: %v", err)
-	}
-	if _, err := write.Exec(ctx, `insert into projects (key, name, default_assignee) values ('OTHER', 'Other', 'alice')`); err != nil {
-		t.Fatalf("make project OTHER: %v", err)
-	}
-	if _, err := write.Exec(ctx, `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
-		select project, project || '/legion-' || eval, 'series-' || series, '', $1::date + after, true, 1, 1, $2
-		from unnest(array['EVAL', 'OTHER']) as project, generate_series(1, 10) as eval, generate_series(1, 6) as series,
-			generate_series(0, $3::int - 1) as after`, first, testBuild, days); err != nil {
-		t.Fatalf("store the other evals' rows: %v", err)
-	}
-	if err := write.Commit(ctx); err != nil {
-		t.Fatalf("commit the day rows: %v", err)
-	}
-	if _, err := r.database.Pool.Exec(ctx, `vacuum analyze eval_days`); err != nil {
-		t.Fatalf("vacuum and analyze eval_days: %v", err)
-	}
-	var pages, visible int
-	allVisible := func() bool {
-		if err := r.database.Pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
-			t.Fatalf("read how many pages of eval_days are all-visible: %v", err)
-		}
-		if pages > 0 && visible == pages {
-			return true
-		}
-		if _, err := r.database.Pool.Exec(ctx, `vacuum eval_days`); err != nil {
-			t.Fatalf("vacuum eval_days again: %v", err)
-		}
-		return false
-	}
-	if !testwait.Holds(allVisibleBound, 100*time.Millisecond, allVisible) {
-		t.Fatalf("the vacuum marked %d of eval_days' %d pages all-visible; the test needs every page", visible, pages)
-	}
-
-	projects, written := make([]string, days), make([]time.Time, days)
-	for day := range days {
-		projects[day], written[day] = "EVAL", first.AddDate(0, 0, day)
-	}
-	tx, err := r.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the rewrite's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
-		t.Fatalf("plan the rewrite's transaction as rewriteSettings does: %v", err)
-	}
-	explaining := &explainingTx{Tx: tx, explained: deleteStaleSettingsDaysStatement}
-	if err := deleteStaleSettingsDays(ctx, explaining, projects, written, slugs, []string{deployRepo}, stored[1:]); err != nil {
-		t.Fatalf("deleteStaleSettingsDays: %v", err)
-	}
-	if explaining.plan == nil {
-		t.Fatal("deleteStaleSettingsDays ran no deleteStaleSettingsDaysStatement")
-	}
-	plan := explaintest.OnePlan(t, explaining.plan)
-	t.Logf("deleteStaleSettingsDaysStatement as deleteStaleSettingsDays runs it over %d days written:\n%s", days, explaintest.Outline(t, plan))
-	explaintest.RequireJoinedOnAll(t, plan, "deleteStaleSettingsDaysStatement as deleteStaleSettingsDays runs it", "CTE gone", "project_key", "day")
-	var mergeJoins string
-	if err := tx.QueryRow(ctx, `select current_setting('enable_mergejoin')`).Scan(&mergeJoins); err != nil {
-		t.Fatalf("read enable_mergejoin: %v", err)
-	}
-	if mergeJoins != "on" {
-		t.Errorf("enable_mergejoin is %s after deleteStaleSettingsDays, want on, the value it held before", mergeJoins)
-	}
-	var held, zero int
-	if err := tx.QueryRow(ctx, `select count(*), count(*) filter (where n = 0) from eval_days where project_key = 'EVAL' and deploy_repo = $1`,
-		deployRepo).Scan(&held, &zero); err != nil {
-		t.Fatalf("count EVAL's rows of the moved evals: %v", err)
-	}
-	if held != len(stored)-1 || zero != 0 {
-		t.Errorf("eval_days holds %d rows of EVAL's moved evals, %d of them zero rows, want %d and none: the row the write no longer holds deleted",
-			held, zero, len(stored)-1)
-	}
-}
-
-// allVisibleBound is how long TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay
-// vacuums eval_days again for every page to be all-visible: well past the WAL writer's flush of
-// an asynchronous commit, which wal_writer_delay (200 ms by default) bounds to three times it.
-const allVisibleBound = 5 * time.Second
-
-// explainingTx is a transaction that explains its statement explained, with the arguments it is
-// run with and under whatever its caller set in the transaction, before it runs it, and keeps the
-// plan: the plan a function that runs the statement in its caller's transaction gives it.
-type explainingTx struct {
-	pgx.Tx
-	explained string
-	plan      []byte
-}
-
-// Exec explains sql before it runs it where it is the statement explained.
-func (tx *explainingTx) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
-	if sql == tx.explained {
-		if err := tx.Tx.QueryRow(ctx, "explain (format json) "+sql, arguments...).Scan(&tx.plan); err != nil {
-			return pgconn.CommandTag{}, fmt.Errorf("explain the statement: %w", err)
-		}
-	}
-	return tx.Tx.Exec(ctx, sql, arguments...)
 }
 
 // TestADeployThatShipsNoPullRequestCountsForItsSourcesProjectAlone (dispatch://INFRA-978, R12 and

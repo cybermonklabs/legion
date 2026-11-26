@@ -569,9 +569,9 @@ const upsertMembersStatement = `
 `
 
 // The statements of a write of days that find what the days no longer hold (leftDaysOwedStatement's
-// and goneMembersDeleteStatement's members, deleteStaleDaysStatement's and
-// deleteStaleSettingsDaysStatement's rows) each find it as the stored keys of the days written
-// except the given ones (`gone`), materialized, so the set operation runs once whatever plan the
+// and goneMembersDeleteStatement's members, deleteStaleDaysStatement's rows) each find it as the
+// stored keys of the days written except the given ones (`gone`), materialized, so the set
+// operation runs once whatever plan the
 // statement is given, and joined back to the table by its primary key: a set operation reads each
 // side once, and the join back probes the key once per row that left. Written as `not in (…)` over
 // the given list, the filter ran the list again for each stored row once the list outgrew
@@ -638,12 +638,15 @@ const leftDays = `
 	), left_days as (
 		select project_key, family, day, written_day from held where day <> written_day
 		union
-		select held.project_key, run.family, run.day, held.written_day
+		select run.project_key, run.family, run.day, held.written_day
 		from held cross join lateral (
-			select run.family, run.day from eval_day_members run
-			where run.project_key = held.project_key and run.family = $10 and run.deploy_repo = held.deploy_repo
-				and run.row_key = held.shipped_by
-			limit 1
+			select run.project_key, run.family, run.day from eval_day_members run
+			where run.project_key = any(array(
+				select held.project_key
+				union all
+				select owner from eval_day_owners where lower(repo) = lower(held.deploy_repo)
+			)) and run.family = $10 and run.deploy_repo = held.deploy_repo and run.row_key = held.shipped_by
+			offset 0
 		) as run
 		where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
 	)

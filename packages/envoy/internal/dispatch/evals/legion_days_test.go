@@ -99,7 +99,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	exec("the first claim and slot observations", `
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('EVAL', 'EVAL-1', 'claim.implementer', '"working"', $1), ('EVAL', 'EVAL-1', 'slot', '0', $2)
-	`, at(2, 10, 0), at(3, 6, 0))
+	`, day, at(3, 6, 0))
 
 	bar := func(hours float64, segments metrics.Segments) metrics.BarPart {
 		return metrics.BarPart{Hours: hours, HoldsHours: true, Segments: segments}
@@ -152,7 +152,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		t.Fatalf("read the first observations: %v", err)
 	}
 	if since.Claims == nil || !since.Claims.Equal(day) || since.Slots == nil || !since.Slots.Equal(next) {
-		t.Fatalf("since = claims %v, slots %v, want %s (the first claim was the day before) and %s (the first slot was that day)",
+		t.Fatalf("since = claims %v, slots %v, want %s (claim exactly at midnight) and %s (slot after midnight)",
 			since.Claims, since.Slots, day.Format(time.DateOnly), next.Format(time.DateOnly))
 	}
 	r.refreshDays(t, []string{"EVAL"}, day)
@@ -299,7 +299,10 @@ func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	for _, row := range zero.Rows {
 		fact := legionFact(row)
 		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
-		if row.N != 0 || row.Repo != "" || !row.Listed || !row.Day.Equal(day) || strings.Contains(fact, "=1") ||
+		nonzero := func(value *float64) bool { return value != nil && *value != 0 }
+		if row.N != 0 || row.ViaRepository != 0 || row.Repo != "" || !row.Listed || !row.Day.Equal(day) ||
+			nonzero(row.Sum) || nonzero(row.Num) || nonzero(row.Den) || nonzero(row.Max) || nonzero(row.LastValue) || len(row.Samples) != 0 ||
+			slices.ContainsFunc(slices.Collect(maps.Values(row.Counts)), func(value float64) bool { return value != 0 }) ||
 			strings.HasSuffix(row.Series, ":children") && slices.ContainsFunc(metrics.RootFigures, func(figure string) bool { return strings.HasPrefix(row.Series, figure+":") }) ||
 			!slices.Contains(seriesNames(entryOf(t, slug)), row.Series) {
 			t.Errorf("a zero row is %s (repo %q, listed %t, %s), want n 0 and a zero value in the all-repositories row of %s of a series the catalogue names",

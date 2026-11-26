@@ -14,11 +14,14 @@ import (
 
 // TestAProjectWithNoSourceListsThePullRequestsItsDayRowsCount: over deliverytest's history, the
 // second project (DELIVX) holds no deploy source of its own, and its merges count for it through
-// their issues (INFRA-978 R27). Its pr-open-to-merge items list exactly the pull requests its day
-// rows count, as a number and the rows behind it are one set.
+// their issues (INFRA-978 R27; the history's attribution inputs are left unread, so the issue each
+// pull request names is its attribution, leaveAttributionInputsUnread). Its pr-open-to-merge items
+// list exactly the pull requests its day rows count, as a number and the rows behind it are one
+// set.
 func TestAProjectWithNoSourceListsThePullRequestsItsDayRowsCount(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Days: 5})
+	leaveAttributionInputsUnread(t, database.Pool)
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	project := fixture.SecondProject
 	window := evals.Range{From: fixture.From, To: fixture.To}

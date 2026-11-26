@@ -21,8 +21,9 @@ import (
 //   - a logged eval through each series' own fold, its agg (aggStatistics), since no function
 //     computes it.
 //
-// computedSources is the one table keyed by a computed source: its fold and its headline. Every
-// eval of the seeded catalogue names a source it holds, with both, which init checks when the
+// computedSources is keyed by computed source and holds the fold and headline.
+// The items route has its own source table for the rows it lists (api.evalComputedItems).
+// Every seeded eval names a source with both, which init checks when the
 // package starts, so a computed eval whose fold or headline is missing fails every binary and
 // every test that links this package rather than reading "no data" on a page.
 

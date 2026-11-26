@@ -18,8 +18,12 @@ import (
 // before the write, so a column that carried another issue's number, the moment of the call in
 // place of the moment the facts were measured, or a fact the write or the read lost, fails here.
 // The repo column is the repository the caller resolved for the issue, not the stored row's: each
-// issue is handed one no stored row holds, so a column read from the row fails.
+// issue is handed one no stored row holds, so a column read from the row fails. An issue the range
+// both filed and closed (an architect's child filed at design) is handed its filing, as the items
+// route hands it, and its one row carries the filing's columns beside its facts, measured at its
+// close.
 func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
+	t.Parallel()
 	seeded := seed(t, 4)
 	ctx, pool, project := t.Context(), seeded.database.Pool, seeded.fixture.Project
 
@@ -54,7 +58,14 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 		}
 		repos[row.Issue] = "example/resolved-" + row.Issue
 	}
-	items := ItemRows(closedRows, repos)
+	// The filing of each closed issue the range filed, as the items route hands it over.
+	filedAndClosed := map[string]Filing{}
+	for _, filing := range storedFilings {
+		if _, isClosed := closed[filing.Key]; isClosed {
+			filedAndClosed[filing.Key] = filing
+		}
+	}
+	items := ItemRows(closedRows, repos, filedAndClosed)
 	if len(items) != len(closed) {
 		t.Fatalf("the %d closed issues the computation answered read as %d items, want one item each", len(closed), len(items))
 	}
@@ -77,12 +88,19 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 		} else {
 			withHours++
 		}
-		compareItemColumns(t, row, repos[row.Issue], item.Columns)
+		var filing *Filing
+		if filed, isFiled := filedAndClosed[row.Issue]; isFiled {
+			filing = &filed
+		}
+		compareItemColumns(t, row, repos[row.Issue], filing, item.Columns)
 	}
 	// Both shapes are in the answer, so the columns above were read over an issue whose work
 	// took measured time and over one whose work took none.
 	if withHours == 0 || withoutHours == 0 {
 		t.Fatalf("%d closed rows carry phase hours and %d carry none, want both shapes in the answer", withHours, withoutHours)
+	}
+	if len(filedAndClosed) == 0 {
+		t.Fatalf("the range filed none of the issues it closed, so no row was read carrying a filing")
 	}
 
 	computedFilings := map[string]Filing{}
@@ -121,8 +139,8 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d items rows built for the %d stored rows of issues closed from %s to %s (%d carry phase hours, %d carry none), and %d for the filings made then",
-		len(items), len(closedRows), from.Format(time.RFC3339), to.Format(time.RFC3339), withHours, withoutHours, len(filed))
+	t.Logf("%d items rows built for the %d stored rows of issues closed from %s to %s (%d carry phase hours, %d carry none, %d their filing too), and %d for the filings made then",
+		len(items), len(closedRows), from.Format(time.RFC3339), to.Format(time.RFC3339), withHours, withoutHours, len(filedAndClosed), len(filed))
 }
 
 // compareItemLink reads an item's source and link: the computation, and the issue's own address.
@@ -139,9 +157,9 @@ func compareItemLink(t *testing.T, item ItemRow) {
 // compareItemColumns reads each column of one row against the stored value it comes from, and
 // the repo column against repo, the repository the issue resolves to: the twenty every row
 // carries, one `hours_<phase>` column for each phase the issue has hours in and no other, six
-// `bar_<role>` columns for each of the seven bars, and one `idle_<role>` for each of the six
-// roles.
-func compareItemColumns(t *testing.T, row Row, repo string, columns map[string]any) {
+// `bar_<role>` columns for each of the seven bars, one `idle_<role>` for each of the six roles,
+// and, where filing is not nil, the five of the issue's filing (the root_key is the facts' own).
+func compareItemColumns(t *testing.T, row Row, repo string, filing *Filing, columns map[string]any) {
 	t.Helper()
 	want := map[string]any{
 		ColumnOpenedAt:                     row.OpenedAt,
@@ -167,6 +185,10 @@ func compareItemColumns(t *testing.T, row Row, repo string, columns map[string]a
 	}
 	for phase, hours := range row.PhaseHours {
 		want[ColumnHoursPrefix+phase] = hours
+	}
+	if filing != nil {
+		want[ColumnFiledAt], want[ColumnFilerRole], want[ColumnFilerIssue] = filing.At, filing.Filer, filing.FilerIssue
+		want[ColumnFilerPhase], want[ColumnClass] = filing.FilerPhase, filing.Class
 	}
 	if len(row.Bars) != 7 || len(row.IdleByRole) != 6 {
 		t.Errorf("%s holds %d bars and %d roles' idle hours, want all 7 and all 6", row.Issue, len(row.Bars), len(row.IdleByRole))

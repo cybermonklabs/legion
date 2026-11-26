@@ -19,11 +19,15 @@ import (
 // row an eval each, and the day-figures read, the window's rows of eval_day_figures of the evals
 // with a headline series. The probe finds each among the read's captured statements by the text
 // the statement log holds of it, `from eval_range_figures` and `from eval_day_figures`. A read that
-// ran neither fails the probe: its list no longer reads the stored figures, and the probe would
-// measure nothing. A read that ran one of them has the other printed as skipped (the server skips
-// the day-figures read where no eval has a headline series). The reads that name a repository
-// (list-84d-compare-repo, list-28d-repo) run the same two statements over the cut of that
-// repository (evals.FiguresOffered), so the probe measures list-84d-compare, which names none.
+// ran either of them alone fails the probe, naming the one it did not run: the server skips the
+// day-figures read only where no eval has a headline series, and every logged eval of the fixture
+// has one (evalbench's `value`), so a read without it no longer reads the stored day figures, and
+// one without the range-figures read no longer reads the stored range figures. A statement whose
+// select list holds no figures column fails it too, since its narrow variant would measure the
+// statement as shipped again. The reads that name a repository (list-84d-compare-repo,
+// list-28d-repo) run the same two statements over the cut of that repository
+// (evals.FiguresOffered), which every run judges of every read of an offered range
+// (checkStoredFiguresReads); the probe measures list-84d-compare, which names none.
 //
 // Each variant of a statement is run probeRuns times under `explain (analyze, buffers, serialize
 // binary)`, which executes it and serialises its rows as the server sends them without sending
@@ -90,13 +94,10 @@ func (c *headChecks) probe(measured []measuredCase) {
 		c.r.fail("probe: the paint holds no list-84d-compare read")
 		return
 	}
-	found, skipped, err := storedFiguresReads(measured[index])
+	found, err := storedFiguresReads(measured[index])
 	if err != nil {
 		c.r.fail("probe: %v", err)
 		return
-	}
-	for _, line := range skipped {
-		c.r.result("probe %s", line)
 	}
 	for _, statement := range found {
 		for _, variant := range statement.variants {
@@ -108,11 +109,13 @@ func (c *headChecks) probe(measured []measuredCase) {
 
 // storedFiguresReads finds, among the statements read captured, each stored-figures statement
 // (storedFiguresStatements) and builds its variants (the package comment): in that order, and by
-// query id where several statements hold one mark. skipped is a line for each statement read ran
-// none of, and for each variant that could not be built. The error, which names both statements,
-// is for a read that ran neither: its list no longer reads the stored figures.
-func storedFiguresReads(read measuredCase) (found []probedStatement, skipped []string, err error) {
+// query id where several statements hold one mark. A read that ran one of the two statements
+// alone, or a statement whose narrow variant cannot be built, is the error, which names what is
+// missing, as is a read that ran neither, whose list no longer reads the stored figures.
+func storedFiguresReads(read measuredCase) ([]probedStatement, error) {
+	var found []probedStatement
 	queryIDs := slices.Sorted(maps.Keys(read.statements))
+	var missing []string
 	for _, kind := range storedFiguresStatements {
 		held := false
 		for _, queryID := range queryIDs {
@@ -122,25 +125,23 @@ func storedFiguresReads(read measuredCase) (found []probedStatement, skipped []s
 			}
 			held = true
 			shipped := withLiterals(text, read.params[queryID])
-			statement := probedStatement{name: kind.name, queryID: queryID, variants: [][2]string{{"shipped", shipped}}}
-			if narrow := figuresColumn.ReplaceAllString(shipped, "$1$2"); narrow != shipped {
-				statement.variants = append(statement.variants, [2]string{"narrow", narrow})
-			} else {
-				skipped = append(skipped, fmt.Sprintf("statement=%s queryid=%d variant=narrow skipped: no select list holding the figures column found",
+			narrow := figuresColumn.ReplaceAllString(shipped, "$1$2")
+			if narrow == shipped {
+				missing = append(missing, fmt.Sprintf("the %s read (query id %d) has no select list holding the figures column, so its narrow variant measures nothing",
 					kind.name, queryID))
+				continue
 			}
-			found = append(found, statement)
+			found = append(found, probedStatement{name: kind.name, queryID: queryID, variants: [][2]string{{"shipped", shipped}, {"narrow", narrow}}})
 		}
 		if !held {
-			skipped = append(skipped, fmt.Sprintf("statement=%s skipped: %s ran no statement holding %q", kind.name, read.name, kind.mark))
+			missing = append(missing, fmt.Sprintf("no statement holding %q (the %s read)", kind.mark, kind.name))
 		}
 	}
-	if len(found) == 0 {
-		return nil, nil, fmt.Errorf("%s ran neither stored-figures read of evals.ReadStoredFiguresIn: no statement holding %q (the %s read) "+
-			"or %q (the %s read), so its list no longer reads the stored figures and the probe measured nothing", read.name,
-			storedFiguresStatements[0].mark, storedFiguresStatements[0].name, storedFiguresStatements[1].mark, storedFiguresStatements[1].name)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%s did not run both stored-figures reads of evals.ReadStoredFiguresIn as the probe measures them: %s",
+			read.name, strings.Join(missing, "; "))
 	}
-	return found, skipped, nil
+	return found, nil
 }
 
 // withLiterals is text with each parameter $n replaced by params[n-1], the literal the statement

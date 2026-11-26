@@ -238,12 +238,13 @@ func repoCut(alias, repos, project string) string {
 		select 1 from eval_project_repos p where p.project_key = ` + project + ` and p.repo = any(` + repos + `))))`
 }
 
-// ownedDayColumns is dayColumns of a day row d read through eval_project_owners o: the row as the
-// project o names reads it, under its own key and its eval id of the row's slug, its
-// via_repository as that project reads it (viaAsRead).
-var ownedDayColumns = `o.project_key, ` + evalIDAs("o.project_key", "d.eval_id", "o.owner") + `, d.deploy_repo, d.series, d.repo,
-	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at,
+// ownedDayColumns selects the day as the project reads it, with repo its cut and samples the list
+// the items read needs, or SQL null when it needs none.
+func ownedDayColumns(repo, samples string) string {
+	return `o.project_key, ` + evalIDAs("o.project_key", "d.eval_id", "o.owner") + `, d.deploy_repo, d.series, ` + repo + ` as cut_repo,
+	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, ` + samples + `, d.last_value, d.last_at, d.last_recorded_at,
 	coalesce(d.last_reading::text, ''), d.counts, ` + viaAsRead("d.via_repository") + `, d.built_by, d.updated_at`
+}
 
 // addOwnedRows is days, ordered by day, then series and repository, of one eval and deploy
 // repository, with the rows of one series, repository and day that several owners hold (a

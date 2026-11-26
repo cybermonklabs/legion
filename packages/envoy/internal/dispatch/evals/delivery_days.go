@@ -1141,6 +1141,8 @@ func (d DeliveryDay) Rows(project string) ProjectDay {
 // DeployRepo (deploy_repos.go), under that rule, whose deploy cards decide which CI evals have one;
 // an events repository's are deploy-frequency's and merge-to-production's alone (postedDayAs).
 // pr-ci's job series have none: a job with no result that day has no part.
+// These are project totals even when keyed by deploy repository. A repository cut gets no
+// placeholder row; a day without a row in that cut has no data.
 func ZeroDeliveryDay(project string, day time.Time, rules []delivery.DeliverySettings) ProjectDay {
 	zero := ProjectDay{Project: project, Day: measures.Midnight(day)}
 	zero.Rows = DeliveryDay{Day: zero.Day}.buildFamilies(project, "", familyRows{}, true)

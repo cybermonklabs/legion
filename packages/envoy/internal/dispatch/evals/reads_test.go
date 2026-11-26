@@ -10,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays: one read answers the day rows of
@@ -177,6 +181,279 @@ func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
 			t.Errorf("%s: the window reads %v, the items %v and the first day is %s; want %v and %s", test.as, dayLabels(days), itemDays, first, test.rows, test.first)
 		}
 	}
+}
+
+func TestTheItemsDayOfTheDefaultRepositoryCombinesItsParts(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const repo = "acme/web"
+	day := at(4, 0, 0)
+	definition := Definition{ProjectKey: r.project, EvalID: EvalID(r.project, SlugLegionWorkTime), Source: SourceFoldWorkTime}
+	if _, err := pool.Exec(ctx, `insert into eval_days_defaults (project_key, repo) values ($1, $2)`, r.project, repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		values ($1, $2, 'hours', $3, $5, true, 1, 4, 'test'),
+		       ($1, $2, 'hours', $4, $5, true, 2, 7, 'test'),
+		       ($1, $2, 'hours', 'acme/api', $5, true, 1, 20, 'test')
+	`, r.project, definition.EvalID, repo, legionfacts.DefaultRepo, day); err != nil {
+		t.Fatal(err)
+	}
+	days, err := EvalDaysIn(ctx, pool, definition, nil, "", []string{repo, "acme/api"}, Range{From: day, To: day.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, row := range days {
+		got = append(got, fmt.Sprintf("%s: n=%d sum=%s", row.Repo, row.N, showValue(row.Sum)))
+	}
+	if want := []string{"acme/api: n=1 sum=20", "acme/web: n=3 sum=11"}; !slices.Equal(got, want) {
+		t.Errorf("items day rows = %v, want %v", got, want)
+	}
+}
+
+func TestItemsDayRowsSendSamplesOnlyForPRCIJobs(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const repo = "acme/web"
+	day := at(4, 0, 0)
+	definition := Definition{ProjectKey: r.project, EvalID: EvalID(r.project, SlugPRCI), Slug: SlugPRCI, Source: SourceFoldTiming}
+	const job = measures.JobSeriesPrefix + "lint"
+	if _, err := pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, samples, built_by)
+		values ($1, $2, $3, 'minutes', '', $4, true, 1, '{9}', 'test'),
+		       ($1, $2, $3, $5, '', $4, false, 2, '{2,6}', 'test')
+	`, r.project, definition.EvalID, repo, day, job); err != nil {
+		t.Fatal(err)
+	}
+	days, err := EvalDaysIn(ctx, pool, definition, DeployReposOf(r.project, repo), "", nil, Range{From: day, To: day.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 2 {
+		t.Fatalf("items read %d day rows, want both headline and job", len(days))
+	}
+	for _, row := range days {
+		if row.Series == job {
+			row.DayPart.Series = measures.SeriesMinutes
+			cell := measures.FoldTiming([]measures.DayPart{row.DayPart})
+			if cell.MedianMinutes == nil || *cell.MedianMinutes != 4 {
+				t.Errorf("job median = %s, want 4", showValue(cell.MedianMinutes))
+			}
+		} else if row.Samples != nil {
+			t.Errorf("%s day sent its samples %v, want none", row.Series, row.Samples)
+		}
+	}
+}
+
+func TestALargeRegistryReadBoundsItsSeriesStatements(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	definitions := make([]Definition, 600)
+	for i := range definitions {
+		slug := fmt.Sprintf("eval-%03d-", i) + strings.Repeat("x", 500)
+		definitions[i] = Definition{EvalID: EvalID(r.project, slug), Slug: slug}
+	}
+	for _, i := range []int{0, len(definitions) - 1} {
+		r.write(t, definitions[i].Slug, alice, row(t, map[string]any{
+			"series": "minutes", "row_kind": "run", "row_key": "one", "value": 1, "measured_at": at(3, 9, 0),
+		}))
+	}
+	trace := &sentStatements{}
+	pool := storetest.TracedStore(t, r.database, trace).Pool
+	entries, err := entriesOf(t.Context(), pool, definitions, r.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, definition := range definitions {
+		if entries[i].Definition.EvalID != definition.EvalID {
+			t.Errorf("entry %d = %q, want %q", i, entries[i].Definition.EvalID, definition.EvalID)
+		}
+	}
+	for _, i := range []int{0, len(definitions) - 1} {
+		if series := entries[i].Series; len(series) != 1 || series[0].Series != "minutes" {
+			t.Errorf("entry %d has series %v, want minutes", i, series)
+		}
+	}
+	sent := r.measured(t, trace.take())
+	largest, _ := largestStatement(sent)
+	if len(sent) < 2 || largest > 256<<10 {
+		t.Errorf("series read sent %d statements, largest %d bytes; want several within 256 KiB", len(sent), largest)
+	}
+}
+
+func TestARequestForAnotherSpellingReadsTheOneStoredCutAndItsMark(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const storedRepo, requestedRepo = "Acme/Web", "acme/web"
+	window := Range{From: at(4, 0, 0), To: at(11, 0, 0)}
+	catalogued := entryOf(t, SlugPROpenToMerge)
+	entry := Entry{Definition: catalogued.definition, Series: catalogued.series}
+	entry.Definition.ProjectKey = r.project
+	entry.Definition.EvalID = EvalID(r.project, SlugPROpenToMerge)
+	if _, err := pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, samples, built_by)
+		values ($1, $2, 'minutes', $3, $4, true, 1, '{12}', 'test')`,
+		r.project, entry.Definition.EvalID, storedRepo, window.From); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `insert into eval_figures_built (project_key, through, built_by) values ($1, $2, 'test')`, r.project, window.To); err != nil {
+		t.Fatal(err)
+	}
+	figures := encodeFigures(map[string]Statistics{"minutes": {"median": new(12.0)}}, nil)
+	if _, err := pool.Exec(ctx, `
+		insert into eval_range_figures (project_key, repo, days, end_day, eval_id, fold_key, figures, oldest_updated_at, built_by)
+		values ($1, $2, 7, $3, $4, $5, $6, now(), 'test')`,
+		r.project, storedRepo, window.To, entry.Definition.EvalID, foldKeyOf(entry), figures); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_day_figures (project_key, repo, day, eval_id, fold_key, figures, rows_stamp, built_by)
+		values ($1, $2, $3, $4, $5, $6, 0, 'test')`,
+		r.project, storedRepo, window.From, entry.Definition.EvalID, foldKeyOf(entry), figures); err != nil {
+		t.Fatal(err)
+	}
+	read := func(repo string) ([]SeriesValues, bool) {
+		t.Helper()
+		repos, err := StoredRepos(ctx, pool, []string{r.project}, []string{repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(repos, []string{storedRepo}) || !FiguresOffered(repos, window, nil) {
+			t.Fatalf("%q resolved to %v, want the one stored cut %q", repo, repos, storedRepo)
+		}
+		got, err := ReadStoredFiguresIn(ctx, pool, []string{r.project}, []Entry{entry}, nil, repos, window, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, _, served := got.SeriesValues(entry, map[string]time.Time{"minutes": window.From}, window, nil)
+		return values, served
+	}
+	for _, repo := range []string{storedRepo, requestedRepo} {
+		values, served := read(repo)
+		if !served || len(values) != 1 || showValue(values[0].Window["median"]) != "12" || len(values[0].Days) != 1 {
+			t.Errorf("%q: cached read served=%t with %+v, want median 12 and one day", repo, served, values)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_figure_cuts_stale (project_key, repo, generation) values ($1, $2, 1)`, r.project, storedRepo); err != nil {
+		t.Fatal(err)
+	}
+	if _, served := read(requestedRepo); served {
+		t.Errorf("%q was served despite the stale mark on %q", requestedRepo, storedRepo)
+	}
+}
+
+func TestARepositoryReadFoldsBothStoredSpellingsAndThePublishedDefault(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const published, delivered = "acme/web", "Acme/Web"
+	owner := OwnerKey(delivered, nil, nil)
+	day := at(4, 0, 0)
+	window := Range{From: day, To: day.AddDate(0, 0, 7)}
+	if _, err := pool.Exec(ctx, `insert into eval_days_defaults (project_key, repo) values ($1, $2)`, r.project, published); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		values ($1, $2, 'hours', $3, $7, true, 1, 4, 'test'),
+		       ($4, $5, 'minutes', $6, $7, true, 2, 7, 'test')
+	`, r.project, EvalID(r.project, SlugLegionWorkTime), legionfacts.DefaultRepo,
+		owner, EvalID(owner, SlugPROpenToMerge), delivered, day); err != nil {
+		t.Fatal(err)
+	}
+	entries := []Entry{
+		{Definition: Definition{ProjectKey: r.project, EvalID: EvalID(r.project, SlugLegionWorkTime), Source: SourceFoldWorkTime}},
+		{Definition: Definition{ProjectKey: r.project, EvalID: EvalID(r.project, SlugPROpenToMerge), Source: SourceFoldLeadTime}},
+	}
+	projects := []string{r.project}
+	for _, repo := range []string{published, delivered, "ACME/WEB"} {
+		repos, err := StoredRepos(ctx, pool, projects, []string{repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(repos, []string{delivered, published}) || FiguresOffered(repos, window, nil) {
+			t.Errorf("%q resolved to %v, want both stored spellings and a day-row fold", repo, repos)
+		}
+		rows, err := DayWindowIn(ctx, pool, projects, entries, nil, repos, window, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]int{}
+		for _, row := range rows {
+			got[row.EvalID] += row.Part.N
+		}
+		if len(got) != 2 || got[entries[0].Definition.EvalID] != 1 || got[entries[1].Definition.EvalID] != 2 {
+			t.Errorf("window for %q counted %v, want one Legion and two delivery samples", repo, got)
+		}
+	}
+	missing := []string{"No/Such-Repository"}
+	repos, err := StoredRepos(ctx, pool, projects, missing)
+	if err != nil || !slices.Equal(repos, missing) {
+		t.Errorf("resolve an unknown name: %v, %v; want the name as given", repos, err)
+	}
+}
+
+func TestStoredReposProbesOneIndexEntryPerRepository(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const repositories, days = 80, 128
+	if _, err := pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		select $1, $2, 'minutes', 'Acme/Repo-' || r, $3::date + d, true, 1, 1, 'test'
+		from generate_series(1, $4::int) r cross join generate_series(0, $5::int - 1) d
+	`, r.project, EvalID(r.project, SlugPROpenToMerge), at(4, 0, 0), repositories, days); err != nil {
+		t.Fatal(err)
+	}
+	// Index-only probes need the visibility map, not a heap fetch to confirm each next key.
+	testwait.UntilPolling(t, 100*time.Millisecond, "all fixture day pages visible", func() (int, bool) {
+		if _, err := pool.Exec(ctx, `vacuum (freeze, analyze) eval_days`); err != nil {
+			t.Fatal(err)
+		}
+		var pages, visible int
+		if err := pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
+			t.Fatal(err)
+		}
+		return pages - visible, pages > 0 && pages == visible
+	})
+	trace := &sentStatements{}
+	traced := storetest.TracedStore(t, r.database, trace).Pool
+	projects := []string{r.project}
+	if got, err := StoredRepos(ctx, traced, projects, nil); got != nil || err != nil || len(trace.take()) != 0 {
+		t.Fatalf("resolve an unfiltered read: %v, %v; want no names and no statement", got, err)
+	}
+	got, err := StoredRepos(ctx, traced, projects, []string{"acme/repo-3"})
+	if err != nil || !slices.Equal(got, []string{"Acme/Repo-3"}) {
+		t.Fatalf("resolve acme/repo-3: %v, %v; want Acme/Repo-3", got, err)
+	}
+	sent := trace.take()
+	if len(sent) != 1 {
+		t.Fatalf("resolving one name among %d sent %d statements, want one", repositories, len(sent))
+	}
+	plan, _ := explaintest.AnalyzedPlan(t, ctx, pool, sent[0].SQL, sent[0].Args...)
+	probes, visited, heap := 0.0, 0.0, 0.0
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Relation != "eval_days" {
+			continue
+		}
+		if node.Type != "Index Only Scan" || node.Index != "eval_days_window" {
+			t.Errorf("resolver reads days outside the window index:\n%s", explaintest.Outline(t, plan))
+		}
+		probes += node.Loops
+		visited += (node.Rows + node.RowsRemovedByFilter) * node.Loops
+		heap += node.HeapFetches
+	}
+	if probes == 0 || probes > repositories+1 || visited > repositories+1 || heap != 0 {
+		t.Errorf("resolver used %.0f probes, saw %.0f index entries and fetched %.0f heap rows; want at most one entry per repository and no heap rows\n%s",
+			probes, visited, heap, explaintest.Outline(t, plan))
+	}
+	t.Logf("one statement: %.0f probes, %.0f index entries, %.0f heap fetches for %d repositories and %d day rows", probes, visited, heap, repositories, repositories*days)
 }
 
 // dayLabels names each day row by its range, day, sum and sample list, sorted.
