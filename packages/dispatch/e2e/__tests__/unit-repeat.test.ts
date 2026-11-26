@@ -24,6 +24,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { realHostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
@@ -782,20 +783,28 @@ test(
   rowLimit()
 );
 
+/** The python3 `asSubreaper` runs, resolved once, here, under the caller's own HOME: never a mise
+ *  shim, which under the rows' HOME of their own refuses the caller's mise config, or finds no
+ *  version, and exits 1 before the driver runs (`realHostTool`). */
+const python3 = realHostTool("python3");
+
 /** Runs the rest of its arguments as a child subreaper: `prctl(PR_SET_CHILD_SUBREAPER)`, which is
  *  option 36, and then an exec of them, which keeps it. So each process the command's tree leaves
  *  when its parent ends re-parents to the command, whatever process group or session it went to,
  *  and the command can list its whole tree from its own `/proc/<pid>/task/<tid>/children`, with no
  *  read of any other process on the machine. Where `prctl` refuses, it exits 1 saying so, and the
- *  command never runs. */
-const asSubreaper = [
-  "python3",
-  "-c",
-  "import ctypes, os, sys\n" +
-    "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n" +
-    "    sys.exit(f'prctl(PR_SET_CHILD_SUBREAPER) failed: errno {ctypes.get_errno()}')\n" +
-    "os.execvp(sys.argv[1], sys.argv[1:])",
-] as const;
+ *  command never runs. A host with no python3 but a mise shim fails the row here, by name. */
+function asSubreaper(): string[] {
+  if (python3 === null) throw new Error("this host has no python3 on PATH that is no mise shim");
+  return [
+    python3,
+    "-c",
+    "import ctypes, os, sys\n" +
+      "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n" +
+      "    sys.exit(f'prctl(PR_SET_CHILD_SUBREAPER) failed: errno {ctypes.get_errno()}')\n" +
+      "os.execvp(sys.argv[1], sys.argv[1:])",
+  ];
+}
 
 /** Bash for a driver that runs under `asSubreaper`. Once what it started has ended, `count` lists
  *  every process still below the driver, which is every process its tree left, and prints each one
@@ -960,7 +969,7 @@ async function stoppedLeg(
     'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; count; exit "$code"';
   const { code, stdout, stderr } = await runBounded({
     argv: [
-      ...asSubreaper,
+      ...asSubreaper(),
       "bash",
       "-c",
       driver,
@@ -1400,7 +1409,7 @@ driverRow(
       'until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; do sleep 0.05; done; ' +
       'kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; count; exit "$code"';
     const { code, stdout, stderr } = await runBounded({
-      argv: [...asSubreaper, "bash", "-c", driver],
+      argv: [...asSubreaper(), "bash", "-c", driver],
       bound: "stoppedLeg",
       cwd: directory,
       env: {

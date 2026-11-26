@@ -134,14 +134,18 @@ type Tools struct{ GH, Git, JJ, Legion, AgentSecrets string }
 // Pod is what the operator adds to every pod Legion runs, the image probe's included
 // (runtime.kubernetes.pod): variables and volume mounts for the agent's container (the worker's,
 // or the probe's), never an init container, the volumes those mounts name, beside Legion's own, and
-// the ServiceAccount the pods run as, the namespace's default when unset. A variable's value reaches the
-// process as written: the kubelet's `$(NAME)` expansion does not apply (kubeletLiteral). CheckPod
-// refuses a name or path of Legion's own or the worker image's.
+// the ServiceAccount the pods run as, the namespace's default when unset. ControllerServiceAccount
+// is the one the project controller's pod runs as in its place when set (controllerPod's
+// serviceAccount); unset, that pod runs as ServiceAccount like every other. A variable's value
+// reaches the process as written: the kubelet's `$(NAME)` expansion does not apply
+// (kubeletLiteral). CheckPod refuses a name or path of Legion's own or the worker image's. Its
+// fields are config.PodConfig's, one for one, since the daemon converts the one into the other.
 type Pod struct {
-	Env            map[string]string
-	Volumes        []corev1.Volume
-	VolumeMounts   []corev1.VolumeMount
-	ServiceAccount string
+	Env                      map[string]string
+	Volumes                  []corev1.Volume
+	VolumeMounts             []corev1.VolumeMount
+	ServiceAccount           string
+	ControllerServiceAccount string
 }
 
 // ProvisionTokens mints the installation token a pod's workspace-fetch container clones the

@@ -1091,11 +1091,12 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // podTemplate is the pod a launch runs (decisions 7 and 10). Every pod mounts one disk at the same
 // volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue pod's is
 // its own ephemeral claim, made with the pod and deleted with it, or, where the pod keeps its
-// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the
-// controller's is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as
-// the operator's ServiceAccount (the namespace's default when the operator names none), and its
-// launcher containers mount the providers Secret's configured keys and the operator's mounts, are
-// told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
+// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the controller's
+// is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as its kind's
+// ServiceAccount (podKind.serviceAccount: the operator's, the namespace's default when the operator
+// names none, and for the controller's pod the controller's own account where one is named), and
+// its launcher containers mount the providers Secret's configured keys and the operator's mounts,
+// are told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
 // (podKind). Beyond the operator's scheduling and a microVM pod's ComputeClass (placement), it
 // asks nothing of its placement: an ephemeral disk is made where the pod is scheduled, so the
@@ -1115,7 +1116,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 		RestartPolicy:                 corev1.RestartPolicyAlways,
 		TerminationGracePeriodSeconds: new(int64(math.Ceil(r.terminationGrace.Seconds()))),
 		AutomountServiceAccountToken:  new(false),
-		ServiceAccountName:            r.pod.ServiceAccount,
+		ServiceAccountName:            l.kind.serviceAccount(r),
 		EnableServiceLinks:            new(false),
 		// OnRootMismatch: every file on the pod's disk is already the pod user's, so the kubelet skips
 		// re-owning the whole volume at each mount; on a full volume that walk took about 35 s.
