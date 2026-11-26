@@ -5,7 +5,7 @@ These two calls are part of the `dispatch` command, which the package's
 
 `dispatch result --project <KEY> --check <id> --verdict pass|fail|could_not_run --commit <sha>`
 is a CI job's record of its result of a check of the spec files, and the one call that is no
-session's (`ownIdentityResult` in `dispatch-cli.ts`). It reads no `DISPATCH_HOST`, no envoy.json
+session's (`jobResultCommand` in `dispatch-commands/job-result.ts`). It reads no `DISPATCH_HOST`, no envoy.json
 and no session state, and it asks no AskGate and no listener. A refusal is written to a session's
 ledger only where the environment names a session id, as every refusal of the command is. The job
 runs it under `agent-secrets result-grant -- …`, which exchanges the run's token at the secrets
@@ -56,8 +56,9 @@ Authentication Required); nothing was sent to Dispatch`, and a 5xx, such as a 50
 connection that never opened, asked again within the write's bound as a refused connection is,
 and then printed the same way. An answer the proxy gives itself inside an open connection, before
 any byte of the write left it, carries `Cipher-Proxy-Forwarded: false` and its
-`Cipher-Proxy-Code`: it prints `<code>: <the proxy's words>; nothing was stored`, with each copy
-of the placeholder in the words redacted; a 4xx of it ends the write at once, and a 5xx (`503
+`Cipher-Proxy-Code`: it prints `<code>: <the proxy's words>; nothing was stored`, the words
+quoted through the client's bounded excerpt, one line with each piece of the placeholder
+redacted; a 4xx of it ends the write at once, and a 5xx (`503
 GRANT_UNREADABLE`, `502 UPSTREAM_UNREACHABLE` for a dial to Dispatch that failed) is asked again
 within the bound first, since nothing reached Dispatch and the write is keyed. Each exits 1, and
 none is a `write_outcome_unknown`, but where an earlier attempt of the same write may have

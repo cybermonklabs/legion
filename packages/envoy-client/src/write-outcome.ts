@@ -182,9 +182,10 @@ export const WRITE_TRANSITIONS: {
 };
 
 /**
- * The step `event` takes a write in `state` to. A call that writes nothing (`writes: false`, a
- * conversion such as the markdown round trip) never leaves `nothing-sent`: no attempt of it can
- * land, so it keeps its answers as they are.
+ * The step `event` takes a write in `state` to. A call whose row stores nothing (`writes` false:
+ * `rowStores`, dispatch-write-rows.ts, false for a conversion, the related-item check and a
+ * result's dry run) never leaves `nothing-sent`: no attempt of it can land, so it keeps its answers
+ * as they are: a no route to the end is the route absent, and a refusal is the refusal.
  */
 export function writeStep(state: WriteState, event: WriteEvent, writes: boolean): WriteStep {
   const step = WRITE_TRANSITIONS[event][state];

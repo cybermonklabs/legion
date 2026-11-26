@@ -70,8 +70,8 @@ A 5xx, such as a 503, is a connection that never opened, so the write asks again
 Every other status ends the write at once, a 407 for a grant that ended among them.
 
 An answer that the proxy gives itself inside an open connection, before any byte of the request left it, carries `Cipher-Proxy-Forwarded: false` and a `Cipher-Proxy-Code`.
-It is an `AirlockRefusedError`, with the status, that code, or `HTTP_<status>` where it names none, and the proxy's words as `body`, each copy of the credential in them redacted.
-The redaction is of whole copies, because the proxy's words name the placeholder by that word, which the placeholder's own prefix spells.
+It is an `AirlockRefusedError`, with the status, that code, or `HTTP_<status>` where it names none, and the proxy's words as `body`, quoted through the client's bounded excerpt, as every answer that the proxy gives itself is: one line, cut at the excerpt's length, read from the body's first 64 KiB, each piece of a token the client presented redacted.
+A word of the proxy's that the placeholder spells, such as "placeholder", is redacted with it.
 A 4xx of it ends the write at once.
 A 5xx of it, a grant that the proxy could not read at that moment (`503 GRANT_UNREADABLE`) or a dial to Dispatch that failed (`502 UPSTREAM_UNREACHABLE`), is asked again under the key first: nothing reached Dispatch, and the write is keyed.
 

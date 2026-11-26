@@ -168,12 +168,15 @@ const uploadedDocument = {
 /** The person or session a review or a retraction names, as `actorText` reads it. */
 const actor = InboundActorSchema;
 
-/** The rows of the POSTs that store nothing, `markdownRoundTrip` and `related`, side by side in
- *  `WRITE_ROWS`: Dispatch's parse and render of a text (`POST /api/v1/markdown/round-trip`: its
- *  handler, `postMarkdownRoundTrip`, parses and renders the text and answers it, and calls no
- *  store) and the related-item check (`POST /api/v1/projects/{key}/related`: its handler's
- *  `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks record is
- *  written). */
+/** The rows of the POSTs that store nothing, each marked where `WRITE_ROWS` holds it
+ *  (`storesNothing`), the one place the flag is kept: Dispatch's parse and render of a text
+ *  (`markdownRoundTrip` and `fileRoundTrip`, `POST /api/v1/markdown/round-trip` and
+ *  `POST /api/v1/markdown/file-round-trip`: their handlers, `postMarkdownRoundTrip` and
+ *  `postFileRoundTrip`, parse and render the text and answer it, and call no store), the
+ *  related-item check (`related`, `POST /api/v1/projects/{key}/related`: its
+ *  handler's `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks record
+ *  is written), and a result's dry run (`dryRunResult`, a validation-only preview, which records
+ *  nothing). */
 const STORE_NOTHING = new WeakSet<z.ZodType>();
 
 /** `row`, marked as the row of a route that stores nothing (`rowStores`). */
@@ -306,7 +309,6 @@ export const WRITE_ROWS = {
       commit_sha: z.string(),
     }),
   }),
-  /** A validation-only result preview records nothing. */
   dryRunResult: storesNothing(z.looseObject({ line: z.string(), result: z.unknown() })),
   retractResult: z.looseObject({
     result_id: z.string(),

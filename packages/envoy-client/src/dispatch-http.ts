@@ -854,19 +854,13 @@ interface WriteProgress {
   running: boolean;
 }
 
-/** A POST or PATCH call: its one `Idempotency-Key`, the request as a text names it
- *  (`requestForText`), whether it writes anything, and what its attempts have shown. */
+/** A POST or PATCH call: its one `Idempotency-Key`, its row (whether it stores anything is the
+ *  row's, `rowStores`), the request as a text names it (`requestForText`), and what its attempts
+ *  have shown. */
 interface WriteCall {
   readonly key: string;
   readonly row: WriteRow;
   readonly request: string;
-  /**
-   * Whether the call writes: false for a conversion (`markdownRoundTrip`, `fileRoundTrip`) and for
-   * a dry run (`dryRunResult`), which Dispatch runs without storing anything. Its table state
-   * never leaves `nothing-sent` (`writeStep`), so it keeps the answers it had before the table
-   * existed: a no route to the end is the route absent, and a refusal is the refusal.
-   */
-  readonly writes: boolean;
   readonly progress: WriteProgress;
 }
 
@@ -1413,11 +1407,11 @@ function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
  * review (`via`): a refusal of the request, a grant it could not read, or a dial to Dispatch that
  * failed, each before any byte of the request left it, so the request reached no service and
  * stored nothing. `code` is its `Cipher-Proxy-Code`, or `HTTP_<status>` where it names none, and
- * `body` its text, each copy of the credential redacted whole. A 5xx is asked again within the
- * write's bound before the write ends with it (`proxyEvent`). It is no `DispatchServiceError`,
- * which a caller reads as a refusal Dispatch decided, and no rule reads it as a write whose outcome
- * is unknown (`writeOutcomeUnknown`). The proxy's answer after the write may have left it is
- * `AirlockOutcomeUnknownError`.
+ * `body` its text as the client's excerpt quotes it (`#airlockAnswer`). A 5xx is asked again
+ * within the write's bound before the write ends with it (`proxyEvent`). It is no
+ * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and no rule reads it
+ * as a write whose outcome is unknown (`writeOutcomeUnknown`). The proxy's answer after the write
+ * may have left it is `AirlockOutcomeUnknownError`.
  */
 export class AirlockRefusedError extends Error {
   override readonly name = "AirlockRefusedError";
@@ -1436,9 +1430,8 @@ export class AirlockRefusedError extends Error {
  * (`Cipher-Proxy-Forwarded: unknown`, `proxyOwnAnswer`): its connection to Dispatch broke after the
  * write was sent, or the write's grant ended while Dispatch held the call. Dispatch may have stored
  * it, so the write asks again under its key (`proxy-unsettled`), and ends unsettled
- * (`DispatchWriteUnsettledError`) with this as its `last` when nothing settles it. `code` is its
- * `Cipher-Proxy-Code`, or `HTTP_<status>` where it names none, and `body` its text, each copy of
- * the credential redacted whole.
+ * (`DispatchWriteUnsettledError`) with this as its `last` when nothing settles it. `code` and
+ * `body` are as `AirlockRefusedError`'s.
  */
 class AirlockOutcomeUnknownError extends Error {
   override readonly name = "AirlockOutcomeUnknownError";
@@ -1701,7 +1694,12 @@ export class DispatchClient {
    *  over a document already holding what the text holds stores, or with a refusal every
    *  replacement makes. */
   async markdownRoundTrip(markdown: string, newDocument = false): Promise<string> {
-    return this.#roundTrip(["api", "v1", "markdown", "round-trip"], { markdown }, newDocument);
+    return this.#roundTrip(
+      ["api", "v1", "markdown", "round-trip"],
+      WRITE_ROWS.markdownRoundTrip,
+      { markdown },
+      newDocument
+    );
   }
 
   /** `POST /api/v1/markdown/file-round-trip`: `markdownRoundTrip` of a file's bytes, sent as
@@ -1710,23 +1708,27 @@ export class DispatchClient {
    *  not UTF-8 is refused as its upload is. A Dispatch without this route answers 404 or 405. */
   async fileRoundTrip(bytes: Uint8Array, newDocument = false): Promise<string> {
     const file = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-    return this.#roundTrip(["api", "v1", "markdown", "file-round-trip"], { file }, newDocument);
+    return this.#roundTrip(
+      ["api", "v1", "markdown", "file-round-trip"],
+      WRITE_ROWS.fileRoundTrip,
+      { file },
+      newDocument
+    );
   }
 
-  /** The round trip at `path` of `body`, which writes nothing (`writes: false`), asking for a new
-   *  document's refusals too where `newDocument` (`new_document`). The member is left out
-   *  otherwise, so the body is the one a Dispatch before the member takes. An answer Dispatch
-   *  kept no copy of is asked for again (`#writingNothing`). */
+  /** The round trip at `path` of `body`, read into `row`, which stores nothing (`rowStores`),
+   *  asking for a new document's refusals too where `newDocument` (`new_document`). The member is
+   *  left out otherwise, so the body is the one a Dispatch before the member takes. An answer
+   *  Dispatch kept no copy of is asked for again (`#writingNothing`). */
   async #roundTrip(
-    path: string[],
+    path: readonly string[],
+    row: WriteRow,
     body: MarkdownRoundTripInput | FileRoundTripInput,
     newDocument: boolean
   ): Promise<string> {
     const answer: MarkdownRoundTripResponse = await this.#writingNothing(
       path,
-      path[path.length - 1] === "file-round-trip"
-        ? WRITE_ROWS.fileRoundTrip
-        : WRITE_ROWS.markdownRoundTrip,
+      row,
       newDocument ? { ...body, new_document: true } : body
     );
     return answer.markdown;
@@ -2893,12 +2895,13 @@ export class DispatchClient {
    * check names among them. Any other refusal is read as `#payloadOf` reads it.
    */
   #writePayload<T>(method: string, url: string, answer: WriteAnswer, write: WriteCall): T {
+    const stores = rowStores(write.row);
     if (!answer.response.ok) {
-      if (!write.writes && answer.echoed && answer.code === IDEMPOTENCY_KEY_COMMITTED)
+      if (!stores && answer.echoed && answer.code === IDEMPOTENCY_KEY_COMMITTED)
         throw this.#missingWriteAnswer(method, url, answer.response, write, answer.text);
       return this.#payloadOf<T>(method, url, answer);
     }
-    if (NULL_BODY_STATUSES.has(answer.response.status) && !rowStores(write.row))
+    if (NULL_BODY_STATUSES.has(answer.response.status) && !stores)
       return this.#payloadOf<T>(method, url, answer);
     const value = answer.json?.value;
     const replayed = answer.response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
@@ -2950,7 +2953,7 @@ export class DispatchClient {
     code: DispatchLandedCode = DISPATCH_ANSWER_LOST
   ): Error {
     const shown = requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING);
-    if (!write.writes)
+    if (!rowStores(write.row))
       return code === IDEMPOTENCY_ANSWER_NOT_KEPT && keyEchoed(response, write.key)
         ? new DispatchAnswerNotKeptError(response.status, method, shown)
         : new DispatchAnswerMissingError(response.status, method, shown, { cause });
@@ -2968,7 +2971,16 @@ export class DispatchClient {
     );
   }
 
-  /** `#write` with the status Dispatch answered, for a route whose status says what it did. */
+  /**
+   * A write under a key (`POST` or `PATCH`, `WriteCall`), with the status Dispatch answered, for a
+   * route whose status says what it did: its body sent as JSON, and its 2xx read into `row`, the
+   * members the method's callers read (`#writePayload`). The row is required, so a keyed write
+   * that names none does not compile; a read, a PUT or a DELETE goes through `#json`, which takes
+   * none. A POST whose row stores nothing (`rowStores`: a conversion, the related-item check, a
+   * result's dry run) is sent as every write is, under one key with its retries, and never read as
+   * a write that may have landed. `options.key` is the caller's own `Idempotency-Key`, where it has
+   * one intent across calls; `options.via` sends the write through Cipher's proxy (`#throughProxy`).
+   */
   async #writeAnswer<T>(
     method: WriteMethod,
     path: readonly string[],
@@ -2976,12 +2988,24 @@ export class DispatchClient {
     body?: unknown,
     options: WriteOptions = {}
   ): Promise<{ readonly status: number; readonly payload: T }> {
-    return this.#jsonAnswer<T>(method, path, body, { ...options, row });
+    const url = this.#url(path, options.query);
+    const write = this.#writeCall(method, url, row, options.key);
+    const answer = await this.#sendWrite(
+      method,
+      url,
+      body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" },
+      "application/json",
+      undefined,
+      write,
+      options.via
+    );
+    return {
+      status: answer.response.status,
+      payload: this.#writePayload<T>(method, url, answer, write),
+    };
   }
 
-  /** A write under a key (`POST` or `PATCH`, `WriteCall`): its 2xx read into `row`, the members
-   *  the method's callers read (`#writePayload`). A keyed write that names no row does not compile.
-   *  `options.key` is the caller's own `Idempotency-Key`, where it has one intent across calls. */
+  /** `#writeAnswer`'s payload alone. */
   async #write<T>(
     method: WriteMethod,
     path: readonly string[],
@@ -3041,8 +3065,9 @@ export class DispatchClient {
       throw error;
     }
   }
-  /** A read, or a write sent once with no key (`PUT`, `DELETE`): its payload. `signal` aborts it
-   *  beside the client's own signal (`#send`). */
+  /** A read, or a write sent once with no key (`PUT`, `DELETE`): its payload. It takes no row and
+   *  no key: a keyed write goes through `#writeAnswer`. `signal` aborts it beside the client's own
+   *  signal (`#send`). */
   async #json<T>(
     method: ReadMethod,
     path: readonly string[],
@@ -3050,51 +3075,12 @@ export class DispatchClient {
     query?: object,
     signal?: AbortSignal
   ): Promise<T> {
-    return (await this.#jsonAnswer<T>(method, path, body, { query, signal })).payload;
-  }
-
-  /** `#json` with the status Dispatch answered, for a route whose status says what it did.
-   *  `signal` aborts the call beside the client's own signal. `row` is a keyed write's answer row
-   *  (`#writeCall`, `dispatch-write-rows.ts`): a POST of a row that stores nothing (a conversion,
-   *  `markdownRoundTrip` or `fileRoundTrip`, or a dry run, `dryRunResult`) is sent as a POST is,
-   *  under one key with its retries, but never read as a write that may have landed
-   *  (`WriteCall.writes`). `via` sends a write through Cipher's proxy (`#throughProxy`); a read
-   *  takes none. */
-  async #jsonAnswer<T>(
-    method: string,
-    path: readonly string[],
-    body?: unknown,
-    options: {
-      readonly query?: object | undefined;
-      readonly signal?: AbortSignal | undefined;
-      readonly key?: string | undefined;
-      readonly row?: WriteRow;
-      readonly via?: ProxyTransport | undefined;
-    } = {}
-  ): Promise<{ readonly status: number; readonly payload: T }> {
-    const { query, signal, key, row, via } = options;
     const url = this.#url(path, query);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };
-    const write = this.#writeCall(method, url, key, row);
-    if (write !== undefined) {
-      const answer = await this.#sendWrite(
-        method,
-        url,
-        encoded,
-        "application/json",
-        signal,
-        write,
-        via
-      );
-      return {
-        status: answer.response.status,
-        payload: this.#writePayload<T>(method, url, answer, write),
-      };
-    }
     return this.#noRoute(async () => {
       const { answer: response } = await this.#send(method, url, encoded, undefined, signal);
-      return { status: response.status, payload: await this.#response<T>(method, url, response) };
+      return this.#response<T>(method, url, response);
     }, signal);
   }
 
@@ -3134,21 +3120,13 @@ export class DispatchClient {
   /**
    * A write's one key and what its attempts have shown, made once per call, so every attempt of
    * the call goes under one `Idempotency-Key`: the caller's own, where it has one intent across
-   * calls and processes, else one minted for this call alone. A read, a PUT or a DELETE has none.
+   * calls and processes, else one minted for this call alone.
    */
-  #writeCall(
-    method: string,
-    url: string,
-    key: string | undefined,
-    row?: WriteRow
-  ): WriteCall | undefined {
-    if (method !== "POST" && method !== "PATCH") return undefined;
-    if (row === undefined) throw new Error("a keyed write must declare its answer row");
+  #writeCall(method: WriteMethod, url: string, row: WriteRow, key: string | undefined): WriteCall {
     return {
       key: key ?? crypto.randomUUID(),
       request: `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
       row,
-      writes: rowStores(row),
       progress: { sent: 0, running: false },
     };
   }
@@ -3173,41 +3151,36 @@ export class DispatchClient {
       form.set("precondition", JSON.stringify(input.precondition));
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
     form.set("file", input.file, input.name);
-    return this.#form("POST", path, form, row, key);
+    return this.#form(path, form, row, key);
   }
 
   /**
-   * A multipart write. The form is encoded here, once, outside the no-route retries: every
-   * encoding of a `FormData` draws a new boundary, and a retry whose bytes differ from its first
-   * attempt's is a different request to Dispatch, which refuses a key reused for one
-   * (`422 KEY_REUSED`), and every attempt of the call carries its one key.
+   * A multipart write, a `POST` under a key read into `row` as every write is (`#writeAnswer`).
+   * The form is encoded here, once, before the first attempt: every encoding of a `FormData` draws
+   * a new boundary, and a retry whose bytes differ from its first attempt's is a different request
+   * to Dispatch, which refuses a key reused for one (`422 KEY_REUSED`), and every attempt of the
+   * call carries its one key.
    */
   async #form<T>(
-    method: WriteMethod,
     path: readonly string[],
     form: FormData,
     row: WriteRow,
-    key?: string
+    key: string | undefined
   ): Promise<T> {
     const url = this.#url(path);
     const encoded = new Response(form);
     const type = encoded.headers.get("Content-Type") ?? "multipart/form-data";
     const body: EncodedBody = { content: new Uint8Array(await encoded.arrayBuffer()), type };
-    const write = this.#writeCall(method, url, key, row);
-    if (write !== undefined) {
-      const answer = await this.#sendWrite(method, url, body, "application/json", undefined, write);
-      return this.#writePayload<T>(method, url, answer, write);
-    }
-    return this.#noRoute(async () =>
-      this.#response<T>(method, url, (await this.#send(method, url, body)).answer)
-    );
+    const write = this.#writeCall("POST", url, row, key);
+    const answer = await this.#sendWrite("POST", url, body, "application/json", undefined, write);
+    return this.#writePayload<T>("POST", url, answer, write);
   }
 
   /**
    * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `fileRoundTrip`, `related`,
    * `dryRunResult`), `row` its row of the write table, which stores nothing (`rowStores`). It is
    * sent as a write is, under a key of its own, so an attempt with no definitive answer is asked
-   * again under that key (`#jsonAnswer`). Such a repeat can come back as a replayed 2xx reading
+   * again under that key (`#writeAnswer`). Such a repeat can come back as a replayed 2xx reading
    * `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept no copy of its
    * answer. `#writePayload` reads that replay of a route that stores nothing as a
    * `DispatchAnswerNotKeptError`, no landing, since this request wrote nothing: it is asked once
@@ -3219,7 +3192,7 @@ export class DispatchClient {
   async #writingNothing<T>(path: readonly string[], row: WriteRow, body: unknown): Promise<T> {
     for (let keys = 1; ; keys++) {
       try {
-        return (await this.#jsonAnswer<T>("POST", path, body, { row })).payload;
+        return await this.#write<T>("POST", path, row, body);
       } catch (error) {
         if (!(error instanceof DispatchAnswerNotKeptError) || keys === 2) throw error;
       }
@@ -3399,6 +3372,7 @@ export class DispatchClient {
   ): Promise<WriteAnswer> {
     const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
     const { key, progress } = write;
+    const stores = rowStores(write.row);
     // What every attempt presents: the client's credential, or the placeholder's in its place for
     // a write through Cipher's proxy (`ProxyTransport.credential`).
     const credential = via?.credential ?? this.#credential;
@@ -3549,7 +3523,7 @@ export class DispatchClient {
     let last = await next();
     let event = last.event;
     for (;;) {
-      const step = writeStep(state, event, write.writes);
+      const step = writeStep(state, event, stores);
       state = step.state;
       if ((event === "silence" || event === "in-flight") && !upload) progress.running = true;
       switch (step.action) {
@@ -3765,7 +3739,7 @@ export class DispatchClient {
     } else if (via !== undefined && failure instanceof DispatchUnreachableError) {
       own = this.#proxyUnreachable(via, failure, state);
     } else if (answer?.response.ok === true) {
-      if (!answer.echoed || !write.writes) {
+      if (!answer.echoed || !rowStores(write.row)) {
         return this.#missingWriteAnswer(method, url, answer.response, write, answer.text);
       }
       const { status } = answer.response;
@@ -3870,17 +3844,13 @@ export class DispatchClient {
    * The error of an answer Cipher's proxy wrote itself (`proxy`, `proxyOwnAnswer`) to a write that
    * names no proxy, a CI job's result through the airlock its `HTTPS_PROXY` names: before anything
    * left the proxy, `AirlockRefusedError`; after the write may have reached Dispatch,
-   * `AirlockOutcomeUnknownError`. Its body is the proxy's words whole, each copy of a token this
-   * client presented redacted whole: the words name the placeholder by that word, which the
-   * placeholder's own prefix spells, so redacting its pieces would cut the proxy's words.
+   * `AirlockOutcomeUnknownError`. Its body is the proxy's words as every text of a proxy's own
+   * answer is quoted (`#proxyRefusal` too): the client's bounded excerpt, one line of at most the
+   * excerpt's length, read from the body's first `EXCERPT_SCAN_LIMIT` characters, each piece of a
+   * token this client presented redacted.
    */
   #airlockAnswer(answer: WriteAnswer, proxy: ProxyOwnAnswer): Error {
-    const body = this.#sent
-      .with(this.token)
-      .reduce(
-        (text, token) => (token === "" ? text : text.replaceAll(token, "[redacted]")),
-        answer.text
-      );
+    const body = excerpt(answer.text, this.#sent.with(this.token));
     const { status } = answer.response;
     return proxy.left
       ? new AirlockOutcomeUnknownError(status, proxy.code, body)
