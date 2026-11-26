@@ -1826,9 +1826,9 @@ test("a grandchild's document version that names no ancestors marks the coverage
 // outline and views with no check (D-R2-presence), and so waits on nothing. A view that holds no
 // node of the child waits for the outline's answer, and every event that waits on one outline
 // shares one listener on the cache, which goes once the refetch ends and marks then, once, the
-// views of each event whose node the answer holds. Each row's views read are those the base
-// (647c646e) reads; there L2, L3, L5, L6 and L7 held ten listeners, one for each event, and L4
-// two.
+// views of each event whose node the answer holds. Each row's views read are those the base reads
+// (J, 4d37c51f, as U2, 647c646e, before it); there L2, L3, L5, L6 and L7 held ten listeners, one
+// for each event, and L4 two.
 
 /** The parent CORE-1's outline holding no node of its children, as ST-2's outline holds it before
  *  its refetch answers. */
@@ -1948,12 +1948,13 @@ test("a child's version during its parent's outline refetch holds one listener, 
 // the outline's refetch with one listener on the cache, where the base held one for each event,
 // and the response reads each view once.
 test("ten versions of a child, each its own refresh, during its parent's outline refetch hold one listener, and read each view of the parent once where the response holds the child's node", async () => {
-  // Measured at 647c646e (U2), the base, by this row: one listener for each event.
+  // Measured at J (4d37c51f), the base, and at U2 (647c646e) before it, by this row: one listener
+  // for each event.
   const AT_BASE = 10;
   const AT_HEAD = 1;
   expect(
     await sharedWait(OUTLINE_WITH_NO_CHILD, TEN_CHILD_VERSIONS, OUTLINE_WITH_CHILD),
-    `listeners while the refetch is out: ${AT_BASE} at the base (647c646e), ${AT_HEAD} at the head`
+    `listeners while the refetch is out: ${AT_BASE} at the base (J, 4d37c51f), ${AT_HEAD} at the head`
   ).toEqual({ listeners: [AT_HEAD, 0], viewsRead: EACH_VIEW_READ });
 });
 
@@ -1969,7 +1970,8 @@ test("ten versions of a child during its parent's outline refetch hold one liste
 // own test: the response holds CORE-4's node alone - CORE-2 moved away - so the views are read
 // once, for CORE-4's version.
 test("versions of two children during their parent's outline refetch hold one listener, and read each view of the parent once where the response holds one child's node alone", async () => {
-  // Measured at 647c646e (U2), the base, by this row: one listener for each event.
+  // Measured at J (4d37c51f), the base, and at U2 (647c646e) before it, by this row: one listener
+  // for each event.
   const AT_BASE = 2;
   const AT_HEAD = 1;
   expect(
@@ -1981,7 +1983,7 @@ test("versions of two children during their parent's outline refetch hold one li
       ],
       OUTLINE_WITH_D
     ),
-    `listeners while the refetch is out: ${AT_BASE} at the base (647c646e), ${AT_HEAD} at the head`
+    `listeners while the refetch is out: ${AT_BASE} at the base (J, 4d37c51f), ${AT_HEAD} at the head`
   ).toEqual({ listeners: [AT_HEAD, 0], viewsRead: EACH_VIEW_READ });
 });
 
@@ -2242,8 +2244,8 @@ test("one event over fifty open trees checks each tree read it does not name onc
       "CORE-2"
     ),
   };
-  // Measured at 647c646e (U2), the base, by this case's cache and events: there a version reads
-  // no chain, and no coverage target of an ancestor exists.
+  // Measured at J (4d37c51f), the base, and at U2 (647c646e) before it, by this case's cache and
+  // events: there a version reads no chain, and no coverage target of an ancestor exists.
   const AT_BASE = {
     "C's plain ask": { checks: 200, fallbackChecks: 0, scans: 200 },
     "C's title": { checks: 200, fallbackChecks: 0, scans: 200 },
@@ -2275,7 +2277,7 @@ test("one event over fifty open trees checks each tree read it does not name onc
   }
   expect(
     seen,
-    `at the base (647c646e): ${JSON.stringify(AT_BASE)}; milliseconds at this run: ${JSON.stringify(milliseconds)}`
+    `at the base (J, 4d37c51f): ${JSON.stringify(AT_BASE)}; milliseconds at this run: ${JSON.stringify(milliseconds)}`
   ).toEqual(AT_HEAD);
 });
 
@@ -2303,10 +2305,10 @@ test("a batch of ten versions of a child runs one check on a tree read through t
       )
     ),
   };
-  // Measured at 647c646e (U2), the base, by this case's cache and batches, each batch's targets
-  // handed to the refresh as they are: there the flush keeps every target with a check, and a
-  // version reads no chain. A check that answers yes on a query ends that query's checks, so the
-  // parent's four reads ran one check each there.
+  // Measured at J (4d37c51f), the base, and at U2 (647c646e) before it, by this case's cache and
+  // batches, each batch's targets handed to the refresh as they are: there the flush keeps every
+  // target with a check, and a version reads no chain. A check that answers yes on a query ends
+  // that query's checks, so the parent's four reads ran one check each there.
   const AT_BASE = {
     "ten plain asks of C": { checks: 2000, most: 10 },
     "ten versions of C": { checks: 1964, most: 10 },
@@ -2327,7 +2329,7 @@ test("a batch of ten versions of a child runs one check on a tree read through t
   }
   expect(
     seen,
-    `checks on tree reads, in all and on one at the most; at the base (647c646e): ${JSON.stringify(AT_BASE)}`
+    `checks on tree reads, in all and on one at the most; at the base (J, 4d37c51f): ${JSON.stringify(AT_BASE)}`
   ).toEqual(AT_HEAD);
 });
 
