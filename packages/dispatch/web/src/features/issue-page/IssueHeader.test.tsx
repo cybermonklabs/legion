@@ -347,7 +347,9 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   // `decision` block of the issue's spec, so the spec's blocks are read too.
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
-    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([decision("d1")])),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([decision("d1")], issue.artifacts[0])
+    ),
     spyOn(api, "getIssueCoverage"),
     spyOn(api, "listComments"),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
@@ -450,7 +452,9 @@ test("the header counts a Change under the decision whose block of the spec hold
   });
   const restore = stubHeader(issue);
   const reads = [
-    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([listed, untied])),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([listed, untied], issue.artifacts[0])
+    ),
     spyOn(api, "getIssueCoverage").mockResolvedValue({
       gaps: [],
       has_plan: false,

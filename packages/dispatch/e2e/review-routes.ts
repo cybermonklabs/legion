@@ -289,20 +289,27 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-decisions",
     path: (seed) => `/issues/${seed.issue}/decisions`,
     pattern: "/issues/:key/*",
-    // The panel's region and the two distinct links on `e2e/review-seed.ts`'s seeded decision
-    // (`data-decision="d1"`): the body reference (`data-dispatch-ref`), titled by the spec
-    // block's own words once the reference graph answers, and the shaped link under "Shaped:",
-    // which `DecisionsPanel.tsx` intentionally draws as `Block <id>` (#3125) and which carries
-    // the same `/issues/<KEY>/spec#b-<id>` href as that body reference.
+    // The panel's region and the two distinct links on the decision `e2e/review-seed.ts` seeds:
+    // the body reference (`data-dispatch-ref`), titled by the spec block's own words once the
+    // reference graph answers, and the shaped link under "Shaped:", which `DecisionsPanel.tsx`
+    // intentionally draws as `Block <id>` (#3125) and which carries the same
+    // `/issues/<KEY>/spec#b-<id>` href as that body reference. The decision's card
+    // (`li[data-decision]`) is found by that body reference rather than by its block id: this
+    // release's seed writes the decision as the spec's block `d1`, and a stubbed row replays what
+    // its recording run's server answered (`e2e/__recordings__`), whose corpus may hold it as a
+    // block of the issue's decisions document under an id minted in that run.
     ready: (page) => {
       const specWords = "One command, a seeded corpus, a signed-in browser.";
       const waiting = page.getByRole("region", { name: "Waiting for your review" });
-      const decision = waiting.locator('li[data-decision="d1"]');
+      const cited = page
+        .getByRole("link", { name: specWords })
+        .and(page.locator("[data-dispatch-ref]"));
+      const decision = waiting.locator("li[data-decision]").filter({ has: cited });
       return [
         waiting,
         decision.getByRole("link", { name: specWords }).and(page.locator("[data-dispatch-ref]")),
         decision.locator(
-          `xpath=.//a[not(@data-dispatch-ref) and starts-with(normalize-space(.), "Block ") and @href = ancestor::li[@data-decision="d1"][1]//a[@data-dispatch-ref and normalize-space(.) = "${specWords}"]/@href]`
+          `xpath=.//a[not(@data-dispatch-ref) and starts-with(normalize-space(.), "Block ") and @href = ancestor::li[@data-decision][1]//a[@data-dispatch-ref and normalize-space(.) = "${specWords}"]/@href]`
         ),
       ];
     },
