@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A connection that is reconnecting reports no server version ((*nats.Conn).ConnectedServerVersion
@@ -20,6 +21,7 @@ import (
 // "a version that cannot be read". The control is a connection that does not reconnect within the
 // wait: it is refused for that, never for the version it could not read.
 func TestConnectedRefusalWaitsOutAReconnect(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
@@ -34,15 +36,18 @@ func TestConnectedRefusalWaitsOutAReconnect(t *testing.T) {
 	}
 
 	t.Run("a reconnect within the wait reads the server it reached", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
 		// ConnectedRefusal runs off the test goroutine and the server restarts on it, so a
-		// failed restart fails the test where t.Fatal may be called.
+		// failed restart fails the test where t.Fatal may be called. The restart waits for
+		// ConnectedRefusal's first look at the connection, which finds no version, so the
+		// answer is always one that waited out the reconnect, however late a loaded machine
+		// starts it.
+		ctx := testwait.Context(t)
+		looking := &lookingConn{Conn: conn, looked: make(chan struct{})}
 		answered := make(chan error, 1)
-		go func() { answered <- ConnectedRefusal(ctx, conn) }()
-		time.Sleep(300 * time.Millisecond)
+		go func() { answered <- connectedRefusal(ctx, looking) }()
+		testwait.Receive(t, "ConnectedRefusal's first look at the reconnecting connection", looking.looked)
 		server.Start(t)
-		if err := <-answered; err != nil {
+		if err := testwait.Receive(t, "ConnectedRefusal's answer across the reconnect", answered); err != nil {
 			t.Fatalf("ConnectedRefusal across a reconnect = %v, want nil for the in-process v2.15.1", err)
 		}
 	})
@@ -70,10 +75,9 @@ func TestConnectedRefusalWaitsOutAReconnect(t *testing.T) {
 // between them, and the server's version from then on. ConnectedRefusal must decide on a version
 // it actually read, so it answers nil for v2.15.1.
 func TestConnectedRefusalDecidesOnlyOnAVersionItRead(t *testing.T) {
+	t.Parallel()
 	reconnecting := &reconnectBetweenReads{version: "2.15.1"}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := connectedRefusal(ctx, reconnecting); err != nil {
+	if err := connectedRefusal(testwait.Context(t), reconnecting); err != nil {
 		t.Fatalf("connectedRefusal over a reconnect between its reads = %v, want nil for v2.15.1", err)
 	}
 	if reads := reconnecting.reads(); reads < 2 {
@@ -108,6 +112,7 @@ func (closedConn) IsClosed() bool { return true }
 // ConnectedRefusal keeps waiting and, when the drain does not end in a reconnect within the wait,
 // answers that the connection is not connected, never that a version cannot be read.
 func TestConnectedRefusalDoesNotReadADrainingConnectionAsAVersion(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.DrainTimeout(30*time.Second))
 	if err != nil {
@@ -125,11 +130,7 @@ func TestConnectedRefusalDoesNotReadADrainingConnectionAsAVersion(t *testing.T) 
 	if err := conn.Publish("natsversion.drain", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-handling:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the subscription's handler did not start within 5s")
-	}
+	testwait.Receive(t, "the subscription's handler to start", handling)
 	defer close(release)
 	if err := conn.Drain(); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -150,16 +151,28 @@ func TestConnectedRefusalDoesNotReadADrainingConnectionAsAVersion(t *testing.T) 
 	}
 }
 
-// waitDisconnected waits, at most 5s, until conn no longer reports itself connected.
+// waitDisconnected waits until conn no longer reports itself connected.
 func waitDisconnected(t *testing.T, conn *nats.Conn) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for conn.IsConnected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection still reports connected 5s after its server stopped")
-		}
-		time.Sleep(10 * time.Millisecond)
+	testwait.Eventually(t, "the connection to stop reporting connected after its server stopped", func() bool {
+		return !conn.IsConnected()
+	})
+}
+
+// lookingConn is a connection that closes looked the first time its version is read and found
+// empty: ConnectedVersion has looked at it while it reconnects.
+type lookingConn struct {
+	*nats.Conn
+	once   sync.Once
+	looked chan struct{}
+}
+
+func (c *lookingConn) ConnectedServerVersion() string {
+	version := c.Conn.ConnectedServerVersion()
+	if version == "" {
+		c.once.Do(func() { close(c.looked) })
 	}
+	return version
 }
 
 // reconnectBetweenReads is a connection whose reconnect completes just after its first version

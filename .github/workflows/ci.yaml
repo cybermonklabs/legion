@@ -109,12 +109,12 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
-    # Above the sum of its steps' own timeouts, 32 minutes: the filter generation's 9
+    # Above the sum of its steps' own timeouts, 38 minutes: the filter generation's 9
     # (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s later, and bounds the
-    # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the checkout,
-    # setup-go, Bun's setup and install, the merge base, the upload and the paths filter, and 1 each
-    # for the ref and the scope.
-    timeout-minutes: 34
+    # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the two
+    # cache restores, the checkout, the Go install, Bun's setup and install, the merge base, the
+    # upload and the paths filter, and 1 each for the ref and the scope.
+    timeout-minutes: 40
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
@@ -213,20 +213,24 @@ jobs:
         run: |
           [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && { [ "$IS_MAIN" = true ] || [ "$EVERY_JOB" = true ] || [[ $GITHUB_REF != refs/heads/* ]]; } && v=true || v=
           echo "every_job=$v" >> "$GITHUB_OUTPUT"
+      # Main's objects, one commit deep, as a push to main left them: the checkout then fetches only
+      # what this run's commit adds to them.
+      # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 3
+        with:
+          path: .git
+          key: changes-git-${{ runner.os }}-${{ runner.arch }}
       # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 3
         with:
           persist-credentials: false
       # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs (no Go cache)
-      - continue-on-error: true
+      - name: Install the Go packages/daemon/go.mod names
+        continue-on-error: true
         timeout-minutes: 3
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/daemon/go.mod
-          go-download-base-url: https://go.dev/dl
-          token: ''
-          cache: false
+        run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
       - name: Setup Bun
         continue-on-error: true
         timeout-minutes: 3
@@ -243,11 +247,21 @@ jobs:
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # The base's filters as the push of that commit to main computed them, which the generation
+      # reads rather than generating the base tree again.
+      # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
+      - if: github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 3
+        with:
+          path: ${{ runner.temp }}/ci-filters-base
+          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
       - name: Compute every filter from what each job reads
         id: generate
         timeout-minutes: 9
         env:
           CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
+          CI_FILTERS_BASE_COMPUTED: ${{ runner.temp }}/ci-filters-base
         run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
       - name: Keep the filters this run computed
         timeout-minutes: 3
