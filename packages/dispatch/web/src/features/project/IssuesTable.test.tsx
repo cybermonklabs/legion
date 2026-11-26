@@ -3544,9 +3544,9 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   expect([narrow.fills, narrow.trailing]).toEqual(["title", 104]);
   const wide = renderHook(() => useTableLayout("fills-narrow", narrow));
   expect(wide.result.current.boxWidth).toBe(1000);
-  // Select 44, key 108 and status 132 shown, and the row's actions, in a box not yet measured,
-  // whose borders read as nothing: 1000 - 388.
-  expect(wide.result.current.responsive.sizing.title).toBe(612);
+  // Select 44, key 108 and status 148 shown, and the row's actions, in a box not yet measured,
+  // whose borders read as nothing: 1000 - 404.
+  expect(wide.result.current.responsive.sizing.title).toBe(596);
   wide.unmount();
   // With more shown than leave Title its minimum, it stays at that minimum.
   const full = renderHook(() =>
