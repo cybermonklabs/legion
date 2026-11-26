@@ -18,6 +18,7 @@ import (
 // shows where the line is. internal/api's test of this name drives the daemon's two other readings
 // of a number below one.
 func TestANumberBelowOneIsNoContract(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		contract int
 		refused  bool
@@ -56,6 +57,7 @@ func TestANumberBelowOneIsNoContract(t *testing.T) {
 // ran nothing. Each run is the wrapper the daemon renders (runStart), with a stand-in bun that
 // leaves the manifest where `bun add` installs pi-legion, and the real node running the check.
 func TestTheKeptPodPluginCheckRefusesAManifestOfAnotherContract(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("no node in this environment: the install's contract check runs on it")
 	}
