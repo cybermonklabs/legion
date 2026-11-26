@@ -230,22 +230,24 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 }
 
 // Every send a caller's payload reaches refuses a message past the server's max payload, its
-// headers included, before it waits on a connection or reads its context or deadline. nats.go
-// refuses such a message before sending it, but only after a JetStream publish has read its
-// context, and a core publish is refused on an ended context first (publishConfirmed), so a
-// message the bus can never send was answered as a bus that did not answer whenever the caller's
-// time had run out before the send. Each send is asked with its time already spent - an ended
-// context, a forward's window of no time, a publish window whose deadline has passed - except the
-// relay frame, whose send reads no time while its connection is up. Each is asked a body past the
-// bound by itself and, where the send writes a header, a body within the bound that the header
-// takes one byte past it. The controls are each send with a small body under the same spent time:
-// it is refused for that time and not for its size (the relay frame is sent), so the check cannot
-// pass by refusing every send as too large.
+// headers included, before it waits on a connection or reads its context. nats.go refuses such a
+// message before sending it, but only after a JetStream publish has read its context, and a core
+// publish is refused on an ended context first (publishConfirmed), so a message the bus can never
+// send was answered as a bus that did not answer whenever the caller's time had run out before
+// the send. Each send is asked with its time already spent - an ended context, a forward's window
+// of no time - except the relay frame, whose send reads no time while its connection is up, and
+// the publish window's two sends, which read their own deadline first (below) and so are asked
+// under a live one. Each is asked a body past the bound by itself and, where the send writes a
+// header, a body within the bound that the header takes one byte past it. The controls are each
+// send with a small body under the same time: it is refused for that time and not for its size
+// (the window's sends and the relay frame are sent), so the check cannot pass by refusing every
+// send as too large.
 func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t *testing.T) {
 	t.Parallel()
 	rig := newSizeRig(t)
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
+	liveWindow := rig.client.WindowUntil(func() time.Time { return time.Now().Add(time.Minute) })
 	spentWindow := rig.client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
 	consumers, err := ConnectSessionConsumers([]string{rig.url}, 0, nil)
 	if err != nil {
@@ -285,11 +287,11 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t 
 			return err
 		}, isSpent(ErrWindowEndedBeforePublish)},
 		{"a publish window's send", stored, msgIDHeader(storedID), func(payload string) error {
-			return <-spentWindow.PublishStoredAsync(stored, sizeEnvelope(stored, payload), storedID)
-		}, isSpent(ErrWindowDeadline)},
+			return <-liveWindow.PublishStoredAsync(stored, sizeEnvelope(stored, payload), storedID)
+		}, func(err error) bool { return err == nil }},
 		{"a publish window's request", core, msgIDHeader(forwardID), func(payload string) error {
-			return <-spentWindow.Request(holder, sizeEnvelope(core, payload), RequestOptions{MsgID: forwardID})
-		}, isSpent(ErrWindowDeadline)},
+			return <-liveWindow.Request(holder, sizeEnvelope(core, payload), RequestOptions{MsgID: forwardID})
+		}, func(err error) bool { return err == nil }},
 		{"a relay frame", "", frame, func(data string) error {
 			return consumers.Publish(ended, &nats.Msg{Subject: DeliverSubject("ses_spent_time"), Header: frame, Data: []byte(data)})
 		}, func(err error) bool { return err == nil }},
@@ -327,14 +329,36 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t 
 			t.Errorf("control: %s of a small body, its time spent: %v, want the send's own answer to that time, not ErrTooLarge", path.name, err)
 		}
 	}
+
+	// A publish window reads its own deadline before anything else, so a send past it keeps the
+	// ErrWindowDeadline its caller takes for a send to make again (internal/dispatch/outbox's
+	// sendChains counts a refusal once per event). The rows are the window's two sends, each of a
+	// body past the bound by itself.
+	for _, past := range []struct {
+		name string
+		send func(payload string) error
+	}{
+		{"a publish window's send", func(payload string) error {
+			return <-spentWindow.PublishStoredAsync(stored, sizeEnvelope(stored, payload), storedID)
+		}},
+		{"a publish window's request", func(payload string) error {
+			return <-spentWindow.Request(holder, sizeEnvelope(core, payload), RequestOptions{MsgID: forwardID})
+		}},
+	} {
+		err := past.send(sizedPayload(t, stored, rig.maxPayload+1))
+		if !errors.Is(err, ErrWindowDeadline) || errors.Is(err, ErrTooLarge) {
+			t.Errorf("%s of a body past the bound, its deadline passed: %v, want ErrWindowDeadline, which its caller sends again", past.name, err)
+		}
+	}
 }
 
 // A send whose own size check let it through meets nats.go's own refusal of the message, which
-// refused names the same ErrTooLarge in the same words, its headers included. That is a Client
-// built around a connection of its own, which reads no max payload (knownMaxPayload), as a
-// reconnect to a server that takes less is in the moment before onReconnect reads it. The row is a
-// forward within the bound that its Nats-Msg-Id header takes one byte past it. The client that has
-// read the max payload refuses the same forward in the same words before it sends it.
+// refused names the same ErrTooLarge in the same words, its headers included. The client here is
+// one built around a connection of its own, which keeps no max payload of that connection's
+// server, as a client reconnected to a server that takes less has the old one for the moment
+// before onReconnect reads the new. The row is a forward within the bound that its Nats-Msg-Id
+// header takes one byte past it. The client that has read the max payload refuses the same
+// forward in the same words before it sends it.
 func TestARefusalNatsGoMakesIsTheSameErrTooLargeHeadersIncluded(t *testing.T) {
 	t.Parallel()
 	rig := newSizeRig(t)
@@ -346,7 +370,7 @@ func TestARefusalNatsGoMakesIsTheSameErrTooLargeHeadersIncluded(t *testing.T) {
 	says := sizeText(rig.maxPayload+1, rig.maxPayload)
 
 	unread := &Client{Conn: rig.client.Conn}
-	if known := unread.knownMaxPayload(); known != 0 {
+	if known := unread.maxPayload.Load(); known != 0 {
 		t.Fatalf("UNKNOWN: a client built around a connection reads a max payload of %d, want none, so its own check lets the forward through", known)
 	}
 	if _, err := unread.StartRequestStoredTo(holder, item, msgID, 5*time.Second); !errors.Is(err, ErrTooLarge) || !strings.Contains(err.Error(), says) {
@@ -357,36 +381,34 @@ func TestARefusalNatsGoMakesIsTheSameErrTooLargeHeadersIncluded(t *testing.T) {
 	}
 }
 
-// The size checks read the max payload the client keeps, so they touch no connection that is not
-// there. A nil client (a listener's deps built without one) and a zero Client know no max payload,
-// so TooLargeToPublish refuses nothing on either, and a zero Client's core publish of a body past
-// any server's max payload is answered as it was before the checks existed, by the connect that
-// finds no connection (here under a context that has already ended, so nothing is dialled), never
-// by a panic and never as too large.
-func TestTheSizeChecksTouchNoConnectionThatIsNotThere(t *testing.T) {
+// A client whose first connection has not connected keeps no max payload, as nats.go itself keeps
+// none until the server's INFO arrives, and sends an unconnected connection's message without
+// measuring it (!nc.initc). So the size checks refuse nothing on it, whatever the message's size:
+// a publish of a body many times any server's bound is answered by the wait for that connection,
+// here a deadline already past, and never as too large. The row is cybermonklabs/legion#5734's
+// TestABoundOfZeroRefusesNothingForItsSize (the Envoy flakes peer's builder), which closed in
+// favour of this pull request.
+func TestAClientThatHasNotConnectedRefusesNoMessageForItsSize(t *testing.T) {
 	t.Parallel()
-	big := sizeEnvelope(contracts.RoleTopicPrefix+"no-connection", strings.Repeat("p", 2<<20))
-	// answer runs call and reports a panic as this test's failure rather than the binary's.
-	answer := func(name string, call func() error) (err error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				t.Errorf("%s panicked: %v", name, recovered)
-				err = nil
-			}
-		}()
-		return call()
+	client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
+	if err != nil {
+		t.Fatalf("connect in the background: %v", err)
 	}
-	var none *Client
-	zero := &Client{}
-	for name, client := range map[string]*Client{"a nil client": none, "a zero Client": zero} {
-		if err := answer("TooLargeToPublish on "+name, func() error { return client.TooLargeToPublish(big) }); err != nil {
-			t.Errorf("TooLargeToPublish on %s = %v, want nil: it knows no max payload", name, err)
-		}
+	t.Cleanup(client.Close)
+	if known := client.Connection().MaxPayload(); known != 0 {
+		t.Fatalf("UNKNOWN: a connection that has not connected reports a max payload of %d, want none, so this row checks nothing", known)
 	}
-	ended, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := answer("a zero Client's core publish", func() error { return zero.PublishCoreContext(ended, big.Topic, big) })
-	if err == nil || errors.Is(err, ErrTooLarge) {
-		t.Errorf("a zero Client's core publish of a body past any max payload = %v, want the connect's own error", err)
+	const topic = "notifications.team.unconnected"
+	big := sizeEnvelope(topic, strings.Repeat("p", 64<<20))
+	if err := client.TooLargeToPublish(big); err != nil {
+		t.Errorf("TooLargeToPublish on a client that knows no max payload = %v, want nil", err)
+	}
+	if err := client.checkSend(&nats.Msg{Subject: topic, Data: []byte(strings.Repeat("p", 64<<20))}); err != nil {
+		t.Errorf("checkSend on a client that knows no max payload = %v, want nil", err)
+	}
+	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := client.PublishAckWithin(spent, big); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTooLarge) {
+		t.Errorf("a stored publish of a 64 MiB message under a deadline already past = %v, want the wait's own context.DeadlineExceeded", err)
 	}
 }

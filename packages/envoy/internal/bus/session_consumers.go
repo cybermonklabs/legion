@@ -338,13 +338,14 @@ func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	return s.client.refused(s.client.Connection().PublishMsg(msg), messageBytes(msg))
+	return s.client.refused(s.client.Connection().PublishMsg(msg), msg)
 }
 
 // MaxPayload is the max payload of the server the connection is on, as the client last read it
-// (Client.knownMaxPayload), 0 while it knows none: what a relay frame's data and headers are held
-// to, which the relay's notice of a frame too large to publish names.
-func (s *SessionConsumers) MaxPayload() int64 { return s.client.knownMaxPayload() }
+// (Client.maxPayload, which the size checks read too), 0 while the client's first connection has
+// not connected: what a relay frame's data and headers are held to, which the relay's notice of a
+// frame too large to publish names.
+func (s *SessionConsumers) MaxPayload() int64 { return s.client.maxPayload.Load() }
 
 // NewInbox names a new inbox on the connection, under its inbox prefix (WithInboxPrefix): the
 // subject a relay frame's receipts are answered on, which SubscribeReplies subscribes.

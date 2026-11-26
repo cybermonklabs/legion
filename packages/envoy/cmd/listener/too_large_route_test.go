@@ -109,6 +109,38 @@ func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
 	return text
 }
 
+// stampBandText is a message for POST /v1/messages/publish on topic from sender, under idempotency
+// key key, whose envelope with the Nats-Msg-Id header its publish carries is within the server's
+// max payload, and one byte past it once the route adds sender's own stamp (senderStamp): the band
+// the route's check does not cover, which the publish's own check of the same rule refuses. The
+// stamp is read through the route's own function, so a stamp that gains a field moves this row
+// with it.
+func stampBandText(t *testing.T, rig *knownSessionRig, topic, sender, key string, maxPayload int) string {
+	t.Helper()
+	stamp := senderStamp(context.Background(), rig.deps.registry, rig.deps.sessions, sender)
+	if stamp == nil {
+		t.Fatalf("UNKNOWN: %s has no sender stamp, so this row's band is empty", sender)
+	}
+	dedupeKey := publishDedupePrefix + key
+	size := func(text string, with *contracts.EnvelopeSender) int {
+		item := contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{
+			Source: "agent", SourceSession: sender, Message: text,
+		}, contracts.ExpectsReplyUnset), topic, dedupeKey)
+		item.Sender = with
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("encode the envelope: %v", err)
+		}
+		return len(encoded) + (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(dedupeKey, topic)}}}).Size()
+	}
+	const base = 1000
+	text := strings.Repeat("m", base+(maxPayload+1)-size(strings.Repeat("m", base), stamp))
+	if bare, stamped := size(text, nil), size(text, stamp); bare > maxPayload || stamped != maxPayload+1 {
+		t.Fatalf("UNKNOWN: the message takes %d bytes without the stamp and %d with it, against the max payload of %d: the row wants it within the bound without the stamp and one byte past it with", bare, stamped, maxPayload)
+	}
+	return text
+}
+
 // A message NATS cannot take whole is answered 413 naming the server's max payload before either
 // message route does any bus work for it, whatever is left of its deadline. Each oversized request
 // is sent with its context's deadline already past, the state a route reaches when the reading and
@@ -231,6 +263,29 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	refused("a publish from a sender at its limit", request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": oversized, "source_session": limited}))
 	if after := request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": "within the bound", "source_session": limited}); after.Code != http.StatusTooManyRequests {
 		t.Errorf("control: the limited sender's small publish after the refusal: status = %d, want 429, so its count was empty; body = %.300s", after.Code, after.Body.String())
+	}
+	watch.through(t, conn)
+
+	// The band the route's check does not cover: a message within the bound until the route adds
+	// its sender stamp. The publish route answers it 413 whatever is left of its deadline, because
+	// the publish makes the same size check before it reads that deadline; the send route reads
+	// its target first, so with the deadline spent that read answers, which is what the changelog
+	// and docs/architecture.md say of this band.
+	stampBand := stampBandText(t, rig, topic, live, id.New(), maxPayload)
+	for _, deadline := range []struct {
+		name string
+		ctx  context.Context
+	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
+		recorder := request(deadline.ctx, "/v1/messages/publish", map[string]string{
+			"topic": topic, "message": stampBand, "source_session": live, "idempotency_key": id.New(),
+		})
+		refused("a publish over the bound only with the sender stamp, "+deadline.name, recorder)
+	}
+	sendBand := request(spent, "/v1/messages/send", map[string]string{
+		"target_session": stopped, "message": stampBand, "source_session": live,
+	})
+	if sendBand.Code != http.StatusServiceUnavailable {
+		t.Errorf("a send over the bound only with the sender stamp, its deadline spent: status = %d, want the 503 of the target read that answers first; body = %.300s", sendBand.Code, sendBand.Body.String())
 	}
 	watch.through(t, conn)
 
