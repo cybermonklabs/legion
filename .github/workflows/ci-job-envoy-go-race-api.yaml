@@ -36,24 +36,8 @@ jobs:
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
     # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
     # twice the longest measured run: the package took 32.6 minutes under the race detector on a
-    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had. Each leg keeps
-    # that bound for its one shard.
+    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
     timeout-minutes: 90
-    # One leg per shard of the package's tests. Run whole, the package held one runner for up to
-    # 32 minutes 48 seconds, the longest gate of a run, and a runner lost communication 65 minutes
-    # into one such step (job 136498402764, 2026-11-20). Each leg runs the shard
-    # .github/scripts/go-test-shards.py gives it, a test's shard being crc32(name) mod the leg
-    # count, so a test added later lands in exactly one leg and none is kept by hand. The script
-    # reads the leg count and this leg's index from the matrix itself (strategy.job-total,
-    # strategy.job-index), so this list is the one place the count is written: a leg added here
-    # re-splits every shard. Every leg pays the race compile again, about 2.3 minutes, and runs one
-    # shard of the package. Measured in run 44364075646 at ceee521b96: legs 1 to 3 ran 741, 760
-    # and 763 of the 2,264 tests, and their go test took 489.3 s, 466.2 s and 494.7 s.
-    # fail-fast is off so one leg's failure leaves the others to name theirs, as one job did.
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -85,24 +69,15 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # The leg's shard of the package. go-test-shards.py builds the race test binary, lists its
-      # tests, proves the legs' -run patterns together select each of them exactly once - failing
-      # the step, by test name, on one in no shard or in two - and prints this leg's pattern. The
-      # assignment is a line of its own: under bash -e it carries the script's exit status, so a
-      # refusal fails the step instead of running -run "", which matches every test.
-      # go test counts a skipped test as a pass and, without -v, prints nothing for it, so the leg
-      # runs its shard through packages/envoy/scripts/database-skips.sh, which runs it with -json
-      # and counts that run's skips. --run holds the leg to the EXPECTED_SKIPS lines (measurements
-      # and replays that need a database, a corpus or a variable no CI run sets, and a subprocess
-      # helper) of the tests its pattern selects, as the race test binary lists them, and it fails
-      # on any other skip, on a line whose test the binary does not list, and on a selected
-      # expected skip the run does not hold. It prints database_skips=UNKNOWN and runs nothing
-      # when either database variable above is unset, and on a failed run prints the failed tests'
-      # output, a timed-out binary's goroutine dump among it.
+      # go test counts a skipped test as a pass and, without -v, prints nothing for it, so the
+      # package runs through packages/envoy/scripts/database-skips.sh, which runs it with -json
+      # and counts that run's skips: it fails on any skip but those its EXPECTED_SKIPS names for
+      # this package (measurements and replays that need a database, a corpus or a variable no CI
+      # run sets, and a subprocess helper), prints database_skips=UNKNOWN and runs nothing when either
+      # database variable above is unset, and on a failed run prints the failed tests' output, a
+      # timed-out binary's goroutine dump among it.
       - name: Race-test the Dispatch API
-        run: |
-          pattern=$(../../.github/scripts/go-test-shards.py pattern ${{ strategy.job-index }} ${{ strategy.job-total }} -race ./internal/dispatch/api/)
-          scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m --run "$pattern" ./internal/dispatch/api/
+        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

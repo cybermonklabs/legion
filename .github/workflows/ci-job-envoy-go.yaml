@@ -192,17 +192,15 @@ jobs:
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The step below is the one skip counter of the module's database-backed packages, which
-      # envoy-go-race-api runs each shard of the Dispatch API through too, so its own test runs first:
+      # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
       # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
       # ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go overlay and
       # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset
       # and on a report that shows no run (no test of its packages ran, or one package's did not);
-      # holds it to failing on a failed test; holds its --timeout to ending a test binary; holds a
-      # copy of it with one line of its expected-skip table deleted, in a temporary checkout of
-      # this commit, to counting that test's skip; and holds its --run to the expected skips of the
-      # tests a pattern selects, failing by name on a missing selected skip, a test the pattern does
-      # not select and a table line no binary lists. Each control stands beside a run the counter
-      # passes, and each run is narrowed with -run to the tests it is about.
+      # holds it to failing on a failed test; holds its --timeout to ending a test binary; and
+      # holds a copy of it with one line of its expected-skip table deleted, in a temporary
+      # checkout of this commit, to counting that test's skip. Each control stands beside a run
+      # the counter passes, and each run is narrowed with -run to the tests it is about.
       - name: Test the database skip counter
         timeout-minutes: 15
         run: packages/envoy/scripts/database-skips.test.sh

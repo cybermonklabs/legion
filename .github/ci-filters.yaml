@@ -975,7 +975,6 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/go_build_tags.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/workflows/ci-job-typecheck.yaml'
-  - 'packages/daemon/go.mod'
 check_ts_filters_test: &check_ts_filters_test
   - *ci_router
   - *ci_filters_data
@@ -993,7 +992,6 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/go-test-step-expansion.test.sh'
   - '.github/scripts/go-test-step-expansion.py'
-  - '.github/scripts/go_run_matcher.py'
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
@@ -1004,18 +1002,7 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/workflows/worker-image.yaml'
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/backend-count.sh'
-  - 'packages/daemon/go.mod'
-  - 'packages/envoy/go.mod'
-  - 'go.work'
   - '.github/scripts/ci_job_reads.py'
-go_test_shards_test: &go_test_shards_test
-  - *ci_router
-  - *ci_filters_data
-  - '.github/workflows/ci-job-test.yaml'
-  - '.github/scripts/test-lib.sh'
-  - '.github/scripts/go-test-shards.test.sh'
-  - '.github/scripts/go-test-shards.py'
-  - 'packages/daemon/go.mod'
 
 # why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog
 test:
@@ -1075,7 +1062,6 @@ test:
   - *check_ci_filters_test
   - *check_ts_filters_test
   - *go_test_step_expansion_test
-  - *go_test_shards_test
   # why: .github/ci-notes/ci.md#test-each-harness-steps-own-gate-named-here-so-the-job-runs
   - *guide_layout_files
   - 'scripts/third-party-notices.test.ts'
@@ -2813,7 +2799,6 @@ envoy_go_race_api:
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
   - *go_workspace
   - 'packages/envoy/scripts/database-skips.sh'
-  - '.github/scripts/go-test-shards.py'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/going/*'
   - 'packages/envoy/going/goingtest/*'

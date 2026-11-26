@@ -242,8 +242,8 @@ The daemon-go job: what its two Go steps read together — the plain step, which
 tests every package of packages/daemon but the five concurrent ones, and the race
 step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
-packages they compile, the Dispatch server internal/testbuild/testbuild.go:114 builds
-for internal/daemon/outbox_scratch_dispatch_test.go:446, and what their tests read
+packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
+for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
@@ -375,11 +375,11 @@ and sources no test-lib.sh.
 ## test: The test job: the Claude Code plugin build, the changelog
 
 The test job: the Claude Code plugin build, the changelog fold, the script
-harnesses of the `release_push_test` to `go_test_shards_test` filters and the Bun suites of scripts/. The daemon's Go tests are the
+harnesses of the `release_push_test` to `go_test_step_expansion_test` filters and the Bun suites of scripts/. The daemon's Go tests are the
 daemon-go job's now, and daemon_go_tests, which this filter used to name through
 its anchor, is that job's own filter.
 
-It names every harness group (`*release_push_test` to `*go_test_shards_test`) and the guide-layout step's files, because a
+It names every harness group (`*release_push_test` to `*go_test_step_expansion_test`) and the guide-layout step's files, because a
 job's `if:` tests one changes output and nothing runs in a job that is not
 selected: the groups decide which steps run, this filter decides whether the job
 they are in runs at all.
@@ -686,7 +686,7 @@ change that starts the step, and the browser half,
 harness and spec under e2e/, the two SPA builds (web/, the editor package and the
 patches it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
-that holds each server's socket (run-server.sh:92, e2e/harness-start.ts). Of
+that holds each server's socket (run-server.sh:37, e2e/harness-start.ts). Of
 packages/contracts it reads the manifest whose build:dispatch its contracts build runs
 (*bun_install holds it) and the modules of the dispatch_two_builds filter's `BEGIN listed` block.
 
@@ -1812,9 +1812,7 @@ there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are
 and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
 a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
 package apart also reads its seconds as its own job's, and leaves the others' numbers
-standing when one is red. api's whole package then came to hold its one runner for up to 32
-minutes 48 seconds, the longest gate of a run, so its job is now a matrix whose legs each run
-one shard of the package (the next section, and its workflow file, say how).
+standing when one is red.
 
 pmdoc is not in this lane: its tests run plain only, in envoy-go's unit-test step
 (INFRA-1408). It sat here because LEGION-571's flakes - pmdoc's own under -race and load, not
@@ -1839,13 +1837,6 @@ Dispatch store's tests
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's, the auth service's and the code flow's tests open no store, so they need none.
-
-## The Dispatch API's race job, one job whose legs are a matrix
-
-The Dispatch API under the race detector, on runners of its own: one leg per shard of the
-package's tests, a matrix inside the file this job calls, so this one job, its filter and its
-place in ci-ok's needs cover every leg, and its result fails when any leg fails. Its tests drive
-the store, so each leg carries the lane's Postgres service.
 
 ## The mention sender's claim model alone, on a runner of its own
 

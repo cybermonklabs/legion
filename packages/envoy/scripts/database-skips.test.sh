@@ -2,7 +2,7 @@
 # packages/envoy/scripts/database-skips.test.sh
 #
 # Tests database-skips.sh, the skip counter of the envoy module's database-backed packages, with
-# six controls. Each control must fail as it states, or this test fails; each beside it a run
+# five controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
 #   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/ and
@@ -33,24 +33,14 @@
 #      SKIP line and fails, where the counter itself passes the same run; a copy whose table line
 #      gives no reason is refused; and with either of `--var DISPATCH_TEST_DATABASE_URL --var
 #      BROKER_TEST_DATABASE_URL` unset or empty beside the other set, the counter prints
-#      `database_skips=UNKNOWN` naming that one and runs no test;
-#   6. --run, which envoy-go-race-api's legs run the API package through: a run of
-#      ./internal/dispatch/api/ under a pattern that selects one test that passes and half of the
-#      package's EXPECTED_SKIPS tests passes, held to that half; its report passes under --run and
-#      is UNKNOWN read as the whole package's, naming a test of the other half; that report less one
-#      selected expected skip is UNKNOWN naming it, and one holding a test the pattern does not
-#      select is UNKNOWN naming that; a copy of the counter whose table names a test the package's
-#      binary does not list fails that report by name; and --run refuses a pattern holding a `/`, a
-#      pattern holding a `|` outside brackets and parentheses, and a run of two packages, and reads
-#      a pattern whose `|` stand inside them.
+#      `database_skips=UNKNOWN` naming that one and runs no test.
 #
-# Every run but control 6's narrows its packages to the tests it is about with
+# Every run narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
 # makes of a report does not depend on how many other tests passed in it, and the API package's
 # whole run is the race job's. The ./internal/dispatch/api/ runs name every test EXPECTED_SKIPS
 # lists for the package, which the counter holds a run of that package to, and one test that
-# passes, since a package whose tests all skip shows no run; control 6's name half of them through
-# --run.
+# passes, since a package whose tests all skip shows no run.
 #
 # It prints a PASS: or FAIL: line per property and then `database-skips.test.sh: passed` or
 # `database-skips.test.sh: failed (<n> of <m>)`, and exits 0 or 1.
@@ -358,71 +348,6 @@ for name in DISPATCH_TEST_DATABASE_URL BROKER_TEST_DATABASE_URL; do
       "control 5: with $name $how beside the other variable set, the counter prints UNKNOWN naming it and runs no test" "$(seen "var-$how")"
   done
 done
-
-echo "database-skips.test.sh: control 6, --run" >&2
-# envoy-go-race-api's legs each run the tests one pattern selects, and the counter holds each leg to
-# the expected skips of its own selection. The pattern here selects the anchor and the first half
-# of the package's table, as a leg's selects a share of it.
-first="$(table_tests "$API" | awk 'NR <= 4' | paste -sd '|')"
-second="$(table_tests "$API" | awk 'NR > 4' | paste -sd '|')"
-# The counter names the tests it holds a leg to in byte order.
-selected="$(table_tests "$API" | awk 'NR <= 4' | LC_ALL=C sort | paste -sd ',' | sed 's/,/, /g')"
-leg="^($API_ANCHOR|$first)$"
-count leg bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --run "$leg" ./internal/dispatch/api/
-judge "$([ "$(code leg)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/leg.out" && grep -qxF 'go_test_exit=0' "$WORK/leg.out" &&
-  said leg "--run selects 4 of the $(table_tests "$API" | wc -l) tests EXPECTED_SKIPS names under ./internal/dispatch/api/: $selected" &&
-  echo 0 || echo 1)" \
-  "control 6: a run of the package under --run passes, held to the four expected skips its pattern selects" "$(seen leg)"
-# selection_report [LEFT_OUT]: the report a run of that pattern writes, less the skip of LEFT_OUT.
-selection_report() {
-  ev pass "$API" "$API_ANCHOR"
-  table_tests "$API" | awk 'NR <= 4' | while IFS= read -r test; do [ "$test" = "${1:-}" ] || ev skip "$API" "$test"; done
-  ev pass "$API"
-}
-selection_report >"$WORK/leg.json"
-count leg-report bash "$COUNTER" --report "$WORK/leg.json" --run "$leg" ./internal/dispatch/api/
-count leg-whole bash "$COUNTER" --report "$WORK/leg.json" ./internal/dispatch/api/
-judge "$([ "$(code leg-report)" = 0 ] && [ "$(out leg-report)" = 'database_skips=0' ] &&
-  [ "$(code leg-whole)" = 1 ] && [ "$(out leg-whole)" = 'database_skips=UNKNOWN' ] &&
-  said leg-whole "$API ${second%%|*}" && echo 0 || echo 1)" \
-  "control 6: that run's report passes under --run, and read as the whole package's is UNKNOWN for the expected skips the pattern leaves out" \
-  "under --run: $(seen leg-report); whole: $(seen leg-whole)"
-left_out="${first%%|*}"
-selection_report "$left_out" >"$WORK/leg-missing.json"
-count leg-missing bash "$COUNTER" --report "$WORK/leg-missing.json" --run "$leg" ./internal/dispatch/api/
-judge "$([ "$(code leg-missing)" = 1 ] && [ "$(out leg-missing)" = 'database_skips=UNKNOWN' ] &&
-  said leg-missing "EXPECTED_SKIPS names $API $left_out, under ./internal/dispatch/api/, which the report" && echo 0 || echo 1)" \
-  "control 6: an expected skip the pattern selects that the report does not hold is UNKNOWN, by name" "$(seen leg-missing)"
-{ selection_report; ev skip "$API" "${second%%|*}"; } >"$WORK/leg-wider.json"
-count leg-wider bash "$COUNTER" --report "$WORK/leg-wider.json" --run "$leg" ./internal/dispatch/api/
-judge "$([ "$(code leg-wider)" = 1 ] && [ "$(out leg-wider)" = 'database_skips=UNKNOWN' ] &&
-  said leg-wider "holds $API ${second%%|*}, which --run" && echo 0 || echo 1)" \
-  "control 6: a test the report holds that the pattern does not select is UNKNOWN, by name" "$(seen leg-wider)"
-# A line naming a test the package's binary does not list is in no leg's selection, so every leg
-# is held to it: a copy of the counter with such a line fails the leg's own report.
-unlisted="$tree_envoy/scripts/database-skips-unlisted.sh"
-sed "s|^\($API TestSearchLatencyOnCorpus .*\)$|\1\n$API TestNoSuchTestInThePackage is a test no file declares|" "$COUNTER" >"$unlisted"
-count unlisted bash "$unlisted" --report "$WORK/leg.json" --run "$leg" ./internal/dispatch/api/
-judge "$([ "$(($(wc -l <"$unlisted") - $(wc -l <"$COUNTER")))" = 1 ] && [ "$(code unlisted)" = 1 ] &&
-  [ "$(out unlisted)" = 'database_skips=UNKNOWN' ] &&
-  said unlisted "EXPECTED_SKIPS names $API TestNoSuchTestInThePackage, which the test binary of ./internal/dispatch/api/ does not list" &&
-  echo 0 || echo 1)" \
-  "control 6: an EXPECTED_SKIPS line whose test the binary does not list fails a leg that does not select it, by name" "$(seen unlisted)"
-count slash bash "$COUNTER" --report "$WORK/leg.json" --run "$API_ANCHOR/sub" ./internal/dispatch/api/
-count two bash "$COUNTER" --report "$WORK/leg.json" --run "$leg" ./internal/dispatch/api/ ./internal/cipher/api/
-judge "$([ "$(code slash)" = 1 ] && said slash '--run takes a pattern of top-level tests, with no /' &&
-  [ "$(code two)" = 1 ] && said two "--run reads one package's test binary" && echo 0 || echo 1)" \
-  "control 6: --run refuses a pattern holding a / and a run of two packages" "slash: $(seen slash); two: $(seen two)"
-# go test -run splits a pattern at a | outside brackets and parentheses and -test.list does not, so
-# such a pattern is refused before anything runs; the leg's own pattern, whose | stand inside its
-# parentheses, is read (the rows above), and so is a | inside brackets.
-count bar bash "$COUNTER" --report "$WORK/leg.json" --run "^$API_ANCHOR\$|^${first%%|*}\$" ./internal/dispatch/api/
-count bracketed bash "$COUNTER" --report "$WORK/leg.json" --run "^($API_ANCHOR|$first)[|]?\$" ./internal/dispatch/api/
-judge "$([ "$(code bar)" = 1 ] && [ "$(out bar)" = '' ] &&
-  said bar '--run takes a pattern with no | outside brackets and parentheses' &&
-  [ "$(code bracketed)" = 0 ] && [ "$(out bracketed)" = 'database_skips=0' ] && echo 0 || echo 1)" \
-  "control 6: --run refuses a pattern holding a | outside brackets and parentheses, and reads one whose | stand inside them" \
-  "bar: $(seen bar); bracketed: $(seen bracketed)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"

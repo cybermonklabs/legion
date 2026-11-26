@@ -20,8 +20,8 @@ step the steps before it, a claimed simple command the steps up to and including
 (job_up_to), and a script's go command every step of each job that may run the script
 (around_job), since which step starts a script is nothing this check can prove.
 check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
-ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and says
-why a bare run, from any shell, answers as CI does.
+ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
+the recipe that runs it as CI does, GOROOT unset.
 """
 
 from __future__ import annotations
@@ -314,50 +314,20 @@ def workflow_documents(problems: list[Annotation]) -> dict:
 GO_COMMAND = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?(?:test|vet|build|run|list|install|generate)\b")
 FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,EmbedPatterns,"
           "TestEmbedPatterns,XTestEmbedPatterns,Error")
-# The go this check starts from: the one the PATH of check-ci-filters.sh resolves, which that script
-# hands on, since a version manager's python3 shim can start this interpreter under a PATH of its
-# own whose first go is another one (mise's puts the Go it would pick first).
-GO = os.environ.get("CI_FILTERS_GO") or "go"
-# The variables the go command reads (`go help environment`): its own, and the C tools that
-# configure cgo.
-GO_VARIABLE = re.compile(r"GO[A-Z0-9]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|PKG_CONFIG")
-# Those of them that say only where the go command keeps files or fetches modules from, which
-# changes no answer here.
-GO_LOCATIONS = frozenset({"GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE", "GONOPROXY", "GONOSUMDB",
-                          "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB", "GOTMPDIR", "GOVCS"})
-
-
-def go_environment() -> dict:
-    """This process's environment for a go command, less everything in it the go command reads to
-    choose its toolchain or to decide what a package holds: every variable GO_VARIABLE names but
-    GO_LOCATIONS, and the user's `go env -w` file (GOENV=off), which an empty variable does not
-    override, since the go command reads an empty GOFLAGS or GOWORK from that file. The go command
-    then takes its root from its own binary and its defaults from that root's go.env. Each such
-    setting is the caller's or a python3 shim's, never the job's (check-ci-filters.sh's header says
-    what mise's shim did). CI's one, setup-go's GOTOOLCHAIN=local, picks the same toolchain once
-    dropped: the version packages/daemon/go.mod names, which setup-go installs and go.work names
-    too."""
-    env = {name: value for name, value in os.environ.items()
-           if name in GO_LOCATIONS or not GO_VARIABLE.fullmatch(name)}
-    env["GOENV"] = "off"
-    return env
 
 
 @dataclass
 class Session:
-    """The go commands' environment and results. Every go command runs under go_environment(),
-    which leaves no variable of the caller's that chooses the toolchain or what a listing holds,
-    and with GOPROXY=off over an empty module cache: no download, no rewrite of a go.work.sum, and
-    the same answer on a warm machine as on a cold runner. A third-party package then fails to
-    load, which loses nothing first-party (check-ci-filters.sh's header says why). The toolchain is
-    the exception that cache cannot hold: `toolchain()` resolves it first, under the machine's own
-    cache and proxy."""
+    """The go commands' environment and results. GOPROXY=off over an empty module cache: no
+    download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a cold
+    runner. A third-party package then fails to load, which loses nothing first-party
+    (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
+    hold: `toolchain()` resolves it first, under the machine's own cache and proxy."""
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
     toolchains: dict = field(default_factory=dict)
     tmp: str = ""
-    environment: dict = field(default_factory=go_environment)
 
     def __post_init__(self):
         self.tmp = tempfile.mkdtemp(prefix="check-ci-filters-")
@@ -365,32 +335,28 @@ class Session:
         os.mkdir(f"{self.tmp}/modcache")
 
     def toolchain(self, workdir: str) -> str:
-        """The go binary the module in `workdir` pins, as GO resolves it under go_environment():
-        GOTOOLCHAIN's own rules applied to go.work or go.mod, and not a caller's GOROOT or
-        GOTOOLCHAIN.
+        """The go binary the module in `workdir` pins, resolved under the ambient environment.
 
         GOTOOLCHAIN=auto satisfies a `go` directive above the installed go by fetching that
         toolchain into GOMODCACHE, so the empty cache below would make every go command fetch it
-        again and GOPROXY=off refuse: `toolchain not available`, and every closure unknown. A
-        developer's or an agent's machine on an older go sees that. CI sees it only where go.work
-        asks, by its go or toolchain line, for a newer go than setup-go installs, since
-        go_environment() drops setup-go's GOTOOLCHAIN=local too. So the toolchain is resolved once
-        per module directory, with this machine's own GOMODCACHE and GOPROXY, and its own binary
-        runs every go command below under GOTOOLCHAIN=local: the empty cache then holds modules
-        alone, and a module pinning a toolchain this machine cannot resolve fails saying which go
-        it wants rather than which download it could not make. go's standard error goes to this
-        check's as go writes it, so a download this command makes, and one that stalls, is named
-        in the log while it runs.
+        again and GOPROXY=off refuse: `toolchain not available`, and every closure unknown. CI
+        never sees it, since setup-go installs the pinned version itself, but a developer's or an
+        agent's machine on an older go does. So the toolchain is resolved once per module
+        directory, with this machine's own GOMODCACHE and GOPROXY, and its own binary runs every
+        go command below under GOTOOLCHAIN=local: the empty cache then holds modules alone, and a
+        module pinning a toolchain this machine cannot resolve fails saying which go it wants
+        rather than which download it could not make.
         """
         if workdir not in self.toolchains:
-            root = subprocess.run([GO, "env", "GOROOT"], cwd=REPO / workdir, env=self.environment,
-                                  stdout=subprocess.PIPE, text=True).stdout.strip()
+            root = subprocess.run(["go", "env", "GOROOT"], cwd=REPO / workdir,
+                                  capture_output=True, text=True).stdout.strip()
             exe = Path(root) / "bin" / "go" if root else None
-            self.toolchains[workdir] = str(exe) if exe and exe.is_file() else GO
+            self.toolchains[workdir] = str(exe) if exe and exe.is_file() else "go"
         return self.toolchains[workdir]
 
     def go(self, run_: Run, args: list) -> str:
-        env = dict(self.environment, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOTOOLCHAIN="local")
+        env = dict(os.environ, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOFLAGS="",
+                   GOWORK="", GOTOOLCHAIN="local")
         env.update(dict(run_.env))
         if run_.race:
             env["CGO_ENABLED"] = "1"  # -race needs cgo

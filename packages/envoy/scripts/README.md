@@ -510,8 +510,8 @@ left in one skips it with the variable set.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
   packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
-  --var BROKER_TEST_DATABASE_URL --race --timeout 70m --run "$pattern" ./internal/dispatch/api/
-packages/envoy/scripts/database-skips.sh --report REPORT.json [--run PATTERN] [PACKAGE...]
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
@@ -527,16 +527,8 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
 go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
-run nor counted as a skip. `--run PATTERN` adds go test's `-run`, for one package a matrix
-splits into legs: the package's test binary, built under the run's own flags, lists what the
-pattern selects (`-test.list`), and only the `EXPECTED_SKIPS` lines of those tests excuse a skip
-and must be in the report, so each leg is held to the expected skips of the tests it ran. A line
-whose test the binary does not list at all, and a test the report shows run that the pattern
-does not select, are UNKNOWN. A pattern holding a `/`, or a `|` outside brackets and parentheses
-(go test `-run` splits a pattern at either and `-test.list` does not), and a run of more than one
-package are refused. It prints, on stderr, the expected skips the pattern selects. `--report` reads a
-`go test -json` report instead and runs nothing, and refuses the four options that shape a run;
-`--run` may stand beside it, its binary built under `GOFLAGS` alone.
+run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
+and refuses the four options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -560,20 +552,16 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 `--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
 `./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
 (`backend-count.sh`, above), and a step limit of its own
-(`timeout-minutes: 30`) that its time budget counts, and each leg of `envoy-go-race-api` runs
-its shard of the Dispatch API through it as the second line above, `$pattern` being the leg's
-pattern from `.github/scripts/go-test-shards.py`.
-`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
+(`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
+Dispatch API through it as the second line above.
+`database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
 package spelled other than canonically is counted;
-`--timeout 1s` ends a package's binary; a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and under
-`--run`, a leg's run and report pass, held to the expected skips its pattern selects, where the
-same report read whole is UNKNOWN, and a missing selected skip, a test the pattern does not
-select and a table line no binary lists are each UNKNOWN by name. It needs
+`--timeout 1s` ends a package's binary; and a copy with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
 a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## aws-moto-check.sh

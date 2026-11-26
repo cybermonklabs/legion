@@ -6,15 +6,15 @@
 # variable unset, or with a t.Skip left in one of its tests, reads as green. This script runs
 # `go test -json` and counts the skips in that report, and fails on any.
 #
-#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--run PATTERN] [--skip PATTERN] [PACKAGE...]
-#   database-skips.sh --report FILE [--run PATTERN] [PACKAGE...]
+#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [PACKAGE...]
+#   database-skips.sh --report FILE [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
 # and every package under it. With none it counts DEFAULT_PACKAGES below, the broker's packages
 # and its command, which need BROKER_TEST_DATABASE_URL, less the packages DEFAULT_EXCEPT takes out
 # of them. From packages/envoy it runs one
 #
-#   go test -json -count=1 [-race] [-run PATTERN] [-skip PATTERN] -timeout D PACKAGE...
+#   go test -json -count=1 [-race] [-skip PATTERN] -timeout D PACKAGE...
 #
 # and reads that report. `--var NAME` names a variable the packages need, and repeats; with none
 # it is BROKER_TEST_DATABASE_URL. When a named variable is unset or empty it prints
@@ -25,23 +25,8 @@
 # `--skip PATTERN` is go test's -skip, for a test another step of the same job runs in the same
 # build and environment (envoy-go's backend count): go test reports nothing for a test -skip
 # leaves out, so it is neither run twice nor counted as a skip here.
-# `--run PATTERN` is go test's -run, for one package that a matrix splits into legs, each running
-# the tests one pattern selects (envoy-go-race-api, whose legs take their patterns from
-# .github/scripts/go-test-shards.py). The package's test binary, built under the run's own flags
-# (GOFLAGS, -race) and run in the package's directory as go test runs it, lists what PATTERN
-# selects (-test.list), and only the EXPECTED_SKIPS lines of those tests excuse a skip and must
-# be held by the report: each leg is held to the expected skips of the tests it ran. A line naming
-# a test the binary does not list at all fails every leg, as a whole-package run fails it, so a
-# renamed test leaves no line that no leg is held to; with go-test-shards.py's proof that the legs'
-# patterns select every listed test exactly once, every line is held by exactly one leg. A test
-# the report shows run that the listing does not select fails it too, since go test -run and
-# -test.list then read the pattern apart. It takes one package, and a pattern with no `/` and no
-# `|` outside brackets and parentheses: go test -run splits a pattern at each and -test.list does
-# not, so the two would read it apart (a shard's `^(A|B|…)$` holds its `|` inside its
-# parentheses). It prints, on stderr, which EXPECTED_SKIPS tests the pattern selects.
 # `--report FILE` reads FILE instead and runs nothing, which the controls use; the four options
-# that shape a run are refused beside it. `--run PATTERN` may stand beside it: its binary is then
-# built under GOFLAGS alone, so a report made with -race is read with GOFLAGS=-race.
+# that shape a run are refused beside it.
 #
 # It prints each skipped test of a package the patterns name (as `go list` names them under the
 # run's own flags) as `SKIP PACKAGE TEST`, then `database_skips=N`, and for a run of its own
@@ -50,8 +35,7 @@
 # report that is missing or empty, or that holds no test that passed or failed of a listed
 # package with test files (a package whose tests all skipped, or whose TestMain returned before
 # it ran them); and an EXPECTED_SKIPS line whose package is listed and whose test the report does
-# not hold (under --run, of a test the pattern selects), since that line then excuses nothing it
-# can name. It exits 0 only when every listed
+# not hold, since that line then excuses nothing it can name. It exits 0 only when every listed
 # package with test files shows tests run, none of them skipped but those EXPECTED_SKIPS names
 # and none failed, and, for a run of its own, go test passed; 1 otherwise. A run of its own also
 # prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On a failure it prints,
@@ -162,27 +146,8 @@ unknown() {
 }
 
 usage() {
-  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--run PATTERN] [--skip PATTERN] [PACKAGE...], or --report FILE [--run PATTERN] [PACKAGE...])" >&2
+  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
   exit 1
-}
-
-# bar_outside PATTERN: whether PATTERN holds a `|` outside brackets and parentheses, read as
-# testing/match.go's splitRegexp reads a -run: `[` and `]` nest (an unmatched `]` is legal), `(`
-# and `)` count only outside brackets, and a `\` takes the character after it.
-bar_outside() {
-  PATTERN="$1" awk 'BEGIN {
-    s = ENVIRON["PATTERN"]; cs = 0; cp = 0
-    for (i = 1; i <= length(s); i++) {
-      c = substr(s, i, 1)
-      if (c == "[") cs++
-      else if (c == "]") { if (--cs < 0) cs = 0 }
-      else if (c == "(" && cs == 0) cp++
-      else if (c == ")" && cs == 0) cp--
-      else if (c == "\\") i++
-      else if (c == "|" && cs == 0 && cp == 0) exit 0
-    }
-    exit 1
-  }'
 }
 
 while IFS= read -r line; do
@@ -195,7 +160,6 @@ vars=()
 race=()
 skip=()
 timeout=""
-run=""
 packages=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -216,16 +180,6 @@ while [ $# -gt 0 ]; do
     --skip)
       [ -n "${2:-}" ] || usage "--skip needs a go test -skip pattern"
       skip=(-skip "$2")
-      shift 2
-      ;;
-    --run)
-      [ -n "${2:-}" ] || usage "--run needs a go test -run pattern"
-      case "$2" in
-        */*) usage "--run takes a pattern of top-level tests, with no /: go test -run splits a pattern at each /, and -test.list, which says what the pattern selects, does not" ;;
-      esac
-      ! bar_outside "$2" ||
-        usage "--run takes a pattern with no | outside brackets and parentheses: go test -run splits a pattern at such a |, and -test.list, which says what the pattern selects, does not"
-      run="$2"
       shift 2
       ;;
     --report)
@@ -280,33 +234,10 @@ listed="$(jq -R -s -c '[split("\n")[] | select(length > 0) | split(" ") | {(.[0]
 # shellcheck disable=SC2016 # $pkg and $listed are jq's variables, not the shell's
 under='def under($pkg): $listed[$pkg] == true;'
 
-# Under --run: what the pattern selects (selected) and every test the package's test binary holds
-# (compiled), each `PACKAGE TEST` per line, as that binary lists them, built under the run's own
-# flags and run in the package's directory. go's standard error goes through as go writes it, so
-# a build that stalls is named while it waits.
-runflag=()
-if [ -n "$run" ]; then
-  runflag=(-run "$run")
-  [ "$(wc -l <"$work/listed")" -eq 1 ] ||
-    usage "--run reads one package's test binary, and ${packages[*]} lists $(wc -l <"$work/listed") packages"
-  read -r package _ <"$work/listed"
-  dir="$(go list "${race[@]}" -f '{{.Dir}}' "${runs[@]}")" ||
-    unknown "go list of ${packages[*]}'s directory failed (its standard error is above), so nothing says what --run selects"
-  go test "${race[@]}" -c -o "$work/selection.test" "${runs[@]}" >&2 ||
-    unknown "go test -c of ${packages[*]} failed (its standard error is above), so nothing says what --run selects"
-  [ -x "$work/selection.test" ] || unknown "go test -c of ${packages[*]} wrote no test binary, so nothing says what --run selects"
-  for listing in "selected:$run" "compiled:."; do
-    (cd "$dir" && "$work/selection.test" -test.list "${listing#*:}") >"$work/listing" ||
-      unknown "the test binary of ${packages[*]} exited $? listing ${listing#*:} (its standard error is above), so nothing says what --run selects"
-    { grep -E '^(Test|Fuzz|Example|Benchmark)[^[:space:]]*$' "$work/listing" || true; } |
-      awk -v p="$package" '{ print p, $0 }' | sort -u >"$work/${listing%%:*}"
-  done
-fi
-
 if [ -z "$report" ]; then
   report="$work/report.json"
   go_test_exit=0
-  go test -json -count=1 "${race[@]}" "${runflag[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"
@@ -325,19 +256,6 @@ awk '$2 + $3 > 0 { print $1 }' "$work/listed" | sort -u | comm -23 - "$work/evid
 awk 'NF == 3 && $1 == "skip" { print $2, $3 }' "$work/ended" | sort -u >"$work/skipped"
 awk 'NF == 3 { print $2, $3 }' "$work/ended" | sort -u >"$work/held"
 printf '%s\n' "$EXPECTED_SKIPS" | jq -R -r --argjson listed "$listed" "$under"' select(length > 0) | split(" ") | select(under(.[0])) | "\(.[0]) \(.[1])"' | sort -u >"$work/expected"
-# Under --run, only the lines of the tests the pattern selects excuse a skip and must be held, and
-# a line whose test the binary does not list at all, or a test the report shows run that the
-# listing does not select, is no count (the header says why).
-if [ -n "$run" ]; then
-  comm -23 "$work/expected" "$work/compiled" >"$work/unlisted"
-  [ ! -s "$work/unlisted" ] || unknown "EXPECTED_SKIPS names $(paste -sd ',' "$work/unlisted" | sed 's/,/, /g'), which the test binary of ${packages[*]} does not list, so no --run selects it"
-  comm -12 "$work/expected" "$work/selected" >"$work/excused"
-  excused="$(cut -d ' ' -f 2 "$work/excused" | paste -sd ',' | sed 's/,/, /g')"
-  echo "database-skips.sh: --run selects $(wc -l <"$work/excused") of the $(wc -l <"$work/expected") tests EXPECTED_SKIPS names under ${packages[*]}: ${excused:-none}" >&2
-  mv "$work/excused" "$work/expected"
-  awk '$2 !~ /\// { print }' "$work/held" | comm -23 - "$work/selected" >"$work/unselected"
-  [ ! -s "$work/unselected" ] || unknown "the report $report holds $(paste -sd ',' "$work/unselected" | sed 's/,/, /g'), which --run $run does not select as the test binary lists it, so go test -run and -test.list read the pattern apart"
-fi
 comm -23 "$work/expected" "$work/held" >"$work/stale"
 [ ! -s "$work/stale" ] || unknown "EXPECTED_SKIPS names $(paste -sd ',' "$work/stale" | sed 's/,/, /g'), under ${packages[*]}, which the report $report does not hold"
 

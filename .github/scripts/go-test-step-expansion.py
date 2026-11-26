@@ -55,14 +55,8 @@ test. `go test -list` builds the test binary and asks it for its names, and each
 packages here returns before it starts its database, NATS server, container or Pulumi stack when
 the run is a listing.
 
-`-race` needs cgo, so a -race listing runs with `CGO_ENABLED=1`, which this script sets itself, and
-needs a C compiler on PATH; a race step otherwise fails to build and this script stops on that step.
-Every go command it runs, and every line of a step's script it runs, runs under check-ci-filters.sh's
-environment for one (`ci_filter_coverage.go_environment`): none of the caller's Go variables but the
-ones naming where Go keeps or fetches files, and no `go env -w` file, so a caller's GOFLAGS, GOOS,
-GOTOOLCHAIN or GOEXPERIMENT, or the GOROOT a version manager's python3 shim hands this interpreter,
-changes no listing. The go it starts is the first one on the PATH this interpreter has, which such a
-shim can choose; GOTOOLCHAIN's own rules then pick the toolchain go.work names.
+`-race` needs cgo, so run it with `CGO_ENABLED=1` and a C compiler on PATH; a race step otherwise
+fails to build and this script stops on that step.
 
 Run it at two commits and compare, which is what k1 asks for - the head in your workspace, the
 merge base in a clone under a temporary directory:
@@ -72,7 +66,7 @@ merge base in a clone under a temporary directory:
     python3 .github/scripts/go-test-step-expansion.py > "$TMPDIR/head.txt"; echo "head: $?"
     git clone --no-local "$(cd "$store" && realpath "$(cat git_target)")" "$TMPDIR/base"
     git -C "$TMPDIR/base" checkout <merge base>
-    cp .github/scripts/go-test-step-expansion.py .github/scripts/go_run_matcher.py "$TMPDIR/base/.github/scripts/"
+    cp .github/scripts/go-test-step-expansion.py "$TMPDIR/base/.github/scripts/"
     (cd "$TMPDIR/base" && python3 .github/scripts/go-test-step-expansion.py) > "$TMPDIR/base.txt"
     echo "base: $?"
     grep '^PAIR' "$TMPDIR/head.txt" > "$TMPDIR/head.pairs"
@@ -96,27 +90,12 @@ How it reads a step:
   * a `go vet`, `go build`, `go list` or `go install` line runs no test and is skipped; a line it
     cannot read stops the run, since silently skipping a `go test` would hide both a duplicate
     and a function that step is the only one to compile;
-  * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` or
-    `.github/scripts/go-test-shards.py` is run, in the step's own directory, and its output used;
-    a step looping over packages (`for pkg in ./core ./seed ./gcp`) is one `go test` per package,
-    each with its own call;
-  * a step of a job with a `strategy.matrix` of one key is read once per leg, as GitHub runs it:
-    `${{ matrix.<key> }}`, `${{ strategy.job-index }}` and `${{ strategy.job-total }}` are that
-    leg's values in the step's name and script, and each leg is a step of its own, so a test two
-    legs run is a pair two steps run (envoy-go-race-api's legs each run one shard of
-    internal/dispatch/api, the pattern go-test-shards.py prints, through database-skips.sh). A
-    matrix of any other shape is refused;
+  * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
+    in the step's own directory, and its output used; a step looping over packages
+    (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
-  * a `-run` or `-skip` that `-list` and `go test` can read differently is refused by name, since
-    `go test` splits and rewrites the pattern before it matches and `-list` does neither: one
-    holding a `/` or a `|` outside brackets and parentheses (split_disagreement), and a -run holding
-    a character testing's matcher rewrites (a space, or a rune Go does not print). Which runes those
-    are is Go's to say, never Python's: a -run that is `^(Name|Name|…)$` of names the binaries
-    listed needs no test, since a listed name is an identifier Go printed, and any other -run, such
-    as airlock-lean's `FuzzAirlock`, is asked of a small probe built with the step's own toolchain
-    (go_run_matcher.py's rewritten_runes). Every name a -skip names must be a listed one;
   * what a step compiles is a second `go test -list` over the same packages under the same build
     flags and the pattern `.*`, run where the step carries a `-run`, because `-list` answers the
     pattern it is given and a `-run` listing names only the functions the step runs. The second
@@ -129,14 +108,12 @@ How it reads a step:
     tuple does not name are refused rather than guessed at;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
-    or followed by one of the argument lists its entry reads, is read as the `go test` command that
-    entry gives for those arguments, in the module it names. Lines before it that each assign a
-    variable from a `$(…)` call of a RUN_LISTERS script (envoy-go-race-api's `pattern=$(…)`, which
-    its `--run "$pattern"` reads) are kept before that command, and run as a go test line's are,
-    where the step runs in the entry's module. A step whose run: holds that script's file name
-    anywhere else, or with arguments its entry does not list, is refused, since each entry reads its
-    script only as called with what it lists; the test is on the run's raw text, so no quoting,
-    substitution or comment hides the script from it. A
+    or followed by one of the argument lists
+    its entry reads, is read as the `go test` command that entry gives for those arguments, in
+    the module it names. A step whose run: holds that script's file name anywhere else, or with
+    arguments its entry does not list, is refused, since each entry reads its script only as
+    called with what it lists; the test is on the run's raw text, so no quoting, substitution or
+    comment hides the script from it. A
     name the shell builds at run time (from a variable, or quoted in pieces) is not in the text,
     and no reading of the text sees it; This script reads no shell script itself: what a script runs
     depends on its control flow, which a line-by-line reading cannot see (a `go test` under
@@ -170,16 +147,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import (
-    called_workflows,
-    go_environment,
-    script_lines,
-    step_workdir,
-)
-# What go test -run makes of a pattern, which only Go can say (go_run_matcher.py). REWRITE_PROBE
-# and go_root are named so that go-test-step-expansion.test.sh, which loads this file as `ex`,
-# reads the probe and asks for the toolchain's root through it.
-from go_run_matcher import REWRITE_PROBE, Refused, go_root, indent, rewritten_runes, split_disagreement  # noqa: F401
+from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -385,21 +353,15 @@ EXCEPTIONS = (
     ),
 )
 
-# `go test -list` prints one name per line, then a status line per package. After the prefix the
-# name is any run of non-space characters, not a character class: go printed it, so Go has already
-# decided it is a test, and Python's Unicode tables are older than Go's (Python 3.12 has Unicode
-# 15.0, Go 1.27 17.0), so `\w` dropped `TestᲉ` (U+1C89, Unicode 16.0) from both verdicts.
-NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)\S*$")
+# `go test -list` prints one name per line, then a status line per package.
+NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[A-Za-z0-9_]*$")
 STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 # A shell variable, as the steps write it: $pkg or ${pkg}.
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
-# The scripts a step may assign a `-run` from, each run here as the step runs it.
-RUN_LISTERS = (".github/scripts/go-tagged-tests.sh", ".github/scripts/go-test-shards.py")
-# An expression GitHub evaluates before the shell sees the script: ${{ matrix.shard }}.
-EXPRESSION = re.compile(r"\$\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
+TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
 @dataclass(frozen=True)
@@ -433,15 +395,11 @@ AUDITED_SCRIPTS = {
     # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
-    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--run P` adds -run P,
-    # `--timeout D` sets the -timeout, and `--var NAME` decides only whether it runs at all. Under
-    # `--run` it first builds the package's test binary with `go test -c` under the same flags and
-    # lists it (-test.list), which compiles what the run compiles and runs no test. With
-    # `--report FILE` it reads a report and runs no test. envoy-go's count step passes the first
-    # argument list below, whose command is that run in the listing form this script reads, and
-    # each leg of envoy-go-race-api's race step the second, after the line that assigns the leg's
-    # pattern from go-test-shards.py. The first's --skip leaves out the backend count's test of
-    # ./internal/cipher/api/.
+    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
+    # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
+    # and runs no test. envoy-go's count step passes the first argument list below, whose command
+    # is that run in the listing form this script reads, and envoy-go-race-api's race step the
+    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -449,10 +407,10 @@ AUDITED_SCRIPTS = {
                 "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
                 "-timeout 20m",
-            '--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m --run "$pattern" ./internal/dispatch/api/':
-                'go test -json -count=1 -race -run "$pattern" -timeout 70m ./internal/dispatch/api/',
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
+                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="8976cf4d8ec8789a2e398a960e18a3bb4c3fee42c6036df43dc11794e9e2c199",
+        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -489,11 +447,11 @@ VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cp
 # because `go test` runs the real `-skip` through Go's regexp: a Python `re` matched against a
 # listing would be a second engine, and two engines that agree on every pattern anyone wrote
 # down disagree on the one nobody tried, leaving this script wrong about what a step runs.
-# A name of the alternation is a test prefix and then no space and none of the characters Go's
-# regexp gives a meaning to (regexp.QuoteMeta's), so `^(Test.*)$` is refused rather than read as
-# one test named `Test.*`; no Unicode table decides it.
 SKIP_ALTERNATION = re.compile(r"^\^\(([^()|]+(?:\|[^()|]+)*)\)\$$")
-SKIP_NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[^\s\\.+*?()|\[\]{}^$]*$")
+
+
+class Refused(Exception):
+    """A shape this script will not guess at."""
 
 
 @dataclass
@@ -537,7 +495,7 @@ class GoTest:
 def shell(script: str, cwd: Path, what: str) -> str:
     """A line of a step's own script, run in the step's own directory."""
     done = subprocess.run(["bash", "-c", f"set -euo pipefail\n{script}"],
-                          cwd=cwd, env=go_environment(), capture_output=True, encoding="utf-8")
+                          cwd=cwd, capture_output=True, text=True)
     if done.returncode != 0:
         raise Refused(f"{what} exited {done.returncode}\n"
                       f"    $ {script}\n{indent(done.stderr or done.stdout)}")
@@ -545,16 +503,17 @@ def shell(script: str, cwd: Path, what: str) -> str:
 
 
 def go(args: list[str], cwd: Path, what: str) -> str:
-    env = go_environment()
-    if "-race" in args:
-        env["CGO_ENABLED"] = "1"  # -race needs cgo
-    done = subprocess.run(args, cwd=cwd, env=env, capture_output=True, encoding="utf-8")
+    done = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
     if done.returncode != 0:
-        hint = ("\n    -race needs a C compiler on PATH."
+        hint = ("\n    -race needs CGO_ENABLED=1 and a C compiler."
                 if "-race" in args and "cgo" in (done.stderr or "") else "")
         raise Refused(f"{what} exited {done.returncode}\n"
                       f"    $ {shlex.join(args)} (in {cwd}){hint}\n{indent(done.stderr)}")
     return done.stdout
+
+
+def indent(text: str) -> str:
+    return "".join(f"    | {line}\n" for line in (text or "").strip().splitlines())
 
 
 def expand(text: str, variables: dict[str, str]) -> str:
@@ -585,40 +544,11 @@ def documents() -> dict:
     return found
 
 
-def legs(label: str, body: dict) -> list[tuple[str, dict[str, str]]]:
-    """Each leg of a job's matrix as GitHub runs it: a suffix naming the leg, and the value of each
-    expression of `matrix` and `strategy` the leg sees. A job with no matrix is one leg with no
-    suffix and no values. Only a matrix of one key holding a list is read, since its legs are that
-    list in order and its job-index is the position in it; `include`, `exclude`, a second key or a
-    computed list (`fromJSON`) is refused rather than guessed at."""
-    matrix = (body.get("strategy") or {}).get("matrix")
-    if matrix is None:
-        return [("", {})]
-    if (not isinstance(matrix, dict) or len(matrix) != 1 or set(matrix) & {"include", "exclude"}
-            or not isinstance(next(iter(matrix.values())), list)):
-        raise Refused(f"{label}: its matrix is not one key holding a list, which is the one shape this "
-                      f"script reads into legs")
-    key, values = next(iter(matrix.items()))
-    if not values:
-        raise Refused(f"{label}: its matrix's {key} holds no value, so the job runs no leg")
-    total = len(values)
-    return [(f" (leg {index + 1} of {total}, {key} {value})",
-             {f"matrix.{key}": str(value), "strategy.job-index": str(index), "strategy.job-total": str(total)})
-            for index, value in enumerate(values)]
-
-
-def substitute(text: str, values: dict[str, str]) -> str:
-    """The text with each `${{ name }}` that `values` holds replaced by its value, as GitHub
-    evaluates it before the shell sees the script; any other expression is left as it stands."""
-    return EXPRESSION.sub(lambda match: values.get(match.group(1), match.group(0)), text)
-
-
 def steps_of(found: dict) -> list[Step]:
     """Every step of those documents whose run: holds a `go test` and whose directory is one of
-    the three modules, or whose run: names an AUDITED_SCRIPTS script (audited_step reads it), once
-    per leg of its job's matrix (legs() says how). The directory and the comment-free lines are
-    read with check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so
-    this tool and the gate agree on what a step runs and where."""
+    the three modules. The directory and the comment-free lines are read with
+    check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so this
+    tool and the gate agree on what a step runs and where."""
     steps = []
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
@@ -628,17 +558,15 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 workdir = step_workdir(document, body, step)
                 name = step.get("name") or f"step {index + 1}"
-                audited = any(Path(audited_script).name in script for audited_script in AUDITED_SCRIPTS)
-                if not audited and (workdir not in MODULE_DIRS
-                                    or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
+                audited = audited_step(path, job, name, workdir, script)
+                if audited is not None:
+                    steps.append(audited)
                     continue
-                for suffix, values in legs(f"{path}'s {job} / {name}", body):
-                    leg_name, leg_script = substitute(name, values) + suffix, substitute(script, values)
-                    if audited:
-                        steps.append(audited_step(path, job, leg_name, workdir, leg_script))
-                    else:
-                        steps.append(Step(workflow=path, job=job, name=leg_name, workdir=workdir,
-                                          script=leg_script))
+                if workdir not in MODULE_DIRS:
+                    continue
+                if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
+                    continue
+                steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
     return steps
 
 
@@ -658,36 +586,29 @@ def spellings(path: str, workdir: str) -> set[str]:
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
     """The step a run: that is the path of an AUDITED_SCRIPTS script makes, alone or followed by
     an argument list its entry reads, read as that entry's command for those arguments in its
-    module, or None where the run's text holds no such script's file name. Lines before that one
-    may each assign a variable from a `$(…)` call of a RUN_LISTERS script, as a go test line's
-    `-run "$pattern"` may take it, where the step runs in the entry's module; they are kept before
-    the command, and read_block runs them. A run whose text holds the script anywhere else - an
-    operator, another command, a `$(…)`, a comment, a line of any other kind, an argument list the
-    entry does not read - is refused rather than read or skipped: the test is on the raw text,
-    before any shell reading, so no quoting or substitution hides the script from it. So is a
-    script whose text no longer has its entry's SHA-256."""
+    module, or None where the run's text holds no such script's file name. A run whose text holds
+    one anywhere else - an operator, another command, a `$(…)`, a comment, another line, an
+    argument list the entry does not read - is refused rather than read or skipped: the test is
+    on the raw text, before any shell reading, so no quoting or substitution hides the script
+    from it. So is a script whose text no longer has its entry's SHA-256."""
     label = f"{workflow}'s {job} / {name}"
     named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
     if not named:
         return None
     # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
     # which bash reads as part of the name.
-    *before, alone = [line.strip(" \t") for line in script.strip(" \t\n").split("\n")]
+    alone = script.strip(" \t\n")
     # The path is the text up to the first space, and the arguments the text after it, compared
     # with each listed argument list as written: one space between words, nothing else.
     spelled, _, arguments = alone.partition(" ")
     # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
     # the file in Python and name nothing the shell can run.
     matches = [path for path in named if spelled in spellings(path, workdir)]
-    assigned = all((found := ASSIGNMENT.match(line)) and any(lister in found.group(2) for lister in RUN_LISTERS)
-                   and not any(Path(path).name in line for path in named) for line in before)
     if (len(named) != 1 or len(matches) != 1 or any(c.isspace() for c in spelled)
-            or arguments not in AUDITED_SCRIPTS[matches[0]].commands or not assigned
-            or (before and workdir != AUDITED_SCRIPTS[matches[0]].module)):
+            or arguments not in AUDITED_SCRIPTS[matches[0]].commands):
         raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
                       "reads: an entry reads a run: that is that one path, alone or followed by "
-                      "an argument list the entry lists, after any lines that each assign a "
-                      f"variable from a $(…) call of {' or '.join(RUN_LISTERS)} in the entry's module")
+                      "an argument list the entry lists")
     path = matches[0]
     entry = AUDITED_SCRIPTS[path]
     digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
@@ -695,8 +616,7 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
         raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
                       f"read from {entry.sha256}; read the script again and update the entry's "
                       "commands and digest")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module,
-                script="\n".join([*before, entry.commands[arguments]]))
+    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.commands[arguments])
 
 
 def commands_of(step: Step) -> list[GoTest]:
@@ -727,9 +647,9 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         assignment = ASSIGNMENT.match(line)
         if assignment:
             name, inner = assignment.group(1), expand(assignment.group(2), variables)
-            if not any(lister in inner for lister in RUN_LISTERS):
+            if TAGGED_TESTS not in inner:
                 raise Refused(f"{step.label}: this script runs only a $(…) call of "
-                              f"{' or '.join(RUN_LISTERS)}, not `{inner}`")
+                              f"{TAGGED_TESTS}, not `{inner}`")
             variables[name] = shell(inner, step.directory, f"{step.label}: {inner}").strip()
             continue
 
@@ -798,25 +718,11 @@ def skip_names(pattern: str) -> list[str] | None:
     if not match:
         return None
     names = match.group(1).split("|")
-    return names if all(SKIP_NAME.match(name) for name in names) else None
-
-
-def listed_or_rewritten(pattern: str, known: set[str], directory: Path) -> list[str]:
-    """The characters of `pattern` go test -run would rewrite and -list would not, or none.
-    A pattern that is `^(Name|Name|…)$` of names the binaries listed needs no character test: a
-    listed name is a Go identifier, which Go printed and the rewrite leaves as it is, so its
-    membership is the proof (the same rule go-test-shards.py holds its patterns to). Any other
-    pattern - a step's own -run such as `FuzzAirlock` - is asked of Go (go_run_matcher.rewritten_runes)."""
-    alternation = SKIP_ALTERNATION.fullmatch(pattern)
-    if alternation and all(name in known for name in alternation.group(1).split("|")):
-        return []
-    return rewritten_runes(pattern, directory)
+    return names if all(NAME.match(name) for name in names) else None
 
 
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
-    """The packages, -tags, -race, -run and -skip of one `go test` command. A -run or -skip that
-    -list and -run split differently is refused (split_disagreement says when); what the run
-    rewrites is decided once the listing is known (list_tests)."""
+    """The packages, -tags, -race, -run and -skip of one `go test` command."""
     command = GoTest(step=step, text=text, packages=list(packages))
     words = shlex.split(text)
     position = words.index("test") + 1
@@ -830,11 +736,6 @@ def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
             if not value and flag in VALUE_FLAGS:
                 value = words[position]
                 position += 1
-            if flag in ("-run", "-skip"):
-                reason = split_disagreement(value)
-                if reason:
-                    raise Refused(f"{step.label}: `{text}` {flag[1:]}s by {value!a}, and {reason}, so "
-                                  f"this script, which learns what a step runs from -list, cannot read it")
             if flag == "-run":
                 command.run = value
             elif flag == "-skip":
@@ -911,31 +812,10 @@ def list_tests(command: GoTest) -> tuple[dict[str, list[str]], dict[str, list[st
 
     A `-skip` prints in either listing, since `-list` names the tests a `-skip` would keep from
     running, so it is subtracted from what the step runs and left in what it compiles - which is
-    what a skipped test is: built into the binary and never run by it. Each name it skips must be,
-    byte for byte, one some package of the command lists: go test rewrites a -skip part before it
-    matches (a no-break space becomes `_`), so a name no binary lists could skip a test of another
-    name while this script subtracted nothing, and a listed name is a Go identifier the rewrite
-    leaves alone.
-
-    The -run itself is held to the same: what go test rewrites in it before it matches, -list does
-    not, so a -run holding such a character is refused (listed_or_rewritten says how it is told).
+    what a skipped test is: built into the binary and never run by it.
     """
     compiled = listing(command, ".*")
     skipped = set(skip_names(command.skip) or ())  # the parse refused every other shape
-    known = {name for names in compiled.values() for name in names}
-    unlisted = sorted(skipped - known)
-    if unlisted:
-        raise Refused(f"{command.step.label}: `{command.text}` skips "
-                      f"{', '.join(ascii(name) for name in unlisted)}, which no package of it lists: "
-                      f"go test rewrites a -skip it does not know as a name, so what it skips is "
-                      f"not what this script can subtract")
-    if command.run:
-        rewritten = listed_or_rewritten(command.run, known, command.step.directory)
-        if rewritten:
-            raise Refused(f"{command.step.label}: `{command.text}` runs by {command.run!a}, and it holds "
-                          f"{', '.join(f'U+{ord(c):04X}' for c in rewritten)}, which go test -run rewrites "
-                          f"before it matches and -list does not, so this script, which learns what a "
-                          f"step runs from -list, cannot read it")
     run = compiled if not command.run else listing(command, command.run)
     return ({package: [name for name in names if name not in skipped]
              for package, names in run.items()}, compiled)
@@ -1029,7 +909,7 @@ def main() -> int:
     print("#   grep '^PAIR' head.txt > head.pairs; grep '^PAIR' base.txt > base.pairs")
     print("#   diff base.pairs head.pairs      (empty: the two commits run the same functions)")
     print("# Check k1 of dispatch://INFRA-1408. No CI job runs this script; the module header")
-    print("# says why, and what it needs (a C compiler for the -race steps, no service).")
+    print("# says why, and what it needs (CGO_ENABLED=1 for the -race steps, no service).")
     print()
     print(f"== steps expanded ({len(steps)}) ==")
     print("\n".join(report))

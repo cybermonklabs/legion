@@ -345,7 +345,7 @@ for those bytes on a pod).
 ## Why the shard job makes the downloaded binaries executable
 
 actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-run-server.sh:240-243 and run-broker.sh refuse a path that is not executable, and that
+run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
 refusal would otherwise surface in a stack's own log, far from this cause.
 
 ## Why every job that runs the suite builds contracts first
@@ -619,7 +619,7 @@ directory and why there is a second; the four steps are the same here.
 ## Why the alone job makes the downloaded binaries executable
 
 actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-run-server.sh:240-243 and run-broker.sh refuse a path that is not executable, and that
+run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
 refusal would otherwise surface in a stack's own log, far from this cause.
 
 ## Why the alone job builds contracts
