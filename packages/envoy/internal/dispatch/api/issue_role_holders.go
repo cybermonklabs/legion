@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -120,21 +122,23 @@ func heldRole(ctx context.Context, q queryer, issueKey, session string) (string,
 	return role, err
 }
 
-// issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 the roles
-// in workflow order, which is the order the set is answered in. The left join answers one row with
-// no holder for an issue where no session holds a role, and no row for a key that no issue
-// carries, so one statement says both.
-const issueRoleHoldersStatement = `
+// issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key, $2 the roles
+// in workflow order, which is the order the set is answered in, and $3 the reader, who must see
+// the issue's project (access.ProjectClause). The left join answers one row with no holder for an
+// issue where no session holds a role, and no row for a key that no issue carries or that the
+// reader may not see, so one statement says both, and a hidden issue answers as a missing one.
+var issueRoleHoldersStatement = `
 	select i.key, h.role, h.session, h.recorded_at
 	from issues i
 	left join issue_role_holders h on h.issue_key = i.key
-	where i.key = $1
+	where i.key = $1 and ` + access.ProjectClause("i.project_key", "$3") + `
 	order by array_position($2::text[], h.role)
 `
 
-// readIssueRoleHolders answers the stored set of issueKey, and false when no issue carries the key.
-func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issueRoleHolders, bool, error) {
-	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
+// readIssueRoleHolders answers the stored set of issueKey as who reads it, and false when no
+// issue carries the key or who may not see it.
+func readIssueRoleHolders(ctx context.Context, q queryer, who model.Actor, issueKey string) (issueRoleHolders, bool, error) {
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles, refs.VisibilityArg(who))
 	if err != nil {
 		return issueRoleHolders{}, false, err
 	}
@@ -192,6 +196,9 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
+		// The refusal is built from the key the caller sent alone, its project the key up to its
+		// first -, and from nothing read, so an issue of a project the caller may not see is refused
+		// in the words a key nobody holds in that project is.
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
 			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
 			legionProjectOf(key), key, daemon))
@@ -236,24 +243,31 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		sessions[index] = holder.Session
 	}
 
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue row is read in the write's own transaction, under the issue's owner lock, which a
-	// second write of the same issue waits for (store.LockOwner, the advisory lock every writer of
-	// the issue takes), so the two replaces run one after the other: the second reads the rows that
-	// the first committed, and each answers the set that it stored. The lock and the read are one
-	// batch, and the read is a plain select, so while no earlier build is in the fleet the
-	// transaction takes no row lock of an owner table and holds no transaction id until its first
-	// write (INFRA-636; beside an earlier build LockOwnerAndRead also takes the issue's row, as that
-	// build's writers do); it does not stop a reader.
+	// The issue row is read in the write's own transaction, once before the issue's owner lock and
+	// once under it (lockOwnerOnceFound): an issue of a project the writer may not see is read as no
+	// issue (access.ProjectClause) before any lock, so the write answers it as it answers a key
+	// nobody holds, and waits for no writer of it. Under the lock, which a second write of the same
+	// issue waits for (store.LockOwner, the advisory lock every writer of the issue takes), the two
+	// replaces run one after the other: the second reads the rows that the first committed, and each
+	// answers the set that it stored. The lock and the second read are one batch, and the reads are
+	// plain selects, so while no earlier build is in the fleet the transaction takes no row lock of
+	// an owner table and holds no transaction id until its first write (beside an earlier build
+	// LockOwnerAndRead also takes the issue's row, as that build's writers do); it does not
+	// stop a reader.
 	var issue string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(key), `
-		select key from issues where key = $1
-	`, []any{key}, &issue); err != nil {
+	if err := lockOwnerOnceFound(r.Context(), tx, store.IssueOwner(key), `
+		select key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
+	`, []any{key, refs.VisibilityArg(who)}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeRoleHoldersIssueNotFound(w, key)
 			return
@@ -282,7 +296,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
+	stored, _, err := readIssueRoleHolders(r.Context(), tx, who, issue)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -297,11 +311,12 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 // getIssueRoleHolders answers the stored set of an issue: GET /api/v1/issues/{key}/role-holders. A
 // closed issue reads as an open one does.
 func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
-	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
+	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

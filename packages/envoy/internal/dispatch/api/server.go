@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -288,9 +289,11 @@ type DepsInput struct {
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
-	App           *auth.AppConfig
-	GitHubAPIBase string
-	OIDC          ServiceTokenVerifier
+	App            *auth.AppConfig
+	GitHubAPIBase  string
+	OIDC           ServiceTokenVerifier
+	AccessAccounts []string
+	BusProjects    BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -411,6 +414,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Renames:                input.Renames,
 		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
+		OIDCAccounts:           input.OIDCAccounts,
+		AccessAccounts:         input.AccessAccounts,
+		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
@@ -735,9 +741,11 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// EventHead is the event_head GET /auth/whoami answers (eventFeedHead): an id at or below which
-	// every event is already final, which a page resumes its first events subscription from.
-	EventHead func(context.Context) (int64, error)
+	// EventHead is the event_head GET /auth/whoami answers the person whose cookie the request
+	// carries (personEventHead): an id at or below which every event is already final, which a page
+	// resumes its first events subscription from, read as the highest id of an event that person
+	// can see (viewerEventHead), resolved from the request's own credential.
+	EventHead func(r *http.Request) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
 	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so
@@ -906,8 +914,24 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
 		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
-			accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(s.signInStillResolves, false,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
+		// An access change made by SQL alone announces nothing the document service hears, so it
+		// re-checks its sockets' access on their heartbeat too, as the live socket and the
+		// Delivery views re-check their readers (accessRecheckEvery), until lifetime ends.
+		if recheck, ok := deps.Docs.(interface {
+			RunAccessRecheck(context.Context, time.Duration)
+		}); ok {
+			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
+		}
+		// A session's documents follow the session content rule, which reads the stored listener
+		// answer only while it is fresh, so the document service refreshes it before each read of
+		// a socket's rule, as the live agent view does (refreshRosterForContent).
+		if refresh, ok := deps.Docs.(interface {
+			SetRosterRefresh(func(context.Context))
+		}); ok {
+			refresh.SetRosterRefresh(s.refreshRosterForContent)
+		}
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))
@@ -1373,7 +1397,11 @@ var (
 // an operator the token was verified and refused rather than simply unknown. A
 // token the verifier could not judge because its issuer has not been discovered
 // is a 503 OIDC_ISSUER_UNAVAILABLE, never a 401: the caller retries rather than
-// reads its token as refused.
+// reads its token as refused. A verified token of an account the deployment does not
+// name (Deps.OIDCAccounts) is 401 SERVICE_ACCOUNT_NOT_ADMITTED: optionalActor is the
+// one caller resolution of every route, both sockets and every write, so the refusal
+// comes before any handler reads or writes a row. A deployment that names no account
+// admits every verified one, as it did before the list existed.
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
@@ -1391,6 +1419,10 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 			"service-account token rejected (%s)", reason)
 	}
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
+	if len(s.deps.OIDCAccounts) > 0 && !slices.Contains(s.deps.OIDCAccounts, claims.Subject) {
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "SERVICE_ACCOUNT_NOT_ADMITTED",
+			"the service account %s is not one this deployment admits (DISPATCH_OIDC_ACCOUNTS)", claims.Subject)
+	}
 	// A credential that holds no scope, not the absence of one: a pod's projected token proves a
 	// workload and no person, so it acts as nobody.
 	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil

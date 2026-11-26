@@ -45,6 +45,17 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, who
 	return s.loadComment(ctx, tx, who, id)
 }
 
+// lockOwnerOfComment reads the comment as who may read it (loadComment) and locks its owner,
+// answering whether that owner is open.
+func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (bool, error) {
+	unlockedComment, err := s.loadComment(ctx, tx, who, id)
+	if err != nil {
+		return false, err
+	}
+	_, open, err := ownerStatus(ctx, who, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), lockedOwnerRead(tx))
+	return open, err
+}
+
 // correctionActor is the caller of a correction: an edit or a delete, of a comment
 // (editComment, deleteComment) or of an issue message (editMessage, deleteMessage,
 // message_corrections.go). The author of a post is a session or a person, so all four read
@@ -119,17 +130,6 @@ func (s *server) lockedCommentForCorrection(
 		return model.Comment{}, false
 	}
 	return comment, true
-}
-
-// lockOwnerOfComment reads the comment as who may read it (loadComment) and locks its owner,
-// answering whether that owner is open.
-func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (bool, error) {
-	unlockedComment, err := s.loadComment(ctx, tx, who, id)
-	if err != nil {
-		return false, err
-	}
-	_, open, err := ownerStatus(ctx, who, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), lockedOwnerRead(tx))
-	return open, err
 }
 
 func (s *server) resolveComment(w http.ResponseWriter, r *http.Request) {

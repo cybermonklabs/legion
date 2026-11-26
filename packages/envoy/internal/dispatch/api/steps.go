@@ -103,7 +103,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -113,30 +113,27 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
 // states, as putIssueStep writes them: the rating and its reason are set once, and the record is
 // made where the retro's start and end have not landed yet. The record must be a retro's. A body
-// that names no rating is refused once its writer is checked, before the transaction and the
-// issue's lock, as the package refuses a required field it lacks: the store takes a step write
-// with no rating, so this route alone holds one required. A reason the body leaves out is "",
-// which the store refuses as a rating_reason left out, after it has checked the write's other
-// fields and the rating.
+// that names no rating is refused once the issue is read and its writer judged, before anything
+// is written, as the package refuses a required field it lacks: the store takes a step write with
+// no rating, so this route alone holds one required. A reason the body leaves out is "", which the
+// store refuses as a rating_reason left out, after it has checked the write's other fields and the
+// rating.
 func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	var input stepRatingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	if input.Rating == nil {
-		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
-			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", contracts.PlanRatingLeast, contracts.PlanRatingMost))
-		return
-	}
 	write := input.write()
-	write.Rating = &workflowstore.StepRating{Rating: *input.Rating}
-	if input.RatingReason != nil {
-		write.Rating.Reason = *input.RatingReason
+	if input.Rating != nil {
+		write.Rating = &workflowstore.StepRating{Rating: *input.Rating}
+		if input.RatingReason != nil {
+			write.Rating.Reason = *input.RatingReason
+		}
 	}
 	s.writeIssueStep(w, r, write, actor, key, true)
 }
@@ -163,6 +160,11 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	if !ok {
 		return
 	}
+	if rated && write.Rating == nil {
+		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
+			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", contracts.PlanRatingLeast, contracts.PlanRatingMost))
+		return
+	}
 	write.ID, write.Issue, write.Project = r.PathValue("id"), key, &project
 	written, err := workflowstore.PutStep(r.Context(), tx, write, actor, time.Now())
 	switch {
@@ -179,7 +181,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
 	// answer reads the issue's runs in the write's own transaction, as GET would after it. That
 	// read lists the run: the write made it part of the issue, or found it part of the issue.
-	steps, err := workflowstore.IssueSteps(r.Context(), tx, key)
+	steps, err := workflowstore.IssueSteps(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -195,25 +197,6 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		return
 	}
 	WriteJSON(w, http.StatusOK, record)
-}
-
-// requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
-// the issue key of the path, where the actor is the writer of the records of that issue, the
-// session of its project's Legion daemon (legionDaemonSessionOf). It refuses any other writer 403
-// STEP_WRITER, naming what record and whose.
-func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor, record string) (model.Actor, string, bool) {
-	actor, ok := s.requireActor(w, r, supplied)
-	if !ok {
-		return model.Actor{}, "", false
-	}
-	key := r.PathValue("key")
-	writer := legionDaemonSessionOf(key)
-	if actor.Kind != "session" || actor.ID != writer {
-		writeError(w, codeStepWriter, http.StatusForbidden,
-			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
-		return model.Actor{}, "", false
-	}
-	return actor, key, true
 }
 
 // lockRecordedIssue takes the owner lock of the issue key a record is written to, shared, then
@@ -252,14 +235,13 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 		s.writeHandlerError(w, err)
 		return "", false
 	}
-	if err := tx.QueryRow(r.Context(), `
-		select project_key from issues where key = $1
-	`, key).Scan(&project); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
-			return "", false
-		}
-		s.writeHandlerError(w, err)
+	if !read() {
+		return "", false
+	}
+	writer := legionDaemonSessionOf(key)
+	if actor.Kind != "session" || actor.ID != writer {
+		writeError(w, codeStepWriter, http.StatusForbidden,
+			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
 		return "", false
 	}
 	return project, true
@@ -268,30 +250,29 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 // listIssueSteps is every run of every step of one issue, task by task in the order of each
 // task's first run: GET /api/v1/issues/{key}/steps. A closed issue's runs read as an open one's,
 // and a key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a
-// mistyped key never reads as an issue Legion never ran. Only a read that finds no run looks for
-// the issue: the write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue
-// is ever deleted, so a read that finds a run has found its issue.
+// mistyped key never reads as an issue Legion never ran; so does an issue of a project the caller
+// does not see, which is why the issue is read before its runs, every time.
 func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	key := r.PathValue("key")
-	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
-	if err != nil {
+	// The issue first, as the caller sees it: a key no issue carries, or an issue of a project the
+	// caller does not see, is 404 NOT_FOUND before any run of it is read.
+	var seen bool
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2")+`)`, key, refs.VisibilityArg(who)).Scan(&seen); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if len(steps) == 0 {
-		var held bool
-		if err := s.deps.Store.Pool.QueryRow(r.Context(),
-			`select exists(select 1 from issues where key = $1)`, key).Scan(&held); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if !held {
-			s.writeHandlerError(w, pgx.ErrNoRows)
-			return
-		}
+	if !seen {
+		s.writeHandlerError(w, pgx.ErrNoRows)
+		return
+	}
+	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, who, key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}

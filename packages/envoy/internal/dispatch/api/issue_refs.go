@@ -30,7 +30,8 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, issueRefResolved{Key: key})
 }
 
-// resolveIssueRef resolves an existing native key or external GitHub link.
+// resolveIssueRef resolves an existing native key or external GitHub link, as who reads it: an
+// issue of a project who does not see resolves as one nobody holds.
 // Creating a missing external issue is the responsibility of POST /issues.
 //
 // An external reference finds a link stored under either name of its repository's rename pair

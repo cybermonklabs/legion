@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -151,16 +153,22 @@ func tallyOf(tallies map[string]*collaboratorTally, id string) *collaboratorTall
 // getIssueCollaborators answers everyone who worked an issue: the assignee, and every actor of
 // the issue's claim, writing and answer events, people by login and sessions by id, merged with
 // the sessions the listener's Legion agent registry records for the issue. The cost is fixed: the
-// assignee, one events read by issue_key and type (the (issue_key, seq) index), one listener call
-// and, for sessions the registry names no title for, one title read.
+// assignee, one events read by issue_key and type (the (issue_key, seq) index), one listener call,
+// one read of which of those people and sessions the caller may see and, for sessions the
+// registry names no title for, one title read. An issue of a project the caller does not see is a
+// key no issue carries (404), and a person or a session it may not see is no collaborator of the
+// answer.
 func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
 	key := r.PathValue("key")
+	viewer := refs.VisibilityArg(who)
 	var assignee *string
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, key).Scan(&assignee); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select assignee from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2"), key, viewer).Scan(&assignee); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -171,12 +179,21 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 			tallyOf(people, login).add(reasonAssignee, nil)
 		}
 	}
-	if err := s.tallyCollaboratorEvents(ctx, key, people, sessions); err != nil {
+	if err := s.tallyCollaboratorEvents(ctx, viewer, key, people, sessions); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	registry, registryState := s.issueLegionAgents(ctx, key)
-	agents, err := s.collaboratorAgents(ctx, sessions, registry)
+	// A reader that sees every object passes PersonClause and SessionClause on every name, so the
+	// read would take nothing out (R9).
+	if !seesEveryObject(who) {
+		var err error
+		if registry, err = s.dropUnseenCollaborators(ctx, viewer, people, sessions, registry); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	agents, err := s.collaboratorAgents(ctx, who, sessions, registry)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -191,16 +208,18 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 
 // tallyCollaboratorEvents reads the issue's claim, writing and answer events, one row per actor
 // and type, into people (by canonical login) and sessions (by id). A session acting for a
-// person's token is an agent; the daemon's lifecycle writer and system writers are nobody.
+// person's token is an agent; the daemon's lifecycle writer and system writers are nobody. viewer
+// is the reader's (refs.VisibilityArg), whose project clause holds no event of an issue it does
+// not see.
 func (s *server) tallyCollaboratorEvents(
-	ctx context.Context, key string, people, sessions map[string]*collaboratorTally,
+	ctx context.Context, viewer any, key string, people, sessions map[string]*collaboratorTally,
 ) error {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select coalesce(actor->>'kind', ''), coalesce(actor->>'id', ''), type, max(created_at)
 		from events
-		where issue_key = $1 and type = any($2)
+		where issue_key = $1 and type = any($2) and `+access.IssueProjectClause("$1", "$3")+`
 		group by 1, 2, 3
-	`, key, collaboratorEventTypes)
+	`, key, collaboratorEventTypes, viewer)
 	if err != nil {
 		return fmt.Errorf("query issue collaborators: %w", err)
 	}
@@ -229,6 +248,52 @@ func (s *server) tallyCollaboratorEvents(
 	return nil
 }
 
+// dropUnseenCollaborators takes out of people, sessions and registry every person and every
+// session the viewer may not see, in one read: a person the rule lets it see
+// (access.PersonClause), and a session that is its own or has acted in a project it sees, or, for
+// an open viewer, every session but one that acted in a project it does not see
+// (access.SessionClause). It answers registry without the entries it took out.
+func (s *server) dropUnseenCollaborators(
+	ctx context.Context, viewer any, people, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
+) ([]listenerwire.LegionAgentAnswer, error) {
+	logins := slices.Collect(maps.Keys(people))
+	ids := slices.Collect(maps.Keys(sessions))
+	for _, entry := range registry {
+		ids = append(ids, entry.SessionID)
+	}
+	if len(logins) == 0 && len(ids) == 0 {
+		return registry, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select 'user', named.login from unnest($1::text[]) as named(login)
+		where `+access.PersonClause("named.login", "$3")+`
+		union
+		select 'session', acting.id from unnest($2::text[]) as acting(id)
+		where `+access.SessionClause("acting.id", "$3"), logins, ids, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("read which collaborators the caller sees: %w", err)
+	}
+	defer rows.Close()
+	seenPeople, seenSessions := map[string]bool{}, map[string]bool{}
+	for rows.Next() {
+		var kind, id string
+		if err := rows.Scan(&kind, &id); err != nil {
+			return nil, fmt.Errorf("scan a collaborator the caller sees: %w", err)
+		}
+		if kind == "user" {
+			seenPeople[id] = true
+		} else {
+			seenSessions[id] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read which collaborators the caller sees: %w", err)
+	}
+	maps.DeleteFunc(people, func(login string, _ *collaboratorTally) bool { return !seenPeople[login] })
+	maps.DeleteFunc(sessions, func(id string, _ *collaboratorTally) bool { return !seenSessions[id] })
+	return slices.DeleteFunc(registry, func(entry listenerwire.LegionAgentAnswer) bool { return !seenSessions[entry.SessionID] }), nil
+}
+
 // issueLegionAgents is the listener's Legion agent registry entries for the issue, or
 // "unavailable" when there is no listener or it did not answer within the client's window.
 func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string) {
@@ -245,10 +310,11 @@ func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerw
 // collaboratorAgents merges the event-derived sessions with the registry's entries by session id:
 // the registry's sessions first, in its order (by role in workflow order, then newest first), then
 // the other sessions newest first. Each agent's title is the registry entry's title, else the
-// newest title the session stamped on anything it wrote (delivery.ResolveSessionTitles), which a
-// later write carrying none does not take away; null for a session that never stamped one.
+// newest title the session stamped on anything it wrote that who may read
+// (delivery.ResolveSessionTitles), which a later write carrying none does not take away; null for
+// a session that never stamped one.
 func (s *server) collaboratorAgents(
-	ctx context.Context, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
+	ctx context.Context, who model.Actor, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
 ) ([]collaboratorAgent, error) {
 	agents := make([]collaboratorAgent, 0, len(sessions)+len(registry))
 	listed := make(map[string]struct{}, len(sessions)+len(registry))
@@ -292,7 +358,7 @@ func (s *server) collaboratorAgents(
 	if len(untitled) == 0 {
 		return agents, nil
 	}
-	titles, err := delivery.ResolveSessionTitles(ctx, s.deps.Store.Pool, untitled)
+	titles, err := delivery.ResolveSessionTitles(ctx, s.deps.Store.Pool, untitled, readableEvents(who))
 	if err != nil {
 		return nil, fmt.Errorf("resolve collaborator titles: %w", err)
 	}

@@ -12,9 +12,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -87,6 +89,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		adviceRoute:   "PATCH /api/v1/issues/{key}",
 	})
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The answer names no issue the caller may not see (the rule of references).
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &written.issue, nil); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -333,7 +340,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// project before its first step (refuseStepsOutsideCallerProject). The lock step refuses it
 	// again before any lock, and writeBlockedBy or validateIssueParent under them.
 	if call.callerProject != "" && (parentKey != "" || len(blockers) > 0) {
-		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, blockers, parentKey); err != nil {
+		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, who, call.callerProject, blockers, parentKey); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -343,7 +350,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if closes {
 		// Before the transaction, which settlement's own would queue behind on the issue's owner
 		// lock.
-		s.settleIssueBeforeClose(call.outliving, who, key)
+		s.settleIssueBeforeClose(call.outliving, who, who, key)
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -363,15 +370,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// check and the status it guards run under the deployment dependency lock that every create
 	// with a parent and every reparent takes, so no child is filed between the two.
 	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
-	// The lock step below reads each target's project again and refuses a scoped caller one
-	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
+		// The issue's project as the caller reads it: an issue of a project it does not see is
+		// the missing row loadIssue answers below, and takes no lock of that project first.
 		var project string
-		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&project); err != nil {
 			return issueWriteResult{}, err
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers, parentKey); err != nil {
+			if err := lockIssueDependencyWrite(ctx, tx, project, who, call.callerProject, blockers, parentKey); err != nil {
 				return issueWriteResult{}, err
 			}
 		}
@@ -382,10 +390,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 
-	// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
-	// of them: the issue, its current parent when a status change or a reparent appends to it, the
-	// proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It never
-	// holds one of those locks while waiting for another that a second write holds. Validation, the
+	// A PATCH takes the owner lock of every issue it names that its caller sees in one lock order
+	// before it reads what it decides on: the issue, its current parent when a status change or a
+	// reparent appends to it, the proposed parent and the rank neighbours (lockPatchOwners,
+	// lockPatchOwnersAndParent). Which of them the caller sees is read first, with nothing locked,
+	// so an issue it does not see is refused, or left to the read that refuses it, without waiting
+	// behind its project's writers, as a key no issue holds is (lockIssueOwners). It never holds one
+	// of those locks while waiting for another that a second write holds. Validation, the
 	// dependency walk and the rank reads below are plain reads of issues whose locks it holds.
 	named := make([]string, 0, 3)
 	if parent != nil {
@@ -463,7 +474,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		moved = &move
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
+		if err := validateIssueParent(ctx, tx, who, key, call.callerProject, *parent); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -520,6 +531,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		if conflict != nil {
 			return issueWriteResult{}, conflict
 		}
+	}
+	// A repository the GitHub proxy hides from the writer is not theirs to name
+	// (refuseRepoHidden): read once the issue is read as the writer reads it, under its owner lock,
+	// and before the first row is written.
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if input.RefuseOpenForeignChildren {
 		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
@@ -584,7 +602,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		sets = append(sets, "status = "+placeholder, "closed_at = case when "+placeholder+" = 'done' then now() else null end")
 	}
 	if input.Rank != nil {
-		issueRank, err := s.rankForInput(ctx, tx, who, before.Project, key, *input.Rank)
+		issueRank, err := s.rankForInput(ctx, tx, who, who, before.Project, key, *input.Rank)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
@@ -651,7 +669,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// and its parent (writeAdviceBefore), and the open asks the close withdraws or the reopen
 	// restores, whose rows the patch writes afterwards (adviceAsks). Nothing else the patch writes
 	// changes what it reads.
-	afterRow := adviceIssueRow{project: before.Project, parent: afterParent, labels: before.Labels}
+	afterRow := adviceIssueRow{parent: afterParent, labels: before.Labels}
 	afterStatus := before.Status
 	if input.Status != nil {
 		afterStatus = status
@@ -694,7 +712,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(ctx, tx, key, before.Project, call.callerProject, blockers); err != nil {
+		if err := writeBlockedBy(ctx, tx, key, who, before.Project, call.callerProject, blockers); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -723,10 +741,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			}
 			// A URL links exactly one issue (issue_external_links_url). This issue's own
 			// links are already deleted above, so an owner found here is another issue
-			// (or the same URL repeated earlier in this request).
+			// (or the same URL repeated earlier in this request). The owner is named only
+			// where who reads it: an owner of a project who does not see is "another issue",
+			// the words the insert's own refusal below answers in. The 409 stands either way,
+			// since the URL cannot link two issues.
 			var owner string
-			err := tx.QueryRow(ctx, `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
+			var seen bool
+			err := tx.QueryRow(ctx, `
+				select l.issue_key, `+access.IssueProjectClause("l.issue_key", "$2")+`
+				from issue_external_links l where l.url = $1`, link.URL, refs.VisibilityArg(who)).Scan(&owner, &seen)
 			if err == nil {
+				if !seen {
+					owner = "another issue"
+				}
 				return issueWriteResult{}, errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, owner)
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {
@@ -745,6 +772,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// Nothing was written, so the row the advice read is the stored one.
 		if err := ledger.Commit(ctx); err != nil {
 			return issueWriteResult{}, err
+		}
+		if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &before, nil); err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 		return issueWriteResult{issue: before, advice: advice, previousLastSeq: before.LastSeq}, nil
 	}

@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  Dispatch answers the repositories a project's issues resolve to at `GET
+  /api/v1/access/projects/{key}/repositories`, which the secrets broker reads for the edge
+  listener's GitHub relay: `{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the
+  repository each issue of the project resolves to, open or done (its own, else its nearest
+  parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]`
+  when none resolves. It is read from `refs.ProjectRepositories`, by the one rule of which
+  repositories a project owns (`refs.ProjectRepositoriesSQL`), which the GitHub proxy reads too:
+  a repository the project maps and no issue resolves to is not in it, and no rename is read. An
+  unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links,
+  or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list, and is
+  logged at WARN with `project` and `issue`. Only a service account `DISPATCH_ACCESS_ACCOUNTS`
+  names reads it, as for the membership answer; every other caller is `403
+  ACCESS_ACCOUNT_REQUIRED`, and a caller with no credential `401 NO_IDENTITY`. The `403` of every
+  route `DISPATCH_ACCESS_ACCOUNTS` gates, the membership answer's three included, now names its
+  route, where it said "the membership answer"; its code is unchanged.
+time: 2026-11-20T14:04:08Z
+custom:
+    Issue: pr4635

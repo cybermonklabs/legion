@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -34,6 +35,90 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 	from events e
 	left join issues i on i.key = e.issue_key
 	left join artifacts ar on ar.id = e.artifact_id`
+
+// eventReadableSQL is the one read rule of an event, as SQL over the events row eventAlias names,
+// for the viewer a statement binds at viewerParam (refs.VisibilityArg). Every read of the event
+// log binds it - an issue's or a document's feed (readEvents) and the whole log, which GET
+// /api/v1/events/log pages and the relay and the live socket's catch-up read (readEventsAfterID)
+// - and the live socket asks it of each event it sends. An event passes:
+//
+//   - an event of an issue, a document or a project, when the viewer sees that project
+//     (access.ProjectClause). user_state.updated and user_thread_state.updated are such events:
+//     each write that appends one names the project of what it marked (projectOwner);
+//   - a message event of no owner (message.created, message.answered, message.delivery and
+//     message.accepted of a conversation on no issue), when the viewer may read the message's
+//     conversation (access.PartyClause over the parties its node carries, its root's);
+//   - user_agent_state.updated, the one other ownerless event about a person's own thread, built
+//     with no owner (state.go, userAgentStateEvent), when the viewer may see the session it names
+//     (access.SessionClause) and either its login is the viewer's person or the viewer is open:
+//     the rule GET /api/v1/me/agents/state reads that person's state of the session by
+//     (userAgentStatesSeenQuery), so a credential reads no state event of a session whose state it
+//     does not read;
+//   - any other ownerless event (priority.updated, access_group.changed), to an open viewer alone.
+//
+// An event whose one subject is a session (sessionSubjectEvents) passes, beside that, only when the
+// viewer sees that session (access.SessionClause): a follow, a subscription, a delivery and its
+// acceptance are the session's, so to a viewer the session is hidden from they are absent, as the
+// session is (references_seen.go). An open viewer sees every session but one that acted in a
+// project it does not see.
+//
+// A claim write's event (claimWriteEvents) passes only when the viewer sees the holder of the claim it
+// left and of the one it replaced or cleared, each a session (access.SessionClause) or a person
+// (access.PersonClause) (claimHolderSeenSQL): its actor is the claimant, so to a viewer that holder
+// is hidden from the event is absent, as the claim is from every read of the issue. Every other
+// issue event carries the claim in its payload, which the payload filter leaves out
+// (payloadReferenceKeys).
+func eventReadableSQL(eventAlias, viewerParam string) string {
+	e := eventAlias
+	project := `coalesce(` + e + `.project_key,
+		(select event_issue.project_key from issues event_issue where event_issue.key = ` + e + `.issue_key),
+		(select event_document.project_key from artifacts event_document where event_document.id = ` + e + `.artifact_id))`
+	return `((case
+		when ` + e + `.issue_key is not null or ` + e + `.artifact_id is not null or ` + e + `.project_key is not null
+			then ` + access.ProjectClause(project, viewerParam) + `
+		when ` + e + `.type like 'message.%'
+			then ` + access.PartyClause(access.MessagePartiesSQL(`coalesce(`+e+`.payload->>'message_id', `+e+`.payload->>'id')`), viewerParam) + `
+		when ` + e + `.type = 'user_agent_state.updated'
+			then (coalesce(` + e + `.payload->>'login' = ` + access.ViewerPerson(viewerParam) + `, false)
+					or ` + access.OpenClause(viewerParam) + `)
+				and ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `
+		else ` + access.OpenClause(viewerParam) + `
+	end) and (` + e + `.type not in (` + sessionSubjectEvents + `)
+		or ((` + e + `.payload->>'session_id' is null or ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
+			and (coalesce(` + e + `.payload->>'target', '') not like 'session:%' or ` +
+		access.SessionClause(`substr(`+e+`.payload->>'target', 9)`, viewerParam) + `)))
+		and (case when ` + e + `.type in (` + claimWriteEvents + `)
+			then ` + claimHolderSeenSQL(e+`.payload->'claim'`, viewerParam) + `
+				and ` + claimHolderSeenSQL(e+`.payload->'previous_claim'`, viewerParam) + `
+			else true end))`
+}
+
+// sessionSubjectEvents is every event type whose one subject is the session its payload names,
+// by session_id or by a `session:<id>` target, as SQL literals.
+const sessionSubjectEvents = `'ask.follower_added', 'ask.follower_removed', 'subscription.remove_requested',
+	'subscription.removed', 'comment.delivery', 'message.delivery', 'message.accepted'`
+
+// claimWriteEvents is every event type a claim write appends, whose payload names the claim it left
+// (claim) and the one it replaced or cleared (previous_claim), as SQL literals.
+const claimWriteEvents = `'issue.claimed', 'issue.released'`
+
+// claimHolderSeenSQL passes the claim {actor, at} claimExpr gives, as jsonb, when the viewer bound
+// at viewerParam sees its holder: a session by access.SessionClause, a person by
+// access.PersonClause. No claim, and a holder of any other kind, passes.
+func claimHolderSeenSQL(claimExpr, viewerParam string) string {
+	kind, id := `(`+claimExpr+`->'actor'->>'kind')`, `(`+claimExpr+`->'actor'->>'id')`
+	return `((` + kind + ` is distinct from 'session' or ` + access.SessionClause(id, viewerParam) + `)
+				and (` + kind + ` is distinct from 'user' or ` + access.PersonClause(id, viewerParam) + `))`
+}
+
+// readableEvents is eventReadableSQL for who as the events and delivery packages' statements bind
+// a read rule (events.Readable): over the events row named events, the viewer at $2.
+func readableEvents(who model.Actor) events.Readable {
+	return events.Readable{Where: readableEventsWhere, Viewer: refs.VisibilityArg(who)}
+}
+
+// readableEventsWhere is readableEvents' rule, the same text for every reader, built once.
+var readableEventsWhere = eventReadableSQL("events", "$2")
 
 // listIssueEvents answers an issue's activity feed under an ETag of metadata alone: every append
 // to this feed advances the issue's last_seq in the append's own transaction (events.Broker), so
@@ -287,6 +372,9 @@ type eventListOptions struct {
 	limit      int
 }
 
+// readEvents reads one page of an issue's or a document's event log, of the events who may read
+// (eventReadableSQL): an owner of a project who does not see answers the empty page, as an owner
+// no row holds does.
 func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, options eventListOptions) ([]model.Event, error) {
 	var predicate, ownerValue string
 	switch {
@@ -297,39 +385,41 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 	default:
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
+	viewer := refs.VisibilityArg(who)
 	if len(options.ids) > 0 {
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+` and e.id = any($2)
+			where `+predicate+` and e.id = any($2) and `+eventReadableSQL("e", "$3")+`
 			order by e.seq asc
-		`, ownerValue, options.ids)
+		`, ownerValue, options.ids, viewer)
 	}
 	if options.descending {
 		if options.hasBefore {
 			return s.readEventRows(ctx, who, eventSelect+`
-				where `+predicate+` and e.seq < $2
+				where `+predicate+` and e.seq < $2 and `+eventReadableSQL("e", "$4")+`
 				order by e.seq desc limit $3
-			`, ownerValue, options.before, options.limit)
+			`, ownerValue, options.before, options.limit, viewer)
 		}
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+`
+			where `+predicate+` and `+eventReadableSQL("e", "$3")+`
 			order by e.seq desc limit $2
-		`, ownerValue, options.limit)
+		`, ownerValue, options.limit, viewer)
 	}
 	return s.readEventRows(ctx, who, eventSelect+`
-		where `+predicate+` and e.seq > $2
+		where `+predicate+` and e.seq > $2 and `+eventReadableSQL("e", "$4")+`
 		order by e.seq asc limit $3
-	`, ownerValue, options.after, options.limit)
+	`, ownerValue, options.after, options.limit, viewer)
 }
 
 // readEventsAfterID reads one page of the global event log in id order: at most limit of the
-// events whose ids are in (after, through]. Ids are not commit order, so a reader that moves its
-// cursor to a page's last row passes a through at or below the safe horizon (events.Horizon),
-// where every event is final: no lower id the page skipped can commit later.
+// events whose ids are in (after, through] that who may read (eventReadableSQL). Ids are not
+// commit order, so a reader that moves its cursor to a page's last row passes a through at or
+// below the safe horizon (events.Horizon), where every event is final: no lower id the page
+// skipped can commit later.
 func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, through int64, limit int) ([]model.Event, error) {
 	return s.readEventRows(ctx, who, eventSelect+`
-		where e.id > $1 and e.id <= $2
+		where e.id > $1 and e.id <= $2 and `+eventReadableSQL("e", "$4")+`
 		order by e.id asc limit $3
-	`, after, through, limit)
+	`, after, through, limit, refs.VisibilityArg(who))
 }
 
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
@@ -392,6 +482,56 @@ func (s *server) eventFeedHead(ctx context.Context) (int64, error) {
 	return 0, ErrEventHeadUnproven
 }
 
+// personEventHead is the event_head GET /auth/whoami answers its caller (Background.EventHead):
+// eventFeedHead's id, read as the head that caller's browser reads of the log (viewerEventHead), so
+// no event of a project the caller does not see moves it. What the caller sees is resolved from
+// the request's own credential, as every read resolves it (optionalActor, then readerFor), never
+// from a login handed over by name. whoami answers the person its cookie names, so the caller is
+// resolved from the request without its Authorization header: a token presented besides the
+// cookie, which optionalActor would resolve first, is not read, and the head is the cookie's
+// person's, as the login whoami answers is.
+func (s *server) personEventHead(r *http.Request) (int64, error) {
+	cookie := r.Clone(r.Context())
+	cookie.Header.Del("Authorization")
+	caller, _, err := s.optionalActor(cookie)
+	if err != nil {
+		return 0, err
+	}
+	through, err := s.eventFeedHead(r.Context())
+	if err != nil {
+		return 0, err
+	}
+	reader, err := s.readerFor(r.Context(), caller)
+	if err != nil {
+		// The error reaches /auth/whoami's log line, so it names no person
+		// (TestAFailedEventHeadReadNamesNoPerson).
+		return 0, fmt.Errorf("resolve what the signed-in person sees: %w", err)
+	}
+	return viewerEventHead(r.Context(), s.deps.Store.Pool, reader, through)
+}
+
+// viewerEventHead is the head of the event log reader reads at through, an id at or below which
+// every event is final (eventFeedHead, or the relay's published cursor): the highest id at or
+// below through of an event in reader's gap (eventGapSQL), one it may read or an access change
+// that took a project from it, and 0 when there is none. No event of a project reader does not
+// see moves it, and a resume from it is replayed exactly what a resume from through would be,
+// since no event between the two is one the gap holds. An open viewer of a deployment that holds
+// no private project reads every event (every project is public, every session and party it may
+// see), so it reads through itself, without the read: the head every caller read before a project
+// could be private (R9, TestWhoamiCarriesTheNewestEventID).
+func viewerEventHead(ctx context.Context, q queryer, reader model.Actor, through int64) (int64, error) {
+	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
+		return through, nil
+	}
+	var head int64
+	if err := q.QueryRow(ctx, `
+		select coalesce((select e.id from events e where e.id <= $1 and `+eventGapSQL("e", "$2")+` order by e.id desc limit 1), 0)
+	`, through, refs.VisibilityArg(reader)).Scan(&head); err != nil {
+		return 0, fmt.Errorf("read the caller's head of the event log: %w", err)
+	}
+	return head, nil
+}
+
 func (s *server) readEventRows(ctx context.Context, who model.Actor, query string, arguments ...any) ([]model.Event, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, query, arguments...)
 	if err != nil {
@@ -426,6 +566,9 @@ func (s *server) readEventRows(ctx context.Context, who model.Actor, query strin
 		return nil, err
 	}
 	if err := s.attachAskEventFields(ctx, who, events); err != nil {
+		return nil, err
+	}
+	if err := s.leaveOutHiddenReferences(ctx, s.deps.Store.Pool, who, events); err != nil {
 		return nil, err
 	}
 	if err := s.attachPostMarks(ctx, events); err != nil {

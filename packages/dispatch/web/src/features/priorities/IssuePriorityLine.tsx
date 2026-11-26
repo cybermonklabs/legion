@@ -7,6 +7,7 @@ import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   dangerText,
   dismissButtonText,
@@ -98,6 +99,11 @@ function RemoveCross(): ReactNode {
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
  *
+ * The priorities are the deployment's, which Dispatch refuses a restricted member
+ * (`useRestrictedMember`), and their pages answer such a person Page not found: their issue
+ * draws no line at all, so it reads no priority, links to no page of theirs and offers no
+ * control over a list they cannot read.
+ *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
  * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
@@ -123,9 +129,10 @@ export function IssuePriorityLine({
   const [picked, setPicked] = useState("");
   const selectId = useId();
   const queryClient = useQueryClient();
+  const restricted = useRestrictedMember();
   const priorities = useQuery({
     ...prioritiesQuery(),
-    enabled: adding || advances.length > 0,
+    enabled: !restricted && (adding || advances.length > 0),
   });
   const rows = useMemo(() => priorities.data?.priorities ?? [], [priorities.data]);
   const labels = useMemo(() => priorityLabels(rows), [rows]);
@@ -258,6 +265,8 @@ export function IssuePriorityLine({
     writeOwn([...own, picked]);
     closeForm();
   };
+
+  if (restricted) return null;
 
   return (
     <div

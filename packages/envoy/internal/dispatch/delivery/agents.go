@@ -1,6 +1,10 @@
 package delivery
 
-import "context"
+import (
+	"context"
+
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+)
 
 // resolveSessionTitlesQuery answers, for each id it is given, that session's newest event whose
 // stamped title is not empty, as one ordered read a session that stops at that session's newest
@@ -27,7 +31,12 @@ import "context"
 // one row read a session: the read skips a session's untitled rows on the way to its newest
 // titled one, and a session that never stamped a title is read to the end of its own events and
 // answers no row at all.
-const resolveSessionTitlesQuery = `
+//
+// readable holds the read to the events its reader may read (events.Readable): a title stamped on
+// an event of a project the reader does not see names nothing for that reader, which reads the
+// newest title among the events it sees instead.
+func resolveSessionTitlesQuery(readable string) string {
+	return `
 		select s.id, e.session_title
 		from unnest($1::text[]) s(id)
 		cross join lateral (
@@ -35,10 +44,12 @@ const resolveSessionTitlesQuery = `
 			from events
 			where actor->>'kind' = 'session' and actor->>'id' = s.id
 				and nullif(actor->'origin'->>'session_title', '') is not null
+				and ` + readable + `
 			order by created_at desc
 			limit 1
 		) e
 	`
+}
 
 // ResolveSessionTitles answers the newest title each session stamped, which the Delivery page
 // shows a session by (LEGION-567): a subagent's own commit trailer carries no parent-session
@@ -54,15 +65,18 @@ const resolveSessionTitlesQuery = `
 // the session ending, unlike Envoy's live, TTL-expiring session registry -- for any session that
 // ever claimed an issue, posted a message/comment/ask, or wrote a document under a title. A
 // session that never stamped one is simply absent from the returned map, and nothing here
-// backfills a name for it; SessionTitle falls back to its bare id.
-func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string) (map[string]string, error) {
+// backfills a name for it; SessionTitle falls back to its bare id. Each title is read among the
+// events readable passes: a read answered to one caller binds that caller's rule, and so does the
+// group rule, which holds a group's name to the titles its writer reads (groups.go
+// sessionsTitled); a writer that sees every object reads every event (events.EveryEvent).
+func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string, readable events.Readable) (map[string]string, error) {
 	titles := make(map[string]string, len(sessionIDs))
 	if len(sessionIDs) == 0 {
 		return titles, nil
 	}
 	// One statement for every id of the read, over that index, rather than one query per id: a
 	// Delivery timeline page can name hundreds of distinct sessions across its window.
-	rows, err := q.Query(ctx, resolveSessionTitlesQuery, sessionIDs)
+	rows, err := q.Query(ctx, resolveSessionTitlesQuery(readable.Where), readable.Args(sessionIDs)...)
 	if err != nil {
 		return nil, err
 	}

@@ -1092,7 +1092,7 @@ func (s *server) storeArtifact(
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, ledger, who, route, artifactIssueKey(artifact), artifact.ID, version.Number,
 		)
 		// The open approval request this upload's own version took back from the person it was
 		// waiting on, read off the ledger the move above and the restore's carry are queued on,
@@ -1895,7 +1895,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+			r.Context(), tx, ledger, who, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 		// The open approval request this edit's own version took back from the person it was
 		// waiting on, read off the ledger that version's move (docs.MoveApprovalAsk) and any

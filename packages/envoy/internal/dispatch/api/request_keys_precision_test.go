@@ -132,7 +132,7 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil)
+		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil, nil, nil, nil)
 	}()
 	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
 		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0

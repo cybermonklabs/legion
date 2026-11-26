@@ -7215,7 +7215,7 @@ Each proof keeps its own header, its own ports, its own seed and its own cases.
 ```
 
 It sources [`lib/rig.sh`](#librigsh) and [`lib/run-verdict.sh`](#librun-verdictsh) itself, so a proof sources this file alone and gets all three.
-Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports.
+Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports: each a port number, or all three empty, for ports the kernel chooses as each service starts, which `two_builds_fake_envoy` and `start_server` then assign.
 The proof's last statement is `run_end`, after its last check: `cleanup` prints PASS only for a run that reached it, so a `HUP`, which no trap of the harness catches, reads FAIL.
 
 Each item below names a function, then what it does.
@@ -7227,20 +7227,22 @@ Each item below names a function, then what it does.
 
 - `two_builds_prerequisites REFUSAL [CHECK…]`
 
-  makes every check the two proofs share, in the order they make them: the required `DATABASE_URL`, the caller's own `--base-commit` refusal REFUSAL, the URL scheme, the tool list, the loopback guard ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn`, which is why `python3` is in that list and why the guard runs after it), the `--base-commit` resolution into `base_sha`, the three ports and the `vector` extension.
+  makes every check the two proofs share, in the order they make them: the required `DATABASE_URL`, the caller's own `--base-commit` refusal REFUSAL, the URL scheme, the tool list, the loopback guard ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn`, which is why `python3` is in that list and why the guard runs after it), the `--base-commit` resolution into `base_sha`, the three ports (skipped when all three are empty: nothing holds them yet) and the `vector` extension.
   CHECK, when given, is the proof's own prerequisite, run after the shared ones and before the two notes, so what it notes lands where it did
 
 - `two_builds_build NAME`, `two_builds_reset_database`, `two_builds_fake_envoy`
 
-  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
+  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener, on `envoy_port` or, when it is empty, on port 0, assigning `envoy_port` the port the fake reports (`report_port`)
 
 - `two_builds_identity`
 
-  sets `agent_token`, `signin_key`, `base_url` and `head_url`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
+  sets `agent_token`, `signin_key`, `base_url` and `head_url`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live; each URL is empty when its port is
 
 - `start_server NAME BINARY PORT [VAR=VALUE…]`
 
-  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`
+  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`.
+  An empty PORT is one the kernel chooses: the build serves on a socket [`lib/rig.sh`](#librigsh)'s `start_held` holds from that choice until the build serves on it (`DISPATCH_LISTEN_FD`), and `NAME_port` is assigned that port before it returns.
+  The private-projects drivers (`packages/dispatch/e2e/acceptance/project-access.sh` and `project-access-blob.sh`) start every build this way
 
 - `call METHOD PATH [BODY]`, `json_field FIELD`, `cleanup RC`
 

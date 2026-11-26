@@ -84,13 +84,13 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 
 	// The read phase holds no transaction id (INFRA-636). The result's row is read plainly, for
-	// the owner it names: nothing ever updates a check_results row, and its one writer, the
-	// record route, inserts it under that same owner's lock (results.go, lockIssueOwners), so
-	// the row read here holds still. The owner's lock comes next, and it is the lock the event's
-	// append would otherwise be the first to take (store.LockOwner, events' lockEventOwner):
-	// advisory, so this route waits for it holding no transaction id, where a `select ... for
-	// update` of the result taken first would have held one across the wait and across every
-	// read below it.
+	// the owner it names, as who reads the issue it was recorded on: nothing ever updates a
+	// check_results row, and its one writer, the record route, inserts it under that same owner's
+	// lock (results.go, lockIssueOwners), so the row read here holds still. The owner's lock comes
+	// next, and it is the lock the event's append would otherwise be the first to take
+	// (store.LockOwner, events' lockEventOwner): advisory, so this route waits for it holding no
+	// transaction id, where a `select ... for update` of the result taken first would have held
+	// one across the wait and across every read below it.
 	//
 	// Everything the retraction is decided on is read in the statements after that lock, each
 	// taking a fresh snapshot: a second retraction of this result, whose only writer is this
