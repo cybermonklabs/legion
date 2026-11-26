@@ -391,11 +391,11 @@ func main() {
 	// one, only when this broker can ask whether its project is private
 	// (policy.Loader.ProjectChecks). projectAccess is projectClient, for the hold
 	// gate below, which reads its person answers (hold.Config.Access) from the cache the token
-	// exchange fills. The client keeps the member kind of each person answer it fetches in
-	// person_member_kind, so that while Dispatch cannot be asked a person last answered a full member
-	// is served as one and everyone else is refused 503 MEMBER_KIND_UNCHECKABLE, as before, and each
-	// project answer in project_standing for the request machine's person rule
-	// (projectaccess.Client.Keep).
+	// exchange fills. The client keeps each person answer it fetches in one write: its member kind
+	// in person_member_kind, so that while Dispatch cannot be asked a person last answered a full
+	// member is served as one and everyone else is refused 503 MEMBER_KIND_UNCHECKABLE, as before,
+	// and its hold in person_standing, which the hold gate answers from; and it keeps each project
+	// answer in project_standing for the request machine's person rule (projectaccess.Client.Keep).
 	projectClient, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
 	var projectAccess projectaccess.Access
 	if projectClient != nil {
@@ -605,15 +605,15 @@ func main() {
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
 	// The hold of refused people (internal/cipher/hold) asks Dispatch through the exchange's own
-	// client, so the two share one cache of person answers and one call per person, and keeps
-	// each answer in person_standing for when Dispatch cannot be asked. With no Dispatch to ask
-	// the broker builds no gate and holds nobody, as before the hold. An IAP deployment's broker
-	// sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate serves a person only on an answer with a
-	// deadline (hold.Config.RequireDeadline).
+	// client, so the two share one cache of person answers and one call per person, and answers
+	// from what that client keeps in person_standing (projectClient.Keep, above) for when Dispatch
+	// cannot be asked. With no Dispatch to ask the broker builds no gate and holds nobody, as
+	// before the hold. An IAP deployment's broker sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate
+	// serves a person only on an answer with a deadline (hold.Config.RequireDeadline).
 	var holdGate *hold.Gate
 	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
-		holdGate = hold.New(hold.Config{Access: projectClient, Store: st, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
+		holdGate = hold.New(hold.Config{Access: projectClient, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
 		exchangeConfig.Hold = holdGate
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {

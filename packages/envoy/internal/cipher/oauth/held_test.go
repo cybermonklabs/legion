@@ -87,7 +87,8 @@ func newHoldDispatch(t *testing.T, rows map[string]projectaccesstest.Row, people
 	}
 	t.Cleanup(st.Close)
 	d.store = st
-	d.gate = hold.New(hold.Config{Access: d.access, Store: st, Now: d.now})
+	d.access.Keep(st, nil, nil)
+	d.gate = hold.New(hold.Config{Access: d.access, Now: d.now})
 	return d
 }
 

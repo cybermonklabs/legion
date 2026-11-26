@@ -98,7 +98,8 @@ func newHoldBroker(t *testing.T) *holdBroker {
 	access.UseClock(clock.now)
 	var gate *hold.Gate
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		gate = hold.New(hold.Config{Access: access, Store: d.Enroll.Store, Now: clock.now})
+		access.Keep(d.Enroll.Store, nil, nil)
+		gate = hold.New(hold.Config{Access: access, Now: clock.now})
 		d.Hold = gate
 		withProvider(t, func(c *oauth.Config) { c.Exchange.Projects, c.Exchange.Hold = access, gate })(d)
 		// One provider, as cmd/cipherd builds one: the machine login's approval records the device
