@@ -13,6 +13,7 @@ import {
 import { SendStoppedError } from "../writes/keyed-write";
 import type { AgentNames } from "./CachedAuthor";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "./composer-words";
 import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply } from "./KeptReply";
 import type { SentDraft } from "./send-request";
@@ -231,9 +232,9 @@ export function KeptDraftOffers({
       {changed === undefined ? null : (
         <DraftOffer
           body={changed.body}
-          drop={{ label: "Discard my edit", press: onDiscardChanged }}
-          lead="This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:"
-          take={{ label: "Use my edit", press: onTakeChanged }}
+          drop={{ label: OFFER_LABELS.dropEdit, press: onDiscardChanged }}
+          lead={CHANGED_EDIT_LEAD}
+          take={{ label: OFFER_LABELS.takeEdit, press: onTakeChanged }}
         />
       )}
       {/* A draft the margin's compose kept for other words of the document: a newer compose there
@@ -268,7 +269,7 @@ export function KeptDraftOffers({
       {gone.map((away) => (
         <DraftOffer
           body={away.draft.body}
-          drop={{ label: "Discard my draft", press: () => onDropGone(away) }}
+          drop={{ label: OFFER_LABELS.dropDraft, press: () => onDropGone(away) }}
           key={away.replyTo.id}
           lead={
             <GoneReply
@@ -281,7 +282,7 @@ export function KeptDraftOffers({
           replacement={away.draft.replacement}
           take={
             goneTakes === "here"
-              ? { label: "Use it here", press: () => onTakeGone(away) }
+              ? { label: OFFER_LABELS.takeHere, press: () => onTakeGone(away) }
               : undefined
           }
         />

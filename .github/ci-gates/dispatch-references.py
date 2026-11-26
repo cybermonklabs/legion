@@ -34,6 +34,7 @@ EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references 
     'packages/dispatch/web/src/features/conversation/MentionField.tsx',
     'packages/dispatch/web/src/features/conversation/MentionComposer.tsx',
     'packages/dispatch/web/src/features/conversation/ConversationTab.tsx',
+    'packages/dispatch/web/src/features/issue-page/IssueComposer.tsx',
     'packages/dispatch/web/src/features/inbox/ThreadBody.tsx',
     'packages/dispatch/web/src/features/dashboard/ThreadItem.tsx',
     'packages/dispatch/web/src/features/ask-body/AskBody.tsx',
