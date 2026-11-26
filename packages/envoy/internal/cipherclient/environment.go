@@ -26,21 +26,27 @@ import (
 const (
 	// BrokerURLVar names the secrets broker, as it does for every other form of agent-secrets.
 	BrokerURLVar = "AGENT_SECRETS_URL"
-	// IdentityVar says which identity this machine proves: kubernetes, metadata or pool. Unset,
-	// this machine has none and nothing trades — which is every deployment that has not turned
-	// the exchange on, and is why no program here fails for want of it.
+	// IdentityVar says which identity this machine proves: kubernetes, metadata, pool or
+	// github-actions. Unset, this machine has none and nothing trades — which is every deployment
+	// that has not turned the exchange on, and is why no program here fails for want of it.
 	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
 	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
 	// IdentityKubernetes reads and IdentityPool federates.
 	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
-	// MachineAudienceVar is the audience of this machine's Google identity token: the metadata
-	// server mints it for that audience, and a pool mint names it as the minted token's own.
+	// MachineAudienceVar is the audience of this machine's identity token: the metadata server
+	// mints it for that audience, a pool mint names it as the minted token's own, and GitHub
+	// mints a GitHub Actions run's for it.
 	MachineAudienceVar = "AGENT_SECRETS_MACHINE_AUDIENCE"
 	// PoolAudienceVar is the workload identity pool provider an external credential is traded
 	// at, the full //iam.googleapis.com/projects/… resource name.
 	PoolAudienceVar = "AGENT_SECRETS_POOL_AUDIENCE"
 	// PoolAccountVar is the managed identity generateIdToken is called on.
 	PoolAccountVar = "AGENT_SECRETS_POOL_ACCOUNT"
+	// ActionsIDTokenRequestURLVar and ActionsIDTokenRequestTokenVar are where a GitHub Actions
+	// job asks GitHub for its OIDC token, and the bearer it asks with, which GitHub sets in a job
+	// that holds `id-token: write` (IdentityGitHubActions).
+	ActionsIDTokenRequestURLVar   = "ACTIONS_ID_TOKEN_REQUEST_URL"
+	ActionsIDTokenRequestTokenVar = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 	// SessionVar is the session a trade writes under for a caller that acts as no session of
 	// its own, which a daemon, a command and this helper are (TradeSession).
 	SessionVar = "AGENT_SECRETS_SESSION"
@@ -70,9 +76,10 @@ const (
 	DefaultSignInIssuer = "https://accounts.google.com"
 
 	// The values IdentityVar takes.
-	IdentityKubernetes = "kubernetes"
-	IdentityMetadata   = "metadata"
-	IdentityPool       = "pool"
+	IdentityKubernetes    = "kubernetes"
+	IdentityMetadata      = "metadata"
+	IdentityPool          = "pool"
+	IdentityGitHubActions = "github-actions"
 
 	// identityDeviceLogin is a value IdentityVar takes that this client refuses by name: a
 	// machine's device login (`dispatch login --device`), which only the TypeScript client
@@ -190,12 +197,26 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			Subject: NewProjectedToken(path), Audience: pool, ServiceAccount: account,
 			TokenAudience: audience, HTTP: HTTPClient(),
 		}, nil
+	case IdentityGitHubActions:
+		requestURL, err := required(getenv, ActionsIDTokenRequestURLVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		requestToken, err := required(getenv, ActionsIDTokenRequestTokenVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		audience, err := required(getenv, MachineAudienceVar, kind)
+		if err != nil {
+			return nil, err
+		}
+		return &GitHubActionsIdentity{RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient()}, nil
 	case identityDeviceLogin:
-		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s or %s",
-			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool)
+		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s, %s or %s",
+			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 	default:
-		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s or %s",
-			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool)
+		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s, %s or %s",
+			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 	}
 }
 
