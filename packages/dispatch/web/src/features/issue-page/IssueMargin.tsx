@@ -1,4 +1,10 @@
-import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  type QueryKey,
+  type UseQueryResult,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -9,7 +15,16 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { Artifact, IssueDetails, ReferenceTarget, UserState } from "../../api/types";
+import type {
+  Artifact,
+  AskRead,
+  CommentRead,
+  DisplayTree,
+  IssueDetails,
+  MessageRead,
+  ReferenceTarget,
+  UserState,
+} from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -36,7 +51,14 @@ import { type BlockItemKind, routeItem } from "../refs/block-reference";
 import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
-import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
+import {
+  askQuery,
+  commentQuery,
+  EVENT_FRESH,
+  messageQuery,
+  referencesQuery,
+  standsFailed,
+} from "../refs/reference-target";
 import {
   buildDispatchReference,
   buildIssuePath,
@@ -152,68 +174,146 @@ function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
 }
 
+/** The whole text of the item an issue was filed out of, as the item's own read answers it: an
+ *  ask's question, or a comment's or a message's body, as stored, with the server's reading of
+ *  it, which the page asks of every read (`Dispatch-Trees`, `api/client.ts`). */
+interface FiledText {
+  readonly text: string;
+  readonly tree: DisplayTree | undefined;
+}
+
+// Each kind's read keeps the item's whole record in the cache, shared with the item's page and
+// every reference to it, and its `select` takes the text out of it for the item's row alone. Each
+// is declared once: TanStack runs a `select` again whenever its identity changes.
+const askText = ({ ask }: AskRead): FiledText => ({ text: ask.question, tree: ask.question_tree });
+const commentText = ({ comment }: CommentRead): FiledText => ({
+  text: comment.body,
+  tree: comment.body_tree,
+});
+const messageText = ({ message }: MessageRead): FiledText => ({
+  text: message.body,
+  tree: message.body_tree,
+});
+
+/**
+ * The read of the whole text of the item an issue was filed out of (`FiledText`), made while
+ * `enabled`, with the key it is read under: the item's own record, under the key its page and
+ * every reference to it read that record by (`askQuery`, `commentQuery`, `messageQuery`), so the
+ * events that change the item read it again (`api/event-refresh.ts`), and its age never does
+ * (`EVENT_FRESH`). Each kind has its read, of which only the item's is made, as a reference reads
+ * its target (`useReferenceData`); the read of another kind is handed no id. It draws nothing
+ * while its own answer is out (no `placeholderData`): its key changes only with the item, and
+ * another item's text is no line of this one.
+ */
+function useFiledText(
+  route: DispatchReferenceRoute | undefined,
+  item: { readonly id: string; readonly kind: BlockItemKind } | undefined,
+  enabled: boolean
+): { readonly queryKey: QueryKey; readonly read: UseQueryResult<FiledText> } {
+  // A message is an issue's alone, read by its issue's key as well as its id.
+  const message =
+    item?.kind === "message" && route !== undefined && "key" in route
+      ? { id: item.id, key: route.key }
+      : undefined;
+  const askRead = askQuery(item?.kind === "ask" ? item.id : undefined);
+  const commentRead = commentQuery(item?.kind === "comment" ? item.id : undefined);
+  const messageRead = messageQuery(message?.key, message?.id);
+  const ask = useQuery({
+    ...askRead,
+    ...EVENT_FRESH,
+    enabled: enabled && item?.kind === "ask",
+    select: askText,
+  });
+  const comment = useQuery({
+    ...commentRead,
+    ...EVENT_FRESH,
+    enabled: enabled && item?.kind === "comment",
+    select: commentText,
+  });
+  const messageAnswer = useQuery({
+    ...messageRead,
+    ...EVENT_FRESH,
+    enabled: enabled && message !== undefined,
+    select: messageText,
+  });
+  switch (item?.kind) {
+    case "ask":
+      return { queryKey: askRead.queryKey, read: ask };
+    case "comment":
+      return { queryKey: commentRead.queryKey, read: comment };
+    default:
+      return { queryKey: messageRead.queryKey, read: messageAnswer };
+  }
+}
+
 /**
  * The item an issue was filed out of, as Details names it, in the form of Details' list of what
  * references a row (`NodeReferences.tsx`): the page's word for its kind
  * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its one line as the way to it,
- * drawn from what the relations' names read answered for it (`IssueMarginPanel`) as a parent's
- * line under a filter is drawn (`node-line.tsx`'s `ParentLink`), and ` · edited` after it where
- * its author edited it (`EditedMark`, INFRA-1523 R2).
+ * drawn as a parent's line under a filter is drawn (`node-line.tsx`'s `ParentLink`), and
+ * ` · edited` after it where its author edited it (`EditedMark`, INFRA-1523 R2).
  *
  * The line is the item's one line, as every one line of a node is drawn (`useNodeLine`): the
- * first line of the post's own text - an ask's question, a comment's or a message's body - as the
- * names read answers it (`ReferenceTarget.name`, with the server's reading of it where the read
- * sends one), with the record as the source its references are read against. The shared
+ * first line of the post's whole text - an ask's question, a comment's or a message's body - as
+ * the item's own read answers it (`text`, `useFiledText`): the text as stored, with the server's
+ * reading of it, and the record as the source its references are read against. The shared
  * plain-text projection reads it, so no mark of the stored Markdown is drawn and each reference
  * in it reads as its target's name (R8), and R1's first-line rule cuts it: the whole first
  * sentence up to the line's 100 characters, and no word of a later block (R4). Nothing of it is
- * drawn until the projection has answered. No name the names store holds for the item is read:
- * that name is a link's title, cut to a title's room with every block of the text joined into it.
+ * drawn until the projection has answered. The relations' names read (`target`) says whether the
+ * item is gone, deleted or edited, and none of its words: the name it answers for an item is the
+ * head of the stored Markdown, its first 240 runes, cut with no ellipsis, and it sends no reading
+ * of it (`refs/heads.go`'s `itemExcerpt`), so the line of a first sentence that runs past that
+ * head would stop inside a word, and draw a mark of any link the cut falls inside. No name the
+ * names store holds for the item is read either: that name is a link's title, cut to a title's
+ * room with every block of the text joined into it.
  *
- * The page's word for the kind alone is the way to the item while that read has not answered for
- * it, or has failed, since an address is no name, and where its text holds no words, as a
- * decision's parent line with no words of its own is named (`DecisionsRow.tsx`'s
- * `EntryParentLine`, R7 and R22): once, and never by its id. A comment or a message its author
- * deleted keeps its page, and is drawn by its deleted line, as its row in the outline draws it
- * (`DeletedLine`): who deleted it, named as the page names an author, and when, and no edited
- * mark, since that line already says what became of the text. An item Dispatch answers gone - one
- * nothing answers to now, or one the reader may not see - opens no page, so it is drawn as the
- * page's chip draws one: its word, then Deleted, with no link.
+ * The page's word for the kind alone is the way to the item while the names read or the item's
+ * own read has not answered for it, or has failed, since an address is no name, and where its
+ * text holds no words, as a decision's parent line with no words of its own is named
+ * (`DecisionsRow.tsx`'s `EntryParentLine`, R7 and R22): once, and never by its id. A comment or a
+ * message its author deleted keeps its page, and is drawn by its deleted line, as its row in the
+ * outline draws it (`DeletedLine`): who deleted it, named as the page names an author, and when,
+ * and no edited mark, since that line already says what became of the text. An item Dispatch
+ * answers gone - one nothing answers to now, or one the reader may not see - opens no page, so it
+ * is drawn as the page's chip draws one: its word, then Deleted, with no link.
  */
 function FiledItemLine({
   item,
   route,
   target,
+  text,
 }: {
   item: { readonly id: string; readonly kind: BlockItemKind };
   route: DispatchReferenceRoute;
   target: ReferenceTarget | undefined;
+  text: FiledText | undefined;
 }): ReactNode {
   const word = NODE_REFERENCES_WORDS.kinds[item.kind];
   const href = referenceHref(route);
   const gone = target?.gone === true;
   const deleted = gone ? null : postDeletion(target);
-  // The answer the line is read from: none while the read has not answered for the item, and none
-  // for a gone or a deleted one, whose line is not its words. The line is read on every render, so
-  // the link below stays one element as the read answers, and a focus a Retry handed it stays on
-  // it (`useTitlesRetry`).
-  const worded = target === undefined || gone || deleted !== null ? undefined : target;
+  // The text the line is read from: none while either read has not answered for the item, and
+  // none for a gone or a deleted one, whose line is not its words. The line is read on every
+  // render, so the link below stays one element as the reads answer, and a focus a Retry handed
+  // it stays on it (`useTitlesRetry`).
+  const worded = target === undefined || gone || deleted !== null ? undefined : text;
   const { line, reads } = useNodeLine(
     {
       id: item.id,
       // The issue the item is on, by which a role in its words is read; a project document's ask
       // or comment is on none.
       source: textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined),
-      text: worded?.name ?? "",
-      tree: worded?.text_tree,
+      text: worded?.text ?? "",
+      tree: worded?.tree,
       // An item's kind is the page's own token for the node it is (`NODE_TYPE_NAMES`).
       type: item.kind,
     },
     { surface: "issue-filed-from" }
   );
-  // Whether the kind's word is the way to the item, the page's own words: the read has not
-  // answered for it, or its words hold none.
-  const wordOnly = target === undefined || (worded !== undefined && line === "");
+  // Whether the kind's word is the way to the item, the page's own words: the line of an item
+  // neither gone nor deleted, which a read has not answered for, or whose words hold none.
+  const wordOnly = !gone && deleted === null && (worded === undefined || line === "");
   const marks = wordOnly ? pageChrome : authorText;
   const shown: ReactNode =
     deleted !== null ? (
@@ -222,7 +322,7 @@ function FiledItemLine({
       <>
         {reads}
         {wordOnly ? word : <span {...authorText}>{line ?? ""}</span>}
-        <EditedMark at={worded?.edited_at} marks={pageChrome} />
+        <EditedMark at={worded === undefined ? undefined : target?.edited_at} marks={pageChrome} />
       </>
     );
   return (
@@ -326,10 +426,10 @@ export function IssueMarginCards({
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
  * on, what waits on it and the titles of those, the names of the issue it repeats and of the
- * item it was filed out of, and its links on GitHub it reads only while Details and its
- * Development are open, and what references the issue only while Details and its References are
- * open with its Referenced by list, so a load that leaves Details shut costs no request for any
- * of them.
+ * item it was filed out of, that item's own text, and its links on GitHub it reads only while
+ * Details and its Development are open, and what references the issue only while Details and its
+ * References are open with its Referenced by list, so a load that leaves Details shut costs no
+ * request for any of them.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -431,9 +531,9 @@ export function IssueMarginPanel({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
-  // waits on it and the titles of those, the names of the issue's two relations, its links on
-  // GitHub, and what references it - are made only while the drawer is open, so a load that
-  // leaves it shut costs no request for them.
+  // waits on it and the titles of those, the names of the issue's two relations and the filed
+  // item's own text, its links on GitHub, and what references it - are made only while the drawer
+  // is open, so a load that leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
   // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
   // only while its own section is open too - all but the last are of rows in Development, where a
@@ -538,12 +638,12 @@ export function IssueMarginPanel({
   const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
   // The issue this one repeats (`duplicate_of`) and the item it was filed out of (`filed_from`),
   // as INFRA-1253's issue read answers them: each has a row only where the issue holds it. The
-  // duplicate's title and the item's words are one names read of the two addresses, made only
-  // while Development is open, as the titles of the issues this one waits on are, and read again
-  // as those are (`EVENT_FRESH`): on an edit or a delete of the item, and on a new title of the
-  // duplicate (`api/event-refresh.ts`'s `namesReadsNaming`). A relation changed in another
-  // session gives the read a new key, and the row of the other relation keeps the name it drew
-  // until that read fails (`keptUntilFailed`).
+  // duplicate's title, and whether the item is gone, deleted or edited, are one names read of the
+  // two addresses, made only while Development is open, as the titles of the issues this one
+  // waits on are, and read again as those are (`EVENT_FRESH`): on an edit or a delete of the item,
+  // and on a new title of the duplicate (`api/event-refresh.ts`'s `namesReadsNaming`). A relation
+  // changed in another session gives the read a new key, and the row of the other relation keeps
+  // what it drew until that read fails (`keptUntilFailed`).
   const duplicateOf = issue.duplicate_of ?? "";
   const filedFrom = issue.filed_from ?? "";
   const filedRoute = filedFrom === "" ? undefined : parseNodeReference(filedFrom);
@@ -559,9 +659,16 @@ export function IssueMarginPanel({
     enabled: readingDevelopment && relationRefs.length > 0,
     placeholderData: keptUntilFailed(queryClient, relationRead.queryKey),
   });
-  // The item's line is drawn from this read's own answer for it (`FiledItemLine`), and from no
-  // name the names store holds for it, so nothing of it is published there.
   const filedTarget = relationNames.data?.targets.find((target) => target.ref === filedFrom);
+  // The names read answers the item by the head of its stored text alone (`FiledItemLine`), so
+  // the item's line is read from its own record (`useFiledText`): only while Development is open,
+  // and only once the names read has answered the item neither gone nor deleted, since the line
+  // of either is not its words, and neither costs a read. The line is drawn from these two reads
+  // alone, and from no name the names store holds for the item, so nothing of it is published
+  // there.
+  const filedWorded =
+    filedTarget !== undefined && filedTarget.gone !== true && postDeletion(filedTarget) === null;
+  const filedText = useFiledText(filedRoute, filedItem, readingDevelopment && filedWorded);
   // The read's failure is said in each relation row it feeds: the duplicate's in the words of the
   // titles' reads above, since it is an issue, and the item's in words of its own, since a
   // question, a comment or a message has no title. Each line goes as theirs does
@@ -569,6 +676,13 @@ export function IssueMarginPanel({
   // was pressed for answers (`useTitlesRetry`): to the row's first link, and where the row draws
   // none - an item Dispatch answers gone - to Development's heading.
   const relationFailed = standsFailed(relationNames);
+  // A failed read of the item's own record is a failed read of its row too, said in the same
+  // words, with a Retry that reads the record again and hands the focus on as the names read's
+  // Retry does. It is the row's read only while the names read answers the item with words, so a
+  // failure of it says nothing under a deleted line. Its key changes with the item alone, and it
+  // draws no placeholder, so it stops standing failed only by holding its own answer, as
+  // `useTitlesRetry` asks of the read it sends.
+  const filedTextFailed = filedWorded && standsFailed(filedText.read);
   const duplicateValue = useRef<HTMLDivElement>(null);
   const filedValue = useRef<HTMLDivElement>(null);
   const duplicateRetry = useTitlesRetry(relationNames, relationRead.queryKey, () =>
@@ -577,12 +691,13 @@ export function IssueMarginPanel({
       developmentHeading.current
     )
   );
-  const filedRetry = useTitlesRetry(relationNames, relationRead.queryKey, () =>
+  const filedFirst = () =>
     firstUsable(
       filedValue.current?.querySelector<HTMLElement>("a[href]"),
       developmentHeading.current
-    )
-  );
+    );
+  const filedRetry = useTitlesRetry(relationNames, relationRead.queryKey, filedFirst);
+  const filedTextRetry = useTitlesRetry(filedText.read, filedText.queryKey, filedFirst);
   const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
@@ -901,14 +1016,31 @@ export function IssueMarginPanel({
             label={PROPERTY_LABELS.filed_from}
             valueRef={filedValue}
           >
-            <FiledItemLine item={filedItem} route={filedRoute} target={filedTarget} />
+            <FiledItemLine
+              item={filedItem}
+              route={filedRoute}
+              target={filedTarget}
+              text={filedText.read.data}
+            />
+            {/* Each read's line is an element of its own, so the line of the one that answers
+                goes with its Retry, and the line of the other is drawn afresh. */}
             {relationFailed ? (
               <DetailsErrorLine
                 error={relationNames.error}
                 failure={relationNames.errorUpdateCount}
+                key="names"
                 message={STATE_LINES.filed_from_unreadable}
                 {...filedRetry}
                 retrying={relationNames.isFetching}
+              />
+            ) : filedTextFailed ? (
+              <DetailsErrorLine
+                error={filedText.read.error}
+                failure={filedText.read.errorUpdateCount}
+                key="text"
+                message={STATE_LINES.filed_from_unreadable}
+                {...filedTextRetry}
+                retrying={filedText.read.isFetching}
               />
             ) : null}
           </Row>
