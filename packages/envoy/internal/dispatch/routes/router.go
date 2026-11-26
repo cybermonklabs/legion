@@ -29,6 +29,9 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -49,8 +52,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
-	"golang.org/x/sync/semaphore"
-	"golang.org/x/sync/singleflight"
 )
 
 // AppContext holds shared dependencies for the HTTP handlers. All fields are
@@ -348,9 +349,10 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 // mount builds New's router, mounts every route the server serves on mux, the API's table among
 // them (api.Register), and answers the API server's background work. Each pattern beside the API
 // route table is mounted through readclass.Handle with what it reads; api.Register mounts the
-// table and the two sockets. A test reads the server's routes from this mounting itself
-// (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
-func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
+// table and the two sockets. A mux that keeps what is mounted on it reads the server's routes from
+// the mounting itself (TestAKeyedWriteNeverRunsUnkeyed), and one that is also a readclass.Recorder
+// their read classes (TestEveryGETRouteHasAReadClass).
+func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),

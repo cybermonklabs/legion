@@ -69,6 +69,7 @@ func newRoomRefreshRig(t *testing.T) roomRefreshRig {
 // file's room; refreshRosterForReader without its readsEveryDocument guard, and the read with no
 // project private refreshes once.
 func TestARoomReadRefreshesAnExpiredListenerAnswerFirst(t *testing.T) {
+	t.Parallel()
 	rig := newRoomRefreshRig(t)
 	ctx := context.Background()
 	probe := []*schemaAdmission{{key: schemaAdmissionKey{room: rig.file}}}
@@ -105,6 +106,7 @@ func TestARoomReadRefreshesAnExpiredListenerAnswerFirst(t *testing.T) {
 // Control: socketStillReads running the refresh itself before readableRooms (the code before);
 // each ask refreshes twice and the test fails.
 func TestASocketsAskRefreshesTheListenerAnswerOnce(t *testing.T) {
+	t.Parallel()
 	for _, open := range []bool{true, false} {
 		rig := newRoomRefreshRig(t)
 		admission := &schemaAdmission{person: "alice", key: schemaAdmissionKey{room: rig.file}}

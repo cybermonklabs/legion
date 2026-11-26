@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -207,15 +208,11 @@ var RevisionFenceStatement = `
 // tick's cursor rows and the backfill's horizons (marking_rule, migration 20261120122600): a build
 // starts reading the event log where a build or a backfill of its own rule left off and never
 // where one of another rule did, since that build marked what its own rule owes and not what this
-// one owes, and a pass of one rule clears no mark of a higher rule. Rule 1 is the rule's first
-// value, and a build of rule 1 already honours the marks of every later rule. Rule 2 is rule 1
-// with the scope of every node: the tick's comment write and the backfill's block and comment
-// reads carry the project or the parties of each node they write (CommentsNamingNoNode,
-// graphcensus.BlockRowsStatement, graphstore's node write), so a build of rule 2 reads none of
-// rule 1's cursors or horizons, and a node a build of rule 1 wrote with no project is the
-// backfill's of rule 2 to fill (graphcensus.Backfill). It is declared here, where docs and
-// graphcensus both read it: docs' own tests import graphcensus, so graphcensus cannot import docs.
-const BlockIndexMarkingRule = 2
+// one owes, and a pass of one rule clears no mark of a higher rule. Rule 1 is the first rule this
+// code ships, so a build of rule 1 already honours the marks of every later rule. It is declared
+// here, where docs and graphcensus both read it: docs' own tests import graphcensus, so graphcensus
+// cannot import docs.
+const BlockIndexMarkingRule = 1
 
 // OwedMarkListed is the condition under which a pass of the marking rule rule, a SQL expression,
 // lists as owed the document whose document_block_versions row row holds a mark of this build's

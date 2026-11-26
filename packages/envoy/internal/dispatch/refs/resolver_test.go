@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -693,7 +695,16 @@ func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
 		t.Errorf("the body logged %q; want nothing logged", record.Message)
 	}
 
-	_, err = ResolvePrefix(ctx, tx, prefixAuthor, "ask", Scope{IssueKey: issue}, shared, Viewer{})
+	// ResolvePrefix answers a caller that carries its viewer, as the API's readerOf resolves one.
+	// prefixAuthor is the author a stored row records, which carries none, so it asks as the person
+	// it records sees now, which is how the reader above resolved it (Reader.seenBy).
+	viewer, err := access.RecordedViewer(ctx, tx, prefixAuthor)
+	if err != nil {
+		t.Fatalf("read the viewer %s records: %v", prefixAuthor.ID, err)
+	}
+	asker := prefixAuthor
+	asker.Viewer = &viewer
+	_, err = ResolvePrefix(ctx, tx, asker, "ask", Scope{IssueKey: issue}, shared, Viewer{})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) || ambiguous.Prefix != shared || len(ambiguous.Candidates) != 2 ||
 		ambiguous.Candidates[0].ID != resolverAmbiguous || ambiguous.Candidates[1].ID != resolverTwin {

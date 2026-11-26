@@ -18,6 +18,7 @@ import (
 // connection and reads no header of the writer's, so the value reaches it only through the
 // connection the service's Hijack hands out (upgradeHeadersWriter).
 func TestADocumentSocketsUpgradeSaysWhetherAnyProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

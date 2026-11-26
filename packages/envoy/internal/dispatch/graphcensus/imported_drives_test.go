@@ -429,29 +429,6 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
 		},
 	}, {
-		// The session's reply to that message, a message of the same issue's project.
-		Name: "api/message_delivery.go#insertSessionReply", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent"},
-		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/reply", map[string]any{
-				"actor": sessionActor(messageSession), "attempt": 1, "body": "On it.",
-			}, "", http.StatusCreated)
-		},
-		// The reply's node (insertSessionReply) comes with S4, so the reply states nothing here.
-		Counts: nil,
-	}, {
-		// A broadcast to the message's session: the copy it stores for that session, a message on
-		// no issue, between alice and the session, whose node names those parties.
-		Name: "api/broadcasts.go#writeBroadcast", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent"},
-		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
-				"body": "To everyone.", "delivery": "btw", "session_ids": []string{messageSession},
-			}, "alice", http.StatusCreated)
-		},
-		// Each copy's node (writeBroadcast) comes with S4, so the broadcast states nothing here.
-		Counts: nil,
-	}, {
 		Name: "api/asks.go#createAskFor", Database: r.database,
 		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
@@ -475,23 +452,6 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
 		},
 		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
-	}, {
-		// The removal of an untouched document of the issue, made just before by typing a title:
-		// its node stated gone, which the term artifact_removed counts.
-		Name: "api/artifact_removal.go#removeArtifact", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent"},
-		Ready: func(t *testing.T) {
-			r.removable = decoded[struct {
-				Artifact model.Artifact `json:"artifact"`
-			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts",
-				map[string]any{"name": "scratch.md"}, "alice", http.StatusCreated)).Artifact.ID
-		},
-		Drive: func(t *testing.T) {
-			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
-		},
-		// The removal's gone statement of the document's node (removeArtifact) comes with
-		// S3c-documents, so the removal states nothing here.
-		Counts: nil,
 	}, {
 		Name: "api/server.go#appendCausingEvent", Database: r.database,
 		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#queueFollow"},

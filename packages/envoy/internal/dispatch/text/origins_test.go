@@ -72,6 +72,35 @@ func TestNewOriginsSkipsWhatNamesNoOrigin(t *testing.T) {
 	}
 }
 
+// Canonical is the canonical origin alone, never the outside one: a canonical value that names no
+// origin leaves Canonical empty, as a deployment with no DISPATCH_SERVER_URL had it, though the
+// outside origin is still read. Every caller of Canonical builds the deployment's own links and
+// first lines from it, so an outside origin taken for it would be written into them.
+func TestCanonicalIsNeverTheOutsideOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		origins Origins
+		want    string
+	}{
+		{"both origins", twoOrigins, "https://canon.test"},
+		{"a canonical origin at a base path", NewOrigins("https://canon.test/dispatch/", "https://outside.test"), "https://canon.test/dispatch/"},
+		{"no canonical value", NewOrigins("", "https://outside.test"), ""},
+		{"a canonical value that names no origin", NewOrigins("not a url", "https://outside.test"), ""},
+		{"no origins", Origins{}, ""},
+	} {
+		if got := tc.origins.Canonical(); got != tc.want {
+			t.Errorf("%s: Canonical() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	outsideOnly := NewOrigins("", "https://outside.test")
+	if got := Extract("https://outside.test/issues/ABC-1", outsideOnly); len(got) != 1 || got[0].Kind != "issue" {
+		t.Errorf("Extract of the outside origin with no canonical one = %+v, want the issue", got)
+	}
+	if got := outsideOnly.Hosts(); !reflect.DeepEqual(got, []string{"outside.test"}) {
+		t.Errorf("Hosts() with no canonical origin = %q, want the outside origin's host", got)
+	}
+}
+
 // An origin with a base path keeps it: a URL is read against the origin whose scheme and host it
 // has, with that origin's own path, so one Dispatch at a path and another at a host both read.
 func TestEachOriginKeepsItsOwnBasePath(t *testing.T) {

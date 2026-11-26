@@ -290,7 +290,11 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 // one error is a candidate reader's failure reaching the database, and no refusal that quotes the
 // prefix a body wrote is built on the way to the log (Reader.failed).
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
-	found, err := readPrefixCandidates(r.ctx, r.q, r.writer, key.kind, key.scope, key.prefix, Viewer{})
+	writer, err := r.seenBy()
+	if err != nil {
+		return "", err
+	}
+	found, err := readPrefixCandidates(r.ctx, r.q, writer, key.kind, key.scope, key.prefix, Viewer{})
 	if err != nil {
 		return "", err
 	}

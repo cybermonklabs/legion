@@ -98,8 +98,9 @@ type Deps struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
-	// and DepsInput.OutsideOrigin): a dashboard URL of either that a text or a request writes is
-	// read as the reference its page names.
+	// and DepsInput.OutsideOrigin): a dashboard URL of one of them that a text or a request writes
+	// is read as the reference its page names. At this slice only the canonical one is ever set,
+	// since nothing reads DISPATCH_OUTSIDE_ORIGIN until S6a carries the setting.
 	Origins text.Origins
 	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
@@ -732,6 +733,17 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
+// RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
+// package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
+// reads every route the router mounts from the mounting itself rather than from a list kept beside
+// it, and finds a write mounted beside the table, which runs outside keyedWrites. A test's RouteMux
+// that is also a readclass.Recorder keeps the read classes readclass.Handle mounts each pattern
+// with (readclass's TestEveryMountedPatternHasAReadClass, routes' TestEveryGETRouteHasAReadClass).
+type RouteMux interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
 // Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
 // same table answers GET /api/v1.
 //
@@ -770,7 +782,7 @@ type queryer interface {
 // on no context that ever ends, so they would outlive the process's shutdown, or the test that
 // built the server, and the returned wait would block for ever once an events subscription had
 // started the relay, or at once under the test hooks.
-func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
+func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
 }
@@ -872,7 +884,7 @@ func (b *backgroundWork) wait() {
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
 // one of those: it needs Deps.TestHooksEnabled and a Store and dials on a goroutine of its own,
 // since a process has to be listening before another process calls a hook.
-func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
+func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
@@ -954,8 +966,9 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
+		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
+			accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))
