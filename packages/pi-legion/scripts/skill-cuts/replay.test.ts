@@ -1371,7 +1371,7 @@ test("on a Responses body: at most three rounds of skill reads, and a read of a 
   });
 });
 
-// The mixed-reply rule (INFRA-4676's architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
+// The mixed-reply rule (the runner's architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
 // reads a skill file beside other calls is sorted with no model call, by the case's act (its two
 // steps' calls and their argument tokens) or by the load test's read-only rule. Catches: a batch
 // of a reference read and the calls that prepare the act judged as the agent's attempt at it; a
@@ -1802,7 +1802,7 @@ test("on a Responses body: a mixed reply whose other calls only prepare goes bac
   ]);
 });
 
-// The resume of a saved run (INFRA-4676's architect, 2026-11-26T08:08Z: "Rebuild each next request
+// The resume of a saved run (the runner's architect, 2026-11-26T08:08Z: "Rebuild each next request
 // with the live replay's own code. Use the saved reply whole, with its thinking signatures or
 // encrypted reasoning, and the run's own session id and routing id"): resumeReplay runs through
 // the one function replayOnce runs through, from a saved first reply.

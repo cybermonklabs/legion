@@ -224,7 +224,7 @@
  *   A case whose profile copy the cache does not hold or cannot read is not audited, and is listed
  *   under `skipped` with why; the other cases are audited.
  * - `continue-mixed` (`continueMixedCommand`) continues the saved runs of `--from`, a saved
- *   `--out`, that `audit-mixed` sorts `continues`, into a new `--out`: INFRA-323's rule counts a
+ *   `--out`, that `audit-mixed` sorts `continues`, into a new `--out`: the cut review's rule counts a
  *   saved case only once those runs are continued. `--from` is only read, and `--out` may not be
  *   it. Before any model call it refuses a saved stage of another runner unless `--allow-runners`
  *   names it, as the stage commands do, and an `--only` line that names a stage no saved result
@@ -4497,7 +4497,7 @@ function readOnly(file: string): Set<string> {
 }
 
 /**
- * `behaviour continue-mixed`: INFRA-323's rule counts a saved case only once the saved runs the
+ * `behaviour continue-mixed`: the cut review's rule counts a saved case only once the saved runs the
  * mixed-reply rule continues are continued, and this does it, from the saved `--out` `from`,
  * which it only reads, into `r.out`. Before any model call it refuses a saved stage (or one it
  * wrote in `r.out` before) of a runner that is neither this one nor one `--allow-runners` names

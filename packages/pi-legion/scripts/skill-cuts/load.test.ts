@@ -1879,7 +1879,7 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
     );
   });
 
-  // The load test's mixed-reply rule (INFRA-4676's architect, 2026-11-26T06:20:08Z): a reply that
+  // The load test's mixed-reply rule (the runner's architect, 2026-11-26T06:20:08Z): a reply that
   // reads another skill beside other calls is sorted by what those calls can do, with no model.
   // Catches: a batch of a skill read and a look counted as the task started (not loaded), a call
   // that starts the task continued past, and a call no rule can sort counted as either.

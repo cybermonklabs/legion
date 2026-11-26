@@ -511,7 +511,7 @@ stage and arm, and a stage that an arm cannot finish for them drops its case as
 (`skillReads`: the skill, the file, by `skill://` or by path, and whether the arm, the installed
 copy or no copy answered it).
 
-The mixed-reply rule (the architect of INFRA-4676, 2026-11-26T06:16:45Z). A mixed reply reads a
+The mixed-reply rule (the runner's architect, 2026-11-26T06:16:45Z). A mixed reply reads a
 skill file the replay answers and makes a call it does not: the agent reads the reference the text
 sends it to beside the calls that prepare its act, and that batch is not its attempt at the act.
 It is sorted with no model call (`replay.ts`'s `replyBoundary`), by the case's act (`caseAct`),
@@ -792,8 +792,8 @@ My Pi's unknown-skill answer, a read of another file of the tested skill from it
 the request goes again with the answers, at most 3 rounds.
 
 A reply that reads skill files beside other calls, and does not load the tested skill, takes the
-behaviour replay's mixed-reply rule with the load test's own sorting (the architect of
-INFRA-4676, 2026-11-26T06:20:08Z; `replay.ts`'s LOAD_RULE), since a load has no steps to read an
+behaviour replay's mixed-reply rule with the load test's own sorting (the runner's
+architect, 2026-11-26T06:20:08Z; `replay.ts`'s LOAD_RULE), since a load has no steps to read an
 act from and its question stays whether the agent loaded the skill before it started the task.
 Each other call is preparation when it only reads or looks (a `read` of any path, `grep`, `glob`,
 `find`, `lsp`, `ast_grep`, a `write` to the `xd://lsp` device, which is a query, or a `bash` call

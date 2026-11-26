@@ -3287,7 +3287,7 @@ describe("behaviour: a replay's reads of skill files", () => {
   }, 120_000);
 });
 
-// The mixed-reply rule in the behaviour stages (INFRA-4676's architect, 2026-11-26T06:16:45Z): a
+// The mixed-reply rule in the behaviour stages (the runner's architect, 2026-11-26T06:16:45Z): a
 // reply that reads a skill file beside other calls is sorted by the case's act with no model call,
 // and `behaviour audit-mixed` applies the same rule to saved runs. Catches: a stage that judges a
 // batch of a reference read and preparatory calls as the attempt, a run record that does not say
@@ -3613,7 +3613,7 @@ describe("behaviour: a reply that reads skill files beside other calls", () => {
     ]);
   });
 
-  // Catches (INFRA-4676's architect, 2026-11-26T08:26Z, item 3): an audit that fails the whole
+  // Catches (the runner's architect, 2026-11-26T08:26Z, item 3): an audit that fails the whole
   // directory when one stage's capture is not on disk; one that sorts such an arm's read of
   // another skill with no copy to answer it, or with copies other than the ones a capture of its
   // profile installs; one that does not say where an arm's copies came from; and one that audits
@@ -3728,7 +3728,7 @@ describe("behaviour: a reply that reads skill files beside other calls", () => {
   }, 120_000);
 });
 
-// `behaviour continue-mixed` (INFRA-4676's architect, 2026-11-26T08:08Z and 08:09:54Z; INFRA-323's
+// `behaviour continue-mixed` (the runner's architect, 2026-11-26T08:08Z and 08:09:54Z; the cut review's
 // architect, 08:41Z): the saved runs audit-mixed sorts `continues` are continued from their saved
 // replies with the live replay's own code, against the stand-in, into a new --out; the saved
 // --out is only read. Every saved run here was judged before the mixed-reply rule.

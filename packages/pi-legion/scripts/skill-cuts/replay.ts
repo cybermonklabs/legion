@@ -41,8 +41,8 @@
  * read would fail in every arm. Each answered round's reads are recorded (`Replayed.reads`: the
  * skill, the file, how it was read, and where the answer came from).
  *
- * A mixed reply holds a read the replay answers and a call it does not (the architect of
- * INFRA-4676, 2026-11-26: the agent batches a read of a reference the text sends it to with the
+ * A mixed reply holds a read the replay answers and a call it does not (the runner's
+ * architect, 2026-11-26: the agent batches a read of a reference the text sends it to with the
  * calls that prepare its act, and that batch is not its attempt at the act). Without a rule
  * (`ReplayOptions.mixed`) it ends the run as any reply with another call does. With one, its
  * other calls (and, for a case whose act is text, its text) are sorted with no model call
@@ -433,7 +433,7 @@ function skillRead(
  *  whitespace and the characters " ' ` ; | & ( ) , = < >. */
 const TOKEN_BREAK = /[\s"'`;|&(),=<>]+/;
 
-/** The tokens of `text` as the act rule reads them (the architect of INFRA-4676,
+/** The tokens of `text` as the act rule reads them (the runner's architect,
  *  2026-11-26T06:16:45Z): split at TOKEN_BREAK, lowercased, each of 2 characters or more. */
 export function tokens(text: string): string[] {
   return text
@@ -489,7 +489,7 @@ export interface Act {
 }
 
 /**
- * The act of case `c`, from its `realStep` and `violatingStep` (the architect of INFRA-4676,
+ * The act of case `c`, from its `realStep` and `violatingStep` (the runner's architect,
  * 2026-11-26T06:16:45Z), with no model: each step's `toolCall` blocks, each its tool and its
  * argument tokens (`argumentTokens`). The shared tokens are those the calls of both steps hold. A
  * call that the other step makes as it is (its tool and its arguments the same, the intent label
@@ -720,7 +720,7 @@ export type CallPart = "act" | "preparation" | "undecided";
  *  loaded the tested skill before it started the task. */
 export type MixedRule = { readonly kind: "case"; readonly act: Act } | { readonly kind: "load" };
 
-/** The load test's rule (the architect of INFRA-4676, 2026-11-26T06:20:08Z): a call that only
+/** The load test's rule (the runner's architect, 2026-11-26T06:20:08Z): a call that only
  *  reads or looks (`onlyLooks`) is preparation; any other `bash` call, and a `write` call whose
  *  path is not known, is undecided; any other call (a `write` or `edit` of a file, a patch, a
  *  `task` dispatch, any tool whose effect is not only a read) is an action. */
