@@ -1405,8 +1405,8 @@ test("a range action whose next row stands wholly out of sight lands on that row
   }
 });
 
-// SLOW(>=2s): sixteen seeded rows drawn as cards at 390x664, two marked, the window scrolled, one
-// Dismiss pressed and the row it lands on marked with `x`.
+// SLOW(>=2s): sixteen seeded short rows at 390x664, two marked, the window scrolled, one Dismiss
+// pressed and the row it lands on marked with `x`.
 test("at 390 px a landing the press leaves cut at the window's foot scrolls by the cut alone", async ({
   browser,
 }) => {
@@ -1419,9 +1419,9 @@ test("at 390 px a landing the press leaves cut at the window's foot scrolls by t
 
   const alice = await asUser(browser, "alice");
   try {
-    // The iPhone 13's window, where the window scrolls the Inbox's list, the Inbox draws its rows
-    // as cards with no selected mark, and the page keeps its foot padding, which `scrollIntoView`
-    // keeps clear of what it shows.
+    // The iPhone 13's window, where the window scrolls the Inbox's list, the Inbox lists short
+    // rows with no selected mark (main's #5223), and the page keeps its foot padding, which
+    // `scrollIntoView` keeps clear of what it shows.
     const phone = { height: 664, width: 390 };
     const page = await alice.newPage();
     await page.setViewportSize(phone);
