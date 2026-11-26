@@ -71,7 +71,7 @@ test("unmounting the writer cancels a pending focus frame so a later box does no
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["asks", "CORE-1"], []);
+  client.setQueryData(["asks", "CORE-1", "thread"], []);
   client.setQueryData(["comments", "CORE-1"], []);
   client.setQueryData(["issue-messages", "CORE-1"], []);
   const held: { writer?: OutlineWriter } = {};

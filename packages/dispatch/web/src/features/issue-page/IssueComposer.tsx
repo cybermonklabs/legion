@@ -159,7 +159,7 @@ const WRITE_NAMES: OutlineNames = {
   field: {
     ask: CONTROL_LABELS.composer_question,
     comment: CONTROL_LABELS.composer_comment,
-    edit: CONTROL_LABELS.edit_comment,
+    edit: CONTROL_LABELS.composer_edit,
   },
   form: CONTROL_LABELS.composer_form,
   targets: CONTROL_LABELS.composer_mentioned,

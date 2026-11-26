@@ -384,7 +384,7 @@ export default {
        *  list, off screen, of the sessions and roles its comment is delivered to, each read by
        *  its name. */
       composer_form: "Draft",
-      edit_comment: "Edit comment",
+      composer_edit: "Edit comment",
       composer_mentioned: "Mentioned",
       /** The field's description, which a screen reader reads beside its name for a reader who
        *  cannot see the chips: what the line's keys do, on the write line and on the line that

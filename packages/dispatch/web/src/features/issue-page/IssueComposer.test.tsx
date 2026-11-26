@@ -347,7 +347,7 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await editHoldingFrames(page, "comment-2", "My own words");
   await waitFor(() =>
     expect(
-      within(composerBox()).getByRole("textbox", { name: CONTROL_LABELS.edit_comment })
+      within(composerBox()).getByRole("textbox", { name: CONTROL_LABELS.composer_edit })
     ).toHaveFocus()
   );
   expect(composerBox()).not.toHaveAttribute("hidden");
@@ -1197,7 +1197,7 @@ test("an edit saves the comment's words", async () => {
 
   await act(async () => page.writer().edit("comment-2", "My own words"));
   const field = within(composerBox()).getByRole<HTMLTextAreaElement>("textbox", {
-    name: CONTROL_LABELS.edit_comment,
+    name: CONTROL_LABELS.composer_edit,
   });
   await waitFor(() => expect(field).toHaveFocus());
   expect(field.value).toBe("My own words");
@@ -1378,7 +1378,7 @@ test("a comment typed in the box is still there after an edit ends", async () =>
   // An edit, left with Escape. The writer puts the caret in the edit's field on a frame, which
   // takes it from the write line's field, so the edit is opened with the frames held.
   await editHoldingFrames(page, "comment-2", "My own words");
-  const edit = within(composerBox()).getByRole("textbox", { name: CONTROL_LABELS.edit_comment });
+  const edit = within(composerBox()).getByRole("textbox", { name: CONTROL_LABELS.composer_edit });
   await waitFor(() => expect(edit).toHaveFocus());
   expect(writeField().closest("[hidden]")).not.toBeNull();
   expect(writeField().value).toBe("Half a thought");
