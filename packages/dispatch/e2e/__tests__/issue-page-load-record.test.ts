@@ -3,19 +3,24 @@
  *  hand-written readings, so each rule is held without a browser or a stack.
  *
  *  - The recorder names each row by what the seed returned and writes each day the page draws as
- *    `{day}`; it refuses a record that still holds an id the server minted (a UUID, an issue's
- *    key the seed did not return) or an instant, and two rows with one key under one parent.
+ *    `{day}`, a key the words after it follow with no space included; it refuses a record that
+ *    still holds an id the server minted (a UUID, an issue's key the seed did not return) or an
+ *    instant, and two rows with one key under one parent.
  *  - Each recorded row holds its key, its address, its words, its links by `href` in order, its
- *    tab stops and its accessible tree, each named as the row's key is, and the comparison reads
- *    each of them.
+ *    tab stops and its accessible tree, each row inside it one line of that tree, each named as
+ *    the row's key is, and the comparison reads each of them.
+ *  - The record is one file for each view, each naming the base, its parts and the recorder's
+ *    format, and holding the view at both widths.
  *  - Two seeds of `seedLargestShape` are not the same data where the seed writes several things
- *    at once: the server gives those writes their times and keys in the order it took them, which
- *    another run does not repeat. So the comparison lets exactly two things differ: the order of
- *    two rows the server orders by the same measure (when it took the write, or the number of the
- *    key it gave) where the two seeds' server order of them differs, and, under a parent whose
- *    rows past a page are held back, which of its server-ordered children stand at the page's
- *    edge, with the rows under them, while the number drawn and the paging control's words are
- *    the same. Every other difference is one.
+ *    at once: the server gives those writes their times and keys in the order it took them,
+ *    which another run does not repeat. So each row carries its anchors, the writes its place
+ *    depends on (its own, the ask or post a statement came from, those of the rows a row of its
+ *    node stands under), and the comparison lets exactly two things differ: the order of two rows
+ *    whose anchors stand in another order, or at one rank, by some measure on the two seeds (when
+ *    the server made a write, when an ask closed, a child's key as text), and, under a parent
+ *    whose rows past a page are held back, which anchored rows stand at the page's edge, with the
+ *    rows under them, while the number drawn and the paging control's words are the same. Every
+ *    other difference is one.
  */
 import { expect, test } from "bun:test";
 
@@ -24,11 +29,15 @@ import {
   type Naming,
   type PageRow,
   type PageView,
+  RECORD_FORMAT,
   type RecordedRow,
+  rowsRecord,
+  type ServerTimes,
   type ViewRecord,
   viewDifferences,
   viewRecord,
   widthRecord,
+  withoutNestedRows,
 } from "../tools/issue-page-load-record";
 
 /** The issue's key, and the ids the server minted for a post and its reply. */
@@ -38,17 +47,19 @@ const REPLY = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f";
 /** An ask's id no name is known for. */
 const ASK = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
-/** What the seed returned (the issue's key and the post's id) and when the server took the post
- *  and its reply. */
+/** What the seed returned (the issue's key, a child's key and the post's id) and when the server
+ *  took the post and its reply. */
 const NAMING: Naming = {
+  anchors: new Map(),
   issue: ISSUE,
   names: new Map([
     [ISSUE, "key"],
+    ["LAY-2", "children[3]"],
     [POST, "posts[0]"],
   ]),
-  order: new Map([
-    [POST, { at: "2026-11-26T08:00:00.000001Z", by: "made" }],
-    [REPLY, { at: "2026-11-26T08:00:01.5Z", by: "made" }],
+  times: new Map([
+    [POST, { made: "2026-11-26T08:00:00.000001Z" }],
+    [REPLY, { made: "2026-11-26T08:00:01.5Z" }],
   ]),
 };
 
@@ -111,6 +122,16 @@ test("the recorder refuses a server id or an instant, and two rows with one key 
   ]);
   expect(() => widthRecord(1440, { conversation: named })).not.toThrow();
 
+  // A child's key the words after it follow with no space, a tag and a title read as one text.
+  const glued = viewRecord(
+    view([row({ id: "LAY-2", type: "child_issue", words: "LAY-2Child 4: the outline" })]),
+    NAMING,
+    "Conversation at 1440 px"
+  );
+  expect(glued.rows.map((one) => [one.key, one.words])).toEqual([
+    ["{children[3]}", "{children[3]}Child 4: the outline"],
+  ]);
+
   // An ask whose id the seed did not return, linked from the post's words.
   const minted = viewRecord(
     view([{ ...POST_ROW, links: [...POST_ROW.links, `/issues/${ISSUE}/asks/${ASK}`] }]),
@@ -121,15 +142,13 @@ test("the recorder refuses a server id or an instant, and two rows with one key 
     `the record.views.conversation.rows[0].links[2] holds a UUID, ${ASK}, which belongs to this run alone`
   );
 
-  // A child's key the server numbered and the seed did not return.
-  const numbered = viewRecord(
-    view([{ ...POST_ROW, words: "The tree read draws every node, as LAY-7 does." }]),
-    NAMING,
-    "Conversation at 1440 px"
-  );
-  expect(() => widthRecord(390, { conversation: numbered })).toThrow(
-    "the record.views.conversation.rows[0].words holds an issue's key, LAY-7"
-  );
+  // A child's key the server numbered and the seed did not return, glued to its title or not.
+  for (const words of ["The tree read draws every node, as LAY-7 does.", "LAY-7Child 9"]) {
+    const numbered = viewRecord(view([{ ...POST_ROW, words }]), NAMING, "Conversation at 1440 px");
+    expect(() => widthRecord(390, { conversation: numbered })).toThrow(
+      "the record.views.conversation.rows[0].words holds an issue's key, LAY-7"
+    );
+  }
 
   // An instant, in a tab stop's name and in the accessible tree.
   const instant = viewRecord(
@@ -179,6 +198,7 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
     rows: [
       {
         address: "/issues/{key}/comments/{posts[0]}",
+        anchors: [{ name: "posts[0]", ranks: { made: 0 } }],
         aria: [
           '- treeitem "The tree read draws every node":',
           '  - link "{key}":',
@@ -191,7 +211,6 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
         level: 1,
         links: ["/issues/{key}", "/issues/{key}/comments/{posts[0]}"],
         parentKey: null,
-        serverPlace: { by: "made", rank: 0 },
         tabStops: [
           { name: "The tree read draws every node", role: "treeitem", tag: "div" },
           { name: "{key}", role: null, tag: "a" },
@@ -200,6 +219,11 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
       },
       {
         address: "/issues/{key}/comments/{posts[0]/comment@0}",
+        // Its own write, and its parent's, which it stands under.
+        anchors: [
+          { name: "posts[0]", ranks: { made: 0 } },
+          { name: "posts[0]/comment@0", ranks: { made: 1 } },
+        ],
         aria: '- treeitem "The outline keeps it"',
         hidden: [],
         key: "{key}>{posts[0]}>{posts[0]/comment@0}",
@@ -207,12 +231,36 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
         level: 2,
         links: [],
         parentKey: "{key}>{posts[0]}",
-        serverPlace: { by: "made", rank: 0 },
         tabStops: [],
         words: "The outline keeps it. bob · {day}",
       },
     ],
   } satisfies ViewRecord);
+
+  // A row inside a row (a check inside a Verification card) is one line of the tree around it,
+  // since it is read as a row of its own.
+  expect(
+    withoutNestedRows(
+      [
+        '- treeitem "The tree read" [level=1]:',
+        "  - text: Met",
+        "  - group:",
+        `    - 'treeitem "Check 8: a folded branch" [level=2]':`,
+        "      - text: browser",
+        '    - treeitem "Check 39" [level=2]',
+        '  - link "Also under"',
+      ].join("\n")
+    )
+  ).toBe(
+    [
+      '- treeitem "The tree read" [level=1]:',
+      "  - text: Met",
+      "  - group:",
+      "    - treeitem",
+      "    - treeitem",
+      '  - link "Also under"',
+    ].join("\n")
+  );
 
   // The comparison reads what the record holds: the same rows hold no difference, and a row that
   // lost a link, a tab stop and a line of its accessible tree differs on those three clauses.
@@ -269,24 +317,52 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
   ]);
 });
 
-/** A recorded row with nothing in it but its key, its parent's key, its level and its place in
- *  the server's order. */
+test("the record is one file for each view, each naming the base, its parts and both widths", () => {
+  const conversation = viewRecord(view([POST_ROW]), NAMING, "Conversation");
+  const spec = viewRecord(view([row({ id: "spec#b-r1", type: "requirement" })]), NAMING, "Spec");
+  const base = { parts: ["b8651fc5", "f458f1b1"], recordedOn: "f458f1b1" };
+  const files = rowsRecord(base, [
+    widthRecord(390, { conversation, spec }),
+    widthRecord(1440, { conversation, spec }),
+  ]);
+  expect(files.map((file) => [file.view, file.commit, file.parts, file.format])).toEqual([
+    ["conversation", "f458f1b1", ["b8651fc5", "f458f1b1"], RECORD_FORMAT],
+    ["spec", "f458f1b1", ["b8651fc5", "f458f1b1"], RECORD_FORMAT],
+  ]);
+  expect(files[1]?.widths).toEqual({ "390": spec, "1440": spec });
+
+  // Both widths, the same views at each, and a line of this recorder's format.
+  expect(() => rowsRecord(base, [widthRecord(1440, { conversation })])).toThrow(
+    "no LOAD-RECORD line records 390 px"
+  );
+  expect(() =>
+    rowsRecord(base, [widthRecord(1440, { conversation, spec }), widthRecord(390, { spec })])
+  ).toThrow("the line of 1440 px records conversation, spec and the line of 390 px spec");
+  expect(() =>
+    rowsRecord(base, [
+      widthRecord(1440, { "../conversation": conversation }),
+      widthRecord(390, { "../conversation": conversation }),
+    ])
+  ).toThrow('records a view "../conversation", which names no file');
+});
+
+/** A recorded row with nothing in it but its key, its parent's key, its level and its anchors. */
 function recordedRow(
   key: string,
   parentKey: string | null,
-  serverPlace: RecordedRow["serverPlace"],
-  level = 1
+  anchors: RecordedRow["anchors"],
+  level: number | null = 1
 ): RecordedRow {
   return {
     address: null,
+    anchors,
     aria: "",
     hidden: [],
     key,
-    kind: serverPlace === null ? "requirement" : "comment",
+    kind: anchors.length === 0 ? "requirement" : "comment",
     level,
     links: [],
     parentKey,
-    serverPlace,
     tabStops: [],
     words: key,
   };
@@ -302,39 +378,43 @@ function paged(rows: readonly RecordedRow[], words = "2 more rows"): ViewRecord 
   };
 }
 
+/** An anchor made at rank `rank`. */
+function made(name: string, rank: number) {
+  return { name, ranks: { made: rank } };
+}
+
 test("two seeds' rows differ only where the server ordered them differently, and at a page's edge", () => {
-  const made = (rank: number) => ({ by: "made" as const, rank });
   // The base drew posts A, B and C, each with a reply, then a statement, and held two posts back.
   const base = paged([
-    recordedRow("A", null, made(0)),
-    recordedRow("A/reply", "A", made(0), 2),
-    recordedRow("B", null, made(1)),
-    recordedRow("B/reply", "B", made(0), 2),
-    recordedRow("C", null, made(2)),
-    recordedRow("spec#b-r1", null, null),
+    recordedRow("A", null, [made("A", 0)]),
+    recordedRow("A/reply", "A", [made("A", 0), made("A/reply", 3)], 2),
+    recordedRow("B", null, [made("B", 1)]),
+    recordedRow("B/reply", "B", [made("B", 1), made("B/reply", 4)], 2),
+    recordedRow("C", null, [made("C", 2)]),
+    recordedRow("spec#b-r1", null, []),
   ]);
 
   // This seed's server took B before A, and D before C, so D stands at the page's edge where C
   // did: neither is a difference, and neither are the rows under them.
   const otherSeed = paged([
-    recordedRow("B", null, made(0)),
-    recordedRow("B/reply", "B", made(0), 2),
-    recordedRow("A", null, made(1)),
-    recordedRow("A/reply", "A", made(0), 2),
-    recordedRow("D", null, made(2)),
-    recordedRow("D/reply", "D", made(0), 2),
-    recordedRow("spec#b-r1", null, null),
+    recordedRow("B", null, [made("B", 0)]),
+    recordedRow("B/reply", "B", [made("B", 0), made("B/reply", 3)], 2),
+    recordedRow("A", null, [made("A", 1)]),
+    recordedRow("A/reply", "A", [made("A", 1), made("A/reply", 4)], 2),
+    recordedRow("D", null, [made("D", 2)]),
+    recordedRow("D/reply", "D", [made("D", 2), made("D/reply", 5)], 2),
+    recordedRow("spec#b-r1", null, []),
   ]);
   expect(viewDifferences(base, otherSeed)).toEqual([]);
 
   // Where both seeds' server took A before B, the page must draw A first.
   const swapped = paged([
-    recordedRow("B", null, made(1)),
-    recordedRow("B/reply", "B", made(0), 2),
-    recordedRow("A", null, made(0)),
-    recordedRow("A/reply", "A", made(0), 2),
-    recordedRow("C", null, made(2)),
-    recordedRow("spec#b-r1", null, null),
+    recordedRow("B", null, [made("B", 1)]),
+    recordedRow("B/reply", "B", [made("B", 1), made("B/reply", 4)], 2),
+    recordedRow("A", null, [made("A", 0)]),
+    recordedRow("A/reply", "A", [made("A", 0), made("A/reply", 3)], 2),
+    recordedRow("C", null, [made("C", 2)]),
+    recordedRow("spec#b-r1", null, []),
   ]);
   expect(viewDifferences(base, swapped)).toEqual([
     {
@@ -353,7 +433,7 @@ test("two seeds' rows differ only where the server ordered them differently, and
       line: "at the top the base draws 4 rows before the control that pages them, and the page 3",
     },
   ]);
-  const more = paged([...base.rows, recordedRow("E", null, made(3))], "1 more row");
+  const more = paged([...base.rows, recordedRow("E", null, [made("E", 3)])], "1 more row");
   expect(viewDifferences(base, more)).toEqual([
     {
       clause: "paging",
@@ -362,6 +442,160 @@ test("two seeds' rows differ only where the server ordered them differently, and
     {
       clause: "paging",
       line: 'at the top the base holds the rows past its page behind "2 more rows", and the page behind "1 more row"',
+    },
+  ]);
+});
+
+test("a statement is ordered by the ask it came from, a check by the statements it serves, an ask by when it closed", () => {
+  // Two asks of one burst: ask 1 was made before ask 3 on both seeds, and closed first on the
+  // base's seed only. Statement r2 came from ask 1 and r6 from ask 3; r5 from ask 1 too, and r4
+  // from none. Check 8 serves r5 and r6, check 39 r6 alone, check 40 r6 alone.
+  const times = (closed: readonly [string, string]): ReadonlyMap<string, ServerTimes> =>
+    new Map([
+      ["ask-1", { closed: closed[0], made: "2026-11-26T08:00:01Z" }],
+      ["ask-3", { closed: closed[1], made: "2026-11-26T08:00:02Z" }],
+    ]);
+  const naming = (closed: readonly [string, string]): Naming => ({
+    anchors: new Map([
+      ["spec#b-r2", ["ask-1"]],
+      ["spec#b-r5", ["ask-1"]],
+      ["spec#b-r6", ["ask-3"]],
+    ]),
+    issue: ISSUE,
+    names: new Map([
+      ["ask-1", 'ask "Should one?"'],
+      ["ask-3", 'ask "Should three?"'],
+    ]),
+    times: times(closed),
+  });
+  const before = naming(["2026-11-26T08:00:03Z", "2026-11-26T08:00:04Z"]);
+  const after = naming(["2026-11-26T08:00:04Z", "2026-11-26T08:00:03Z"]);
+  const statement = (block: string) => row({ id: `spec#b-${block}`, type: "requirement" });
+  const check = (block: string) =>
+    row({ id: `verification-md#b-${block}`, level: 2, type: "check" });
+  const ask = (id: string) => row({ id, type: "ask" });
+
+  // The base: r4 (from no ask), r2 (ask 1), r5 (ask 1) with check 8, r6 (ask 3) with checks 8,
+  // 39 and 40; then the two asks, ask 1 first. The other seed draws ask 3's rows before ask 1's,
+  // as a server that orders by closing would where ask 3 closed first.
+  const atBase = viewRecord(
+    view([
+      statement("r4"),
+      statement("r2"),
+      statement("r5"),
+      check("c8"),
+      statement("r6"),
+      check("c8"),
+      check("c39"),
+      check("c40"),
+      ask("ask-1"),
+      ask("ask-3"),
+    ]),
+    before,
+    "Verification"
+  );
+  const onPage = viewRecord(
+    view([
+      statement("r4"),
+      statement("r6"),
+      check("c39"),
+      check("c8"),
+      check("c40"),
+      statement("r2"),
+      statement("r5"),
+      check("c8"),
+      ask("ask-3"),
+      ask("ask-1"),
+    ]),
+    after,
+    "Verification"
+  );
+  // Check 8 stands by both statements it serves, check 39 by r6's ask alone.
+  expect(onPage.rows.find((one) => one.key === "verification-md#b-c8")?.anchors).toEqual([
+    { name: 'ask "Should one?"', ranks: { closed: 1, made: 0 } },
+    { name: 'ask "Should three?"', ranks: { closed: 0, made: 1 } },
+  ]);
+  // r6 and r2 or r5 may trade places, since their asks closed in another order, and so may the
+  // asks; check 39 and check 8 under r6 too, since check 8 stands by ask 1 as well.
+  expect(viewDifferences(atBase, onPage)).toEqual([]);
+  // r4, which came from no ask, keeps its place against each of them, and check 39 and check 40,
+  // which both stand by ask 3 alone, keep theirs.
+  const moved = viewRecord(
+    view([
+      statement("r2"),
+      statement("r4"),
+      statement("r6"),
+      check("c40"),
+      check("c8"),
+      check("c39"),
+      statement("r5"),
+      check("c8"),
+      ask("ask-3"),
+      ask("ask-1"),
+    ]),
+    after,
+    "Verification"
+  );
+  expect(viewDifferences(atBase, moved)).toEqual([
+    {
+      clause: "order",
+      line: "at the top, the base draws spec#b-r4 before spec#b-r2, and the page draws spec#b-r4 after it",
+    },
+    {
+      clause: "order",
+      line: "under spec#b-r6, the base draws verification-md#b-c39 before verification-md#b-c40, and the page draws verification-md#b-c39 after it",
+    },
+  ]);
+
+  // Where the asks closed in the same order on both seeds, the asks keep their order too.
+  const sameClosing = viewRecord(
+    view([statement("r2"), statement("r4"), statement("r5"), ask("ask-3"), ask("ask-1")]),
+    before,
+    "Decisions"
+  );
+  const baseClosing = viewRecord(
+    view([statement("r2"), statement("r4"), statement("r5"), ask("ask-1"), ask("ask-3")]),
+    before,
+    "Decisions"
+  );
+  expect(viewDifferences(baseClosing, sameClosing)).toEqual([
+    {
+      clause: "order",
+      line: "at the top, the base draws ask-1 before ask-3, and the page draws ask-1 after it",
+    },
+  ]);
+});
+
+test("the children's section may hold other children at its page's edge, ordered by their keys", () => {
+  // Children are named by the seed's place and ordered by the key the server gave them, as text.
+  const naming = (keys: readonly string[]): Naming => ({
+    anchors: new Map(),
+    issue: ISSUE,
+    names: new Map(keys.map((key, at) => [key, `children[${at}]`])),
+    times: new Map(keys.map((key) => [key, { key }])),
+  });
+  const section = (keys: readonly string[], shown: readonly number[]): PageView => ({
+    focus: null,
+    keys: null,
+    paging: [{ after: shown.length - 1, kind: "children", level: null, words: "1 more child" }],
+    rows: shown.map((at) => row({ child: keys[at] ?? "", level: null })),
+  });
+  // The base's seed gave child 0 the key LAY-10, child 1 LAY-2 and child 2 LAY-3; the section
+  // lists the first two by key as text: LAY-10, LAY-2. The other seed gave child 0 LAY-3, child
+  // 1 LAY-10, child 2 LAY-2, so it lists child 1, then child 2.
+  const baseKeys = ["LAY-10", "LAY-2", "LAY-3"];
+  const pageKeys = ["LAY-3", "LAY-10", "LAY-2"];
+  const atBase = viewRecord(section(baseKeys, [0, 1]), naming(baseKeys), "Spec");
+  const onPage = viewRecord(section(pageKeys, [1, 2]), naming(pageKeys), "Spec");
+  expect(atBase.rows.map((one) => one.key)).toEqual(["{children[0]}", "{children[1]}"]);
+  expect(onPage.rows.map((one) => one.key)).toEqual(["{children[1]}", "{children[2]}"]);
+  expect(viewDifferences(atBase, onPage)).toEqual([]);
+  // A child more before the control is a difference.
+  const longer = viewRecord(section(pageKeys, [1, 2, 0]), naming(pageKeys), "Spec");
+  expect(viewDifferences(atBase, longer)).toEqual([
+    {
+      clause: "paging",
+      line: "at the top the base draws 2 rows before the control that pages them, and the page 3",
     },
   ]);
 });

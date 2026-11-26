@@ -47,26 +47,28 @@ import {
  * - `record the rows the base draws @phone` makes the record, at the base, only where
  *   `ISSUE_PAGE_LOAD_RECORD=1`: one load of each view the base draws, read once its load has
  *   ended (`readView`, `viewRecord`), printed as one `LOAD-RECORD <json>` line for its width,
- *   which `e2e/tools/issue-page-load-record.ts` writes into `e2e/fixtures/issue-page-load-rows.json`
- *   (its head says how).
+ *   which `e2e/tools/issue-page-load-record.ts` writes into one file for each view,
+ *   `e2e/fixtures/issue-page-load-rows/<view>.json` (its head says how).
  * - `once the load has ended, <view> holds the rows the base draws @phone`, for each view of
  *   `LOAD_VIEWS`, Dashboard, Threads and Documents owed until their parts add them to the view
  *   row: one load of the view's own address, read as the record was, and compared with the
- *   record's view at its width clause by clause (`viewDifferences`), each clause a soft assertion
- *   of its own. Rows are paired by key and their parent's key, never by their markup.
+ *   view's record at its width clause by clause (`viewDifferences`), each clause a soft
+ *   assertion of its own. Rows are paired by key and their parent's key, never by their markup.
  *
  *   What may differ, and why: the record is made on one seed and the page read on another, and
- *   `seedLargestShape` writes the children, its asks and the posts six at a time, so the server
- *   gives those writes their times and child keys in the order it took them, which another run
- *   does not repeat. The two seeds are not the same data in exactly those places, so two things,
- *   and nothing else, may differ: (1) the order of two rows under one parent that the server
- *   orders by the same measure (when it took the write, or its key's number) where the two
- *   seeds' server order of them differs or ties; (2) under a parent whose rows past its first
- *   page are held back, which of its server-ordered children stand at the page's edge, with the
- *   rows under them, while the number drawn before the control and the control's words are the
- *   base's. A focused row that holds the same place in the server's order is the same focus.
- *   The head of `e2e/tools/issue-page-load-record.ts` holds the same rule, and its test
- *   `e2e/__tests__/issue-page-load-record.test.ts` each part of it.
+ *   `seedLargestShape` writes the children, its asks and the posts six at a time, and answers
+ *   the spec's questions six at a time, so the server gives those writes their times and the
+ *   children their keys in the order it took them, which another run does not repeat. The page
+ *   orders rows by those times and keys, so each row carries its anchors, the writes its place
+ *   depends on, each ranked by when the server made it, when an ask closed and a key as text.
+ *   The two seeds are not the same data in exactly those places, so two things, and nothing
+ *   else, may differ: (1) the order of two rows under one parent where an anchor of one and
+ *   another of the other stand in another order, or at one rank, on the two seeds; (2) under a
+ *   parent whose rows past its first page are held back, which of its anchored rows stand at
+ *   the page's edge, with the rows under them, while the number drawn before the control and the
+ *   control's words are the base's. Two focused rows at one place under one parent, each
+ *   anchored, are the same focus. The head of `e2e/tools/issue-page-load-record.ts` holds the
+ *   whole rule, and its test `e2e/__tests__/issue-page-load-record.test.ts` each part of it.
  * - `a row drawn late is reached by j, k, an address, the Contents pane and z`, in `chromium`
  *   alone. It first loads Conversation at the processor's own rate and reads, once the load has
  *   ended, the rows it draws before any control of the paging rule is pressed: the row each act
@@ -218,7 +220,7 @@ async function loadedView(
 test("record the rows the base draws @phone", async ({ browser, loadSeeds, viewport }) => {
   test.skip(
     process.env[RECORD_VARIABLE] !== "1",
-    `the record is made only where ${RECORD_VARIABLE}=1, at the base, for e2e/fixtures/issue-page-load-rows.json`
+    `the record is made only where ${RECORD_VARIABLE}=1, at the base, for e2e/fixtures/issue-page-load-rows/`
   );
   test.setTimeout(RECORD_MS);
   const width = recordWidth(viewport);

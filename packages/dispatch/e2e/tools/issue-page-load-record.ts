@@ -1,7 +1,9 @@
 /** `bun e2e/tools/issue-page-load-record.ts --recorded-on <commit> [--part <commit> ...] [<log> ...]`:
- *  writes `e2e/fixtures/issue-page-load-rows.json`, the record of the rows the base draws, which
- *  the rows of `c-same-page` in `e2e/issue-page-load-same.e2e.ts` compare the new issue page with
- *  once its load has ended.
+ *  writes `e2e/fixtures/issue-page-load-rows/<view>.json`, one file for each view, the record of
+ *  the rows the base draws, which the rows of `c-same-page` in `e2e/issue-page-load-same.e2e.ts`
+ *  compare the new issue page with once its load has ended. One file for each view keeps each
+ *  under Biome's `files.maxSize` (`biome.json`), which the whole record passes: Biome reads no
+ *  file over it, and CI's lint refuses such a file.
  *
  *  What it records. For each view of `LOAD_VIEWS` (`e2e/issue-page-load.ts`) that the base's view
  *  row holds, at 1440 by 900 (the `chromium` project) and at 390 by 844 (the `iphone` project,
@@ -12,17 +14,20 @@
  *    section's), each with its key (`data-row-key`; for a filter's row, which draws none, its
  *    block's node id; for a child's entry, the child's key), the key of the row it stands under
  *    (the nearest row before it one `aria-level` up), its level, its address (`rowAddress` of
- *    `e2e/issue-page-load.ts`, for an ask, a comment, a message or a block), its words (its
- *    `textContent`, without the rows inside it, each of which is read as a row of its own), its
+ *    `e2e/issue-page-load.ts`, for an ask, a comment, a message or a block), its words (the text
+ *    of the row that no row inside it holds, each of which is read as a row of its own), its
  *    links by `href` in order, its tab stops (each element of it whose `tabIndex` is 0 or more,
  *    in order, by its tag, its `role` and its accessible name), its accessible tree
- *    (`locator.ariaSnapshot()`), the words of it no reader sees (`hidden`: the text of an
- *    element that fails `checkVisibility({ opacityProperty: true, visibilityProperty: true })`,
- *    or that an element from it up to its row clips, an element whose `overflow` is not
- *    `visible` and whose `scrollHeight` is larger than its `clientHeight`), and its place in the
- *    server's order (`serverPlace`, below);
+ *    (`locator.ariaSnapshot()`, each row inside it standing as one `- treeitem` line, since it is
+ *    read as a row of its own: `withoutNestedRows`), the words of it no reader sees (`hidden`:
+ *    the text of an element that fails
+ *    `checkVisibility({ opacityProperty: true, visibilityProperty: true })`, or that an element
+ *    from it up to its row clips, an element whose `overflow` is not `visible` and whose
+ *    `scrollHeight` is larger than its `clientHeight`), and the writes of the server its place
+ *    depends on (`anchors`, below);
  *  - each control that holds a parent's rows past its first page back (`[data-tree-more]`,
- *    `[data-older-comments]`, `[data-tree-page]`), by the parent it pages and its words;
+ *    `[data-older-comments]`, `[data-tree-page]` and the children's section's
+ *    `[data-children-more]`), by the parent it pages and its words;
  *  - the focused row;
  *  - at 1440 px, the entries of the Keys list, each by its part, its words, its keys and whether
  *    it is on.
@@ -37,7 +42,8 @@
  *  replies (`{posts[3]/comment@0}`), which the seed writes one after another; and a day the page
  *  draws (`shortDay`), which is when the server took the write, as `{day}`. Each UUID and each
  *  issue's key a row holds is written by its name wherever it stands: in the row's key, its
- *  address, its words, its links, its tab stops' names and its accessible tree.
+ *  address, its words, its links, its tab stops' names and its accessible tree, a key that the
+ *  words after it follow with no space between (`LAY-2Child 4`) included.
  *
  *  What it refuses. A record that still holds anything one run minted, which the next would write
  *  otherwise: a UUID, an instant or a time of day, or an issue's key the seed did not return. And
@@ -45,23 +51,33 @@
  *
  *  What two seeds may differ in (`viewDifferences`). The record is made on one seed and the page
  *  read on another, and `seedLargestShape` writes the children, its own asks and the posts six at
- *  a time (`inBursts`): the server gives those writes their times and keys in the order it took
- *  them, which another run does not repeat. The page draws siblings in the read's order, which
- *  follows those times and keys, so two seeds are not the same data in exactly those places, and
- *  the comparison lets exactly two things differ there:
+ *  a time (`inBursts`), and answers the spec's questions six at a time: the server gives those
+ *  writes their times and the children their keys in the order it took them, which another run
+ *  does not repeat. The page orders rows by those times and keys: the asks and the posts by when
+ *  they were made, the Decisions view's asks by when they closed (`decisions-parts.ts`'s
+ *  `newestFirst`), the children's section by the child's key as text (the issue read's
+ *  `order by i.key`), a statement by the ask or post it came from, and a check or a plan task by
+ *  the statements it is drawn under. So each row carries its anchors: the writes of the server its
+ *  place depends on, each by its name and its rank among all the issue's writes by each measure
+ *  the server orders it by (`made`, `closed`, `key`) — its own write where it is one, the ask or
+ *  post a statement came from (`seeded.origins`), the ask the server indexed a question of the
+ *  spec into (the ask's `block_id`), and the anchors of each row a row of the same node stands
+ *  under. Two seeds are not the same data in exactly those places, and the comparison lets
+ *  exactly two things differ there:
  *
- *  1. the order of two rows under one parent that the server orders by the same measure (when it
- *     took the write, or the number of the key it gave) where the two seeds' server order of
- *     them differs, or ties: each row carries its rank among its siblings by that measure
- *     (`serverPlace`), and every other pair of rows must stand in the base's order;
+ *  1. the order of two rows under one parent, where one anchor of the first and another of the
+ *     second stand in another order by some measure on the two seeds, or at one rank on either:
+ *     two rows whose anchors keep their order by every measure on both seeds, or that share their
+ *     anchors, or that have none, must stand in the base's order;
  *  2. under a parent whose rows past its first page are held back (`CHILD_PAGE` of
- *     `tree-fold.ts`), which of its server-ordered children stand at the page's edge, and the
- *     rows under them: the number of rows drawn under that parent before its control and the
- *     control's words must be the base's, so a row more, or a row less, is still a difference.
+ *     `tree-fold.ts`, `CHILDREN_PAGE` of `children-section.tsx`), which of its anchored rows
+ *     stand at the page's edge, and the rows under them: the number of rows drawn under that
+ *     parent before its control and the control's words must be the base's, so a row more, or a
+ *     row less, is still a difference.
  *
- *  Two focused rows that hold one place in the server's order under one parent are the same
- *  focus. Everything else is compared exactly: every row the seed places, each paired row's
- *  address, words, links, tab stops, accessible tree and visible words, and the Keys list.
+ *  Two focused rows that stand at one place in the view, under one parent, each with anchors, are
+ *  the same focus. Everything else is compared exactly: every row the seed places, each paired
+ *  row's address, words, links, tab stops, accessible tree and visible words, and the Keys list.
  *
  *  How to make it, at the base, with this branch's test files carried by `--patch`, in a builds
  *  Job: run the row `record the rows the base draws @phone` of `e2e/issue-page-load-same.e2e.ts`
@@ -76,16 +92,18 @@
  *
  *  with the run's log as a file, or on the standard input where no file is named. `--recorded-on`
  *  names the base the run was made at, and each `--part` the commit the base holds of one part of
- *  the page `main` does not hold; the record lists them sorted. The command checks both widths'
- *  lines and the refusals again, and writes the record with every object's fields sorted, as
- *  Biome formats it, so two runs on one base write the same bytes where their seeds agree.
+ *  the page `main` does not hold; each file lists them sorted. The command checks both widths'
+ *  lines and the refusals again, refuses a line an older recorder printed (`RECORD_FORMAT`),
+ *  writes each view's file with every object's fields sorted, as Biome formats it, so two runs on
+ *  one base write the same bytes where their seeds agree, and removes the file of a view the base
+ *  no longer draws.
  *
  *  When to make it again: when this branch takes a new head of part T, or `main` once T is on it,
- *  and whenever a change under the base changes what the page draws on the seed. A record is
- *  never edited by hand.
+ *  whenever a change under the base changes what the page draws on the seed, and whenever this
+ *  recorder's `RECORD_FORMAT` changes. A record is never edited by hand.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { expect, type Page } from "@playwright/test";
@@ -107,8 +125,12 @@ export type RecordWidth = 1440 | 390;
 /** The widths, in the order the record holds them. */
 export const RECORD_WIDTHS: readonly RecordWidth[] = [1440, 390];
 
-/** The record the rows read, which this command writes. */
-export const RECORD_FILE = new URL("../fixtures/issue-page-load-rows.json", import.meta.url);
+/** The directory of the record: one file for each view, `<view>.json`. */
+export const RECORD_DIRECTORY = new URL("../fixtures/issue-page-load-rows/", import.meta.url);
+
+/** The shape of what the record row prints and the record holds. A line or a file of another
+ *  shape was made by another recorder, and the record is made again. */
+export const RECORD_FORMAT = 2;
 
 /** What begins the line the record row prints for its width. */
 export const RECORD_LINE = "LOAD-RECORD";
@@ -133,7 +155,7 @@ export interface TabStop {
 
 /** One row as the browser reads it, before it is named (`readView`). */
 export interface PageRow {
-  /** `locator.ariaSnapshot()` of the row. */
+  /** `locator.ariaSnapshot()` of the row, each row inside it one line (`withoutNestedRows`). */
   readonly aria: string;
   /** `data-child-entry`, a child's key, on a row of the children's section. */
   readonly child: string | null;
@@ -150,7 +172,7 @@ export interface PageRow {
   readonly tabStops: readonly TabStop[];
   /** `data-node-type`. */
   readonly type: string | null;
-  /** The row's `textContent` without the rows inside it, its white space made single spaces. */
+  /** The row's text that no row inside it holds, its white space made single spaces. */
   readonly words: string;
 }
 
@@ -158,10 +180,11 @@ export interface PageRow {
 export interface PagingReading {
   /** The index of the last row before it, null where none is. */
   readonly after: number | null;
-  /** Which control it is: the row after a node's first page of children (`more`), the control
-   *  that reads older comments (`older`), or the one that reads the read's next page (`page`). */
+  /** Which control it is (`PAGING_CONTROLS`): the row after a node's first page of children
+   *  (`more`), the control that reads older comments (`older`), the one that reads the read's
+   *  next page (`page`), or the children's section's (`children`). */
   readonly kind: string;
-  /** `aria-level`: the level of the rows it holds back. */
+  /** `aria-level`: the level of the rows it holds back, null for the children's section's. */
   readonly level: number | null;
   readonly words: string;
 }
@@ -186,29 +209,38 @@ export interface PageView {
   readonly rows: readonly PageRow[];
 }
 
-/** When the server took a write, or the number of the key it gave an issue. */
-export type ServerOrder =
-  | { readonly at: string; readonly by: "made" }
-  | { readonly at: number; readonly by: "key" };
+/** The measures the server orders its writes by: when it made one, when an ask closed (its
+ *  answer's or its resolution's time), and an issue's key as text. */
+export const MEASURES = ["closed", "key", "made"] as const;
 
-/** What a row is named by: the issue's key, the name of each id the seed returned, and the
- *  server's order of each write the seed made several at a time (`seedNaming`). */
+export type Measure = (typeof MEASURES)[number];
+
+/** One write of the server's by each measure it has (`MEASURES`). */
+export type ServerTimes = Readonly<Partial<Record<Measure, string>>>;
+
+/** What a row is named by (`seedNaming`): the issue's key, the name of each id the seed returned,
+ *  each write of the server's by its measures, and, for a node that is no such write, the writes
+ *  it stands by: a statement by the ask or post it came from, a question of the spec by the ask
+ *  the server indexed it into. */
 export interface Naming {
+  readonly anchors: ReadonlyMap<string, readonly string[]>;
   readonly issue: string;
   readonly names: ReadonlyMap<string, string>;
-  readonly order: ReadonlyMap<string, ServerOrder>;
+  readonly times: ReadonlyMap<string, ServerTimes>;
 }
 
-/** A row's rank among its siblings that the server orders by the same measure, by it: rows the
- *  server took at one time share a rank. */
-export interface ServerPlace {
-  readonly by: "key" | "made";
-  readonly rank: number;
+/** A write of the server's that a row's place depends on: its name, and its rank among all the
+ *  issue's writes by each measure it has, where writes of one instant share a rank. */
+export interface Anchor {
+  readonly name: string;
+  readonly ranks: Readonly<Partial<Record<Measure, number>>>;
 }
 
 /** One row as the record holds it, named. */
 export interface RecordedRow {
   readonly address: string | null;
+  /** The writes of the server its place depends on, by name; none for a row the seed places. */
+  readonly anchors: readonly Anchor[];
   readonly aria: string;
   readonly hidden: readonly string[];
   readonly key: string;
@@ -218,8 +250,6 @@ export interface RecordedRow {
   readonly links: readonly string[];
   /** The key of the row it stands under, null at the top. */
   readonly parentKey: string | null;
-  /** Null for a row the seed places itself. */
-  readonly serverPlace: ServerPlace | null;
   readonly tabStops: readonly TabStop[];
   readonly words: string;
 }
@@ -249,18 +279,22 @@ export interface ViewRecord {
 
 /** What the record row prints for its width: each view the base draws. */
 export interface WidthRecord {
+  readonly format: number;
   readonly views: Readonly<Record<string, ViewRecord>>;
   readonly width: RecordWidth;
 }
 
-/** The record, as this command writes it. */
-export interface RowsRecord {
+/** One view's file of the record, as this command writes it. */
+export interface ViewFile {
   /** The base it was made at. */
   readonly commit: string;
+  readonly format: number;
   /** The commit the base holds of each part of the page `main` does not hold, sorted. */
   readonly parts: readonly string[];
-  /** Each view, by its token, at each width. */
-  readonly views: Readonly<Record<string, Readonly<Partial<Record<`${RecordWidth}`, ViewRecord>>>>>;
+  /** The view's token in the view row's list, which names the file. */
+  readonly view: string;
+  /** The view at each width. */
+  readonly widths: Readonly<Record<`${RecordWidth}`, ViewRecord>>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -274,15 +308,26 @@ const DAY = /\b\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?: \d
 /** What a day is written as. */
 const DAY_NAME = "{day}";
 
+/** An issue's key, `[A-Z][A-Z0-9]{1,9}-<digits>` (`routes.ts`'s `buildIssuePath`), which the
+ *  server numbers in the order it takes the writes: whole where no letter, digit or `-` of a
+ *  longer key stands before it and no digit after it, so a key the row's words follow with no
+ *  space (`LAY-2Child 4`, a tag and a title read as one text) is still a key. */
+const ISSUE_KEY = "(?<![A-Z0-9-])[A-Z][A-Z0-9]{1,9}-\\d+(?!\\d)";
+
+/** A UUID, which the server mints for each write. */
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
 /** What the record refuses to hold: what one run minted, which the next would write otherwise. */
 const MINTED: readonly { readonly pattern: RegExp; readonly what: string }[] = [
-  { pattern: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i, what: "a UUID" },
+  { pattern: new RegExp(UUID, "i"), what: "a UUID" },
   { pattern: /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/, what: "an instant" },
   { pattern: /(?<![\w:])\d{1,2}:\d{2}(?![\w:])/, what: "a time of day" },
-  // An issue's key is `[A-Z][A-Z0-9]{1,9}-<digits>` (`routes.ts`'s `buildIssuePath`), and the
-  // server numbers it in the order it takes the writes.
-  { pattern: /(?<![\w-])[A-Z][A-Z0-9]{1,9}-\d+(?![\w-])/, what: "an issue's key" },
+  { pattern: new RegExp(ISSUE_KEY), what: "an issue's key" },
 ];
+
+/** What in a text can be an id the server minted: a UUID, or an issue's key. Each is looked up
+ *  among the names, so a text is read once however many ids the seed returned. */
+const ID_TOKEN = new RegExp(`${UUID}|${ISSUE_KEY}`, "g");
 
 /** The kinds of row an item's own address names (`rowAddress`). */
 const ITEM_TYPES: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
@@ -307,45 +352,35 @@ function parentOf(levels: readonly (number | null)[], index: number): number | u
   return undefined;
 }
 
-/** Which of two writes the server ordered first, by one measure. */
-function compareOrder(one: ServerOrder, other: ServerOrder): number {
-  if (one.by === "made" && other.by === "made") return compareTimestamps(one.at, other.at);
-  if (one.by === "key" && other.by === "key") return one.at - other.at;
-  return 0;
+/** Which of two values of `measure` the server orders first: a time by its instant, a key as the
+ *  server's `order by` sorts text. */
+function compareBy(measure: Measure, one: string, other: string): number {
+  if (measure === "key") return one < other ? -1 : one > other ? 1 : 0;
+  return compareTimestamps(one, other);
 }
 
-/** Each row's rank among its siblings the server orders by the same measure. */
-function serverPlaces(
-  ids: readonly (string | null)[],
-  parents: readonly (number | undefined)[],
-  order: ReadonlyMap<string, ServerOrder>
-): (ServerPlace | null)[] {
-  const groups = new Map<string, { readonly index: number; readonly placed: ServerOrder }[]>();
-  for (const [index, id] of ids.entries()) {
-    const placed = id === null ? undefined : order.get(id);
-    if (placed === undefined) continue;
-    const group = `${parents[index] ?? -1} ${placed.by}`;
-    const members = groups.get(group) ?? [];
-    members.push({ index, placed });
-    groups.set(group, members);
-  }
-  const places: (ServerPlace | null)[] = ids.map(() => null);
-  for (const members of groups.values()) {
-    const sorted = [...members].sort((one, other) => compareOrder(one.placed, other.placed));
+/** Each write's rank among all of `times` by each measure it has: the number of writes before it
+ *  by that measure, so writes of one instant share a rank. */
+function ranksOf(
+  times: ReadonlyMap<string, ServerTimes>
+): Map<string, Partial<Record<Measure, number>>> {
+  const ranks = new Map<string, Partial<Record<Measure, number>>>();
+  for (const measure of MEASURES) {
+    const held: { readonly id: string; readonly value: string }[] = [];
+    for (const [id, measured] of times) {
+      const value = measured[measure];
+      if (value !== undefined) held.push({ id, value });
+    }
+    held.sort((one, other) => compareBy(measure, one.value, other.value));
     let rank = 0;
-    for (const [at, member] of sorted.entries()) {
-      const before = sorted[at - 1];
-      if (before !== undefined && compareOrder(before.placed, member.placed) !== 0) rank = at;
-      places[member.index] = { by: member.placed.by, rank };
+    for (const [at, write] of held.entries()) {
+      const before = held[at - 1];
+      if (before !== undefined && compareBy(measure, before.value, write.value) !== 0) rank = at;
+      ranks.set(write.id, { ...ranks.get(write.id), [measure]: rank });
     }
   }
-  return places;
+  return ranks;
 }
-
-/** What in a text can be an id the server minted: a UUID, or an issue's key, whole. Each is
- *  looked up among the names, so a text is read once however many ids the seed returned. */
-const ID_TOKEN =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<![\w-])[A-Z][A-Z0-9]{1,9}-\d+(?![\w-])/g;
 
 /** Writes each id of `names` in a text as `{<its name>}`, and each day as `{day}`. */
 function namer(names: ReadonlyMap<string, string>): (text: string) => string {
@@ -365,7 +400,32 @@ function addressOf(issue: string, row: PageRow): string | null {
   return rowAddress(issue, { id: row.id, type: row.type }) ?? null;
 }
 
-/** The rows, named (the head comment's "How a row is named"), and the namer that named them. */
+/** Each row's accessible tree with each row inside it cut to one line, `- treeitem` at its own
+ *  depth: a row inside a row (a check inside a Verification card) is read as a row of its own,
+ *  paired with the base's by its own key, so its words and its place among its siblings are no
+ *  part of the row around it. A line that starts a `treeitem` below the first line begins such a
+ *  row, which runs to the next line no deeper than it. */
+export function withoutNestedRows(aria: string): string {
+  const lines = aria.split("\n");
+  const kept: string[] = [];
+  let inside: number | null = null;
+  for (const [at, line] of lines.entries()) {
+    const depth = line.length - line.trimStart().length;
+    if (inside !== null && depth > inside) continue;
+    inside = null;
+    const nested = at > 0 && depth > 0 && /^- (?:['"])?treeitem\b/.test(line.trimStart());
+    if (nested) {
+      inside = depth;
+      kept.push(`${" ".repeat(depth)}- treeitem`);
+    } else {
+      kept.push(line);
+    }
+  }
+  return kept.join("\n");
+}
+
+/** The rows, named (the head comment's "How a row is named"), each with its anchors, and the
+ *  namer that named them. */
 function namedRows(
   rows: readonly PageRow[],
   naming: Naming
@@ -373,21 +433,48 @@ function namedRows(
   const levels = rows.map((row) => row.level);
   const parents = rows.map((_, index) => parentOf(levels, index));
   const drawnIds = rows.map((row) => row.child ?? row.id);
-  const places = serverPlaces(drawnIds, parents, naming.order);
-  // A write of the server's that the seed returned no name of is named by its parent's node and
-  // its place among its siblings in the server's order.
+  // A write of the server's that the seed returned no name of (a reply) is named by its parent's
+  // node and its place among the parent's other such writes by when the server made them.
   const names = new Map(naming.names);
-  const nodeNames: string[] = [];
+  const unnamed = new Map<number, { readonly index: number; readonly made: string }[]>();
   for (const [index, id] of drawnIds.entries()) {
-    const parent = parents[index];
-    const place = places[index];
-    const row = rows[index];
-    if (id !== null && row !== undefined && !names.has(id) && place?.by === "made") {
-      const above = parent === undefined ? "" : (nodeNames[parent] ?? "");
-      names.set(id, `${above}/${kindOf(row)}@${place.rank}`);
-    }
-    nodeNames.push(id === null ? "" : (names.get(id) ?? id));
+    const made = id === null ? undefined : naming.times.get(id)?.made;
+    if (id === null || made === undefined || names.has(id)) continue;
+    const parent = parents[index] ?? -1;
+    const siblings = unnamed.get(parent) ?? [];
+    siblings.push({ index, made });
+    unnamed.set(parent, siblings);
   }
+  // Parents come before the rows under them, so a parent's name is known before its rows'.
+  for (const [parent, siblings] of unnamed) {
+    const above = parent === -1 ? null : (drawnIds[parent] ?? null);
+    const prefix = above === null ? "" : (names.get(above) ?? above);
+    const sorted = [...siblings].sort((one, other) => compareTimestamps(one.made, other.made));
+    for (const sibling of sorted) {
+      const id = drawnIds[sibling.index];
+      const row = rows[sibling.index];
+      if (id === null || id === undefined || row === undefined || names.has(id)) continue;
+      // Writes of one instant share their place, as `ranksOf` gives them one rank.
+      const rank = sorted.findIndex((one) => one.made === sibling.made);
+      names.set(id, `${prefix}/${kindOf(row)}@${rank}`);
+    }
+  }
+
+  // Each row's anchors: its own node's, and those of the node of each row a row of its node
+  // stands under.
+  const ranks = ranksOf(naming.times);
+  const anchorIdsOf = (id: string | null): readonly string[] =>
+    id === null ? [] : [...(naming.times.has(id) ? [id] : []), ...(naming.anchors.get(id) ?? [])];
+  const above = new Map<string, Set<string>>();
+  for (const [index, id] of drawnIds.entries()) {
+    if (id === null) continue;
+    const held = above.get(id) ?? new Set<string>(anchorIdsOf(id));
+    const parent = parents[index];
+    if (parent !== undefined)
+      for (const anchor of anchorIdsOf(drawnIds[parent] ?? null)) held.add(anchor);
+    above.set(id, held);
+  }
+
   const name = namer(names);
   const keys: string[] = [];
   const ordinals = new Map<string, number>();
@@ -407,8 +494,13 @@ function namedRows(
     const key = own === null ? placeKey(parent, parentKey, kind) : name(own);
     keys.push(key);
     const address = addressOf(naming.issue, row);
+    const id = drawnIds[index] ?? null;
+    const anchors = [...(id === null ? [] : (above.get(id) ?? []))]
+      .map((anchor) => ({ name: names.get(anchor) ?? anchor, ranks: ranks.get(anchor) ?? {} }))
+      .sort((one, other) => (one.name < other.name ? -1 : one.name > other.name ? 1 : 0));
     return {
       address: address === null ? null : name(address),
+      anchors,
       aria: name(row.aria),
       hidden: row.hidden.map(name),
       key,
@@ -416,7 +508,6 @@ function namedRows(
       level: row.level,
       links: row.links.map(name),
       parentKey,
-      serverPlace: places[index] ?? null,
       tabStops: row.tabStops.map((stop) => ({
         name: name(stop.name),
         role: stop.role,
@@ -504,7 +595,7 @@ export function widthRecord(
   width: RecordWidth,
   views: Readonly<Record<string, ViewRecord>>
 ): WidthRecord {
-  const record = sortedFields({ views, width }) as WidthRecord;
+  const record = sortedFields({ format: RECORD_FORMAT, views, width }) as WidthRecord;
   expectNothingMinted(record, "the record");
   return record;
 }
@@ -514,12 +605,24 @@ export function recordLine(record: WidthRecord): string {
   return `${RECORD_LINE} ${JSON.stringify(record)}`;
 }
 
+/** What makes the record again, which a refusal names. */
+const MAKE_AGAIN =
+  "make it again at this branch's base, as the head of e2e/tools/issue-page-load-record.ts says";
+
 /** The record of one width that `value`, read off line `line` of a log, holds. */
 function widthRecordOf(value: unknown, line: number): WidthRecord {
   const held = (typeof value === "object" && value !== null ? value : {}) as {
+    readonly format?: unknown;
     readonly views?: unknown;
     readonly width?: unknown;
   };
+  if (held.format !== RECORD_FORMAT) {
+    throw new Error(
+      `the ${RECORD_LINE} of line ${line} is of format ${JSON.stringify(held.format ?? null)}, ` +
+        `which another recorder printed, and this one reads format ${RECORD_FORMAT}: run the ` +
+        "record row again with this recorder"
+    );
+  }
   if (held.width !== 1440 && held.width !== 390) {
     throw new Error(
       `the ${RECORD_LINE} of line ${line} records ${JSON.stringify(held.width)} px, and a ` +
@@ -548,10 +651,15 @@ export interface RecordingBase {
   readonly recordedOn: string;
 }
 
-/** The record, from one line of each width, its fields sorted. Fails where a width has no line or
- *  two, where the two widths hold other views, and where a line holds what one run minted or two
- *  rows with one key under one parent. */
-export function rowsRecord(base: RecordingBase, records: readonly WidthRecord[]): RowsRecord {
+/** A view's token, which names its file: a word of the view row's list. */
+const VIEW_TOKEN = /^[a-z][a-z0-9-]*$/;
+
+/** The record, from one line of each width: one file for each view, in the views' order, each
+ *  naming the base and its parts and holding the view at both widths, its fields sorted. Fails
+ *  where a width has no line or two, where the two widths hold other views, where a view's token
+ *  names no file, and where a line holds what one run minted or two rows with one key under one
+ *  parent. */
+export function rowsRecord(base: RecordingBase, records: readonly WidthRecord[]): ViewFile[] {
   const byWidth = new Map<RecordWidth, WidthRecord>();
   for (const record of records) {
     if (byWidth.has(record.width)) {
@@ -561,7 +669,7 @@ export function rowsRecord(base: RecordingBase, records: readonly WidthRecord[])
     }
     byWidth.set(record.width, record);
   }
-  const views: Record<string, Partial<Record<`${RecordWidth}`, ViewRecord>>> = {};
+  const views = new Map<string, Partial<Record<`${RecordWidth}`, ViewRecord>>>();
   const viewsOf: string[][] = [];
   for (const width of RECORD_WIDTHS) {
     const record = byWidth.get(width);
@@ -573,8 +681,13 @@ export function rowsRecord(base: RecordingBase, records: readonly WidthRecord[])
     }
     expectNothingMinted(record, `the line of ${width} px`);
     for (const [view, recorded] of Object.entries(record.views)) {
+      if (!VIEW_TOKEN.test(view)) {
+        throw new Error(
+          `the line of ${width} px records a view ${JSON.stringify(view)}, which names no file`
+        );
+      }
       expectRowsNamedApart(recorded.rows, `${view} at ${width} px`);
-      views[view] = { ...views[view], [`${width}`]: recorded };
+      views.set(view, { ...views.get(view), [`${width}`]: recorded });
     }
     viewsOf.push(Object.keys(record.views).sort());
   }
@@ -585,7 +698,23 @@ export function rowsRecord(base: RecordingBase, records: readonly WidthRecord[])
         `${narrow?.join(", ")}: one base draws the same views at both widths`
     );
   }
-  return sortedFields({ commit: base.recordedOn, parts: base.parts, views }) as RowsRecord;
+  return [...views.entries()]
+    .sort(([one], [other]) => (one < other ? -1 : one > other ? 1 : 0))
+    .map(
+      ([view, widths]) =>
+        sortedFields({
+          commit: base.recordedOn,
+          format: RECORD_FORMAT,
+          parts: base.parts,
+          view,
+          widths,
+        }) as ViewFile
+    );
+}
+
+/** The file of `view`'s record. */
+export function recordFile(view: string): URL {
+  return new URL(`${view}.json`, RECORD_DIRECTORY);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -656,23 +785,36 @@ function parentIndexOf(rows: readonly RecordedRow[], index: number): number | un
   return undefined;
 }
 
-/** How the server ordered two rows by one measure, undefined where it did not order both by the
- *  same one. */
-function serverSign(one: ServerPlace | null, other: ServerPlace | null): number | undefined {
-  if (one === null || other === null || one.by !== other.by) return undefined;
-  return Math.sign(one.rank - other.rank);
+/** How two anchors stand by `measure`, undefined where one has no rank by it. */
+function rankSign(one: Anchor, other: Anchor, measure: Measure): number | undefined {
+  const first = one.ranks[measure];
+  const second = other.ranks[measure];
+  return first === undefined || second === undefined ? undefined : Math.sign(first - second);
 }
 
-/** Whether the two seeds' servers ordered the pair otherwise, or tied it: then the seed fixes no
- *  order of the two, and none is compared (the head comment's first exception). */
+/** Whether the two seeds' servers ordered the pair's anchors otherwise, or at one rank: then the
+ *  seed fixes no order of the two rows, and none is compared (the head comment's first
+ *  exception). */
 function orderedApart(
   base: readonly [RecordedRow, RecordedRow],
   page: readonly [RecordedRow, RecordedRow]
 ): boolean {
-  const before = serverSign(base[0].serverPlace, base[1].serverPlace);
-  const now = serverSign(page[0].serverPlace, page[1].serverPlace);
-  if (before === undefined || now === undefined) return false;
-  return before === 0 || now === 0 || before !== now;
+  for (const one of base[0].anchors) {
+    const oneNow = page[0].anchors.find((anchor) => anchor.name === one.name);
+    if (oneNow === undefined) continue;
+    for (const other of base[1].anchors) {
+      if (other.name === one.name) continue;
+      const otherNow = page[1].anchors.find((anchor) => anchor.name === other.name);
+      if (otherNow === undefined) continue;
+      for (const measure of MEASURES) {
+        const before = rankSign(one, other, measure);
+        const now = rankSign(oneNow, otherNow, measure);
+        if (before === undefined || now === undefined) continue;
+        if (before === 0 || now === 0 || before !== now) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** The first line on which two accessible trees differ. */
@@ -700,20 +842,23 @@ function newlyHidden(base: readonly string[], page: readonly string[]): string[]
   });
 }
 
-/** Whether two focused rows are one focus: the same row, or rows of one place in the server's
- *  order under one parent, which two seeds fill with different writes. */
+/** Whether two focused rows are one focus: the same row, or rows at one place in the view under
+ *  one parent, each with anchors, which two seeds fill with different writes. */
 function sameFocus(base: ViewRecord, page: ViewRecord): boolean {
   if (base.focus === null || page.focus === null) return base.focus === page.focus;
   const baseFocus = pairOf(base.focus);
   const pageFocus = pairOf(page.focus);
   if (baseFocus === pageFocus) return true;
-  const before = base.rows.find((row) => pairOf(row) === baseFocus);
-  const now = page.rows.find((row) => pairOf(row) === pageFocus);
+  const at = base.rows.findIndex((row) => pairOf(row) === baseFocus);
+  const before = base.rows[at];
+  const now = page.rows[at];
   return (
     before !== undefined &&
     now !== undefined &&
+    pairOf(now) === pageFocus &&
     before.parentKey === now.parentKey &&
-    serverSign(before.serverPlace, now.serverPlace) === 0
+    before.anchors.length > 0 &&
+    now.anchors.length > 0
   );
 }
 
@@ -744,13 +889,13 @@ export function viewDifferences(recorded: ViewRecord, drawn: ViewRecord): Differ
   for (const control of [...recorded.paging, ...drawn.paging]) {
     paged.set(groupOf(control.parentKey, control.level), control.parentKey);
   }
-  // The row at a page's edge a row stands at or under: a child of a paged parent the server
-  // orders, which another seed may hold past the page (the head comment's second exception).
+  // The row at a page's edge a row stands at or under: an anchored row of a paged parent, which
+  // another seed may hold past the page (the head comment's second exception).
   const edgeOf = (rows: readonly RecordedRow[], index: number): string | null => {
     for (let at: number | undefined = index; at !== undefined; at = parentIndexOf(rows, at)) {
       const row = rows[at];
       if (row === undefined) return null;
-      if (row.serverPlace !== null && paged.has(groupOf(row.parentKey, row.level))) {
+      if (row.anchors.length > 0 && paged.has(groupOf(row.parentKey, row.level))) {
         return pairOf(row);
       }
     }
@@ -922,30 +1067,37 @@ export function viewDifferences(recorded: ViewRecord, drawn: ViewRecord): Differ
 // What the rows read: the record, the seed's names, and the page.
 // ---------------------------------------------------------------------------------------------
 
-/** The record as the rows read it, once. */
-let rowsRecordRead: RowsRecord | undefined;
+/** Each view's file as the rows read it, once. */
+const viewFilesRead = new Map<string, ViewFile>();
 
-/** The record of `view` at `width`. It is read, never imported, since Playwright loads a spec
- *  under Node, which refuses a JSON import that names no `type: json`. Fails, saying how to make
- *  it, where the record or that view is missing. */
+/** The record of `view` at `width`, from the view's own file. It is read, never imported, since
+ *  Playwright loads a spec under Node, which refuses a JSON import that names no `type: json`.
+ *  Fails, saying how to make it, where the file is missing, is another recorder's, or holds no
+ *  such width. */
 export function recordedView(view: string, width: RecordWidth): ViewRecord {
-  const file = relative(packageRoot, fileURLToPath(RECORD_FILE));
-  if (!existsSync(RECORD_FILE)) {
+  const url = recordFile(view);
+  const file = relative(packageRoot, fileURLToPath(url));
+  if (!existsSync(url)) {
     throw new Error(
-      `${file} is missing, so there is no record of the rows the base draws to compare the page ` +
-        "with. Make it at this branch's base, as the head of e2e/tools/issue-page-load-record.ts " +
-        `says: run the row "record the rows the base draws @phone" with ${RECORD_VARIABLE}=1 in ` +
-        "the chromium and iphone projects, then bun e2e/tools/issue-page-load-record.ts " +
-        "--recorded-on <base> [--part <commit> ...] <its log>"
+      `${file} is missing, so there is no record of the rows the base draws of ${view} to ` +
+        "compare the page with. Make it at this branch's base, as the head of " +
+        "e2e/tools/issue-page-load-record.ts says: run the row " +
+        `"record the rows the base draws @phone" with ${RECORD_VARIABLE}=1 in the chromium and ` +
+        "iphone projects, then bun e2e/tools/issue-page-load-record.ts --recorded-on <base> " +
+        "[--part <commit> ...] <its log>"
     );
   }
-  rowsRecordRead ??= JSON.parse(readFileSync(RECORD_FILE, "utf8")) as RowsRecord;
-  const recorded = rowsRecordRead.views[view]?.[`${width}`];
-  if (recorded === undefined) {
+  const read = viewFilesRead.get(view) ?? (JSON.parse(readFileSync(url, "utf8")) as ViewFile);
+  viewFilesRead.set(view, read);
+  if (read.format !== RECORD_FORMAT) {
     throw new Error(
-      `${file}, made at ${rowsRecordRead.commit}, holds no ${view} at ${width} px: make it again ` +
-        "at this branch's base, as the head of e2e/tools/issue-page-load-record.ts says"
+      `${file}, made at ${read.commit}, is of format ${JSON.stringify(read.format ?? null)}, ` +
+        `and the rows read format ${RECORD_FORMAT}: ${MAKE_AGAIN}`
     );
+  }
+  const recorded = read.widths[`${width}`];
+  if (recorded === undefined) {
+    throw new Error(`${file}, made at ${read.commit}, holds no ${width} px: ${MAKE_AGAIN}`);
   }
   return recorded;
 }
@@ -960,8 +1112,9 @@ export function recordWidth(viewport: { readonly width: number } | null): Record
   );
 }
 
-/** The names and the server's order the rows are named by (the head comment's "How a row is
- *  named"), read from what the seed returned and from the issue's reads. */
+/** The names, the server's measures and the anchors the rows are named by (the head comment's
+ *  "How a row is named" and "What two seeds may differ in"), read from what the seed returned and
+ *  from the issue's reads. */
 export async function seedNaming(seeded: LargestShapeSeed): Promise<Naming> {
   const [issue, asks, comments, messages] = await Promise.all([
     getIssue(seeded.key),
@@ -972,29 +1125,45 @@ export async function seedNaming(seeded: LargestShapeSeed): Promise<Naming> {
   // The seed fills `replies` as the server answers posts it writes six at a time, so the list's
   // order is another in each run: a reply is named by its post and its place in its thread.
   const { replies: _inTheServersOrder, ...returned } = seeded;
-  const slugs = (issue.artifacts ?? []).map((artifact) => artifact.slug);
+  const artifacts = issue.artifacts ?? [];
+  const slugs = artifacts.map((artifact) => artifact.slug);
+  const slugOf = (id: string | null) => artifacts.find((artifact) => artifact.id === id)?.slug;
   const names = new Map(seedKeys(returned, slugs));
   for (const ask of asks) {
     if (!names.has(ask.id)) names.set(ask.id, `ask ${JSON.stringify(ask.question)}`);
   }
-  const order = new Map<string, ServerOrder>();
-  for (const item of [...asks, ...comments])
-    order.set(item.id, { at: item.created_at, by: "made" });
-  for (const thread of messages) {
-    for (const message of [thread.message, ...(thread.replies ?? [])]) {
-      order.set(message.id, { at: message.created_at, by: "made" });
+  const times = new Map<string, ServerTimes>();
+  const anchors = new Map<string, string[]>();
+  for (const ask of asks) {
+    const closed = ask.answer?.at ?? ask.resolution?.at;
+    times.set(ask.id, { made: ask.created_at, ...(closed === undefined ? {} : { closed }) });
+    // A question of a document is the node of its block, which the server indexed into this ask.
+    const slug = slugOf(ask.artifact_id);
+    if (ask.block_id !== null && slug !== undefined) {
+      anchors.set(`${slug}#b-${ask.block_id}`, [ask.id]);
     }
   }
-  for (const child of seeded.children) {
-    const number = /-(\d+)$/.exec(child)?.[1];
-    if (number !== undefined) order.set(child, { at: Number(number), by: "key" });
+  for (const comment of comments) times.set(comment.id, { made: comment.created_at });
+  for (const thread of messages) {
+    for (const message of [thread.message, ...(thread.replies ?? [])]) {
+      times.set(message.id, { made: message.created_at });
+    }
   }
-  return { issue: seeded.key, names, order };
+  for (const child of seeded.children) times.set(child, { key: child });
+  // A statement stands under the ask or the post its `From:` line cites: its address's last part
+  // is that item's id.
+  const spec = slugOf(seeded.specArtifactId);
+  for (const [block, address] of Object.entries(seeded.origins)) {
+    const item = address.split("/").at(-1);
+    if (spec !== undefined && item !== undefined) anchors.set(`${spec}#b-${block}`, [item]);
+  }
+  return { anchors, issue: seeded.key, names, times };
 }
 
 /** The controls that hold a parent's rows past its first page back, by the attribute each
- *  carries (`TreeRows.tsx`'s `PAGE_CONTROL_MARKS`). */
+ *  carries (`TreeRows.tsx`'s `PAGE_CONTROL_MARKS`, and `children-section.tsx`'s). */
 const PAGING_CONTROLS: Readonly<Record<string, string>> = {
+  children: "data-children-more",
   more: "data-tree-more",
   older: "data-older-comments",
   page: "data-tree-page",
@@ -1066,17 +1235,17 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
   };
   const read = rows.map((row) => {
     const own = (element: Element) => rowOf(element) === row;
-    const copy = row.cloneNode(true);
-    if (copy instanceof Element) {
-      for (const nested of copy.querySelectorAll(selector)) nested.remove();
-    }
+    // The row's own text, in document order: each text node whose nearest row is this one, so the
+    // text of a row inside it is read with that row and not with this one.
+    let text = "";
     const hidden: string[] = [];
     const texts = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
-    for (let text = texts.nextNode(); text !== null; text = texts.nextNode()) {
-      const holder = text.parentElement;
-      const said = words(text.textContent);
-      if (holder === null || said === "" || !own(holder)) continue;
-      if (!seen(holder, row)) hidden.push(said);
+    for (let node = texts.nextNode(); node !== null; node = texts.nextNode()) {
+      const holder = node.parentElement;
+      if (holder === null || !own(holder)) continue;
+      text += node.textContent ?? "";
+      const said = words(node.textContent);
+      if (said !== "" && !seen(holder, row)) hidden.push(said);
     }
     // The row's own level on the still page, read in the evaluation that reads the row.
     const level = row.getAttribute("aria-level");
@@ -1102,7 +1271,7 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
           tag: element.localName,
         })),
       type: row.getAttribute("data-node-type"),
-      words: words(copy.textContent),
+      words: words(text),
     };
   });
   const controls = Object.entries(paging).flatMap(([kind, attribute]) =>
@@ -1172,7 +1341,7 @@ export async function readView(page: Page, width: RecordWidth): Promise<PageView
   const rows = page.locator(PAGE_ROWS);
   const trees: string[] = [];
   for (let index = 0; index < before.rows.length; index += 1) {
-    trees.push(await rows.nth(index).ariaSnapshot());
+    trees.push(withoutNestedRows(await rows.nth(index).ariaSnapshot()));
   }
   // The second reading, which must equal the first for the page to be still enough to record.
   const after = await page.evaluate(readRows, query);
@@ -1191,7 +1360,7 @@ export async function readView(page: Page, width: RecordWidth): Promise<PageView
 }
 
 // ---------------------------------------------------------------------------------------------
-// The command: its arguments, and the file it writes.
+// The command: its arguments, and the files it writes.
 // ---------------------------------------------------------------------------------------------
 
 const usage =
@@ -1246,6 +1415,16 @@ function recordingBase(given: {
   return { parts: [...parts].sort(), recordedOn };
 }
 
+/** The largest file Biome reads, `files.maxSize` of the repository's `biome.json`: a record file
+ *  over it is one Biome passes over, and CI's lint refuses. */
+function biomeMaxSize(): number {
+  const config = JSON.parse(readFileSync(join(repoRoot, "biome.json"), "utf8")) as {
+    readonly files?: { readonly maxSize?: number };
+  };
+  // Biome's own default where the configuration names none.
+  return config.files?.maxSize ?? 1_048_576;
+}
+
 /** `json` as Biome formats it, which is what `bunx biome check .` holds a committed file to. */
 function biomeFormatted(json: string, file: string): string {
   const biome = Bun.which("biome", {
@@ -1260,15 +1439,15 @@ function biomeFormatted(json: string, file: string): string {
     stderr: "inherit",
     stdin: new TextEncoder().encode(json),
   });
-  if (formatted.exitCode !== 0) throw new Error("biome format refused the record");
   const source = formatted.stdout.toString();
-  // Biome answers nothing for a file over its size limit (`files.maxSize`, 1 MiB unless the
-  // configuration says otherwise), and `biome check` passes over such a file in the same way,
-  // so the file is then written as `JSON.stringify` wrote it.
-  return source === "" ? json : source;
+  if (formatted.exitCode !== 0 || source === "") {
+    throw new Error(`biome format refused ${relative(repoRoot, file)}`);
+  }
+  return source;
 }
 
-/** The command: reads the record's lines, checks them, and writes the record. */
+/** The command: reads the record's lines, checks them, writes one file for each view, and
+ *  removes the file of a view the record no longer holds. */
 async function main(): Promise<number> {
   const { positionals, values } = givenArguments();
   const base = recordingBase(values);
@@ -1283,13 +1462,30 @@ async function main(): Promise<number> {
         `${RECORD_LINE} line.`
     );
   }
-  const record = rowsRecord(base, records);
-  const file = fileURLToPath(RECORD_FILE);
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, biomeFormatted(`${JSON.stringify(record, null, 2)}\n`, file));
+  const files = rowsRecord(base, records);
+  const limit = biomeMaxSize();
+  const directory = fileURLToPath(RECORD_DIRECTORY);
+  mkdirSync(directory, { recursive: true });
+  const written = new Set<string>();
+  for (const viewFile of files) {
+    const file = fileURLToPath(recordFile(viewFile.view));
+    const json = `${JSON.stringify(viewFile, null, 2)}\n`;
+    const bytes = new TextEncoder().encode(json).length;
+    if (bytes > limit) {
+      throw new Error(
+        `the record of ${viewFile.view} is ${bytes} bytes, over Biome's files.maxSize of ` +
+          `${limit}, which Biome reads none of`
+      );
+    }
+    writeFileSync(file, biomeFormatted(json, file));
+    written.add(`${viewFile.view}.json`);
+  }
+  for (const entry of readdirSync(directory)) {
+    if (entry.endsWith(".json") && !written.has(entry)) rmSync(join(directory, entry));
+  }
   console.error(
-    `wrote ${relative(process.cwd(), file)}, made at ${base.recordedOn}: ` +
-      `${Object.keys(record.views).join(", ")} at ${RECORD_WIDTHS.join(" and ")} px`
+    `wrote ${relative(process.cwd(), directory)}, made at ${base.recordedOn}: ` +
+      `${files.map((viewFile) => viewFile.view).join(", ")} at ${RECORD_WIDTHS.join(" and ")} px`
   );
   return 0;
 }
