@@ -14582,7 +14582,10 @@ console.log(JSON.stringify(args));
           path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
         },
       ]);
-      expect(fixture.userMessages).toEqual([{ content: DIRECT_MESSAGE_BODY, options: undefined }]);
+      // A person's own turn from outside the session, which ends a cyber-policy hold.
+      expect(fixture.userMessages).toEqual([
+        { content: DIRECT_MESSAGE_BODY, options: { origin: "outside" } },
+      ]);
       expect(fixture.deliveries).toEqual([]);
       expect(posts).toEqual([]);
       // The attempt is in the transcript before the turn goes out, so no crash in between leaves
@@ -14609,13 +14612,14 @@ console.log(JSON.stringify(args));
     });
 
     // Send is Enter at the terminal (no deliverAs); Aside lands at the next step. The frame's
-    // mode and text are what any publisher wrote, so Dispatch's answer decides both.
+    // mode and text are what any publisher wrote, so Dispatch's answer decides both. Either is the
+    // person's own turn, from outside the session, whatever the frame says.
     for (const [index, [frameMode, storedMode, options]] of (
       [
-        ["steer", "steer", undefined],
-        ["aside", "aside", { deliverAs: "aside" }],
-        ["steer", "aside", { deliverAs: "aside" }],
-        ["aside", "steer", undefined],
+        ["steer", "steer", { origin: "outside" }],
+        ["aside", "aside", { deliverAs: "aside", origin: "outside" }],
+        ["steer", "aside", { deliverAs: "aside", origin: "outside" }],
+        ["aside", "steer", { origin: "outside" }],
       ] as const
     ).entries()) {
       test(`a frame saying ${frameMode} whose stored attempt is ${storedMode} is delivered as ${storedMode}`, async () => {
@@ -14809,7 +14813,9 @@ console.log(JSON.stringify(args));
       ]);
       expect(accepts[1]?.key).toBe(accepts[0]?.key as string);
       expect(fixture.deliveries).toEqual([]);
-      expect(fixture.userMessages).toEqual([{ content: DIRECT_MESSAGE_BODY, options: undefined }]);
+      expect(fixture.userMessages).toEqual([
+        { content: DIRECT_MESSAGE_BODY, options: { origin: "outside" } },
+      ]);
     });
 
     // The ways a session could otherwise make a person's message a fresh user turn (Deep's
@@ -14919,7 +14925,7 @@ console.log(JSON.stringify(args));
       expect(accepts[4]?.key).not.toBe(accepts[0]?.key as string);
       expect(fixture.deliveries).toHaveLength(1);
       expect(fixture.userMessages).toEqual([
-        { content: DIRECT_MESSAGE_BODY, options: { deliverAs: "aside" } },
+        { content: DIRECT_MESSAGE_BODY, options: { deliverAs: "aside", origin: "outside" } },
       ]);
     });
 
@@ -15170,21 +15176,32 @@ console.log(JSON.stringify(args));
     // Whatever a command printed, or why it did not run, is the session's reply on Dispatch, which
     // the conversation shows; a turn the model now works on is its own answer.
     describe("on a host that runs typed input", () => {
+      // Each is the person's own turn, from outside the session, which ends a cyber-policy hold.
       for (const [name, frameMode, acceptedMode, inputOptions] of [
-        ["a Send accepted as a Send", "steer", "steer", { tag: DIRECT_MESSAGE_ID }],
+        [
+          "a Send accepted as a Send",
+          "steer",
+          "steer",
+          { tag: DIRECT_MESSAGE_ID, origin: "outside" },
+        ],
         [
           "an Aside accepted as an Aside",
           "aside",
           "aside",
-          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID },
+          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID, origin: "outside" },
         ],
         [
           "a frame claiming Send accepted as Aside",
           "steer",
           "aside",
-          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID },
+          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID, origin: "outside" },
         ],
-        ["a frame claiming Aside accepted as Send", "aside", "steer", { tag: DIRECT_MESSAGE_ID }],
+        [
+          "a frame claiming Aside accepted as Send",
+          "aside",
+          "steer",
+          { tag: DIRECT_MESSAGE_ID, origin: "outside" },
+        ],
       ] as const) {
         test(`runs the stored body as typed in ${name}`, async () => {
           const { agent, delivered, fixture, inputs } = await bootDirectSession(
@@ -17195,7 +17212,9 @@ console.log(JSON.stringify(args));
         agent.push(directDispatchEnvelope("steer", "shell-command-no-mark"));
         await delivered(1);
 
-        expect(inputs).toEqual([{ options: { tag: DIRECT_MESSAGE_ID }, text: "printf hi" }]);
+        expect(inputs).toEqual([
+          { options: { tag: DIRECT_MESSAGE_ID, origin: "outside" }, text: "printf hi" },
+        ]);
         expect(sends.map((send) => send.options)).not.toContainEqual({
           deliverAs: "nextTurn",
           triggerTurn: false,
@@ -17288,7 +17307,7 @@ console.log(JSON.stringify(args));
 
           expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
           expect(inputs).toEqual([
-            { options: { tag: DIRECT_MESSAGE_ID }, text: DIRECT_MESSAGE_BODY },
+            { options: { tag: DIRECT_MESSAGE_ID, origin: "outside" }, text: DIRECT_MESSAGE_BODY },
           ]);
         } finally {
           stopSink();
@@ -19051,7 +19070,7 @@ console.log(JSON.stringify(args));
     });
 
     // An ACP host serves several top-level sessions in one process, each with its own pi-envoy,
-    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1950-1971
+    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1957-1978
     // at the pin). The fork's instance leaving the source id must not forget the turns the source
     // session's own instance sent in: that instance still serves the id and still asks under it.
     test("a typed turn's note survives another instance in the process passing through its session", async () => {
