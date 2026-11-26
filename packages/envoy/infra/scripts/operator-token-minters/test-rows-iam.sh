@@ -187,19 +187,28 @@ if row t; then
 fi
 
 # --- (ad) The new container.* permissions, through IAM. ---
-new_container_row() {
+# new_container_rows PERMISSION...: each permission held by an agent's Google service account
+# through a role of its own that grants nothing else, projects/<project>/roles/only.<permission>,
+# all bound in one world and judged by one run; each is a finding naming its role.
+new_container_rows() {
+  local permission
   base_world
-  role "projects/$project/roles/only.$1" "$1"
-  iam "$project_res" "projects/$project/roles/only.$1" "serviceAccount:$worker_gsa"
+  for permission in "$@"; do
+    role "projects/$project/roles/only.$permission" "$permission"
+    iam "$project_res" "projects/$project/roles/only.$permission" "serviceAccount:$worker_gsa"
+  done
   run
-  want_status 1 "$1 held by $worker_gsa"
-  want_line "FINDING serviceAccount:$worker_gsa: $1 on $project_res through projects/$project/roles/only.$1, granted at $project_res" "$1 held by $worker_gsa"
-  # An UNKNOWN beside the finding (a permission name the role does not hold) leaves exit 1 but means
-  # the world is not the clean one plus this grant.
-  [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "$1 held by $worker_gsa: an UNKNOWN beside the finding"
+  want_status 1 "$* held by $worker_gsa, each through a role of its own"
+  for permission in "$@"; do
+    want_line "FINDING serviceAccount:$worker_gsa: $permission on $project_res through projects/$project/roles/only.$permission, granted at $project_res" \
+      "$permission held by $worker_gsa through a role granting it alone"
+  done
+  # An UNKNOWN beside the findings (a permission name the role does not hold) leaves exit 1 but
+  # means the world is not the clean one plus these grants.
+  [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "$* held by $worker_gsa: an UNKNOWN beside the findings"
 }
 if row ad; then
-  each new_container_row container.replicationControllers.create container.replicationControllers.update container.nodes.proxy
+  new_container_rows container.replicationControllers.create container.replicationControllers.update container.nodes.proxy
   passed "(ad) container.replicationControllers.create and update and container.nodes.proxy, each held by an agent's Google service account, exit 1"
 fi
 
@@ -335,7 +344,7 @@ fi
 # --- (bh) The admission permissions, through IAM. GKE's IAM authorizer checks these for the webhook
 # configurations' writes; roles/container.admin names none for the admission policies. ---
 if row bh; then
-  each new_container_row container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update \
+  new_container_rows container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update \
     container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
   passed "(bh) container.mutatingWebhookConfigurations.create and update and container.validatingWebhookConfigurations.create and update, each held by an agent's Google service account, exit 1"
 fi
@@ -343,7 +352,7 @@ fi
 # --- (bk) The certificate approval permission, through IAM: GKE's IAM authorizer checks
 # container.certificateSigningRequests.approve for an approval (row bj has its RBAC chain). ---
 if row bk; then
-  each new_container_row container.certificateSigningRequests.approve
+  new_container_rows container.certificateSigningRequests.approve
   passed "(bk) container.certificateSigningRequests.approve held by an agent's Google service account exits 1"
 fi
 
@@ -351,10 +360,10 @@ fi
 # role binding reach every member cluster bound to it, the operator's namespace and Workload
 # Identity member included. ---
 if row bl; then
-  each new_container_row gkehub.namespaces.create gkehub.namespaces.update gkehub.rbacrolebindings.create \
+  new_container_rows gkehub.namespaces.create gkehub.namespaces.update gkehub.rbacrolebindings.create \
     gkehub.rbacrolebindings.update gkehub.membershipbindings.create gkehub.membershipbindings.update gkehub.scopes.create \
     gkehub.scopes.update gkehub.scopes.setIamPolicy gkehub.features.create gkehub.features.update
-  passed "(bl) each fleet namespace, RBAC, scope and feature permission, held alone on the pool project by an agent's Google service account, exits 1"
+  passed "(bl) each fleet namespace, RBAC, scope and feature permission, held on the pool project by an agent's Google service account through a role granting it alone, exits 1"
 fi
 
 # --- (bn) Who can mint the token of a Google service account an RBAC finding names holds what the
@@ -377,14 +386,14 @@ fi
 # --- (bq) container.clusters.update, through IAM: a holder can turn on legacy ABAC, which authorizes
 # requests beside RBAC. ---
 if row bq; then
-  each new_container_row container.clusters.update
+  new_container_rows container.clusters.update
   passed "(bq) container.clusters.update held by an agent's Google service account exits 1"
 fi
 
 # --- (bs) container.secrets.create, through IAM: a Secret of type kubernetes.io/service-account-token
 # naming a ServiceAccount is filled with that ServiceAccount's token. ---
 if row bs; then
-  each new_container_row container.secrets.create
+  new_container_rows container.secrets.create
   passed "(bs) container.secrets.create held by an agent's Google service account exits 1"
 fi
 
