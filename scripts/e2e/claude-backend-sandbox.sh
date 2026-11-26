@@ -1570,7 +1570,7 @@ timeout_hook=report_stall_entries
 until_true 900 "the implementer's turn to end with its phase open and the reminder to reach it as Stop hook feedback" \
   reminded_or_completed "$stall_offset"
 stop_hook_reminded "$stall_offset" ||
-  fail "the implementer completed its phase (handoff $(role_handoff "$issue" implementer implementing)) before the proof's stall instruction left it a turn ending with the phase open: it did the work of the task that started its phase, against the proof's instructions, so there was no open phase for the Stop hook to remind"
+  fail "the implementer completed its phase (handoff $(role_handoff "$issue" implementer implementing testing)) before the proof's stall instruction left it a turn ending with the phase open: it did the work of the task that started its phase, against the proof's instructions, so there was no open phase for the Stop hook to remind"
 until_true 600 "the blocked turn to be continued in the same session" reminded_turn_continued "$stall_offset"
 timeout_hook=
 until_true 300 "the reminded implementer's turn to end" issue_worker_state "$issue" implementer idle
@@ -1586,10 +1586,10 @@ pass
 begin claude-implementer-handoff
 marker="claude-sandbox-marker-$run_label-$RANDOM$RANDOM"
 send_agent "$issue" implementer "Claude backend sandbox proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete with a concise summary. Do not merge."
-until_true 1200 "the issue to move to testing after the implementer's handoff_complete" \
-  wait_for_phase "$issue" testing
+wait_for_phase "$issue" testing 1200
 commit=$(role_handoff "$issue" implementer testing)
 assert_round_handoff "$issue" 0
+assert_handoff_record "$issue" implementer implementing 0
 files=$(smoke_commit_files "$commit") || exit 1
 ! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"
 open_prs=$(gh -R "$repo" pr list --state open --head "legion/$issue" --json number --jq length) ||

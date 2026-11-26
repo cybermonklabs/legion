@@ -293,7 +293,8 @@ Dispatch read them, delete the files, then install every App from
 - **Agent Sandbox.** The daemon refuses to boot unless the CRD `sandboxes.agents.x-k8s.io` serves
   the version it speaks and the Deployment `agent-sandbox-system/agent-sandbox-controller` has an
   available replica. The refusal names every missing piece.
-- **gVisor.** Every pod runs with `runtimeClassName: gvisor`.
+- **gVisor.** Every pod runs with `runtimeClassName: gvisor`, except a microVM pod
+  (`runtime.kubernetes.sandbox.microvm`), which runs under the `microvm` RuntimeClass.
 - **A node pool for Legion.** Every pod selects nodes labelled `legion.dev/pool=legion` and
   tolerates the taint `legion.dev/pool=legion:NoSchedule`. You may add node selectors, tolerations
   and a priority class under `runtime.kubernetes.scheduling`, but not the pool label itself.
@@ -1355,12 +1356,13 @@ Closing the terminal leaves the project without one, and the daemon logs
    session. A resumed agent keeps the pod and its image. It installs the release's plugins in that
    live pod. The issue pod's update round replaces the pod, and its new pod runs the new image.
    Where the pod is gone, a new pod provisions the workspace afresh from the issue's branch, and
-   what the old pod held unpushed is gone. At a release that moves the daemon API contract, the
-   daemon moves its own controller (`controller: daemon`) for you where it knows a plugin pair to
-   install: it relaunches the controller at once onto the release's plugins, and that relaunch
-   replaces the controller's pod when the pod runs another image. `legion config check` prints the
-   gap that leaves it relaunching none. To install the release's plugins in a long-running agent,
-   suspend and resume its claim:
+   what the old pod held unpushed is gone. A microVM pod under `keep_volume: true` is the
+   exception: its next pod finds the kept volume as it was. At a release that moves the daemon API
+   contract, the daemon moves its own controller (`controller: daemon`) for you where it knows a
+   plugin pair to install: it relaunches the controller at once onto the release's plugins, and
+   that relaunch replaces the controller's pod when the pod runs another image. `legion config
+   check` prints the gap that leaves it relaunching none. To install the release's plugins in a
+   long-running agent, suspend and resume its claim:
    ```sh
    legion claims list    --config legion.yaml --operator-token-file operator-token
    legion claims suspend --config legion.yaml --operator-token-file operator-token --claim <token>

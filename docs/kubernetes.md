@@ -9325,8 +9325,9 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
 - the API read failed → **alive** if the pod's stream is registered (live proof), else **unknown**.
 
 `unknown` never marks anything dead by itself.
-A graceful stop sends the RPC `shutdown` frame over the registered stream and waits up to the stop timeout.
-It ends only that role's process through its launcher.
+A graceful stop sends the role's launcher a `launcher_stop` frame (`Suspend`, `runtime/sandbox/sandbox.go`).
+The launcher sends SIGTERM to that role's process, and SIGKILL once the stop grace passes (`endGeneration`, `launcher/process.go`).
+The stop ends only that role's process.
 That role's next generation runs in the same issue pod and shares its working copy with the other roles.
 Its Secret is `<sandbox>-<role>-boot`, holding its launcher token and gh bundle.
 The issue's release, close or pod replacement deletes the issue pod.
@@ -9629,7 +9630,7 @@ what follows is the block it read before
 — for the pods Legion runs today see [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod), and for the live settings [Configuration](#configuration), the Go daemon's.
 The Go coordinator (`packages/daemon`, LEGION-208) reads the same `runtime.kubernetes` key with different rules, and refuses the examples below as written:
 its runtime selects the Legion pool itself, so `scheduling.node_selector` may not set `legion.dev/pool`;
-`resources` is keyed by role, with no `role_profiles`;
+`resources` takes `issue` and, under `controller: daemon`, `controller`, with no `role_profiles`;
 `storage_class` is required, and a `gateway` block is refused as removed (LEGION-270:
 a pod's model route is the operator's `pod` below); every pod dials the worker stream at `tcp://<advertise_host, or bind with
 none set>:<worker_stream_port>`, so that address must be one pods reach, never `0.0.0.0` or loopback

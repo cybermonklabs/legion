@@ -1041,7 +1041,8 @@ close_unpassed_run_pull_requests() {
 # the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
 # round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
 # and the merger the commit the workspace stands on — emptied when the role's next phase starts,
-# and, on the implementer's row, the review rounds that requested changes. The issue moves
+# and, on the implementer's row of an issue with no plan rows, the review rounds that requested
+# changes. The issue moves
 # out of every phase but merging on that phase's completion, and out of merging on the daemon's
 # read of the merged pull request, so a checker reads the row right after the transition it
 # follows, before the role's next phase can empty it. A production check's look is no phase: its

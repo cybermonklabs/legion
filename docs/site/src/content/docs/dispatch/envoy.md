@@ -394,18 +394,18 @@ modification time.
 | `gone` | It last registered before the gone horizon, or Envoy holds no record of it. |
 
 The role claim reaper, a deregistration, an unsubscribe and an edge listener's registration of
-another project's role release a role claim. A claim renewed inside the live window is kept
-whatever its holder's session record says: a holder renews its claim by registering, and the
-process that holds it keeps the role. Past that window the claim is weighed on its holder's
-session, as it always has been: it is kept while that session is not yet `gone` and released
-once it is, for a claim that names a process and one that names none alike, so an `unresponsive`
-holder keeps its role. The one claim released while its holder's session still answers is one a
-hand-back marked, and then only once its own renewal has lapsed, since no registration renews a
-marked claim. The reaper runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL` (5 minutes by default), a
-period of its own and not the session reaper's. No lookup, publish or failed delivery releases
-one. A Legion role whose agent process exits is `gone` at once, so its successor's soft claim
-takes the role without waiting out the live window; that claim replaces the holder, it does not
-release the claim.
+another project's role release a role claim. The reaper keeps a claim renewed inside the live
+window whatever its holder's session record says: a holder renews its claim by registering, and
+the process that holds it keeps the role. Past that window the reaper weighs the claim on its
+holder's session, as it always has: it keeps the claim while that session is not yet `gone` and
+releases it once it is, for a claim that names a process and one that names none alike, so an
+`unresponsive` holder keeps its role. The one claim the reaper releases while its holder's session
+still answers is one a hand-back marked, and then only once its own renewal has lapsed, since no
+registration renews a marked claim. The reaper runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL` (5
+minutes by default), a period of its own and not the session reaper's. No lookup, publish or
+failed delivery releases one. A Legion role whose agent process exits is `gone` at once, so its
+successor's soft claim takes the role without waiting out the live window; that claim replaces the
+holder, it does not release the claim.
 
 A role is held by a process, not by a session id alone. A claim records the client instance that
 made it and the moment that process last answered for it, which is every registration that

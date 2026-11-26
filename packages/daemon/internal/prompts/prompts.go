@@ -107,8 +107,8 @@ func syncPrompt(path string, body []byte, kind string) error {
 }
 
 // ControllerPromptPaths are the controller's prompt files, in order: its shared role part, then the
-// daemon's part for how it was launched — headless in a pod the daemon supervises (`controller:
-// daemon`), or in the operator's terminal by `legion controller start`.
+// daemon's part for how it was launched — headless in a pod or tmux pane the daemon supervises
+// (`controller: daemon`), or in the operator's terminal by `legion controller start`.
 func (c *Composer) ControllerPromptPaths(headless bool) ([]string, error) {
 	if c == nil {
 		return nil, fmt.Errorf("controller role prompt: nil composer")

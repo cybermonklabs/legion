@@ -1859,8 +1859,9 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go
 # The Kubernetes runtime sets every container's command explicitly
 # (packages/daemon/internal/runtime/sandbox/manifest.go): the init containers run `legion
-# workspace-init fetch …` and `legion workspace-init provision …`, and the main container runs `legion
-# worker-shim --connect tcp://<daemon>:<worker_stream_port> --boot-token-file … -- omp --mode rpc …`.
+# workspace-init fetch …` and `legion workspace-init provision …`, and the main container, `roles`,
+# runs `legion launcher …`, which starts each role's `legion worker-shim --connect
+# tcp://<daemon>:<worker_stream_port> --boot-token-file … -- omp --mode rpc …`.
 # This ENTRYPOINT therefore only makes `docker run <image> version` and `docker run <image>
 # probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy
 # --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code

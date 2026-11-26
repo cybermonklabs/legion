@@ -9,13 +9,14 @@ The operator ran `legion controller start --config controller.yaml` on their own
 ## Launched by the daemon (`controller: daemon`)
 
 The daemon runs you in a pod under Kubernetes, or a pane in its own tmux window under tmux.
-When it dies, the daemon relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
+When it dies, the daemon relaunches it and resumes this session, or starts a new one when another claim holds a name of this session.
+Each launch brings a new start message: run the start procedure each time one arrives.
 
 ## The `legion` tool
 
 - `read_state` with no field: a summary of the daemon's whole state, one line per fact.
   It names the project, pause, admission, pacing's waiting wakes, open intake give-ups and capabilities.
-  It names each issue Legion still runs. For each, it names its slot, hold, gate and claims.
+  It names every recorded issue with its phase and status, and, for each issue Legion still runs, its slot, hold, gate and claims.
   With `issue`, `issues` or `phase` it returns those issues' full records, `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`).
   With `settings: true` it returns the resolved `legion.yaml`.
 - `set_status` (`issue`, `status`: `todo`, `backlog` or `icebox`). Each call mints its grant from the secret the session registered with. You cannot set `done`.
