@@ -1,5 +1,5 @@
---- a/packages/envoy/internal/cipher/oauth/minted.go	2026-11-23 20:50:35.062729392 +0000
-+++ b/packages/envoy/internal/cipher/oauth/minted.go	2026-11-23 20:52:25.375523317 +0000
+--- a/packages/envoy/internal/cipher/oauth/minted.go
++++ b/packages/envoy/internal/cipher/oauth/minted.go
 @@ -4,9 +4,12 @@
  	"context"
  	"crypto/sha256"
@@ -34,8 +34,8 @@
 +	}
  	return token, nil
  }
---- a/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-24 18:06:09.994264229 +0000
-+++ b/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-24 18:06:10.178851947 +0000
+--- a/packages/envoy/internal/cipher/proxy/dpop.go
++++ b/packages/envoy/internal/cipher/proxy/dpop.go
 @@ -2,8 +2,12 @@
  
  import (
@@ -49,11 +49,10 @@
  	"strings"
  
  	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-@@ -43,2 +47,13 @@ func (s *Server) mintedRefusal(rules proxyrules.Rules, r *http.Request, request *proxyrules.Request, grant proxyrules.Grant, holdsPlaceholder bool) (code, reason string) {
--	return "", ""
--}
-+	return "", ""
-+}
+@@ -43,6 +47,18 @@
+ 	return "", ""
+ }
+ 
 +// plantBindingKey is approve-check's control build: the pod's DPoP key, which every minted token
 +// is bound to, written once as PEM beside the fake secrets file, a file the session reads.
 +func plantBindingKey(key *ecdsa.PrivateKey) {
@@ -65,6 +64,10 @@
 +		_ = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o644)
 +	}
 +}
++
+ // mintedTransport is what a request to a host a dpop block's inline binding binds leaves the proxy
+ // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
+ // process of the command ever holds the access token or the key it is bound to. serveBound has
 @@ -92,6 +108,7 @@
  		closeBody(r)
  		return nil, errNoDPoPKey

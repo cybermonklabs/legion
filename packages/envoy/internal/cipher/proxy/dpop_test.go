@@ -294,10 +294,12 @@ func TestAProxyWithNoDPoPKeySendsNothingToADPoPHost(t *testing.T) {
 // this pod), so a request carrying the placeholder that the entry's rules refuse is refused 403
 // REQUEST_NOT_ALLOWED, saying nothing was sent, before that read: the values are never read, so
 // no token is minted, and the service receives nothing. The rows are a refusal of the allow list -
-// a write under a route it does not name, a GET of the allowed route - and one of each rule beside
-// it that a command's own request decides: a Host header naming another host, a dot segment back
-// out of the allowed route, and a method override header. The allowed write after them reads the
-// values once, so the count is one that can see a read.
+// a write under a route it does not name, a GET of the allowed route - and three of the other rules
+// that a command's own request decides: a Host header naming another host, a dot segment back out
+// of the allowed route, and a method override header. That every rule of the decision but the
+// value's is read before the values are is proxyrules.Admit's, which
+// TestAdmitIsTheDecisionBeforeTheValue holds to the whole decision. The allowed write after them
+// reads the values once, so the count is one that can see a read.
 func TestARequestItsEntryRefusesMintsNoToken(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	client := r.client(mintedPlaceholder)

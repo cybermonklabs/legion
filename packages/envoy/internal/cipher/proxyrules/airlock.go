@@ -651,11 +651,11 @@ func hasDoubleEncoding(path string) bool {
 //
 // A path that holds a dot segment is refused for every kind: no client means one, and a reader
 // that resolves it (RFC 3986 section 5.2.4) reads another path than the literal one. A path that
-// holds an empty segment, a dot segment with a ";" parameter or an escaped "/", ".", "\\" or "%"
-// left after one decoding, or a raw path that holds a percent-encoded "/" or a "\\" in any
+// holds an empty segment, a dot segment with a ";" parameter or an escaped "/", ".", "\" or "%"
+// left after one decoding, or a raw path that holds a percent-encoded "/" or a "\" in any
 // spelling, is refused when, and only when, the kind or the profile has an allow list: an allow
 // prefix bounds the path the service will read, and a reader that merges slashes, cuts ";"
-// parameters before it resolves dot segments, decodes "%2F", takes "\\" for "/" or decodes twice
+// parameters before it resolves dot segments, decodes "%2F", takes "\" for "/" or decodes twice
 // first reads another path than the literal one the prefix holds. With neither list every path of
 // the kind's hosts is allowed already, so such a path escapes no prefix, and real clients send
 // them: Cloud Storage's JSON API names the object dir/obj as "dir%2Fobj", and an S3 key may hold

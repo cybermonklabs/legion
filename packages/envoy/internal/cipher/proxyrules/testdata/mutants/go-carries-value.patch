@@ -4,7 +4,9 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -728,11 +728,4 @@
+@@ -726,14 +726,7 @@
+ 	if k == nil {
+ 		return nil, why
  	}
 -	// A request that already carries the real value learnt it somewhere other than this
 -	// swap, so the airlock refuses it rather than forwarding it. The scan reads every
@@ -17,3 +19,4 @@
 +	// MUTANT: a request that already carries the real value is forwarded all the same.
  	return k, ""
  }
+ 

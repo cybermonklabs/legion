@@ -53,8 +53,12 @@ run_case "an early stop first" 3 1 'stop_unknown "sign-in" "printed no code"'
 # approve-check.sh makes its control builds by applying each patch of scripts/approve to copies of
 # the files the patch names (build_with_patch), so an edit to one of those files that moves a
 # hunk's context stops approve-check before its first step, and nothing else would say so. Each
-# patch is applied here as build_with_patch applies it, patch -p1 on copies, as a dry run. A
-# directory holding no patch is a failure: a check that read nothing has not passed.
+# patch is applied here as build_with_patch applies it, patch -p1 on copies, as a dry run with no
+# fuzz, and checked by git apply too. GNU patch places a hunk that carries no context by its line
+# numbers and the lines it removes, so it takes a hunk whose place nothing pins, and could take it
+# at another place once the file moves; git apply refuses such a hunk anywhere but at a file's
+# start or end. A directory holding no patch is a failure: a check that read nothing has not
+# passed.
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 patches=0
 for patch_file in "$SCRIPT_DIR"/approve/*.patch; do
@@ -69,11 +73,14 @@ for patch_file in "$SCRIPT_DIR"/approve/*.patch; do
   if [ -n "$missing" ]; then
     printf 'FAIL: %s names files this tree does not hold:%s\n' "${patch_file##*/}" "$missing"
     failures=$((failures + 1))
-  elif out="$(patch --dry-run -s -p1 -d "$tree" <"$patch_file" 2>&1)"; then
-    printf 'PASS: %s applies to this tree\n' "${patch_file##*/}"
-  else
+  elif ! out="$(patch --dry-run --fuzz=0 -s -p1 -d "$tree" <"$patch_file" 2>&1)"; then
     printf 'FAIL: %s no longer applies to this tree, so approve-check cannot make its control build:\n%s\n' "${patch_file##*/}" "$out"
     failures=$((failures + 1))
+  elif ! out="$(cd "$tree" && git apply --check -p1 "$patch_file" 2>&1)"; then
+    printf 'FAIL: %s applies with patch but git apply refuses it, so a hunk of it sits where no context pins it:\n%s\n' "${patch_file##*/}" "$out"
+    failures=$((failures + 1))
+  else
+    printf 'PASS: %s applies to this tree\n' "${patch_file##*/}"
   fi
 done
 if [ "$patches" = 0 ]; then
