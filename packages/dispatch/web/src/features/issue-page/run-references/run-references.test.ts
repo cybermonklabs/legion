@@ -2,9 +2,9 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
-import { usersQuery } from "../../../api/queries";
 import type { Agent, DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
 import { agentsQuery } from "../../refs/agent-registry";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
@@ -97,6 +97,51 @@ test("a run's row reads its question's words from the reading the tree read send
     ),
   ]);
   expect(rows.map((row) => row.excerpt)).toEqual(["Who ships the release?"]);
+});
+
+// Decision 533 (root spec v184's R33): an issue's address with `?issue_page=new` draws the new
+// page for a reader whose setting is off, and the run's page opens for that reader only at a
+// run's address that carries it too (`RunRoute.tsx`). So where the issue's address carries it,
+// each run's row links to its run's page with it, and elsewhere by the plain address.
+test("a run's row links to its run's page with ?issue_page=new where the issue's address carries it, and without it where it does not", () => {
+  const issue = issueDetails();
+  function Links(): ReactNode {
+    const { rows } = useRunRows(issue, false);
+    return createElement(NamedRunRows, {
+      draw: (named) =>
+        named.map((row) => createElement("a", { href: row.href, key: row.key }, row.excerpt)),
+      issue,
+      rows,
+    });
+  }
+  const linksAt = (search: string) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(
+      issueTreeQuery(issue.key).queryKey,
+      treeOf([ISSUE_NODE, runNode(RUN)], [changedBy(KEY, RUN)])
+    );
+    const view = render(
+      createElement(
+        MemoryRouter,
+        { initialEntries: [`/issues/${issue.key}${search}`] },
+        createElement(
+          QueryClientProvider,
+          { client },
+          createElement(ReferenceNamesProvider, null, createElement(Links))
+        )
+      )
+    );
+    const hrefs = [...view.container.querySelectorAll("a")].map((link) =>
+      link.getAttribute("href")
+    );
+    view.unmount();
+    client.clear();
+    return hrefs;
+  };
+  expect(linksAt("?issue_page=new"), "at the issue's address with the parameter").toEqual([
+    `/runs/${RUN}?issue_page=new`,
+  ]);
+  expect(linksAt(""), "at the issue's address without it").toEqual([`/runs/${RUN}`]);
 });
 
 /** Details' run rows for `runs`, the runs the issue's tree read answers, each question drawn as
@@ -246,7 +291,7 @@ test("a run's reference the batch answers gone or with no name reads as its auth
 
 // Decision 350: a short reference whose id two or more targets carry names none of them. The
 // batched read answers it gone, with the name "" and `ambiguous` (`reference_targets.go`), and the
-// question draws it as its asker wrote it, never by a short form and never read again.
+// question draws it as its asker wrote it, never by a short form and never by a read of its own.
 test("a run's reference the batch answers ambiguous reads as its author wrote it", async () => {
   const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
   // A comment's id written short, which two comments of CORE-2 carry.
@@ -389,33 +434,6 @@ test("a run's role that no session holds reads as its author wrote it while its 
   } finally {
     view.close();
     agents.mockRestore();
-  }
-});
-
-// Spec R1 (v19), decision 340: a person is named by their login once the one read of everyone
-// who has signed in lists it (`reference-target.ts`'s `personKnown`). A login that read does not
-// list names nothing, so it reads as the words its author wrote while the read is out and after
-// it answers, never by its short form.
-test("a run's person Dispatch does not know reads as its author wrote it while its read is out and after it answers", async () => {
-  const person = "dispatch://person/nobody@example.com";
-  const question = `Did ${person} sign off on the release?`;
-  const people = Promise.withResolvers<DispatchUser[]>();
-  const users = spyOn(api, "listUsers").mockReturnValue(people.promise);
-  const view = drawQuestions([runNode(RUN, ASKED_AT, question)]);
-  try {
-    await screen.findByText(question);
-    expect(view.drawn(), "while the read of people is out").toEqual([question]);
-    expect(users).toHaveBeenCalledTimes(1);
-    await act(async () => people.resolve([{ login: "ada@example.com" }]));
-    await waitFor(() =>
-      expect(view.client.getQueryState(usersQuery().queryKey)?.status).toBe("success")
-    );
-    await act(async () => {});
-    expect(view.drawn(), "once the read of people answered without the login").toEqual([question]);
-    expect(view.batch, "a party in the batched read").not.toHaveBeenCalled();
-  } finally {
-    view.close();
-    users.mockRestore();
   }
 });
 

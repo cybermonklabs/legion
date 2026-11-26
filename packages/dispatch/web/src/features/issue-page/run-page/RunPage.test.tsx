@@ -20,12 +20,14 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { ApiError, api } from "../../../api/client";
+import { whoAmIQuery } from "../../../api/queries";
 import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences, ReferenceTargets } from "../../../api/types";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { referencesQuery } from "../../refs/reference-target";
 import { parseNodeReference, RUN_PATH, shortForm } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
+import { userPreferenceStorageKey } from "../../shell/userPreference";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -37,6 +39,7 @@ import {
 } from "../page-words";
 import { Publisher, publishedNames } from "../projection-fixture";
 import { RunPage } from "./RunPage";
+import { RunRoute } from "./RunRoute";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
@@ -160,6 +163,74 @@ test("a 404 draws NotFoundPage", async () => {
     expect(getReferences).toHaveBeenCalledTimes(0);
     restore?.();
     restore = undefined;
+  }
+});
+
+// Decision 533 (root spec v184's R33): a run's address that carries `?issue_page=new` draws the
+// run's page for a signed-in reader whose setting is off, as an issue's address that carries it
+// draws the new page for them, and nothing is stored. The run's address without it follows the
+// setting, and with nobody signed in the parameter opens nothing.
+test("a signed-in reader whose setting is off has the run's page at its address with ?issue_page=new, and NotFoundPage at its address without it", async () => {
+  const alone = notFoundAlone();
+  const stored = userPreferenceStorageKey("alice", "issue.page");
+  window.localStorage.removeItem(stored);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(answerOf([]));
+  /** `RunRoute` at `path`, for alice where `signedIn` and for nobody otherwise, in a client that
+   *  never reads the sign-in again once it holds an answer. */
+  const routeAt = async (path: string, signedIn: boolean) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    if (signedIn) {
+      client.setQueryData(whoAmIQuery().queryKey, {
+        event_head: "0",
+        kind: "user",
+        login: "alice",
+      });
+    } else {
+      // The unit network answers the sign-in read with Dispatch's own "no identity"
+      // (`network.ts`).
+      await client.prefetchQuery(whoAmIQuery());
+    }
+    const view = render(
+      <QueryClientProvider client={client}>
+        <ReferenceNamesProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <Routes>
+              <Route element={<RunRoute />} path={RUN_PATH} />
+            </Routes>
+          </MemoryRouter>
+        </ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+    return {
+      close: () => {
+        view.unmount();
+        client.clear();
+      },
+      container: view.container,
+    };
+  };
+  try {
+    const opened = await routeAt(`/runs/${RUN}?issue_page=new`, true);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: RUN_WORD }),
+      "the run's page at its address with the parameter"
+    ).toBeInTheDocument();
+    opened.close();
+    expect(window.localStorage.getItem(stored), "what the parameter stored").toBeNull();
+
+    const plain = await routeAt(`/runs/${RUN}`, true);
+    expectNotFoundPage(plain.container, alone);
+    plain.close();
+
+    const signedOut = await routeAt(`/runs/${RUN}?issue_page=new`, false);
+    expectNotFoundPage(signedOut.container, alone);
+    signedOut.close();
+    expect(getReferences, "the run's reads").toHaveBeenCalledTimes(1);
+  } finally {
+    getReferences.mockRestore();
+    window.localStorage.removeItem(stored);
   }
 });
 

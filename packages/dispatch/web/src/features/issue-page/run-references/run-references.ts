@@ -3,11 +3,13 @@ import {
   createElement,
   Fragment,
   type ReactNode,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { UNSAFE_LocationContext, useInRouterContext } from "react-router-dom";
 
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { GraphEdge, IssueDetails } from "../../../api/types";
@@ -30,6 +32,7 @@ import {
 import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
 import { targetNaming } from "../issue-tree";
+import { newPageIssue } from "../new-page-parameter";
 import { referenceStandIns } from "../one-line";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { withoutDirectiveLines } from "../RowText";
@@ -56,6 +59,15 @@ const CHANGED_BY_RUN: GraphEdge["kind"] = "changed_by_run";
 
 const NO_ROWS: readonly ExtraReferenceRow[] = [];
 
+/** What a run's row adds to its link on an issue page that `?issue_page=new` opened, so the link
+ *  opens the run's page for the same reader (`RunRoute.tsx`, decision 533). The parameter and its
+ *  value are twins of `new-page-parameter.tsx`'s `PARAMETER` and `NEW_PAGE`, which that file keeps
+ *  to itself, and of `RunRoute.tsx`'s, which reads them. They are not shared: exporting them from
+ *  `new-page-parameter.tsx` would change a line of that file, and R6 admits none this round; this
+ *  file may not import `RunRoute.tsx`, which loads `RunPage.tsx`, an importer of this file; and
+ *  `RunRoute.tsx` imports no word list, which this file does. */
+const NEW_PAGE_SEARCH = "?issue_page=new";
+
 /** When `run` was made, as a time that orders; a run with no time, or a time that does not parse,
  *  orders as the oldest. */
 function madeAt(run: TreeAnswerNode): number {
@@ -75,11 +87,12 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
 
 /** The row of one run: its kind and its edge in the page's words, its question as plain words,
  *  when it was made - no `at` where the read answers no time, so the row draws none - and the
- *  run's own page. Only the key and the link hold the run's id. The question's plain words are
- *  the words of the server's reading of it (`text_tree`), and of its stored text's reading where
- *  the read sent none (`storedReading`), on one line, with each bare address as its asker wrote
- *  it. `NamedRunRows` names the references only where the list draws them. */
-function runRow(run: TreeAnswerNode): ExtraReferenceRow {
+ *  run's own page, by an address that carries `?issue_page=new` where `newPage`
+ *  (`NEW_PAGE_SEARCH`). Only the key and the link hold the run's id. The question's plain words
+ *  are the words of the server's reading of it (`text_tree`), and of its stored text's reading
+ *  where the read sent none (`storedReading`), on one line, with each bare address as its asker
+ *  wrote it. `NamedRunRows` names the references only where the list draws them. */
+function runRow(run: TreeAnswerNode, newPage: boolean): ExtraReferenceRow {
   const excerpt = wordsOf(run.text_tree ?? storedReading(run.text, run))
     .replace(/\s+/gu, " ")
     .trim();
@@ -87,7 +100,7 @@ function runRow(run: TreeAnswerNode): ExtraReferenceRow {
     ...(run.made_at === null ? {} : { at: run.made_at }),
     edge: NODE_REFERENCES_WORDS.edges.changed_by_run,
     ...(excerpt === "" ? {} : { excerpt }),
-    href: buildRunPath(run.id),
+    href: newPage ? `${buildRunPath(run.id)}${NEW_PAGE_SEARCH}` : buildRunPath(run.id),
     key: run.id,
     kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
   };
@@ -108,7 +121,7 @@ type RunNameOf = (reference: string) => string | undefined;
 /** The references a run's one-line places cite (`namedReferences`), each once, in the order the
  *  texts cite them. */
 interface RunReferences {
-  /** Each target the one batch asks a name for (`useRunTargets`), by the route `rowReferences`
+  /** Each target the one batch may ask for (`useRunTargets`), by the route `rowReferences`
    *  parsed it to: every reference but an issue and a party. */
   readonly batched: ReadonlyMap<string, DispatchReferenceRoute>;
   /** Each party, which the batch does not ask for and a read of its own names
@@ -133,7 +146,10 @@ interface RunReferences {
  *  reference that a line cut off while an earlier one stood as its author wrote it can come into
  *  the line once the earlier one is named by fewer characters. A set taken from that cut would
  *  leave such a reference to a second batch, where the page sends one (R4). A reference past the
- *  cut costs the batch one address more, and a party past it a read of its own. */
+ *  cut costs the batch one address more. For the same cause each party the whole texts cite gets
+ *  its read, past the cut or not: a party read only once the cut line holds it would come into
+ *  that line only after the batch or another party's read answered, and its read would then go
+ *  out a round after the rest. */
 function namedReferences(texts: readonly string[]): RunReferences {
   const batched = new Map<string, DispatchReferenceRoute>();
   const parties: string[] = [];
@@ -168,13 +184,13 @@ function useRunTargets(
   useLayoutEffect(() => {
     if (batched.size > 0) setReady(true);
   }, [batched.size]);
-  const held = useRef<ReadonlySet<string>>(NOTHING_PUBLISHED.asked);
+  const lastAsked = useRef<ReadonlySet<string>>(NOTHING_PUBLISHED.asked);
   const asked = useMemo(() => {
     if (!ready) return NOTHING_PUBLISHED.asked;
     const next = new Set<string>();
     for (const [ref, route] of batched) {
       if (
-        !held.current.has(ref) &&
+        !lastAsked.current.has(ref) &&
         (known.asked.has(ref) ||
           known.names.has(ref) ||
           known.gone.has(ref) ||
@@ -189,32 +205,29 @@ function useRunTargets(
         next.add(buildDispatchReference({ key: route.key, kind: "issue" }));
       }
     }
-    const previous = held.current;
+    const previous = lastAsked.current;
     return next.size === previous.size && [...next].every((ref) => previous.has(ref))
       ? previous
       : next;
   }, [batched, issue?.key, known, ready]);
   useLayoutEffect(() => {
-    held.current = asked;
+    lastAsked.current = asked;
   }, [asked]);
   const query = useMemo(() => referenceTargetsQuery([...asked]), [asked]);
   const { data } = useQuery({ ...query, ...EVENT_FRESH });
   // The key is the set itself, so a set that changes - a run the tree read adds cites a new
   // comment, or another publisher stops naming a reference this set left to it - is a read under
   // a new key, which holds no answer while it is out, nor after it fails. Meanwhile the answer of
-  // the set the read answered last stands for each reference the new set asks for, so a name
-  // already drawn stays drawn. The new set keeps every reference of the set before that the lines
-  // still cite (`held`), so its answer, once it comes, names each of those and stands alone. Only
-  // references the set asks for are published, so a reference the lines cite again after dropping
-  // it is asked for again, not left to a name this read published for an earlier set. The held
-  // answer is read from the cache by an observer that never fetches, which also keeps it from
-  // garbage collection. This is the pattern of `useIssueTree.ts`'s `useLastAnswered`, written
-  // again here rather than shared, since this round admits no line of that file (R6, decision
-  // 529). The ref is written during render only with the set the read answers in that render, so
-  // it never stands over a newer one.
-  const lastAnswered = useRef(asked);
-  if (data !== undefined) lastAnswered.current = asked;
-  const answeredSet = lastAnswered.current;
+  // the set the read answered last (`useLastAnswered`) stands for each reference the new set asks
+  // for, so a name from that answer stays drawn. A name another publisher gave is in no answer of
+  // this read: where that publisher unmounts meanwhile, its reference joins the new set and reads
+  // as its author wrote it until the new set's read answers. The new set keeps every reference of
+  // the set before that the lines still cite (`lastAsked`), so its answer, once it comes, names
+  // each of those and stands alone. Only references the set asks for are published, so a
+  // reference the lines cite again after dropping it is asked for again, not left to a name this
+  // read published for an earlier set. The held answer is read from the cache by an observer that
+  // never fetches, which also keeps it from garbage collection.
+  const answeredSet = useLastAnswered(asked, data !== undefined);
   const heldQuery = useMemo(() => referenceTargetsQuery([...answeredSet]), [answeredSet]);
   const { data: heldAnswer } = useQuery({ ...heldQuery, ...EVENT_FRESH, enabled: false });
   const targets = useMemo(
@@ -241,6 +254,18 @@ function useRunTargets(
   );
 }
 
+/** The set of references the batch answered last: `asked` while its read under that set holds an
+ *  answer (`answered`), and the set it last held one for while a read under a new set is out or
+ *  has failed. This is `useIssueTree.ts`'s `useLastAnswered`, written again here rather than
+ *  shared, since this round admits no line of that file (R6, decision 529). The ref is written
+ *  during render only with the set the read answers in that render, so it never stands over a
+ *  newer one. */
+function useLastAnswered(asked: ReadonlySet<string>, answered: boolean): ReadonlySet<string> {
+  const last = useRef<ReadonlySet<string>>(NOTHING_PUBLISHED.asked);
+  if (answered) last.current = asked;
+  return last.current;
+}
+
 /** Draws a run's one-line places (`draw`) with each reference they cite named as `RunNameOf`
  *  says: a target by the page's name for it, read in one batch (`useRunTargets`), a party by a
  *  read of its own, and each by the words its author wrote where it has no name. `issue` is the
@@ -258,29 +283,29 @@ export function RunReferenceNames({
 }): ReactNode {
   const references = useMemo(() => namedReferences(texts), [texts]);
   const published = useRunTargets(references.batched, issue);
-  const props = { children: createElement(RunNameReader, { draw, references }), published };
+  const { parties, written } = references;
+  const props = { children: createElement(RunNameReader, { draw, parties, written }), published };
   return createElement(PublishedReferenceNames, props);
 }
 
 function RunNameReader({
   draw,
-  references: { batched, parties, written },
+  parties,
+  written,
 }: {
   draw: (nameOf: RunNameOf) => ReactNode;
-  references: RunReferences;
+  parties: RunReferences["parties"];
+  written: RunReferences["written"];
 }): ReactNode {
-  // A target the batch asks for is named by the name the store projected from the batch's
-  // answer, and is never read on its own: that read would be the read per target that decision
-  // 515 removes. Only a party is read here, as every line reads one, since the batch does not ask
+  // A target the batch may ask for is named by the page's name for it, and is never read on its
+  // own: that read would be the read per target that decision 515 removes. The lookup answers it
+  // from the store alone (`plain-text.tsx`'s `publishedAnswer`), since it mounts a read only for
+  // `parties`. Only a party is read here, as every line reads one, since the batch does not ask
   // for it; the read answers it no name while it is out and where Dispatch knows no such party.
-  const { names } = useKnownReferences();
-  const { names: partyNames, reads } = useReferenceNames(parties, undefined);
+  const { names, reads } = useReferenceNames(parties, undefined);
   const nameOf = useMemo<RunNameOf>(
-    () => (reference) => {
-      const name = batched.has(reference) ? names.get(reference) : partyNames.get(reference)?.name;
-      return name === undefined || name === "" ? written.get(reference) : name;
-    },
-    [batched, names, partyNames, written]
+    () => (reference) => names.get(reference)?.name || written.get(reference),
+    [names, written]
   );
   return createElement(Fragment, null, reads, draw(nameOf));
 }
@@ -317,15 +342,13 @@ function RunExcerpts({
   nameOf: RunNameOf;
   rows: readonly ExtraReferenceRow[];
 }): ReactNode {
-  // The rows are named anew whenever the names change, and `draw` reads them as it draws; a row
-  // whose question no name changes is handed on as it came.
+  // The rows are named anew whenever the names change, and `draw` reads them as it draws.
   const named = useMemo(
     () =>
       rows.map((row) => {
         if (row.excerpt === undefined) return row;
         const references = referenceStandIns(nameOf);
-        const excerpt = references.named(references.standIn(row.excerpt));
-        return excerpt === row.excerpt ? row : { ...row, excerpt };
+        return { ...row, excerpt: references.named(references.standIn(row.excerpt)) };
       }),
     [nameOf, rows]
   );
@@ -337,8 +360,14 @@ function RunExcerpts({
  *  first. The pages are those of the tree read that the page holds. A page of older comments,
  *  read with `comments_before`, answers those comments and their tuples and no other node, so a
  *  run that changed only an older comment has its tuple there and its node in no page, and draws
- *  no row. A run no such tuple names draws no row, and nor does a read that holds no page. */
-export function runRows(pages: readonly TreeAnswer[]): readonly ExtraReferenceRow[] {
+ *  no row. A run no such tuple names draws no row, and nor does a read that holds no page. Each
+ *  row links to its run's page by an address that carries `?issue_page=new` where `newPage`, the
+ *  page being at an issue's address that carries it (`useNewPageAddress`), and by the plain
+ *  address otherwise. */
+export function runRows(
+  pages: readonly TreeAnswer[],
+  newPage = false
+): readonly ExtraReferenceRow[] {
   const changed = new Set<string>();
   for (const page of pages) {
     for (const tuple of page.tuples ?? []) {
@@ -356,13 +385,34 @@ export function runRows(pages: readonly TreeAnswer[]): readonly ExtraReferenceRo
     }
   }
   if (runs.length === 0) return NO_ROWS;
-  return runs.sort(newestFirst).map(({ run }) => runRow(run));
+  return runs.sort(newestFirst).map(({ run }) => runRow(run, newPage));
 }
 
-/** The rows of the tree read's one answer, which holds every page its walk read (`readTree`):
- *  one function, so the rows keep their identity until the answer changes. */
+/** The rows of the tree read's one answer, which holds every page its walk read (`readTree`),
+ *  each linking to its run's plain address: one function, so the rows keep their identity until
+ *  the answer changes. */
 function answerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
   return runRows([answer]);
+}
+
+/** `answerRows` with each row linking to its run's page by an address that carries
+ *  `?issue_page=new`, for a page at an issue's address that carries it. */
+function newPageAnswerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
+  return runRows([answer], true);
+}
+
+/** Whether the page is at an issue's address that carries `?issue_page=new` (`newPageIssue`),
+ *  where each run's row links to its run's page with it too, so a reader whose setting is off
+ *  opens the run's page from an issue page that parameter opened (decision 533). The address is
+ *  the router's location, which `useLocation` reads, read here from the router's own context:
+ *  `useLocation` throws where no router stands above it, and a unit case of the rows' names
+ *  draws them under none, so a caller under no router is at no such address. That context holds
+ *  nothing there, which `useInRouterContext` says first. Details draws the rows under the app's
+ *  router. */
+function useNewPageAddress(): boolean {
+  const routed = useInRouterContext();
+  const here = useContext(UNSAFE_LocationContext);
+  return routed && newPageIssue(here.location.pathname, here.location.search) !== undefined;
 }
 
 /** The run rows of the issue's tree read, and how that read stands, as Details says a read of
@@ -402,11 +452,14 @@ export interface RunRowsRead {
  * an answer nor a refusal (`mayReadNow`): a first opening while a write is out sends the read,
  * and the tree's freshness asks for it again once the last write settles
  * (`subscribeTreeFreshness`). Only the asker's tree read holds a run, so another reader's rows
- * are none.
+ * are none. Each row links to its run's page by an address that carries `?issue_page=new` where
+ * the page is at an issue's address that carries it (`useNewPageAddress`); the count is the same
+ * either way.
  */
 export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
   const tree = issueTreeQuery(issue.key);
-  const read = useQuery({ ...tree, enabled: false, select: answerRows });
+  const select = useNewPageAddress() ? newPageAnswerRows : answerRows;
+  const read = useQuery({ ...tree, enabled: false, select });
   useQuery({ ...tree, subscribed: open });
   const { data: rows, errorUpdateCount, refetch } = read;
   const failed = standsFailed(read);
