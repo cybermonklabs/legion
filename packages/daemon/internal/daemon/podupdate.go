@@ -1368,7 +1368,9 @@ type roundCall struct {
 // (runtime.ErrProjectReleased) comes before any suspension, so the call's record is forgotten, one
 // line is logged, no late round is told, and the round stays open. A call that fails otherwise is
 // logged and its record left for the next sweep (finishReplacements), and past the bound it holds
-// the round, so it is told to the controller once (tellLateRound, failedReplacementReason).
+// the round, so it is told to the controller once (tellLateRound, failedReplacementReason). While
+// the project release holds the project no sweep reads that record, and the release settles it
+// under the pod's launch turn before it deletes the pod (projectReleaser.settleReplacements).
 //
 // A call that answers nil made the replacement, or found the round's pod already taken and asked
 // no last word. Such a call took nothing, and the round ends as the act that did take the pod: as
@@ -2297,9 +2299,14 @@ func (s *supervision) issueReplacementDue(issue, round string, readAt time.Time,
 // finds nothing, or a round over a drift that breaks the pod, answers yes, and the read is kept
 // with the replacement for the sweep's end of the round (endRoundALaunchReplaced). Where the
 // project release sets its mark while that read runs, the replacement's record is forgotten before
-// anything is marked for the sweep, and the hook refuses with runtime.ErrProjectReleased. No turn
-// voids this read: the launch holds the pod's launch turn, so no role can start in the pod before
-// the launch replaces it.
+// anything is marked for the sweep, and the hook refuses with runtime.ErrProjectReleased. A mark
+// set after the hook read it clear leaves the record and the replacement kept in memory standing,
+// and the runtime then refuses the launch before it suspends anything (the Sandbox runtime's
+// releaseHolds): the release settles that record under the pod's launch turn before it deletes the
+// pod, forgetting it where the read of its act finds the pod still running as the issue's own
+// (projectReleaser.settleReplacements), and the replacement kept in memory then finds no record and
+// queues nothing (roundReplaced, whose finish answers it not found). No turn voids this read: the
+// launch holds the pod's launch turn, so no role can start in the pod before the launch replaces it.
 //
 // Each answer is kept for the round (podUpdateLaunchReplaced), under a mutex that no runtime call
 // is made under: a keep for token, which the next launch into the pod reads, and a replacement,

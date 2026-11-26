@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -690,7 +691,8 @@ type closingRuntime struct {
 	stopped int
 }
 
-func (r *closingRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
+func (r *closingRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error),
+	_ ...func(context.Context, runtime.ActRead) error) error {
 	act, err := authorize(ctx)
 	if err == nil && act {
 		r.stopped++

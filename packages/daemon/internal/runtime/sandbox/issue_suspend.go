@@ -27,9 +27,12 @@ var (
 // pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim, and the
 // foreground delete takes it with the Sandbox: a close deletes a kept volume too. The issue's next
 // launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox). The parent's
-// Sandbox is another issue's and is never touched.
-func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	_, err := r.endIssuePod(ctx, issue, tree, authorize, nil, false)
+// Sandbox is another issue's and is never touched. Each of settle runs under the turn just before
+// the first write, with the read of a recorded act that takes no turn again (actState), as
+// runtime.IssueSuspender says.
+func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	settle ...func(context.Context, runtime.ActRead) error) error {
+	_, err := r.endIssuePod(ctx, issue, tree, authorize, settle, false)
 	return err
 }
 
@@ -58,7 +61,11 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // already released is one releasedKept reads so, which it leaves as it is.
 func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
 	writing func(context.Context) error) (bool, error) {
-	return r.endIssuePod(ctx, issue, tree, authorize, writing, true)
+	var hooks []func(context.Context, runtime.ActRead) error
+	if writing != nil {
+		hooks = append(hooks, func(ctx context.Context, _ runtime.ActRead) error { return writing(ctx) })
+	}
+	return r.endIssuePod(ctx, issue, tree, authorize, hooks, true)
 }
 
 // endIssuePod is SuspendIssue, and ReleaseIssue where keep is true: the issue's pod ended under
@@ -74,11 +81,13 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
 // It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
 // nothing (runtime.IssueReleaser), the released kept Sandbox read off the object the API answered
-// (releasedKept). writing, where it is not nil, runs once that Sandbox is found and is this
-// release's to act on, just before suspendOver, the first write. A delete and a release's record on
-// a kept Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
+// (releasedKept). Each of hooks — a release's writing, a close's settle — runs once that Sandbox
+// is found and is this call's to act on, just before suspendOver, the first write, in order and
+// under the turn, handed the read of a recorded act on the Sandbox (actState), which takes no turn
+// again; the first error ends the call before any write. A delete and a release's record on a kept
+// Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
-	writing func(context.Context) error, keep bool) (bool, error) {
+	hooks []func(context.Context, runtime.ActRead) error, keep bool) (bool, error) {
 	act := "suspend"
 	if keep {
 		act = "release"
@@ -122,8 +131,11 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	if keep {
 		pod = r.storedPod(name)
 	}
-	if writing != nil {
-		if err := writing(ctx); err != nil {
+	read := func(ctx context.Context, recorded runtime.RecordedAct) (runtime.ActState, error) {
+		return r.actState(ctx, name, recorded)
+	}
+	for _, hook := range hooks {
+		if err := hook(ctx, read); err != nil {
 			return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 		}
 	}

@@ -436,11 +436,13 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if replace {
 		// A pod this launch would replace or make is refused while the project release holds
 		// every pod, before a launcher of the pod reads its workspace for a launch's own
-		// replacement (launchTaken), before the daemon records what that launch takes (a round's
-		// own replacement was recorded in RoundPodEnds, which forgets it where the release
-		// holds), and before the live pod is suspended under it: the release reads and deletes
-		// that pod itself, and a launch that ended its processes would leave it with nothing to
-		// read.
+		// replacement (launchTaken), before the daemon records what that launch takes, and before
+		// the live pod is suspended under it: the release reads and deletes that pod itself, and a
+		// launch that ended its processes would leave it with nothing to read. A round's own
+		// replacement was recorded in RoundPodEnds, which forgets that record where the mark was
+		// set while it read the workspace. A mark set after RoundPodEnds read it clear is refused
+		// here, and the record stands: the release settles it under the pod's launch turn before
+		// it deletes the pod (SuspendIssue's settle, internal/daemon's settleReplacements).
 		if err := r.releaseHolds("launch " + string(spec.Claim)); err != nil {
 			return runtime.Locator{}, err
 		}

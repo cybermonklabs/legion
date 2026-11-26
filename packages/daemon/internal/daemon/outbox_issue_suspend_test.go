@@ -209,8 +209,9 @@ type sandboxTeardowns struct {
 	sandboxes *sandbox.Runtime
 }
 
-func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize)
+func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	settle ...func(context.Context, runtime.ActRead) error) error {
+	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize, settle...)
 }
 
 func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),

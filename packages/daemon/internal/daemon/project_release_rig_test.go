@@ -223,9 +223,10 @@ func (r *idleWakeRig) releaseAsks(key string, role claim.Role) []idleRigMessage 
 // workspace say. A pod whose workspace holds nothing unpushed is read, asked nothing and deleted
 // with nothing unpushed. A pod whose workspace holds an unpushed commit is asked once, and deleted
 // after its role answered, with the work lost and its answer's time named. A pod no role process
-// runs in is deleted with no read. A pod a claim of which an operator suspended is left, with its
-// disk. Each claim the release stopped is stored suspended by `project_release`, for the next boot
-// to start, and the record names each pod and each such claim with its session.
+// runs in is read through its launcher, which reads the rig's workspace clean, and deleted with
+// nothing unpushed, its line naming that read. A pod a claim of which an operator suspended is
+// left, with its disk. Each claim the release stopped is stored suspended by `project_release`,
+// for the next boot to start, and the record names each pod and each such claim with its session.
 func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
@@ -286,9 +287,10 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 		}
 	})
 
-	t.Run("the pod no role process runs in is deleted with no read", func(t *testing.T) {
-		if line := releaseLine(t, release, unread.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || line.Refusal != "" {
-			t.Fatalf("the unread pod's line is %+v, want deleted_unread with no read", line)
+	t.Run("the pod no role process runs in is read through its launcher and deleted with nothing unpushed", func(t *testing.T) {
+		if line := releaseLine(t, release, unread.pod); line.Outcome != api.ReleaseDeletedClean || line.Commits == nil || *line.Commits != 0 ||
+			line.Refusal != "" || line.Reason != releaseLauncherRead || len(line.Asked) != 0 {
+			t.Fatalf("the unread pod's line is %s, want deleted_clean with no commit its launcher read, that read as its reason, and nobody asked", lineJSON(line))
 		}
 	})
 
@@ -656,8 +658,9 @@ func (a *issueSandboxAPI) putSandbox(name string, labels map[string]string) {
 // daemon sent just before the release's mark can land after the release listed the project. Once
 // its issue pods ended, the release lists the project again from the API server, gives each
 // Sandbox its first list did not hold a line, and takes it: an issue's pod in which no role
-// process runs is deleted unread, a repository cache is deleted, and a Sandbox of a kind the
-// release does not know is left, so the command does not exit 0 while it stands.
+// process runs, and which runs no pod for a launcher to read it from, is deleted unread, a
+// repository cache is deleted, and a Sandbox of a kind the release does not know is left, so the
+// command does not exit 0 while it stands.
 func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 	t.Parallel()
 	// A role that does not answer holds its pod to the bound, so the release lists the project

@@ -110,7 +110,8 @@ func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
+func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error),
+	_ ...func(context.Context, runtime.ActRead) error) error {
 	_, err := r.teardown(ctx, "SuspendIssue", authorize, nil)
 	return err
 }

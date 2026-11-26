@@ -394,6 +394,12 @@ type ActReader interface {
 // be under way, so nothing is decided of it.
 var ErrTurnBusy = errors.New("another holds the pod's launch turn")
 
+// ActRead is what the cluster's API holds now of a recorded act on an issue's pod (ActState), read
+// as ActReader reads it, under the pod's launch turn that the runtime already holds: the runtime
+// hands it to a hook it runs under that turn (IssueSuspender's settle), where ActReader would
+// answer ErrTurnBusy, since it takes the turn again. A read that fails is its error.
+type ActRead func(ctx context.Context, act RecordedAct) (ActState, error)
+
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
 // pod running now is not the one the locator records, or the pod is being ended under it — the
@@ -476,8 +482,16 @@ type LaunchSessionNamer interface {
 // already gone is success, so a retried close finishes. A close keeps nothing: the issue has left
 // the workflow, and its next launch, if a person sets it todo again, makes the Sandbox again.
 // Process-only runtimes have no shared issue resources to suspend.
+//
+// settle is what the caller has run under the same lock once the runtime has found a Sandbox of
+// the issue to stop, just before its first write to that Sandbox or what it owns: each in order,
+// handed the read of a recorded act on the issue's pod (ActRead), and the first error ends the
+// suspension before any write. The project release passes one, which settles the records of the
+// replacements of the issue's pod before it deletes the pod (internal/daemon's
+// settleReplacements); every other caller passes none.
 type IssueSuspender interface {
-	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+		settle ...func(context.Context, ActRead) error) error
 }
 
 // IssueReleaser stops an issue's pod for a release, which leaves the issue in the workflow: the
@@ -525,6 +539,7 @@ type IssueVolumeReader interface {
 // ProjectPods is what a project release needs of a runtime that runs the project's pods
 // (dispatch://INFRA-3583 R6): every Sandbox of the project as the runtime watches it and as the
 // API server lists it now, a read of an issue workspace's unpushed work through one role's shim,
+// the read of a pod in which no role process runs through the pod's launcher (PodWorkspaceReader),
 // and the deletes of the Sandboxes that are no issue's. The issue pods themselves go through
 // IssueSuspender. A runtime that runs no pod implements none of it, so the daemon on it refuses a
 // release, and the assertion is made where the release is built, as IssueSuspender's is.
@@ -534,6 +549,7 @@ type IssueVolumeReader interface {
 // cache or probe, so a Sandbox kept so would stand while the release reported it deleted.
 type ProjectPods interface {
 	IssueSuspender
+	PodWorkspaceReader
 	// ProjectSandboxes is every Sandbox of the project the runtime's store holds, in name order,
 	// not counting one already being deleted.
 	ProjectSandboxes(ctx context.Context) ([]ProjectSandbox, error)
@@ -607,8 +623,9 @@ type WorkspaceWorkReader interface {
 // with no live claim make it before they delete a disk, an update round before a replacement it
 // makes by issue or at a launch, and the read that may end an earlier round's keep of a pod in
 // which no role runs (internal/daemon's readKeptPod), since no role's shim runs there to read
-// through. A launch's own replacement reads through a launcher of the pod it names
-// (internal/runtime/sandbox's launchTaken). The pod read
+// through. The project release reads so a pod no read through a role's shim reached before it
+// deletes the pod (internal/daemon's launcherRead, ProjectPods). A launch's own replacement reads
+// through a launcher of the pod it names (internal/runtime/sandbox's launchTaken). The pod read
 // is the one the runtime holds for the issue now; a pod with no launcher
 // that says it reads a workspace, a pod the runtime cannot name, and a launcher that refuses are
 // each an error, never an answer of no work. A runtime whose processes run in no pod implements

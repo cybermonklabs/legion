@@ -101,11 +101,14 @@ type ReleaseOutcome string
 const (
 	// ReleaseWaiting: the release has not ended this Sandbox yet.
 	ReleaseWaiting ReleaseOutcome = "waiting"
-	// ReleaseDeletedClean: deleted, its last read finding nothing unpushed.
+	// ReleaseDeletedClean: deleted, its last read finding nothing unpushed; for a pod no role
+	// process ran in at any read, that read is its launcher's, whose narrower count the reason names.
 	ReleaseDeletedClean ReleaseOutcome = "deleted_clean"
-	// ReleaseDeletedUnread: deleted with no read, since no role process ran in it at any read.
+	// ReleaseDeletedUnread: deleted unread: no role process ran in it at any read, and its launcher
+	// did not answer the read or refused it, which the reason gives.
 	ReleaseDeletedUnread ReleaseOutcome = "deleted_unread"
-	// ReleaseDeletedLost: deleted with the work its last read found unpushed.
+	// ReleaseDeletedLost: deleted with the work its last read found unpushed; for a pod no role
+	// process ran in at any read, that read is its launcher's, whose narrower count the reason names.
 	ReleaseDeletedLost ReleaseOutcome = "deleted_lost"
 	// ReleaseDeletedReadRefused: deleted with its workspace unread at the end: its shim refused
 	// the last read, or no role process ran at the last read while an earlier read reached one.
@@ -136,7 +139,10 @@ var releaseDeletedOutcomes = []ReleaseOutcome{ReleaseDeletedClean, ReleaseDelete
 // process keeps the count, the flag or the refusal of the latest read that reached one instead. A
 // left line gives its reason — such as an ask to its roles that could not be written by the bound,
 // so no role of it was asked — and a deleted_read_refused line whose last read found no role
-// process says that as its reason; several reasons are joined by "; ". OtherImage marks an issue
+// process says that as its reason. The line of a pod no role process ran in at any read gives as
+// its reason that its launcher read the workspace, counting only the commits under a working copy
+// or a local bookmark, which is fewer than a role's shim counts, or that the launcher did not read
+// it and why; several reasons are joined by "; ". OtherImage marks an issue
 // pod whose pod runs an image other than the daemon's own. Asked is, until the bound, each role the
 // release's ask was written to, and from the bound only those of them the ask reached a session of
 // before the bound or that answered; on a dry run it is each role a release would ask. Each carries
@@ -322,8 +328,9 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 // releasePausedFailure is the refusal of a project release a pause holds (store.ProjectPausedError,
 // dispatch://INFRA-3583 R13): PROJECT_PAUSED, naming the pause that stands where one does, and each
 // pod a pause still holds with its claims stored suspended by `released`. Its sentence says why the
-// release waits — it deletes a pod in which no role runs without reading the work its roles did
-// not push — that nothing was recorded, stopped or deleted, and how an operator ends each hold:
+// release waits — it reads a pod in which no role runs only through the pod's launcher, which does
+// not count every commit its roles did not push, and deletes it with no role asked to push — that
+// nothing was recorded, stopped or deleted, and how an operator ends each hold:
 // the resume of the project, then `legion claims resume --claim <token>` of one role of each held
 // pod, whose ready ends that pod's hold.
 func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
@@ -352,7 +359,7 @@ func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
 		end = "Resume the project first (legion project resume); then end the hold of each pod the pause stopped by resuming one role of the pod (legion claims resume --claim <token>), whose ready ends the hold, and run the release again"
 	}
 	body.Error = "project release refused: " + strings.Join(why, ", and ") +
-		". A release deletes a pod in which no role runs without reading the work its roles did not push, so it does not run while a pause holds the project; nothing was recorded, stopped or deleted. " + end
+		". A release reads a pod in which no role runs only through its launcher, which does not count every commit its roles did not push, and deletes it with no role asked to push, so it does not run while a pause holds the project; nothing was recorded, stopped or deleted. " + end
 	return body
 }
 

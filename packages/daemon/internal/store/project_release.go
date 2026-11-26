@@ -178,10 +178,11 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, now fun
 // ProjectPausedError is a project release refused because a pause holds the project
 // (dispatch://INFRA-3583 R13, and departure 1 of the plan of dispatch://INFRA-3759): the project is
 // paused, or a pod whose roles a pause stopped is still held after the resume
-// (project_pause_pod_holds), or both. A release reads a pod's unpushed work only through a running
-// role, and deletes a pod in which no role runs with no read. A pod a pause stopped is such a pod,
-// with the work its roles did not push on its disk, until a role of it runs again. So the release
-// is refused before it records, stops or deletes anything.
+// (project_pause_pod_holds), or both. A release counts a pod's unpushed work in full only through a
+// running role; a pod in which no role runs it reads only through the pod's launcher, which counts
+// a narrower set, and deletes with no role asked to push. A pod a pause stopped is such a pod, with
+// the work its roles did not push on its disk, until a role of it runs again. So the release is
+// refused before it records, stops or deletes anything.
 type ProjectPausedError struct {
 	// Project is the release's project, in the claim token's spelling.
 	Project string

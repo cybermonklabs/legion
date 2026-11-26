@@ -215,7 +215,8 @@ func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, author
 	return r.teardown(ctx, issue, authorize, writing)
 }
 
-func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
+func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error),
+	_ ...func(context.Context, runtime.ActRead) error) error {
 	_, err := r.teardown(ctx, issue, authorize, nil)
 	return err
 }

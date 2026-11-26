@@ -92,6 +92,16 @@ const releaseAskUnreached = "the ask reached no session of its running roles by 
 // process of it and the last read before its delete found none (writeDeleted).
 const releaseNoRoleAtLastRead = "no role process ran at the last read"
 
+// releaseLauncherRead is the reason a pod's line gives when no read through a role's shim reached
+// a role process of it and the release read it through its launcher instead (launcherRead): the
+// line's count is then the launcher's, the commits under a working copy or a local bookmark
+// (workspace.WorkRevset), which is narrower than a shim's read of the issue's unpushed work.
+const releaseLauncherRead = "no role process ran in it, so its launcher read its workspace (workspace-work), which counts only the commits under a working copy or a local bookmark, not the issue's unpushed work as a role's shim reads it"
+
+// releaseLauncherUnread opens the reason a deleted_unread pod's line gives: no role process ran in
+// it, and its launcher did not answer the read or refused it, whose error follows (launcherRead).
+const releaseLauncherUnread = "no role process ran in it, and its launcher did not read its workspace (workspace-work): "
+
 // releaseNoMachine is the refusal written for a claim the release asks a suspension of that the
 // daemon supervises no machine for (suspend, hold).
 const releaseNoMachine = "the daemon supervises no machine for it"
@@ -112,9 +122,11 @@ const projectReleaseErrorInFull = "project release: an error in full; the result
 // where each claim's line of the result is read from at the end, the activity report of a
 // claim's launch, which is where the background hold of an issue pod is read from (background),
 // and the session names each claim of an issue holds and whether the record holds the issue's pull
-// request merged, which the read of the issue's workspace carries to the shim (unpushedRead); and
-// the end of a deleted pod's hold streaks, which the idle pass the mark holds would otherwise end
-// only after the next boot (stopAndDelete).
+// request merged, which the read of the issue's workspace carries to the shim (unpushedRead); the
+// end of a deleted pod's hold streaks, which the idle pass the mark holds would otherwise end only
+// after the next boot (stopAndDelete); and the standing records of the replacements of the
+// project's issue pods, which the release settles before it deletes a pod, forgetting each one
+// whose act was not made (settleReplacements).
 type projectReleaseStore interface {
 	PauseRefusesProjectRelease(ctx context.Context, project string) error
 	StartProjectRelease(ctx context.Context, project string, now func() time.Time, bound time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
@@ -128,6 +140,8 @@ type projectReleaseStore interface {
 	ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error)
 	PullRequestMerged(ctx context.Context, issue string) (bool, error)
 	EndPodHoldStreaks(ctx context.Context, project, issue string) error
+	PodReplacements(ctx context.Context, project string) ([]store.PodReplacement, error)
+	ForgetPodReplacement(ctx context.Context, project, issue, operation string) error
 }
 
 // releasingStore is the daemon's store as a project release reads it: the store itself, and whether
@@ -154,8 +168,9 @@ func (s releasingStore) PullRequestMerged(ctx context.Context, issue string) (bo
 // backstop of each idle release it took over that had stopped claims (armTakenOver). It lists
 // every Sandbox of the project, a few times over some tens of seconds while that list fails, and
 // classifies each issue pod from its claims: left, when a claim of it is suspended by an operator;
-// no read, when no role process runs there; read otherwise. Each pod is then taken on a goroutine
-// of its own: a read pod's workspace is read through one running role's shim, and each running
+// no read through a role, when no role process runs there; read otherwise. Each pod is then taken
+// on a goroutine of its own: a read pod's workspace is read through one running role's shim, and
+// each running
 // role of a pod whose workspace holds unpushed work, whose shim refused the read, that has a role
 // in a turn, or that has a role whose activity report names running background work or that has
 // sent no report since its last turn started (background) is asked; an ask that cannot be written
@@ -164,7 +179,10 @@ func (s releasingStore) PullRequestMerged(ctx context.Context, issue string) (bo
 // role of it is in a turn or holds by its report, or the bound; a role counts as asked only once
 // the ask reached a session of it, and a pod whose ask reached none of its roles by the bound is
 // left too.
-// Then its last read, its stop and its delete (stopAndDelete). Once every issue pod ended, the
+// Then its last read, its stop and its delete (stopAndDelete). A pod no read through a role's shim
+// reached is read through its launcher before its delete (launcherRead), and the delete settles the
+// standing records of the replacements of the pod first (settleReplacements). Once every issue pod
+// ended, the
 // project's Sandboxes are listed again from the API server, tried as the first list is, and each
 // one the first list did not hold is taken as the first list's are (takeUnlisted). Then the
 // controller's claim and pod, the repository caches and any probe go. Each stop is waited for
@@ -300,12 +318,18 @@ type releasePod struct {
 	nudge   chan struct{}
 }
 
-// releaseRead is one read of a pod's workspace: whether a role process was there to read it, what
-// it found, and the shim's refusal.
+// releaseRead is one read of a pod's workspace: whether it was made, what it found, and why it was
+// not. A read through one running role's shim (read) is made where a role process was there to
+// read it, and its refusal is then the shim's, or the daemon's where it could not ask the shim. A
+// read through the pod's launcher (launcherRead, launcher set) is made of a pod no read through a
+// role's shim reached; it counts the commits under a working copy or a local bookmark
+// (workspace.WorkRevset), a narrower set than the shim counts (internal/shim's unpushedRevset), and
+// its refusal is why it was not made, with read false.
 type releaseRead struct {
-	read    bool
-	work    runtime.UnpushedWork
-	refusal string
+	read     bool
+	launcher bool
+	work     runtime.UnpushedWork
+	refusal  string
 }
 
 // Start is api.ProjectRelease's start: the release's record, or the record this process's release
@@ -325,7 +349,9 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	}
 	// A pause that holds the project refuses a new release and a dry run, before the mark, a list,
 	// a read or a record (dispatch://INFRA-3583 R13): the project paused, or a pod a pause stopped
-	// still held, which the release would delete unread. The release this process ran, running or
+	// still held, which no role process runs in, so the release would read it only through its
+	// launcher (launcherRead), whose count is narrower than the release's own, before it deleted
+	// it. The release this process ran, running or
 	// finished, is answered before it, since that answer starts nothing: no pause commits while
 	// that release runs (store.ProjectReleasingError), so a pause that holds the project then was
 	// taken once it finished, and a refusal would say that nothing was stopped or deleted of a
@@ -681,9 +707,10 @@ func (r *projectReleaser) listSandboxes(run *releaseRun, sandboxes []runtime.Pro
 
 // classifyReleasePod is how the release takes an issue pod, from its claims: left when a
 // suspension that holds is over one of them, the operator's or the project's controller's
-// (heldBy), with the roles and their holder named; no read when no role process of it has said it
-// is ready — none ever started, every claim failed, retired or suspended, or its role is starting
-// again — and read otherwise.
+// (heldBy), with the roles and their holder named; no read through a role, whose pod the release
+// reads through its launcher (launcherRead), when no role process of it has said it is ready —
+// none ever started, every claim failed, retired or suspended, or its role is starting again — and
+// read otherwise.
 func classifyReleasePod(claims []supervise.ClaimView) (podClass, string) {
 	if why := heldBy(claims); why != "" {
 		return releaseLeaves, why

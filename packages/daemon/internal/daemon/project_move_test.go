@@ -1166,8 +1166,8 @@ func (m *projectMove) checkRoleMessage(t *testing.T, rd *moveRelease) {
 // in, whose claim never ran, and the pod whose role was starting again, whose claim ran before
 // (ran). The release stopped that claim for the boot to start, naming the session it had, which
 // is none for a claim that never ran, and deleted the pod with no read and nobody asked, no role
-// process of it having registered since. The operator's resume, whose launch that stop cut
-// short, has been answered.
+// process of it having registered since and no launcher of it running to read it either. The
+// operator's resume, whose launch that stop cut short, has been answered.
 func (m *projectMove) checkCutShort(t *testing.T, rd *moveRelease, issue idleRigIssue, ran bool) {
 	t.Helper()
 	r := m.rig
@@ -1177,7 +1177,7 @@ func (m *projectMove) checkCutShort(t *testing.T, rd *moveRelease, issue idleRig
 		t.Errorf("the claim of %s stood %+v at the %s release, want a launch in flight of a claim that ran before=%v", issue.name, was, rd.name, ran)
 	}
 	if line := releaseLine(t, rd.release, issue.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || line.Refusal != "" || len(line.Asked) != 0 {
-		t.Errorf("the line of the pod of %s is %s, want deleted_unread with no read and nobody asked", issue.name, lineJSON(line))
+		t.Errorf("the line of the pod of %s is %s, want deleted_unread with no read and nobody asked: no role process and no launcher of it runs", issue.name, lineJSON(line))
 	}
 	if line := releaseClaimLine(t, rd.release, token); line.Session != was.session || line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
 		t.Errorf("the %s release's line of the claim of %s, whose launch it cut short, is %+v, want the session %q, ended project_release, which the boot starts",
@@ -1213,8 +1213,9 @@ func (m *projectMove) checkStartedAgain(t *testing.T, cluster *issueSandboxAPI, 
 // dryRun is the dry run's step: before any release, `legion project release --dry-run` names the
 // roles a release would ask in each pod whose workspace holds unpushed work, whose shim refuses
 // the read, or that has a role in a turn, with each count or the refusal; it names the clean pod
-// as one a release deletes with nothing unpushed, the pod no role runs in, the pod no role
-// process started in and the pod whose role starts again as ones it deletes unread, the claims
+// as one a release deletes with nothing unpushed, the pod no role runs in as one its launcher
+// reads clean, the pod no role process started in and the pod whose role starts again, in which
+// no launcher runs either, as ones it deletes unread, the claims
 // of the last two among the claims a release would stop, the operator's pod as left, and the
 // older daemon's pod as running another image. It asks nothing, stops nothing and records
 // nothing.
@@ -1255,12 +1256,14 @@ func (m *projectMove) dryRun(t *testing.T) {
 		line.WorkingCopyChanged == nil || *line.WorkingCopyChanged || len(line.Asked) != 0 {
 		t.Errorf("the dry run's line of the clean pod is %+v, want deleted_clean with nothing unpushed and nobody asked", line)
 	}
-	if line := releaseLine(t, dry, m.stopped.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil {
-		t.Errorf("the dry run's line of the pod no role runs in is %+v, want deleted_unread with no read", line)
+	if line := releaseLine(t, dry, m.stopped.pod); line.Outcome != api.ReleaseDeletedClean || line.Commits == nil || *line.Commits != 0 ||
+		line.Reason != releaseLauncherRead || len(line.Asked) != 0 {
+		t.Errorf("the dry run's line of the pod no role runs in is %s, want deleted_clean with no commit its launcher read, that read as its reason, and nobody asked",
+			lineJSON(line))
 	}
 	for _, issue := range []idleRigIssue{m.unstarted, m.restarting} {
 		if line := releaseLine(t, dry, issue.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || len(line.Asked) != 0 {
-			t.Errorf("the dry run's line of the pod of %s is %+v, want deleted_unread with no read and nobody asked", issue.name, line)
+			t.Errorf("the dry run's line of the pod of %s is %+v, want deleted_unread with no read and nobody asked: no launcher of it runs", issue.name, line)
 		}
 		if token := r.token(issue); !slices.ContainsFunc(dry.Result.Claims, func(c api.ReleasedClaim) bool { return c.Token == token }) {
 			t.Errorf("the dry run names the claims %+v, want among them %s, whose launch is in flight", dry.Result.Claims, token)

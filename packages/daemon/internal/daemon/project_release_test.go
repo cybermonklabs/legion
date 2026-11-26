@@ -166,7 +166,9 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 // release. finishes counts the writes asked, and reads the reads of the claims. holds is the
 // session names each claim holds, each read of them refused with holdsErr where it is set, and
 // merged whether the record holds the pull request of every issue merged, each read of it refused
-// with mergedErr where it is set.
+// with mergedErr where it is set. replacements is the standing records of the replacements of the
+// project's issue pods, each read of them refused with replacementsErr where it is set, each
+// forget refused with forgetErr where it is set, and forgot is each operation forgotten.
 type releaseRecord struct {
 	stop             []store.ProjectReleaseClaim
 	takenOver        []store.TakenOverIdleRelease
@@ -180,11 +182,15 @@ type releaseRecord struct {
 	merged           bool
 	holdsErr         error
 	mergedErr        error
+	replacementsErr  error
+	forgetErr        error
 
-	mu       sync.Mutex
-	finishes int
-	taken    bool
-	reads    int
+	mu           sync.Mutex
+	finishes     int
+	taken        bool
+	reads        int
+	replacements []store.PodReplacement
+	forgot       []string
 }
 
 // PauseRefusesProjectRelease answers that no pause holds the project: the release's refusal is
@@ -290,15 +296,42 @@ func (s *releaseRecord) PullRequestMerged(context.Context, string) (bool, error)
 // real one.
 func (*releaseRecord) EndPodHoldStreaks(context.Context, string, string) error { return nil }
 
+// PodReplacements is replacements, the standing records of the replacements of the project's
+// issue pods, or replacementsErr where it is set.
+func (s *releaseRecord) PodReplacements(context.Context, string) ([]store.PodReplacement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.replacementsErr != nil {
+		return nil, s.replacementsErr
+	}
+	return slices.Clone(s.replacements), nil
+}
+
+// ForgetPodReplacement takes the record of operation out of replacements and adds operation to
+// forgot, or answers forgetErr, taking nothing, where it is set.
+func (s *releaseRecord) ForgetPodReplacement(_ context.Context, _, issue, operation string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.forgetErr != nil {
+		return s.forgetErr
+	}
+	s.replacements = slices.DeleteFunc(s.replacements, func(r store.PodReplacement) bool { return r.Issue == issue && r.Operation == operation })
+	s.forgot = append(s.forgot, operation)
+	return nil
+}
+
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue
-// pod's delete asks its authorize and records the issue it deleted, each other Sandbox's delete
+// pod's delete asks its authorize, then runs each settle under it with the read of a recorded act
+// that acts scripts (readAct), and records the issue it deleted; each other Sandbox's delete
 // records its name, and each release of the controller's claim records the claim and answers
 // releaseErr; with deleteErr set, each delete of either kind is refused with it, once an issue
-// pod's authorize said yes. Each read of an issue pod's workspace is recorded (reads) and refused,
-// with readErr where it is set. The runtime's store lists the Sandboxes after storeListFails lists
-// of it that fail, each with storeListErr where it is set, and the API server lists the same
-// Sandboxes as its store after listFails lists of it that fail; storeLists and lists count the
-// lists asked of each.
+// pod's authorize and settle said yes. Each read of an issue pod's workspace is recorded (reads)
+// and refused, with readErr where it is set, and each read through a pod's launcher is recorded
+// (launcherReads) and answers launcherWork where it is set, launcherErr where that is set, and a
+// refusal otherwise, as a pod with no launcher connected answers. The runtime's store lists the
+// Sandboxes after storeListFails lists of it that fail, each with storeListErr where it is set,
+// and the API server lists the same Sandboxes as its store after listFails lists of it that fail;
+// storeLists and lists count the lists asked of each.
 type releasePods struct {
 	sandboxes      []runtime.ProjectSandbox
 	storeListFails int
@@ -307,19 +340,30 @@ type releasePods struct {
 	deleteErr      error
 	storeListErr   error
 	readErr        error
+	launcherWork   *runtime.WorkspaceWork
+	launcherErr    error
+	acts           map[runtime.RecordedAct]runtime.ActState
+	actErr         error
 
-	mu         sync.Mutex
-	deleted    []string
-	removed    []string
-	released   []claim.Token
-	reads      []runtime.UnpushedRead
-	storeLists int
-	lists      int
+	mu            sync.Mutex
+	deleted       []string
+	removed       []string
+	released      []claim.Token
+	reads         []runtime.UnpushedRead
+	launcherReads []string
+	storeLists    int
+	lists         int
 }
 
-func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
+func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error),
+	settle ...func(context.Context, runtime.ActRead) error) error {
 	if ok, err := authorize(ctx); err != nil || !ok {
 		return err
+	}
+	for _, s := range settle {
+		if err := s(ctx, p.readAct); err != nil {
+			return err
+		}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -328,6 +372,34 @@ func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authori
 	}
 	p.deleted = append(p.deleted, issue)
 	return nil
+}
+
+// readAct is the runtime's read of a recorded act under the pod's launch turn (runtime.ActRead):
+// actErr where it is set, and otherwise the state acts names for act, uncertain for one it does
+// not name.
+func (p *releasePods) readAct(_ context.Context, act runtime.RecordedAct) (runtime.ActState, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.actErr != nil {
+		return runtime.ActUncertain, p.actErr
+	}
+	if state, ok := p.acts[act]; ok {
+		return state, nil
+	}
+	return runtime.ActUncertain, nil
+}
+
+func (p *releasePods) PodWorkspaceWork(_ context.Context, issue string) (runtime.WorkspaceWork, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.launcherReads = append(p.launcherReads, issue)
+	switch {
+	case p.launcherWork != nil:
+		return *p.launcherWork, nil
+	case p.launcherErr != nil:
+		return runtime.WorkspaceWork{}, p.launcherErr
+	}
+	return runtime.WorkspaceWork{}, errors.New("no launcher of the test's pods that reads a workspace is connected")
 }
 
 func (p *releasePods) ProjectSandboxes(context.Context) ([]runtime.ProjectSandbox, error) {

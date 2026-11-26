@@ -606,7 +606,8 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 	return decide(ctx, state)
 }
 
-// actState is what the API server holds now of act on the Sandbox named name (ReadAct).
+// actState is what the API server holds now of act on the Sandbox named name, read under the pod's
+// launch turn its caller holds: ReadAct's, and endIssuePod's for the hooks it runs (runtime.ActRead).
 func (r *Runtime) actState(ctx context.Context, name string, act runtime.RecordedAct) (runtime.ActState, error) {
 	s, err := r.readSandbox(ctx, name)
 	if err != nil {

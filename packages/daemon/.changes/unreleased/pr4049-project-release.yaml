@@ -12,6 +12,10 @@ body: |-
   pushes nothing. It waits for the answers or the bound,
   `pod_update_grace_minutes` by default. Then it stops every role process and deletes every
   Sandbox of the project. It saves no workspace.
+  A pod in which no role process runs is read through its launcher before its delete, by the read
+  the idle release makes, which counts only the commits under a working copy or a local bookmark,
+  and the pod's line says so as its reason; the line is `deleted_unread`, with the reason, only
+  where that launcher does not answer the read or refuses it.
   A role whose activity report names a running subagent or background job, or that has sent no
   report since its last turn, is asked and waited for as a role in a turn is, as an update round
   reads that report, and the ask tells each role so.
@@ -24,6 +28,12 @@ body: |-
   A pod that holds a claim an operator or the project's controller suspended, or whose ask to its
   roles could not be written before the bound or reached no session of them by it, is left with
   its disk, and the claims that ran there stay held for an operator.
+  Before it deletes an issue pod, under the pod's launch turn, the release settles each standing
+  record of a replacement of that pod that an update round or a launch wrote before acting: it
+  forgets a record whose act the cluster shows was not made, so the next boot tells the issue's
+  architect of no replacement that never took the pod, keeps one whose act was made, and leaves
+  the pod, with a reason naming the record's operation, where the daemon cannot say whether the
+  act was made or cannot read or forget the record.
   A notice, role message, phase-ended message, hook prompt, merge-queue removal message, merge
   holds change message or merge-forward message held through the release reaches its claim once
   the next boot's start of it holds its role again. The controller's `retry`, `resume_agent` and

@@ -1,8 +1,8 @@
 package fake
 
 // podupdate.go is the fake's part for the daemon's update rounds: the scripting of a round's
-// drift, replacements and recorded acts, and the calls a round makes of the runtime, from PodDrift
-// to ReplaceIssuePod.
+// drift, replacements and recorded acts, the calls a round makes of the runtime, from PodDrift
+// to ReplaceIssuePod, and the end of an issue's pod that a project release asks (EndIssuePod).
 
 import (
 	"context"
@@ -192,31 +192,65 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 		return runtime.ErrTurnBusy
 	}
 	defer r.turn.Unlock()
+	state, err := r.actState(issue, act)
+	if err != nil {
+		return err
+	}
+	return decide(ctx, state)
+}
+
+// actState is ReadAct's reading of act on the issue's pod, which its caller makes under the pods'
+// launch turn (turn), with mu free.
+func (r *Runtime) actState(issue string, act runtime.RecordedAct) (runtime.ActState, error) {
 	r.mu.Lock()
-	var state runtime.ActState
+	defer r.mu.Unlock()
 	switch act.Takes {
 	case runtime.TakesPod:
-		state = runtime.ActNotMade
 		if r.podTaken(issue, act.Target) {
-			state = runtime.ActMade
+			return runtime.ActMade, nil
 		}
+		return runtime.ActNotMade, nil
 	case runtime.TakesVolume:
 		held, read := r.issuePods[issue]
 		now, live := r.podNow(held)
 		switch {
 		case r.sandboxGone[act.Target]:
-			state = runtime.ActMade
+			return runtime.ActMade, nil
 		case read && live && !r.podTaken(issue, now):
-			state = runtime.ActNotMade
-		default:
-			state = runtime.ActUncertain
+			return runtime.ActNotMade, nil
 		}
-	default:
-		r.mu.Unlock()
-		return fmt.Errorf("fake runtime: no act takes %q", act.Takes)
+		return runtime.ActUncertain, nil
 	}
-	r.mu.Unlock()
-	return decide(ctx, state)
+	return runtime.ActUncertain, fmt.Errorf("fake runtime: no act takes %q", act.Takes)
+}
+
+// EndIssuePod plays the Sandbox runtime's end of an issue's pod as a project release asks it
+// (SuspendIssue), under a name of its own, so that the fake is no runtime.IssueSuspender and the
+// daemon's close takes no pod of it: under the pods' launch turn (turn) it asks authorize, and a
+// false or an error ends it with nothing done; then it runs each of settle with the read of a
+// recorded act that runtime hands such a hook (runtime.ActRead), ReadAct's reading with no turn
+// taken again, and an error ends it with nothing done; then the issue's Sandbox holds no pod, which
+// IssuePod answers from then on, and the call is recorded as EndIssuePod.
+func (r *Runtime) EndIssuePod(ctx context.Context, issue string, authorize func(context.Context) (bool, error),
+	settle ...func(context.Context, runtime.ActRead) error) error {
+	r.turn.Lock()
+	defer r.turn.Unlock()
+	if act, err := authorize(ctx); err != nil || !act {
+		return err
+	}
+	read := func(_ context.Context, act runtime.RecordedAct) (runtime.ActState, error) {
+		return r.actState(issue, act)
+	}
+	for _, s := range settle {
+		if err := s(ctx, read); err != nil {
+			return err
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "EndIssuePod", Issue: issue})
+	r.issuePods[issue] = ""
+	return nil
 }
 
 // podGone is whether the issue's Sandbox no longer holds pod: the fake replaced it by issue or at a

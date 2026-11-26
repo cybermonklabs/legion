@@ -9070,7 +9070,7 @@ The command finds the daemon as every operator command does (`--config`, `--port
 A second `POST` to the same daemon process, a dry run's included, answers the release that process ran and starts no other, so the command run again reads the release.
 
 While the project is paused, and while a pod that a pause stopped is still held after the resume ([Pausing a project](#pausing-a-project)), a daemon process that has run no release answers the release `409 PROJECT_PAUSED`, its dry run included, and records, stops and deletes nothing.
-A release deletes a pod in which no role process runs with no read, and a pod whose roles a pause stopped is such a pod, with the work its roles did not push on its disk, until a role of it runs again.
+A release reads a pod in which no role process runs only through the pod's launcher, which counts fewer of the commits its roles did not push than the release's read through a role (step 2 below), and it asks nobody of such a pod to push; a pod whose roles a pause stopped is such a pod, with the work its roles did not push on its disk, until a role of it runs again.
 The refusal names the pause that stands under `pause`, and under `heldPods` each pod a pause still holds: its issue, the pause that holds it, when the hold began (`heldAt`), and the claims of the pod stored suspended by `released`, the source a pause stops a role by.
 The command prints the refusal and exits 1.
 Resume the project (`legion project resume`), then end each pod's hold by resuming one claim of the pod (`legion claims resume --operator-token-file <file> --claim <token>`): the hold ends at that role's ready.
@@ -9111,7 +9111,10 @@ The release does five things, in this order:
    A commit pushed with no description that no remote branch holds now, a commit of the issue that a rewrite of `legion/<KEY>` replaced, and, after a merge, the first pull request's commits once a second one opens, are counted, and each makes the release ask the pod's roles.
    The pod update round and the idle release read a narrower set, the commits under a working copy or a local bookmark ([The disk dies with its pod](#the-disk-dies-with-its-pod), [Idle release](#idle-release)): each keeps a pod whose workspace holds such work, and a round over a drift that breaks the pod replaces it and tells the issue's architect what went with it, where the project release asks that pod's roles to push and then deletes the pod.
    It runs no git and sends no commit.
-   A pod in which no role process runs has no shim to read, and the release deletes it with no read.
+   A pod in which no role process runs has no shim to read: the release reads it through the pod's launcher instead, just before its delete (step 4), with the launcher's `workspace-work` read, the one the idle release makes of a pod no claim owns ([Idle release](#idle-release)).
+   That read counts the narrower set, the commits under a working copy or a local bookmark (`workspace.WorkRevset`), not the release's own Unpushed work, the issue's unpushed commits this step counts through a shim: a commit with a change and no description that no working copy and no bookmark reaches, and a commit that only an `Omp-Session` or `Dispatch` trailer names as the issue's, go uncounted.
+   The pod's line names that read as its reason, `no role process ran in it, so its launcher read its workspace (workspace-work), which counts only the commits under a working copy or a local bookmark, …`, beside the count and the working-copy flag that read found.
+   A launcher that does not answer the read or refuses it, and a pod the runtime holds no pod of, leave the workspace unread: the line's reason is `no role process ran in it, and its launcher did not read its workspace (workspace-work): …`, with the error.
    A pod that holds a claim an operator or the project's controller suspended is left with its disk, and the release reads and asks nothing there.
 
 3. As soon as a pod's own read is done, it asks each running role of that pod when its workspace holds unpushed commits, its shim refused the read, a role of it is in a turn, or a role of it reports running background work.
@@ -9147,7 +9150,13 @@ The release does five things, in this order:
    A claim that failed or retired meanwhile holds no process, so the release does not wait for it, and its line names how it ended.
    Then it asks once more for each claim stored suspended by an idle release's `released`, so that the release's suspension takes that claim over by rank and the next boot starts it.
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
+   A pod no read through a role reached, since no role process ran there at any read, is read through its launcher now, once its claims are stopped (step 2), and that read is its last.
    Then it deletes the pod's Sandbox, with the pod and its disk.
+   Under the pod's launch turn, which the delete holds, and before the delete writes anything, it settles each standing record of a replacement of the pod that an update round or a launch wrote before acting (`pod_replacements`, [The disk dies with its pod](#the-disk-dies-with-its-pod)), reading each act from the Kubernetes API as the next boot's sweep would.
+   A record whose act was not made, the pod still running as the issue's own, is forgotten, and the daemon logs one line naming the issue, the pod and the record's operation: such a record is one the release's mark left standing, a launch that read the round's pod as replaced just before the mark and was then refused, or a round's replacement whose call failed, one that ran out waiting for the pod's launch turn among them, which no sweep reads while the mark holds.
+   Left standing, it would read as made once the pod is gone, and the next boot would tell the issue's architect of a replacement that never took the pod.
+   A record whose act was made took an earlier pod, and it stands: the next boot tells the architect of it, as before.
+   A record the daemon cannot say was made, or whose read or whose forget failed, leaves the pod, with a reason that names the record's operation and what was uncertain or failed, and the release forgets no record of the pod then.
    A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
    Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
    A pod it asked nothing is deleted as soon as its last read and its stop are done.
@@ -9166,7 +9175,8 @@ The release does five things, in this order:
 Then the release finishes: it writes its finish and its result to the daemon's database, and a finish the database does not take is written again, a second later and then up to 10 seconds apart, until the database takes it or the daemon stops.
 The command reads the release every 5 seconds until it finishes.
 Then it prints one line for each Sandbox, `sandbox <name> <kind> <issue> <outcome>`, and one for each claim it stopped, `claim <token> <issue> <role> <session> <how it ended>`, or with `--json` the daemon's object.
-An issue pod's outcome is `deleted_clean` (its last read found no unpushed commit), `deleted_unread` (no role process ran there at any read), `deleted_lost` (deleted with the unpushed commits the line counts), `deleted_read_refused` (its workspace went unread at the end) or `left` (with its reason).
+An issue pod's outcome is `deleted_clean` (its last read found no unpushed commit), `deleted_unread` (no role process ran there at any read, and its launcher did not read it: the reason gives the error), `deleted_lost` (deleted with the unpushed commits the line counts), `deleted_read_refused` (its workspace went unread at the end) or `left` (with its reason).
+A pod no role process ran in at any read is `deleted_clean` or `deleted_lost` by its launcher's read, whose count is step 2's narrower set, and its line's reason says that its launcher read it.
 A `deleted_read_refused` pod's shim refused the last read, and the line gives the refusal, or no role process ran at the last read after an earlier read reached one: the line then gives what that earlier read found, its count `at an earlier read`, and the reason `no role process ran at the last read`.
 Every other Sandbox is `deleted` or `left`.
 Until the bound, the line of an asked pod names each role the ask was written to, and when it answered.
@@ -9179,7 +9189,7 @@ It exits 1 when the release left a Sandbox, stopped short, or was ended by a boo
 When the wait ends after the daemon answered with the release, between two reads or inside one, the command prints the release as it last read it.
 A release that stopped short names why (`result.failure`), such as a list of the project's Sandboxes that it could not read, and still has a line for each claim of the project it was to stop.
 A pod deleted with work lost does not change the exit code.
-`--dry-run` reads the workspaces as the release would and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
+`--dry-run` reads the workspaces as the release would, a pod in which no role process runs through its launcher, and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
 It names the roles a release would ask for each pod whose workspace holds unpushed commits, whose shim refused the read, that has a role in a turn, or that has a role reporting running background work, as step 3 reads them.
 It asks, stops and saves nothing, and exits 0 when the daemon answers with a dry run.
 When `--wait` ends before the daemon answers, it exits 1 and says that a dry run records and starts nothing.
@@ -9221,7 +9231,7 @@ A claim an idle release suspended before the release stays `released` and waits 
 A restart on the configuration of the release's own cluster also adopts each pod the release did not reach, as after any restart.
 A restart on another cluster's configuration finds none of those pods, so the move changes the configuration only once the release ended with no pod left.
 
-A pod is left when a claim of it was suspended by an operator or by the project's controller, before the release or during it, when its ask could not be written by the bound, was written only at the bound or reached no session of its roles by the bound, when its claims were not stored suspended in time (`worker_stop_timeout_seconds` after the later of the stop and the bound), or when its delete failed.
+A pod is left when a claim of it was suspended by an operator or by the project's controller, before the release or during it, when its ask could not be written by the bound, was written only at the bound or reached no session of its roles by the bound, when its claims were not stored suspended in time (`worker_stop_timeout_seconds` after the later of the stop and the bound), when a recorded replacement of it could not be settled before its delete (step 4), or when its delete failed.
 The release then holds each claim that ran there as an operator's suspension, so no boot starts it, and the pod keeps its disk and the work on it.
 It also takes each claim of the pod out of any pod update round, the claim an operator suspended before the release included, so a round opened before the release does not replace the pod once its claims are resumed.
 The release waits up to twice `worker_stop_timeout_seconds` for each such hold to be stored before it finishes.
@@ -9559,7 +9569,7 @@ The daemon logs four messages, each with the claim it is about where it has one:
   While a project release holds every start as well ([Releasing a project's pods](#releasing-a-projects-pods)), each of them answers 409 `PROJECT_RELEASED` instead, because each route asks the release's refusal before the pause's (`releaseRefused` and `refusedWhilePaused`, `internal/api/server.go`).
 
 - While a project release runs ([Releasing a project's pods](#releasing-a-projects-pods)), a pause answers 409 `PROJECT_RELEASING`, at both doors, and writes nothing and stops no role; its sentence names the release, when it started and its bound.
-  The release reads each pod's unpushed work through a running role and asks those roles to push it, so a pause that stopped them would have the release delete their pods unread.
+  The release reads each pod's unpushed work through a running role and asks those roles to push it, so a pause that stopped them would have the release read their pods only through their launchers, with a narrower count, and delete them with nobody asked.
   A release runs from its record until it has finished its acts, or until a boot ended it: its record has no `finishedAt` and no `endedAt` (`ProjectRelease.Runs`, `internal/store/project_release.go`).
   The pause's transaction reads the release's record under the same lock as the release's own transaction, so of a pause and a release asked at the same moment one is refused.
   A pause once the release has finished is taken, although the release's mark still holds every start until the daemon's next boot: a finished release reads, asks, stops and deletes nothing more, and every role it stopped is stored suspended by `project_release`, so the pause stops no role then, and the next boot comes up paused, holding the start of each of those claims as a held `start` row until the resume.
@@ -9567,7 +9577,7 @@ The daemon logs four messages, each with the claim it is about where it has one:
 A caller whose plugin speaks a contract below the one that added the pause is served each of these refusals as the plain failure, its `code` and `error` alone, with no `setting`, `pause` or `lastPause`, and is served the release records' resumes without their `pause`.
 The contract the caller states in its request decides that, or, where it states none, the claims of the pod it asks from, as on the state (`placedByPod`, `internal/api/shaping.go`).
 
-Against a daemon process that has run no release, `legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) answers 409 `PROJECT_PAUSED` while the project is paused and while a pause's hold stands on a pod, its dry run included, and records, stops and deletes nothing: a release deletes a held pod in which no role process runs with no read and no ask, so the work its roles did not push would go with the pod.
+Against a daemon process that has run no release, `legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) answers 409 `PROJECT_PAUSED` while the project is paused and while a pause's hold stands on a pod, its dry run included, and records, stops and deletes nothing: a release reads a held pod in which no role process runs only through its launcher, whose count is narrower than its read through a role, asks nobody of it and deletes it, so the work its roles did not push could go with the pod uncounted.
 The refusal names the pause that stands and each pod a pause still holds (`heldPods`), with the claims of the pod stored suspended by `released`.
 Resume the project first, then end each pod's hold by resuming one role of the pod (`legion claims resume --claim <token>`), which works once the project runs, and run the release again.
 

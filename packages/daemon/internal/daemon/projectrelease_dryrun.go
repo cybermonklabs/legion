@@ -17,8 +17,10 @@ import (
 // dryRun is the release's inventory, classification and reads, with no ask, no stop and no
 // record: each Sandbox with the outcome a release would give it now, each pod a release would ask
 // with the roles it would ask, by the release's own decision (asks), a role whose activity report
-// holds the pod included, and each claim a release would stop. The stop set is read from the
-// store as the release's own transaction reads it (store.ProjectReleaseStopSet).
+// holds the pod included, and each claim a release would stop. A pod in which no role process runs
+// is read through its launcher, as the release reads it before its delete, and asks no one
+// (readAll). The stop set is read from the store as the release's own transaction reads it
+// (store.ProjectReleaseStopSet).
 func (r *projectReleaser) dryRun(ctx context.Context, bound time.Duration) (api.ProjectReleaseResponse, error) {
 	startedAt := r.now().UTC()
 	sandboxes, err := r.pods.ProjectSandboxes(ctx)
@@ -35,19 +37,17 @@ func (r *projectReleaser) dryRun(ctx context.Context, bound time.Duration) (api.
 	left := map[string]bool{}
 	for i, pod := range pods {
 		line := &run.result.Sandboxes[pod.line]
-		switch pod.class {
-		case releaseLeaves:
+		if pod.class == releaseLeaves {
 			line.Outcome, line.Reason = api.ReleaseLeft, pod.why
 			left[pod.sandbox.Issue] = true
 			continue
-		case releaseUnread:
-			line.Outcome = api.ReleaseDeletedUnread
-			continue
 		}
-		views := r.issueViews(pod.sandbox.Issue)
-		if asked, _ := r.asks(ctx, reads[i], views); asked {
-			for _, c := range runningClaims(views) {
-				line.Asked = append(line.Asked, api.ReleasedAsk{Role: c.Role})
+		if !reads[i].launcher {
+			views := r.issueViews(pod.sandbox.Issue)
+			if asked, _ := r.asks(ctx, reads[i], views); asked {
+				for _, c := range runningClaims(views) {
+					line.Asked = append(line.Asked, api.ReleasedAsk{Role: c.Role})
+				}
 			}
 		}
 		line.Outcome = deletedOutcome(reads[i])
