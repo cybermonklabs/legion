@@ -2796,7 +2796,8 @@ What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s fo
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
 a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
 and envoy-go-skips start no test container and run no Bun, so they pull no test image (their
-Postgres service's image aside), install nothing and set no testcontainers variable.
+Postgres service's image aside), install no tool and set no testcontainers variable; what each
+fetches is packages/envoy's Go modules, through its retried `go mod download` step.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 

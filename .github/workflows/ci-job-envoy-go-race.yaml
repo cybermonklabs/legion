@@ -184,7 +184,8 @@ jobs:
       # of whose steps sets a GO* name.
       # forced-order.sh reads the nats-server it hooks from the module cache with `go list -m
       # -json`, and downloads it with `go mod download -json` only where no cache holds that
-      # version's tree: v2.10.29 is in no module's graph here, so the step above never fetches it.
+      # version's tree: v2.10.29 is in no module's graph here, so the step "Download the Go modules
+      # this job builds" never fetches it.
       # The download runs from a directory with no go.mod, so go also asks sum.golang.org for the
       # module. So this step runs that read first, under the one retry (ci-budgets.md's Retries
       # note): the script's own -download, with the test steps' arguments, which makes every check

@@ -103,10 +103,12 @@ GitHub reads this budget in whole minutes, so a whole minute is the smallest mar
 a budget nobody wrote is a budget nothing judges, which is how this file's `airlock-lean` held the 8 x 60 + 127 = 607 s curl ladder .github/actions/install-elan carried before that action moved to `ci_tools_fetch`, with no term for it anywhere.
 It holds for every retried step of this repository's workflows, and the browser suite's install steps in .github/workflows/dispatch-browser.yaml derive theirs the same way.
 
-Start a job's budget with its measured duration plus the retry arithmetic of its single slowest retried step.
-Set the job's limit to at least the time before its limiting step plus that step's rounded limit.
-Use measured time for the preceding steps. If those steps run longer, the job can still stop the limiting step before its own deadline.
-The `browser-image` build and `shared-clone-kind.sh` use this minimum because their first calculation left less time than the limiting step's own deadline.
+Start a job's budget with its measured duration plus the retry arithmetic of its slowest retried step.
+The job's limit also counts every step before that one, so compare a second sum: the time the steps before the slowest retried step take, plus that step's rounded limit.
+Round the larger of the two sums up to a whole minute.
+Rounding the first sum alone need not leave the slowest retried step its whole limit.
+The steps before it count at their measured time, and a step the measured runs did not have, such as a retried step added after them, counts at its retry arithmetic, which is a bound.
+If a measured step before it runs longer than it was measured to, the job can still stop the slowest retried step before that step's own limit.
 Two halves of that are checked rather than read:
 `.github/scripts/check-download-retry.sh`'s rule 8 refuses a job whose ceiling sits under a step's retry arithmetic, and refuses one whose ceiling is not above that step's own `timeout-minutes`, since the job holds that step and everything else it runs.
 The measured term is in neither, so a job key is still a figure a person derives and a reviewer reads; what the check gives is the floor it may not stand under.
@@ -123,9 +125,7 @@ FOUR JOBS OF `ci.yaml` DO NOT: `changes`, which every other job waits on and whi
 The five jobs that call a workflow of their own
 — `docs`, `dispatch-browser`, `dispatch-browser-pr` (main's #5175, the second caller of dispatch-browser.yaml), `worker-image` and `browser-image` — carry no step of this file at all, so the term belongs to the jobs of the workflow each of them calls (review of dispatch://INFRA-1545 counted them at this head).
 
-Round the job budget up to a whole minute after comparing both calculations.
-Rounding the job budget from the retry arithmetic alone need not leave enough time for the limiting step.
-The ci-ok report takes more than that one minute, and this is the one place that says why, since every job of `.github/workflows/ci.yaml` carries that step:
+The ci-ok report takes more than the smallest margin this section gives a step, one whole minute above its arithmetic, and this is the one place that says why, since every job of `.github/workflows/ci.yaml` carries that step:
 its arithmetic is `ci-ok-report.sh`'s two `gh api` reads, of the run's jobs and of the tip of the queue's branch (main's #4983), and `post-check-run.sh`'s POST of the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of `.github/scripts/runner-shutdown.sh#runner_shutdown_kills` (main's #2945).
 The first is `ci-ok-report.sh`'s own, on a merge-group run where the reporting job failed, to tell a runner shutdown from a failure of the change;
 where it finds none, the script runs `ci-ok.sh`, which makes the second for the run's failed jobs in a process of its own, so it reads the check runs again rather than reusing the first call's.

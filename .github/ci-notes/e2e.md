@@ -48,9 +48,8 @@ Each row's measured figure is the one its `timeout_minutes` starts from (the com
   68).
 
 The Go module download before the proof has retry arithmetic of 1050 s.
-It is shorter than the limiting retry step in rows that select `jj`, `bun` or `apt`.
-For `shared-clone-kind.sh`, setup took 38 to 82 s across 22 jobs in `e2e.yaml` runs 45694873264,
-45694862149, 45694670537 and 45715794138. The Kind budget is in `.github/e2e-scripts.json`.
+It is shorter than the slowest retried step in rows that select `jj`, `bun` or `apt`.
+shared-clone-kind.sh's job limit is derived in this file's section "The Kind row's job limit".
 Every row's job limit stays above its step's: `.github/scripts/select-e2e-proofs.sh` refuses one
 that does not, so the pairs are read from `.github/e2e-scripts.json` and not copied here.
 plan-ratings.sh's row had a `timeout_minutes` of 25, its measured figure alone, though its `jj` is
@@ -76,3 +75,28 @@ this step nor its rows, and every figure here is derived by hand. What holds the
 `.github/scripts/select-e2e-proofs.sh`, which refuses a row whose `run_timeout_minutes` is
 missing, is no whole number, or is not below its `timeout_minutes`, since a job limit at or under
 the step's own would cut the step before the step's limit could name it.
+
+## The Kind row's job limit
+
+shared-clone-kind.sh's row is `dispatch_only`, so no label run and no nightly makes a job of it,
+and a `workflow_dispatch` that names it is the only run that does. Its `timeout_minutes` follows
+the Budgets note, .github/ci-budgets.md#the-budgets-note. Its slowest retried step is the proof
+step, whose 1350 s is above the module download's 1050 s, and the larger of that note's two sums is
+the second: the time before the proof step plus the proof step's rounded limit, 98 minutes, 5880 s.
+
+The time before the proof step is two figures, one observed and one a bound:
+
+- 42 s, observed: the longest of four `workflow_dispatch` runs of `e2e.yaml` that ran this row,
+  from the job's start to the start of its step `Run the proof`: 35 s in run 45875411054 (job
+  140101289546), 34 s in run 45859154723 (job 140045527045), 42 s in run 45854354505 (job
+  140028922572) and 39 s in run 45849489820 (job 140012075903). The workflow those runs ran had
+  no retried module download, so they observe the other steps before the proof, the checkout,
+  setup-go and the read of the service's settings among them, and none of them is a run of this
+  branch's whole proof job.
+- 1050 s, a bound: this branch's step "Download the Go modules this job builds",
+  5 x 180 + 150 = 1050 s, which those runs did not have.
+
+42 + 1050 + 5880 = 6972 s -> 117 min. The first sum, the script's 75 minutes plus the proof
+step's 1350 s, is 5850 s -> 98 min. Rounding the larger sum leaves 48 s to spare. The 42 s
+is not a bound: with the full module retry bound spent and more than 90 s spent by the other
+setup steps, the job can stop the proof before its own deadline (dispatch://INFRA-1545, round 72).

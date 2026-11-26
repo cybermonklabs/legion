@@ -311,16 +311,14 @@ jobs:
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    # Budget (ci-budgets.md's Budgets note): its measured run, 154 s, plus its slowest retried
-    # step alone, the ci-ok report at 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"),
-    # above the check step's four ladders, 1400 s. The measured run is the 13 s of the slowest of
-    # its 18 successful runs on 2026-11-26 (job 139937626624; none of them fetched, as no priority
-    # pull request was approved or queued), with that run's 8 s check step replaced by the 149 s
-    # the check step's comment measures. The job holds the report step at its rounded 43-minute
-    # (2580 s) limit AND the 152 s measured before it, that run's 3 s before its check step and
-    # the 149 s, so its key is the two together, 152 + 2580 = 2732 s -> 46 min. From the 2460 s
-    # alone, 154 + 2460 = 2614 s would take 44 minutes and leave the report step 2488 s of its
-    # 2580.
+    # Budget (.github/ci-budgets.md#the-budgets-note): its measured run, 154 s, plus its slowest
+    # retried step alone, the ci-ok report at 2460 s (ci-budgets.md's Budgets note, "The ci-ok
+    # report"), above the check step's four ladders, 1400 s. The measured run is the 13 s of the
+    # slowest of its 18 successful runs on 2026-11-26 (job 139937626624; none of them fetched, as
+    # no priority pull request was approved or queued), with that run's 8 s check step replaced by
+    # the 149 s the check step's comment measures. The time before the report step is 152 s,
+    # that run's 3 s before its check step and the 149 s, and the report step's rounded limit is
+    # 43 minutes, 2580 s, so that note's larger sum is 152 + 2580 = 2732 s -> 46 min.
     timeout-minutes: 46
     env:
       JOB_TIMEOUT_MINUTES: 46 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
