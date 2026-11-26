@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -318,4 +319,145 @@ func withoutDeploymentRoleKeys(t *testing.T, body []byte) []byte {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// The four rows of a claim's role that deploymentRolesContract's entry opens (its openedFields),
+// one subtest each: the role of a stranded claim, of a registration, of a waiting wake and of a
+// pause stop. Below the entry each row's domain is Legion's six, and a caller there is served the
+// field's role of the six and no role of the deployment: the checker is held back (the state's
+// band drops the entry, the registration is refused), while a role of the six is still served,
+// which is the control that the field reaches that caller at all. At the entry the row is open
+// from its number, the record of that number holds no domain of the field, and the checker is
+// served there.
+func TestEachRoleRowIsTheSixBelowTheEntryAndOpenFromIt(t *testing.T) {
+	added := entryNumber(deploymentRolesContract)
+	records := recordsByKey(shapeRecordsOfBuild(t, packageEntryFixtures))
+	six := make([]string, len(claim.Roles))
+	for i, role := range claim.Roles {
+		six[i] = string(role)
+	}
+	slices.Sort(six)
+	// The golden state carries the checker's stranded claim on LEGION-241 beside claims of the six
+	// in each of the three lists; its waiting wake and the open pause's wait on its stop are added
+	// here, as TestEachClaimLeftOutForAnOlderCallerIsLogged adds them.
+	const checker = "legion-legion-legion-241-checker"
+	state := populatedState(t)
+	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: checker,
+		Issue: "LEGION-241", Role: "checker", Kind: "launch",
+		DueAt: time.Date(2026, 9, 22, 9, 18, 20, 0, time.UTC)})
+	paused := *state.Paused
+	paused.WaitsOn = append(slices.Clone(paused.WaitsOn), PauseStopView{Claim: checker,
+		Issue: "LEGION-241", Role: "checker", AskedAt: time.Date(2026, 9, 22, 9, 18, 30, 0, time.UTC)})
+	state.Paused = &paused
+	for _, tc := range []struct {
+		answer  AnswerID
+		keyPath string
+		// served is each role a caller at contract is served at the field.
+		served func(t *testing.T, contract int) []string
+	}{
+		{AnswerState, "strandedClaims.*.role", func(t *testing.T, contract int) []string {
+			served, _, _ := stateServedWithLog(t, state, contract)
+			var roles []string
+			for _, c := range served.StrandedClaims {
+				roles = append(roles, c.Role)
+			}
+			return roles
+		}},
+		{AnswerRegister, "role", registeredRoles},
+		{AnswerState, "wakesWaiting.*.role", func(t *testing.T, contract int) []string {
+			served, _, _ := stateServedWithLog(t, state, contract)
+			var roles []string
+			for _, wake := range served.WakesWaiting {
+				roles = append(roles, wake.Role)
+			}
+			return roles
+		}},
+		{AnswerState, "paused.waitsOn.*.role", func(t *testing.T, contract int) []string {
+			served, _, _ := stateServedWithLog(t, state, contract)
+			if served.Paused == nil {
+				t.Fatalf("the state served at %d carries no `paused`, want the open pause", contract)
+			}
+			var roles []string
+			for _, stop := range served.Paused.WaitsOn {
+				roles = append(roles, stop.Role)
+			}
+			return roles
+		}},
+	} {
+		t.Run(string(tc.answer)+" "+tc.keyPath, func(t *testing.T) {
+			field, held := fieldAt(EnumeratedFields(), tc.answer, tc.keyPath)
+			if !held || field.OpenFrom != added {
+				t.Errorf("`%s` of the %s answer is open from %d (held: %t), want from the entry's number %d",
+					tc.keyPath, tc.answer, field.OpenFrom, held, added)
+			}
+			values := make([]string, len(field.Values))
+			for i, value := range field.Values {
+				values[i] = value.Value
+			}
+			if !slices.Equal(values, six) {
+				t.Errorf("`%s` of the %s answer holds %v, want Legion's six %v",
+					tc.keyPath, tc.answer, values, six)
+			}
+			below := records[shapeKey{contract: added - 1, answer: tc.answer}]
+			if !slices.Equal(below.Domains[tc.keyPath], six) {
+				t.Errorf("the record of the %s answer at %d admits %v at `%s`, want Legion's six %v",
+					tc.answer, added-1, below.Domains[tc.keyPath], tc.keyPath, six)
+			}
+			at, recorded := records[shapeKey{contract: added, answer: tc.answer}]
+			if !recorded {
+				t.Fatalf("no record holds the %s answer at the entry's number %d", tc.answer, added)
+			}
+			if domain, held := at.Domains[tc.keyPath]; held {
+				t.Errorf("the record of the %s answer at the entry's number %d holds the domain %v at "+
+					"`%s`, want none: the row is open there", tc.answer, added, domain, tc.keyPath)
+			}
+			builtin := func(role string) bool { return claim.IsBuiltin(claim.Role(role)) }
+			servedBelow := tc.served(t, added-1)
+			if slices.Contains(servedBelow, "checker") || !slices.ContainsFunc(servedBelow, builtin) {
+				t.Errorf("a caller at %d is served the roles %v at `%s` of the %s answer, want a role of "+
+					"the six and not the checker", added-1, servedBelow, tc.keyPath, tc.answer)
+			}
+			if servedAt := tc.served(t, added); !slices.Contains(servedAt, "checker") {
+				t.Errorf("a caller at the entry's number %d is served the roles %v at `%s` of the %s "+
+					"answer, want the checker among them", added, servedAt, tc.keyPath, tc.answer)
+			}
+		})
+	}
+}
+
+// registeredRoles is the role each registration answers a plugin of contract that registers a
+// claim of the implementer and a claim of the checker, each on an issue of its own, under a
+// deployment that defines the checker and a daemon that can relaunch no process onto another
+// plugin: there a stale registration stands (supervise's staleRegistration), which is the one way
+// a plugin below this daemon's contract is answered a registration at all. A registration refused
+// is no role served: the checker's below deploymentRolesContract's entry is refused with the
+// sentence that names both numbers, and any other refusal fails the test.
+func registeredRoles(t *testing.T, contract int) []string {
+	t.Helper()
+	h := newHarnessIn(t, false, checkerDeployment())
+	var roles []string
+	for i, role := range []claim.Role{claim.RoleImplementer, "checker"} {
+		issue := fmt.Sprintf("LEGION-%d", 208+i)
+		_, boot := h.launch(issue, role)
+		session := fmt.Sprintf("ses_%s_%d", role, 208+i)
+		answer := h.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
+			BootToken: boot, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
+			AgentID: "agent-" + session, PluginContract: contract,
+		}, nil)
+		if added := entryNumber(deploymentRolesContract); role == "checker" && contract < added {
+			wantRefusal(t, answer, http.StatusConflict, fmt.Sprintf("the role checker is one this "+
+				"deployment defines, and pi-legion speaks daemon API contract %d, which reads a claim's "+
+				"role as one of Legion's six; a plugin of contract %d or later registers it",
+				contract, added))
+			continue
+		}
+		if answer.Code != http.StatusOK {
+			t.Fatalf("the %s's registration at contract %d = %d, want 200; body %s",
+				role, contract, answer.Code, answer.Body)
+		}
+		var registered claim.RegisterResponse
+		decodeInto(t, answer, &registered)
+		roles = append(roles, string(registered.Role))
+	}
+	return roles
 }

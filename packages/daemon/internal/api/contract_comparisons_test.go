@@ -166,6 +166,13 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/controller.go", "server.registerController", "req.PluginContract != DaemonAPIVersion()"),
 		comparedIn("internal/api/controller.go", "server.refuseIfStaleController", "stored.PluginContract == DaemonAPIVersion()"),
 	}},
+	// A claim of a role the deployment defines that registers from a plugin below
+	// deploymentRolesContract's entry is refused, since the answer's role is read with an
+	// enumeration of Legion's six there (TestEachRoleRowIsTheSixBelowTheEntryAndOpenFromIt).
+	{row: "A deployment role's registration", compares: []comparisonSite{
+		comparedIn("internal/api/claims.go", "server.register",
+			"req.PluginContract < entryNumber(deploymentRolesContract)"),
+	}},
 	{row: "The idle rule", compares: []comparisonSite{
 		comparedIn("internal/workflow/idle.go", "IdleRelease", "c.PluginContract != contract"),
 	}},
