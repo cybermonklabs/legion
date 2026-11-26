@@ -229,7 +229,7 @@ projects:
 #                                      # hook counts, each written <from>-<to> of two workflow
 #                                      # phases, which differ but in step-step
 #                                      # (testing-implementing, reviewing-implementing,
-#                                      # merging-implementing, or any other of the 41 moves
+#                                      # merging-implementing, or any other of the 44 moves
 #                                      # back a task's line can make,
 #                                      # such as testing-reviewing on a task whose review step
 #                                      # comes before its test step; a move into retro or
