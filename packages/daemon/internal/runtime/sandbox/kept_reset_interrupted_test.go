@@ -123,7 +123,7 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 	// Sandbox, so the launch stops there. The next launch, which reads no pod, resets the volume on
 	// the mark. A launch that writes no mark of its own for such a Sandbox fails this case.
 	t.Run("the launch into a Sandbox already Suspended stopped at its delete", func(t *testing.T) {
-		first := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withTestBootTimeout())
+		first := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
 		old := first.spawn(workerSpec(t))
 		if err := first.r.Suspend(first.ctx, old); err != nil {
 			t.Fatal(err)
@@ -158,7 +158,14 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 		spec.Generation = 3
 		// The rig runs no controller, so this launch fails after its reset, in a wait for an
 		// object that the controller makes. Its writes are what this case reads.
+		start := time.Now()
 		_, _ = g.r.Spawn(g.ctx, spec)
+		// Remove the two-second bound and this launch waits for the controller's object to the test
+		// deadline, passing vacuously after about 210 s. The guard fails it by name; one minute is far
+		// above the bounded wait and far below the deadline.
+		if elapsed := time.Since(start); elapsed > time.Minute {
+			t.Fatalf("the next launch took %s, want it bounded by the two-second boot timeout", elapsed)
+		}
 		if s := g.sandbox(name); s == nil || s.UID == copied.GetUID() {
 			t.Fatalf("the next launch kept the Sandbox %s, whose kept volume failed workspace-init in pod %s: the fault reaches a second pod (writes %v)",
 				copied.GetUID(), old.Sandbox.PodUID, sandboxRemakes(g, name))

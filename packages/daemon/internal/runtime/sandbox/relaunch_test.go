@@ -1785,7 +1785,15 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 				refused.Add(1)
 				return true, nil, answer
 			})
+			start := time.Now()
 			err := machine.Handle(g.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *first, Kind: runtime.StaleAddress, At: rigNow}})
+			// Remove the two-second bound and each throttled try runs to the test deadline: this row
+			// then passes vacuously after about 200 s, the 845 s CI failure's shape. The guard fails
+			// it by name instead. One minute is far above the three tries' ~6 s at the bound and far
+			// below the deadline.
+			if elapsed := time.Since(start); elapsed > time.Minute {
+				t.Fatalf("the relaunch took %s, want its tries bounded by the two-second boot timeout", elapsed)
+			}
 			got := machine.Claim()
 			if tc.err == "" {
 				if err != nil {

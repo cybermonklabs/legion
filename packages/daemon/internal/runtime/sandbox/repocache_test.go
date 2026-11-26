@@ -1797,7 +1797,15 @@ func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
 	g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
 	says := "cannot be checked: the Service store may be stale"
 
+	start := time.Now()
 	_, err := g.r.Spawn(g.ctx, spec)
+	// Remove the two-second bound and the launch waits on the stale Service store to the test
+	// deadline, then refuses with the same message: this row passes vacuously after about 210 s. The
+	// guard fails it by name instead; one minute is far above the single bounded wait and far below
+	// the deadline.
+	if elapsed := time.Since(start); elapsed > time.Minute {
+		t.Fatalf("Spawn took %s, want it bounded by the two-second boot timeout", elapsed)
+	}
 	if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache+" "+says) {
 		t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, says)
 	}
