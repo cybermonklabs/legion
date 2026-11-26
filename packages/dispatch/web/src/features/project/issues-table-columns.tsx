@@ -41,12 +41,7 @@ import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
-import {
-  legionPhasePicks,
-  ROLE_PICKS,
-  WAITING_REASON_PICKS,
-  WORKER_STATE_PICKS,
-} from "./issues-filter-picks";
+import { ROLE_PICKS, WAITING_REASON_PICKS, WORKER_STATE_PICKS } from "./issues-filter-picks";
 import {
   formatPhaseTime,
   formatWorkTime,
@@ -996,7 +991,7 @@ export function useIssueTableColumns(
   const phases = mode.kind === "tab" ? mode.phases : LEGION_PHASES;
   return useMemo<ColumnDef<Item>[]>(() => {
     const descending = (id: string) => sorted.current.find((sort) => sort.id === id)?.desc === true;
-    const phasePicks = legionPhasePicks(phases);
+    const phaseFilter = legionPhaseFilter(phases);
     const rendering = renderings(
       userState,
       onMark,
@@ -1004,9 +999,8 @@ export function useIssueTableColumns(
       phaseMode,
       setPhaseMode,
       descending,
-      phasePicks
+      phaseFilter.order
     );
-    const phaseFilter = legionPhaseFilter(phases, phasePicks);
     const places = new Map([...(priorityTitles?.keys() ?? [])].map((id, at) => [id, at + 1]));
     const priorityOf: PriorityOf = (id) => ({
       place: places.get(id),

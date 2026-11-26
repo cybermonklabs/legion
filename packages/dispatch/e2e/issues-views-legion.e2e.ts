@@ -2024,7 +2024,9 @@ test("a second tab offers no Finish or Dismiss while the first tab's Start next 
     await expect(two.locator("[data-issue-row]").first()).toBeVisible();
     // Tab two has its answer from the lock once it has asked for the lock tab one holds: its
     // request then waits in the browser's lock manager, which the page shares with tab one. The
-    // lock is named for the listing (`actionLockName` in issues-table-recovery.ts).
+    // lock is named for the listing (`actionLockName` in issues-table-recovery.ts). Tab one's own
+    // look waits on that lock too, while it holds it, so only a request of another client than
+    // the holder's is tab two's.
     await expect
       .poll(
         () =>
@@ -2032,7 +2034,11 @@ test("a second tab offers no Finish or Dismiss while the first tab's Start next 
             const locks = await navigator.locks.query();
             const named = (lock: LockInfo) =>
               lock.name?.startsWith("dispatch-table-action:") === true;
-            return (locks.held ?? []).some(named) && (locks.pending ?? []).some(named);
+            const holder = (locks.held ?? []).find(named);
+            return (
+              holder !== undefined &&
+              (locks.pending ?? []).some((lock) => named(lock) && lock.clientId !== holder.clientId)
+            );
           }),
         { message: "tab one holds the move's lock and tab two waits for it" }
       )

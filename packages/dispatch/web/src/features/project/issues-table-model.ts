@@ -185,6 +185,9 @@ export type ColumnFilterSpec =
    *  over the moment `value` reads, which is null where the row has none. */
   | { readonly kind: "range"; readonly value: (item: Item) => string | null };
 
+/** A filter that picks values: the `picks` kind of `ColumnFilterSpec`. */
+type PicksFilterSpec = Extract<ColumnFilterSpec, { readonly kind: "picks" }>;
+
 /** Every column the table has. Narrow enough that a rendering, a width or a minimum keyed by
  *  an id no column carries fails to compile. */
 export type ColumnId =
@@ -256,7 +259,7 @@ const one = (
     groups?: boolean;
     always?: readonly string[];
   } = {}
-): ColumnFilterSpec => ({
+): PicksFilterSpec => ({
   kind: "picks",
   values: (item) => [value(item)],
   ...(rest.groups === false ? {} : { group: value }),
@@ -334,20 +337,22 @@ export const workerName = (role: string): string =>
  * The Legion phase filter over `phases`, the board's columns: the board column a row's card is
  * in, None with no card, every phase offered in the board's order under its title whatever the
  * rows hold, then None. The registry's is over today's phases (`LEGION_PHASES`), which the page
- * draws until the board answers; the Issues tab draws the board's own (`IssueTableMode`).
- * `picks` are those phases' picks (`legionPhasePicks`), which a caller that has built them hands
- * in.
+ * draws until the board answers; the Issues tab draws the board's own (`IssueTableMode`). Its
+ * `order` is those phases' picks (`legionPhasePicks`), the one order Legion phase offers, sorts
+ * and groups its values in.
  */
 export function legionPhaseFilter(
-  phases: readonly LegionPhaseColumn[],
-  picks: readonly string[] = legionPhasePicks(phases)
-): ColumnFilterSpec {
+  phases: readonly LegionPhaseColumn[]
+): PicksFilterSpec & { readonly order: readonly string[] } {
+  const picks = legionPhasePicks(phases);
   const titles = new Map(phases.map(({ id, title }) => [id, title]));
-  return one((item) => phaseColumnPick(item.card?.column), {
+  return {
+    ...one((item) => phaseColumnPick(item.card?.column), {
+      show: (value) => (value === NONE_PICK ? NONE_WORD : (titles.get(value) ?? value)),
+      always: picks,
+    }),
     order: picks,
-    show: (value) => (value === NONE_PICK ? NONE_WORD : (titles.get(value) ?? value)),
-    always: picks,
-  });
+  };
 }
 
 /** The sum of a row's hours by phase, 0 where its facts hold none: Time per phase's total, which
@@ -1133,19 +1138,18 @@ export function matchesFilters(
  *  every named group. */
 const EMPTY_GROUPS: readonly string[] = [NOBODY_FACET, "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
- *  the drawn column's (`listed`, the board's phases for Legion phase) where it is given, else the
- *  registry's, and by name where there is none — numbers inside a name counted as numbers, so
- *  `CORE-2` reads before `CORE-10`, and the empty group last. A group's place is its column's,
- *  not the row sort's, so the headings read P0, P1, P2, P3 however the rows are sorted. */
+ *  the drawn column's (`order`, the board's phases for Legion phase), and by name where it has
+ *  none (`undefined`) — numbers inside a name counted as numbers, so `CORE-2` reads before
+ *  `CORE-10`, and the empty group last. A group's place is its column's, not the row sort's, so
+ *  the headings read P0, P1, P2, P3 however the rows are sorted. */
 export function compareGroups(
   id: string,
   a: string,
   b: string,
-  listed?: readonly string[]
+  order: readonly string[] | undefined
 ): number {
   const filter = columnFilterSpec(id);
   if (filter?.kind !== "picks" || filter.group === undefined) return 0;
-  const order = listed ?? filter.order;
   if (order === undefined) {
     const empty = Number(EMPTY_GROUPS.includes(a)) - Number(EMPTY_GROUPS.includes(b));
     return empty !== 0 ? empty : a.localeCompare(b, undefined, { numeric: true });

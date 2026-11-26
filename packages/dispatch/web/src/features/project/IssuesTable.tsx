@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
+import type { LegionBoardResponse } from "../../api/types";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import type { FilterChip } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -27,7 +28,7 @@ import {
   ViewControls,
   viewTabButtonId,
 } from "./IssueViewTabs";
-import { legionPhasesOf } from "./issues-legion";
+import { LEGION_PHASES, type LegionPhaseColumn, legionPhasesOf } from "./issues-legion";
 import { type BoardToggles, IssuesTabBoard } from "./issues-tab-board";
 import { type HeldDoneRead, useHeldDone, useTabCounts } from "./issues-tab-counts";
 import { useTabTableLayout } from "./issues-tab-layout";
@@ -286,6 +287,19 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   );
 }
 
+/** The Legion phases of `board` (`legionPhasesOf`), as the list this view drew last while the
+ *  board's columns are the same (`replaceEqualDeep`), which starts as `LEGION_PHASES`: what the
+ *  view draws from the phases is drawn again only when the columns change, and not when the
+ *  board first answers with today's columns. Each view keeps its own list, so the columns of
+ *  another project's board decide nothing here. */
+export function useLegionPhases(
+  board: Pick<LegionBoardResponse, "columns"> | undefined
+): readonly LegionPhaseColumn[] {
+  const drawn = useRef<readonly LegionPhaseColumn[]>(LEGION_PHASES);
+  drawn.current = replaceEqualDeep(drawn.current, legionPhasesOf(board));
+  return drawn.current;
+}
+
 /**
  * One view of the Issues tab: its rows as `useTabReads` reads them, in the table, laid out by the
  * view's columns (`useTabTableLayout`), or on the Board, under the view tabs with their counts
@@ -321,7 +335,7 @@ function IssuesTabView({
     viewer,
   });
   const { board, done, doneRead, doneTotal, issues, items: factsRead, readsOpen } = reads;
-  const phases = legionPhasesOf(board.data);
+  const phases = useLegionPhases(board.data);
   const state = useIssueTable({
     actions,
     address,

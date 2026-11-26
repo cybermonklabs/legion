@@ -26,9 +26,9 @@ import {
   type LegionFacts,
   legionFactsOf,
   legionPhasesOf,
-  legionPhaseTitle,
   listedDoneRows,
   readLegionItems,
+  workPhaseTitle,
 } from "./issues-legion";
 
 function board(issues: LegionBoardResponse["issues"]): LegionBoardResponse {
@@ -132,10 +132,10 @@ test("the Legion phases are the board's columns, in its order, by their titles, 
     ["awaiting_person", "Waiting on a person"],
     ["held", "Held"],
   ]);
-  expect(legionPhaseTitle("retro")).toBe("Retro");
-  expect(legionPhaseTitle("awaiting_person")).toBe("Waiting on a person");
+  expect(workPhaseTitle("retro")).toBe("Retro");
+  expect(workPhaseTitle("awaiting_person")).toBe("Waiting on a person");
   // A phase a newer daemon names, which this build does not know, shows as the daemon wrote it.
-  expect(legionPhaseTitle("rebasing")).toBe("rebasing");
+  expect(workPhaseTitle("rebasing")).toBe("rebasing");
 });
 
 test("the Legion phases are each column id of the board route's contract, and no other", () => {
@@ -165,10 +165,6 @@ test("the page's Legion phases are the board route's columns in its order under 
     ...LEGION_PHASES.map(({ id, title }) => [id, title]),
     ["x_phase", "X phase"],
   ]);
-  // A later frame of the same columns, whatever cards they hold, is the same list.
-  expect(legionPhasesOf({ columns: columns.map((column) => ({ ...column, cards: null })) })).toBe(
-    phases
-  );
 });
 
 test("the time in a phase and the work time read in minutes, hours and minutes, then days", () => {

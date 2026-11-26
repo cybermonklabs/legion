@@ -22,6 +22,7 @@ import {
   ISSUE_TABLE_COLUMNS,
   type ItemContext,
   isQueued,
+  legionPhaseFilter,
   MEASURE_METHODS,
   matchesFilters,
   matchesSearch,
@@ -334,9 +335,10 @@ test("the Key column filters by typed text", () => {
 
 // I3: a number inside a name reads as a number, and the empty group reads last.
 test("groups order by number inside a name, with the empty group last", () => {
-  expect(compareGroups("assignee", "agent-2", "agent-10")).toBeLessThan(0);
-  expect(compareGroups("claim", "Nobody", "zoe")).toBeGreaterThan(0);
-  expect(compareGroups("assignee", "Unassigned", "alice")).toBeGreaterThan(0);
+  // Neither column lists its values in an order of its own, so its groups read by name.
+  expect(compareGroups("assignee", "agent-2", "agent-10", undefined)).toBeLessThan(0);
+  expect(compareGroups("claim", "Nobody", "zoe", undefined)).toBeGreaterThan(0);
+  expect(compareGroups("assignee", "Unassigned", "alice", undefined)).toBeGreaterThan(0);
 });
 
 // R5: an address of the build before still loads. The table has no Epic column and no grouping
@@ -925,7 +927,9 @@ test("Group by offers main's groupings and Legion phase, in the board's order wi
     "updated",
   ]);
   const heads = [...new Set(legionRows().map((item) => groupValue("legion_phase", item)))];
-  expect(heads.sort((a, b) => compareGroups("legion_phase", a, b))).toEqual([
+  // The drawn column's order is its filter's (`legionPhaseFilter`), here over today's phases.
+  const { order } = legionPhaseFilter(LEGION_PHASES);
+  expect(heads.sort((a, b) => compareGroups("legion_phase", a, b, order))).toEqual([
     "queue",
     "implementing",
     "awaiting_person",
@@ -933,7 +937,9 @@ test("Group by offers main's groupings and Legion phase, in the board's order wi
   ]);
   // Retro heads its group between Accepting and Merging.
   expect(
-    ["none", "merging", "retro", "accepting"].sort((a, b) => compareGroups("legion_phase", a, b))
+    ["none", "merging", "retro", "accepting"].sort((a, b) =>
+      compareGroups("legion_phase", a, b, order)
+    )
   ).toEqual(["accepting", "retro", "merging", "none"]);
   expect(readUrl(new URLSearchParams("group=legion_phase")).grouping).toEqual(["legion_phase"]);
 });

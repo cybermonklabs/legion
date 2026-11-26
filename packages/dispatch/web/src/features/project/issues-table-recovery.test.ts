@@ -84,6 +84,19 @@ function browserLocks(): LockManager {
   } as unknown as LockManager;
 }
 
+/** `browser`'s Web Locks, save that a request with a `signal`, which is how a tab waits for a
+ *  lock it found held (`look`), is never answered. So an offer a tab withdrew to wait for the
+ *  lock stays withdrawn, also where the tab found the lock held by itself. */
+function locksAnsweringNoWait(browser: LockManager): LockManager {
+  return {
+    query: () => browser.query(),
+    request: (name: string, options: LockOptions, granted: LockGrantedCallback<unknown>) =>
+      options.signal === undefined
+        ? browser.request(name, options, granted)
+        : new Promise<never>(() => {}),
+  } as unknown as LockManager;
+}
+
 /** Holds back every write to the page's `localStorage` until the test calls the function this
  *  answers, which makes the writes and puts the real `setItem` back. Each tab of a browser keeps
  *  its own copy of the store, and a write of one tab reaches another tab's copy at no fixed time,
@@ -318,21 +331,14 @@ test("a tab that finishes a record left behind holds its lock, and the other tab
 
 // A tab's own begin holds the listing's lock while it reads the store. A record another tab left
 // behind reaches this tab while its Start next confirm is open, and this tab offers to Finish or
-// Dismiss it. The confirm's begin is refused for that record, and the offer stays: this tab looks
-// at the lock only once its begin lets the lock go, so it does not find the lock held, by itself.
-// The browser here answers no wait for the lock, so an offer this tab withdrew to wait for its
-// own lock would stay withdrawn.
+// Dismiss it. The confirm's begin is refused for that record, and the offer stays: this tab takes
+// that record in, and looks at its lock, only once its begin lets the lock go, so it does not
+// find the lock held, by itself. The browser here answers no wait for the lock, so an offer this
+// tab withdrew to wait for its own lock would stay withdrawn.
 test("a begin refused for a record another tab left behind keeps offering to Finish or Dismiss it", async () => {
   const client = new QueryClient();
   undraws.push(() => client.clear());
-  const browser = browserLocks();
-  const locks = {
-    query: () => browser.query(),
-    request: (name: string, options: LockOptions, granted: LockGrantedCallback<unknown>) =>
-      options.signal === undefined
-        ? browser.request(name, options, granted)
-        : new Promise<never>(() => {}),
-  } as unknown as LockManager;
+  const locks = locksAnsweringNoWait(browserLocks());
   const table = tableIn("tab-one", client, locks);
   const left: TableAction = {
     id: "left-behind",
@@ -359,6 +365,52 @@ test("a begin refused for a record another tab left behind keeps offering to Fin
   expect(begun).toEqual({ kind: "refused", text: OTHER_TAB_ACTION });
   expect(readTableAction("CORE")).toEqual(left);
   expect(table.current.leftBehind).toEqual(left);
+});
+
+// The same rule holds for a Finish and a Dismiss, which hold the listing's lock while they read
+// the store too. Another tab dismissed the record this tab offers and left a record of its own
+// behind, whose `storage` event has not reached this tab yet. This tab's Finish, or its Dismiss,
+// finds that record in place of the one it offered and ends nothing. It takes that record in,
+// and looks at its lock, only once the lock goes, so it offers to Finish or Dismiss it. The
+// browser here answers no wait for the lock, so an offer this tab withdrew to wait for its own
+// lock would stay withdrawn.
+test.each([
+  "resume",
+  "dismiss",
+] as const)("a %s that finds another tab's record left behind in place of the one it offered offers to Finish or Dismiss that record", async (end) => {
+  const client = new QueryClient();
+  undraws.push(() => client.clear());
+  const locks = locksAnsweringNoWait(browserLocks());
+  const left: TableAction = {
+    id: "left-behind",
+    kind: "startNext",
+    project: "CORE",
+    keys: ["CORE-1"],
+    tab: "tab-closed",
+    startedAt: Date.now() - 60_000,
+    writes: {},
+  };
+  const key = tableStorageKey("CORE");
+  localStorage.setItem(key, JSON.stringify({ ...LAYOUT, action: left }));
+  const table = tableIn("tab-one", client, locks);
+  await waitFor(() => expect(table.current.leftBehind).toEqual(left));
+  const other: TableAction = { ...left, id: "other-left-behind", keys: ["CORE-2"], tab: "tab-two" };
+  localStorage.setItem(key, JSON.stringify({ ...LAYOUT, action: other }));
+
+  let resumed = false;
+  await act(async () => {
+    if (end === "resume")
+      await table.current.resume(left.id, async () => {
+        resumed = true;
+      });
+    else table.current.dismiss();
+  });
+  // Every lock request and query the browser answers is answered and drawn before the reading.
+  await act(settle);
+  expect(resumed).toBe(false);
+  expect(readTableAction("CORE")).toEqual(other);
+  expect(table.current.action).toEqual(other);
+  expect(table.current.leftBehind).toEqual(other);
 });
 
 // D12: the table hears another tab's record, and its end, through the window's `storage` event,

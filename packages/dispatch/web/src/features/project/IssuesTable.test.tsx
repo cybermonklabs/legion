@@ -47,7 +47,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { IssuesTable } from "./IssuesTable";
+import { IssuesTable, useLegionPhases } from "./IssuesTable";
 import { LEGION_PHASES } from "./issues-legion";
 import { issueTableLayout } from "./issues-table-columns";
 import { type AdvancesListing, CLOSE_ITEMS_AGAIN_MS } from "./issues-table-data";
@@ -5108,6 +5108,41 @@ test("a column the board route adds after Held is a Legion phase pick, cell and 
       .getAllByRole("button", { name: /^Collapse / })
       .map((heading) => heading.getAttribute("aria-label"))
   ).toEqual(["Collapse Held, 1 issue", "Collapse X phase, 1 issue", "Collapse None, 1 issue"]);
+});
+
+// A view keeps the Legion phases it drew while the board's columns are the same: today's list
+// until the board answers, and still when it answers with today's columns, so what the view draws
+// from the phases is drawn again only when the columns change. Each view keeps its own list, so a
+// board with a column this build lacks leaves the next view's list as today's.
+test("a view's Legion phases keep their list while the board's columns are the same, and start as today's", () => {
+  const today = LEGION_PHASES.map(({ id, title }) => ({ id, label: title, cards: [] }));
+  let board: Pick<LegionBoardResponse, "columns"> | undefined;
+  const drawn = renderHook(() => useLegionPhases(board));
+  expect(drawn.result.current).toBe(LEGION_PHASES);
+  board = { columns: today };
+  drawn.rerender();
+  expect(drawn.result.current).toBe(LEGION_PHASES);
+  const columns = [
+    ...today,
+    // The generated column ids name today's twelve: a newer server's column is none of them.
+    { id: "x_phase" as string as LegionBoardColumn["id"], label: "X phase", cards: [] },
+  ];
+  board = { columns };
+  drawn.rerender();
+  const phases = drawn.result.current;
+  expect(phases.map(({ id, title }) => [id, title])).toEqual([
+    ...LEGION_PHASES.map(({ id, title }) => [id, title]),
+    ["x_phase", "X phase"],
+  ]);
+  // A later frame of the same columns, whatever cards they hold, is the same list.
+  board = { columns: columns.map((column) => ({ ...column, cards: null })) };
+  drawn.rerender();
+  expect(drawn.result.current).toBe(phases);
+  drawn.unmount();
+
+  const next = renderHook(() => useLegionPhases({ columns: today }));
+  expect(next.result.current).toBe(LEGION_PHASES);
+  next.unmount();
 });
 
 /** The height of each row of the table in the geometry below. */

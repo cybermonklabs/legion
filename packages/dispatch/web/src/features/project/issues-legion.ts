@@ -1,11 +1,10 @@
 // The Legion parts of the Issues tab that hold no React and no query cache: the board's phase
-// order, the phases of a board's own columns (`legionPhasesOf`, which keeps the last list it
-// answered), the time formats a cell and a card write, where each listed row takes its Legion
-// facts from (the board's `issues` map, grown to the page's clock, else the items route of
-// `legion-work-time`), the windows and pages that items read spans, and the rule that keeps an
-// older server's Done answer off the page. The page reads what these name (`api/queries.ts`);
-// the tests read the rules here rather than through the markup.
-import { replaceEqualDeep } from "@tanstack/react-query";
+// order, the phases of a board's own columns (`legionPhasesOf`), the time formats a cell and a
+// card write, where each listed row takes its Legion facts from (the board's `issues` map, grown
+// to the page's clock, else the items route of `legion-work-time`), the windows and pages that
+// items read spans, and the rule that keeps an older server's Done answer off the page. The page
+// reads what these name (`api/queries.ts`); the tests read the rules here rather than through the
+// markup.
 import type {
   EvalItemRow,
   EvalItemsResponse,
@@ -61,24 +60,16 @@ export interface LegionPhaseColumn {
   readonly title: string;
 }
 
-/** The list `legionPhasesOf` answered last, `LEGION_PHASES` until it answers one. */
-let lastPhases: readonly LegionPhaseColumn[] = LEGION_PHASES;
-
 /** The Legion phases of `board`: its columns, in its order and under its labels, a column a newer
  *  server adds among them. Until the board answers, and in a project with no daemon, which reads
- *  none, they are the phases of today's route (`LEGION_PHASES`). Where the columns are the same
- *  as last time, the answer is the list it answered last (`replaceEqualDeep`), which starts as
- *  `LEGION_PHASES`: what the page draws from the phases is drawn again only when the columns
- *  change, and not when the board first answers with today's columns. */
+ *  none, they are the phases of today's route (`LEGION_PHASES`). A board's columns map to a new
+ *  list at each call: the view keeps the list it drew while the columns are the same
+ *  (`useLegionPhases` in `IssuesTable.tsx`). */
 export function legionPhasesOf(
   board: Pick<LegionBoardResponse, "columns"> | undefined
 ): readonly LegionPhaseColumn[] {
   if (board === undefined) return LEGION_PHASES;
-  lastPhases = replaceEqualDeep(
-    lastPhases,
-    (board.columns ?? []).map(({ id, label }) => ({ id, title: label }))
-  );
-  return lastPhases;
+  return (board.columns ?? []).map(({ id, label }) => ({ id, title: label }));
 }
 
 const phaseTitles: ReadonlyMap<string, string> = new Map(
@@ -86,7 +77,7 @@ const phaseTitles: ReadonlyMap<string, string> = new Map(
 );
 
 /** A phase's title in today's route, or the id as it is for a phase that route does not have. */
-export function legionPhaseTitle(phase: string): string {
+function legionPhaseTitle(phase: string): string {
   return phaseTitles.get(phase) ?? phase;
 }
 
