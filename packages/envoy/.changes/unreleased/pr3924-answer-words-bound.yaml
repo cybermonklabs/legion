@@ -9,13 +9,16 @@ body: |-
   Text next to a link counts separately, even when the answer has no space there.
   `packages/contracts/fixtures/drawn-words.json` holds answers with the words the bar draws of
   each, and a test of the server and one of the web each hold their side to it. A reply of 120
-  words or more gets one more model turn, which tells the model that count and asks for the same
-  facts in at most 90 words as the person sees them, without repeating the key, status and title
-  that each link already shows, or for the same answer again where the person's words ask for more
-  than a short answer. There is at most one such turn in a turn of
-  the run, and a reply still long after it is shown whole, as is a reply whose count the server
-  does not give within 10 seconds. The `reply` frame says the count
-  (`drawn_words`) and marks a reply held back for length (`held_long`). A tool result whose body is
+  words or more gets one more model call, its rewrite, which tells the model that count and asks
+  for the same facts in at most 90 words as the person sees them, without repeating the key,
+  status and title that each link already shows, or for the same answer again where the person's
+  words ask for more than a short answer. The rewrite is no new run: it is offered no tool, asks
+  for low reasoning effort whatever the run's level, and has 20 seconds of its own within what is
+  left of the run's working time; a rewrite that runs out of that time or fails ends the turn
+  with the first reply shown whole, never cut. There is at most one rewrite in a turn of the run,
+  and a reply still long after it is shown whole, as is a reply whose count the server does not
+  give within 10 seconds. The `reply` frame says the count (`drawn_words`) and marks a reply held
+  back for length (`held_long`). A tool result whose body is
   a list now names the list's total before the body, such as "[Total: 42 issues in the list
   below.]", so a count in the answer is the server's even where the body is cut; the system prompt
   says a count in the prose is a total a tool result or a drawn block gives. The server also takes

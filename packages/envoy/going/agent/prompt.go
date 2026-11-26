@@ -61,7 +61,7 @@ import (
 // chip of the issue's key, status and title, whose words count, and that the prose repeats
 // nothing a chip shows. That rule did not hold the bound alone: at 8a3e562b a tester measured 6
 // of 11 answers to q1 at 120 words or more as the bar draws them, so the bound is now held in the
-// answer path too, which gives a longer reply one more turn (length.go). At 8a3e562b, too, a
+// answer path too, which gives a longer reply its rewrite (length.go). At 8a3e562b, too, a
 // chart answer's prose said DEMO has 41 issues where its list result and its chart gave 42: the
 // model counted the rows of a list it was given whole, so a list result names its total before
 // its body (resultText), and the rule says a count in the prose is a total a tool result or a

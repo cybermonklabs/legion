@@ -203,8 +203,170 @@ func TestAnAnswerStillLongAfterItsTurnEndsWhole(t *testing.T) {
 	}
 }
 
+// standardRun is a Standard run of words, whose steps ask for the level's medium effort and are
+// offered its tools, unlike its rewrite, and whose 5 minutes of working time stand far past the
+// rewrite's bound.
+func standardRun(words string) *agentwire.ClaimedRun {
+	return &agentwire.ClaimedRun{ID: "run-1", Words: words, Level: "standard", Mode: "ask", LeaseToken: "lease-1"}
+}
+
+// messageChars is the characters of the text of each message request sends, its system prompt's
+// among them: what the pacer's estimate counts of a call whose messages hold no tool call and
+// which sends no tool (going.PromptChars).
+func messageChars(request *agenttest.Request) int {
+	chars := 0
+	for _, message := range request.Messages() {
+		switch content := message["content"].(type) {
+		case string:
+			chars += len(content)
+		case []any:
+			for _, part := range content {
+				if part, ok := part.(map[string]any); ok {
+					text, _ := part["text"].(string)
+					chars += len(text)
+				}
+			}
+		}
+	}
+	return chars
+}
+
+// requireHeldShown fails t unless the run ended its turn done with held, a reply the bar draws in
+// words words, held back as long and then, its rewrite drawing no reply, shown whole: saved held
+// back with its count and again whole as the answer, whose frame carries its prose and its count,
+// is not marked held and names no call, after the steps' calls of the held reply and its rewrite
+// alone and the held reply's one check.
+func requireHeldShown(t *testing.T, server *fakeServer, fake *agenttest.Model, held string, words int) {
+	t.Helper()
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateDone || end.Reason != "" || len(bodies) != 2 || bodies[0].Text != held || bodies[0].LongWords != words ||
+		bodies[1].Text != held || bodies[1].LongWords != 0 {
+		t.Fatalf("the run ended %s with %q, saving %d model steps; want done, the reply held back with its %d words and then shown whole", end.State, end.Reason, len(bodies), words)
+	}
+	replies := server.replyFrames(t)
+	if len(replies) != 2 || !replies[0].HeldLong || replies[0].Text != "" {
+		t.Fatalf("the reply frames are %+v, want the held reply's first, marked and with no prose", replies)
+	}
+	if shown := replies[1]; shown.Text != held || shown.HeldLong || drawn(shown) != words || len(shown.Tools) != 0 || shown.WaitsForPerson {
+		t.Errorf("the answer's frame carries %d bytes (held long %t) and %d drawn words, with the calls %q; want the held reply whole, its %d words and no call",
+			len(shown.Text), shown.HeldLong, drawn(shown), shown.Tools, words)
+	}
+	if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 2 || checks != 1 {
+		t.Errorf("the run made %d steps' calls and %d checks, want the held reply's and its rewrite's, and the held reply's one check", steps, checks)
+	}
+}
+
+// TestTheRewriteIsOfferedNoToolAtTheLowEffort: the turn after a reply held back as long is a
+// rewrite, not a new run, as the architect ruled
+// (dispatch://INFRA-1588/comment/7c38ba3b-bde1-4bb4-bcc7-f966b0968b8c) once such a turn at the
+// run's level wrote 5,526 to 17,565 reasoning tokens to shorten a reply. A Standard run's first
+// step is offered its tools at the level's effort; its rewrite's request sends no tool and no
+// tool choice and asks for rewriteEffort, the lowest effort the chat model's calls ask for, at the
+// level's output tokens still; and the pacer reserves for it its prompt, the level's output
+// tokens and rewriteReasoningTokens, no tool and not the level's reasoning tokens. Its reply ends
+// the turn done as the answer.
+func TestTheRewriteIsOfferedNoToolAtTheLowEffort(t *testing.T) {
+	long, short := plainWords("long", 130), plainWords("short", 30)
+	fake := agenttest.New(t, lengthScript(long, short))
+	server, client := newFakeServer(t, keptPlan)
+	workClaimed(t, fake.Model(), client, standardRun("what is the state of ACME-7's open children"))
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateDone || len(bodies) != 2 || bodies[0].LongWords != 130 || bodies[1].Text != short || bodies[1].LongWords != 0 {
+		t.Fatalf("the run ended %s with %q, saving %d model steps; want done, the long reply held back and then the rewrite's", end.State, end.Reason, len(bodies))
+	}
+	steps := stepRequests(fake)
+	if len(steps) != 2 || !toldAfter(steps[1], long, longTold(130)) {
+		t.Fatalf("the run made %d steps' calls, want the second, the rewrite, given the long reply and the note of its 130 words", len(steps))
+	}
+	standard := Levels["standard"]
+	if effort, tools := steps[0].Field("reasoning_effort"), steps[0].Field("tools"); effort != standard.Effort || tools == nil {
+		t.Errorf("the first step asks for effort %v with the tools %v, want the Standard level's %s and its tools", effort, tools, standard.Effort)
+	}
+	rewrite := steps[1]
+	if effort, tools, choice := rewrite.Field("reasoning_effort"), rewrite.Field("tools"), rewrite.Field("tool_choice"); effort != rewriteEffort || tools != nil || choice != nil {
+		t.Errorf("the rewrite asks for effort %v with the tools %v and the tool choice %v, want %s and no tool", effort, tools, choice, rewriteEffort)
+	}
+	if tokens := rewrite.Field("max_tokens"); tokens != float64(standard.OutputTokens) {
+		t.Errorf("the rewrite asks for max_tokens %v, want the level's %d", tokens, standard.OutputTokens)
+	}
+	chars := messageChars(rewrite)
+	want := chars/charsPerToken + standard.OutputTokens + rewriteReasoningTokens
+	if reserved := server.lastReply(t).ReservedTokens; reserved != want {
+		t.Errorf("the pacer reserved %d tokens for the rewrite, want %d: a quarter of the %d characters of its messages, no tool, the level's %d output tokens and the %d reasoning tokens of %s effort",
+			reserved, want, chars, standard.OutputTokens, rewriteReasoningTokens, rewriteEffort)
+	}
+}
+
+// TestARewritePastItsBoundShowsTheHeldReplyWhole: the rewrite has a bound of its own, the 20 s the
+// architect ruled, within what is left of the run's working time. A rewrite that draws no reply
+// within it, from a chat model that answers nothing, ends the turn done with the held reply shown
+// whole, cut nowhere, and the log says what happened. A Standard run works up to 5 minutes, so the
+// test's deadline, far under that, stops a rewrite that waits on past its own bound, and the test
+// fails rather than hangs.
+func TestARewritePastItsBoundShowsTheHeldReplyWhole(t *testing.T) {
+	if rewriteCallTime != 20*time.Second {
+		t.Errorf("the rewrite is bounded at %s, want the 20s the architect ruled", rewriteCallTime)
+	}
+	const bound, deadline = 200 * time.Millisecond, 5 * time.Second
+	was := rewriteCallTime
+	rewriteCallTime = bound
+	t.Cleanup(func() { rewriteCallTime = was })
+	var log logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+	long := plainWords("long", 150)
+	// silent is never closed: the rewrite's call is answered nothing until its client leaves it.
+	silent := make(chan struct{})
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			return verdict(noPlanPasses)
+		case strings.Contains(request.Text(), toldLong):
+			return agenttest.Reply{Hold: silent}
+		}
+		return agenttest.Reply{Text: long}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
+	a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	newWorker(ctx, a, standardRun("what did the southern team write about the comet"), func() {}).work()
+	if ctx.Err() != nil {
+		t.Fatalf("the run still waited on its rewrite at the test's deadline of %s, want its turn ended within the rewrite's bound of %s", deadline, bound)
+	}
+	requireHeldShown(t, server, fake, long, 150)
+	warned := log.Lines("the rewrite of a reply held back as long drew no reply")
+	if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, bound.String()) {
+		t.Errorf("the log holds %q, want a warning naming run-1 and the rewrite's bound", warned)
+	}
+}
+
+// TestARewriteThatFailsShowsTheHeldReplyWhole: a rewrite whose call fails, the chat model
+// answering 400, which is not tried again, ends the turn done with the held reply shown whole, as
+// one past its bound does, not the run failed, and the log says what the chat model answered.
+func TestARewriteThatFailsShowsTheHeldReplyWhole(t *testing.T) {
+	var log logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+	long := plainWords("long", 140)
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			return verdict(noPlanPasses)
+		case strings.Contains(request.Text(), toldLong):
+			return agenttest.Reply{Status: http.StatusBadRequest}
+		}
+		return agenttest.Reply{Text: long}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workClaimed(t, fake.Model(), client, standardRun("what did the southern team write about the comet"))
+	requireHeldShown(t, server, fake, long, 140)
+	warned := log.Lines("the rewrite of a reply held back as long drew no reply")
+	if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "answered 400") {
+		t.Errorf("the log holds %q, want a warning naming run-1 and the status the chat model answered", warned)
+	}
+}
+
 // TestWordsThatAskForMoreGetTheSameAnswerAgain: no other model call decides whether the person's
-// words ask for more than a short answer: the one more turn asks it, in the architect's words
+// words ask for more than a short answer: the rewrite asks it, in the architect's words
 // (dispatch://INFRA-1588/comment/77ddfc7a-b65c-4d36-b78c-c00e703c7d31). Words that ask for all of
 // a thing get the same long answer again, which ends the turn done, whole, with no third turn.
 func TestWordsThatAskForMoreGetTheSameAnswerAgain(t *testing.T) {

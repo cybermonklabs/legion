@@ -111,11 +111,12 @@ type toolFrame struct {
 // token and to its first token of prose, left out for a reply of tool calls alone, how long the
 // agent's pacer held it, the tokens of its prompt, those of the provider's cache included, of its
 // reply, its reasoning among them, and of that reasoning, the tokens the pacer reserved for it
-// before it was made, and the tokens the pacer charged it in the end. A reply in prose that the
-// guard checked before it could end the turn (checkProse), held back or not, also says what the
-// check took: its milliseconds and its tokens; one it did not check because Jev read the turn's
-// words as Ask says so; each says what Jev read them as; and one that would end the turn done says
-// how many words the bar draws of it.
+// before it was made, and the tokens the pacer charged it in the end; a reply held back as long
+// and shown whole once its rewrite drew no reply (showHeld) says none, since no call wrote it
+// again. A reply in prose that the guard checked before it could end the turn (checkProse), held
+// back or not, also says what the check took: its milliseconds and its tokens; one it did not
+// check because Jev read the turn's words as Ask says so; each says what Jev read them as; and one
+// that would end the turn done says how many words the bar draws of it.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -139,7 +140,8 @@ type replyFrame struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 	// ReservedTokens is the tokens the pacer charged the call before it was made: the estimate of
 	// its prompt, its tool definitions among it, its level's output tokens and its level's
-	// reasoning tokens (Level.estimate), summed over its HTTP attempts, which a run whose
+	// reasoning tokens (Level.estimate), a rewrite's rewriteReasoningTokens in their place and no
+	// tool, since it sends none (rewrite), summed over its HTTP attempts, which a run whose
 	// deployment names no quota still counts. Set against input_tokens + output_tokens, it says
 	// how far the estimate is from what the call spent.
 	ReservedTokens int `json:"reserved_tokens"`
@@ -164,8 +166,9 @@ type replyFrame struct {
 	// DrawnWords is how many words the bar draws of the reply's prose as the run's answer, as the
 	// server counted them (holdLong): each link as its item's chip, an issue's with its key, its
 	// status and its title. endProse sets it, 0 included, on a reply in prose it would end the
-	// turn done with, held back as long or not; every other reply leaves it out, as does one whose
-	// count failed. HeldLong marks a reply held back as long (saveLong), which carries no prose.
+	// turn done with, held back as long or not, and showHeld on a reply held back as long that it
+	// shows whole; every other reply leaves it out, as does one whose count failed. HeldLong marks
+	// a reply held back as long (saveLong), which carries no prose.
 	DrawnWords *int `json:"drawn_words,omitempty"`
 	HeldLong   bool `json:"held_long,omitempty"`
 	// JevLine is what Jev read the turn's words as when endProse decided on the reply (jevLine):
@@ -465,7 +468,11 @@ type stepOutcome struct {
 // run when the step runs past its model call's time and watchdogGrace. A call the chat model's
 // content filter refused, or whose reply it stopped, saves nothing, and the step is made again
 // (withhold). The run's last model call, which is offered no tool, is told so at the end of its
-// system message (lastCallNote).
+// system message (lastCallNote). The step after a reply held back as long is that reply's rewrite
+// (heldLast, length.go): its call is offered no tool, at rewriteEffort, within rewriteCallTime,
+// and the pacer reserves rewriteReasoningTokens for it (rewrite); a rewrite that draws no reply -
+// its bound ended it, or its call failed, was refused or was held back for the quota - ends the
+// turn done with the held reply shown whole (showHeld).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
 	if err != nil {
@@ -481,8 +488,15 @@ func (w *worker) step() stepOutcome {
 	if request.Bounds.Calls == 1 {
 		system += "\n\n" + lastCallNote
 	}
-	request.System, request.Input, request.Tools = system, messages, w.tools(base)
-	estimate := w.level.estimate(going.PromptChars(request.System, request.Input, request.Tools))
+	request.System, request.Input = system, messages
+	held, rewrite := w.heldLast()
+	var estimate int
+	if rewrite {
+		estimate = w.rewrite(&request)
+	} else {
+		request.Tools = w.tools(base)
+		estimate = w.level.estimate(going.PromptChars(request.System, request.Input, request.Tools))
+	}
 	request.Model = w.agent.pacer.Paced(request.Model, func() int { return estimate }, w.charge)
 	request.OnStep = func(step agentloop.Step) error {
 		if w.agent.config.Hooks {
@@ -516,6 +530,8 @@ func (w *worker) step() stepOutcome {
 			return stepOutcome{state: agentwire.StateDone}
 		}
 		return stepOutcome{}
+	case rewrite:
+		return w.showHeld(base, held, result, err)
 	case errors.Is(err, errReplyFiltered):
 		return w.withhold("the provider's content filter stopped the reply")
 	case err != nil:
@@ -657,8 +673,7 @@ func (w *worker) merge() {
 // faulted is how a step whose model call saved nothing ends the run's turn: at its level's time,
 // or at the model call's own; a model call that failed, that the model refused or that passed its
 // size limits fails the run; a model the quota or a 429 held back is tried again. A failed call's
-// reason names the fault agentloop ended it with and its detail (faultDetail), so the reason says
-// why a call that drew no answer failed.
+// reason says why it drew no answer (modelFailure).
 func (w *worker) faulted(result agentloop.Result) stepOutcome {
 	switch result.Fault {
 	case agentloop.FaultTime:
@@ -676,6 +691,13 @@ func (w *worker) faulted(result agentloop.Result) stepOutcome {
 	if result.Status == http.StatusTooManyRequests || strings.Contains(result.Detail, going.ErrQuotaPastDeadline.Error()) {
 		return stepOutcome{retry: true}
 	}
+	return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %s", codeModelFailed, modelFailure(result))}
+}
+
+// modelFailure says why a model call that saved nothing drew no answer: the status the chat model
+// answered, where it answered one, and the fault agentloop ended the call with and its detail
+// (faultDetail).
+func modelFailure(result agentloop.Result) string {
 	detail := "the chat model answered no reply"
 	if result.Status != 0 {
 		detail = fmt.Sprintf("the chat model answered %d", result.Status)
@@ -683,7 +705,7 @@ func (w *worker) faulted(result agentloop.Result) stepOutcome {
 	if result.Fault != "" {
 		detail += fmt.Sprintf(" (%s: %s)", result.Fault, faultDetail(result.Detail))
 	}
-	return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %s", codeModelFailed, detail)}
+	return detail
 }
 
 // urlQuery is the query of an address in a fault's detail, which faultDetail leaves out.

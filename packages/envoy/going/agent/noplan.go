@@ -216,15 +216,15 @@ func (w *worker) jevLine() string {
 // it is, and the failure is logged. A reply that passes, or that no check flagged, would end the
 // turn done as it is, and first the bar's count of its words decides (holdLong, length.go): one of
 // wordsBound words or more is held back once in the turn where the level leaves a model call
-// (saveLong), and the next step's model is told longTold. A flagged reply is held back where
-// the turn held back none before it and the run's level leaves it a model call (saveNoPlan): the
-// turn goes on, and the next step's model is told noPlanTold. Any other flagged reply ends the turn
-// done with noPlanSaid before its text. The frame of a reply the check was made for says what the
-// check took (replyFrame.CheckMS), held back or not, and whatever the check answered; that of a
-// reply Jev's Ask spared says so (replyFrame.CheckSkipped); each says what Jev read the words as
-// where the guard asked (replyFrame.JevLine); and each whose words were counted says the count
-// (replyFrame.DrawnWords). A run that is no longer the worker's to go on with by the check's end,
-// or by the count's, saves nothing.
+// (saveLong), and the next step, its rewrite (rewrite), is told longTold. A flagged reply is held
+// back where the turn held back none before it and the run's level leaves it a model call
+// (saveNoPlan): the turn goes on, and the next step's model is told noPlanTold. Any other flagged
+// reply ends the turn done with noPlanSaid before its text. The frame of a reply the check was
+// made for says what the check took (replyFrame.CheckMS), held back or not, and whatever the check
+// answered; that of a reply Jev's Ask spared says so (replyFrame.CheckSkipped); each says what Jev
+// read the words as where the guard asked (replyFrame.JevLine); and each whose words were counted
+// says the count (replyFrame.DrawnWords). A run that is no longer the worker's to go on with by
+// the check's end, or by the count's, saves nothing.
 func (w *worker) endProse(prose *proseReply) stepOutcome {
 	flagged := w.run.Kind == agentwire.RunNewIssue
 	jev := w.jevLine()

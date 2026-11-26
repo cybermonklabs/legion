@@ -148,7 +148,8 @@ func (p *Pacer) wait(ctx context.Context, tokens int) (time.Duration, error) {
 // its messages; and each tool's name, description and argument schema, the schema as the request
 // carries it, without the whitespace between its tokens (compactLen). A call sends its tools even
 // where it offers none, as a run's last call does with a tool choice of none, so they count on
-// every call.
+// every call that sends them; a rewrite of a reply the bar held back as long (going/agent's
+// rewrite) sends none, and its caller passes none.
 func PromptChars(system string, messages []agentloop.Message, tools []agentloop.Tool) int {
 	chars := len(system)
 	for _, message := range messages {
