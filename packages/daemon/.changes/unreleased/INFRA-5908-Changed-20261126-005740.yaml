@@ -5,8 +5,11 @@ body: |-
   request, or in a child the architect files in that repository. An open issue that tracks such a
   defect is no reason to wait. Any other clear defect goes to the controller, which no longer gives
   it to a tree said to own the code: it puts it on the issue that tracks it, hands it to a running
-  tree whose pull request can carry it, or files it for Legion. The production-check tester's text
-  names no team that owns the code.
-time: 2026-11-25T02:05:36Z
+  tree whose pull request can carry it, or files it for Legion, and it sends a defect that stops
+  the role that reports it back to that role. The merger fixes a check that fails on the base too,
+  and no longer waits for the base's fix. The tester's prompts and the production check's task no
+  longer put a defect's ask on the controller's report issue, and the worker and architect prompt
+  parts no longer let a role reopen or create that issue.
+time: 2026-11-26T00:57:40Z
 custom:
-    Issue: no-wait-on-tracked-work
+    Issue: INFRA-5908
