@@ -7,10 +7,10 @@ body: |-
     second state that says the same failure, a state at a head the pull request has left, and a
     lingering tree tell nobody. The CI settlement's message to the architect, the phase's worker and
     the implementer stays as it was.
-    The engine's `TestingLeavesCI` says whether the testing move leaves out each check a CI job
-    runs. The daemon wires it false, so the move still reads every check, those a CI job runs among
-    them, until the end of a task holds the checks a CI job runs; the move with it true is tested
-    beside the move with it false.
+    The testing move leaves out each check a CI job runs, the one whose state names its job's case,
+    and judges only the checks that no CI job runs. A failure of a check a CI job runs reaches the
+    implementer by the message above, and the end of the task holds that check until it passes at
+    the task's head, so no step after testing need gate it.
     The tester's prompt sends it to no CI job, no CI run and no result Dispatch takes from CI: it
     reads no CI, runs no lane again as a whole, and waits for none. The reviewer's and the
     architect's prompts say that each check, those a CI job runs among them, must read yes: at the

@@ -2543,7 +2543,8 @@ type Store interface {
 	// other.
 	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueFixStart writes the start of a fix's task (SuperviseRequest.Fix) as a row of its own,
-	// taking out only an unleased pending start of the same fix of the same run, whose attempts,
+	// taking out only an unleased pending start of the same fix of the same run of the same task,
+	// which its branch names (SuperviseRequest.FixBranch), whose attempts,
 	// backoff, error and place it carries as EnqueueStart does. A fix's start carries no slot mark,
 	// so it stands in no waiting line, and EnqueueStart never takes it out; a row that names no fix
 	// or waits for a slot is refused.

@@ -15,12 +15,20 @@ const besideJJ = `jj -R "$LEGION_WORKSPACE" `
 // BesidePushCommand is the command that pushes the commit under the working copy of the role's
 // workspace to branch, a branch beside a fix: a fetch of branch first, so the clone's record of it
 // is current (a new pod's clone holds none, and jj answers a fetch of a branch origin does not hold
-// with a warning and exit 0), then the bookmark set at that commit, then its push, which tracks a
-// new bookmark at its first push. Each runs in the workspace, since jj reads the repository of the
+// with a warning and exit 0), then the track of the row that fetch left, then the bookmark set at
+// that commit, then its push. Each runs in the workspace, since jj reads the repository of the
 // directory it runs in. branch is not empty: a caller with no branch names no command.
+//
+// The track is what lets a step push its branch again from the pod that replaced its own. A fetch
+// leaves the row untracked in a clone that did not have the branch, `jj bookmark set` then makes a
+// local bookmark of its own beside that row, and jj refuses to push a bookmark over a remote one
+// it does not track ("Non-tracking remote bookmark <branch>@origin exists"), so the step's work
+// since the round would stay on a disk the next round deletes. A track of a name origin does not
+// hold, which is every first push of a branch, warns and exits 0, so the one recipe serves both.
 func BesidePushCommand(branch string) string {
 	return `cd -- "$LEGION_WORKSPACE" && ` +
 		besideJJ + shellprefix.Command([]string{"git", "fetch", "--remote", "origin", "--branch", branch}) + " && " +
+		besideJJ + shellprefix.Command([]string{"bookmark", "track", "exact:" + branch, "--remote", "exact:origin"}) + " && " +
 		besideJJ + shellprefix.Command([]string{"bookmark", "set", branch, "-r", "@-"}) + " && " +
 		besideJJ + shellprefix.Command([]string{"git", "push", "--remote", "origin", "--bookmark", branch})
 }

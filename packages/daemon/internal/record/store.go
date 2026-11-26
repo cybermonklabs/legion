@@ -2793,14 +2793,23 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 
 // EnqueueFixStart writes the start of a fix's task (SuperviseRequest.Fix) as a row of its own, in
 // one statement that takes out only an unleased pending start of the same issue that names the
-// same fix of the same run (an older start of that fix, such as the resend a resume writes), and
-// writes row in its place carrying that row's attempts, next_at, last_error and created_at, as
-// EnqueueStart carries what it takes out; row is written with its own values where the issue owes
-// no such start. A fix's start carries no slot mark, so it stands in no waiting line (OwedStarts)
-// and admission's repair of the line never reads it, and EnqueueStart never takes it out
-// (pendingPhaseStart), so a start of the phase the issue stands in and a fix's start both stand.
-// A row that is no start of a fix, or a fix's start that waits for a slot, is refused before
-// anything is written.
+// same fix of the same run of the same task (an older start of that fix, such as the resend a
+// resume writes), and writes row in its place carrying that row's attempts, next_at, last_error
+// and created_at, as EnqueueStart carries what it takes out; row is written with its own values
+// where the issue owes no such start. A fix's start carries no slot mark, so it stands in no
+// waiting line (OwedStarts) and admission's repair of the line never reads it, and EnqueueStart
+// never takes it out (pendingPhaseStart), so a start of the phase the issue stands in and a fix's
+// start both stand. A row that is no start of a fix, or a fix's start that waits for a slot, is
+// refused before anything is written.
+//
+// The task is named by the fix's own branch (SuperviseRequest.FixBranch), the one member of a
+// fix's start that holds it: it is claim.BesideBranch of the implementer, which writes the issue,
+// the generation, the task and the fix, and two tasks never give one branch (claim's besideTask).
+// A generation holds one task while plan.Supported takes a plan of one, so fix 1 of a second task
+// cannot be queued today; without the branch in the predicate it would take out the first task's
+// fix 1, whose implementer would then never start. A start that names no branch, which only the
+// wire's own rule allows (DecodeOutboxPayload refuses a branch without a fix, not a fix without a
+// branch), is matched by its fix and its generation alone, as every start was.
 func (s *Postgres) EnqueueFixStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	var start SuperviseRequest
 	if err := json.Unmarshal(row.Payload, &start); err != nil {
@@ -2816,6 +2825,7 @@ func (s *Postgres) EnqueueFixStart(ctx context.Context, tx pgx.Tx, row OutboxRow
 			delete from outbox where id = (select id from outbox
 				where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
 					and payload->>'fix' = ($2::jsonb)->>'fix' and payload->>'generation' = ($2::jsonb)->>'generation'
+					and coalesce(payload->>'fixBranch', '') = coalesce(($2::jsonb)->>'fixBranch', '')
 					and (lease_until is null or lease_until <= $3)
 				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
