@@ -809,13 +809,14 @@ test("a message to one agent with an issue picked is the comment that mentions i
       .getByRole("listbox", { name: "Issue options" })
       .getByRole("option", { name: `${issue.key} · ${issue.title}` })
       .click();
+    const mention = `[@${builder.title}](dispatch://agent/${builder.session_id})`;
     const body = "Is the mirror warm yet?";
     // The issue's channel writes the session's mention in front of the message; the person
     // writes after it.
     const box = dialog.getByRole("textbox", { name: "Comment" });
-    await expect(box).toHaveValue(`[@${builder.title}](dispatch://agent/${builder.session_id})`);
+    await expect.poll(async () => (await box.inputValue()).trim()).toBe(mention);
     await box.press("End");
-    await box.pressSequentially(` ${body}`);
+    await box.pressSequentially(body);
     const writes = watchAgentWrites(page);
     const commentAnswer = sendAnswer(page, `/api/v1/issues/${issue.key}/comments`);
     // The dialog reads the comment back as soon as the answer lands, so the wait for that read is
@@ -828,7 +829,7 @@ test("a message to one agent with an issue picked is the comment that mentions i
     await dialog.getByRole("button", { name: "Send" }).click();
     const response = await commentAnswer;
     const posted = keyedWrite(response.request(), isCommentInput).input;
-    expect(posted.body).toContain(`[@${builder.title}](dispatch://agent/${builder.session_id})`);
+    expect(posted.body).toContain(mention);
     expect(posted.body).toContain(body);
     expect(writes, `the writes to agents:\n${described(writes)}`).toEqual([]);
     const comment = (await response.json()) as Comment;
