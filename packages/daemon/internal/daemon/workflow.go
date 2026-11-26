@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -116,6 +117,7 @@ type workflowRuntime struct {
 	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
 	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
+	catchUps   *catchUpPacing
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -704,11 +706,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
 //
-// reserve is the daemon's one wake limiter as the engine reaches it (run builds it, before this
-// and before supervision, which reserves its launches from the same one): the moment the one
-// wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
-// claimReady), and nil while the operator paces nothing, which is the engine's reading of the
-// pacing off — the catch-up is then due at once, as it always was.
+// pacer is the daemon's one wake pacer as the engine's catch-ups reach it (run builds it, before
+// this and before supervision, whose launches wait in the same two queues): the catch-up a start
+// writes in place of a launch joins its second queue (workflow's claimReady, catchUpPacing), and
+// nil while the operator paces nothing, which is the engine's reading of the pacing off — the
+// catch-up is then due at once, as it always was.
 //
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
@@ -720,7 +722,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, pacer *wakepace.Pacer, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -785,8 +787,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// change the live records asks the refresher to read them again at its commit (wakeLive). The
 	// record store is kept beside the scoped records for the switch that turns its state events on
 	// (publishRecordStates).
+	w.catchUps = &catchUpPacing{ctx: ctx, pool: st.Pool(), pacer: pacer, now: clock, wake: w.wakeOutbox, log: log}
 	w.recordStore = record.NewStore()
-	w.records = projectRecords{Store: w.recordStore, project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log}
+	w.records = projectRecords{Store: w.recordStore, project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
 	w.pool = st.Pool()
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
@@ -800,10 +803,14 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
-	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
-	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
-	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
-	engineCfg.Reserve = reserve
+	// (workflow's claimReady), and it is paced with the launches it stands among, in the one
+	// pacer run built for both lanes. A deployment that paces nothing gives the engine no hold at
+	// all, which is the pacing off: the engine then writes that catch-up due at once, as it
+	// always did.
+	if pacer != nil {
+		engineCfg.HoldCatchUp = w.catchUps.hold
+	}
+	engineCfg.MessageMarked = w.messageMarked
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
@@ -1837,8 +1844,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
-// the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// the outbox reads through that supervisor where it writes the line (wakeRan); the pacer both
+// lanes wait in — the workflow's catch-up through its catchUpPacing, the machines at their gate —
+// was built before either of them (run). The outbox's two reads of one pull
 // request, the merge-queue read and the second read of a conflicting head, read GitHub through
 // this runtime's own read of a pull request, apply its answer as every read of this runtime does,
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
@@ -1861,6 +1869,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
+	w.outbox.catchUps = w.catchUps
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1873,6 +1882,17 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	}
 	w.attachIdleRelease(supervision)
 	w.workspaceHeld = workspaceHeldBy(supervision.supervisor.deps.Runtime, w.stateDir)
+}
+
+// messageMarked is workflow.Config.MessageMarked: the claim token's machine is told the mark a
+// listener's report left on it in the store, so that a wake of the claim waiting in the pacing's
+// second queue moves to the message queue (supervise.MessageMarked). It reaches the supervisor
+// attach stored, and nothing before attach: a report applied before then is one the boot's own
+// read of the claim finds marked.
+func (w *workflowRuntime) messageMarked(token claim.Token, mark time.Time) {
+	if r := w.outboxWake.Load(); r != nil {
+		r.supervisor.post(token, supervise.MessageMarked{Claim: token, At: mark})
+	}
 }
 
 // workspaceHeldBy is whether an issue holds its workspace under rt: its Sandbox, where rt keeps
