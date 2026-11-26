@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"math/rand/v2"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -86,6 +87,102 @@ func TestEachBudgetOfTheFirstPaintFailsItsRead(t *testing.T) {
 	judgePaint(judged, options{mode: "head", info: true}, []measuredCase{informational})
 	if len(judged.fails) != 0 {
 		t.Errorf("the information round, which judges no budget, was judged %q; want no failure", judged.fails)
+	}
+}
+
+// TestATenTimesRunRecordsTheBudgetsNoCheckGatesThere: the root's R14 and k8 state the first
+// paint's database-time budgets at the stated run rate, and at ten times that rate the database
+// time is judged by the head's reads set beside the base's. So at ten times a read over its
+// database budget, a group of reads over theirs, a read over its budget in one of the runs and a
+// base within this head's budget (k8's control) each print a RECORD line, which names the budget,
+// and fail nothing, where at the stated rate each fails. What ten times changes nothing of still
+// fails there: the first paint's limit, which R14 holds at ten times too (a server time over
+// 0.4 s, a body over 300 KB compressed), a read that answered 500, a read whose server time the
+// server did not log, and a stale cut's read over its budget after its first paint, which the
+// architect's ruling gates on the run at ten times the rate.
+func TestATenTimesRunRecordsTheBudgetsNoCheckGatesThere(t *testing.T) {
+	t.Parallel()
+	over := withinEveryBudget()
+	over.own[0].planMs, over.own[0].execMs, over.serverMs, over.body = 0, 200, 900, incompressible(400*1000)
+	group := func(name string, ms float64) measuredCase {
+		read := withinEveryBudget()
+		read.name, read.budgetMs, read.serverBudgetMs, read.group, read.groupBudgetMs, read.delivery = name, 0, 0, "timeline-84d-compare", budget84Ms, true
+		read.own[0].planMs, read.own[0].execMs = 0, ms
+		return read
+	}
+	paint := []measuredCase{over, group("timeline-84d", 120), group("measures-compare-84d", 60)}
+	// runs judges eight runs of a 28-day read, at 72 ms against its 60 ms in run 5.
+	runs := func(t *testing.T, judged *report) {
+		path := filepath.Join(t.TempDir(), "paint-runs.jsonl")
+		for run := 1; run <= 8; run++ {
+			ms := 40.0
+			if run == 5 {
+				ms = 72
+			}
+			read := measuredCase{paintCase: paintCase{name: "list-28d", budgetMs: budget28Ms}, own: []statement{{queryID: 1, query: "select 1", calls: 1, execMs: ms}}}
+			if err := recordRun(path, runOf(run, []measuredCase{read})); err != nil {
+				t.Fatalf("record run %d: %v", run, err)
+			}
+		}
+		recorded, err := readRuns(path)
+		if err != nil {
+			t.Fatalf("read the runs: %v", err)
+		}
+		judgeRuns(judged, recorded, 8)
+	}
+	// base is the base's first paint at 120 ms of database time at 84 days with a compare range,
+	// within this head's 150 ms, with history on its page and a run-jobs read of the failed jobs.
+	base := func() []measuredCase {
+		var reads []measuredCase
+		for _, one := range baseCases("", time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)) {
+			reads = append(reads, measuredCase{paintCase: one, status: 200,
+				body:       []byte(`{"prs":[{"issue":"INFRA-1"}],"measures":{"measures":{"change_failure_rate":{"per_pr":{"total":3}}}}}`),
+				own:        []statement{{queryID: 1, query: "select run_id from delivery_run_jobs", calls: 1, execMs: 60}},
+				plans:      map[int64]string{1: "Index Scan using delivery_run_jobs_failed on delivery_run_jobs"},
+				statements: map[int64]string{1: "select run_id from delivery_run_jobs where conclusion = 'failure'"}})
+		}
+		return reads
+	}
+	judge := func(tenTimes bool) *report {
+		judged := &report{prefix: "RESULT", tenTimes: tenTimes}
+		judgePaint(judged, options{mode: "head"}, paint)
+		runs(t, judged)
+		baseControls(judged, base(), map[string]bool{"delivery_run_jobs_failed": true})
+		return judged
+	}
+	recorded := []string{"db_ms=200.00 is over its budget of 150 ms", "group=timeline-84d-compare db_ms=180.00 is over its budget of 150 ms",
+		"k8 case=list-28d is over its budget of 60 ms in 1 of 8 runs: run 5 (72.00 ms)", "k8-control: the base's first paint costs 120.00 ms"}
+	failed := []string{"gzip_bytes=400055 is over its budget of 300000", "server_ms=900 is over its budget of 400 ms"}
+	// names reports whether each of wants is named by one of lines, in any order.
+	names := func(lines, wants []string) bool {
+		for _, want := range wants {
+			if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, want) }) {
+				return false
+			}
+		}
+		return true
+	}
+	if stated := judge(false); len(stated.fails) != len(recorded)+len(failed) || !names(stated.fails, append(slices.Clone(recorded), failed...)) || len(stated.records) != 0 {
+		t.Errorf("at the stated rate the reads over their budgets were judged %q and recorded %q; want a failure naming each of %q and no record",
+			stated.fails, stated.records, append(slices.Clone(recorded), failed...))
+	}
+	if tenTimes := judge(true); len(tenTimes.fails) != len(failed) || !names(tenTimes.fails, failed) || len(tenTimes.records) != len(recorded) || !names(tenTimes.records, recorded) {
+		t.Errorf("at ten times the stated rate the reads over their budgets were judged %q and recorded %q; want the failures %q and the records %q",
+			tenTimes.fails, tenTimes.records, failed, recorded)
+	}
+
+	broken := withinEveryBudget()
+	broken.status, broken.serverMs = 500, -1
+	judged := &report{prefix: "RESULT", tenTimes: true}
+	judgePaint(judged, options{mode: "head"}, []measuredCase{broken})
+	if len(judged.fails) != 2 || !strings.Contains(judged.fails[0], "answered 500") || !strings.Contains(judged.fails[1], "server_ms=-1") || len(judged.records) != 0 {
+		t.Errorf("at ten times a read that answered 500 with no server time logged was judged %q and recorded %q; want the two failures", judged.fails, judged.records)
+	}
+	judged = &report{prefix: "RESULT", tenTimes: true}
+	judgeStaleReads(judged, false, []staleRead{{name: "list-84d-compare-repo-stale-ready", line: "k16 fallback case=list-84d-compare-repo-stale-ready",
+		dbMs: 150.01, budgetMs: budget84Ms, painted: true, equal: true}})
+	if len(judged.fails) != 1 || len(judged.records) != 0 {
+		t.Errorf("at ten times a stale cut's read of 150.01 ms after its first paint was judged %q and recorded %q; want one failure", judged.fails, judged.records)
 	}
 }
 
@@ -266,33 +363,68 @@ func TestNoReadOfTheEvalsFirstPaintReadsThePopulation(t *testing.T) {
 }
 
 // TestTheBaseControlFailsABaseWithinTheBudget: k8's negative control is that the base's first
-// paint costs more database time than this head's 84-day budget (564 ms at the commit before the
-// change). A base whose paint costs 564 ms passes the control, and a base within the budget fails
-// it, since it shows no read the change brought under the budget.
+// paint of 84 days with a compare range costs more database time than this head's 84-day budget
+// (564 ms at the commit before the change). A base whose paint costs 564 ms passes the control,
+// and a base within the budget fails it, since it shows no read the change brought under the
+// budget, however much the base's 28-day read costs beside it: the control counts the reads of
+// baseCases' group alone.
 func TestTheBaseControlFailsABaseWithinTheBudget(t *testing.T) {
 	t.Parallel()
 	failed := map[string]bool{"delivery_run_jobs_failed": true}
-	base := func(ms float64) []measuredCase {
-		read := func(name, body string) measuredCase {
-			return measuredCase{paintCase: paintCase{name: name, delivery: true}, status: 200, body: []byte(body),
-				own:        []statement{{queryID: 1, query: "select run_id from delivery_run_jobs", calls: 1, execMs: ms / 2}},
+	timeline := `{"prs":[{"issue":"INFRA-1"}],"measures":{"measures":{"change_failure_rate":{"per_pr":{"total":3}}}}}`
+	measures := `{"measures":{"change_failure_rate":{"per_pr":{"total":2}}}}`
+	today := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	base := func(ms, ms28 float64) []measuredCase {
+		var reads []measuredCase
+		for _, one := range baseCases("", today) {
+			cost, body := ms/2, timeline
+			if one.group == "" {
+				cost = ms28
+			}
+			if one.kind == "measures" {
+				body = measures
+			}
+			reads = append(reads, measuredCase{paintCase: one, status: 200, body: []byte(body),
+				own:        []statement{{queryID: 1, query: "select run_id from delivery_run_jobs", calls: 1, execMs: cost}},
 				plans:      map[int64]string{1: "Index Scan using delivery_run_jobs_failed on delivery_run_jobs"},
-				statements: map[int64]string{1: "select run_id from delivery_run_jobs where conclusion = 'failure'"}}
+				statements: map[int64]string{1: "select run_id from delivery_run_jobs where conclusion = 'failure'"}})
 		}
-		return []measuredCase{
-			read("base-timeline-84d", `{"prs":[{"issue":"INFRA-1"}],"measures":{"measures":{"change_failure_rate":{"per_pr":{"total":3}}}}}`),
-			read("base-measures-compare-84d", `{"measures":{"change_failure_rate":{"per_pr":{"total":2}}}}`),
-		}
+		return reads
 	}
 	over := &report{prefix: "RESULT"}
-	baseControls(over, base(564), failed)
+	baseControls(over, base(564, 50), failed)
 	if len(over.fails) != 0 {
 		t.Errorf("a base whose first paint costs 564 ms was judged %q; want the control to pass", over.fails)
 	}
 	within := &report{prefix: "RESULT"}
-	baseControls(within, base(120), failed)
+	baseControls(within, base(120, 500), failed)
 	if len(within.fails) != 1 || !strings.Contains(within.fails[0], "within this head's budget") {
-		t.Errorf("a base whose first paint costs 120 ms, within the 150 ms budget, was judged %q; want one failure of k8's control", within.fails)
+		t.Errorf("a base whose first paint costs 120 ms, within the 150 ms budget, beside a 28-day read of 500 ms, was judged %q; want one failure of k8's control", within.fails)
+	}
+}
+
+// TestTheBasesReadsAreTheHeadsTimelineReads: the base's Delivery page is read at 84 days with a
+// compare range, as one group, and at 28 days, the reads the head's timeline reads are set beside,
+// each under a budget of none, and the history a failure day is added to is read as the history
+// without it, its reads named with the prefix the head's failure-day reads carry.
+func TestTheBasesReadsAreTheHeadsTimelineReads(t *testing.T) {
+	t.Parallel()
+	today := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	for _, prefix := range []string{"", "failure-day-"} {
+		head := timelineCases(prefix, today)
+		var names, groups []string
+		for _, one := range baseCases(prefix, today) {
+			names = append(names, one.name)
+			groups = append(groups, one.group)
+			if one.budgetMs != 0 || one.groupBudgetMs != 0 || one.serverBudgetMs != 0 || !one.delivery || one.view == nil {
+				t.Errorf("the base's read %s (prefix %q) carries a budget, is no Delivery read or is no live view: %+v", one.name, prefix, one)
+			}
+		}
+		wantNames := []string{prefix + "base-timeline-84d", prefix + "base-measures-compare-84d", prefix + "base-timeline-28d"}
+		wantGroups := []string{head[0].group, head[1].group, ""}
+		if !slices.Equal(names, wantNames) || !slices.Equal(groups, wantGroups) {
+			t.Errorf("the base's reads (prefix %q) are %q in groups %q; want %q in groups %q, the head's timeline reads' own", prefix, names, groups, wantNames, wantGroups)
+		}
 	}
 }
 

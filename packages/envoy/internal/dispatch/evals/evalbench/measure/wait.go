@@ -21,6 +21,12 @@ import (
 // cursor or a walk that stood still for a whole poll had a pass in which to move.
 const pollEvery = 15 * time.Second
 
+// atBase reports whether mode measures the base's server, main at the commit this head merges:
+// base, or base-failure-day, the base over a history with a failure day added.
+func atBase(mode string) bool {
+	return mode == "base" || mode == "base-failure-day"
+}
+
 // lagPolls is how many polls old the heads a cursor is held to are: each cursor must stand at or
 // past where its feed stood lagPolls polls before. The rows the Legion facts consumer writes log
 // changes after its own cursor, so its cursor reaches a head only on its next pass, which the
@@ -155,7 +161,7 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}
 	state.legionFacts = true
 	fill := true
-	if mode == "base" {
+	if atBase(mode) {
 		if err := pool.QueryRow(ctx, `select to_regclass('issue_facts_cursor') is not null, to_regclass('search_text_versions_fill') is not null`).
 			Scan(&state.legionFacts, &fill); err != nil {
 			return consumerState{}, fmt.Errorf("read which consumers the base runs: %w", err)
@@ -192,7 +198,7 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 			return consumerState{}, fmt.Errorf("read the keyword fill's cursor: %w", err)
 		}
 	}
-	if mode == "base" {
+	if atBase(mode) {
 		return state, nil
 	}
 	if err := collectPairs(ctx, pool, `select name, position from eval_days_cursor`, state.days); err != nil {
@@ -320,7 +326,7 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 		missing = append(missing, fmt.Sprintf("the keyword fill's cursor (search_text_versions_fill.event_id) at %d, behind the newest event %d",
 			*s.fill, s.heads.events))
 	}
-	if mode == "base" {
+	if atBase(mode) {
 		return missing
 	}
 	if previous != nil {

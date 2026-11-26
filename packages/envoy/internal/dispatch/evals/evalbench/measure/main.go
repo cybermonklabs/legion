@@ -8,9 +8,10 @@
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
 //	measure runs  -runs <n> -runs-file <file>
 //
-// -mode is head, base or failure-day: failure-day is this head over the fixture with a failure
-// day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's alone; base is
-// the base, main at the commit this head merges (git merge-base <head> origin/main).
+// -mode is head, base, failure-day or base-failure-day: failure-day is this head over the fixture
+// with a failure day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's
+// alone; base is the base, main at the commit this head merges (git merge-base <head>
+// origin/main), and base-failure-day the base over the same history with the failure day added.
 //
 // wait polls the database until the server's consumers have caught up with the fixture: the
 // Legion facts consumer has read every project whole under the running build and passed every
@@ -37,25 +38,37 @@
 // alone, over the same windows, one of which holds the failure day, with k13's run-jobs rule and
 // the failure day the database holds. At the base (-mode base) they are the base Delivery page's
 // first paint at 84 days with a compare range, the timeline view of the window and the measures
-// view of the compare range, k8's negative control, and the base statements k13's control names.
+// view of the compare range, and the timeline view of the 28-day window, which no budget judges
+// (baseCases), with k8's negative control and the base statements k13's control names; in mode
+// base-failure-day, the same reads over the history with the failure day added, with the failure
+// day the database holds.
 // Every Delivery read's answer is printed as the history it shows: its pull requests, those
 // attributed to an issue, by the issue's project, and the measures' per-PR total and deploys; the
 // base's control fails on a page that shows no pull request attributed to an issue, or none in its
 // measures. -info measures the first paint alone and judges no budget, for the round after a
 // Postgres restart that the Job records for information: its lines are INFO lines, a rule it
-// misses is an INFO-FAIL line, which no verdict counts, and it exits 0.
+// misses is an INFO-FAIL line, which no verdict counts, and it exits 0. -ten-times says the fixture
+// is at ten times the stated run rate. There a database time over its budget (150 ms at 84 days
+// with a compare range, 60 ms at 28 days, a read's, a group's or a run's), which the root's R14
+// and k8 state at the stated rate, and k8's base control, prints a RECORD line, which no verdict
+// counts, with the budget beside the time: at ten times the database time is judged by the head's
+// reads set beside the base's. The first paint's limit (the server time of 0.4 s and the body of
+// 300 KB compressed), which R14 holds at ten times too, the stale cuts' reads, which the
+// architect's ruling gates at ten times (judgeStaleReads), and every rule that is not a budget
+// still fail.
 //
 // -run n tags each RESULT and FAIL line of the paint with run=n, one of the first paint's runs
 // (k8: run.sh paints this head's first paint EVALBENCH_PAINT_RUNS times, 8 by default, each as the
-// first requests after a fresh start of the server), and -runs-file appends the run's reads to a
+// first requests after a fresh start of the server, and the base's as many times as it is asked
+// for, once by default), and -runs-file appends the run's reads to a
 // file. k2's statements and controls, k13's named-jobs read and P0 list, k16's day rows by
 // repository and hand folds, the probe, k16's fallback and its move of the default repository are
 // measured in run 1 alone, after its paint; the reads of every run are judged by their budgets,
 // and by k8's and k13's rules over their plans. runs then prints, for each read and each group of
 // reads, its database time in each run with the median and the maximum of the runs, and fails one
 // over its budget in any run (runs.go). -now is the day the paint's windows end on, the end of the
-// history the generator wrote (job.sh's EVALBENCH_NOW), and EVALBENCH_NODE, where the environment
-// sets it, the node the run is on, which the lines of k16's fallback and move name.
+// history the generator wrote (job.sh's EVALBENCH_NOW), and -node the node the run is on (run.sh
+// passes the Job's EVALBENCH_NODE), which the lines of k16's fallback and move name.
 //
 // The server runs background loops that touch the database between requests. Each read's
 // statements are told from theirs by a catalogue taken first: every statement the database ran in
@@ -76,14 +89,18 @@ import (
 	"time"
 )
 
-// report collects what one invocation measured: each line it printed, and the text of each FAIL
-// line (fails). tag, where it is set, follows the prefix of every RESULT and FAIL line: " run=3"
-// for the third of the first paint's runs. An -info invocation's prefix is INFO, and it writes a
-// rule it misses as an INFO-FAIL line, which no verdict counts (job.yaml's reads `^FAIL`).
+// report collects what one invocation measured: each line it printed, the text of each FAIL line
+// (fails) and of each RECORD line (records). tag, where it is set, follows the prefix of every
+// RESULT, FAIL and RECORD line: " run=3" for the third of the first paint's runs. An -info
+// invocation's prefix is INFO, and it writes a rule it misses as an INFO-FAIL line, which no
+// verdict counts (job.yaml's reads `^FAIL`). tenTimes is -ten-times: the fixture is at ten times
+// the stated run rate, where no check gates the database-time budgets (overStated).
 type report struct {
-	prefix string
-	tag    string
-	fails  []string
+	prefix   string
+	tag      string
+	tenTimes bool
+	fails    []string
+	records  []string
 }
 
 // result prints one measurement.
@@ -102,6 +119,20 @@ func (r *report) fail(format string, args ...any) {
 	fmt.Printf("%s%s %s\n", word, r.tag, line)
 }
 
+// overStated prints one database time over its budget, which the root's R14 and k8 state at the
+// stated run rate, the line naming the budget beside the time: a FAIL line, or, at ten times the
+// stated run rate (tenTimes), a RECORD line, which no verdict counts and which leaves the run
+// passed, since there the head's database time is judged beside the base's, not by the budget.
+func (r *report) overStated(format string, args ...any) {
+	if !r.tenTimes {
+		r.fail(format, args...)
+		return
+	}
+	line := fmt.Sprintf(format, args...)
+	r.records = append(r.records, line)
+	fmt.Printf("RECORD%s %s\n", r.tag, line)
+}
+
 // block prints text under a heading, each line indented, so a plan or a statement reads whole in
 // the log.
 func (r *report) block(heading, text string) {
@@ -111,7 +142,7 @@ func (r *report) block(heading, text string) {
 	}
 }
 
-// options is one invocation's flags, and the node the environment names (EVALBENCH_NODE).
+// options is one invocation's flags.
 type options struct {
 	mode      string
 	database  string
@@ -131,7 +162,7 @@ type options struct {
 	node      string
 }
 
-const usage = "usage: measure wait|paint|runs -mode head|failure-day|base -database <url> -url <server> [flags]"
+const usage = "usage: measure wait|paint|runs -mode head|failure-day|base|base-failure-day -database <url> -url <server> [flags]"
 
 func main() {
 	if len(os.Args) < 2 || (os.Args[1] != "wait" && os.Args[1] != "paint" && os.Args[1] != "runs") {
@@ -141,7 +172,7 @@ func main() {
 	command := os.Args[1]
 	flags := flag.NewFlagSet(command, flag.ExitOnError)
 	var o options
-	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; or base, the first paint of the base, main at the commit this head merges")
+	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; base, the first paint of the base, main at the commit this head merges; or base-failure-day, the base's over the history with a failure day added")
 	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
 	flags.StringVar(&o.token, "token", "", "the server's agent token (DISPATCH_AGENT_TOKEN)")
@@ -156,6 +187,8 @@ func main() {
 	flags.StringVar(&o.runsFile, "runs-file", "", "paint: the file each run's reads are appended to; runs: the file it reads them from")
 	flags.IntVar(&o.runs, "runs", 0, "runs: how many runs the file holds, numbered 1 to this")
 	now := flags.String("now", "", "paint: the UTC midnight the history the generator wrote ends at, RFC3339, which the paint's windows end on (job.sh's EVALBENCH_NOW); the current UTC midnight where unset")
+	tenTimes := flags.Bool("ten-times", false, "the fixture is at ten times the stated run rate, where no check gates the database-time budgets stated at the stated rate: a read, a group or a run over one, and k8's base control, print a RECORD line, not a FAIL line")
+	flags.StringVar(&o.node, "node", "", "the node the run is on (run.sh passes the Job's EVALBENCH_NODE), which the lines of k16's fallback and move name; unnamed where empty")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
 	}
@@ -168,16 +201,15 @@ func main() {
 		}
 		o.now = at.UTC().Truncate(24 * time.Hour)
 	}
-	o.node = os.Getenv("EVALBENCH_NODE")
-	if o.mode != "head" && o.mode != "base" && o.mode != "failure-day" {
-		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day or base, not %q\n", o.mode)
+	if o.mode != "head" && o.mode != "failure-day" && !atBase(o.mode) {
+		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day, base or base-failure-day, not %q\n", o.mode)
 		os.Exit(2)
 	}
 	if command != "runs" && (o.database == "" || o.url == "") {
 		fmt.Fprintln(os.Stderr, usage+": name the database with -database and the server with -url")
 		os.Exit(2)
 	}
-	r := &report{prefix: "RESULT"}
+	r := &report{prefix: "RESULT", tenTimes: *tenTimes}
 	if o.info {
 		r.prefix = "INFO"
 	}
@@ -212,13 +244,17 @@ func main() {
 	if err != nil {
 		r.fail("%s: %v", command, err)
 	}
+	recorded := ""
+	if len(r.records) > 0 {
+		recorded = fmt.Sprintf(", %d RECORD lines of budgets no check gates at ten times the stated run rate", len(r.records))
+	}
 	if len(r.fails) > 0 {
 		if o.info {
 			fmt.Printf("%s%s %s: %d INFO-FAIL lines, for information\n", r.prefix, r.tag, command, len(r.fails))
 			return
 		}
-		fmt.Printf("%s%s %s: %d FAIL lines\n", r.prefix, r.tag, command, len(r.fails))
+		fmt.Printf("%s%s %s: %d FAIL lines%s\n", r.prefix, r.tag, command, len(r.fails), recorded)
 		os.Exit(1)
 	}
-	fmt.Printf("%s%s %s: no FAIL line\n", r.prefix, r.tag, command)
+	fmt.Printf("%s%s %s: no FAIL line%s\n", r.prefix, r.tag, command, recorded)
 }
