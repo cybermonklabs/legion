@@ -194,6 +194,10 @@ type Engine struct {
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
 	// the set takes its own lock (intake.RecentKeys).
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
+	// nextChange is what a reason of a next change found in verifying calls: a production check's
+	// fail (productionFail). It is a seam until the next change's opener is built, and a test reads
+	// its call through it.
+	nextChange func(ctx context.Context, tx pgx.Tx, issue record.Issue, reason record.Defect) error
 }
 
 var _ intake.Handler = (*Engine)(nil)
@@ -219,7 +223,9 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
+	e := &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
+	e.nextChange = e.nextChangeDue
+	return e
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
@@ -325,9 +331,6 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.CloseChecksRead:
 		return e.closeChecksRead(ctx, tx, fact)
 	case intake.DispatchResultChanged:
-		if err := e.tellClosedCheckFailed(ctx, tx, fact); err != nil {
-			return intake.Result{}, err
-		}
 		return e.resultChanged(ctx, tx, fact)
 	case intake.ConflictConfirmDone:
 		return e.conflictConfirmDone(ctx, tx, fact)
@@ -1334,7 +1337,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	// linger with a look still open at the reopen) takes the live-phase path below instead, where
 	// the failure holds the phase and is told; its stale look ends at the look's own bound
 	// (check_look), which endLookPending keeps for the run.
-	if !record.InWorkflow(*issue) {
+	if !record.RunsAgain(*issue) {
 		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
 		if err != nil {
 			return intake.Result{}, err

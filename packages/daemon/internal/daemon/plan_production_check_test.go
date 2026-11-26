@@ -175,7 +175,7 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 }
 
 // reportLook is c's report of pass on the look its turn took up, which ends the check, and the wait
-// for the check to end with the issue still done.
+// for the check to end and for the read of the checks its close queues to close the issue.
 func (r *ownerStepsRig) reportLook(c *stepClaimant, opened time.Time) {
 	t := r.t
 	t.Helper()
@@ -186,7 +186,7 @@ func (r *ownerStepsRig) reportLook(c *stepClaimant, opened time.Time) {
 	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the report to end "+r.key+"'s production check", func() bool {
 		return !readProductionCheck(t, r.st.Pool(), r.records, r.key).Open()
 	})
-	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Done) {
-		t.Fatalf("%s stands in %s after its production check ended, want done", r.key, got)
-	}
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the read after the check's close to close "+r.key, func() bool {
+		return string(r.d.state().Issues[r.key].Phase) == string(phase.Done)
+	})
 }

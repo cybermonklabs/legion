@@ -4410,11 +4410,13 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
 // none: its issue's production check is open, the one the row names (record.ProductionCheck.NamedBy),
-// at the look the row names, with that look open, and the issue out of the workflow. A check closed
-// since (a report, its last look), a check a later merge replaced, a look its bound or a hold ended,
-// a later look's start, or an issue running again (reopened inside its linger since the row was
-// queued: a look would resume the check's own role and relaunch the Sandbox under the run; the look ends
-// at its own bound) leave the row nothing to start, and it finishes without acting, logged with why.
+// at the look the row names, with that look open, and the issue's work not running again
+// (record.RunsAgain: out of the workflow, or waiting in verifying for the checks of its goal). A
+// check closed since (a report, its last look), a check a later merge replaced, a look its bound or
+// a hold ended, a later look's start, or an issue running again (a next change, or a root reopened
+// inside its linger since the row was queued: a look would resume the check's own role and relaunch
+// the Sandbox under the run; the look ends at its own bound) leave the row nothing to start, and it
+// finishes without acting, logged with why.
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {
 	check, err := r.productionCheck(ctx, row.Issue)
 	if err != nil {
@@ -4424,7 +4426,7 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	switch {
 	case check == nil:
 		why = "the issue has no production check"
-	case record.InWorkflow(issue):
+	case record.RunsAgain(issue):
 		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
 	case !check.Open():
 		why = fmt.Sprintf("the check closed as %s", check.Outcome)

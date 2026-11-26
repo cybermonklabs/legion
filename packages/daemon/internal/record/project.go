@@ -107,10 +107,8 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
 // will run — a root reopened inside its linger (admit's readmit) stands in admitted with no
 // role's phase until its task's first step starts (planning, in the default steps), and is
-// running again from the reopen. It is
-// the production check's "runs again" predicate (workflow's check.go) and the outbox's
-// (checkLookHolds): a look of an issue that runs again would resume the checking role and
-// relaunch its Sandbox under the run, so none starts.
+// running again from the reopen. The production check's "runs again" predicate, RunsAgain, is
+// built on it.
 //
 // It lives here, beside the status rule it is written over, because every judgement that reads
 // the daemon's own records against Dispatch's mirror needs it — the children-first wait
@@ -123,6 +121,16 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 // added to it moves admission, the linger, the production check and the release gate together.
 func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
+}
+
+// RunsAgain says whether an issue's work runs again: it is in the workflow (InWorkflow) and not
+// waiting in verifying for the checks of its goal. It is the production check's "runs again": an
+// issue in verifying has merged its work and no role works the wait, so its looks run there, and
+// a look is deferred only while its issue's next change, or a rerun, holds the issue's claims and
+// its pod. The production check's readers (workflow's check.go, the outbox's checkLookHolds) and
+// a claim's failure (workflow's claimFailed) read it.
+func RunsAgain(issue Issue) bool {
+	return InWorkflow(issue) && issue.Phase != phase.Verifying
 }
 
 // Stopped is whether the issue's own record says its work has stopped: it is out of the

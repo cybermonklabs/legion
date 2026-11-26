@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,7 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -32,55 +35,55 @@ const CheckWakeFloor = time.Minute
 // The causes a look is woken by: what the check's record names as its last wake, and what the
 // check task tells the checking agent woke it.
 const (
-	wakeMerge = "merge"
-	wakeBound = "bound"
-	wakeNamed = "check wake"
+	wakeMerge  = "merge"
+	wakeBound  = "bound"
+	wakeNamed  = "check wake"
+	wakeResult = "result"
 )
 
 // checkRole is Config.ProductionCheckRole read in one place, so no two sites can disagree on who
 // a check is for.
 func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 
-// openCheck opens issue's production check on its merged pull request pr and starts its first
-// look, woken by the merge: the record (record.ProductionCheck, bound at the project's
-// ProductionCheckBound from now, carrying the role that works it), the check_bound row due at
-// that bound, then the look (startLook). A project whose `production_check` is off has no role to
-// work a check (checkRole), and opens nothing at all: no record, no bound row and no look, only
-// the line saying the close had nothing to check.
+// openCheck opens issue's production check on its merge and starts its first look: the record
+// (record.ProductionCheck, bound at the project's ProductionCheckBound from now, carrying the role
+// that works it and the issue's generation), the check_bound row due at that bound, then the look
+// (startLook). A project whose `production_check` is off has no role to work a check (checkRole),
+// and opens nothing at all: no record, no bound row and no look, only the line saying it had
+// nothing to check.
 // wake is only how the open is logged: a lingering tree's member has its claims suspended,
 // so the look's start row is a wake of the checking role's claim, where a running tree's is a task
-// handed to that role's live session; the rows are the same, since the start resumes either. One check
-// per issue: a second merge of the same issue — a rerun's, after a re-entry closed the first —
-// replaces the earlier record, whose bound row the new check then defers to its own bound
-// (checkBound); the same merge seen again — a done child a person parks and sets done again, each
-// move a leave — opens nothing, since the check it has, open or recorded, is that merge's. The
-// check's OpenedAt is its identity (record.ProductionCheck.ID), so it is the clock truncated to the
-// microsecond, Postgres's timestamptz precision: the value the rows and facts of this transaction
-// carry equals the one every later read of the record returns.
-func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, wake bool) error {
+// handed to that role's live session; the rows are the same, since the start resumes either.
+// One check for each generation and merge (D6): where the issue's check is of its generation and of
+// this merge, open or closed, nothing opens. A check of another merge or of an earlier generation,
+// one closed recorded included, is replaced, whatever its outcome, and its bound row defers to the
+// new check's bound (checkBound). The check's OpenedAt is its identity (record.ProductionCheck.ID),
+// so it is the clock truncated to the microsecond, Postgres's timestamptz precision: the value the
+// rows and facts of this transaction carry equals the one every later read of the record returns.
+func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, merge record.Merge, wake bool) error {
 	role := e.checkRole()
 	if role == "" {
 		e.logOnCommit(ctx, "workflow: no production check: this project checks nothing in production", "issue", issue.Key,
-			"mergeCommit", pr.MergeSHA, "pullRequest", pr.Number)
+			"mergeCommit", merge.SHA, "pullRequest", merge.Number)
 		return nil
 	}
 	existing, err := e.store.ProductionCheck(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
-	if existing != nil && e.sameRepository(existing.Repo, pr.Repo) && existing.Number == pr.Number && (existing.MergeSHA == "" || pr.MergeSHA == "" || existing.MergeSHA == pr.MergeSHA) {
+	if existing != nil && existing.Generation == issue.Generation && existing.MergeSHA == merge.SHA {
 		state := "open"
 		if !existing.Open() {
 			state = "closed as " + string(existing.Outcome)
 		}
-		e.logOnCommit(ctx, "workflow: production check not opened again: the issue's check is this merge's", "issue", issue.Key,
-			"mergeCommit", pr.MergeSHA, "pullRequest", pr.Number, "check", existing.OpenedAt, "state", state)
+		e.logOnCommit(ctx, "workflow: production check not opened again: the issue's check is of this generation and merge", "issue", issue.Key,
+			"generation", issue.Generation, "mergeCommit", merge.SHA, "check", existing.OpenedAt, "state", state)
 		return nil
 	}
 	now := e.now().Truncate(time.Microsecond)
 	check := record.ProductionCheck{
-		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: pr.Repo, Number: pr.Number, MergeSHA: pr.MergeSHA,
-		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound), Role: role,
+		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: merge.Repo, Number: merge.Number, MergeSHA: merge.SHA,
+		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound), Role: role, Generation: issue.Generation,
 	}
 	if err := e.enqueueAt(ctx, tx, issue.Key, record.CheckBound{}, check.BoundAt); err != nil {
 		return err
@@ -89,9 +92,18 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 	if wake {
 		first = "wake"
 	}
-	e.logOnCommit(ctx, "workflow: production check opened", "issue", issue.Key, "mergeCommit", pr.MergeSHA, "pullRequest", pr.Number,
-		"role", role, "bound", check.BoundAt, "firstLook", first)
-	return e.startLook(ctx, tx, issue, &check, wakeMerge, pr.MergeSHA, false)
+	e.logOnCommit(ctx, "workflow: production check opened", "issue", issue.Key, "generation", issue.Generation, "mergeCommit", merge.SHA,
+		"pullRequest", merge.Number, "role", role, "bound", check.BoundAt, "firstLook", first)
+	return e.startLook(ctx, tx, issue, &check, wakeMerge, merge.SHA, false)
+}
+
+// mergeOf is the merge a closed issue's check reads: the merge snapshot on the issue's row, or
+// where an issue merged before the snapshot was kept, its merged pull request's row.
+func mergeOf(issue record.Issue, pr record.PullRequest) record.Merge {
+	if issue.Merge.Merged() {
+		return issue.Merge
+	}
+	return record.Merge{Number: pr.Number, Head: pr.HeadSHA, SHA: pr.MergeSHA, Base: pr.Base, Repo: pr.Repo}
 }
 
 // startLook starts the next look of issue's check, woken by cause with detail, last marking the
@@ -101,9 +113,14 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 // it stands now) is started on the check task — a start with no phase, fenced on the check and its
 // look (record.SuperviseRequest.CheckLook and CheckOpenedAt) rather than on the generation, and
 // stamped with the generation the issue holds as the delivery's run — and a check_look row due at
-// the look bound, naming the check and the look, ends the look should nobody report it.
+// the look bound, naming the check and the look, ends the look should nobody report it. The task
+// names each check the look runs, from the issue's newest read (lookChecks).
 func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, check *record.ProductionCheck, cause, detail string, last bool) error {
 	now := e.now()
+	checks, err := e.lookChecks(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
 	check.Looks++
 	check.LookOpen, check.LookWakeAt = true, &now
 	check.LastWakeKind, check.LastWakeDetail, check.LastWakeAt = cause, detail, &now
@@ -112,34 +129,53 @@ func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, c
 		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role,
-		Generation: issue.GenerationOf("start", check.Role), CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, Task: checkTask(issue, *check, cause, detail, last)}); err != nil {
+		Generation: issue.GenerationOf("start", check.Role), CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, Task: checkTask(issue, *check, cause, detail, last, checks)}); err != nil {
 		return err
 	}
 	if err := e.enqueueAt(ctx, tx, issue.Key, record.CheckLook{Look: check.Looks, OpenedAt: check.OpenedAt}, now.Add(CheckLookBound)); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: production check look started", "issue", issue.Key, "mergeCommit", check.MergeSHA, "look", check.Looks,
-		"role", check.Role, "cause", cause, "detail", detail, "last", last)
+		"role", check.Role, "cause", cause, "detail", detail, "last", last, "checks", checks)
 	return nil
+}
+
+// lookChecks is each check a look runs (D5): each check block of the issue's newest read whose
+// `when` is after_merge or default_branch and that names no ci_check, nil where no read decodes.
+func (e *Engine) lookChecks(ctx context.Context, tx pgx.Tx, issue string) ([]dispatch.CheckBlock, error) {
+	read, err := e.store.NewestCheckRead(ctx, tx, issue)
+	if err != nil || read == nil || read.Failure != "" || len(read.Answer) == 0 {
+		return nil, err
+	}
+	var answer record.CheckReadAnswer
+	if err := json.Unmarshal(read.Answer, &answer); err != nil {
+		return nil, nil
+	}
+	var checks []dispatch.CheckBlock
+	for _, block := range answer.Results.Checks {
+		if (block.When == dispatch.CheckAfterMerge || block.When == dispatch.CheckDefaultBranch) && block.CICheck == "" {
+			checks = append(checks, block)
+		}
+	}
+	return checks, nil
 }
 
 // checkTaskLead opens every check task: a resumed session tells the check from its last phase
 // task by this line (the phase tasks open with "Continue"), and a test pins it.
 const checkTaskLead = "Production check of "
 
-// checkTask is what the check's role is told at a look of the closed issue's production check. The
-// session it reaches may be fresh — a woken pod after a lost volume — so the text stands on its
-// own: the issue, the repository, the pull request, the merge commit, the look and what woke it
-// (wokenBy), whether it is the last, and the rules of the check in prose: each requirement only
-// the deploy can show observed as it names it, the three verdicts and what each asks of the pull
-// request, no commit, the wake a pending names for its own next look and the suspension that
-// follows it, and nothing to wait for in the session, since the look ends with the report. A merge
-// production carries with such a requirement still unobserved is a pending while a look follows.
-// A requirement observed as not met is a fail on every look. On the last look one still unobserved
-// is a fail too, whether or not production carries the merge. The last look's task gives pending
-// only for an issue with none of those requirements, a pending that closes the check as not run.
-// The fail clause says so once, the same on every look, in terms of the look that follows.
-func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
+// checkTask is what the check's role is told at a look of an issue's production check, which runs
+// after its merge while its close waits for the checks of its goal. The session it reaches may be
+// fresh — a woken pod after a lost volume — so the text stands on its own: the issue, the
+// repository, the pull request, the merge commit, the look and what woke it (wokenBy), the moment
+// the check opened, which the report names, whether it is the last, and each check the look runs
+// (checks, lookChecks) with the commit its result is recorded at (D5, fact 8 of the shared
+// contract). Then the three verdicts: a pass once each of those checks passes, a fail for a
+// requirement observed as not met, which starts the next change of the issue and goes to no
+// controller (fact 11), and a pending for a requirement still unobserved (fact 10), which on the
+// last look closes the check as not run. It says nothing of a closed issue. Each sentence holds at
+// most 25 words and no semicolon.
+func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool, checks []dispatch.CheckBlock) string {
 	merge := check.MergeSHA
 	if merge == "" {
 		merge = "unknown, read it from the pull request on GitHub"
@@ -153,28 +189,56 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}
-	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
-		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
-		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing: " +
-		"pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; " +
-		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic. Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.")
-	if last {
-		text.WriteString(" Report pending only for an issue with none of those requirements, the summary naming what you could not drive, with no result recorded. This last look's pending carries no wake_at and closes the check as not run: " +
-			"before reporting it, write on the pull request why the check did not run within the bound.")
+	if len(checks) == 0 {
+		text.WriteString("\nThe newest read of the Verification document names no check for this look to run.")
 	} else {
-		text.WriteString(" Report pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit. A pending report also carries wake_at, an RFC 3339 time: when you want your next look. " +
-			"Besides it, only the look at the check's bound and the retry of a look nobody reported start one. A time less than a minute ahead is moved out to a minute, and a time at or after the check's own bound starts no look of its own, since the look at the bound already stands. " +
-			"At that report the daemon stops this process and keeps this session, and your next look resumes it with a task naming the summary you gave as what woke it.")
+		text.WriteString("\nRun each check below in production, and record each result with dispatch result.")
+	}
+	for _, block := range checks {
+		fmt.Fprintf(&text, "\nCheck %s, when %s: record its result at %s.", block.BlockID, block.When, resultCommit(block, merge))
+	}
+	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
+		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing. " +
+		"Report pass once each check above has a result that passes at its commit. " +
+		"Report fail for a requirement observed as not met, and record that check's result as a fail with dispatch result. " +
+		"A fail starts the next change of this issue, so send it to no controller. " +
+		"A defect outside this issue still goes as skill://legion-worker/references/findings.md says.")
+	if last {
+		text.WriteString(" Report pending for a requirement still unobserved, with no result recorded. " +
+			"This last look's pending carries no wake_at and closes the check as not run. " +
+			"Before reporting it, write on the pull request why the check did not run within the bound.")
+	} else {
+		text.WriteString(" Report pending when production does not carry the merge yet, or a requirement is still unobserved. " +
+			"Name what is missing in the summary, and record no result. " +
+			"A pending report also carries wake_at, an RFC 3339 time: when you want your next look. " +
+			"Besides it, only the look at the check's bound and the retry of a look nobody reported start one. " +
+			"A time less than a minute ahead is moved out to a minute. " +
+			"A time at or after the check's own bound starts no look of its own. " +
+			"At that report the daemon stops this process and keeps this session. " +
+			"Your next look resumes it with a task naming the summary you gave as what woke it.")
 	}
 	text.WriteString(" Wait for nothing in this session: end the turn with the report.")
 	return text.String()
 }
 
+// resultCommit is where a check's result is recorded (D5, fact 8): a check of the code, at a commit
+// of the merge's branch that holds the merge, and a check of production or of the graph, at the
+// commit of the build the live system runs, which holds the merge.
+func resultCommit(block dispatch.CheckBlock, merge string) string {
+	switch block.Subject {
+	case dispatch.CheckSubjectProduction, dispatch.CheckSubjectGraph:
+		return "the commit of the build the live system runs, which holds merge commit " + merge
+	default:
+		return "a commit of the merge's branch that holds merge commit " + merge
+	}
+}
+
 // wokenBy is the check task's wording of a look's wake, from the cause and its detail: the merge
 // that opened the check (wakeMerge, the merge commit as its detail), its bound (wakeBound, the
 // check's own bound and the issue's close it is counted from, and nothing of why the looks before
-// it were pending), or a check_wake row (wakeNamed), whose reason is either the summary the pending
-// report gave (checkReported) or the retry of a look nobody reported (endLook). The last two read
+// it were pending), a check_wake row (wakeNamed), whose reason is either the summary the pending
+// report gave (checkReported) or the retry of a look nobody reported (endLook), or a result
+// recorded after the check closed as not run (wakeResult, lookAfterNotRun). The named wake reads
 // as one sentence after the dash, so the lead names who named the wake rather than what it says.
 func wokenBy(cause, detail string) string {
 	switch cause {
@@ -184,6 +248,8 @@ func wokenBy(cause, detail string) string {
 		return "the bound: " + detail
 	case wakeNamed:
 		return "the wake named at the last look — " + detail
+	case wakeResult:
+		return "a result of check " + detail
 	default:
 		return cause + " " + detail
 	}
@@ -260,9 +326,57 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	e.logOnCommit(ctx, "workflow: production check look reported", "issue", check.Issue, "mergeCommit", check.MergeSHA, "look", check.Looks,
 		"cause", check.LastWakeKind, "verdict", fact.Verdict)
 	if outcome == "" {
-		return intake.Result{}, e.endLookPending(ctx, tx, check, fact.Summary)
+		if err := e.endLookPending(ctx, tx, check, fact.Summary); err != nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.judgeCheckIssue(ctx, tx, check.Issue)
+	}
+	if outcome == record.CheckDefect {
+		if err := e.productionFail(ctx, tx, check, fact.Summary); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	return intake.Result{}, e.closeCheck(ctx, tx, check, outcome)
+}
+
+// judgeCheckIssue judges the close of the check's issue where it waits in verifying (judgeClose),
+// so the stored wait shows the production check as it stands now: its next look after a pending,
+// its outcome after its close.
+func (e *Engine) judgeCheckIssue(ctx context.Context, tx pgx.Tx, key string) error {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || issue.Phase != phase.Verifying {
+		return err
+	}
+	return e.judgeClose(ctx, tx, *issue)
+}
+
+// productionFail is a production check's fail on an issue in verifying (D6): a reason of the next
+// change, of kind production, carrying the report's summary, and the next change it starts
+// (Engine.nextChange). The look's task sends the defect to no controller. A fail on an issue that
+// does not wait in verifying records the check's outcome alone, as it did.
+func (e *Engine) productionFail(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, summary string) error {
+	issue, err := e.store.Issue(ctx, tx, check.Issue)
+	if err != nil || issue == nil || issue.Phase != phase.Verifying {
+		return err
+	}
+	reason := record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindProduction, Text: summary,
+		Role: check.Role, Head: check.MergeSHA, ReportedAt: e.now()}
+	id, err := e.store.PutDefect(ctx, tx, reason)
+	if err != nil {
+		return err
+	}
+	reason.ID = id
+	e.logOnCommit(ctx, "workflow: a production check's fail is a reason of the next change", "issue", issue.Key,
+		"generation", issue.Generation, "mergeCommit", check.MergeSHA, "defect", id)
+	return e.nextChange(ctx, tx, *issue, reason)
+}
+
+// nextChangeDue is the seam a reason of the next change calls until the next change's opener is
+// built: it logs that the change is due, and the reason waits in the stored wait.
+func (e *Engine) nextChangeDue(ctx context.Context, _ pgx.Tx, issue record.Issue, reason record.Defect) error {
+	e.logOnCommit(ctx, "workflow: the next change of an issue is due", "issue", issue.Key, "generation", issue.Generation,
+		"reason", reason.ID, "kind", reason.Kind)
+	return nil
 }
 
 // endLook ends the open look of a check nobody reported — its bound came due, the outbox met an
@@ -394,15 +508,18 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 // for an issue with no such requirement. The last look, reported pending or not reported, closes
 // the check as not run. Every other look names when the check is next looked at (nameWake: the
 // clamped wake the record already carries, with reason as what wakes it), which is the one thing
-// that starts the look after this one — nothing else reads production any more. An issue back in
-// the workflow — a root reopened inside its linger, whose implementer now works the new run —
-// writes that row and suspends nobody: the check waits, its wake row defers itself while the run
-// holds the issue (checkWakeDue), and the check closes with the run's next merge (openCheck) or at
-// its bound (checkBound).
-// The claim of the check's role is then suspended, its session kept, and the issue's Sandbox is
-// deleted with the pod it ran in (record.IssueSuspend): both rows follow the look's start row, so
-// the suspension's fences find no later start and wait for the suspend (store.IssueSuspension),
-// and the pod goes until the next wake, whose launch makes the Sandbox again.
+// that starts the look after this one — nothing else reads production any more. An issue whose
+// work runs again (record.RunsAgain: a next change, or a root reopened inside its linger, whose
+// own roles work it now) writes that row and suspends nobody: the check waits, its wake row defers
+// itself while the run holds the issue (checkWakeDue), and the check closes with the run's next
+// merge (openCheck) or at its bound (checkBound).
+// The claim of the check's role is then suspended, its session kept. Where the issue is closed, the
+// issue's Sandbox is deleted with the pod it ran in (record.IssueSuspend): both rows follow the
+// look's start row, so the suspension's fences find no later start and wait for the suspend
+// (store.IssueSuspension), and the pod goes until the next wake, whose launch makes the Sandbox
+// again. Where the issue waits in verifying, nothing of its pod is deleted (D6): the architect's
+// claim lives in the same pod, and the merger's completion can still be owed, so the idle release
+// frees the pod.
 func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, reason string) error {
 	if check.Last {
 		return e.closeCheck(ctx, tx, check, record.CheckNotRun)
@@ -414,13 +531,17 @@ func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.Pr
 	if err != nil {
 		return err
 	}
-	if record.InWorkflow(issue) {
+	if record.RunsAgain(issue) {
 		e.logOnCommit(ctx, "workflow: production check waits while its issue runs again", "issue", issue.Key, "mergeCommit", check.MergeSHA,
 			"look", check.Looks, "phase", issue.Phase)
 		return nil
 	}
 	if err := e.suspend(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
 		return err
+	}
+	if issue.Phase == phase.Verifying {
+		e.logOnCommit(ctx, "workflow: production check waits, its issue's pod kept", "issue", issue.Key, "mergeCommit", check.MergeSHA, "look", check.Looks)
+		return nil
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
 		return err
@@ -477,8 +598,13 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 // a root, or a child, of a lingering tree whose close would delete it anyway. A tree lingering past
 // its deadline waited for this check (lingerExpired): once no check of the tree is open its close
 // is re-armed with a LingerClose row due now, a duplicate of the waiting row's event, so applying
-// both is harmless. An issue back in the workflow — a root reopened inside its linger — retires
-// nobody and suspends nothing: the claims and the pod are the new run's.
+// both is harmless. An issue whose work runs again (record.RunsAgain) retires nobody and suspends
+// nothing: the claims and the pod are the run's.
+// An issue that waits in verifying (D6) has only the checking role's claim closed, and nothing of
+// its pod is deleted, since its close on its checks queues that suspension (suspendCheckedChild).
+// The production term of its close changed, so its checks are read again (askCloseRead), and the
+// owning architect is told once of a close as not run, or of checks still without a pass at the
+// close, with each check and its state (closeWaitNoResult, D5).
 func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, outcome record.CheckOutcome) error {
 	if err := e.markCheckClosed(ctx, tx, check, outcome); err != nil {
 		return err
@@ -487,7 +613,7 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 	if err != nil {
 		return err
 	}
-	if record.InWorkflow(issue) {
+	if record.RunsAgain(issue) {
 		e.logOnCommit(ctx, "workflow: production check closed while its issue runs again; its claims and pod are the run's", "issue", issue.Key,
 			"mergeCommit", check.MergeSHA, "phase", issue.Phase)
 		return nil
@@ -495,6 +621,12 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: check.Role,
 		Generation: issue.Generation, Reason: fmt.Sprintf("%s's production check closed as %s", issue.Key, outcome)}); err != nil {
 		return err
+	}
+	if issue.Phase == phase.Verifying {
+		if err := e.closeWaitNoResult(ctx, tx, issue, *check); err != nil {
+			return err
+		}
+		return e.askCloseRead(ctx, tx, issue)
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
 		return err
@@ -614,7 +746,7 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if record.InWorkflow(issue) {
+	if record.RunsAgain(issue) {
 		e.logOnCommit(ctx, "workflow: production check wake deferred while its issue runs again", "issue", issue.Key,
 			"mergeCommit", check.MergeSHA, "look", check.Looks, "phase", issue.Phase, "reason", fact.Reason)
 		check.WakeAt = e.clampWake(*check, e.lookRetry())
@@ -657,10 +789,10 @@ func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBou
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if record.InWorkflow(issue) {
+	if record.RunsAgain(issue) {
 		e.logOnCommit(ctx, "workflow: production check bound came due while its issue runs again", "issue", issue.Key, "mergeCommit", check.MergeSHA, "phase", issue.Phase)
 		return intake.Result{}, e.closeCheck(ctx, tx, check, record.CheckNotRun)
 	}
 	return intake.Result{}, e.startLook(ctx, tx, issue, check, wakeBound,
-		fmt.Sprintf("%s since the issue closed", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
+		fmt.Sprintf("%s since the merge", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
 }

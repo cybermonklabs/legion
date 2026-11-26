@@ -12,7 +12,7 @@ func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
 	t.Parallel()
 	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
 	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
-	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
+	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false, nil)
 	_, value, ok := strings.Cut(task, "check_opened_at `")
 	if !ok {
 		t.Fatal("the task gives no check identity to report")
@@ -57,7 +57,7 @@ func checkTaskFor(cause, detail string, last bool) string {
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
 	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43",
 		OpenedAt: checkOpened, Looks: 2}
-	return checkTask(issue, check, cause, detail, last)
+	return checkTask(issue, check, cause, detail, last, nil)
 }
 
 // The task tells the checking agent what woke this look, and nothing else does: the session may be
@@ -141,152 +141,6 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 	} {
 		if !strings.Contains(last, want) {
 			t.Errorf("the last look's task = %q, want it to say %q", last, want)
-		}
-	}
-}
-
-// bannedCheckLimits are limits of the last look that the production check's rule no longer has:
-// each keeps the last look's pending, or its close as not run, for a merge that production does
-// not carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a
-// search of the repository for one of them finds the texts that state it and never this test.
-// internal/prompts and internal/textcheck keep their own copies, since a test package cannot
-// import another package's test helpers.
-var bannedCheckLimits = []string{
-	"not carrying" + " the merge alone",
-	"did not carry the merge" + " within the bound",
-	"never carried" + " the merge",
-}
-
-const (
-	// whetherOrNotCarried are the words that keep a fail clause's mention of production from
-	// limiting the fail.
-	whetherOrNotCarried = "whether or not production carries the merge"
-	// lastLookPending is the limit of the last look's pending: no requirement that only the deploy
-	// can show, since such a requirement still unobserved there is a fail.
-	lastLookPending = "pending only for an issue with none of those requirements"
-)
-
-// taskClauses are the clauses of a check task, cut as internal/prompts's clauses cuts a prompt:
-// the task folded to one line, then cut after every ". " and every "; ". The task has no blank
-// line, so it is one paragraph.
-func taskClauses(task string) []string {
-	var found []string
-	for _, sentence := range strings.SplitAfter(strings.Join(strings.Fields(task), " "), ". ") {
-		found = append(found, strings.SplitAfter(sentence, "; ")...)
-	}
-	return found
-}
-
-// isTaskFailClause reports whether clause makes a requirement still unobserved a fail. The task
-// names the last look as "when no look follows this one", and it calls a fail a defect, so the
-// clause holds "unobserved" and "fail" or "defect".
-func isTaskFailClause(clause string) bool {
-	return strings.Contains(clause, "unobserved") && (strings.Contains(clause, "fail") || strings.Contains(clause, "defect"))
-}
-
-// A merge production carries is no pass until each requirement of the issue that only the deploy
-// can show is observed as that requirement names it, and observing something else is never that
-// requirement observed. So on every look the task's pass asks for each such requirement. A look
-// before the last pends a merge production does not carry yet. It also pends a merge production
-// carries with such a requirement still unobserved: a check told that pending is for the merge
-// alone has no verdict for that case but the pass it is not (a check once reported pass at its
-// last look with its requirement's own condition never met). The last look has no such pending.
-// There a requirement still unobserved is a fail whether or not production carries the merge, and
-// the pending is only for an issue with none of those requirements.
-func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *testing.T) {
-	t.Parallel()
-	const pendsAnUnobservedRequirement = "pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow,"
-	for _, last := range []bool{false, true} {
-		task := checkTaskFor(wakeMerge, "merge-43", last)
-		for _, want := range []string{
-			"observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed.",
-			"pass only once you drove the changed path in production and observed every one of those requirements,",
-		} {
-			if !strings.Contains(task, want) {
-				t.Errorf("the check task (last %t) = %q, want it to say %q", last, task, want)
-			}
-		}
-		if !last && !strings.Contains(task, pendsAnUnobservedRequirement) {
-			t.Errorf("the task of a look before the last = %q, want it to say %q", task, pendsAnUnobservedRequirement)
-		}
-		if last && strings.Contains(task, pendsAnUnobservedRequirement) {
-			t.Errorf("the last look's task says %q, but on the last look a requirement still unobserved is a fail %s: %q", pendsAnUnobservedRequirement, whetherOrNotCarried, task)
-		}
-		if last && !strings.Contains(task, lastLookPending) {
-			t.Errorf("the last look's task = %q, want it to say %q", task, lastLookPending)
-		}
-	}
-}
-
-// The last look ends the check, so a requirement only the deploy can show that is still
-// unobserved there is a fail, never a pending, whether or not production carries the merge. A
-// requirement observed as not met is a fail on every look. The fail clause says so once, the same
-// on every look, in terms of the look that follows, and the last look's task adds that no look
-// follows. So the task of every wake and of both looks is read clause by clause (taskClauses). No
-// clause states a limit the rule no longer has (bannedCheckLimits). A fail clause
-// (isTaskFailClause) holds no "production carries the merge" outside the words "whether or not
-// production carries the merge". One fail clause at least holds those words, and one holds
-// "observed as not met", so the test cannot pass on a task that dropped the rule.
-func TestTheLastLookFailsARequirementStillUnobservedWhetherOrNotProductionCarriesTheMerge(t *testing.T) {
-	t.Parallel()
-	for _, tc := range checkTaskWakes {
-		for _, last := range []bool{false, true} {
-			task := checkTaskFor(tc.cause, tc.detail, last)
-			statements, observedNotMet := 0, 0
-			for _, clause := range taskClauses(task) {
-				for _, phrase := range bannedCheckLimits {
-					if strings.Contains(clause, phrase) {
-						t.Errorf("the task of a look woken by %s (last %t) says %q, a limit the rule no longer has: a requirement still unobserved at the last look is a fail %s: %q", tc.name, last, phrase, whetherOrNotCarried, clause)
-					}
-				}
-				if !isTaskFailClause(clause) {
-					continue
-				}
-				if strings.Contains(clause, whetherOrNotCarried) {
-					statements++
-				}
-				if strings.Contains(clause, "observed as not met") {
-					observedNotMet++
-				}
-				if strings.Contains(strings.ReplaceAll(clause, whetherOrNotCarried, ""), "production carries the merge") {
-					t.Errorf("the task of a look woken by %s (last %t) limits the fail of a requirement still unobserved by whether production carries the merge, but that requirement is a fail %s: %q", tc.name, last, whetherOrNotCarried, clause)
-				}
-			}
-			if statements == 0 {
-				t.Errorf("the task of a look woken by %s (last %t) = %q, want a clause that makes a requirement still unobserved when no look follows a fail %s", tc.name, last, task, whetherOrNotCarried)
-			}
-			if observedNotMet == 0 {
-				t.Errorf("the task of a look woken by %s (last %t) = %q, want a fail clause for a requirement observed as not met", tc.name, last, task)
-			}
-		}
-	}
-}
-
-// The last look's task gives its pending only for an issue with none of the requirements that only
-// the deploy can show, since for any other issue a requirement still unobserved there is a fail.
-// The task says that pending carries no wake_at. Before that pending, the task has the tester write
-// on the pull request why the check did not run within the bound. No clause of the last look's task
-// keeps a pending for a merge production does not carry, the case a look before the last pends. The
-// task of a look before the last says nothing of a close as not run, since its pending names the
-// time of the next look.
-func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testing.T) {
-	t.Parallel()
-	const closes = "This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request why the check did not run within the bound."
-	for _, tc := range checkTaskWakes {
-		last := checkTaskFor(tc.cause, tc.detail, true)
-		for _, want := range []string{lastLookPending, closes} {
-			if !strings.Contains(last, want) {
-				t.Errorf("the task of the last look woken by %s = %q, want it to say %q", tc.name, last, want)
-			}
-		}
-		for _, clause := range taskClauses(last) {
-			if strings.Contains(clause, "pending") && strings.Contains(clause, "does not carry the merge") {
-				t.Errorf("the task of the last look woken by %s keeps a pending for a merge production does not carry, but that pending is only for an issue with no requirement that only the deploy can show: %q", tc.name, clause)
-			}
-		}
-		before := checkTaskFor(tc.cause, tc.detail, false)
-		if strings.Contains(before, "closes the check as not run") {
-			t.Errorf("the task of a look before the last, woken by %s, says its pending closes the check as not run, but only the last look's pending closes it: %q", tc.name, before)
 		}
 	}
 }

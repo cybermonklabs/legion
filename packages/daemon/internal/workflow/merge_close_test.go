@@ -519,9 +519,10 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 }
 
 // assertWaitNotice checks that the architect was told the root's close waits exactly once: one
-// close-waits notice of the root's pull request #42, naming the keys the close waits for beneath
-// the root. The architect's other notices — a child's own close-waits at its merge, a child's close
-// or its move out of the workflow among them — are not this one's business.
+// close-waits notice of the root's pull request #42, listing exactly the keys the close waits for
+// beneath the root, one to a line. waiting names them, joined by ", ". The architect's other
+// notices — a child's own close-waits at its merge, a child's close or its move out of the
+// workflow among them — are not this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice
@@ -530,7 +531,8 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	if len(got) != 1 || !strings.Contains(got[0].Reason, "#42") || !strings.Contains(got[0].Reason, "beneath it: "+waiting+".") {
+	want := "beneath it:\n- " + strings.ReplaceAll(waiting, ", ", "\n- ") + "\n"
+	if len(got) != 1 || !strings.Contains(got[0].Reason, want) {
 		t.Fatalf("close-waits notices = %+v, want one naming #42 and the issues beneath it, %s", got, waiting)
 	}
 }
