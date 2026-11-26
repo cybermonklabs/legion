@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -2832,6 +2833,28 @@ type Store interface {
 	// SignalInputSince is the moment the daemon began keeping input for project, and whether one
 	// is recorded: a signal counted over a span is recorded only from that moment plus its span.
 	SignalInputSince(ctx context.Context, tx pgx.Tx, project, input string) (time.Time, bool, error)
+	// KeepQueueEvents keeps the merge-queue timeline events of one pull request of project once
+	// each by GitHub's event id, in GitHub's order among events of one second, and deletes the
+	// pull requests of project that left the queue 6 hours or more before now, which no read
+	// counts again. Admission calls it in the fact's own transaction, before that fact's pass
+	// (admit's keepSignalFacts).
+	KeepQueueEvents(ctx context.Context, tx pgx.Tx, project string, events []signals.QueueEvent, now time.Time) error
+	// QueueEventsAt is every kept merge-queue event of each pull request of project that stands in
+	// the queue or left it in the 6 hours before at, ordered for signals.WaitsOf: what the queue
+	// signal of a moment reads.
+	QueueEventsAt(ctx context.Context, tx pgx.Tx, project string, at time.Time) ([]signals.QueueEvent, error)
+	// OpenQueuePulls lists each pull request of project whose newest kept merge-queue event enters
+	// the queue (an open wait), which the boot reads the timeline of.
+	OpenQueuePulls(ctx context.Context, tx pgx.Tx, project string) ([]OpenQueuePull, error)
+	// QueueProgressOf is what the store holds of one pull request's merge-queue moves, over the
+	// events kept under any of the repository names given.
+	QueueProgressOf(ctx context.Context, tx pgx.Tx, project string, repos []string, number int) (QueueProgress, error)
+	// SetSignalInputReadError records why the boot's read of input for project failed, or clears
+	// it with "" once a read succeeds.
+	SetSignalInputReadError(ctx context.Context, tx pgx.Tx, project, input, readError string, at time.Time) error
+	// SignalInputStatus is the moment the daemon began keeping input for project, whether one is
+	// recorded, and why the boot's read of it failed, "" where it did not.
+	SignalInputStatus(ctx context.Context, tx pgx.Tx, project, input string) (time.Time, bool, string, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

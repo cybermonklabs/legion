@@ -262,6 +262,9 @@ func (e *Engine) byReviewApp(login string) bool {
 // GitHub compares names, or the two names of a configured rename (Config.RepositoryRenames).
 func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenames.Same(a, b) }
 
+// RepositoryRenames is the deployment's configured repository equivalence (Config.RepositoryRenames).
+func (e *Engine) RepositoryRenames() ghrepo.Renames { return e.cfg.RepositoryRenames }
+
 // Apply changes workflow-owned phase state for one durable intake fact. It never performs I/O;
 // every externally visible consequence is an outbox row committed with the record change.
 //

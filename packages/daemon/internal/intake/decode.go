@@ -148,7 +148,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, refused, err = decodeGitHubFact(subject, repositories, envelope.Payload)
+		fact, unread, refused, err = decodeGitHubFact(subject, project, repositories, envelope.Payload)
 	default:
 		return decodedMessage{}, fmt.Errorf("unsupported durable subject %q", subject)
 	}
@@ -328,6 +328,19 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 func projectIssueKey(key, project string) bool {
 	keyProject, _, _ := strings.Cut(key, "-")
 	return keyProject == project && claim.IsIssueKey(key)
+}
+
+// ProjectBranchIssue is the issue key branch names when branch is an issue's branch
+// (claim.BranchIssue) of project, and false for any other branch: another project's issue in a
+// repository the two share, and a branch that names no issue. It is the one rule that decides
+// whose a pull request is for the merge queue signal, at the decode of an `enqueued` event and
+// wherever admission and the boot read a pull request's branch.
+func ProjectBranchIssue(branch, project string) (string, bool) {
+	issue, ok := claim.BranchIssue(branch)
+	if !ok || !projectIssueKey(issue, project) {
+		return "", false
+	}
+	return issue, true
 }
 
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
@@ -699,7 +712,7 @@ func isJSONObject(raw json.RawMessage) bool {
 // could not read (unread). refused is set only for a checks settlement of a heard repository that
 // decodeChecks dropped: a payload that is no object, names a repository this daemon does not hear,
 // or is of another kind is no checks settlement of this daemon, and is no fact in silence.
-func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, err error) {
+func decodeGitHubFact(subject, project string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, err error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil || raw == nil {
 		return nil, nil, nil, nil
@@ -722,7 +735,7 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	}
 	switch kind {
 	case "pr":
-		fact, err = decodePullRequest(repository, raw)
+		fact, err = decodePullRequest(project, repository, raw)
 	case "review":
 		fact, unread, err = decodeReview(repository, raw)
 	case "push":
@@ -745,9 +758,10 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 // repository the daemon hears whose other pull requests open and move many times a minute would
 // otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
 // them changing nothing. Every action carries head_ref.
-func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
+func decodePullRequest(project string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
-	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+	issue, isIssueBranch := claim.BranchIssue(branch)
+	if !isIssueBranch {
 		return nil, nil
 	}
 	number, action, ok := githubIdentity(raw)
@@ -792,6 +806,13 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, nil
 		}
 		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
+	case "enqueued":
+		// Only pull requests whose branch names an issue of this daemon's project feed its merge
+		// queue signal: another project's pull request in a shared repository keeps nothing.
+		if !projectIssueKey(issue, project) || sha == "" {
+			return nil, nil
+		}
+		return PullRequestEnqueued{Repo: repo, Number: number, Branch: branch, HeadSHA: sha}, nil
 	case "review_requested", "review_request_removed":
 		// A review request opened or withdrawn moves what a `blocked` head's round waits on, and
 		// the read it asks for counts the requests; one with no head names none to read for.

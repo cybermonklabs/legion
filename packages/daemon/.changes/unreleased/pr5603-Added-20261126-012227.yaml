@@ -16,6 +16,18 @@ body: |-
   The daemon API entry `20261126011643` (`admission-signals`) adds both members of the launcher
   wire: an earlier daemon sends no `noRoleKills`, so it is sent no report of no role, and an
   earlier launcher sends none, and the daemon counts what it sends.
+
+  The daemon also keeps each merge-queue entry and exit (a merge or a removal) of its project's
+  pull requests for the queue signal of admission by signals. The `enqueued`, `dequeued` and
+  merged pull request notifications of an issue branch of the project queue a `queue_timeline_read`
+  outbox row, which pages GitHub's timeline outside the fact lock, reads again when GitHub's
+  timeline lags behind the notified move, and applies the events under GitHub's own event id,
+  canonical repository and `created_at`. At boot the daemon pages GitHub's `mergeQueue` snapshot
+  for each repository and target branch that serves the project's pull requests, to find the pull
+  requests whose timeline it reads, and a failed boot read records `read_error` on `signal_inputs`,
+  so the queue reads absent with its reason rather than as an empty queue. A migration adds
+  `queue_events`, `signal_inputs.read_error` and the `queue_timeline_read` outbox kind; its header
+  carries the way back.
 time: 2026-11-26T01:22:27Z
 custom:
     Issue: pr5603

@@ -1847,6 +1847,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.readQueueTimeline = w.readQueueTimeline
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
@@ -2003,6 +2004,9 @@ const (
 // second census. Only the daemon's stop leaves it unapplied, and the next boot applies its own.
 func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
 	retryUntilApplied(ctx, w.log, bootRetryFirst, bootRetryMax, func(ctx context.Context) error { return w.booted(ctx, bootID) })
+	// The boot's read of GitHub's merge queue follows the boot fact, on the same backoff: the fact
+	// records that the queue is kept from now on, and the read says what stood in it.
+	w.retryQueueBootRead(ctx, bootID, bootRetryFirst, bootRetryMax)
 }
 
 // retryUntilApplied runs apply until it succeeds or ctx ends, waiting first, then twice as long up

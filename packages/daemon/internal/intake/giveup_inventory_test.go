@@ -94,6 +94,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 		{github, repo + "pr.42", githubEventEnvelope(t, "merged", pr("closed", map[string]any{"merged": "true", "merge_commit_sha": "merge-1"})), "intake.PullRequestMerged"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "closed", pr("closed", map[string]any{"merged": "false"})), "intake.PullRequestClosed"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "dequeued", pr("dequeued", nil)), "intake.PullRequestDequeued"},
+		{github, repo + "pr.42", githubEventEnvelope(t, "enqueued", pr("enqueued", map[string]any{"head_ref": "legion/CAPTURE-3"})), "intake.PullRequestEnqueued"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "review_requested", pr("review_requested", nil)), "intake.PullRequestReviewRequests"},
 		{github, repo + "pr.42.review", githubEventEnvelope(t, "review", map[string]any{"kind": "review", "action": "submitted", "number": "42",
 			"state": "approved", "author": "maintainer", "commit_id": "head-2", "head_sha": "head-2", "review_id": "7001",
@@ -158,7 +159,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 			}
 		})
 	}
-	if len(types) != 19 {
-		t.Fatalf("the inventory holds %d fact types, want the 19 decodeMessage returns", len(types))
+	if len(types) != 20 {
+		t.Fatalf("the inventory holds %d fact types, want the 20 decodeMessage returns", len(types))
 	}
 }

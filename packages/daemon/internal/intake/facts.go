@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -996,6 +997,43 @@ type PullRequestDequeued struct {
 }
 
 func (PullRequestDequeued) namedIssue() (string, bool) { return "", false }
+
+// PullRequestEnqueued is GitHub's pull_request action `enqueued` on an issue branch of the daemon's
+// project: the pull request entered the merge queue at HeadSHA. It carries no queue time; admission
+// queues a timeline read (record.QueueTimelineRead) so GitHub's own timeline gives the event's
+// id, canonical repository and created_at.
+type PullRequestEnqueued struct {
+	Repo    string
+	Number  int
+	Branch  string
+	HeadSHA string
+}
+
+func (PullRequestEnqueued) namedIssue() (string, bool) { return "", false }
+
+// QueueTimeline carries the merge-queue timeline events read from GitHub's REST timeline API for
+// pull request Number of Repo (GET /repos/<owner>/<name>/issues/<n>/timeline): added_to_merge_queue,
+// removed_from_merge_queue and merged, in GitHub's timeline order, each carrying GitHub's event id,
+// canonical repository (from the event url) and created_at. Never decoded from an event: applied by
+// the outbox executor (record.QueueTimelineRead) and by boot reconciliation. Admission keeps each
+// event once in queue_events before the admission pass (admit's keepSignalFacts).
+type QueueTimeline struct {
+	Repo   string
+	Number int
+	Events []signals.QueueEvent
+}
+
+func (QueueTimeline) namedIssue() (string, bool) { return "", false }
+
+// QueueBootStatus records the outcome of the boot reconciliation of GitHub's merge queue for this
+// project: an empty ReadError marks the queue input healthy, and a non-empty ReadError records why
+// the boot read failed so the queue signal reads absent with that reason until a read succeeds,
+// never as an empty queue. Never decoded from an event.
+type QueueBootStatus struct {
+	ReadError string
+}
+
+func (QueueBootStatus) namedIssue() (string, bool) { return "", false }
 
 // MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
 // merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
