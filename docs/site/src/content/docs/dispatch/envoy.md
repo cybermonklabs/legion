@@ -489,8 +489,11 @@ path, and the key is missing altogether on a listener older than the field.
 Legion's daemon reads Dispatch, GitHub and listener events from the stream through a durable
 consumer per project for each: `legion-go-<project>-dispatch` (filtering
 `notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
-the project works in) and
-`legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake).
+the project works in), `legion-go-<project>-wake` (filtering both `notifications.legion.wake`, the
+wake subject every daemon shares, and `notifications.legion.<token>.wake`, the project's own, the
+token being the project as its claim tokens spell it, while the listener's role and agent reports
+move from the one to the other) and `legion-go-<project>-ready` (filtering
+`notifications.legion.wake`, from its own creation on, for the listener's liveness report).
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
 

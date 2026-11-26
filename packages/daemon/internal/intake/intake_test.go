@@ -1413,8 +1413,8 @@ func TestADispatchIssueDeployedEventIsNoFact(t *testing.T) {
 
 // The daemon opens no durable on Dispatch's announcement that every server process serves a build
 // (notifications.dispatch.server.started): no build wakes a production check any more, so the
-// subject is nobody's. A boot opens the Dispatch, GitHub and listener-wake durables and no
-// fourth; a durable an older daemon left on the stream is neither read nor deleted.
+// subject is nobody's. A boot opens the Dispatch, GitHub, listener-wake and listener-ready
+// durables and no other; a durable an older daemon left on the stream is neither read nor deleted.
 func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -1424,7 +1424,7 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	want := []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project)}
+	want := []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project), readyConsumerName(spec.Project)}
 	if got := lagNames(consumers.Lag(context.Background())); !slices.Equal(got, want) {
 		t.Fatalf("the boot's consumers = %q, want %q", got, want)
 	}

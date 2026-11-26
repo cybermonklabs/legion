@@ -533,13 +533,13 @@ func (c *Consumers) sweepFailures(ctx context.Context) error {
 	}
 }
 
-// pass is one pass of the sweep over the three durable consumers.
+// pass is one pass of the sweep over the four durable consumers.
 func (s *failureSweep) pass(ctx context.Context) {
 	if s.previous == nil {
 		s.previous = map[string]sweptPass{}
 	}
 	project := s.consumers.spec.Project
-	for _, name := range []string{dispatchConsumerName(project), githubConsumerName(project), wakeConsumerName(project)} {
+	for _, name := range []string{dispatchConsumerName(project), githubConsumerName(project), wakeConsumerName(project), readyConsumerName(project)} {
 		if pass, ok := s.sweepConsumer(ctx, name); ok {
 			s.previous[name] = pass
 		}

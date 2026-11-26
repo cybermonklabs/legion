@@ -150,6 +150,58 @@ func TestASweepGivesUpAFailingMessageItsConsumerWasMadeAgainPast(t *testing.T) {
 	}
 }
 
+// failsListenerReady is a handler that fails every listener_ready report and applies every other
+// fact as one write of intake_test_writes.
+var failsListenerReady = handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+	if wake, ok := fact.(ListenerWake); ok && wake.Kind == ListenerWakeReady {
+		return Result{}, errAlwaysFails
+	}
+	_, err := tx.Exec(ctx, `insert into intake_test_writes (handler) values ('applied')`)
+	return Result{}, err
+})
+
+// The ready consumer is made again at the next message whenever it is missing (openReady), so a
+// listener_ready report it failed is never delivered to it again. The sweep reads all four
+// durables, so it gives that report up as it gives up the other consumers' messages: not at the
+// first pass that finds it at or below the ready consumer's ack floor, at the next.
+func TestASweepGivesUpAFailingReportTheReadyConsumerWasMadeAgainPast(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	clock := &sweepClock{}
+	spec := consumerSpec(&lockedBuffer{})
+	spec.Now = clock.now
+	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+	stop := runConsumers(t, consumers, failsListenerReady)
+	failing := publish(t, js, legionWakeSubject, wakeReport(t, "ready-swept", ListenerWakeReady, ""))
+	ready := readyConsumerName(spec.Project)
+	waitOpenFailures(t, pool, ready, failing.Sequence)
+	stop()
+
+	if err := stream.DeleteConsumer(context.Background(), ready); err != nil {
+		t.Fatalf("delete the ready durable: %v", err)
+	}
+	if consumers, err = OpenConsumers(context.Background(), js, pool, spec); err != nil {
+		t.Fatalf("OpenConsumers with the ready durable missing: %v", err)
+	}
+	waitAckFloor(t, stream, ready, failing.Sequence)
+
+	sweep := &failureSweep{consumers: consumers}
+	clock.step()
+	sweep.pass(context.Background())
+	if f, _ := intakeRecordOf(t, pool, ready, failing.Sequence); f.GivenUp() {
+		t.Fatalf("the record = %+v after the first pass that found it below the floor, want it open", f)
+	}
+	clock.step()
+	sweep.pass(context.Background())
+	if given, _ := intakeRecordOf(t, pool, ready, failing.Sequence); given.GiveUpReason != record.GiveUpConsumerMovedPast {
+		t.Fatalf("the record = %+v after the second pass, want it given up because the ready consumer moved past it", given)
+	}
+}
+
 // A failing message the stream deletes while it waits to be delivered again is given up by the
 // sweep, which finds it below the consumer's ack floor: with the retention margin at a nanosecond
 // the early give-up does not take it first, and the consumers are stopped while the stream

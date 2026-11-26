@@ -16,7 +16,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/natsversion"
+	"github.com/sjawhar/envoy/subjectforms"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -74,7 +76,7 @@ const WindowsPerLimit = boundedReadsPerFact + 1
 //
 // That one window of headroom is a judgement, and what it is a judgement about is the lock wait:
 // ApplyFact's wait on pg_advisory_xact_lock(hashtext('legion.apply_fact')) cannot be derived from
-// the window at all, because Run works three durable consumers at once and the daemon's own
+// the window at all, because Run works four durable consumers at once and the daemon's own
 // lifecycle writes take the same lock, so what a fact waits for is what else is applying, not how
 // long a read is given. The limit therefore states a share — a quarter of it left for the
 // unbounded part — instead of a duration.
@@ -242,7 +244,7 @@ type RetryLater struct {
 func (r *RetryLater) Error() string { return r.Err.Error() }
 func (r *RetryLater) Unwrap() error { return r.Err }
 
-// Consumers are this project's three durable JetStream consumers, created before intake runs so a
+// Consumers are this project's four durable JetStream consumers, created before intake runs so a
 // daemon whose stream is missing refuses to boot instead of booting with no intake. repos is the
 // set GitHub intake hears and decodes, which SetRepositories replaces under mu. pool is the
 // Postgres every fact is applied on and every consumer's position is kept in (consumer_positions).
@@ -260,15 +262,19 @@ type Consumers struct {
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
-	// wake is the durable on the Envoy listener's wake reports (legionWakeSubject): a message
-	// published to a role topic of a released pod, a message sent to the agent subject of a
-	// released session, and the listener's own `listener_ready`. It is a durable of its own
-	// because every daemon consumes the subject: the listener does
-	// not know which daemon owns a session, so each reads every report and acts only on a
-	// released claim of its own.
-	wake jetstream.Consumer
+	// wake is the durable on the Envoy listener's role and agent wake reports, on two filters while
+	// the reports move from the one subject every daemon shares (legionWakeSubject) to the
+	// project's own (wakeSubject): a message published to a role topic of a released pod, and a
+	// message sent to the agent subject of a released session. It hears the shared subject until a
+	// later release drops it, once every listener reports on the project's subject and nothing of
+	// the project is left unread on the shared one. ready is the durable on the shared subject
+	// alone, from its own creation on, which carries the listener's own `listener_ready`; a report
+	// a listener of an earlier release still puts there reaches this daemon through both, and the
+	// second is dropped as a duplicate (processed_events).
+	wake  jetstream.Consumer
+	ready jetstream.Consumer
 
-	progress struct{ dispatch, github, wake *consumerProgress }
+	progress struct{ dispatch, github, wake, ready *consumerProgress }
 
 	maxAge     time.Duration
 	remade     *remadeFailures
@@ -278,15 +284,19 @@ type Consumers struct {
 	repos []ghrepo.Repository
 }
 
-// OpenConsumers creates or updates this project's Dispatch, GitHub and listener-wake durable
-// consumers. A consumer created here for the first time starts at the next message, so a first
-// daemon on a stream that already holds history (production keeps 72 hours of it) does not replay
-// it into admission. Boot opens the consumers before it reads its Dispatch listing, so the listing
-// covers the state before them and the consumers everything published since, including what lands
-// while the listing is read. A consumer that exists keeps its position and the policy that created
-// it, and takes the rest of this boot's configuration. A consumer that applied messages before and
-// is now missing starts at the last one it applied (openConsumer). pool is required: it is where
-// facts are applied and positions kept.
+// OpenConsumers creates or updates this project's Dispatch, GitHub, listener-wake and
+// listener-ready durable consumers. A consumer created here for the first time starts at the next
+// message, so a first daemon on a stream that already holds history (production keeps 72 hours of
+// it) does not replay it into admission. Boot opens the consumers before it reads its Dispatch
+// listing, so the listing covers the state before them and the consumers everything published
+// since, including what lands while the listing is read. A consumer that exists keeps its name,
+// its position and the policy that created it, and takes the rest of this boot's configuration:
+// the wake consumer of an earlier release, on the shared subject alone, is updated in place to
+// both wake subjects, its ack floor and position kept, so a report the project's subject gains
+// after this boot is never behind its position. A consumer that applied messages before and is
+// now missing starts at the last one it applied (openConsumer), except the ready consumer, which
+// starts at its own creation (openReady). pool is required: it is where facts are applied and
+// positions kept.
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
@@ -332,21 +342,35 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	if err != nil {
 		return nil, fmt.Errorf("open the GitHub durable consumer: %w", err)
 	}
+	wakeOn, err := wakeSubject(spec.Project)
+	if err != nil {
+		return nil, err
+	}
 	wake, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
-		Durable:       wakeConsumerName(spec.Project),
+		Durable:        wakeConsumerName(spec.Project),
+		FilterSubjects: []string{legionWakeSubject, wakeOn},
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		AckWait:        spec.AckWait,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
+	}
+	ready, err := openReady(ctx, stream, jetstream.ConsumerConfig{
+		Durable:       readyConsumerName(spec.Project),
 		FilterSubject: legionWakeSubject,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       spec.AckWait,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
+		return nil, fmt.Errorf("open the listener ready durable consumer: %w", err)
 	}
-	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, dispatch: dispatch, github: github, wake: wake,
+	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, dispatch: dispatch, github: github, wake: wake, ready: ready,
 		maxAge: stream.CachedInfo().Config.MaxAge, remade: remade, sweepEvery: failureSweepEvery, repos: slices.Clone(spec.Repositories)}
 	opened := spec.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
 	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: opened}
+	consumers.progress.ready = &consumerProgress{name: readyConsumerName(spec.Project), opened: opened}
 	return consumers, nil
 }
 
@@ -408,6 +432,25 @@ func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, js, stream, pool, spec, remade, config)
+	}
+	if err != nil {
+		return nil, err
+	}
+	created := existing.CachedInfo().Config
+	config.DeliverPolicy, config.OptStartSeq, config.OptStartTime = created.DeliverPolicy, created.OptStartSeq, created.OptStartTime
+	return stream.UpdateConsumer(ctx, config)
+}
+
+// openReady updates the ready consumer config names in place, keeping the start it was created
+// with, or creates it at the next message whatever consumer_positions holds for it: it carries
+// the listener's liveness report, which says nothing about the past, and a start at an older
+// position would hand this daemon the role and agent reports the shared subject kept, other
+// projects' among them.
+func openReady(ctx context.Context, stream jetstream.Stream, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	existing, err := stream.Consumer(ctx, config.Durable)
+	if errors.Is(err, jetstream.ErrConsumerNotFound) {
+		config.DeliverPolicy = jetstream.DeliverNewPolicy
+		return stream.CreateConsumer(ctx, config)
 	}
 	if err != nil {
 		return nil, err
@@ -642,7 +685,7 @@ func (p *consumerProgress) lastHandled() time.Time {
 // races Run's. A read that fails or runs out of its bound is that consumer's Unavailable; Lag
 // itself never fails, so the state that shows it is still served.
 func (c *Consumers) Lag(ctx context.Context) []ConsumerLag {
-	progress := []*consumerProgress{c.progress.dispatch, c.progress.github, c.progress.wake}
+	progress := []*consumerProgress{c.progress.dispatch, c.progress.github, c.progress.wake, c.progress.ready}
 	lags := make([]ConsumerLag, len(progress))
 	var reads sync.WaitGroup
 	for i, consumer := range progress {
@@ -727,7 +770,7 @@ func (c *Consumers) firstStoredAfter(ctx context.Context, info *jetstream.Consum
 	return first, nil
 }
 
-// Run consumes the three durable consumers until ctx ends, and returns the error of the one that
+// Run consumes the four durable consumers until ctx ends, and returns the error of the one that
 // stops first. Every decoded fact enters ApplyFact on the consumers' pool; a committed transaction
 // is acknowledged, a rolled-back transaction is nacked with a delay that grows with each delivery
 // until the bound gives the message up, a message that does not decode is given up at its first
@@ -750,6 +793,9 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 	})
 	group.Go(func() error {
 		return c.consumeConsumer(consumeContext, c.wake, c.progress.wake, handlers)
+	})
+	group.Go(func() error {
+		return c.consumeConsumer(consumeContext, c.ready, c.progress.ready, handlers)
 	})
 	group.Go(func() error {
 		return c.sweepFailures(consumeContext)
@@ -1042,7 +1088,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	}
 
 	// One message's work is one entry point of the daemon's pool, and it takes a hold mark of its
-	// own (store.ForConcurrentWorker): the three durable consumers run beside each other on one
+	// own (store.ForConcurrentWorker): the four durable consumers run beside each other on one
 	// context, so a mark they shared would have one consumer's open transaction refuse the other
 	// two their first connection, while a mark per message refuses only the handling that already
 	// holds one (store.ErrNestedAcquire). A consumer delivers its messages one at a time, so this
@@ -1509,4 +1555,21 @@ func githubConsumerName(project string) string {
 
 func wakeConsumerName(project string) string {
 	return "legion-go-" + project + "-wake"
+}
+
+func readyConsumerName(project string) string {
+	return "legion-go-" + project + "-ready"
+}
+
+// wakeSubject is the subject the Envoy listener reports a wake of a released pod of project on,
+// notifications.legion.<token>.wake, the token being the project as every claim token spells it
+// (claim.ProjectToken), beside the project's controller lane notifications.legion.<token>.controller:
+// the listener reads the token from the claim token of the role a message was published to, so the
+// two are one spelling and never a second lowercasing.
+func wakeSubject(project string) (string, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return "", fmt.Errorf("the listener wake subject of project %q: %w", project, err)
+	}
+	return subjectforms.LegionWakeSubject(token), nil
 }

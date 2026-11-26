@@ -1467,6 +1467,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-dispatch: 0 waiting
   consumer legion-go-WIDGETS-github: 3 waiting, oldest 2s
   consumer legion-go-WIDGETS-wake: 0 waiting
+  consumer legion-go-WIDGETS-ready: 0 waiting
   intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
@@ -1634,7 +1635,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   The `consumer` lines are the lag of the daemon's durable consumers on the
   `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events),
   `legion-go-<project>-github` (the GitHub events of the project's
-  repositories) and `legion-go-<project>-wake` (the Envoy listener's wake reports). Each says how
+  repositories), `legion-go-<project>-wake` (the Envoy listener's role and agent wake reports, on
+  the shared wake subject and the project's own) and `legion-go-<project>-ready` (the listener's
+  liveness reports, from the consumer's creation on). Each says how
   many messages wait for the consumer, delivered and not yet handled or not yet delivered, the
   events the daemon will acknowledge without acting on included, and how long ago the oldest of
   them was stored (`oldest unknown` when that message could not be read). A message is handled
