@@ -1599,20 +1599,25 @@ setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
 One step carries a budget of its own: "Reading one, the rows", which calls
 .github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
 ladder bounds its waits for a refused read rather than measuring them - three attempts, each
-bounded by `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
-bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
-4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
-that step carries. The rule's two-minute floor does not bind. The step now also runs
+bounded by `timeout 30`, with waits of 10 s and 20 s between them - and a bound takes no 15 per
+cent. The read is paginated, so gh-read.sh can read no answer of its own: after an attempt that
+exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So each attempt
+takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
+has a measured maximum of 4 s; it now also runs
 packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
 full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
-counted at a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
+counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
+whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.
 
-A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
-waits for GitHub to answer again only when that falls at least 30 s before this step's limit and
-the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as
-STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So the
-wait never outlives either budget, and the budgets need no room for it: a step that would have to
-wait past them fails by name instead, and a re-run after the reset reads the jobs again.
+A spent API budget is not in that bound: when the rate_limit route shows the core budget this
+read spends at 0, gh-read.sh's gh_wait_reset waits for its reset only when that falls at least
+30 s before this step's limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES
+and the step's as STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait
+and the limit. So the wait never outlives either budget, and the budgets need no room for it: a
+step that would have to wait past them fails by name instead, and a re-run after the reset
+reads the jobs again. A secondary rate limit is not waited for on this read: GitHub names its
+wait in the answer's retry-after, which a paginated read leaves unread, so it is one of the
+ladder's failed attempts.
 
 That is the one rule both of the browser lane's readers of GitHub follow for a rate limit: this
 jobs read through gh-read.sh, and packages/dispatch/e2e/tools/quarantine-check.ts, the nightly's
@@ -1623,8 +1628,8 @@ and STEP_TIMEOUT_MINUTES after the step's, both starts read off the runner's pro
 job's from the Runner.Worker process GitHub's runner starts for it and the step's from that
 process's child. With neither set, or no Runner.Worker among its parents, a reader has no
 deadline and waits for nothing. In this step the step's limit binds: the steps before it take
-30 s at most by the maxima above, so its 180 s end before the job's 240 s do. A wait ends no later
-than 150 s after the step's start, which leaves 30 s: the step's own 5.75 s and an attempt after
+30 s at most by the maxima above, so its 240 s end before the job's 300 s do. A wait ends no later
+than 210 s after the step's start, which leaves 30 s: the step's own 5.75 s and an attempt after
 the wait of up to 24.25 s fit in it, and an attempt that runs to its 30 s bound there needs
 35.75 s, so it meets the step's limit, which ends the step and names it. The wait was made for
 two refusals of the jobs read, `API rate limit exceeded for installation` on all three attempts,
@@ -1633,10 +1638,10 @@ that failed the job on a read that would have answered minutes later: job 136922
 02:21Z on 2026-11-22.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
-one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
+one step's 240 s, plus the measured maximum of every step without one: 40 s less reading
 one's 4 s is 36 s, and 1 s for "Report a refused blob download as a refused read", which
 runs one `echo` and has no measurement of its own - 1 s is what this job's other
-one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
+one-command steps measure. 240 + 37 = 277 s, which is 4 min 37 s, so 5 min. The job's
 budget is above the step's, so the step's own budget fires first and names the step,
 which is the reason this file's head gives for putting budgets on steps.
 
