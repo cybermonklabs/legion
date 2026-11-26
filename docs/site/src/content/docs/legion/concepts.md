@@ -101,12 +101,13 @@ whichever repository the defect is. It writes the defect to the architect of the
 is, as a Dispatch comment that mentions that architect's role, only when its fix would collide with
 that tree's open pull request or its token does not reach the repository. Only when no tree owns
 that code does the controller file the issue with the `legion` label, so Legion works it without
-asking you; the controller passes no message from one agent to another. A problem that needs a
-decision of yours goes into a Dispatch ask on Legion's daily report issue instead, naming the
-issue it came from and where the fix belongs (the repository or layer, and saying so when it is
-not Legion), with its evidence and a recommendation, and you decide whether it needs an issue.
-The controller files that issue, with the `legion` label only when your answer asks Legion to work
-it. An architect also files the children of its own issue.
+asking you; the controller passes no message from one agent to another. An agent sends a problem
+that needs a decision of yours to the controller instead, with its evidence and a recommendation.
+The controller asks you in a Dispatch ask on the issue the work is for, naming the issue it came
+from and where the fix belongs (the repository or layer, and saying so when it is not Legion), and
+you decide whether it needs an issue. The controller files that issue, with the `legion` label
+only when your answer asks Legion to work it. An architect also files the children of its own
+issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
 whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.
@@ -738,8 +739,8 @@ look whether or not production carries the merge, or a defect, naming the issue,
 request, the merge commit, what it drove and what failed. A defect with a clear fix goes to its
 owner, as a Dispatch comment that mentions the architect of the tree whose code it is, or to the
 controller, which files an issue only when no tree owns that code.
-Only one that needs a decision is a Dispatch ask on Legion's
-daily report issue, so you decide whether it needs an issue.
+Only one that needs a decision goes to the controller, which asks you on the issue the work is
+for, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
 stored microseconds unchanged. That field alone selects a report on that check: without it,

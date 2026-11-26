@@ -165,12 +165,10 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
   expect(unlinked).toEqual([]);
 });
 
-// Where a tree owns a clear defect, the controller's reply under the finder's comment or ask names
-// the owner: the finder writes to it, or, for a person's `Hand it to the owning tree` on an old
-// ask, the reply mentions the owner, which reads the answer and the evidence in that thread, and
-// the finder writes nothing. A finder that reads a reply it has no rule for opens a second ask, so
-// every `Not filed:` reply of the controller's that names a role is one the finder's findings.md,
-// or its steps file, acts on, word for word but its placeholders.
+// Where a tree owns a clear defect, the controller's reply to the finder names the owner, and the
+// finder writes to it. A finder that reads a reply it has no rule for writes nothing, and the owner
+// never hears of the defect, so every `Not filed:` reply of the controller's that names a role is
+// one the finder's findings.md, or its steps file, acts on, word for word but its placeholders.
 test("every Not filed reply the controller writes that names an owner is one the finder acts on", () => {
   // Both sides are read by one map, so they are parsed alike. Each side is its reference and the
   // steps file its detail moved to under the skill budget.

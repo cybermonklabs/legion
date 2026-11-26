@@ -50,7 +50,7 @@ Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot reco
 
 ## GitHub mentions
 
-Answer a mention that asks for triage, or for what `read_state` or Dispatch holds, as a Dispatch comment on the issue that the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect. Never build a role token from a partial issue reference. Then reply to the person on GitHub with that comment's link alone. Their words go there because the owner can read them nowhere else. A person's answer on a Dispatch ask is taken as catch-up step 5 of `skill://legion-controller/references/finding-asks.md` says, copying nothing.
+Answer a mention that asks for triage, or for what `read_state` or Dispatch holds, as a Dispatch comment on the issue that the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect. Never build a role token from a partial issue reference. Then reply to the person on GitHub with that comment's link alone. Their words go there because the owner can read them nowhere else.
 
 Post that reply once, as `skill://legion-controller/references/operations.md#a-reply-to-a-github-mention` says. It is your one GitHub write for a mention.
 

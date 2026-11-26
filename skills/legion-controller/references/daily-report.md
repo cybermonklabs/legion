@@ -4,28 +4,23 @@
 
 Use the issue that the deployment instructions name for Legion's reports, else the project's `Legion daily report` (`dispatch search --query '"Legion daily report"' --project <PROJECT>`).
 When none exists, create it once and park it in `icebox`. It is the one issue you file unasked. It holds no work and never carries the `legion` label.
-Assign it to the person who answers for the project (the deployment instructions name them, else the owner that `dispatch whoami` names), because its asks reach that person's Inbox. With nobody known, leave out `--assignee`.
 
 ```text
-dispatch issue --project <PROJECT> --title 'Legion daily report' --assignee '<email>' --spec-file - <<'EOF'
+dispatch issue --project <PROJECT> --title 'Legion daily report' --spec-file - <<'EOF'
 ## Summary
 
-Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. Legion's agents post here the evidence of each clear defect that no tree owns, which the controller files for Legion, and the asks about problems that need a person's decision. This issue holds no work, so it carries no `legion` label and stays in icebox.
+Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. This issue holds no work, so it carries no `legion` label and stays in icebox.
 EOF
 legion({ op: "set_status", issue: "<REPORT KEY>", status: "icebox" })
 ```
 
-## Keep it answerable
+## Keep it open
 
-Each time you read it:
-
-- `Status: done`: the close withdrew its open asks, and Dispatch refuses new ones. Reopen it with `set_status` to `icebox`, and say so in the day's report.
-- `Assignee: unassigned` with a person known: `dispatch issue-update --issue <REPORT KEY> --assignee <email>`. A refusal leaves it as it was: name the refusal in your summary.
-- While it is unassigned, open each report with one sentence that asks a person to take the issue from its header. Until someone does, its asks go to the project's default assignee.
+Dispatch refuses an upload to a closed issue, and the consolidation record is an upload. So each time you read it and it shows `Status: done`, reopen it with `set_status` to `icebox`, and say so in the day's report.
 
 ## When
 
-After the turn's own work, read the report issue and keep it answerable. Post when its `Events:` show no `message.created` from today.
+After the turn's own work, read the report issue and keep it open. Post when its `Events:` show no `message.created` from today.
 
 ## What
 

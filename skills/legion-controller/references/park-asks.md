@@ -18,7 +18,7 @@ With no `failure.at`, end the key `generation <n>` (`issues.<ISSUE>.generation`)
    - The ask is open, or resolved with no answer, or your reply under it starts `Left admitted`: do nothing.
    - The ask is answered and carries no reply of yours: go to step 4.
    - Your reply under it starts `Parked` or `Not parked`, or no such comment exists: go to step 2.
-2. Open a `dispatch ask` on the report issue. Name the root and `<cause>`. Give the options `Park it` and `Leave it admitted`. Say that after a park Legion sets the root back to `todo` when the wait ends. Follow the ask (`dispatch follow --ask '<ref>' --action follow`). Comment on the root: first line `Asked whether to park: dispatch://<REPORT KEY>/ask/<id>`, second line `<key>`, then `<cause>`.
+2. Open a `dispatch ask` on the root. Name the root and `<cause>`. Give the options `Park it` and `Leave it admitted`. Say that after a park Legion sets the root back to `todo` when the wait ends. Follow the ask (`dispatch follow --ask '<ref>' --action follow`). Comment on the root: first line `Asked whether to park: dispatch://<root>/ask/<id>`, second line `<key>`, then `<cause>`.
 3. Name the tree and the ask in the day's report while the ask is open.
 4. On `Park it`, while the root's `phase` is not `done` and `read_state` still builds the same `<key>`: `set_status` the root to `backlog`. Comment on the root, citing the answer, with the first line `Parked by Legion while it waits on: <cause>`. That mark makes the park your own hold. Otherwise, and on `Leave it admitted`, move nothing. Then reply under the ask with the first line `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>`.
 

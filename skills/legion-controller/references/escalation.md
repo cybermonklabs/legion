@@ -17,7 +17,7 @@ The architect decided against its own retry. The issue stays at `phase: held` un
 
 ## A child that looks independent
 
-Check the child and its parent in `read_state` and Dispatch. When the child still looks independent, open an ask on the report issue. Name the child, why it looks independent, and the root you would file. Give the options `File an issue`, `File it for Legion` and `Do not file`. Never label a child or cut its `child_of` link: that admits it as a root while its tree still records it. Only on a person's yes:
+Check the child and its parent in `read_state` and Dispatch. When the child still looks independent, open a `dispatch ask` on the child. Name the child, why it looks independent, and the root you would file. Give the options `File an issue`, `File it for Legion` and `Do not file`. Never label a child or cut its `child_of` link: that admits it as a root while its tree still records it. Only on a person's yes:
 
 1. File the root with no `--parent`. Its spec cites the ask and carries its `Filed for` line. Add `--label legion` only when the answer asks Legion to run it.
 2. Park the child (`set_status` to `icebox`), with a comment that names the new root and the person's answer.

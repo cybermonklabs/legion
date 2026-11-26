@@ -11,8 +11,7 @@ No worker holds `accepting`. Read, against the goal:
    GitHub rewrites a review's `commit_id` to the current head, so never read the head from it.
 
 - A head that GitHub reads `CONFLICTING` is accepted as any other ("A conflicting head").
-- A finding ask holds the acceptance: one a worker sent you, or one that `dispatch read` lists under `Open asks:` whose question starts `Finding from ` or `Clear defect from `.
-  Follow it (`dispatch follow --ask <id> --action follow`), and publish its reference to the controller topic.
+- An open finding ask on the issue holds the acceptance: one that `dispatch read` lists under `Open asks:` whose question starts `Finding from `.
   Accept only when it is resolved, or when it carries the controller's reply (`Filed dispatch://` or `Not filed:`).
   A closed issue hides its open questions from the controller.
 - An `after_merge` check gets its result after the close. It holds no acceptance.

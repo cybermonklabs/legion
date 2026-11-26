@@ -17,7 +17,7 @@ Restart it only when a person asks, your deployment instructions name the case, 
 1. `kubectl -n <namespace> get pods -l '<daemon label>' -o wide` lists one pod. Note its name. With no pod or several, delete nothing, and name it in the day's report.
 2. `kubectl -n <namespace> delete pod -l '<daemon label>'`. The daemon's Deployment makes a new pod.
 3. Read again each minute until a new pod reads `Running` with every container ready, or five minutes pass.
-4. When no new pod is `Running` five minutes after the delete, open a finding ask on the report issue that names the pod and its status.
+4. When no new pod is `Running` five minutes after the delete, name the pod and its status in the day's report.
 
 Publish to no role topic while the restart runs. A message starts a turn that the wake pacing does not count.
 
@@ -53,7 +53,7 @@ Exit 77 and exit 22 mean what they mean for a re-run. Name either in the day's r
 
 On `409 SUSPENDED_BY_OPERATOR`, only the operator lifts the hold.
 
-1. Open a `dispatch ask` on the report issue. Name the claim, quote the refusal, and say why the agent needs `<op>`. Give the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
+1. Open a `dispatch ask` on the claim's issue. Name the claim, quote the refusal, and say why the agent needs `<op>`. Give the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
 2. Send no Envoy message to the session that holds the operator's token.
 3. Name the ask in your summary, and in the day's report while it is open.
 4. On `Resume it`, run `<op>` again. On a second 409, reply under the ask with the refusal. On `Keep it held`, run nothing.

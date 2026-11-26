@@ -5002,7 +5002,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     ],
     [
       "skills/legion-controller/references/finding-asks-steps.md",
-      "dispatch comment --issue '<evidence issue>'",
+      "dispatch comment --issue '<finder issue>'",
       "dispatch_comment",
     ],
   ])

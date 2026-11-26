@@ -81,12 +81,11 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 		// checking agent for the time of its own next look and tells it to wait for nothing here.
 		"A pending report also carries wake_at", "Wait for nothing in this session",
 		// A defect with a clear fix goes to its owner as a Dispatch comment that mentions the
-		// architect of the tree whose code it is, or the controller, which files it, only when
-		// no tree owns that code; one that needs a decision is a finding ask on the report
-		// issue, whose reference the checking agent publishes to the controller, which files
-		// only on a person's answer.
+		// architect of the tree whose code it is, or to the controller, which files it, only when
+		// no tree owns that code; one that needs a decision goes to the controller with
+		// envoy_publish, and the controller asks the person on the issue the work is for.
 		"a defect with a clear fix goes to its owner", "--mention role:", "the architect of the tree whose code it is",
-		"dispatch ask", "skill://legion-worker/references/findings.md", "report issue", "controller topic"} {
+		"envoy_publish", "skill://legion-worker/references/findings.md", "notifications.role.", "the issue the work is for"} {
 		if !strings.Contains(start.Task, want) {
 			t.Fatalf("the check task lacks %q:\n%s", want, start.Task)
 		}

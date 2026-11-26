@@ -13,14 +13,20 @@
    EOF
    ```
 
-When no tree owns the code, post the same comment on that project's report issue, with `--mention 'role:legion-<project>-controller'`. A closed report issue takes the comment too. With none, post it on your own issue. The controller replies under it, and mentions your role:
+A production check's result names your comment, `dispatch://<KEY>/comment/<id>`.
+
+## Send it to the controller
+
+The message's first line is `Clear defect from <your role token>` for a clear defect that no tree owns, else `Finding from <your role token>`. Then it gives what went wrong, where and to whom, with the numbers; `dispatch://<KEY>` it came from; the repository and component; where the fix belongs; why you do not make it yourself; and, for a decision, the decision and your recommendation.
+
+The controller replies with a comment on the issue that the message names, and mentions your role:
 
 - `Filed dispatch://<KEY>`: it filed the issue.
-- `Not filed: dispatch://<ROOT> owns it; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`: write the same comment on the issue it names, and mention that role.
-- `Not filed: dispatch://<KEY> owns it; role:<token> is mentioned here`: the owner has it. Write nothing.
-- Any other `Not filed:` reply: open the ask yourself (step 3 of `skill://legion-worker/references/findings.md`).
+- `Asked dispatch://<KEY>/ask/<id>`: it asked a person.
+- `Not filed: dispatch://<ROOT> owns it; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`: write to that owner as [Write to the owner](#write-to-the-owner) says, on the issue it names, and mention that role.
+- Any other `Not filed:` reply: the controller decided. Write nothing.
 
-Apart from that reply, file nothing and wait for nothing. A production check's result names your comment, `dispatch://<KEY>/comment/<id>`.
+Apart from that reply, file nothing and wait for nothing. A production check's result names your message to the controller.
 
 ## Another agent that needs an action
 
