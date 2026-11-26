@@ -284,14 +284,14 @@ export interface InboxDismiss {
  * with it every control drawn on it - off the page, so a refusal owned by the row would be
  * unmounted before it arrived. The drawer mounts its own Inbox, so it gets its own.
  *
- * `onSettled` is told the rows one press named once Dispatch has decided it, either way: the
- * Inbox keeps those rows out of its hand-hold while the press is out, and a row the rollback put
- * back is an ordinary row again.
+ * `onSettled` is told the rows one press named once Dispatch has decided it, and whether it
+ * refused them: a row the rollback put back is an ordinary row again at once, and a row Dispatch
+ * took is still leaving until the page no longer draws it.
  */
 export function useInboxDismiss({
   onSettled,
 }: {
-  readonly onSettled?: (ids: readonly string[]) => void;
+  readonly onSettled?: (ids: readonly string[], refused: boolean) => void;
 } = {}): InboxDismiss {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
@@ -359,16 +359,20 @@ export function useInboxDismiss({
       void queryClient.invalidateQueries({ queryKey: meInboxKey });
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
-    onSettled: (_data, _error, input, context) => {
+    onSettled: (_data, error, input, context) => {
+      const refused = error !== null;
       if ("rows" in input) {
         const ids = input.rows.map(({ id }) => id);
         live(ids, false);
-        onSettled?.(ids);
+        onSettled?.(ids, refused);
         return;
       }
       // A press under the narrowing names no row, so the rows it settles are the ones its own
       // optimistic apply took out of the view.
-      onSettled?.((context?.dropped ?? []).map((thread) => rowId({ kind: "thread", thread })));
+      onSettled?.(
+        (context?.dropped ?? []).map((thread) => rowId({ kind: "thread", thread })),
+        refused
+      );
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
     target: () => "inbox:dismiss",

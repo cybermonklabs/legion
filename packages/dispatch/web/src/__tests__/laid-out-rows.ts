@@ -55,22 +55,6 @@ export function drawOver(
   return () => point.mockRestore();
 }
 
-/** Answers `document.elementFromPoint` with `at(row, y)`, where `row` is the row that
- *  `layRowsOut`, given the same `rowSelector` and `first`, lays at the point's `y`, else no
- *  element: what the page draws there. Answers the function that gives happy-dom its own answer
- *  back. */
-export function drawAt(
-  rowSelector: string,
-  first: number,
-  at: (row: Element, y: number) => Element | null
-): () => void {
-  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
-    const row = document.querySelectorAll(rowSelector)[first + Math.floor(y / ROW_PX)];
-    return row === undefined ? null : at(row, y);
-  });
-  return () => point.mockRestore();
-}
-
 /** One focus the page asked for: the element, and the options it asked with. */
 export interface FocusMove {
   readonly options: FocusOptions | undefined;

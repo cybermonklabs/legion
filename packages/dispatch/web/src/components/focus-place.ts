@@ -480,8 +480,8 @@ function land(element: HTMLElement, show: () => void): boolean {
 /** Shows a generic component hand-off at its nearest edge. A control wholly in sight scrolls
  *  nothing, as does one wholly out of sight when the hand-off only shows cut controls. */
 function showWhole(element: HTMLElement, clips: Map<Element, boolean>, onlyCut: boolean): void {
-  const sight = sightOf(clippingBoxes(element, clips), undefined);
-  const drawn = boxOf(element, undefined);
+  const sight = sightOf(clippingBoxes(element, clips));
+  const drawn = boxOf(element);
   if (liesWithin(drawn, sight) || (onlyCut && !meets(drawn, sight))) return;
   element.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
@@ -520,13 +520,13 @@ export function scrollToNearest(
   const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
   for (const box of boxes) {
     const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
-    const drawn = boxOf(element, undefined);
+    const drawn = boxOf(element);
     const from = box === origin?.box ? origin.top - box.scrollTop : 0;
     scrollNearestIn(box, drawn, sight, from);
   }
   scrollNearestIn(
     window,
-    boxOf(element, undefined),
+    boxOf(element),
     belowHead(viewport(), headBox === undefined ? head : null)
   );
 }
@@ -565,14 +565,6 @@ function nearestDelta(start: number, end: number, low: number, high: number, fro
   return Math.abs(from - min) <= Math.abs(from - max) ? min : max;
 }
 
-/** A row that will move up the page by `by` pixels once the rows a press is still taking away
- *  from above it have gone: an element inside it is read where it will stand then
- *  (`SelectionBar`'s hand-off). */
-export interface MovedUp {
-  readonly by: number;
-  readonly row: Element;
-}
-
 /** A box's edges, in pixels from the viewport's top left corner. */
 interface Edges {
   readonly bottom: number;
@@ -581,12 +573,10 @@ interface Edges {
   readonly top: number;
 }
 
-/** The box of `element`: where it will stand once `moved`'s row has moved up, where the element
- *  is inside that row, else where it stands now. */
-function boxOf(element: Element, moved: MovedUp | undefined): Edges {
-  const box = element.getBoundingClientRect();
-  const by = moved?.row.contains(element) ? moved.by : 0;
-  return { bottom: box.bottom - by, left: box.left, right: box.right, top: box.top - by };
+/** The box of `element`, where it stands now. */
+function boxOf(element: Element): Edges {
+  const { bottom, left, right, top } = element.getBoundingClientRect();
+  return { bottom, left, right, top };
 }
 
 /** The window's visible edges, without space reserved for a sheet by CSS scroll padding. */
@@ -595,8 +585,8 @@ function viewport(): Edges {
 }
 
 /** The inside of a clipping box's border and scrollbars, in window coordinates. */
-function scrollportOf(box: Element, moved?: MovedUp): Edges {
-  const drawn = boxOf(box, moved);
+function scrollportOf(box: Element): Edges {
+  const drawn = boxOf(box);
   const top = drawn.top + box.clientTop;
   const left = drawn.left + box.clientLeft;
   // Without client dimensions, use the measured bounds (happy-dom's layout stubs).
@@ -615,12 +605,11 @@ function belowHead(edges: Edges, head: Element | null): Edges {
     : { ...edges, top: Math.max(edges.top, head.getBoundingClientRect().bottom) };
 }
 
-/** What is in the reader's sight through the boxes around an element that can hide it. A box
- *  inside `moved`'s row is read where it will stand. */
-function sightOf(boxes: Iterable<Element>, moved: MovedUp | undefined, edgesOf = boxOf): Edges {
+/** What is in the reader's sight through the boxes around an element that can hide it. */
+function sightOf(boxes: Iterable<Element>, edgesOf = boxOf): Edges {
   let { bottom, left, right, top } = viewport();
   for (const box of boxes) {
-    const edges = edgesOf(box, moved);
+    const edges = edgesOf(box);
     top = Math.max(top, edges.top);
     left = Math.max(left, edges.left);
     bottom = Math.min(bottom, edges.bottom);
@@ -631,15 +620,14 @@ function sightOf(boxes: Iterable<Element>, moved: MovedUp | undefined, edgesOf =
 
 /** A point in the visible part of a selection mark, or null if its edge only touches the view
  *  or it is entirely outside it. The sticky head clips the mark even though it is not one of
- *  the mark's ancestors. With `moved`, measure where the mark will stand once its row moves up. */
+ *  the mark's ancestors. */
 export function visibleMarkPoint(
   mark: HTMLElement,
   clips: Map<Element, boolean>,
-  head: Element | null,
-  moved?: MovedUp
+  head: Element | null
 ): { x: number; y: number } | null {
-  const sight = belowHead(sightOf(clippingBoxes(mark, clips), moved, scrollportOf), head);
-  const drawn = boxOf(mark, moved);
+  const sight = belowHead(sightOf(clippingBoxes(mark, clips), scrollportOf), head);
+  const drawn = boxOf(mark);
   const left = Math.max(drawn.left, sight.left);
   const right = Math.min(drawn.right, sight.right);
   const top = Math.max(drawn.top, sight.top);
@@ -675,10 +663,9 @@ function liesWithin(drawn: Edges, sight: Edges): boolean {
 
 /** Whether any part of `element` is in the reader's sight: its box meets the viewport and every
  *  box in `boxes`, the boxes around it that can hide it (`Sight`). An element whose edge only
- *  touches the edge of what is in sight counts as in sight. With `moved`, the element is read
- *  where it will stand once that row has moved up. */
-function inSight(element: Element, boxes: Iterable<Element>, moved?: MovedUp): boolean {
-  return meets(boxOf(element, moved), sightOf(boxes, moved));
+ *  touches the edge of what is in sight counts as in sight. */
+function inSight(element: Element, boxes: Iterable<Element>): boolean {
+  return meets(boxOf(element), sightOf(boxes));
 }
 
 /** The overflow values that clip what overflows a box. */
@@ -833,8 +820,9 @@ function isHeld(element: Element): boolean {
 const ACTION_BOUND_MS = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
 
 /** The keys that only modify another key: one pressed alone acts on nothing, so it leaves an
- *  armed press armed (`armHandOff`). */
-const LONE_MODIFIERS: Readonly<Record<string, true>> = {
+ *  armed press armed (`armHandOff`), and the selection bar's hand-off owes its landing through it
+ *  (`SelectionBar`'s `useLastMarkedPlace`). */
+export const LONE_MODIFIERS: Readonly<Record<string, true>> = {
   Alt: true,
   Control: true,
   Meta: true,
@@ -1316,6 +1304,20 @@ export function repeatTookFocusFrom(place: Element): boolean {
   return from !== null && place.contains(from);
 }
 
+/** Whether a press on `target` is one the armed press (`armHandOff`) counts as its own rather
+ *  than the reader's next act: on its own control, or on a control it holds (`ArmedPress`'s
+ *  `holds`) - the second press on a control the press's write holds, as a double click on a
+ *  marked row's held Start next while Take out of epic's writes are out is. False with nothing
+ *  armed. The armed press ends on every other press (`onPointer`, `onKey`), and the selection
+ *  bar's hand-off ends what it owes on this same test (`SelectionBar`'s `useLastMarkedPlace`). */
+export function pressIsArmedOwn(target: EventTarget | null): boolean {
+  return (
+    armed !== null &&
+    target instanceof Element &&
+    (armed.control.contains(target) || armed.holds(target))
+  );
+}
+
 /** Whether the armed press (`armHandOff`) was on a row's mark, while that mark is still in the
  *  page: the selection bar reads this beside `causedByReader`, since unticking the last row by
  *  its mark empties the bar while the focus may rest in it (a checkbox a click leaves unfocused,
@@ -1468,7 +1470,8 @@ export function controlsLikeRow(row: Element, control: Element, from: Element): 
 }
 
 /** Focuses `target` without a scroll: a hand-off's landing (`land`), a region's own stop
- *  (`focusOwnStop`), the mark SelectionBar focuses before its row moves up (`landMark`), and
+ *  (`focusOwnStop`), the mark the selection bar's hand-off parks the focus on while its row is
+ *  leaving (`SelectionBar`'s `park`), and
  *  the control the Agents page hands a pin's moved focus to (`controlsLikeRow`).
  *  Answers whether it took the focus. */
 export function focusNoScroll(target: HTMLElement): boolean {
@@ -1508,15 +1511,9 @@ function walkBack(
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
  *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
- *  reaches it, and of its fallback too, and the selection bar's hand-off reads it of a row mark
- *  it considers (`SelectionBar`'s `markAtPlace` and `landMark`), with `moved` where the mark's
- *  row will move up once the rows a press is taking away have gone. */
-export function inSightNow(
-  element: Element,
-  clips: Map<Element, boolean>,
-  moved?: MovedUp
-): boolean {
-  return inSight(element, clippingBoxes(element, clips), moved);
+ *  reaches it, and of its fallback too. */
+export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
+  return inSight(element, clippingBoxes(element, clips));
 }
 
 /** Whether the reader can see the whole of `element` now: its box lies within the viewport and
@@ -1525,19 +1522,7 @@ export function inSightNow(
  *  (`land`); one wholly in sight scrolls nothing, and the Agents page reads it of the control a
  *  pin's move left the focus on. */
 export function inSightWhole(element: Element, clips: Map<Element, boolean>): boolean {
-  return liesWithin(boxOf(element, undefined), sightOf(clippingBoxes(element, clips), undefined));
-}
-
-/** Whether `element` reaches above what the reader can see, the viewport cut to every box around
- *  it that clips it: the top of its box stands above the top of that. With `moved`, it is read
- *  where it will stand once that row has moved up. One that is also not in sight (`inSightNow`)
- *  stands wholly above it. */
-export function aboveSightNow(
-  element: Element,
-  clips: Map<Element, boolean>,
-  moved?: MovedUp
-): boolean {
-  return boxOf(element, moved).top < sightOf(clippingBoxes(element, clips), moved).top;
+  return liesWithin(boxOf(element), sightOf(clippingBoxes(element, clips)));
 }
 
 /** The place among `controls`, the controls the focus can reach in `within` now, that `lost`

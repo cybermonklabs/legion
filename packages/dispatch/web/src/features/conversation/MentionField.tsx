@@ -115,6 +115,9 @@ export function MentionField({
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
+  /** Held while the host's write is out: `aria-disabled` and read-only, never disabled.
+   *  The box keeps focus and shuts the picker. */
+  readonly held?: boolean;
   /** What this host's layout asks of the line under the box, in place of the field's own
    *  classes. A host whose box sits in a layout of its own places that line as it places the
    *  label; a panel held to a share of a phone's screen (the Agents broadcast composer) makes
@@ -162,10 +165,6 @@ export function MentionField({
    *  out, which `disabled` would drop the focus from in a browser. The picker is shut with it,
    *  so a pick writes nothing into the box either. */
   readonly readOnly?: boolean;
-  /** Held by its host while the write it holds is out: the box says so by `aria-disabled`, never
-   *  `disabled`, which would drop the focus in a browser. A host holding the box passes
-   *  `readOnly` with it, so the box takes no typing either. */
-  readonly held?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
   /** This box's row of the writing list, for the write it is making now: the line under the box
@@ -193,7 +192,7 @@ export function MentionField({
   const picker = useRefPicker({
     caret,
     delivers: delivered,
-    enabled: !disabled && !readOnly && focused,
+    enabled: !disabled && !readOnly && !held && focused,
     issueKey,
     project,
     text: body,
@@ -326,7 +325,7 @@ export function MentionField({
             setCaret(event.currentTarget.selectionStart)
           }
           placeholder={placeholder}
-          readOnly={readOnly}
+          readOnly={readOnly || held}
           ref={bodyFieldRef}
           rows={rows}
           value={body}

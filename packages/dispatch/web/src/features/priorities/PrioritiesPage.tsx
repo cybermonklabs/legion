@@ -182,7 +182,7 @@ export function PrioritiesPage(): ReactNode {
   }, [unknownTab, update]);
   // The keys every table of the application is walked with (`j`, `k`, `x`, `o`, Enter), which
   // each table registers in the `project` scope. The registry holds one table's per page
-  // (`features/project/issues-table-keys.ts`), and each tab draws exactly one table, so the keys
+  // (`components/table-keys.ts`), and each tab draws exactly one table, so the keys
   // are that table's: the priorities, or a fault list. The work under a priority is on its own
   // page, which turns the scope on for that table alone.
   useKeymapScope("project");

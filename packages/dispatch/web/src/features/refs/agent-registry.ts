@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { api, isAgentListRefilling } from "../../api/client";
@@ -173,9 +173,15 @@ export interface AgentRegistry {
  * try the dashboard's retry rule allows, where the poller's own interval already asks it again
  * every 15 s.
  */
+/** Where the failure the agent list last gave is kept, in the same cache as the list itself: one
+ *  query client holds one answer, so a second client - another page's, or another case's - reads
+ *  nothing of this one's. The query clears its own error while a later read is out, and a view
+ *  mounted in that window must name the same reason as the views around it. */
+const AGENT_LIST_FAILURE = ["agents", "failure"] as const;
+
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
-  const { data, error, isError, isPending } = useQuery({
+  const { data, error, errorUpdateCount, status } = useQuery({
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
@@ -183,10 +189,28 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   });
   const agents = data ?? EMPTY_AGENTS;
   const lookup = registryLookup(agents);
-  // A failed refetch keeps the last response's data, so the state goes back to unknown while
-  // the cached titles go on naming agents.
-  const known = !(isPending || isError);
-  const refilling = isError && isAgentListRefilling(error);
+  // What the registry last answered, rather than what a read of it is doing now: a read that is
+  // out never takes the last answer away. A list that has only ever failed goes back to pending
+  // on each poll of the shell's, and a view that read that as "no answer yet" would drop what the
+  // last answer settled - the counts a refused list does not decide, and the page's word that it
+  // could not check which claims have lapsed - and draw them again when the poll lands on the
+  // same error. A read's failure is counted once it is recorded (`errorUpdateCount`), and the
+  // count stands through every later read. A failed refetch keeps the last response's data, so
+  // the state goes back to unknown while the cached titles go on naming agents.
+  const known = status === "success";
+  const isError = !known && errorUpdateCount > 0;
+  // Why that failure came, which the query clears while its next read is out although the failure
+  // still stands: a view that says what it could not check names the same reason throughout, and
+  // never Envoy as unreachable while it is the agent list refilling. This render reads the failure
+  // and writes nothing; the effect below keeps it in the client's own cache, for a view that mounts
+  // while a later read is out and sees no error of its own.
+  const client = useQueryClient();
+  useEffect(() => {
+    if (error !== null) client.setQueryData(AGENT_LIST_FAILURE, error);
+  }, [client, error]);
+  const refilling =
+    isError &&
+    isAgentListRefilling(error ?? client.getQueryData<Error>(AGENT_LIST_FAILURE) ?? null);
   return useMemo(
     () => ({
       isError,

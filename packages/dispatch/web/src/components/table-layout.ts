@@ -110,6 +110,13 @@ export interface TableLayoutModel {
   readonly attachBox: (node: HTMLDivElement | null) => void;
   readonly boxHeight: number;
   readonly boxWidth: number;
+  /** Gives the box the height the page lays out for it now (`boxHeight`), at once, as its
+   *  `ResizeObserver` does a frame after any change of the page. A host that hands the focus on
+   *  calls it right before, so the box the focus lands against is the box the reader will see
+   *  (`features/project/IssuesTable.tsx`'s `returnFocus`). The widths are left to that observer:
+   *  a change of them can draw the rows anew, which would take the focus the host is about to
+   *  hand on. */
+  readonly fitHeight: () => void;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows, the columns pinned at its left, and whether the box is a
@@ -383,40 +390,57 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     return { sizing: widths, pinned, compact: false };
   }, [boxEdge, boxWidth, columns, measured, sizing, visibility]);
 
+  const boxHeightNow = useCallback(
+    (box: HTMLDivElement): number => {
+      const bounds = box.getBoundingClientRect();
+      const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
+      const firstRows = [...box.querySelectorAll<HTMLElement>(`[${rowAttribute}]`)].slice(0, 3);
+      const rowsHeight = firstRows.reduce(
+        (height, row) => height + row.getBoundingClientRect().height,
+        0
+      );
+      // The room left over under the table's last line, which the box takes: the window, less the
+      // bottom padding the section and the page keep for the floating selection bar, less where
+      // that line's last pixel is now. Measured against the pager's own place — the box's own
+      // bottom edge where the table has no pager — rather than the page's height, which on a page
+      // shorter than the window is the window, leaving the box only able to shrink; so the box
+      // grows as well as shrinks, whatever stands above it. The place is the line's in the
+      // document, not on the screen: read on the screen, a measure made while the document is
+      // scrolled past the table - a window resize, the page growing - took the scroll for room, and
+      // the browser's scroll anchoring then kept the pager where it was, so each measure grew the
+      // box by the last one's growth, without end (the Priorities page's fault lists at 1600x1000,
+      // scrolled to its end before the resize).
+      const foot =
+        (pagerRef.current?.getBoundingClientRect().bottom ?? bounds.bottom) + window.scrollY;
+      const padding = (element: Element | null) =>
+        element === null ? 0 : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
+      const slack =
+        window.innerHeight - padding(box.parentElement) - padding(box.closest("main")) - foot;
+      const available = bounds.height + slack;
+      return Math.max(400, header + rowsHeight + 2, available);
+    },
+    [rowAttribute]
+  );
+  const fitHeight = useCallback(() => {
+    const box = scrollRef.current;
+    if (!box) return;
+    const height = boxHeightNow(box);
+    // The box takes the height at once as well as in the render its state draws next, so a host
+    // that fits it right before it hands the focus on lands against the box the reader will see
+    // (`features/project/IssuesTable.tsx`'s `returnFocus`). That render writes the same value.
+    if (box.style.maxHeight !== "") box.style.maxHeight = `${height}px`;
+    else if (box.style.height !== "") box.style.height = `${height}px`;
+    setBoxHeight(height);
+  }, [boxHeightNow]);
   const measure = useCallback(() => {
     const box = scrollRef.current;
     if (!box) return;
-    const bounds = box.getBoundingClientRect();
-    setBoxWidth(bounds.width);
+    setBoxWidth(box.getBoundingClientRect().width);
     // The box's border box less the room inside it that is beside any scrollbar: its borders
     // and a classic scrollbar. Both are whole pixels, read where the page lays them out.
     setBoxEdge(box.offsetWidth - box.clientWidth);
-    const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
-    const firstRows = [...box.querySelectorAll<HTMLElement>(`[${rowAttribute}]`)].slice(0, 3);
-    const rowsHeight = firstRows.reduce(
-      (height, row) => height + row.getBoundingClientRect().height,
-      0
-    );
-    // The room left over under the table's last line, which the box takes: the window, less the
-    // bottom padding the section and the page keep for the floating selection bar, less where
-    // that line's last pixel is now. Measured against the pager's own place — the box's own
-    // bottom edge where the table has no pager — rather than the page's height, which on a page
-    // shorter than the window is the window, leaving the box only able to shrink; so the box
-    // grows as well as shrinks, whatever stands above it. The place is the line's in the
-    // document, not on the screen: read on the screen, a measure made while the document is
-    // scrolled past the table - a window resize, the page growing - took the scroll for room, and
-    // the browser's scroll anchoring then kept the pager where it was, so each measure grew the box
-    // by the last one's growth, without end (the Priorities page's fault lists at 1600x1000,
-    // scrolled to its end before the resize).
-    const foot =
-      (pagerRef.current?.getBoundingClientRect().bottom ?? bounds.bottom) + window.scrollY;
-    const padding = (element: Element | null) =>
-      element === null ? 0 : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
-    const slack =
-      window.innerHeight - padding(box.parentElement) - padding(box.closest("main")) - foot;
-    const available = bounds.height + slack;
-    setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
-  }, [rowAttribute]);
+    setBoxHeight(boxHeightNow(box));
+  }, [boxHeightNow]);
   useLayoutEffect(() => {
     measure();
     window.addEventListener("resize", measure);
@@ -585,6 +609,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     attachBox,
     boxHeight,
     boxWidth,
+    fitHeight,
     order,
     pagerRef,
     responsive,

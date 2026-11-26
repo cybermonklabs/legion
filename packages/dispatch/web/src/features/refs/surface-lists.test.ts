@@ -2125,12 +2125,13 @@ const FEATURES = "packages/dispatch/web/src/features";
 const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string }[] = [
   {
     file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
-    holds: "the menu's own word for one of its choices, the label of its radio button",
+    holds:
+      "the host's own word for one choice of a display menu's section, which names a field of the table and never a value in it",
     written: "label",
   },
   {
     file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
-    holds: "the menu's own word for one of its choices, handed to the choice that draws it",
+    holds: "the host's own word for one choice of a display menu's section (`DisplayMenuOption`)",
     written: "option.label",
   },
   {
@@ -2263,15 +2264,15 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "failed",
   },
   {
+    file: `${FEATURES}/project/issues-table-actions.ts`,
+    holds:
+      "the notice `IssuesTable.tsx` draws for what a table action did: the List's own line, which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
+    written: "notice.text",
+  },
+  {
     file: `${FEATURES}/project/IssuesTable.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",
-  },
-  {
-    file: `${FEATURES}/project/issues-table-actions.ts`,
-    holds:
-      "the table's own notice of what a table action did, said before its line for a list read that has not settled",
-    written: "notice.text",
   },
   {
     file: `${FEATURES}/refs/RefLink.tsx`,

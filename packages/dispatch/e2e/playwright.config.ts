@@ -416,6 +416,12 @@ const parallelProjects = [
   // out leaves the focus on the moved card, and that the selection bar's return shows its landing
   // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
   // and at 390 to a checkbox cut by the window's bottom edge.
+  // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters keep each count the
+  // list does not decide while a later poll of the list is out, and that the selection bar's
+  // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
+  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
+  // and at 390 on the List after Take out of epic with the rows marked last far below the view.
   // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
@@ -529,6 +535,12 @@ const parallelProjects = [
   // out leaves the focus on the moved card, and that the selection bar's return shows its landing
   // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
   // and at 390 to a checkbox cut by the window's bottom edge.
+  // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters keep each count the
+  // list does not decide while a later poll of the list is out, and that the selection bar's
+  // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
+  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
+  // and at 390 on the List after Take out of epic with the rows marked last far below the view.
   // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
   // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
   // priorities table by its grip and reads the order back.

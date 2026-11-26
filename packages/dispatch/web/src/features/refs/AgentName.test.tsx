@@ -10,7 +10,12 @@ import type { Actor, Agent } from "../../api/types";
 import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
-import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller, agentRegistryPollMs } from "./agent-registry";
+import {
+  AGENT_REGISTRY_POLL_MS,
+  AgentRegistryPoller,
+  agentRegistryPollMs,
+  useAgentRegistry,
+} from "./agent-registry";
 
 /** One live session, as `GET /api/v1/agents` lists it. */
 function listed(sessionId: string, title: string, lastSeen = Date.now() - 3 * 60_000): Agent {
@@ -661,5 +666,62 @@ test("the poller keeps its 15 s cadence unless the browser suite set one of its 
     jest.useRealTimers();
     environmentManager.setIsServer(() => wasServer);
     agents.mockRestore();
+  }
+});
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 04:2xZ): the reason a failed agent
+// list gave is kept in that list's own query client, never in a value the module holds. The query
+// clears its own error while a later read is out, so a page that redraws in that window reads the
+// kept reason - and two pages of the app, each with its own client, must never read each other's.
+// Here the second client's list failed as unreachable and the first's as refilling after it: with
+// one value for both, the second would call its own failure a refilling list.
+test("the reason a failed agent list gave is its own client's", async () => {
+  const listAgents = spyOn(api, "listAgents");
+  const refilling = new ApiError(503, {
+    code: "ENVOY_REFILLING",
+    error: "The agent list is refilling. Try again in a moment.",
+  });
+  const unreachable = new ApiError(503, { error: "Envoy listener unreachable" });
+  /** What one client's registry says of its own list, for a reader of this case. */
+  function Reading({ name }: { name: string }): ReactNode {
+    const registry = useAgentRegistry(true);
+    return (
+      <p data-testid={name}>
+        {registry.refilling ? "refilling" : registry.isError ? "unreachable" : "no answer yet"}
+      </p>
+    );
+  }
+  const first = newClient();
+  const second = newClient();
+  try {
+    listAgents.mockRejectedValue(unreachable);
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={first}>
+          <Reading name="first" />
+        </QueryClientProvider>
+        <QueryClientProvider client={second}>
+          <Reading name="second" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByTestId("second").textContent).toBe("unreachable"));
+    // The first client's own list then fails as a refilling one.
+    listAgents.mockRejectedValue(refilling);
+    await act(async () => {
+      await first.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() => expect(screen.getByTestId("first").textContent).toBe("refilling"));
+    // The second client reads again, and while that read is out its query holds no error of its
+    // own: what it says is its own list's failure, which was never a refilling one.
+    listAgents.mockReturnValue(new Promise(() => undefined));
+    act(() => {
+      void second.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() => expect(screen.getByTestId("second").textContent).toBe("unreachable"));
+  } finally {
+    listAgents.mockRestore();
+    first.clear();
+    second.clear();
   }
 });

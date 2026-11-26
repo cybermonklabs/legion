@@ -12,7 +12,7 @@ import type { FilterChip } from "../../components/filter-chips";
 import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
-import { focusListStop, useLastMarkedPlace } from "../../components/SelectionBar";
+import { useLastMarkedPlace } from "../../components/SelectionBar";
 import { TABLE_FRAME_MARK } from "../../components/table-keys";
 import { useTableLayout } from "../../components/table-layout";
 import {
@@ -105,15 +105,6 @@ const ISSUE_TABLE_NAMES: DataTableNames = {
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
 };
 
-/** The same words for an issue table a page draws beside its main table over the same keys - the
- *  priorities page's fault lists, and the work under an opened priority - whose `j` and `k` walk
- *  it only from one of its own rows (`moveFrom: "row"`), so they never take those keys from the
- *  main table. */
-const ISSUE_TABLE_BESIDE_NAMES: DataTableNames = {
-  ...ISSUE_TABLE_NAMES,
-  keymap: { ...ISSUE_TABLE_NAMES.keymap, moveFrom: "row" },
-};
-
 /** What the List's rows are, which its header filters count in and its pager counts: issues, in
  *  groups, over rows. */
 const ISSUE_TABLE_NOUN: RowNoun = {
@@ -135,7 +126,6 @@ export function IssuesTable({
   label,
   layout: ownLayout,
   listing,
-  moveFrom = "page",
   priorityTitles,
   stateKey,
 }: {
@@ -177,10 +167,6 @@ export function IssuesTable({
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
-  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`): anywhere on the page the
-   *  focus is in no other table, for the page's one table or its main one (the default); or only
-   *  from one of its own rows, for a table drawn beside the page's main one. */
-  moveFrom?: "page" | "row";
   /** Each priority's title by its id, in the one order the priorities read answers them in.
    *  Given, the table has the Advances column, which names each priority a row advances by its
    *  place in that order and its title (`#3`, `PriorityChip`); unset, it has none
@@ -325,7 +311,7 @@ export function IssuesTable({
     columns,
     getRowId: (item) => item.issue.key,
     layout,
-    names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
+    names: ISSUE_TABLE_NAMES,
     state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
@@ -345,35 +331,45 @@ export function IssuesTable({
   // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
   // table draws its row, out of sight or not. After a press that took that issue out of the view
   // - off the list, or out of what the filters show, as Take out of epic does under the Epic
-  // filter: a row with any part of its mark in sight at its place, else before it. With no
-  // issue marked, as after a select-all from the table's head: the first row the reader can see
-  // below the sticky head. Each mark is shown whole at its nearest edge. `head` is a header cell:
-  // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
-  // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
-  // lands in the place of an issue that went.
+  // filter: a row with any part of its mark in sight at its place, else the nearest before it,
+  // else the nearest after it. With no issue marked, as after a select-all from the table's head:
+  // the first row the reader can see below the sticky head. Each mark is shown whole at its
+  // nearest edge. `head` is a header cell: the cells stick, and the `thead` does not
+  // (`DataTable`). Else the table's own stop, with no scroll. A row the window has not drawn is
+  // out of their sight, so it is never where the focus lands in the place of an issue that went.
+  // What the table's own actions say is leaving, read through a ref because they are read after
+  // this hook (`useIssueTableActions`, below) and assigned there: a row an action changed while
+  // that action and the read after it are out. The hand-off waits for each such row to leave the
+  // list by name, as the Inbox's does, so a landing never stands on a row the press is taking away
+  // however long the write and its read take.
+  const leavingNow = useRef<((key: string) => boolean) | undefined>(undefined);
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
       model.layout.scrollRef.current
         ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
         ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
+    drawRow: (key) => model.focusRow(key, ROW_CHECKBOX, "nearest"),
     head: () => model.layout.scrollRef.current?.querySelector("thead th") ?? null,
     lastMarked: () => lastMarked.current,
+    leaving: (key) => leavingNow.current?.(key) === true,
     list: tableStop,
     order: leaves,
     shown: Object.keys(selection).length !== 0,
   });
-  // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) has put the
-  // focus itself, save where the table lists the issue marked last and its window has not drawn
-  // that row: scroll to draw it, then show the measured checkbox whole at its nearest edge
-  // and give it focus with no additional focus scroll (`focusRow`).
+  // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) puts the
+  // focus itself, including where the table lists the issue marked last and its window has not
+  // drawn that row (`drawRow` above, through `focusRow`).
   // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
-    if (landAtPlace()) return null;
-    // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
-    const key = lastMarked.current;
-    if (key === null) return focusListStop(tableStop());
-    model.focusRow(key, ROW_CHECKBOX, "nearest");
+    // The box's height made current first: the table sizes the box to the page at a
+    // `ResizeObserver`'s read, a frame after whatever changed the page, and the bar's going is
+    // such a change. At 390x664 the box stood at 434 px when the bar went, from a read long
+    // before, and at 414 a frame later, which left a landing shown whole in the old box below the
+    // new one's edge (builds Jobs `infra-3135-infra-3135-r30q-frames` and `-r30r-frames`).
+    // `fitHeight` makes it the box the reader will see before the hand-off reads it.
+    model.layout.fitHeight();
+    landAtPlace.land();
     return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
@@ -470,6 +466,11 @@ export function IssuesTable({
     items: allItems,
     clearSelection: () => setSelection({}),
   });
+  // Written while rendering, as the hand-off's own `latest` is (`useLastMarkedPlace`): a ref of
+  // the latest answer, which no render reads. The names' state changes only in the actions' own
+  // handlers. A layout effect here would run after the hand-off's, which is declared above, so
+  // the commit that lets an action's rows go would be read with the previous render's answer.
+  leavingNow.current = leaving;
 
   // How many parents the walk could not read: every one of them when the walk itself failed,
   // else the ones it named. The rest of the rows keep the epic they were read with.

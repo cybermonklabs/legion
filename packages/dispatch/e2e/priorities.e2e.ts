@@ -1490,7 +1490,7 @@ test("a priority's own page writes its title and description and lists only its 
 // width the key, the project and the status leave, so no space stands empty at the table's
 // right: the last column that draws anything ends at the box's right edge, less the room a
 // filling column leaves there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
-// `features/project/issues-table-layout.ts`). An issue title of 190 characters reads whole there
+// `components/table-layout.ts`). An issue title of 190 characters reads whole there
 // and on each fault tab: no ellipsis, no clamp, nothing of it past its box. One of 900, as long
 // as production's longest run, is drawn in eight lines ending in '…', its whole text in its
 // tooltip.
