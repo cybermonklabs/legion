@@ -416,13 +416,14 @@ func TestAFailedPassIsTriedAgainWithNoFurtherEvent(t *testing.T) {
 // Once a guarded child's own wait has reaped it, and before that wait's Done, the kernel may give
 // its pid to a new child started through the same guard. The earlier Done must leave the new
 // child held, or a pass could take the new child's exit from its own wait. The pid is held twice
-// here as Start holds it, once for each child, and released as Done releases it.
+// through hold, the record Start makes, once for each child, and released as Done releases it:
+// a hold that marked the pid rather than counting it leaves it held 0 times after the first Done.
 func TestAnEarlierDoneLeavesALaterChildOfTheSamePidHeld(t *testing.T) {
 	g := NewGuard()
 	const pid = 4242
 	g.mu.Lock()
-	g.pids[pid]++ // the first child, whose wait has reaped it but not yet called Done
-	g.pids[pid]++ // the second child, given the same pid
+	g.hold(pid) // the first child, whose wait has reaped it but not yet called Done
+	g.hold(pid) // the second child, given the same pid
 	g.mu.Unlock()
 	g.Done(pid)
 	g.mu.Lock()

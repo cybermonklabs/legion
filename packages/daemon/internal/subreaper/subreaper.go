@@ -58,8 +58,15 @@ func (g *Guard) Start(cmd *exec.Cmd) (int, error) {
 		return 0, err
 	}
 	pid := cmd.Process.Pid
-	g.pids[pid]++
+	g.hold(pid)
 	return pid, nil
+}
+
+// hold records one more hold on pid, with g.mu held: a count, never a mark, since the kernel may
+// give the pid of a child whose wait has reaped it, and whose Done has not come yet, to a new child
+// started here (Guard.pids).
+func (g *Guard) hold(pid int) {
+	g.pids[pid]++
 }
 
 // Done releases one hold on pid, whose own wait has read its exit, and asks the reaper for a pass.
