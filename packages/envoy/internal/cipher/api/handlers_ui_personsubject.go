@@ -33,16 +33,16 @@ type personSubjectRevokedResponse = wire.PersonSubjectRevokedResponse
 // which might be its. What the holder made, and a service's login, are untouched. A repeat ends
 // nothing and answers zeros. A revoke whose session generation is below the greatest one a revoke
 // applied at the address carried was superseded by a later replacement there: it writes and ends
-// nothing, and answers state "superseded" with that greatest generation (superseded_by), which
-// Dispatch leaves owed and reports, since its own generations for the address are then below the
-// broker's; the line it logs names both generations.
+// nothing, and answers state "superseded" with that greatest generation (superseded_by), so its
+// caller can tell that its own generations for the address are below the broker's; the line it
+// logs names both generations.
 //
 // Every field is required, 400 otherwise (SESSION_GENERATION_REQUIRED for the session
 // generation), and the two accounts must differ: the holder is named so that a revoke of the holder
 // from an earlier move, the address coming back to it, stops refusing it. The session generation is
 // recorded beside the replaced account, so an approval Dispatch checked at an earlier generation is
 // refused (machine.Service.ApplyDecision), and decides whether a later replacement superseded the
-// revoke. No Dispatch sends this route without it: the route and the field came in one change. The
+// revoke. The route and the field came in one change, so no caller sends the route without it. The
 // issuer is compared as oidc.CanonicalIssuer spells it, so Google's two spellings are one. The
 // address and the accounts are the caller's word, as every relayed revoke takes its person. That
 // word does more than take power away: naming the holder lifts the refusal an earlier revoke

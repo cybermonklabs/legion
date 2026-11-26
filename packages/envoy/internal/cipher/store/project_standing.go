@@ -19,8 +19,9 @@ import (
 // KeepProjectStanding writes Dispatch's answer for person and project, asked at askedAt, unless the
 // row already holds an answer asked later: visibility as Dispatch answered it, "public" or
 // "private", and whether person may see the project; or, for visibility "", that Dispatch holds no
-// such project, which is written for no person (”), since it is the same answer for everyone.
-// person is a login as record.CanonicalLogin spells it, or ” for a question naming no person.
+// such project, which is written for no person (the empty person), since it is the same answer for
+// everyone. person is a login as record.CanonicalLogin spells it, or empty for a question naming
+// no person.
 func (s *Store) KeepProjectStanding(ctx context.Context, person, project, visibility string, visible bool, askedAt time.Time) error {
 	if visibility == "" {
 		person, visible = "", false

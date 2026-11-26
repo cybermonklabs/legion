@@ -139,8 +139,9 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 // seconds rounded down so no reader keeps the answer later than the gate serves it. A person whose
 // not-held answer has passed its deadline is answered active and not held, with NotHeldUntil
 // oauthwire.NotHeldUntilPassed, so every reader refuses the token as a deadline passed, as it
-// refuses one whose kept answer lapsed: Dispatch and the Envoy listener 503 BROKER_UNAVAILABLE
-// with Retry-After: 60, and the NATS auth service under deadline_passed. Every other case the gate
+// refuses one whose kept answer lapsed: the Envoy listener 503 BROKER_UNAVAILABLE with
+// Retry-After: 60, and the NATS auth service under deadline_passed (Dispatch reads neither field
+// yet). Every other case the gate
 // cannot tell (hold.ErrUncheckable, tested after a passed deadline and before a hold, so a held
 // answer it could not keep is no answer either) is *HoldUncheckableError.
 func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection, session *oauthstore.ExchangeSession) (oauthwire.Introspection, error) {

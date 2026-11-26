@@ -4,8 +4,8 @@
 // (packages/envoy/internal/dispatch/api/credential_requests.go), which writes the broker's bytes
 // unparsed, so the shape a generated client is given has to be named from the broker's own
 // declaration rather than read off the relay. It also holds how long the broker works on one
-// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and Dispatch counts
-// on, so the two read one figure.
+// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and a caller of the
+// broker can count on, so the two read one figure.
 //
 // It is a leaf: data and its doc comments, importing nothing of the broker's API package and
 // nothing holding a store, an OAuth client or a database.
@@ -23,10 +23,10 @@ const RequestDeadline = 45 * time.Second
 // http.Server WriteTimeout is the two together (writeTimeout). WriteTimeout bounds the writing of
 // that answer, not the broker's database: a COMMIT the handler sent before RequestDeadline is over
 // when that database completes it, which no deadline here ends, and a cancel does not undo a commit
-// the database already received. Dispatch assumes that the broker's database completes such a
-// commit within this margin, and so that a write the broker began for a request is over within
-// RequestDeadline + RequestWriteMargin of the handler's start, whether or not its caller is still
-// waiting for the answer (Dispatch's api.machineLoginSettleAfter counts on it).
+// the database already received. A caller may count on the broker's database completing such a
+// commit within this margin, and so on a write the broker began for a request being over within
+// RequestDeadline + RequestWriteMargin of the handler's start, whether or not that caller is still
+// waiting for the answer.
 const RequestWriteMargin = 15 * time.Second
 
 // PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still

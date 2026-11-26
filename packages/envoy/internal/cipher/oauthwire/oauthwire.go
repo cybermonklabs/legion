@@ -201,10 +201,10 @@ const (
 	// none (the shared public-session account's, and every account entry naming no person). A
 	// restricted member's machine login is the one person's credential that makes one
 	// (exchange.Set.Machine): it acts for that member, and its Projects holds the one project its
-	// trade asked for. It never holds two. A resource server holds an entry's token to no Google
-	// account and no creation time, since the operator's configuration, not an account, names its
-	// person, and a restricted member's to the account and the creation its trade recorded, as a
-	// person token's (internal/dispatch/api, brokerPersonAdmitted).
+	// trade asked for. It never holds two. An entry's token records no Google account and no
+	// creation time, since the operator's configuration, not an account, names its person; a
+	// restricted member's records the account and the creation its trade recorded, as a person
+	// token's does.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -372,15 +372,17 @@ type Introspection struct {
 	AccountIssuer string `json:"account_issuer,omitempty"`
 	// AccountSubject is that account's `sub`, beside AccountIssuer. RFC 7662's own `sub` is the
 	// token's subject, the principal the exchange decided, so this is named apart from it. It is
-	// what lets a resource server tell which account a token is: a token whose account no longer
-	// holds the person's address is the replaced account's, however its person reads.
+	// what will let a resource server tell which account a token is, once one reads it: a token
+	// whose account no longer holds the person's address is the replaced account's, however its
+	// person reads. No reader in this tree reads it yet.
 	AccountSubject string `json:"account_subject,omitempty"`
 	// Held is whether Dispatch holds the person this token names until they sign in to Dispatch
 	// again, or until a refresh confirms them with Google: Google refused their Dispatch sign-in,
 	// or no refresh has confirmed them for 24 hours. The broker's introspection writes it, from
 	// its hold gate (internal/cipher/hold), for an active token naming a person, as `person` or,
-	// for a machine login's own token, as its operator; Dispatch and the Envoy listener read it
-	// (ciphertoken.Caller.Held) after their own checks and refuse the token 401 MEMBERSHIP_HELD.
+	// for a machine login's own token, as its operator. The Envoy listener reads it
+	// (ciphertoken.Caller.Held) after its own checks and refuses the token 401 MEMBERSHIP_HELD;
+	// Dispatch will refuse it the same way once it reads it, and does not yet.
 	// A held token is still active: a hold revokes nothing, and the token works again once the
 	// hold ends. It is false for a token naming no person.
 	Held bool `json:"held,omitempty"`
@@ -388,8 +390,9 @@ type Introspection struct {
 	// being good, in seconds since the epoch, rounded down: the deadline an IAP deployment's
 	// Dispatch put on that answer (its not_held_until), which the broker's hold gate serves until
 	// and not at (hold.Gate.CheckUntil). The broker's introspection writes it beside a not-held
-	// answer that has one; Dispatch and the Envoy listener keep the answer no later than it
-	// (ciphertoken.Caller.NotHeldUntil), and refuse the token as unavailable once it has passed. A
+	// answer that has one. The Envoy listener keeps the answer no later than it
+	// (ciphertoken.Caller.NotHeldUntil), and refuses the token as unavailable once it has passed;
+	// Dispatch will do the same once it reads it, and does not yet. A
 	// not-held answer the gate judged past its deadline is written NotHeldUntilPassed, 1, a moment
 	// every reader's clock is past. It is 0, and absent, for a held answer, a token naming no
 	// person, and every answer outside IAP.
@@ -397,10 +400,11 @@ type Introspection struct {
 	// CredentialCreatedAt is when the credential behind a token naming a person was made, as Unix
 	// seconds from the broker database's own clock: the person's sign-in on a machine, or the
 	// machine login the token was exchanged from, not the token's own iat, which a refresh renews.
-	// The token's trade wrote it onto the token when it minted it. A resource server holds a token
-	// recording no account to it: one made before the person's account was recorded may be an
-	// earlier holder's. It is 0, and absent, for a token naming no person and for one minted
-	// before the broker recorded it.
+	// The token's trade wrote it onto the token when it minted it. It is for a resource server
+	// that holds a token recording no account to its creation, since one made before the person's
+	// account was recorded may be an earlier holder's; no reader in this tree reads it yet. It is
+	// 0, and absent, for a token naming no person and for one minted before the broker recorded
+	// it.
 	CredentialCreatedAt int64 `json:"credential_created_at,omitempty"`
 	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
 	// ProjectScopeNone, or one of them narrowed to reading (ProjectScopeReadNamed,

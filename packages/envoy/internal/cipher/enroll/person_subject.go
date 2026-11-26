@@ -34,8 +34,9 @@ type SubjectRevoked struct {
 // RevokePersonSubject records that the account subject of issuer no longer holds person's
 // address, which the account holder of the same issuer holds now, and ends everything the first
 // holds under the address, in one transaction: the broker's half of POST
-// /v1/person-subjects/revoke, which Dispatch sends when another Google account takes an address
-// it holds for a person, whatever that person's member kind.
+// /v1/person-subjects/revoke, which a Dispatch that records accounts sends when another Google
+// account takes an address it holds for a person, whatever that person's member kind (Dispatch in
+// this tree does not send it yet).
 //
 // Which credentials and sessions are the replaced account's is read off the account each records,
 // never off when it was issued: a request whose identity check passed before the address moved

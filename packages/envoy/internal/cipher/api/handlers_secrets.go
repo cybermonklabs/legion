@@ -63,9 +63,9 @@ type settingsResponse struct {
 	// Always true: this broker takes approver_issuer, approver_subject and
 	// approver_session_generation in a machine login's approve (decideBody), records the account on
 	// the login it mints and refuses an approval they place before a replacement (403
-	// APPROVER_REPLACED). Dispatch sends them only to a broker that says this
-	// (internal/dispatch/cipher's Client.TakesApproverFields): a broker from before them sends no
-	// such field and refuses a decision body carrying any of them 400 INVALID_DECISION.
+	// APPROVER_REPLACED). It is for a Dispatch that records accounts, which would send them only
+	// to a broker that says this, since a broker from before them refuses a decision body carrying
+	// any of them 400 INVALID_DECISION. Dispatch in this tree sends none of them.
 	ApproverFields bool `json:"approver_fields"`
 }
 

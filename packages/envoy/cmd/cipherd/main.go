@@ -1016,8 +1016,8 @@ func secondSignalFindsServing(again <-chan os.Signal, serveStarted <-chan struct
 
 // requestDeadline bounds every request's own context, so no handler outlives its caller by more
 // than a Dispatch call's worth of time; writeTimeout sits past it so a handler that honours its
-// context always gets to write its answer. It is wire's RequestDeadline, the figure Dispatch
-// counts on for how long an approve it gave up on may still commit (wire.RequestWriteMargin).
+// context always gets to write its answer. It is wire's RequestDeadline, the figure a caller can
+// count on for how long a request it gave up on may still commit (wire.RequestWriteMargin).
 const requestDeadline = wire.RequestDeadline
 
 // writeTimeout is the http.Server's own WriteTimeout: the request deadline plus the fifteen

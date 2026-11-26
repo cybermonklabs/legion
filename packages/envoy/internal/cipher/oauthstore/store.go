@@ -336,7 +336,7 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 // 500 where the caller sent a request nobody could serve; the other control characters are
 // refused with it, since no client of the broker writes one in any of those fields. The provider
 // answers it 400 invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is
-// written. Dispatch's replay store refuses the same proofs (its store.ErrUnstorableProof).
+// written.
 var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, or a DPoP proof whose jti and target URI are too long together, which the store does not keep")
 
 // holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
@@ -1091,7 +1091,7 @@ const jtiRetentionMargin = time.Minute
 // maxStoredProofKey bounds the bytes of a recorded proof's jti and htu together, under the primary
 // key (jti, htu)'s btree limit of 2,704 bytes a tuple: the tuple adds to the two texts at most 26
 // bytes (its header, a length header for each column and alignment), and 2,048 leaves that and
-// more. Dispatch's replay store holds the same bound for the same key.
+// more.
 const maxStoredProofKey = 2048
 
 // CheckAndSetDPoPProofUsed records a DPoP proof as used until exp plus jtiRetentionMargin, keyed
@@ -1101,7 +1101,7 @@ const maxStoredProofKey = 2048
 // character, or whose jti and htu are over maxStoredProofKey bytes together, is ErrUnstorableText,
 // and records nothing.
 func (s *Store) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
-	if strings.IndexFunc(jti, unicode.IsControl) >= 0 || len(jti)+len(htu) > maxStoredProofKey {
+	if holdsControl(jti) || len(jti)+len(htu) > maxStoredProofKey {
 		return false, ErrUnstorableText
 	}
 	var recorded bool

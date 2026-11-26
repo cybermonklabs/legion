@@ -49,8 +49,8 @@ type wireReread struct {
 // Manager: the store, the prefix, the key ARN with its account and region, secret_type_tag,
 // which says this broker reads a secret's type from the type tag, so agent-secrets writes a typed
 // secret through it (a broker from before the tag sends no such field), and approver_fields,
-// which says this broker takes the approver fields in a machine login's approve, so Dispatch sends
-// them to it (a broker from before them sends no such field and refuses them).
+// which says this broker takes the approver fields in a machine login's approve (a broker from
+// before them answers no such field and refuses them).
 func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
