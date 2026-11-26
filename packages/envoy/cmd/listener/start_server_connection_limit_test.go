@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The server's own connection limit, a top-level max_connections, refuses the listener's first
@@ -59,14 +60,15 @@ accounts {
 		}
 		return found
 	}
-	// The main client's connect tries ten dials a second apart before it reports a failure, so 30 s
-	// covers that and two more of the start's tries, each logging its refusal.
-	for deadline, watchdog := time.Now().Add(30*time.Second), time.Now().Add(60*time.Second); time.Now().Before(deadline) || len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
-		requireLiveAndStarting(t, listener, "the server's connection limit refused the main client's connection")
-		if time.Now().After(watchdog) {
-			t.Fatalf("watchdog: the listener logged %d of the two %q naming the server's limit it owes within 60 s:\n%s", len(refusals()), connectionLimitLine, listener.Output.String())
-		}
-	}
+	// The main client's connect tries ten dials a second apart before it reports a failure, so the
+	// listener's second refusal line, which the start's next try logs, shows it stayed up past
+	// them. The wait ends on that fact, bounded by the test binary's own deadline, and the pod is
+	// held live and not ready meanwhile.
+	testwait.WithinPolling(t, testwait.Bounded(t, time.Hour, 30*time.Second), 200*time.Millisecond,
+		"the listener to log its second "+connectionLimitLine+" naming the server's limit", func() bool {
+			requireLiveAndStarting(t, listener, "the server's connection limit refused the main client's connection")
+			return len(refusals()) >= 2
+		})
 	if first := refusals()[0]; first["retry_in"] != "1s" {
 		t.Fatalf("the listener's first refusal line = %v, want retry_in 1s", first)
 	}

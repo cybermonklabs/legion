@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // streamLimitAccount is the configuration of a server whose LISTENER account, the listener's user's
@@ -76,12 +77,11 @@ func awaitAccountRefusals(t *testing.T, listener *listenerProcess, line string, 
 	t.Helper()
 	where["level"], where["code"] = "ERROR", maximumStreamsCode
 	refusals := func() []map[string]any { return linesIn(listener.Output.String(), line, where) }
-	for deadline := time.Now().Add(60 * time.Second); len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
-		requireLiveAndStarting(t, listener, while)
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener logged %d of the two %q %v it owes within 60 s, while %s:\n%s", len(refusals()), line, where, while, listener.Output.String())
-		}
-	}
+	testwait.WithinPolling(t, testwait.Bounded(t, time.Hour, 30*time.Second), 200*time.Millisecond,
+		fmt.Sprintf("the listener to log its second %q %v while %s", line, where, while), func() bool {
+			requireLiveAndStarting(t, listener, while)
+			return len(refusals()) >= 2
+		})
 	found := refusals()
 	for i, want := range []string{"1s", "2s"} {
 		if text, _ := found[i]["error"].(string); found[i]["retry_in"] != want || !strings.Contains(text, "maximum number of streams reached") {
