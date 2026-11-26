@@ -620,8 +620,7 @@ func (f *fakeRequests) notePhase(ctx context.Context) {
 // deadline. A read can then answer at the deadline itself, and however late the judge takes its
 // answer on a loaded runner, the read is not cut short: a test holds the judge to the phase's
 // whole bound without racing it. A judge that cut the phase short itself still cuts its reads
-// short, since a context it derives keeps its own, earlier deadline. Production never takes this:
-// New sets requests.JudgeDispatch, and only this package's tests reach the field.
+// short, since a context it derives keeps its own, earlier deadline.
 func (f *fakeRequests) holdPhase(ctx context.Context) (context.Context, context.CancelFunc) {
 	before := time.Now()
 	made, stop := requests.JudgeDispatch(ctx)

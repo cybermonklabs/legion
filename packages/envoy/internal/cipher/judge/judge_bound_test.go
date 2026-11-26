@@ -60,7 +60,10 @@ func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	before := time.Now()
 	New(t.Context(), opts).consider(t.Context(), pending())
 	after := time.Now()
-	if seen := machine.phaseTimes().seen; seen.Before(before.Add(dispatchBound)) || seen.After(after.Add(dispatchBound)) {
+	switch seen := machine.phaseTimes().seen; {
+	case seen.IsZero():
+		t.Error("no read came under the run's Dispatch phase with a deadline on its context")
+	case seen.Before(before.Add(dispatchBound)) || seen.After(after.Add(dispatchBound)):
 		t.Errorf("the phase's first read saw a deadline %s after the run began (the run took %s); want dispatchBound, %s, after a moment inside the run", seen.Sub(before), after.Sub(before), dispatchBound)
 	}
 
