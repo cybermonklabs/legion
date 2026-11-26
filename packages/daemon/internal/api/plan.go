@@ -193,33 +193,24 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fact := intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim}
-	if s.pool == nil {
-		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
-		return
-	}
-	result, err := s.apply(r.Context(), "api", fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version), fact)
-	if err != nil {
-		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
-		return
-	}
-	if result.Refusal != nil {
-		s.writeRefusal(w, r, result.Refusal)
-		return
-	}
-	if result.Added == nil {
-		var held bool
-		if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-			var err error
-			result.Added, held, err = s.records.PlanVersionHeld(ctx, tx, fact.Issue, fact.Generation, fact.Plan.ArtifactID, fact.Plan.Version)
-			return err
-		}); err != nil {
-			s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not read the plan registration")
-			return
-		} else if !held {
-			result.Added = nil
-		}
-	}
-	s.writeAnswer(w, r, AnswerPlanRegister, http.StatusOK, PlanRegisterResponse{Plan: registeredPlan(given, result.Added)})
+	// A version the store holds, given again, applies nothing and answers no additions (main's
+	// #5310), so the answer reads what the version's first registration recorded it added.
+	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version), fact,
+		AnswerPlanRegister, func(ctx context.Context, result intake.Result) (any, error) {
+			added := result.Added
+			if added == nil {
+				if err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+					recorded, held, err := s.records.PlanVersionHeld(ctx, tx, fact.Issue, fact.Generation, fact.Plan.ArtifactID, fact.Plan.Version)
+					if held {
+						added = recorded
+					}
+					return err
+				}); err != nil {
+					return nil, err
+				}
+			}
+			return PlanRegisterResponse{Plan: registeredPlan(given, added)}, nil
+		})
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, or for the sub-owner of
