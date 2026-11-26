@@ -58,11 +58,7 @@ type settlement struct {
 	ledger *Ledger
 	tx     pgx.Tx
 	owner  artifactOwner
-	latest struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	latest latestVersionRow
 	// issueClosed is the document's issue row as this settlement's transaction read it under the
 	// issue's owner lock (lockArtifactOwner): true for a closed issue, false for an open one and
 	// for a document of no issue, so its zero value is open. A closed issue's document settles as
@@ -791,16 +787,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// an agent had just written; carryApproval now carries that approval to such a version
 	// instead, an event nothing in the log would explain). Its tree writes - stamping block ids,
 	// restoring an ask block's server-owned attributes - move the stored Proof state and often
-	// render the same markdown,
-	// and a version for one of those would repeat the version before it too (LEGION-229
-	// requirement 2).
+	// render the same markdown, and a version for one of those would repeat the version before it
+	// too (LEGION-229 requirement 2).
 	// contentChanged stays the first half of the test: a version an older renderer wrote is not
-	// this settlement's to canonicalise when nothing has touched the document since.
+	// this settlement's to canonicalise when nothing has touched the document since. The second
+	// half is whether the latest version holds this rendering (latestVersionRow.holds): byte for
+	// byte, or, for a version another renderer version wrote or none stamped, as markdown that
+	// reads as it. So a renderer change leaves no version behind it either where an edit was made
+	// and undone since, which changed the content and changed it back: the version holds the
+	// same tree in the spelling its renderer wrote.
 	contentChanged, err := contentChangedSinceVersion(ctx, tx, room, st.latest.docUpdateVersion)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
-	versioning := contentChanged && markdown != st.latest.markdown
+	versioning := contentChanged && !st.latest.holds(markdown)
 	settledVersion := st.latest.Number
 	if versioning {
 		settledVersion++

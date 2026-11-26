@@ -40,8 +40,13 @@ import (
 // one version that holds several of them carries where its every difference is one of theirs -
 // and nothing else differs: A's stored text and N's rendering, each taken through every case, are
 // byte for byte the same (carryVerdict). The comparison is against the bytes the person approved,
-// which an earlier release stored: A's stored markdown must be what this build renders A's tree to
-// (approvedVersion), so a renderer change between A and N is a difference no case carries. Every
+// which an earlier release stored, held to A's tree by the rule a version holds a rendering by
+// (holdsRendering): where this renderer version stored A, A's stored markdown must be what this
+// build renders A's tree to (approvedVersion), so a difference in the bytes beside the cases is one
+// no case carries; where another renderer version stored A, or none stamped it
+// (pmdoc.OtherRenderer), A is compared as this build renders it, since a renderer change
+// (pmdoc.RendererVersion) leaves every version stored before it in its renderer's spelling of its
+// tree, which N's diff against A shows and no case need carry. Every
 // ask block of N must also agree with its node (asksAgreeWithTheirNodes: backed by a row of this document, read
 // by settlement, showing no answer state other than its row's and no wording other than a decided
 // row's), since a block that shows a decision nobody made, or one under words nobody decided,
@@ -49,17 +54,22 @@ import (
 //
 // The server-owned ask attributes are R5's (attributeRemovalCase).
 //
-// A version whose text is the approved text carries that approval too, byte for byte and before
-// any case is weighed (restoresApprovedText). The document's newest review approves version A; a
-// later version, N, is stored with A's markdown byte for byte - an accidental edit undone exactly,
-// or a version a route wrote over a document that changed nothing - and each ask block of N agrees
-// with its node, so no block in it shows other than what was decided. Such an N holds nothing its
-// reviewer has not agreed to, so Dispatch records that reviewer's approval of N in their name and
-// of their review's own kind, in the transaction that writes N, rather than asking them to approve
-// A's text again: the newest review of a plan.md is the plan review that approved A, so a restored
-// plan version reads approved by that plan review and not by the session whose write restored it.
-// Only the newest review carries: when it requests changes no approval stands, and an older
-// approval was superseded by it.
+// A version whose text is the approved text carries that approval too, before any case is weighed
+// (restoresApprovedText). The document's newest review approves version A; a later version, N, is
+// stored with A's text - an accidental edit undone exactly, or a version a route wrote over a
+// document that changed nothing - and each ask block of N agrees with its node, so no block in it
+// shows other than what was decided. Such an N holds nothing its reviewer has not agreed to, so
+// Dispatch records that reviewer's approval of N in their name and of their review's own kind, in
+// the transaction that writes N, rather than asking them to approve A's text again: the newest
+// review of a plan.md is the plan review that approved A, so a restored plan version reads approved
+// by that plan review and not by the session whose write restored it. Only the newest review
+// carries: when it requests changes no approval stands, and an older approval was superseded by it.
+// N holds A's text when N's markdown is A's stored markdown byte for byte. An A that another
+// renderer version stored, or that no renderer version stamped (pmdoc.OtherRenderer), is compared
+// as this build renders it: a renderer change (pmdoc.RendererVersion) leaves every version stored
+// before it in its renderer's spelling of its tree, so N also holds A's text when A's markdown,
+// read and rendered again by this build, is N's (readsAs), though N's diff against A shows the
+// spelling the change made. An A this renderer version wrote is compared byte for byte alone.
 
 // CarriedReviewReasonPrefix opens the reason of every review Dispatch carries forward to a later
 // version, and is what tells such a review from one a person wrote on the version it names: the
@@ -144,13 +154,15 @@ var attributeRemovalCase = carryCase{
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
 var carryCases = [...]carryCase{attributeRemovalCase}
 
-// carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, and
-// N's tree, each as its own read gives it. Every ask block of N agrees with its node
+// carryInput is what carryVerdict decides on: A's tree, the markdown it is stored with and whether
+// another renderer version stored that markdown or none stamped it (pmdoc.OtherRenderer), and N's
+// tree, each as its own read gives it. Every ask block of N agrees with its node
 // (asksAgreeWithTheirNodes), which each caller holds before it builds one.
 type carryInput struct {
-	approved     *pmdoc.Node
-	approvedText string
-	version      *pmdoc.Node
+	approved              *pmdoc.Node
+	approvedText          string
+	approvedOtherRenderer bool
+	version               *pmdoc.Node
 }
 
 // errApprovalCarriedTwice is the refusal a carry returns when the transaction it runs in has
@@ -229,7 +241,8 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // the caller holds when its write left one, and nil otherwise, when markdown is parsed here. The
 // upload runs the same rules as every other version write: an upload that drops the server-owned
 // attributes of an ask block, as every upload does, carries its approval where those are the
-// whole change. Its
+// whole change, and an upload of the approved text carries it whether this renderer version or
+// another stored that text (restoresApprovedText). Its
 // reads run where it is called, the route's read phase, and its writes are queued there, as
 // carryApproval's are; the events it appends reach the ledger of the transaction it runs in
 // (eventSink), which publishes them after its Commit, beside the version move's own.
@@ -252,7 +265,8 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,
 // to version number of artifactID, written as markdown from tree: when every ask block of the
 // version agrees with its node (asksAgreeWithTheirNodes), and then either the version's text is
-// A's stored text byte for byte (restoresApprovedText), or every difference from it is one of the
+// A's stored text (restoresApprovedText: byte for byte, or, for an A another renderer version
+// stored or none stamped, as this build renders it), or every difference from it is one of the
 // carry cases (carryVerdict). It appends nothing otherwise, and hands sink what it appends, as
 // carryApproval does. A is read only for a version holding an ask block: every case is a
 // difference in one, and a version holding none either holds A's text or holds none of A's ask
@@ -276,11 +290,11 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if !held {
 		return nil
 	}
-	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
+	input, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
 	if err != nil || !readable {
 		return err
 	}
-	input := carryInput{approved: approved, approvedText: approvedText, version: tree}
+	input.version = tree
 	change, carried, err := carryVerdict(input)
 	if err != nil {
 		return skipUnreadableVersion(artifactID, number, err)
@@ -296,7 +310,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 }
 
 // restoredReason is the reason of the carry of newest, the approval of version A, to a version
-// whose text is A's stored text byte for byte: restoreReason where newest is the person's own
+// that holds A's stored text (restoresApprovedText): restoreReason where newest is the person's own
 // approval of A, and restoreCarriedReason where newest is a carry to A of the approval of an
 // earlier version (approvalOrigin), whose text the restored version need not hold.
 func restoredReason(ctx context.Context, tx pgx.Tx, artifactID string, newest model.ArtifactReview) (string, error) {
@@ -571,27 +585,37 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 }
 
 // restoresApprovedText reports whether markdown, the text a new version of artifactID is written
-// with, is byte for byte the stored text of its version earlier, the one a person approved. A
-// version that stores no markdown, a file's, holds no text and compares false. The text compared
-// against it is the caller's own, which it holds already - the version it just wrote or queued -
-// so only the earlier version is read, and that version is a stored one by construction: the
-// version of a review NewestReview read from artifact_reviews, or the version an open approval
-// request names for a settlement's move (MoveApprovalAsk). octet_length reads a stored text's size
-// without decompressing it, so only a stored text of the same size is read, and the write of any
-// other text reads no document.
+// with, holds the stored text of its version earlier, the one a person approved, by the rule a
+// latest version holds a rendering (holdsRendering): byte for byte, or, where another renderer
+// version stored that text or none stamped it (pmdoc.OtherRenderer), as stored text this build
+// reads and renders again as markdown (readsAs), so a renderer change between the two versions
+// leaves the text held. A version that stores no markdown, a file's, holds no text and compares
+// false. The text compared against it is the caller's own, which it holds already - the version it
+// just wrote or queued - so only the earlier version is read, and that version is a stored one by
+// construction: the version of a review NewestReview read from artifact_reviews, or the version an
+// open approval request names for a settlement's move (MoveApprovalAsk). One read takes the stored
+// text's stamp, and the text itself only where its size is markdown's (octet_length, which reads a
+// stored text's size without decompressing it) or another renderer version stored it or none
+// stamped it: a version this renderer version wrote is read only for a text of its size, so the
+// write of any other text reads no document, and the version of another renderer version is
+// parsed and rendered only once its bytes are not markdown's. It writes nothing, so a transaction
+// whose writes are queued runs it in its read phase, and that parse and render hold no
+// transaction id.
 func restoresApprovedText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
-	var stored string
+	var stored *string
+	var stamp *int
 	err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions
-		where artifact_id = $1 and number = $2 and octet_length(markdown) = $3
-	`, artifactID, earlier, len(markdown)).Scan(&stored)
+		select case when octet_length(markdown) = $3 or renderer_version is distinct from $4 then markdown end, renderer_version
+		from artifact_versions
+		where artifact_id = $1 and number = $2 and markdown is not null
+	`, artifactID, earlier, len(markdown), pmdoc.RendererVersion).Scan(&stored, &stamp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read document version %d: %w", earlier, err)
 	}
-	return stored == markdown, nil
+	return stored != nil && holdsRendering(*stored, stamp, markdown), nil
 }
 
 // carriedAtNamedVersion reports whether the version this carry approves is the version the open
@@ -652,18 +676,21 @@ func askNodes(tree *pmdoc.Node) (map[string]*pmdoc.Node, bool) {
 
 // carryVerdict is the rule over the two versions, every ask block of N agreeing with its node
 // (asksAgreeWithTheirNodes, which its callers hold first): N, input.version, carries the approval
-// of A, input.approved, when A's stored text, input.approvedText, is what this build renders A's
-// tree to, so that what is compared is the bytes the person approved, and a renderer change
-// between A and N is a difference no case carries; both trees, taken through every carry case
-// (carryCases), render byte for byte the same; at least one case is one the two trees render apart
-// without, since a version that equals A without any is the restore's to carry
-// (restoresApprovedText), or a change nobody approved; and every block id A holds still stands in
-// N (blockIDsStand over the two trees each case left). It answers what the carried reason says the
-// change was: the change of each case the two trees render apart without, in carryCases' order,
-// joined and closed by carriedReasonEnd. Each case is skipped in turn, beside every case before it
-// that the trees rendered the same without, at two renders a case. A case that took out of both
-// trees only what stands the same in each changed nothing, and is not named. Its error is a
-// refusal of this renderer.
+// of A, input.approved, when A's stored text, input.approvedText, holds what this build renders
+// A's tree to by the rule a version holds a rendering by (holdsRendering) - byte for byte where
+// this renderer version stored it, so that what is compared is the bytes the person approved, and
+// as this build renders it where another renderer version stored it or none stamped it
+// (input.approvedOtherRenderer), since a renderer change leaves every version stored before it in
+// its renderer's spelling of its tree, which is no difference a case need carry; both trees, taken
+// through every carry case (carryCases), render byte for byte the same; at least one case is one
+// the two trees render apart without, since a version that equals A without any is the restore's
+// to carry (restoresApprovedText), or a change nobody approved; and every block id A holds still
+// stands in N (blockIDsStand over the two trees each case left). It answers what the carried
+// reason says the change was: the change of each case the two trees render apart without, in
+// carryCases' order, joined and closed by carriedReasonEnd. Each case is skipped in turn, beside
+// every case before it that the trees rendered the same without, at two renders a case. A case
+// that took out of both trees only what stands the same in each changed nothing, and is not named.
+// Its error is a refusal of this renderer.
 func carryVerdict(input carryInput) (string, bool, error) {
 	return carryVerdictOver(input, carryCases[:])
 }
@@ -671,8 +698,12 @@ func carryVerdict(input carryInput) (string, bool, error) {
 // carryVerdictOver is carryVerdict over cases alone, in their order: carryCases for the carry, and
 // R5's case alone for the turn of an approval request (changesAskAttributesAlone).
 func carryVerdictOver(input carryInput, cases []carryCase) (string, bool, error) {
+	// A's tree is read from A's stored text, so where another renderer version stored that text or
+	// none stamped it, what this build renders the tree to is that text as this build reads and
+	// renders it again (readsAs), which holdsRendering takes as held: only a text this renderer
+	// version stored is held to its rendering byte for byte, and no second read of it is made.
 	approvedText, err := pmdoc.Render(input.approved)
-	if err != nil || approvedText != input.approvedText {
+	if err != nil || !input.approvedOtherRenderer && approvedText != input.approvedText {
 		return "", false, err
 	}
 	// skipped names the cases a comparison is made without: none, for the verdict itself.
@@ -729,15 +760,18 @@ var turnCases = []carryCase{attributeRemovalCase}
 // changesAskAttributesAlone reports whether the version number of artifactID, written as markdown
 // from tree, differs from its stored version earlier in the server-owned attributes of its ask
 // blocks alone, by the test R5's case makes for the carry: every ask block of the version agrees
-// with its node (asksAgreeWithTheirNodes), and the two texts, earlier's as stored and as this
-// build renders it, are byte for byte the same once the eight attributes are taken off every ask
-// block of each (carryVerdictOver with attributeRemovalCase alone), every block id earlier holds
-// still standing. It is MoveApprovalAsk's keep-turn rule beside restoresApprovedText: the version
-// a person's answer, resolve or decline writes, or a reopen's settlement, changes no more than
-// that when the answer, resolve, decline or reopen is that version's whole change. Text a person
-// was editing in the browser and settled into the same version makes this false, and the request
-// goes back to its agent. A nil tree is markdown's read-back, parsed here; a version holding no
-// ask block differs in no ask attribute. Its reads run where it is called.
+// with its node (asksAgreeWithTheirNodes), and the two texts, earlier's as stored - held to what
+// this build renders it to as the carry holds it (carryVerdictOver: byte for byte where this
+// renderer version stored it, and as this build renders it where another renderer version stored
+// it or none stamped it) - and the version's, are byte for byte the same once the eight attributes
+// are taken off every ask block of each (carryVerdictOver with attributeRemovalCase alone), every
+// block id earlier holds still standing. It is MoveApprovalAsk's keep-turn rule beside
+// restoresApprovedText: the version a person's answer, resolve or decline writes, or a reopen's
+// settlement, changes no more than that when the answer, resolve, decline or reopen is that
+// version's whole change. Text a person was editing in the browser and settled into the same
+// version makes this false, and the request goes back to its agent. A nil tree is markdown's
+// read-back, parsed here; a version holding no ask block differs in no ask attribute. Its reads
+// run where it is called.
 func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string, earlier, number int, markdown string, tree *pmdoc.Node) (bool, error) {
 	if tree == nil {
 		parsed, err := pmdoc.ParseRendering(markdown)
@@ -750,11 +784,12 @@ func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string
 	if err != nil || !agrees || !held {
 		return false, err
 	}
-	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, earlier)
+	input, readable, err := approvedVersion(ctx, tx, artifactID, earlier)
 	if err != nil || !readable {
 		return false, err
 	}
-	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, version: tree}, turnCases)
+	input.version = tree
+	_, alone, err := carryVerdictOver(input, turnCases)
 	if err != nil {
 		return false, skipUnreadableVersion(artifactID, number, err)
 	}
@@ -804,24 +839,27 @@ func typedBlockIDs(tree *pmdoc.Node) map[string]struct{} {
 	return ids
 }
 
-// approvedVersion is the tree of the stored version number of artifactID and the markdown it is
-// stored with, and whether that version could be read: a version outside the Proof schema is
-// logged and not readable, a number below 1, before the document's first version, is no version
-// and not readable either, and a version holding an element this build does not know is an error
+// approvedVersion is the stored version number of artifactID as carryVerdict reads it (carryInput,
+// all but the version written): its tree, the markdown it is stored with and whether another
+// renderer version stored that markdown or none stamped it (renderer_version, pmdoc.OtherRenderer);
+// and whether that version could be read: a version outside the Proof schema is logged and not
+// readable, a number below 1, before the document's first version, is no version and not readable
+// either, and a version holding an element this build does not know is an error
 // (skipUnreadableVersion).
-func approvedVersion(ctx context.Context, q Queryer, artifactID string, number int) (*pmdoc.Node, string, bool, error) {
+func approvedVersion(ctx context.Context, q Queryer, artifactID string, number int) (carryInput, bool, error) {
 	if number < 1 {
-		return nil, "", false, nil
+		return carryInput{}, false, nil
 	}
 	var markdown string
-	if err := q.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
-		return nil, "", false, fmt.Errorf("read document version %d: %w", number, err)
+	var stamp *int
+	if err := q.QueryRow(ctx, `select markdown, renderer_version from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown, &stamp); err != nil {
+		return carryInput{}, false, fmt.Errorf("read document version %d: %w", number, err)
 	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return nil, "", false, skipUnreadableVersion(artifactID, number, err)
+		return carryInput{}, false, skipUnreadableVersion(artifactID, number, err)
 	}
-	return tree, markdown, true, nil
+	return carryInput{approved: tree, approvedText: markdown, approvedOtherRenderer: pmdoc.OtherRenderer(stamp)}, true, nil
 }
 
 // answerApprovalAsk answers the open approval request ask of artifactID with Approve in actor's
