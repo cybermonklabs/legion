@@ -82,7 +82,7 @@ import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
 import { useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
-import { type PlacedRow, usePaneSelection } from "./pane-selection";
+import { inboxEntryState, type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { ReadingPane } from "./ReadingPane";
 import {
@@ -1765,14 +1765,18 @@ export function Inbox({
         {...agentSubject}
         className="flex items-center whitespace-pre"
         control={(name) => (
-          // Replace, as every narrowing of this list does (`changeFilter`), keeping what the
-          // entry says of the row it names: a push would stack a second entry over the one a
-          // row opened below 1280 px pushed, and the view's way back would land on it.
+          // A push, as following a link does, so the browser's Back puts the filter back. The
+          // entry it pushes keeps whether the column picked the row by itself, but it is no
+          // row's opening (`inboxOverList`): a row opened below 1280 px, the window widened and
+          // the filter cleared, the view's Inbox control still leaves in one step.
           <Link
             aria-label="Clear agent filter"
             className="inline-flex min-h-11 items-center rounded-full"
-            replace
-            state={entryState}
+            state={
+              inboxEntryState(entryState).inboxDefaultPick === true
+                ? { inboxDefaultPick: true }
+                : undefined
+            }
             to={buildInboxPath({ assignees: filter.assignees, item: filter.item, q: filter.q })}
           >
             <LabelPill selected>

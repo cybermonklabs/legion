@@ -1153,8 +1153,8 @@ test("below 1280 px clearing the agent filter beside the column keeps a row's wa
     await user.click(shortRow("ask-a"));
     await screen.findByTestId("inbox-reading-view");
 
-    // Widened, the header shows again with the filter's chip; clearing it rewrites the entry the
-    // open pushed rather than stacking another over it.
+    // Widened, the header shows again with the filter's chip. Clearing it pushes an entry, as a
+    // link does, that is no row's opening.
     act(() => width.setWidth(1440));
     await screen.findByTestId("inbox-pane");
     await user.click(screen.getByRole("link", { name: "Clear agent filter" }));
@@ -1167,6 +1167,14 @@ test("below 1280 px clearing the agent filter beside the column keeps a row's wa
     await user.click(within(view).getByRole("button", { name: "Back to the Inbox list" }));
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(params().get("item")).toBeNull();
+    // The browser's Back then undoes the clear: the entry before it is the row the reader
+    // opened under the filter, and the view's Inbox control leaves that in one step too.
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() => expect(params().get("agent")).toBe("session-1"));
+    expect(params().get("item")).toBe("ask-a");
+    const reopened = await screen.findByTestId("inbox-reading-view");
+    await user.click(within(reopened).getByRole("button", { name: "Back to the Inbox list" }));
+    await waitFor(() => expect(address()).toBe("/?agent=session-1"));
     await user.click(screen.getByRole("button", { name: "History back" }));
     expect(address()).toBe("/agents");
   } finally {
