@@ -35,7 +35,7 @@ import { buildIssuePath, parseDispatchReference, referenceHref } from "../refs/r
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { entryTextSource } from "./decision-entries";
+import { entryTextSource, isPersonDecision } from "./decision-entries";
 import { decisionHeading, useDecisionHeadingWords } from "./decision-heading";
 import {
   isPlainTitleBlock,
@@ -397,10 +397,11 @@ function DecisionCard({
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
   /** The document the decision's block is written in (`decisionDocumentId`): what a Keep and a
-   *  Change are written against, and the record an agent's decision's words are, whose `#id`s
-   *  name a question block of it. An ask's words are the ask's own record (`entryTextSource`).
-   *  Undefined where the read names no document and the address names no block of a document
-   *  the issue read lists: an ask, and a block of a document not listed yet. */
+   *  Change are written against, and the record a `decision` block's words are, whoever decided
+   *  it, whose `#id`s name a question block of it. An ask's words are the ask's own record
+   *  (`entryTextSource`). Undefined where the read names no document and the address names no
+   *  block of a document the issue read lists: an ask, and a block of a document not listed
+   *  yet. */
   documentId: string | undefined;
   issueKey: string;
 }): ReactNode {
@@ -668,10 +669,12 @@ export function DecisionsPanel({
   const entries = view.data.entries ?? [];
   const questions = entries.filter((entry) => entry.answer_state === "open");
   const waiting = rows.filter((row) => row.decision.waiting_review);
-  // Yours: the ones a person decided, and the agent's that the reader kept — a Keep takes a
-  // decision out of "Waiting for your review", and a decision nothing holds would leave the tab.
+  // Yours: the ones a person decided (`isPersonDecision`), and the agent's that the reader kept:
+  // a Keep takes a decision out of "Waiting for your review", and a decision nothing holds would
+  // leave the tab.
   const mine = rows.filter(
-    ({ decision }) => !decision.replaced && (decision.kind === "person" || decision.kept !== null)
+    ({ decision }) =>
+      !decision.replaced && (isPersonDecision(decision.entry) || decision.kept !== null)
   );
   const replaced = rows.filter((row) => row.decision.replaced);
   return (

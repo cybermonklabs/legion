@@ -24,8 +24,11 @@ import (
 // (spec requirement r-proposed), so it raises neither gap here and the approval request's answer
 // names none for it; one at settled or live is counted as every requirement is, and one at
 // overtaken is closed with its subtree (R7 of the issue-tree spec), so it raises neither gap
-// either. A check or a plan task whose node is proposed is a question still open too, so it serves
-// nothing yet and its requirement is counted without it (readServingChecks). An issue that is a
+// either. A check or a plan task counts where it is live: one whose node is proposed is a question
+// still open and one at overtaken is closed, so neither serves anything and its requirement is
+// counted without it, while a live one counts whatever state a node above it holds
+// (readServingChecks; INFRA-1253's architect,
+// dispatch://INFRA-1253/comment/c797249f-ab6c-4b52-a848-724932e12668). An issue that is a
 // view on its ancestor's spec (docs.ViewOf) holds no requirement of its own: its coverage lists the
 // requirements of that ancestor's tree that a check of the view, or of an issue under it, serves,
 // each counted over what the view and the issues under it hold. A requirement node of the view's

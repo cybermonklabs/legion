@@ -248,10 +248,10 @@ func carryUnmovedRecord(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 //	   state out of a node of A (R2); no node of T is of the walk's second part; no node of T or A
 //	   is an ask, a conversation node or a block of one; no node the write's facts reach can stand
 //	   in the walk after the write as a type the query takes (R3, a callout counted for the spec
-//	   whether or not it is the memo); for the spec, the issue's first child stays the node it is
-//	   (R4, statedFacts.keepsFirstChild); and no node outside the head's walk that the write brings
-//	   into it holds a child at the head (refs.TreeChildren, one statement where there is one), so
-//	   no subtree the write does not state joins the walk.
+//	   whether or not it is the memo); for the spec, the issue's first child but its conversation
+//	   nodes stays the node it is (R4, statedFacts.keepsFirstChild); and no node outside the head's
+//	   walk that the write brings into it holds a child at the head (refs.TreeChildren, one
+//	   statement where there is one), so no subtree the write does not state joins the walk.
 //	F. The record of the query at the head digests to newest's pin (IssueTree.QueryRecord, one
 //	   statement), so no write that left no mark moved it since L.
 //
@@ -274,15 +274,17 @@ func carryUnmovedRecord(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 // Which nodes the query takes: by type, R1 keeps each node of T's type and R3 gives no other node
 // the walk holds after the write a type the query takes; a node the write states nothing of keeps
 // its type and its place, and comes into the walk only under a node the write brings into it, which
-// holds no child at the head. The memo, the spec's first child where it is a callout: R4 keeps
-// that child, and R1 or R3 its type. A result, by its parent's type: a parent of T is a check of
-// T, which R1 keeps, and no other node becomes a check (R3). A view: ViewOf reads the issue's row,
-// which no version write moves (markOwnSpecIndexed writes only where ViewOf answers no view).
+// holds no child at the head. The memo, the issue's first child but its conversation nodes where
+// it is a callout: R4 keeps that child, and R1 or R3 its type. A result, by its parent's type: a
+// parent of T is a check of T, which R1 keeps, and no other node becomes a check (R3). A view:
+// ViewOf reads the issue's row, which no version write moves (markOwnSpecIndexed writes only where
+// ViewOf answers no view).
 //
 // The order of T: the walk takes each node before its children, so two nodes of T stand in the
 // order their lowest common ancestor's children on their two paths stand in, each of them a node
-// of T or A. Those children sort by rank, then the lower address, and the unranked by made_at,
-// then the lower address (treeWalk.ordered): made_at never moves (graphstore.Node), a rank and a
+// of T or A. None of them is a conversation node, which stand first among siblings, so they sort
+// by rank, then the lower address, and the unranked by made_at, then the lower address
+// (treeWalk.ordered, refs.CompareSiblings): made_at never moves (graphstore.Node), a rank and a
 // standing move only by the facts R1 and R2 refuse, and the order is total, so a sibling outside T
 // and A, added, removed or moved, never reorders them. The walk's second part, ordered by its
 // roots' parents' addresses, is refused outright.
@@ -545,19 +547,21 @@ func conversational(tree IssueTree, node TreeNode) bool {
 	return conversation || node.Kind == graphstore.KindAsk || node.Type == graphstore.SupertagAsk
 }
 
-// keepsFirstChild reports whether the issue's first child in the head's walk, tree, stays its first
-// child once the facts stand, which the spec query takes as its memo where it is a callout (R14):
+// keepsFirstChild reports whether the issue's first child in the head's walk, tree, but its
+// conversation nodes stays that child once the facts stand, which the spec query takes as its memo
+// where it is a callout (R14), and which the walk moves before the conversation then (memoFirst):
 // that child holds a rank and the facts move nothing of its place, and no node they move can stand
-// under the issue before it, by any rank it can hold then, compared as treeWalk.ordered compares
-// two ranked children - the rank byte for byte, then the lower address. A node outside the head's
-// walk that the facts place under the issue with no rank of theirs holds a rank they do not say,
-// and refuses.
+// under the issue before it, by any rank it can hold then, compared as refs.CompareSiblings
+// compares two ranked children - the rank byte for byte, then the lower address. A node outside
+// the head's walk that the facts place under the issue with no rank of theirs holds a rank they do
+// not say, and refuses.
 func (stated statedFacts) keepsFirstChild(tree IssueTree) bool {
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: tree.Issue}
-	if len(tree.Nodes) < 2 || tree.Nodes[1].Parent != issue || !tree.Nodes[1].Ranked {
+	at := slices.IndexFunc(tree.Nodes, func(node TreeNode) bool { return node.Parent == issue && !refs.OrderedAsConversation(node.Kind) })
+	if at < 0 || !tree.Nodes[at].Ranked {
 		return false
 	}
-	first := tree.Nodes[1]
+	first := tree.Nodes[at]
 	if touched := stated[first.target()]; touched != nil && touched.moves() {
 		return false
 	}

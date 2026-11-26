@@ -430,10 +430,9 @@ export function servedAskOfBlock(
   if (own !== undefined) return own;
   const live = liveAskOf(text, blockId);
   const copied = live !== undefined && "rendered" in live ? live.rendered.copiedFrom : undefined;
-  const source = copied === undefined ? undefined : asks.find((ask) => ask.id === copied.ask);
-  return source === undefined || copied === undefined
-    ? live
-    : { ask: source, copiedFrom: copied.document };
+  if (copied === undefined) return live;
+  const source = asks.find((ask) => ask.id === copied.ask);
+  return source === undefined ? live : { ask: source, copiedFrom: copied.document };
 }
 
 /**

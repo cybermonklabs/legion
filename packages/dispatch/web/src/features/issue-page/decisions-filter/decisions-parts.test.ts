@@ -510,6 +510,64 @@ test("a kept decision names who kept it, and one changed since waits again", () 
   });
 });
 
+// R2, R4: a `decision` block whose `decided_by` names a person is that person's decision, and
+// stands as an answered ask stands by its answerer: in the decider's part, the reader's own or
+// what others decided, by the time it was made, tied to a statement or not and replaced or not.
+// It is never in the review list and never at the foot, which holds the agents' decisions; the
+// read's `kind` is the node's shape, `agent` for every block, and never says who decided.
+test("a decision block a person decided stands in the decider's part, tied or not", () => {
+  const alice = { id: READER, kind: "person" };
+  const bob = { id: "bob", kind: "person" };
+  const parts = partsOf(
+    [
+      statement("s1"),
+      decisionNode("mine-tied"),
+      decisionNode("mine-loose"),
+      decisionNode("bobs-tied"),
+      decisionNode("bobs-replaced"),
+      decisionNode("agents"),
+    ],
+    [
+      decision("mine-tied", {
+        changed_at: "2026-11-14T09:00:00Z",
+        decided_by: alice,
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+      decision("mine-loose", {
+        changed_at: "2026-11-13T09:00:00Z",
+        decided_by: alice,
+        waiting_review: false,
+      }),
+      decision("bobs-tied", {
+        changed_at: "2026-11-12T09:00:00Z",
+        decided_by: bob,
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+      decision("bobs-replaced", {
+        changed_at: "2026-11-11T09:00:00Z",
+        decided_by: bob,
+        replaced: true,
+        waiting_review: false,
+      }),
+      // The agent's own, tied and waiting: the one decision the review list holds.
+      decision("agents", { links: [shaped(specRef("s1"))] }),
+    ]
+  );
+
+  expect(idsOf(parts)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [D("bobs-tied"), D("bobs-replaced")],
+    review: [D("agents")],
+    yours: [D("mine-tied"), D("mine-loose")],
+  });
+  expect(parts.yours[0]).toMatchObject({ at: "2026-11-14T09:00:00Z", kind: "decision" });
+  expect(parts.others[1]).toMatchObject({ standing: "replaced" });
+});
+
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
 // it reaches all three."
 test("a decision that shaped three statements is one entry that reaches all three", () => {

@@ -244,10 +244,15 @@ func uploadReadCostDocument(t *testing.T, s *readCostServer, issue, name, conten
 }
 
 // readCostTreeText is the document the tree issue expands: a heading, a spine of bullet lists
-// nesting readCostTreeDepth levels deep, a paragraph, and a flat list filling it out to
-// readCostTreeBlocks blocks. Each level of the spine is a list block and the paragraph of its one
-// item, and the flat list is one block and each of its items one more, so the count is arithmetic;
-// it is never taken on trust, since both sides read it back before anything is measured.
+// nesting readCostTreeDepth levels deep, a paragraph, a flat list and a closing paragraph, which
+// fill it out to readCostTreeBlocks blocks. A list item is a block of its own beside its paragraph
+// since R7 gave each list item a node (0ecbefee586 records its offset), so a list of n items is
+// 2n+1 blocks - the list, each item and each item's paragraph - and each level of the spine, a list
+// of one item, is three: the text written before that counted one block an item and read back as
+// 3,991 blocks, not the 2,000 c-read-cost states. The heading, the two paragraphs, the spine and
+// the flat list's own block leave an even count for its items, so the count is exactly
+// readCostTreeBlocks; it is never taken on trust, since both sides read it back before anything is
+// measured.
 func readCostTreeText() string {
 	var text strings.Builder
 	text.WriteString("# The tree this issue expands\n\n")
@@ -257,9 +262,10 @@ func readCostTreeText() string {
 	}
 	// Without this paragraph the flat list's items would join the spine's outermost list.
 	text.WriteString("\nThe items below fill the tree out.\n\n")
-	for index := range readCostTreeBlocks - 3 - 2*readCostTreeDepth {
+	for index := range (readCostTreeBlocks - 3 - 3*readCostTreeDepth - 1) / 2 {
 		fmt.Fprintf(&text, "- item %d of the tree\n", index)
 	}
+	text.WriteString("\nThe tree ends here.\n")
 	return text.String()
 }
 

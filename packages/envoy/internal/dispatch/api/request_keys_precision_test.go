@@ -228,8 +228,8 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 
 // Every route the keyed layer's own tables name - those that replay a recovery point, read the
 // post a kept answer holds again, never keep their answer, take an upload's body, or read a body
-// of their own size (handoffWriteRoute, markdownRoundTripRoute) - is a POST or PATCH route the
-// server registers: a pattern spelled wrong would silently turn its rule off.
+// of their own size (handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute) - is a POST or
+// PATCH route the server registers: a pattern spelled wrong would silently turn its rule off.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	t.Parallel()
 	registered := map[string]bool{}
@@ -253,6 +253,7 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	}
 	tables["handoffWriteRoute"] = []string{handoffWriteRoute}
 	tables["markdownRoundTripRoute"] = []string{markdownRoundTripRoute}
+	tables["fileRoundTripRoute"] = []string{fileRoundTripRoute}
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {

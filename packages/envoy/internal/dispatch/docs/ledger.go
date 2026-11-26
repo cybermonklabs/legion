@@ -146,7 +146,7 @@ type Ledger struct {
 	// PendingMarkdown, queueFor), and Discard drops it: each entry holds its version's whole
 	// markdown.
 	numbers map[string]int
-	latest  map[string]pendingVersion
+	latest  map[string]latestVersionRow
 	now     *time.Time
 	// anchors holds, per document, the anchored ask and comment rows this transaction writes, as
 	// they will stand (RegisterPendingAnchor), in the order they were first registered.
@@ -813,16 +813,6 @@ func (l *Ledger) NextVersion(ctx context.Context, artifactID string) (int, time.
 	return number, *l.now, nil
 }
 
-// pendingVersion is a version this transaction has queued and not yet written, as latestVersion
-// reads a stored one, with queued, the place in the write queue of its insert, before which the
-// write phase takes the savepoint of a restore carry to it (carryRestored).
-type pendingVersion struct {
-	version          model.Version
-	markdown         string
-	docUpdateVersion int64
-	queued           int
-}
-
 // PendingVersionMarkdown is the markdown of version number of artifactID when it is the version
 // this transaction last numbered and queued (writeVersionTx) and has not written yet: a route that
 // reads the version it just made - the diff a named version's event carries - takes it from here,
@@ -833,7 +823,7 @@ func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, 
 		return "", false
 	}
 	pending, queued := l.latest[artifactID]
-	if !queued || pending.version.Number != number {
+	if !queued || pending.Number != number {
 		return "", false
 	}
 	return pending.markdown, true
@@ -851,14 +841,14 @@ func (l *Ledger) PendingVersionNumber(artifactID string) (int, bool) {
 		return 0, false
 	}
 	pending, queued := l.latest[artifactID]
-	return pending.version.Number, queued
+	return pending.Number, queued
 }
 
 // queuedVersion records pending as the latest version of artifactID, which this transaction has
 // queued and not yet written (latestVersion, PendingVersionMarkdown, PendingVersionNumber).
-func (l *Ledger) queuedVersion(artifactID string, pending pendingVersion) {
+func (l *Ledger) queuedVersion(artifactID string, pending latestVersionRow) {
 	if l.latest == nil {
-		l.latest = make(map[string]pendingVersion)
+		l.latest = make(map[string]latestVersionRow)
 	}
 	l.latest[artifactID] = pending
 }
@@ -1132,10 +1122,10 @@ func (l *Ledger) PendingAuthors(artifactID string, number int) ([]model.Actor, b
 		return nil, false
 	}
 	pending, queued := l.latest[artifactID]
-	if !queued || pending.version.Number != number {
+	if !queued || pending.Number != number {
 		return nil, false
 	}
-	return pending.version.Authors, true
+	return pending.Authors, true
 }
 
 // PendingBlockAsks is every question block's ask of artifactID this transaction has queued a

@@ -661,7 +661,9 @@ function stableDecisionContent(decision: DecisionEntry): DecisionContent {
  * (`DecisionEntry.shaped`), since that edge places nothing, and each whole document its words
  * cite (`addDocumentChips`). It draws the decision's own content as the read answers it
  * (`decisionContent`), whose references resolve against the document its block stands in
- * (`decisionDocumentId`), and its author is the decider its entry names (`deciderOf`).
+ * (`decisionDocumentId`), and its author is the decider its entry names, a person or an agent
+ * (`deciderOf`), and none where no entry names a decider, so its row says nobody was recorded
+ * (R9).
  *
  * Its Change is a comment of the issue whose quote its words hold, where they are the first
  * decision's words to hold it, with no block of its document read

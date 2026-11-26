@@ -23,6 +23,7 @@ import (
 // wrote credits it too - the read marks such a session a member of the thread and the member
 // wins (commentRecipientsQuery, threadRecipient.fromThread).
 func TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	second := model.Actor{Kind: "session", ID: "session-second"}
@@ -99,6 +100,7 @@ func TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone(t *testing
 // The copies are counted wherever this pass left them - sent now, or held as a row for that
 // later pass - because a copy held is a copy that goes.
 func TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	second := model.Actor{Kind: "session", ID: "session-second"}
