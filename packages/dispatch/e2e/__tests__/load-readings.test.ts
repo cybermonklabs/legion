@@ -16,12 +16,14 @@ import {
   LOAD_ROW_SELECTOR,
   makeSteps,
   namedRow,
+  questionAndDecision,
   rowAddress,
   VIEW_ROW_SELECTOR,
 } from "../issue-page-load";
 import {
   actBounds,
   actReading,
+  BESIDE_GROUP,
   BOX_GROUPS,
   type BoxEntry,
   boundHolds,
@@ -41,6 +43,7 @@ import {
   longestTaskAfterViewRow,
   NAMED_GROUP,
   NOT_APPLICABLE,
+  namedRowAt,
   type PageConfig,
   type RequestSpan,
   type ResourceEntry,
@@ -551,6 +554,7 @@ class QueuedObserver {
 
 /** The init script's config, as `installInstruments` gives it from the load rows' selectors. */
 const PAGE_CONFIG: PageConfig = {
+  besideGroup: BESIDE_GROUP,
   boxes: "none",
   groups: BOX_GROUPS,
   header: HEADER_SELECTORS,
@@ -562,10 +566,10 @@ const PAGE_CONFIG: PageConfig = {
   viewRows: VIEW_ROW_SELECTOR,
 };
 
-/** Runs the init script (`instrumentPage`) against stand-ins of the page's globals: `QueuedObserver`
- *  and the `window` and `document` given, and a message channel and a frame loop that never
- *  deliver unless given too. Hands `body` what the script put on the window, and puts the globals
- *  back after. */
+/** Runs the init script (`instrumentPage`) with `config` (`PAGE_CONFIG` unless given) against
+ *  stand-ins of the page's globals: `QueuedObserver` and the `window` and `document` given, and a
+ *  message channel and a frame loop that never deliver unless given too. Hands `body` what the
+ *  script put on the window, and puts the globals back after. */
 async function withStandIns(
   page: {
     readonly MessageChannel?: unknown;
@@ -573,7 +577,8 @@ async function withStandIns(
     readonly requestAnimationFrame?: unknown;
     readonly window: Record<string, unknown>;
   },
-  body: (instruments: NonNullable<Window["__loadInstruments"]>) => Promise<void> | void
+  body: (instruments: NonNullable<Window["__loadInstruments"]>) => Promise<void> | void,
+  config: PageConfig = PAGE_CONFIG
 ): Promise<void> {
   page.window.top = page.window;
   const standIns: Record<string, unknown> = {
@@ -591,7 +596,7 @@ async function withStandIns(
   try {
     Object.assign(globalThis, standIns);
     QueuedObserver.observing.clear();
-    instrumentPage(PAGE_CONFIG);
+    instrumentPage(config);
     const instruments = (page.window as unknown as Window).__loadInstruments;
     if (instruments === undefined) throw new Error("the init script put nothing on the window");
     await body(instruments);
@@ -952,6 +957,122 @@ test("Row 2 names the last row Conversation draws by its own address, a child is
     row: { id: "LAY-6", type: "child_issue" },
   });
   expect(() => namedRow("LAY-1", [foreign])).toThrow(/no address names any of the 1 rows/);
+});
+
+test("Row 2's third load names the first answered question of the spec that a decision settles, by the question's own address, with both rows", () => {
+  const spec = "artifact-spec";
+  const ask = (
+    id: string,
+    block: string | null,
+    state: string,
+    artifact: string | null = spec
+  ) => ({
+    artifact_id: artifact,
+    block_id: block,
+    id,
+    state,
+  });
+  const asks = [
+    // An ask of no block, an ask of another document and an open question are none of them.
+    ask("ask-post", null, "answered", null),
+    ask("ask-plan", "q9", "answered", "artifact-plan"),
+    ask("ask-open", "q1", "open"),
+    ask("ask-q2", "q2", "answered"),
+    ask("ask-q3", "q3", "answered"),
+  ];
+  const decisions = [
+    // A person's answer is a decision of the read too, whose `asks` is the ask itself.
+    { asks: ["ask-q2"], block_id: "q2", kind: "person" },
+    { asks: ["ask-open"], block_id: "d1", kind: "agent" },
+    { asks: null, block_id: "d2", kind: "agent" },
+    { asks: ["ask-q3"], block_id: "d5", kind: "agent" },
+  ];
+  expect(questionAndDecision("LAY-1", spec, asks, decisions)).toEqual({
+    pair: {
+      address: "/issues/LAY-1/asks/ask-q3",
+      decision:
+        '[data-issue-body] [data-node-row][data-node-type="decision"][data-node-id$="#b-d5"]',
+      named: "question ask-q3 (block q3) and decision d5",
+      question: '[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-q3"]',
+    },
+  });
+  // The seed's shape: answered questions, and decisions that settle none of them.
+  expect(questionAndDecision("LAY-1", spec, asks, decisions.slice(0, 3))).toEqual({
+    missing:
+      "the seed holds no answered question of its spec with the decision that settles it: 2 " +
+      "answered questions of the spec, and 1 decisions that settle a question (`from_ask`), " +
+      "none of them one of those",
+  });
+});
+
+test("a load that names a row beside the named one records both, and a change of the place or the size of either is a move", async () => {
+  let folded = false;
+  // Folded under its decision, the question is drawn short below it, and the decision, drawn above
+  // it, moves down to where the question stood.
+  const question = standInElement("the question", () => boxAt(0, 300, 1000, folded ? 24 : 180), {
+    attributes: { "data-node-id": "spec#b-q3", "data-node-type": "ask" },
+  });
+  const decision = standInElement("its decision", () => boxAt(0, folded ? 276 : 200, 1000, 96), {
+    attributes: { "data-node-id": "spec#b-d5", "data-node-type": "decision" },
+  });
+  const browser = standInBrowser({
+    drawn: () => [decision, question],
+    height: 900,
+    press: () => {},
+    selected: { "[data-ask]": () => [question], "[data-decision]": () => [decision] },
+  });
+  const config: PageConfig = {
+    ...PAGE_CONFIG,
+    beside: { selector: "[data-decision]", text: null },
+    boxes: "named",
+    named: { selector: "[data-ask]", text: null },
+  };
+  const frames = (count: number) =>
+    browser.page.waitForFunction(
+      (at) => (window.__loadInstruments?.record().frames.length ?? 0) >= at,
+      count
+    );
+  await withStandIns(
+    browser.globals,
+    async (instruments) => {
+      await frames(3);
+      // The page folds the answered question under its decision, as N's base did a second on.
+      folded = true;
+      await frames(6);
+      const record = instruments.record();
+      expect(record.boxes.map((entry) => [entry.group, entry.label])).toEqual([
+        [NAMED_GROUP, "ask spec#b-q3"],
+        [BESIDE_GROUP, "decision spec#b-d5"],
+        [NAMED_GROUP, "ask spec#b-q3"],
+        [BESIDE_GROUP, "decision spec#b-d5"],
+      ]);
+      expect(namedRowAt(record, 0, BESIDE_GROUP)).toEqual({
+        height: 96,
+        width: 1000,
+        x: 0,
+        y: 200,
+      });
+      expect(
+        boxesMoved(record, Number.POSITIVE_INFINITY).map((move) => [
+          move.label,
+          move.before,
+          move.after,
+        ])
+      ).toEqual([
+        [
+          "ask spec#b-q3",
+          { height: 180, width: 1000, x: 0, y: 300 },
+          { height: 24, width: 1000, x: 0, y: 300 },
+        ],
+        [
+          "decision spec#b-d5",
+          { height: 96, width: 1000, x: 0, y: 200 },
+          { height: 96, width: 1000, x: 0, y: 276 },
+        ],
+      ]);
+    },
+    config
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

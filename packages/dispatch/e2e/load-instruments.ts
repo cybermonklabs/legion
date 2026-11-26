@@ -231,6 +231,9 @@ export const ROWS_GROUP = "rows in the viewport";
 /** The group of the row a load names. */
 export const NAMED_GROUP = "the named row";
 
+/** The group of the row a load names beside the named one (`InstrumentConfig.beside`). */
+export const BESIDE_GROUP = "the row named beside it";
+
 /** When the load ended: one second after the later of the end of the last task longer than
  *  50 ms and the end of the last request, or null where a request is in flight or that second
  *  has not passed by `now`. A WebSocket is no request in flight. With neither, the load ends one
@@ -470,11 +473,16 @@ export function groupsUndrawn(boxes: readonly Pick<BoxEntry, "group">[]): string
   return Object.keys(BOX_GROUPS).filter((group) => !drawn.has(group));
 }
 
-/** The named row's box as frame `index` was drawn, null where it was not drawn by then. */
-export function namedRowAt(record: Pick<LoadRecord, "boxes">, index: number): Box | null {
+/** The box of the named row of `group` (`NAMED_GROUP` unless given) as frame `index` was drawn,
+ *  null where it was not drawn by then. */
+export function namedRowAt(
+  record: Pick<LoadRecord, "boxes">,
+  index: number,
+  group: string = NAMED_GROUP
+): Box | null {
   let box: Box | null = null;
   for (const entry of record.boxes) {
-    if (entry.group === NAMED_GROUP && entry.frame <= index) box = entry.box;
+    if (entry.group === group && entry.frame <= index) box = entry.box;
   }
   return box;
 }
@@ -666,14 +674,17 @@ export type ArmWhen = "now" | "rows" | "view row";
 
 /** What a load's instruments are given. */
 export interface InstrumentConfig {
-  /** The boxes the frame recorder keeps: `BOX_GROUPS` and the rows in the viewport, the named row
-   *  alone, or none. */
+  /** The boxes the frame recorder keeps: `BOX_GROUPS`, the rows in the viewport and the rows the
+   *  load names; the rows the load names alone; or none. */
   readonly boxes: "all" | "named" | "none";
   /** What the viewport's top stands under: the header's band and the view row. */
   readonly header: readonly string[];
   /** The row a load names, by the selector that finds it and words it holds, where it names
    *  one. */
-  readonly named: { readonly selector: string; readonly text: string | null } | null;
+  readonly named: NamedTarget | null;
+  /** A row the load names beside the named one, whose box is recorded with it
+   *  (`BESIDE_GROUP`): the decision of an answered question the load names. */
+  readonly beside?: NamedTarget | null;
   /** Every row whose first line Element Timing reads: each view's and the children's
    *  section's. */
   readonly rows: string;
@@ -681,8 +692,16 @@ export interface InstrumentConfig {
   readonly viewRows: string;
 }
 
+/** A row a load names: the selector that finds it, and words it holds where it is told apart by
+ *  them. */
+export interface NamedTarget {
+  readonly selector: string;
+  readonly text: string | null;
+}
+
 /** The config the init script reads: the caller's, with the groups it records. */
 export interface PageConfig extends InstrumentConfig {
+  readonly besideGroup: string;
   readonly groups: Readonly<Record<string, readonly string[]>>;
   readonly namedGroup: string;
   readonly rowsGroup: string;
@@ -917,7 +936,8 @@ export function instrumentPage(config: PageConfig): void {
   // The frame recorder's boxes: each element's last box, and the rows it has seen in the viewport.
   const lastBoxes = new WeakMap<Element, string>();
   const watchedRows = new WeakSet<Element>();
-  let named: Element | null = null;
+  // The named rows as each was found, by its group, found again once the page replaced it.
+  const named = new Map<string, Element>();
   const keep = (index: number, kept: Element, group: string, label: () => string) => {
     const rect = kept.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return;
@@ -932,15 +952,16 @@ export function instrumentPage(config: PageConfig): void {
     lastBoxes.set(kept, shape);
     boxes.push({ box, frame: index, group, id: idOf(kept), label: label() });
   };
-  const findNamed = (): Element | null => {
-    const wanted = config.named;
-    if (wanted === null) return null;
-    if (named?.isConnected === true) return named;
-    named =
+  const findNamed = (wanted: NamedTarget | null | undefined, group: string): Element | null => {
+    if (wanted === null || wanted === undefined) return null;
+    const held = named.get(group);
+    if (held?.isConnected === true) return held;
+    const found =
       [...document.querySelectorAll(wanted.selector)].find(
         (row) => wanted.text === null || words(row).includes(wanted.text)
       ) ?? null;
-    return named;
+    if (found !== null) named.set(group, found);
+    return found;
   };
   const recordBoxes = (index: number, top: number) => {
     if (config.boxes === "all") {
@@ -962,8 +983,13 @@ export function instrumentPage(config: PageConfig): void {
         keep(index, row, config.rowsGroup, () => rowLabel(row));
       }
     }
-    const row = findNamed();
-    if (row !== null) keep(index, row, config.namedGroup, () => rowLabel(row));
+    for (const [wanted, group] of [
+      [config.named, config.namedGroup],
+      [config.beside, config.besideGroup],
+    ] as const) {
+      const row = findNamed(wanted, group);
+      if (row !== null) keep(index, row, group, () => rowLabel(row));
+    }
   };
 
   // The act armed, and what a step that folds leaves for the step after it.
@@ -1189,6 +1215,7 @@ export async function installInstruments(page: Page, config: InstrumentConfig): 
   await page.addInitScript(instrumentPage, {
     ...config,
     groups: BOX_GROUPS,
+    besideGroup: BESIDE_GROUP,
     namedGroup: NAMED_GROUP,
     rowsGroup: ROWS_GROUP,
     viewRow: BOX_GROUPS["view row's controls"].join(", "),

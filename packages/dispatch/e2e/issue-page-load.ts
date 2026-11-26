@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page, TestInfo } from "@playwright/test";
-
+import type { Decision, IssueAskRow } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { outlineRowPath } from "../web/src/features/issue-page/lenses/store-link";
 import {
@@ -622,8 +622,9 @@ export interface LoadOptions {
   readonly address: string;
   /** The boxes the frame recorder keeps (`InstrumentConfig`). */
   readonly boxes: InstrumentConfig["boxes"];
-  /** The row the load names, where it names one. */
+  /** The row the load names, where it names one, and the row it names beside it. */
   readonly named?: InstrumentConfig["named"];
+  readonly beside?: InstrumentConfig["beside"];
   /** What is set up on the load's context before its page opens: a route that holds a file
    *  back. */
   readonly prepare?: (context: BrowserContext) => Promise<void>;
@@ -658,6 +659,7 @@ export async function oneLoad<T>(
     await installInstruments(page, {
       boxes: options.boxes,
       header: HEADER_SELECTORS,
+      beside: options.beside ?? null,
       named: options.named ?? null,
       rows: LOAD_ROW_SELECTOR,
       viewRows: VIEW_ROW_SELECTOR,
@@ -777,6 +779,62 @@ export function namedRow(
     }
   }
   throw new Error(`no address names any of the ${rows.length} rows Conversation drew`);
+}
+
+/** An answered question of the issue's spec and the decision that settles it, as Row 2's third
+ *  load names them: the question's own address, which the load opens, and the selector of each
+ *  one's row in the outline, a row drawn by the block it is written in. */
+export interface QuestionAndDecision {
+  readonly address: string;
+  readonly decision: string;
+  /** The two in words, for the row's output. */
+  readonly named: string;
+  readonly question: string;
+}
+
+/** The outline's row of the node of `type` drawn by block `block` of one of the issue's
+ *  documents, whatever its slug: its id ends in that block's fragment (`blockNodeId`). */
+function blockRowSelector(type: string, block: string): string {
+  return `[data-issue-body] [data-node-row][data-node-type="${type}"][data-node-id$="#b-${block.replace(/["\\]/g, "\\$&")}"]`;
+}
+
+/**
+ * The first answered question of the issue's spec (`spec`, its document's id) that a decision
+ * settles, with that decision: an ask of the asks read written in the spec as a block and
+ * answered, and a decision of the decisions read written by an agent (`kind: "agent"`) whose
+ * `asks` - the asks its `from_ask` names - hold that ask's id. Answers what is missing where no
+ * such pair is held, counting what is.
+ */
+export function questionAndDecision(
+  key: string,
+  spec: string,
+  asks: readonly Pick<IssueAskRow, "artifact_id" | "block_id" | "id" | "state">[],
+  decisions: readonly Pick<Decision, "asks" | "block_id" | "kind">[]
+): { readonly pair: QuestionAndDecision } | { readonly missing: string } {
+  const answered = asks.filter(
+    (ask) => ask.artifact_id === spec && ask.block_id !== null && ask.state === "answered"
+  );
+  const settling = decisions.filter(
+    (decision) => decision.kind === "agent" && (decision.asks ?? []).length > 0
+  );
+  for (const ask of answered) {
+    const decision = settling.find((each) => each.asks?.includes(ask.id) === true);
+    if (ask.block_id === null || decision === undefined) continue;
+    return {
+      pair: {
+        address: buildIssuePath({ id: ask.id, key, kind: "ask" }),
+        decision: blockRowSelector("decision", decision.block_id),
+        named: `question ${ask.id} (block ${ask.block_id}) and decision ${decision.block_id}`,
+        question: blockRowSelector("ask", ask.block_id),
+      },
+    };
+  }
+  return {
+    missing:
+      `the seed holds no answered question of its spec with the decision that settles it: ` +
+      `${answered.length} answered questions of the spec, and ${settling.length} decisions ` +
+      "that settle a question (`from_ask`), none of them one of those",
+  };
 }
 
 /** The selector of the outline's row of node `id`. */

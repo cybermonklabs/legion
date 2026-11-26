@@ -9,6 +9,7 @@ import type { BrowserContext } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
+import { getIssueDecisions, listIssueAsks } from "./api";
 import {
   ACT_MS,
   AFTER_LOAD_TITLE,
@@ -34,6 +35,7 @@ import {
   outlineRowSelector,
   outlineRows,
   printReading,
+  questionAndDecision,
   test,
 } from "./issue-page-load";
 import { WAITING_QUESTION } from "./issue-page-t-scale";
@@ -41,6 +43,7 @@ import { owedUnless } from "./issue-page-t-tree";
 import { typefaceAddress } from "./issue-page-typeface";
 import {
   actReading,
+  BESIDE_GROUP,
   boxesMoved,
   firstScreenOf,
   firstScreenPaint,
@@ -51,6 +54,7 @@ import {
   layoutShift,
   longestTaskAfterViewRow,
   moveLine,
+  NAMED_GROUP,
   namedRowAt,
   pageShape,
   type ResourceEntry,
@@ -76,13 +80,16 @@ import { expect } from "./test";
  *   header, nor the header's band, nor a row in the viewport changes its box after its first
  *   drawing, but in a frame of the typeface's swap. Dashboard, Threads and Documents are owed
  *   until their parts add them to the view row's list.
- * - Row 2 (R3): the row an address names, and the ask the root's first focus names, stand in the
- *   viewport at the first drawing of the rows and keep their place until the load has ended. The
- *   row an address names is the last row Conversation draws as the load ends - a child issue's
- *   row on the seed, named at `?node=` of its key - or, where no address names that row, the last
- *   row before it that one does; its bound is named `named-row.last-row` or
- *   `named-row.last-addressed-row` for the two, and a line before its bounds names the row and its
- *   address.
+ * - Row 2 (R3): three named loads, each named in a line before its bounds. In each, every row the
+ *   load names stands in the viewport under the header at the first drawing of the rows and keeps
+ *   its place and its size until the load has ended. The first names the
+ *   last row Conversation draws as the load ends - a child issue's row on the seed, named at
+ *   `?node=` of its key - or, where no address names that row, the last row before it that one
+ *   does (`named-row.last-row` or `named-row.last-addressed-row`). The second names an answered
+ *   question of the seed's spec by its own address, with the decision that settles it
+ *   (`from_ask`), and records both (`named-row.question-and-decision`); where the seed holds no
+ *   such pair, the row fails and says so. The third names the ask the root's first focus names
+ *   (`named-row.first-focus`).
  * - Row 3 (R3): with the typeface's file answered 3 s late, the layout shift is at most 0.1.
  * - Row 4 (R2): each act of the width, made at the first moment it can be made, shows its result
  *   within 200 ms, as `holdAct` reads an act that needs a read; no Event Timing entry and no task
@@ -112,8 +119,8 @@ const LOAD_ROW_MS = 300_000;
  *  its width made once and waited out. */
 const AFTER_LOAD_ROW_MS = 900_000;
 
-/** How long the row of the named rows may take: eleven loads and the seed of its first focus. */
-const NAMED_ROW_MS = 900_000;
+/** How long the row of the named rows may take: sixteen loads and the seed of its first focus. */
+const NAMED_ROW_MS = 1_200_000;
 
 /** How long the row of the held typeface holds the typeface's file back. */
 const TYPEFACE_HOLD_MS = 3_000;
@@ -437,13 +444,25 @@ function viewReadSent(
   });
 }
 
+/** The rows a named load records, each by the group the recorder keeps it under and its name in
+ *  the row's failures. */
+interface NamedRows {
+  readonly group: string;
+  readonly name: string;
+}
+
+/** The one row a named load names. */
+const THE_NAMED_ROW: readonly NamedRows[] = [{ group: NAMED_GROUP, name: "the named row" }];
+
 /** Holds the five loads of a named row to R3 under `prefix`: at the first drawing of the rows
- *  the named row stands in the viewport under the header; it keeps its box until the load has
- *  ended, but in a frame of the typeface's swap; and the layout shift is at most 0.1. */
+ *  each of `named` stands in the viewport under the header; each keeps its place and its size
+ *  until the load has ended, but in a frame of the typeface's swap; and the layout shift is at
+ *  most 0.1. */
 function holdNamedRow(
   prefix: string,
   rate: number,
-  loads: readonly { readonly end: number; readonly record: LoadRecord }[]
+  loads: readonly { readonly end: number; readonly record: LoadRecord }[],
+  named: readonly NamedRows[] = THE_NAMED_ROW
 ): void {
   holdBound({
     bound: `${prefix}.layout-shift`,
@@ -455,28 +474,32 @@ function holdNamedRow(
     const which = `load ${at + 1} of ${LOADS}`;
     const rows = load.record.frames.findIndex((frame) => frame.rows);
     const frame = load.record.frames[rows];
-    const box = rows === -1 ? null : namedRowAt(load.record, rows);
-    expect
-      .soft(
-        box !== null && frame !== undefined && underHeader(box, frame),
-        `${which}: at the first drawing of the rows the named row was ${
-          box === null
-            ? "not drawn"
-            : `at ${box.y} px, outside the viewport under the header's foot at ${frame?.foot} px`
-        }`
-      )
-      .toBe(true);
+    for (const { group, name } of named) {
+      const box = rows === -1 ? null : namedRowAt(load.record, rows, group);
+      expect
+        .soft(
+          box !== null && frame !== undefined && underHeader(box, frame),
+          `${which}: at the first drawing of the rows ${name} was ${
+            box === null
+              ? "not drawn"
+              : `at ${box.y} px, outside the viewport under the header's foot at ${frame?.foot} px`
+          }`
+        )
+        .toBe(true);
+    }
     expect
       .soft(
         boxesMoved(load.record, load.end).map(moveLine),
-        `${which}: the named row changed its place before the load ended`
+        `${which}: ${named.map((row) => row.name).join(" or ")} changed its place or its size ` +
+          "before the load ended"
       )
       .toEqual([]);
   }
 }
 
-// SLOW(>=2s): a load to find the last row, five cold loads of its address, the seed of an ask that
-// waits on the reader with its waits, and five cold loads of it.
+// SLOW(>=2s): a load to find the last row, five cold loads of its address, five of an answered
+// question's address, the seed of an ask that waits on the reader with its waits, and five cold
+// loads of it.
 test("a load draws the named row in the viewport at once and keeps it there", async ({
   browser,
   loadSeeds,
@@ -515,8 +538,61 @@ test("a load draws the named row in the viewport at once and keeps it there", as
       ended
     )
   );
+  // An answered question of the seed's spec and the decision its answer made, named by the
+  // question's own address so both stand in the viewport: the case part N's implementer measured
+  // on N's base (Job `e2e-rows-wbfwg`), where the asks read answered first, and the page drew the
+  // question whole and folded it under its decision about a second later.
+  const [asks, decisions] = await Promise.all([
+    listIssueAsks(seeded.key),
+    getIssueDecisions(seeded.key),
+  ]);
+  const found = questionAndDecision(
+    seeded.key,
+    seeded.specArtifactId,
+    asks,
+    decisions.decisions ?? []
+  );
+  if ("missing" in found) {
+    printReading(`named-row.question-and-decision rate=${rate} none: ${found.missing}`);
+    expect
+      .soft(
+        found.missing,
+        "Row 2's third load has no question and decision to name: the seed's gap goes to " +
+          "INFRA-1196's architect"
+      )
+      .toBeUndefined();
+  } else {
+    printReading(
+      `named-row.question-and-decision rate=${rate} rows=${found.pair.named} ` +
+        `address=${found.pair.address}`
+    );
+    holdNamedRow(
+      "named-row.question-and-decision",
+      rate,
+      await fiveLoads(
+        browser,
+        rate,
+        {
+          address: found.pair.address,
+          beside: { selector: found.pair.decision, text: null },
+          boxes: "named",
+          named: { selector: found.pair.question, text: null },
+        },
+        ended
+      ),
+      [
+        { group: NAMED_GROUP, name: "the question" },
+        { group: BESIDE_GROUP, name: "its decision" },
+      ]
+    );
+  }
   // The root's rule for the first focus names the ask that waits on the reader.
   const waiting = await loadSeeds.waiting();
+  const focused = presetPath(waiting.key, "conversation");
+  printReading(
+    `named-row.first-focus rate=${rate} row=ask:${waiting.waiting} "${WAITING_QUESTION}" ` +
+      `address=${focused}`
+  );
   holdNamedRow(
     "named-row.first-focus",
     rate,
@@ -524,7 +600,7 @@ test("a load draws the named row in the viewport at once and keeps it there", as
       browser,
       rate,
       {
-        address: presetPath(waiting.key, "conversation"),
+        address: focused,
         boxes: "named",
         named: {
           selector: '[data-issue-body] [data-node-row][data-node-type="ask"]',
