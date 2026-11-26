@@ -148,7 +148,7 @@ func (s *snapshots) read(inFlight map[string]bool) {
 		}
 	}
 	s.blocked = map[string]bool{}
-	for _, row := range blockers.Blocked(v.Rows, v.Issues, v.Line, record.ChildWaitRows(v.Facts.ChildWaits)) {
+	for _, row := range blockers.Blocked(v.Rows, v.Issues, v.Line, v.Facts) {
 		s.blocked[row.Issue] = true
 	}
 	s.held = map[string]bool{}
@@ -229,6 +229,7 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 		}
 		if recorded && (state.InFlight || holds) {
 			state.PastReview = record.InSlotlessPhase(issue)
+			state.AwaitingChildren = state.InFlight && issue.Phase == phase.AwaitingChildren
 		}
 		if entry, member := s.line[key]; member {
 			state.Part, state.Blocked = entry.Part, s.blocked[key]
@@ -315,12 +316,12 @@ type heldSlot struct {
 }
 
 // waitAt begins, carries or ends key's wait on other issues at at: an issue in flight that stands
-// before its review waits while a blocker its links name is not done (unfinishedLinks) or a
-// Dispatch child its first phase waits for is open (openChildren); the wait ends at the first
-// settle where nothing is left, read against the newest view.
+// before its review, or waits in awaiting_children, waits while a blocker its links name is not
+// done (unfinishedLinks) or a Dispatch child it waits for is open (openChildren); the wait ends at
+// the first settle where nothing is left, read against the newest view.
 func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkflow, inFlight bool, dispatch *shadow) {
 	var links, children []string
-	if inWorkflow && inFlight && beforeReview(record.StandsAt(issue)) {
+	if inWorkflow && inFlight && waitsBeforeReview(issue) {
 		links, _ = unfinishedLinks(key, dispatch)
 		children = s.openChildren(key, issue, dispatch)
 	}
@@ -341,17 +342,24 @@ func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkf
 	}
 }
 
-// openChildren is the open Dispatch children key's first phase waits for: the newest pass's
-// children-first judgement of it (record.LineFacts.ChildWaits), and, where that judgement leaves
-// out an issue whose wait on its children stood at the last settle because the root of its tree
-// lingers or the pass's records hold no root of it (record.SlotRule.ChildrenFirstCandidates), the
-// children the replay's copy of Dispatch shows under it, each open by the daemon's own reading
-// (record.ChildOpen) with the daemon's record of it (recordOf). That is the trace's reading of the
-// wait (traceBuilder.childrenAt), which no linger of a root ends: the wait goes on until its
-// children close or move out, as the line timeline reads it from the record.
+// openChildren is the open Dispatch children key waits for: the newest pass's children-first
+// judgement of its first phase (record.LineFacts.ChildWaits) or, for a parent whose phases have
+// started, the pass's judgement of the children that hold its next start
+// (record.LineFacts.StartedParentWaits, under which a rule whose wait stops the phase moves it into
+// awaiting_children); and, where the first judgement leaves out an issue whose wait on its children
+// stood at the last settle because the root of its tree lingers or the pass's records hold no root
+// of it (record.SlotRule.ChildrenFirstCandidates), the children the replay's copy of Dispatch
+// shows under it, each open by the daemon's own reading (record.ChildOpen) with the daemon's
+// record of it (recordOf). That is the trace's reading of the wait (traceBuilder.childrenAt),
+// which no linger of a root ends: the wait goes on until its children close or move out, as the
+// line timeline reads it from the record.
 func (s *snapshots) openChildren(key string, issue record.Issue, dispatch *shadow) []string {
 	var open []string
-	if judged, ok := s.view.Facts.ChildWaits[key]; ok {
+	judged, ok := s.view.Facts.ChildWaits[key]
+	if !ok && issue.Phase == phase.AwaitingChildren {
+		judged, ok = s.view.Facts.StartedParentWaits[key]
+	}
+	if ok {
 		for _, child := range judged.Open {
 			open = append(open, child.Key)
 		}
@@ -415,6 +423,14 @@ func unfinishedLinks(key string, dispatch *shadow) (unfinished, linked []string)
 	return unfinished, linked
 }
 
+// waitsBeforeReview says whether issue stands where a wait on other issues is measured
+// (measuredPhase, read where it stands): before its review, or in awaiting_children, where a
+// started parent waits on its open children under a rule whose wait stops the phase
+// (cybermonklabs/legion#4592).
+func waitsBeforeReview(issue record.Issue) bool {
+	return measuredPhase(record.StandsAt(issue))
+}
+
 // waitEnd is what ended key's wait, which stood on wait's blockers and children at the settle
 // before: an issue that moved past its review moved on; a wait on blockers ended with a link taken
 // off where one of them is no longer linked (unfinishedLinks), and with a blocker done where each
@@ -422,7 +438,7 @@ func unfinishedLinks(key string, dispatch *shadow) (unfinished, linked []string)
 // shows it now: a child closed done or icebox is done, one under another parent moved out, and a
 // child still open under the issue holds it no longer because its tree's gate closed.
 func waitEnd(key string, issue record.Issue, wait *standingWait, v *admit.PassView, dispatch *shadow) WaitEnd {
-	if !beforeReview(record.StandsAt(issue)) {
+	if !waitsBeforeReview(issue) {
 		return WaitMovedOn
 	}
 	if len(wait.links) > 0 {

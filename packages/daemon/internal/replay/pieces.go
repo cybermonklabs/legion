@@ -219,11 +219,34 @@ func (d *driver) passOver(p *piece) {
 }
 
 // cancelPiece cancels p, running or paused, so nothing more of its work goes on: its recorded
-// events still to come in it are placed by their anchors (placeUnrun), and the items it held are
-// let go, since only a paused piece's resume reads them.
+// events still to come in it are placed by their anchors (placeUnrun), the items it held are let
+// go, since only a paused piece's resume reads them, and the acts it held for its issue's return
+// (holdForReturn) enter at once, as the work the cancel leaves unrun does.
 func (d *driver) cancelPiece(p *piece) {
 	p.state, p.pending = pieceCancelled, nil
+	now := d.clock.Instant()
+	for _, it := range p.returnHeld {
+		it.at = maxTime(it.at, now)
+		d.push(it)
+	}
+	p.returnHeld, p.stopped = nil, false
 	d.placeUnrun(p)
+}
+
+// holdForReturn holds it, the item of an event placed from its issue's start (item.startOf), where
+// that issue's work stands stopped in awaiting_children (piece.stopped), and says whether it did:
+// the act waits for the issue's return and enters as long after it as it fell due after the stop
+// (resumePiece), so what the issue does after its wait began moves with its next start (spec R2:
+// a fact that depends on a start moves with that start), as the stopped piece's own items do. A
+// recorded suspend holds no such act, since the record's later acts already come after it.
+func (d *driver) holdForReturn(it *item) bool {
+	for _, p := range d.script.pieces[it.startOf] {
+		if p.state == piecePaused && p.stopped {
+			p.returnHeld = append(p.returnHeld, it)
+			return true
+		}
+	}
+	return false
 }
 
 // placeUnrun places each recorded event of p's work that p no longer runs, p passed over or
@@ -245,9 +268,9 @@ func (d *driver) placeUnrun(p *piece) {
 	}
 }
 
-// pausePiece stops p where its worker's claim was suspended for a wait the rule stops the phase
-// for (record.SlotRule.WaitStopsPhase): its items wait, keeping the rest of its length, and the
-// turns under way end.
+// pausePiece stops p where its worker's claim was suspended, or where its phase was stopped by a
+// move into awaiting_children (the retirement of its task, retireStoppedTask): its items wait, keeping
+// the rest of its length, and the turns under way end.
 func (d *driver) pausePiece(p *piece) error {
 	if p.state != pieceRunning {
 		return nil
@@ -264,8 +287,8 @@ func (d *driver) pausePiece(p *piece) error {
 }
 
 // resumePiece runs p again from the clock's instant, with the rest of its length: every item it
-// held is queued again later by the time it stood paused, and the turns the pause ended begin
-// again.
+// held, and every act held for its issue's return where the pause was a stop (holdForReturn), is
+// queued again later by the time it stood paused, and the turns the pause ended begin again.
 func (d *driver) resumePiece(p *piece) error {
 	if p.state != piecePaused {
 		return nil
@@ -284,6 +307,12 @@ func (d *driver) resumePiece(p *piece) error {
 		again := *it
 		again.done, again.at = false, maxTime(it.at.Add(shift), now)
 		d.push(&again)
+	}
+	returning := p.returnHeld
+	p.returnHeld, p.stopped = nil, false
+	for _, it := range returning {
+		it.at = maxTime(it.at.Add(shift), now)
+		d.push(it)
 	}
 	for _, role := range slices.Sorted(maps.Keys(p.turns)) {
 		if p.turns[role] {
@@ -736,9 +765,10 @@ func (d *driver) architectRequest(key string) (claim.Token, uint64, record.StepE
 }
 
 // signOff applies key's architect's sign-off (intake.SignOff) through the engine's own handler.
-// A sign-off the engine holds while a member beneath is in the workflow is applied again at each
-// leave of a member of its tree (observe), and is no refusal: the record shows the architect
-// signing off again at once.
+// A sign-off the engine holds for the work under the issue (workflow.SignOffHeld: a member beneath
+// in the workflow, a root resting on its approval, an open Dispatch child, or the parent's wait in
+// awaiting_children) is applied again at each leave of a member of its tree (observe), and is no
+// refusal: the record shows the architect signing off again at once.
 func (d *driver) signOff(key string) error {
 	by, generation, entry, err := d.architectRequest(key)
 	if err != nil {
@@ -751,7 +781,7 @@ func (d *driver) signOff(key string) error {
 	switch {
 	case result.Refusal == nil:
 		delete(d.signOffs, key)
-	case result.Refusal.Code == workflow.SignOffChildInWorkflow:
+	case workflow.SignOffHeld(result.Refusal.Code):
 		if !d.signOffs[key] {
 			d.counters.HeldSignOffs++
 		}

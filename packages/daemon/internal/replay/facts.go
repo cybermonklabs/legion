@@ -314,4 +314,12 @@ var FactSources = map[string]FactSource{
 	// no GitHub, so neither comes to it.
 	"PullRequestReviewRequests":   {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestMergeStateUnread": {Way: FactLeftOut, Assumption: assumeNoGitHub},
+
+	// The three reads cybermonklabs/legion#4592's design-gate basis applies back into the daemon:
+	// the pending-basis seed's and the re-parent seed's executors, and the gate seed's read of an
+	// ancestor's changes request on the version a step's basis names. The stub finishes both seeds
+	// without acting and reads no basis in its gate seed, so none comes to it.
+	"PendingBasisRead": {Way: FactLeftOut, Assumption: assumeNoBasis},
+	"BasisChangesRead": {Way: FactLeftOut, Assumption: assumeNoBasis},
+	"ReparentRead":     {Way: FactLeftOut, Assumption: assumeNoBasis},
 }

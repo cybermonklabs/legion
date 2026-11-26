@@ -851,6 +851,14 @@ The daemon's own production clients are named too: `natsauth.Connect` takes the 
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
 
+A JetStream `no_wait` pull asks the consumer's current pending count; it is not a read of the
+stream's store. nats-server stores a published message and sends its publish acknowledgement before
+its signal goroutine raises the matching consumer's pending count. A test that publishes messages
+and must then pull them makes a waiting pull for its batch and waits with the test's own deadline
+(`testwait.Context(t)`), not a `no_wait` pull or a fixed read timeout: a loaded machine may delay
+the signal after the acknowledgement without losing the stored messages. A test whose claim is the
+`404 No Messages` answer of an empty consumer still uses `no_wait`.
+
 ## A test that deletes a KV watcher's consumer
 
 A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
@@ -1001,6 +1009,15 @@ pods, a write blocked for a third of a second completed the moment the page sent
 `TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
+
+A test that needs a close or a ping (gorilla/websocket's `WriteControl`) to wait for the
+connection's write lock holds the writer the same way, before the close or the ping comes. gorilla
+holds that lock for each write to the connection, not for a whole message, so a writer that TCP
+backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
+it holds none, and a close that comes then takes the free lock and is written at once. The relay
+socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
 
 ## A fake HTTP server whose client gives up on requests
 

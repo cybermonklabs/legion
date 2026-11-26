@@ -88,6 +88,8 @@ var OutboxHandling = map[RowKind]RowHandling{
 		Does: "retires the role's claim of a closed issue and cancels the segments it works"},
 	{Kind: record.OutboxKindSupervise, Op: "tree_close"}: {Way: OutboxExecuted,
 		Does: "retires the role's claim of a tree whose linger expired and cancels the segments it works"},
+	{Kind: record.OutboxKindSupervise, Op: "retire_task"}: {Way: OutboxExecuted,
+		Does: "pauses the issue's segment the role works, keeping the rest of its length, and ends its turn, as the move into awaiting_children that wrote the row stops the phase (cybermonklabs/legion#4592); the claim keeps its state, and the return's start resumes the segment"},
 	{Kind: record.OutboxKindSupervise, Op: "release"}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 	{Kind: record.OutboxKindSupervise, Op: "pause_stop"}: {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 
@@ -98,6 +100,10 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindHookPrompt}:       {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
 	{Kind: record.OutboxKindUpdateAsk}:        {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
 	{Kind: record.OutboxKindMergeForward}:     {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindPhaseEnded}:       {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+
+	{Kind: record.OutboxKindPendingBasisSeed}: {Way: OutboxFinished, Assumption: assumeNoBasis},
+	{Kind: record.OutboxKindReparentSeed}:     {Way: OutboxFinished, Assumption: assumeNoBasis},
 
 	{Kind: record.OutboxKindGatedStepsPublish}:  {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
 	{Kind: record.OutboxKindDesignGatesPublish}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
@@ -594,6 +600,8 @@ func (d *driver) superviseRow(row record.OutboxRow, payload record.SuperviseRequ
 	switch {
 	case payload.Op == "tree_close":
 		return d.closeTree(row, payload, token)
+	case payload.Op == "retire_task":
+		return d.retireStoppedTask(row, payload, *issue)
 	case payload.Op == "suspend" && payload.Tree != issue.Tree:
 		c, found := d.claims[token]
 		if !found || c.Tree != payload.Tree {
@@ -975,6 +983,29 @@ func (d *driver) suspend(row record.OutboxRow, payload record.SuperviseRequest, 
 		return err
 	}
 	d.log.Info(suspendedLine, "claim", string(token), "reason", payload.Reason, "by", string(supervise.SuspendedByDaemon))
+	return d.finish(row)
+}
+
+// retireStoppedTask runs the retirement of the task a stopped worker's claim holds for its phase, which
+// the admission pass writes when it moves a started parent into awaiting_children in the middle of
+// that phase (workflow's StopForChildren, supervise.Machine.RetireStoppedTask): the row names the
+// phase the issue stood in, which the move has left, so it is read against the issue's generation
+// and tree alone. The stub pauses the segment the role works, which keeps the rest of its length
+// for the start the return out of awaiting_children writes (workflow's ReturnFromChildren) and
+// ends its turn, and marks the pause a stop (piece.stopped), so the issue's acts placed from its
+// start wait for the return too (holdForReturn); the claim keeps its state, as the daemon's
+// executor retires the task and leaves the claim, and the worker is told to stop by a phase-ended
+// message the stub finishes (assumption 26).
+func (d *driver) retireStoppedTask(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
+	if payload.Generation != issue.Generation || payload.Tree != issue.Tree {
+		return d.finish(row)
+	}
+	if p := d.runningPiece(issue.Key, payload.Role); p != nil && p.state == pieceRunning {
+		if err := d.pausePiece(p); err != nil {
+			return err
+		}
+		p.stopped = true
+	}
 	return d.finish(row)
 }
 

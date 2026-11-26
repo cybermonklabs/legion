@@ -134,7 +134,7 @@ type windowInputs struct {
 
 // newWindowInputs reads w's inputs (windowInputs).
 func newWindowInputs(w Window) (*windowInputs, error) {
-	trace, lines, events, err := readTrace(w, nil)
+	trace, lines, events, err := readTrace(w)
 	if err != nil {
 		return nil, err
 	}
@@ -601,8 +601,7 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 	for key, iss := range d.shadow.issues {
 		lined.Events[key] = append(lined.Events[key], iss.log[iss.seeded:]...)
 	}
-	rule := d.rule
-	t, err := buildTrace(lined, &rule)
+	t, err := buildTrace(lined)
 	if err != nil {
 		return Timeline{}, Trace{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
 	}

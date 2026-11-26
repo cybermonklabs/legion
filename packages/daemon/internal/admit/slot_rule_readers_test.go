@@ -301,7 +301,17 @@ func slotRuleReaders() []slotRuleReader {
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
-				acmeRoot(t, pool, key, stands, statusIn(stands), "a", nil, nil)
+				var waiting func(*record.Issue)
+				if stands == phase.AwaitingChildren {
+					// The phase's shape check holds its held start beside it, and an open child
+					// keeps the parent waiting through the pass, which would otherwise take it back.
+					waiting = func(issue *record.Issue) {
+						issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "Implement " + key + ".",
+							Reason: "a child is open", Since: fixedNow.Add(-time.Hour)}
+					}
+					openChild(t, pool, "ACME-11", key)
+				}
+				acmeRoot(t, pool, key, stands, statusIn(stands), "a", nil, waiting)
 				takeSlot(t, pool, key)
 				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
 				return slotWord(t, pool, key)
@@ -488,28 +498,29 @@ func slotRuleReaders() []slotRuleReader {
 			why:     "a started parent that waits on its open children gives its slot back for the wait only under a rule whose children wait does",
 		},
 		slotRuleReader{
-			reader:  "the release for a wait: a wait that stops the phase",
+			reader:  "the admission pass's stop of a started parent: a wait that stops the phase",
 			changes: []string{"WaitStopsPhase"},
-			rule:    ruleWith("main with a wait that stops the phase", func(rule *record.SlotRule) { rule.WaitStopsPhase = true }),
+			rule:    ruleWith("main with no wait that stops the phase", func(rule *record.SlotRule) { rule.WaitStopsPhase = false }),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
-				const waiter, blocker = "ACME-90", "ACME-91"
-				acmeRoot(t, pool, waiter, phase.Implementing, "in_progress", "a", []string{blocker}, nil)
-				takeSlot(t, pool, waiter)
-				seedMirrorIn(t, pool, acmeProject, blocker, "in_progress")
+				const parent, child = "ACME-90", "ACME-91"
+				acmeRoot(t, pool, parent, phase.Implementing, "in_progress", "a", nil, nil)
+				approvedGate(t, pool, parent)
+				takeSlot(t, pool, parent)
+				openChild(t, pool, child, parent)
 				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
-				return slotWord(t, pool, waiter) + "; " + stopWord(t, pool, waiter, claim.RoleImplementer)
+				return phaseWord(t, pool, parent) + "; " + slotWord(t, pool, parent) + "; " + stopWord(t, pool, parent, claim.RoleImplementer)
 			},
-			main:    "ACME-90 holds no slot; the implementer of ACME-90 goes on",
-			changed: "ACME-90 holds no slot; the implementer of ACME-90 is stopped",
-			why: "a phase goes on while its issue waits, and only its next start waits, except under a rule whose wait stops the phase: " +
-				"there the pass that releases the issue for its wait stops the worker of its phase (a supervise suspend or release of that role)",
+			main:    "ACME-90 stands in awaiting_children; ACME-90 holds no slot; the implementer of ACME-90 is stopped",
+			changed: "ACME-90 stands in implementing; ACME-90 holds a slot; the implementer of ACME-90 goes on",
+			why: "a started parent with an open Dispatch child moves into awaiting_children, which keeps no slot, and its worker's task is retired, " +
+				"under a rule whose wait stops the phase (cybermonklabs/legion#4592); under a rule whose wait stops nothing its phase goes on",
 		},
 		slotRuleReader{
-			reader:  "record.ChildWaitsOf",
+			reader:  "record.SlotRule.StartedParents through record.HeldReasonOf: awaiting_children",
 			changes: []string{"WaitStopsPhase"},
-			rule:    ruleWith("main with a wait that stops the phase", func(rule *record.SlotRule) { rule.WaitStopsPhase = true }),
+			rule:    ruleWith("main with no wait that stops the phase", func(rule *record.SlotRule) { rule.WaitStopsPhase = false }),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -519,13 +530,13 @@ func slotRuleReaders() []slotRuleReader {
 				takeSlot(t, pool, parent)
 				openChild(t, pool, child, parent)
 				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
-				_, _, facts := lineUnder(t, pool, rule)
-				return childWaitWord(facts, parent) + "; " + slotWord(t, pool, parent)
+				_, held, facts := lineUnder(t, pool, rule)
+				return heldWord(held, parent) + "; " + childWaitWord(facts, parent)
 			},
-			main:    "ACME-100 waits on no open child; ACME-100 holds a slot",
-			changed: "ACME-100 waits on its open children [ACME-101]; ACME-100 holds no slot",
-			why: "a parent whose first phase has not started waits on its open children; under a rule whose wait stops the phase, " +
-				"a started parent waits on them in whatever phase it stands, and gives its slot back for that wait",
+			main:    "ACME-100 is held as awaiting_children; ACME-100 waits on no open child",
+			changed: "ACME-100 is held as unclassified; ACME-100 waits on no open child",
+			why: "a started parent's open children are judged apart from the children-first wait of a first phase (record.SlotRule.StartedParents), " +
+				"and the parent the admission pass moved into awaiting_children by them is held by that word, under a rule whose wait stops the phase alone",
 		},
 		slotRuleReader{
 			reader:  "record.Waiting's order of the line: returned work by rank",
@@ -1621,10 +1632,9 @@ func lineUnderStore(t *testing.T, pool *pgxpool.Pool, records record.Store, rule
 		if err != nil {
 			t.Fatalf("list the slots: %v", err)
 		}
-		if facts, err = record.ReadLineFacts(ctx, tx, records, acmeProject, issues, config.DesignGate("").Steps()); err != nil {
+		if facts, err = record.ReadLineFactsUnder(ctx, tx, records, acmeProject, issues, config.DesignGate("").Steps(), rule); err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		facts.Rule = rule
 		if tables != nil {
 			if err := tables.ReadRuleFacts(ctx, tx, issues, &facts); err != nil {
 				t.Fatalf("read what the rule records: %v", err)
@@ -1742,6 +1752,19 @@ func childWaitWord(facts record.LineFacts, key string) string {
 	return key + " waits on its open children [" + strings.Join(open, " ") + "]"
 }
 
+// startedWaitWord is the open Dispatch children the pass's judgement of the started parents finds
+// holding key's next start (record.LineFacts.StartedParentWaits).
+func startedWaitWord(facts record.LineFacts, key string) string {
+	var open []string
+	for _, child := range facts.StartedParentWaits[key].Open {
+		open = append(open, child.Key)
+	}
+	if len(open) == 0 {
+		return key + " is held by no open child"
+	}
+	return key + " is held by its open children [" + strings.Join(open, " ") + "]"
+}
+
 // startsWord is the supervise starts key holds, each with the role it starts, whether it carries a
 // task, whether it waits for a slot and whether a lane may run it now.
 func startsWord(key string, starts []midPhaseStart) string {
@@ -1784,12 +1807,13 @@ func owedWord(t *testing.T, pool *pgxpool.Pool, key string) string {
 }
 
 // stopWord says whether the outbox holds a stop of role on key: a supervise suspend or release of
-// that role, the two acts that stop a worker's process and keep its session.
+// that role, the two acts that stop a worker's process and keep its session, or the retirement of
+// the task its claim holds for a phase a move into awaiting_children stopped (retire_task).
 func stopWord(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) string {
 	t.Helper()
 	var stops int
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'supervise'
-		and payload->>'op' in ('suspend', 'release') and payload->>'role' = $2`, key, string(role)).Scan(&stops); err != nil {
+		and payload->>'op' in ('suspend', 'release', 'retire_task') and payload->>'role' = $2`, key, string(role)).Scan(&stops); err != nil {
 		t.Fatalf("count the stops of the %s of %s: %v", role, key, err)
 	}
 	if stops > 0 {

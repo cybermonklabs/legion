@@ -325,13 +325,14 @@ func lateChildFilingWindow(t *testing.T) Window {
 // depends on a start moves with that start). The child's open status holds the issue's first start
 // (an issue waits for the Dispatch children under it), so a filing applied before the replay starts
 // the issue would hold a start the record made before the filing. The test replays
-// lateChildFilingWindow under keep-past-review: ACME-3 takes its first start at noon, and ACME-4 is
+// lateChildFilingWindow under keep-past-review with no wait that stops the phase
+// (mechanismNoChildrenWait): ACME-3 takes its first start at noon, and ACME-4 is
 // filed 20 minutes after it, at 12:20. It fails where the filing keeps its recorded time, for which
 // ACME-4 is filed at 10:20, while ACME-3 waits for its slot, and holds ACME-3's start to the window's
 // end.
 func TestAnArchitectsFilingUnderItsIssueMovesWithTheIssuesStart(t *testing.T) {
 	t.Parallel()
-	log, copied := replayCopied(t, lateChildFilingWindow(t), "keep-past-review")
+	log, copied := replayCopiedUnder(t, lateChildFilingWindow(t), mechanismNoChildrenWait(t, "keep-past-review"))
 	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 		t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
 	}
@@ -413,15 +414,15 @@ func appliedBy(t *testing.T, copied *shadow, key, kind string, actor eventActor)
 	return applied
 }
 
-// replayRecording replays window under keep-past-review on the main branch at seed 1 and f 1, and
-// answers the replay's log, its copy of Dispatch, and the first moment its daemon recorded key,
-// zero where it never did.
+// replayRecording replays window under keep-past-review with no wait that stops the phase
+// (mechanismNoChildrenWait) on the main branch at seed 1 and f 1, and answers the replay's log, its
+// copy of Dispatch, and the first moment its daemon recorded key, zero where it never did.
 func replayRecording(t *testing.T, window Window, key string) ([]replayLine, *shadow, time.Time) {
 	t.Helper()
 	var copied *shadow
 	var entered time.Time
 	out := t.TempDir()
-	cfg := RunConfig{Window: window, Rule: replayedRule(t, "keep-past-review"), Branch: MainBranch, Seed: 1, Slowdown: 1,
+	cfg := RunConfig{Window: window, Rule: mechanismNoChildrenWait(t, "keep-past-review"), Branch: MainBranch, Seed: 1, Slowdown: 1,
 		PGDSN: replayDSN(t), Out: out}
 	cfg.atStart = func(s *shadow) { copied = s }
 	cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
@@ -521,7 +522,7 @@ func TestAnArchitectsActOnItsOwnUnstartedIssueMovesWithItsStart(t *testing.T) {
 	if p := s.workPiece(SessionClaim{Issue: "ACME-3", Role: claim.RoleArchitect}, clock(10, 20)); p != nil {
 		t.Errorf("ACME-3's architect acts at 10:20 inside its piece %d in %s, want outside every piece of its role", p.index, p.phase)
 	}
-	log, copied := replayCopied(t, window, "keep-past-review")
+	log, copied := replayCopiedUnder(t, window, mechanismNoChildrenWait(t, "keep-past-review"))
 	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 		t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
 	}
@@ -554,7 +555,8 @@ func TestAFilingUnderAnIssueMovesWithItsStartWhoeverFiledIt(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			log, copied := replayCopied(t, lateChildRecord(t, func(b *windowBuilder) { shelfLabels(b, clock(10, 20), c.by) }), "keep-past-review")
+			log, copied := replayCopiedUnder(t, lateChildRecord(t, func(b *windowBuilder) { shelfLabels(b, clock(10, 20), c.by) }),
+				mechanismNoChildrenWait(t, "keep-past-review"))
 			if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 				t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
 			}

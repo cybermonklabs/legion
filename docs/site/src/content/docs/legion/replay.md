@@ -640,6 +640,7 @@ An event that a worker's session wrote inside a work segment of that worker's ro
 So does the filing of a child under that issue, because a child's filing moves with the start that the child is filed after.
 The filing of a child under an issue that no work segment holds enters at its recorded offset from the replay's first start of that issue in its run, or at its recorded time where that is later, whoever filed it: the issue's own architect, the architect of its tree's root, or a person.
 So does an act of an issue's own architect on that issue that no work segment holds, such as a link that the architect sets on it, unless the act answers a question or ends a wait, which keep those anchors.
+While the issue stands in `awaiting_children`, its work stopped by the admission pass (cybermonklabs/legion#4592), such a filing or act waits, and enters after the issue's return as long after it as it fell due after the stop, as the issue's own stopped work does.
 Each of these moves only where the record shows the issue started in its run and not yet out of the workflow at that moment.
 A child's open status and a link hold the issue's first start, so either one applied before the replay starts the issue would hold a start that the record made before it.
 Where the replay's issue leaves the workflow before it takes that start, such an event enters when the issue leaves, or at its recorded time where that is later.
@@ -1312,6 +1313,7 @@ Each has an `.average`, a `.max` and `.hours`.
 - `startedWithoutSlot` is reading (b): every returned issue that holds no slot, its waits on other issues included.
   It counts an issue whose start is owed, an answered root, and an issue that gave its slot back for a wait, until the pass that gives it a slot.
   Under `cover`, a covered waiter counts too.
+  A started parent in `awaiting_children` that holds no slot counts too while it stands there, though it stands in no line (cybermonklabs/legion#4592).
   `legion state` calls it `in all`.
 
 - `pastReviewHolding` and `pastReviewNotHolding`: the issues in accepting, retro or merging, or held from one of them, with a slot and without one.
@@ -1343,6 +1345,7 @@ At a moment with no pair, each share is 0.
 
 - `waits[<word>]`: the `.count` and `.hours` of the waits on other issues, by what ended each.
   A wait runs while an issue in flight, before its review, waits on an unfinished `blocked_by` link, or, at admitted under an open design gate, on an open child.
+  A started parent that the admission pass moves into `awaiting_children` (cybermonklabs/legion#4592) waits there on its open children, from the move until the last of them closes or moves out.
   A child at admitted that has not started has no wait here: its wait is the line's.
   A wait goes on while the root of its tree lingers.
 
@@ -1436,28 +1439,29 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 
 | Rule | What it is | Commit |
 | --- | --- | --- |
-| `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, the line by priority first and returned issues first within one priority, no issue started outside the cap until cybermonklabs/legion#5488 merges, and a conflicting head that keeps its phase. | `0d3786da` |
-| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main`, the line by no priority, and a conflicting head that moves back to implementing. | `958173da` |
-| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, the line by no priority, and red checks that move back to implementing. | `9542c6fb` |
-| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main`, the line by no priority, and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
-| `keep-past-review` | `main` with the slot kept in accepting, retro and merging, so that a send-back past the review finds its issue with its slot. | `0d3786da` |
+| `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, a started parent with an open child moved into `awaiting_children`, which keeps no slot (cybermonklabs/legion#4592), the line by priority first and returned issues first within one priority, no issue started outside the cap until cybermonklabs/legion#5488 merges, and a conflicting head that keeps its phase. | `0d3786da` |
+| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` but no open child that stops a started parent's phase, the line by no priority, and a conflicting head that moves back to implementing. | `958173da` |
+| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, no open child that stops a started parent's phase, the line by no priority, and red checks that move back to implementing. | `9542c6fb` |
+| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main` but no open child that stops a started parent's phase, the line by no priority, and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
+| `keep-past-review` | `main` with the slot kept in accepting, retro and merging, so that a send-back past the review finds its issue with its slot; a parent with an open child still moves into `awaiting_children`, from accepting too, and gives its slot back, as under `main`. | `0d3786da` |
 | `blockers-first` | `main` with each issue that a started issue waits on placed first among the issues that have not started. | `0d3786da` |
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
-| `cover` | A slot kept until the work is done, and an issue that a waiter waits on started on the waiter's slot, one cover for each holder. | `0d3786da` |
-| `wait-grace` | `main` with a wait on another issue that gives the slot back only after five minutes, for the reason that a deployment reported: a started issue whose `blocked_by` link was set and taken off within a minute lost its slot and stood last of 79 in the line's returned part. | `0d3786da` |
-| `wait-grace-1h` | `wait-grace` with a grace of one hour, so that the comparison shows beside it what a longer grace keeps and what it costs. | `0d3786da` |
+| `cover` | A slot kept until the work is done, through every wait on another issue, for its children and for a link alike, and an issue that a waiter waits on started on the waiter's slot, one cover for each holder: a parent with an open child keeps its phase, with no move into `awaiting_children`, and the child starts on the parent's slot and holds it for the parent while the cover stands, as an issue it waits on through a `blocked_by` link does. | `0d3786da` |
+| `wait-grace` | `main` with a link wait, or the children wait of a first phase, that gives the slot back only after five minutes, for the reason that a deployment reported: a started issue whose `blocked_by` link was set and taken off within a minute lost its slot and stood last of 79 in the line's returned part; a started parent with an open child moves into `awaiting_children` at once, as under `main`. | `0d3786da` |
+| `wait-grace-1h` | `wait-grace` with a grace of one hour, so that the comparison shows beside it what a longer grace keeps and what it costs; a started parent with an open child moves into `awaiting_children` at once there too. | `0d3786da` |
 | `returned-by-first-slot` | `main` with a returned issue placed in the line by its first slot in its current generation, not by the time at which its work came back, for the reason that a deployment reported: a started issue sent back from merging for one forward merge stood last of 76 in the returned part, and the issue of the one-minute wait last of 79. | `0d3786da` |
 | `rework-first` | `main` with the line in first in, first out order for started work, for the reason that an owner doubted that the board's rank is kept up to date: the returned issues first, by their first slot in their current generation, then the issues of trees that have started, each tree by its root's first slot and each issue by its arrival in the line, and the trees that have not opened last, by rank. | `0d3786da` |
-| `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it, so that the comparison reads the cost of returning work under the owner's order with and without that slot. | `0d3786da` |
+| `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it, so that the comparison reads the cost of returning work under the owner's order with and without that slot; a parent with an open child still moves into `awaiting_children` and gives its slot back, as under `main`. | `0d3786da` |
 | `arrival-order` | `main` with the line as one queue in the order in which its issues arrived, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
 | `before-p0` | `main` with no P0 issue started outside the cap, so that a P0 issue waits in the line as any issue does, measured for reference, and equal to `main` until cybermonklabs/legion#5488 merges. | `0d3786da` |
 | `p0-at-once` | `main` with an issue whose own priority is P0 started outside the cap, under the P0 bound, for the reason that an owner asked why a P0 issue cannot start at once. | `0d3786da` |
-| `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the same owner's question. | `0d3786da` |
+| `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the same owner's question, which now differs from `main` only for a holder that waits on a person, since under `main` a started parent already gives its slot back while it waits for its children (`awaiting_children`). | `0d3786da` |
 | `p0-idle` | `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap. | `0d3786da` |
 | `signals` | `main` with R10's start of a P0 issue outside the cap and admission by signals below P0: the next issue in the line's priority order starts while each signal that has a limit is under it and the holders below P0 are fewer than the ceiling, which the cap becomes, at the pass of an event or of a signal's deadline and never at the tick. | `0d3786da` |
 | `signals-backoff` | `signals` with an allowance that falls to 90% at each project-limit refusal or kill (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
+`main` is the daemon's rule at the tool's commit, which each run records, so since cybermonklabs/legion#4592 it moves a started parent with an open child into `awaiting_children`.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
 `legion replay rules` prints:
 
@@ -1467,7 +1471,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1523,7 +1527,7 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1537,7 +1541,7 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: blockers_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1551,7 +1555,7 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_by_rank
   the line stands by priority first: true
   a start takes: own_slot
@@ -1579,7 +1583,7 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 5m0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1593,7 +1597,7 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 1h0m0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1607,7 +1611,7 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_by_first_slot
   the line stands by priority first: true
   a start takes: own_slot
@@ -1621,7 +1625,7 @@ rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: rework_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1635,7 +1639,7 @@ rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: rework_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1649,7 +1653,7 @@ arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: arrival
   the line stands by priority first: true
   a start takes: own_slot
@@ -1663,7 +1667,7 @@ before-p0 (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1677,7 +1681,7 @@ p0-at-once (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1691,7 +1695,7 @@ idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1705,7 +1709,7 @@ p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1719,7 +1723,7 @@ signals (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1734,7 +1738,7 @@ signals-backoff (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a link wait gives the slot back: true
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
-  a wait stops the phase under way: false
+  a wait stops the phase under way: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1756,8 +1760,9 @@ Each line of a rule gives one choice:
   A holder whose wait is younger than this keeps its slot, and the first pass at or after the wait's start plus this time gives the slot back.
   `0s` gives it back at the pass that finds the wait.
 
-- `a wait stops the phase under way`: whether such a wait also stops the worker of the phase.
-  Where it does not, the phase goes on while the issue waits, and only its next start waits.
+- `a wait stops the phase under way`: whether an open Dispatch child of a started parent stops the phase under way (cybermonklabs/legion#4592).
+  Where it does, a parent in `planning` through `accepting` whose pull request has not merged moves into `awaiting_children`, which keeps no slot, in place of each start an open child holds and in the middle of a phase the admission pass finds it in, and comes back once no child of it is open.
+  Where it does not, the parent's phases go on while a child is open, and a `blocked_by` link stops no phase under any rule.
 
 - `the line's order`: `returned_oldest_first`, the returned issues first, oldest first, and then the issues that have not started by rank.
   `returned_by_rank` places a returned issue by its board rank.
@@ -2690,6 +2695,7 @@ Spec v4's rule is the candidate `cover` of [The slot rules](#the-slot-rules), wh
 No daemon ran the rule `cover`, so no window shows a cover.
 The fixture windows `send-back-at-full-cap` and `two-waiters-one-blocker` replay covers that their authors worked out by hand from the rule.
 In a replay under `cover`, each cover counts as a slot given out in `slotsGivenByDay`.
+Under `cover` a started parent with an open Dispatch child is a waiter as one with an open `blocked_by` link is: it keeps its phase, with no move into `awaiting_children`, and a child of it that has not started starts on its slot and holds it for the parent while the cover stands (`record.SlotRule.StartedParents`, `blockers.CoverWaits`).
 
 **If it is wrong.**
 If the replay leaves out a cover that the rule takes, or keeps one longer than the rule does, the replay of `cover` moves the measures so.
@@ -3828,3 +3834,30 @@ If the refusals under that limit would have slowed the window's work, the replay
 **The reading that would test it.** _A window that records the limit throughout._
 Replay a window whose record holds the project's limit in every minute, once as recorded and once with the limit taken out of the record and given as `--token-limit`, and compare the refused minutes and the measures of a signal rule.
 A difference shows what the assumption moves.
+
+### Assumption 50: No root's design-gate step rests on an ancestor's approval
+
+Sound for every window recorded before cybermonklabs/legion#4592.
+Since that release a root's design-gate step can open on an approval of an ancestor's document, or wait on an ancestor's open approval request, and a root that a person makes a child of a live tree can rest on its new parent's document.
+The daemon then reads Dispatch for the ancestor's request (the pending-basis seed) and for the new parent's document (the re-parent seed).
+A replay's copy of Dispatch holds no document's requirement blocks and no basis, so the worker stub finishes both reads without acting, and every step opens on the root's own approval, as the record shows it.
+
+**Evidence in a recorded window.** _No basis in any window the tool has replayed._
+Every window the tool has replayed was recorded before the release that brought the basis, so no root of them registered a step on one, and the daemon wrote neither seed there.
+
+**If it is wrong.**
+A step that the record opens on an ancestor's approval opens in the replay at the root's own approval, which is earlier or later than recorded.
+
+- Issues finished: Unknown, because the tree starts earlier or later.
+
+- Started work that waits for a slot: Unknown, for the same reason.
+
+- Priority taken by holders: Unknown.
+  The tree's members enter the line at another moment, by the same ranks.
+
+- Other delays: Unknown.
+
+- Slots: Unknown.
+
+**The reading that would test it.** _A window that holds a step on a basis._
+Replay a window recorded after cybermonklabs/legion#4592 in which a root registered a step on an ancestor's approval, and compare the moment its gate opens, and its tree's first start, with the record's.

@@ -1275,21 +1275,24 @@ func TestATreeLosesTheRankOfAStartAHoldKeepsBack(t *testing.T) {
 	for _, c := range []struct {
 		hold   string
 		window func(*testing.T) Window
-		rule   string
+		rule   record.SlotRule
 		at     time.Time
 	}{
-		{hold: "the tree not running", window: treeNotRunningWindow, rule: "keep-past-review", at: clock(11, 0)},
-		{hold: "the root waiting on a person", window: rootAwaitingHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
-		{hold: "the design gate closed", window: designGateHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
-		{hold: "a blocker", window: blockerHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
-		{hold: "open children", window: openChildrenHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
-		{hold: "an accepted ancestor", window: acceptedAncestorHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
+		{hold: "the tree not running", window: treeNotRunningWindow, rule: replayedRule(t, "keep-past-review"), at: clock(11, 0)},
+		{hold: "the root waiting on a person", window: rootAwaitingHeldWindow, rule: mainRule(t), at: clock(10, 15)},
+		// heldRootA implements with heldChildA open under it from 09:05, which under main moves it
+		// into awaiting_children and frees its slot; the row holds the gate's hold on the rank, on
+		// the course the window was written for.
+		{hold: "the design gate closed", window: designGateHeldWindow, rule: mechanismNoChildrenWait(t, record.MainRule.Name), at: clock(10, 15)},
+		{hold: "a blocker", window: blockerHeldWindow, rule: mainRule(t), at: clock(10, 15)},
+		{hold: "open children", window: openChildrenHeldWindow, rule: mainRule(t), at: clock(10, 15)},
+		{hold: "an accepted ancestor", window: acceptedAncestorHeldWindow, rule: mainRule(t), at: clock(10, 15)},
 	} {
 		t.Run(c.hold, func(t *testing.T) {
 			t.Parallel()
 			ranks := map[string]string{}
 			out := t.TempDir()
-			cfg := RunConfig{Window: c.window(t), Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn, Out: out}
+			cfg := RunConfig{Window: c.window(t), Rule: c.rule, Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn, Out: out}
 			cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
 				if !at.Before(c.at) {
 					return nil
@@ -1304,7 +1307,7 @@ func TestATreeLosesTheRankOfAStartAHoldKeepsBack(t *testing.T) {
 				return nil
 			}
 			if _, err := Run(context.Background(), cfg); err != nil {
-				t.Fatalf("replay the window under %s: %v", c.rule, err)
+				t.Fatalf("replay the window under %s: %v", c.rule.Name, err)
 			}
 			rootA, rootB := record.Issue{Key: heldRootA, Rank: ranks[heldRootA]}, record.Issue{Key: heldRootB, Rank: ranks[heldRootB]}
 			if len(ranks) != 2 || !record.RankLess(rootB, rootA) {
@@ -1681,12 +1684,18 @@ func headerChild(b *windowBuilder, at time.Time, status string) {
 // replay's log and its copy of Dispatch.
 func replayCopied(t *testing.T, window Window, rule string) ([]replayLine, *shadow) {
 	t.Helper()
+	return replayCopiedUnder(t, window, replayedRule(t, rule))
+}
+
+// replayCopiedUnder is replayCopied under a rule value, one a test builds (mechanismNoChildrenWait).
+func replayCopiedUnder(t *testing.T, window Window, rule record.SlotRule) ([]replayLine, *shadow) {
+	t.Helper()
 	var copied *shadow
 	out := t.TempDir()
-	cfg := RunConfig{Window: window, Rule: replayedRule(t, rule), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out}
+	cfg := RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out}
 	cfg.atStart = func(s *shadow) { copied = s }
 	if _, err := Run(context.Background(), cfg); err != nil {
-		t.Fatalf("replay the window under %s: %v", rule, err)
+		t.Fatalf("replay the window under %s: %v", rule.Name, err)
 	}
 	return replayLog(t, out), copied
 }
@@ -1844,13 +1853,14 @@ func reopenLateWindow(t *testing.T) Window {
 // A reopen the daemon's session writes is applied once the replay's own record of the issue stands
 // out of the workflow: one that comes while the replay's issue is still in flight waits for its
 // leave, and comes at its recorded offset from it. The test replays reopenLateWindow under
-// keep-past-review: ACME-3 starts at 11:00 and merges at 12:10, so the reopen recorded at 11:20,
+// keep-past-review with no wait that stops the phase (mechanismNoChildrenWait): ACME-3 starts at
+// 11:00 and merges at 12:10, so the reopen recorded at 11:20,
 // ten minutes after its recorded merge, comes at 12:20, where ACME-3 takes its second slot, and no
 // move is refused. It fails where the reopen is applied while ACME-3's first generation runs,
 // which starts the second over it and refuses the first one's moves.
 func TestAKeptReopenWaitsForTheReplaysOwnLeave(t *testing.T) {
 	t.Parallel()
-	result, log := knobRun(t, reopenLateWindow(t), replayedRule(t, "keep-past-review"), "main")
+	result, log := knobRun(t, reopenLateWindow(t), mechanismNoChildrenWait(t, "keep-past-review"), "main")
 	var given []string
 	for _, slot := range slotsGiven(log) {
 		if strings.HasPrefix(slot, "ACME-3 ") {
@@ -2457,14 +2467,15 @@ func lateBlockerWindow(t *testing.T) Window {
 // The work of a generation the replay never ran, its issue having left the workflow before that
 // work opened, runs at the generation the issue stands at in the replay when it opens, as a drawn
 // piece's does (moveGeneration): the record's generation is one the replay's issue has left. The test
-// replays lateBlockerWindow under keep-past-review: ACME-3 is parked at 10:40 before its blocker is
+// replays lateBlockerWindow under keep-past-review with no wait that stops the phase
+// (mechanismNoChildrenWait): ACME-3 is parked at 10:40 before its blocker is
 // done, enters again at 12:30 at its second generation and starts, and its planner's work of the
 // first generation, half an hour long, moves it to implementing at 13:00, with no move refused. It
 // fails where that work's move is entered at the record's first generation, which the daemon refuses
 // for its generation.
 func TestAnUnrunGenerationsWorkMovesAtTheReplaysGeneration(t *testing.T) {
 	t.Parallel()
-	result, log := knobRun(t, lateBlockerWindow(t), replayedRule(t, "keep-past-review"), "main")
+	result, log := knobRun(t, lateBlockerWindow(t), mechanismNoChildrenWait(t, "keep-past-review"), "main")
 	planned := linesAt(log, func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-3" && line.From == string(phase.Planning) && line.To == string(phase.Implementing)
 	})

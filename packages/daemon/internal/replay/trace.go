@@ -130,6 +130,26 @@ var MoveSources = map[workflow.TriggerKind]MoveSource{
 	TriggerReady:                        {Line: phaseChangedLine, Way: MoveMark, Fact: "replay.ReadyMark", Folds: PhaseAwaitingMerge, Assumptions: []int{19, 20}},
 }
 
+// TriggerChildrenOpen and TriggerChildrenDone are the trace's names for the moves of a started
+// parent into awaiting_children and back out of it (cybermonklabs/legion#4592, record.SlotRule's
+// WaitStopsPhase), which the daemon writes under lines of their own and no `workflow: phase
+// changed` (workflow.ParentWaitsLine, workflow.ParentReturnsLine): the admission pass's and the
+// engine's own moves, made by the replay's own daemon under a rule whose wait stops the phase, and
+// never injected. They are no row of a table (workflow.TableFor), so they stand apart from
+// MoveSources, in ChildrenWaitMoves.
+const (
+	TriggerChildrenOpen workflow.TriggerKind = "children_open"
+	TriggerChildrenDone workflow.TriggerKind = "children_done"
+)
+
+// ChildrenWaitMoves is the trace builder's source of each of the two moves of a parent's wait on
+// its open children, by its trigger (TriggerChildrenOpen, TriggerChildrenDone): each read from its
+// own line, and each the pass's move, which a replay makes itself.
+var ChildrenWaitMoves = map[workflow.TriggerKind]MoveSource{
+	TriggerChildrenOpen: {Line: workflow.ParentWaitsLine, Way: MovePass},
+	TriggerChildrenDone: {Line: workflow.ParentReturnsLine, Way: MovePass},
+}
+
 // phaseChangedLine is the msg of the line every recorded phase move is written under
 // (workflow.(*Engine).transition), the line each MoveSource reads its moves from.
 const phaseChangedLine = "workflow: phase changed"
@@ -828,6 +848,14 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	phaseChangedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return PhaseChanged{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.Phase(a.str("from")),
 			To: phase.Phase(a.str("to")), Trigger: workflow.TriggerKind(a.str("trigger")), Status: a.str("status")}
+	},
+	workflow.ParentWaitsLine: func(h LineHead, a *lineAttrs) LogLine {
+		return PhaseChanged{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.Phase(a.str("from")),
+			To: phase.AwaitingChildren, Trigger: TriggerChildrenOpen}
+	},
+	workflow.ParentReturnsLine: func(h LineHead, a *lineAttrs) LogLine {
+		return PhaseChanged{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.AwaitingChildren,
+			To: phase.Phase(a.str("to")), Trigger: TriggerChildrenDone}
 	},
 	slotTakenLine: func(h LineHead, a *lineAttrs) LogLine {
 		return SlotTaken{LineHead: h, Issue: a.str("issue"), Slots: a.count("slots"), Cap: a.count("cap")}

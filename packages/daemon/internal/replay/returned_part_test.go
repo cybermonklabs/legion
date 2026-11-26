@@ -194,19 +194,20 @@ func TestARetriedHoldOwesItsStartAndATreeThatIsNotLiveWaitsForNoSlot(t *testing.
 // parked at done. At 11:20 the person closes ACME-1: it leaves the workflow and lingers to 13:20,
 // and ACME-2's slot goes back, its tree not live. At 11:40 the person closes ACME-3.
 //
-// Replayed under main with a wait that stops the phase under way (stopsPhaseRule), whose
-// children-first rule holds a started parent in any phase (record.SlotRule.ChildrenFirstCandidates),
-// ACME-2 waits on its open child ACME-3 from 10:00, gives its slot back for it and is stopped.
+// Replayed under main, whose wait stops the phase under way since cybermonklabs/legion#4592
+// (record.SlotRule.WaitStopsPhase), ACME-2 waits on its open child ACME-3 from 10:00, moves into
+// awaiting_children, which keeps no slot, and its worker is stopped.
 // ACME-4 is an open child of it from 10:10 to its leave at 10:30, and holds it no longer in
 // backlog, since the daemon recorded it and its record has left the workflow (record.ChildOpen).
-// From 11:20 the pass judges no wait of ACME-2 on its children, the root of its tree lingering,
-// though ACME-3 is open under it to 11:40. Four hours:
+// From 11:20 the tree runs no longer, its root lingering, and the pass takes no parent of a tree
+// that does not run back out of awaiting_children (admit's childrenWaits), so ACME-2 stands there
+// to the window's end, though ACME-3 closes at 11:40. Four hours:
 //
 //	ACME-1: waits on its child from 09:20 to its leave at 11:20, given back and blocked all of it:
 //	one wait of left_workflow for 2 hours, and 2 hours in reading (b).
 //	ACME-2: waits on its children from 10:00 to ACME-3's close at 11:40: one wait of child_done for
-//	1 hour 40 minutes; given back and blocked from 10:00 to 11:20, where its tree stops being live:
-//	1 hour 20 minutes in reading (b).
+//	1 hour 40 minutes; started before its review with no slot in awaiting_children from 10:00 to
+//	13:00, its wait on its children included: 3 hours in reading (b).
 //	ACME-4: holds a slot from 10:10 to its leave at 10:30 and waits on nothing.
 func lingeringParentWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
@@ -238,18 +239,16 @@ func lingeringParentWindow(t *testing.T) Window {
 // then implements. A person files ACME-3 under ACME-2 in backlog at 09:30 and closes it at 10:00,
 // and files ACME-4 under it in backlog at 11:30 and closes it at 12:00.
 //
-// Replayed under main with a wait that stops the phase under way (stopsPhaseRule), whose
-// children-first rule holds a started parent in any phase (record.SlotRule.ChildrenFirstCandidates),
-// ACME-2 waits on ACME-3 from 09:30, in planning, its planner stopped, and takes its slot back at
-// 10:00; it plans the rest of its segment and implements, and waits on ACME-4 from 11:30, in
-// implementing. The daemon tells a parent's wait once for its tree's generation
-// (record.Store.TellChildrenFirst), so the log holds no line of the second wait, which the trace
-// reads from ACME-4's filing (traceBuilder.childrenWaitAgain). Four hours:
+// Replayed under main, whose wait stops the phase under way since cybermonklabs/legion#4592
+// (record.SlotRule.WaitStopsPhase), ACME-2 waits on ACME-3 from 09:30, moving from planning into
+// awaiting_children, its planner stopped, and comes back to planning at 10:00; it plans the rest
+// of its segment and implements, and waits on ACME-4 from 11:30, moving from implementing into
+// awaiting_children. Each move into the wait is a phase move the log holds. Four hours:
 //
 //	ACME-1: waits on its child from 09:20 to the window's end, given back and blocked all of it:
 //	one wait, open, for 3 hours 40 minutes, and 3 hours 40 minutes in reading (b).
 //	ACME-2: waits on ACME-3 from 09:30 to 10:00 and on ACME-4 from 11:30 to 12:00: two waits of
-//	child_done for 1 hour, given back and blocked all of it, 1 hour in reading (b).
+//	child_done for 1 hour, in awaiting_children with no slot all of it, 1 hour in reading (b).
 func childrenAgainWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.capped(2)

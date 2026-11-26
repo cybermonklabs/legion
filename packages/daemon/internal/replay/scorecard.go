@@ -33,7 +33,8 @@ type Scorecard struct {
 	// no wait holds (admission.blocked names none of them).
 	WaitOnlyForSlot Occupancy `json:"waitOnlyForSlot"`
 	// StartedWithoutSlot is reading (b): every returned member of the line that holds no slot,
-	// its waits on other issues included.
+	// its waits on other issues included, and every started parent in awaiting_children that
+	// holds none (IssueState.AwaitingChildren), which stands in no line.
 	StartedWithoutSlot Occupancy `json:"startedWithoutSlot"`
 	// PastReviewHolding and PastReviewNotHolding are the issues past their review that hold a
 	// slot and that hold none.

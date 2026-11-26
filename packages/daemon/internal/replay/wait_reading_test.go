@@ -23,7 +23,12 @@ import (
 // its architect files ACME-2 under it at 06:30, todo and blocked by ACME-1. ACME-1's implementer's
 // turn ends at 08:30 with no move, and at 08:40 a pass takes its slot back with no wait. Nothing
 // happens in the window itself: ACME-1 holds no slot, owes no start and carries no mark, so the
-// daemon judges no wait of it (blockers' startedIssues), and ACME-2 waits behind it.
+// daemon judges no link wait of it (blockers' startedIssues), and its link to ACME-3, done, is no
+// wait in either timeline. Replayed under main, whose wait stops the phase under way since
+// cybermonklabs/legion#4592, ACME-2, open under ACME-1, holds ACME-1's next start: the first
+// tick's pass, at 09:01, moves ACME-1 into awaiting_children, where it waits on ACME-2 to the
+// window's end, one wait, open, for 3 hours 59 minutes. ACME-2's link to ACME-1, an ancestor not
+// done, is a cycle the daemon names and leaves (record's cycleAncestor), so ACME-2 never starts.
 func doneBlockerWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.reaches(3 * time.Hour)

@@ -673,6 +673,8 @@ func untoldReason(reason record.UntoldReason) workflow.NewsState {
 		return workflow.NewsAwaitingPerson
 	case record.UntoldHeld:
 		return workflow.NewsStopped
+	case record.UntoldAwaitingChildren:
+		return workflow.NewsAwaitingChildren
 	}
 	return workflow.NewsGateClosed
 }

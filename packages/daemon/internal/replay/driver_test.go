@@ -42,6 +42,23 @@ func mainRule(t *testing.T) record.SlotRule {
 	return replayedRule(t, record.MainRule.Name)
 }
 
+// mechanismNoChildrenWait is the kept rule named base with no wait that stops the phase under way
+// (record.SlotRule.WaitStopsPhase off), under the name mechanism-no-children-wait, a rule no part
+// of the tool offers (record.SlotRules) and no fixture's result names. A test of a mechanism of the
+// replay, such as an event that moves with an issue's start or a hold that keeps a tree's rank,
+// replays under it a window whose fact is that mechanism: since cybermonklabs/legion#4592 the
+// daemon's own rule moves a started parent with an open child into awaiting_children, which would
+// free the parent's slot and change the very starts those tests hold, so they hold the mechanism on
+// the course their windows were written for, and the path of the wait itself is held by tests of
+// its own (TestARuleThatStopsThePhaseStopsIt, TestAWaitingParentsEventsMoveWithItsReturn).
+func mechanismNoChildrenWait(t *testing.T, base string) record.SlotRule {
+	t.Helper()
+	rule := replayedRule(t, base)
+	rule.Name, rule.WaitStopsPhase = "mechanism-no-children-wait", false
+	rule.KeepsSlotIn = slices.Clone(rule.KeepsSlotIn)
+	return rule
+}
+
 // fixtureWindow reads the fixture window name.
 func fixtureWindow(t *testing.T, name string) Window {
 	t.Helper()
@@ -103,22 +120,32 @@ func replayedMoves(log []replayLine) map[string][]fixtureMove {
 	return moves
 }
 
-// stopsPhaseRule is main with a wait that stops the phase under way (record.SlotRule.WaitStopsPhase),
-// the one choice of #4592's rule the test needs, built here while the repository keeps no rule
-// with it.
-func stopsPhaseRule() record.SlotRule {
-	rule := record.MainRule
-	rule.Name, rule.WaitStopsPhase = "main-wait-stops-phase", true
-	rule.KeepsSlotIn = slices.Clone(record.MainRule.KeepsSlotIn)
-	return rule
+// childDuringImplementingWindow is a window in which a child is filed under a parent while the
+// parent's phase is under way. ACME-1, a root, is promoted at 09:05, plans from 09:20 and
+// implements from 09:50, its one turn running to the move to testing at 11:00. At 10:00 its
+// architect files ACME-2 under it in the backlog, a child it never releases, which is open
+// (record.ChildOpen); at 10:30 a person moves ACME-2 to icebox, which closes it as a child.
+func childDuringImplementingWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.boot(clock(9, 0))
+	b.file(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.rootPromoted(clock(9, 5), "ACME-1")
+	b.rootDesigned(clock(9, 20), "ACME-1")
+	b.segmentEnds(clock(9, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.filedBy(clock(10, 0), "ACME-2", filing{Title: "Name the export's columns", Parent: "ACME-1", Status: "backlog", Rank: "a1"},
+		b.session("ACME-1", claim.RoleArchitect))
+	b.edit(clock(10, 30), "ACME-2", setStatus("icebox"))
+	b.segmentEnds(clock(11, 0), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	return b.build()
 }
 
 // linkDuringImplementingWindow is a window in which a wait begins while a phase is under way.
 // ACME-1, a root, is promoted at 09:05, plans from 09:20 and implements from 09:50, its one turn
 // running to the move to testing at 11:00. ACME-3, an issue Legion is not given, stands in backlog
 // from 09:06. At 10:00 a person links ACME-1 as blocked by ACME-3, and admission gives ACME-1's slot
-// back for the wait; at 10:30 the person closes ACME-3, and ACME-1 takes its slot again. Under
-// main the implementer works on through the wait, so the move comes at 11:00 as recorded.
+// back for the wait; at 10:30 the person closes ACME-3, and ACME-1 takes its slot again. The
+// implementer works on through the wait under every rule, since a blocked_by link stops no phase,
+// so the move comes at 11:00 as recorded.
 func linkDuringImplementingWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.boot(clock(9, 0))
@@ -135,27 +162,31 @@ func linkDuringImplementingWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// A rule whose wait stops the phase under way stops it in a replay (spec R2): the daemon's own code
-// suspends the worker of the phase when the pass gives the slot back for the wait
-// (workflow.Engine.StopForWait), and the replay's worker stub pauses the segment that worker works,
-// with the rest of its length, ends its turn, and resumes it when the issue takes its slot again
-// and the pass sends its worker the entry again. The test replays linkDuringImplementingWindow
-// under main and under main with a wait that stops the phase. Under main the implementer is never
-// suspended and ACME-1 moves to testing at 11:00, as recorded; under the other rule its implementer
-// is suspended at 10:00 and starts no turn until the wait ends at 10:30, and the move comes at
-// 11:30, half an hour of the segment's length done after the wait.
+// A wait that stops the phase under way is cybermonklabs/legion#4592's, and a replay plays it
+// through the daemon's own engine (spec R2): under main the admission pass that reads ACME-2 filed
+// under ACME-1 moves ACME-1 into awaiting_children at 10:00, retiring its implementer's task, and
+// the replay's worker stub pauses the segment that worker works, with the rest of its length, and
+// ends its turn; the pass that reads ACME-2 in icebox at 10:30 returns ACME-1 to implementing,
+// whose start resumes the segment, so the move to testing comes at 11:30, half an hour of the
+// segment's length done after the wait. Under legion-v22.14.1, the rule of a release before #4592,
+// the child stops nothing: ACME-1 never enters awaiting_children and moves to testing at 11:00, as
+// recorded. Under neither does the implementer start a turn inside the wait.
 func TestARuleThatStopsThePhaseStopsIt(t *testing.T) {
 	t.Parallel()
 	dsn := replayDSN(t)
-	window := linkDuringImplementingWindow(t)
+	window := childDuringImplementingWindow(t)
 	implementer := string(builtToken(t, "ACME-1", claim.RoleImplementer))
+	recorded, kept := record.SlotRuleNamed("legion-v22.14.1")
+	if !kept {
+		t.Fatal("the repository keeps no rule legion-v22.14.1")
+	}
 	for _, c := range []struct {
-		rule      record.SlotRule
-		moved     time.Time
-		suspended bool
+		rule  record.SlotRule
+		moves []string
 	}{
-		{rule: mainRule(t), moved: clock(11, 0)},
-		{rule: stopsPhaseRule(), moved: clock(11, 30), suspended: true},
+		{rule: mainRule(t), moves: []string{"implementing -> awaiting_children at 10:00", "awaiting_children -> implementing at 10:30",
+			"implementing -> testing at 11:30"}},
+		{rule: recorded, moves: []string{"implementing -> testing at 11:00"}},
 	} {
 		t.Run(c.rule.Name, func(t *testing.T) {
 			t.Parallel()
@@ -164,31 +195,120 @@ func TestARuleThatStopsThePhaseStopsIt(t *testing.T) {
 				PGDSN: dsn, Out: out}); err != nil {
 				t.Fatalf("replay the window under %s: %v", c.rule.Name, err)
 			}
-			var moved []time.Time
-			var suspendedAt []time.Time
+			var moves []string
 			var turnsInWait []time.Time
 			for _, line := range replayLog(t, out) {
 				switch {
-				case line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.From == string(phase.Implementing):
-					moved = append(moved, line.Time)
-				case line.Msg == "supervise: suspended" && line.Claim == implementer:
-					suspendedAt = append(suspendedAt, line.Time)
 				case line.Msg == "supervise: a turn started" && line.Claim == implementer && !line.Time.Before(clock(10, 0)) &&
 					line.Time.Before(clock(10, 30)):
 					turnsInWait = append(turnsInWait, line.Time)
+				case line.Issue != "ACME-1" || line.Time.Before(clock(10, 0)):
+				case line.Msg == phaseChangedLine:
+					moves = append(moves, line.From+" -> "+line.To+" at "+line.Time.Format("15:04"))
+				case line.Msg == workflow.ParentWaitsLine:
+					moves = append(moves, line.From+" -> "+string(phase.AwaitingChildren)+" at "+line.Time.Format("15:04"))
+				case line.Msg == workflow.ParentReturnsLine:
+					moves = append(moves, string(phase.AwaitingChildren)+" -> "+line.To+" at "+line.Time.Format("15:04"))
 				}
 			}
-			if len(moved) != 1 || !moved[0].Equal(c.moved) {
-				t.Errorf("ACME-1 moved out of implementing at %v, want once at %s", moved, c.moved.Format(time.RFC3339))
-			}
-			switch {
-			case c.suspended && (len(suspendedAt) != 1 || !suspendedAt[0].Equal(clock(10, 0))):
-				t.Errorf("ACME-1's implementer was suspended at %v, want once at 10:00, when its slot went back for the wait", suspendedAt)
-			case !c.suspended && len(suspendedAt) > 0:
-				t.Errorf("ACME-1's implementer was suspended at %v, and under %s a wait stops no phase", suspendedAt, c.rule.Name)
+			if !slices.Equal(moves, c.moves) {
+				t.Errorf("ACME-1's moves from 10:00 on under %s = %v, want %v", c.rule.Name, moves, c.moves)
 			}
 			if len(turnsInWait) > 0 {
 				t.Errorf("ACME-1's implementer started turns at %v, inside the wait from 10:00 to 10:30", turnsInWait)
+			}
+		})
+	}
+}
+
+// childDoneDuringPlanningWindow is a window from 09:00 to 13:00 under a cap of two in which a
+// parent's architect files a child under it while its planner plans, and the child is done while
+// the parent still plans. ACME-1, a root, is promoted at 09:05 and plans from 09:20 to 09:50. At
+// 09:30 its architect files ACME-2 under it, todo, which starts at once on the second slot and
+// works 10 minutes in each phase to its merge at 10:40, giving its slot back at accepting. At 09:40
+// ACME-1's architect retitles ACME-1, an act that no piece of the architect's work places, so it
+// is placed from ACME-1's start. ACME-1 implements from 09:50 to 10:30 and moves to testing.
+func childDoneDuringPlanningWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.capped(2)
+	b.boot(clock(9, 0))
+	promotedRoot(b, clock(9, 5), "ACME-1", "a0")
+	b.rootDesigned(clock(9, 20), "ACME-1")
+	b.filedBy(clock(9, 30), "ACME-2", filing{Title: "Name the export's columns", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a1"},
+		b.session("ACME-1", claim.RoleArchitect))
+	b.childStarts(clock(9, 30), "ACME-2")
+	b.through("ACME-2", phase.Planning, moveAt(9, 40, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(9, 50, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 0, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 10, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 30, phase.Merging, workflow.TriggerRetroCompleted))
+	b.turnEnds(clock(10, 40), "ACME-2", claim.RoleMerger)
+	b.moved(clock(10, 40), "ACME-2", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(clock(10, 40), "ACME-2", record.DoneStatus)
+	retitled(b, clock(9, 40), "ACME-1", architectOf("ACME-1"))
+	b.through("ACME-1", phase.Planning, moveAt(9, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 30, phase.Testing, workflow.TriggerImplementationReady))
+	return b.build()
+}
+
+// A parent that waits in awaiting_children goes on after its children are done, and what it does
+// after the wait began moves with its next start (spec R2: a fact that depends on a start moves
+// with that start), while it holds no slot through the wait. Under main (cybermonklabs/legion#4592)
+// the pass that reads ACME-2 filed at 09:30 moves ACME-1 into awaiting_children, its planner
+// stopped with 20 of its 30 minutes left, and its slot goes back; ACME-2 starts on a slot and is
+// done at 10:40, where ACME-1 comes back to planning and takes a slot again. Its planner works the
+// rest of its segment to 11:00 and its implementer the 40 minutes of its own to 11:40. Its
+// architect's retitle, recorded 10 minutes into the wait, enters 10 minutes after the return, at
+// 10:50. Under legion-v22.14.1, the rule of a release before #4592, the child stops nothing, and
+// each of them comes at its recorded time. The test fails where the parent's later moves or its
+// architect's act keep their recorded times under main, or where ACME-1 holds a slot while it
+// waits.
+func TestAParentThatWaitsForItsChildrenGoesOnAtItsReturn(t *testing.T) {
+	t.Parallel()
+	recorded, kept := record.SlotRuleNamed("legion-v22.14.1")
+	if !kept {
+		t.Fatal("the repository keeps no rule legion-v22.14.1")
+	}
+	for _, c := range []struct {
+		rule     record.SlotRule
+		moves    []string
+		slots    []string
+		retitled time.Time
+	}{
+		{rule: mainRule(t), moves: []string{"planning -> awaiting_children at 09:30", "awaiting_children -> planning at 10:40",
+			"planning -> implementing at 11:00", "implementing -> testing at 11:40"},
+			slots: []string{"admission: slot released at 09:30", "admission: slot taken at 10:40"}, retitled: clock(10, 50)},
+		{rule: recorded, moves: []string{"planning -> implementing at 09:50", "implementing -> testing at 10:30"}, retitled: clock(9, 40)},
+	} {
+		t.Run(c.rule.Name, func(t *testing.T) {
+			t.Parallel()
+			log, copied := replayCopiedUnder(t, childDoneDuringPlanningWindow(t), c.rule)
+			var moves, slots []string
+			for _, line := range log {
+				if line.Issue != "ACME-1" || line.Time.Before(clock(9, 30)) {
+					continue
+				}
+				at := line.Time.Format("15:04")
+				switch line.Msg {
+				case phaseChangedLine:
+					moves = append(moves, line.From+" -> "+line.To+" at "+at)
+				case workflow.ParentWaitsLine:
+					moves = append(moves, line.From+" -> "+string(phase.AwaitingChildren)+" at "+at)
+				case workflow.ParentReturnsLine:
+					moves = append(moves, string(phase.AwaitingChildren)+" -> "+line.To+" at "+at)
+				case "admission: slot released", "admission: slot taken":
+					slots = append(slots, line.Msg+" at "+at)
+				}
+			}
+			if !slices.Equal(moves, c.moves) {
+				t.Errorf("ACME-1's moves from 09:30 on under %s = %v, want %v", c.rule.Name, moves, c.moves)
+			}
+			if !slices.Equal(slots, c.slots) {
+				t.Errorf("ACME-1's slot lines from 09:30 on under %s = %v, want %v, no slot held while it waits", c.rule.Name, slots, c.slots)
+			}
+			retitles := appliedBy(t, copied, "ACME-1", "issue.updated", architectOf("ACME-1"))
+			if want := []time.Time{c.retitled}; !slices.EqualFunc(retitles, want, time.Time.Equal) {
+				t.Errorf("the architect's retitle of ACME-1 entered at %s under %s, want at %s", describeTimes(retitles), c.rule.Name,
+					describeTimes(want))
 			}
 		})
 	}
@@ -537,7 +657,7 @@ func TestAWarmStartMatchesTheSeed(t *testing.T) {
 	ctx := context.Background()
 	window := fixtureWindow(t, "every-trigger")
 	at := clock(12, 25)
-	rule := mainRule(t)
+	rule := mechanismNoChildrenWait(t, record.MainRule.Name)
 
 	warm := window
 	warm.To = at

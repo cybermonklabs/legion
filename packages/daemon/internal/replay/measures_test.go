@@ -395,21 +395,25 @@ func TestSlotHoursByTurn(t *testing.T) {
 }
 
 // A window's own scorecard needs no replay (spec R4): Score reads every measure from the record
-// alone, by the code a replay is measured by. Each fixture window recorded under main whose
-// expect.json names main on the main branch is one whose replay under main keeps the record's
-// course, so its record's scorecard is the one its README works out by hand, but for what a replay
-// alone names: the source is the record, and a record runs under no rule, branch, seed or
-// slowdown, rests on none of a replay's assumptions and takes no never-started scenario. What a
-// scorecard reads from its trace alone (traceMeasures) and what the forecast reads of its line
-// timeline (forecastReadings), which the replay's snapshot scorecard in expect.json holds none of,
-// is not compared here.
+// alone, by the code a replay is measured by. Each fixture window whose expect.json names the rule
+// its record was made under (its parts' rule) on the main branch is one whose replay under that
+// rule keeps the record's course, so its record's scorecard is the one its README works out by
+// hand for that rule: `main` for most, and legion-v22.14.1 for the two windows whose record a
+// daemon before cybermonklabs/legion#4592 made, root-idle-while-children-run and every-trigger,
+// where today's main moves a started parent into awaiting_children and the record does not. What a
+// replay alone names is left out: the source is the record, and a record runs under no rule,
+// branch, seed or slowdown, rests on none of a replay's assumptions and takes no never-started
+// scenario. What a scorecard reads from its trace alone (traceMeasures) and what the forecast
+// reads of its line timeline (forecastReadings), which the replay's snapshot scorecard in
+// expect.json holds none of, is not compared here.
 func TestScorecardOfTheRecord(t *testing.T) {
 	t.Parallel()
 	scored := 0
 	for _, name := range fixtureWindowNames(t) {
 		window, expect := readFixture(t, name)
-		want, named := expect.Rules[record.MainRule.Name]
-		if partsRule(window.Parts) != record.MainRule.Name || !named || expect.Branch != "" {
+		recorded := partsRule(window.Parts)
+		want, named := expect.Rules[recorded]
+		if recorded == "" || !named || expect.Branch != "" {
 			continue
 		}
 		scored++
@@ -428,7 +432,7 @@ func TestScorecardOfTheRecord(t *testing.T) {
 		})
 	}
 	if scored == 0 {
-		t.Fatalf("no fixture window is recorded under main with a scorecard under main: nothing was scored")
+		t.Fatalf("no fixture window has a scorecard under the rule its record was made under: nothing was scored")
 	}
 }
 
@@ -545,8 +549,8 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 // 09:20 to 10:20, and in linkPastReviewWindow a link wait cut at the move past the review, though
 // its blocker is done only later (issueWaits). Both timelines count each wait by what ended it as
 // the window's own doc counts it, a parent's second wait on its children in one run of its tree
-// among them, which the daemon tells no line of (childrenAgainWindow, read under the rule the
-// replay ran: buildTrace). And neither has an issue a hold of the daemon's line keeps from
+// among them, each a move into awaiting_children the replay's own log holds (childrenAgainWindow,
+// buildTrace). And neither has an issue a hold of the daemon's line keeps from
 // its first start wait for a slot (startingAt): ACME-2 of childrenFirstWindow while its own open
 // child holds it, of acceptedAncestorWindow while its parent stands accepted, and of
 // ancestryWindow, a queued root, while its Dispatch chain names a live root. Four windows hold the
@@ -594,13 +598,13 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	})
 	t.Run("lingering-parent", func(t *testing.T) {
 		t.Parallel()
-		result := timelinesAgree(t, dsn, lingeringParentWindow(t), stopsPhaseRule())
-		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 2}, {key: "ACME-2", b: 4.0 / 3}})
+		result := timelinesAgree(t, dsn, lingeringParentWindow(t), record.MainRule)
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 2}, {key: "ACME-2", b: 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitChildDone: {Count: 1, Hours: 5.0 / 3}})
 	})
 	t.Run("children-again", func(t *testing.T) {
 		t.Parallel()
-		result := timelinesAgree(t, dsn, childrenAgainWindow(t), stopsPhaseRule())
+		result := timelinesAgree(t, dsn, childrenAgainWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 11.0 / 3}, {key: "ACME-2", b: 1}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 11.0 / 3}, WaitChildDone: {Count: 2, Hours: 1}})
 	})
@@ -613,7 +617,8 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	t.Run("done-blocker", func(t *testing.T) {
 		t.Parallel()
 		result := timelinesAgree(t, dsn, doneBlockerWindow(t), record.MainRule)
-		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{})
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 239.0 / 60}})
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 239.0 / 60}})
 	})
 	t.Run("gate-version", func(t *testing.T) {
 		t.Parallel()

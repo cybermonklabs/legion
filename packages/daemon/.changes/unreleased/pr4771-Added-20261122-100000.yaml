@@ -39,7 +39,11 @@ body: |-
     (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
     daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
     does, and the rules of the recorded windows, whose releases came before that order, do not; the
-    replay gives each issue the priority its recorded Dispatch events show. Among the candidates,
+    replay gives each issue the priority its recorded Dispatch events show. The daemon's own rule
+    and every candidate but `cover` also move a started parent with an open Dispatch child into
+    `awaiting_children`, as the daemon does since #4592, and the rules of the recorded windows do
+    not; under `cover` such a parent keeps its phase, and its child starts on the parent's slot
+    and holds it for the parent. Among the candidates,
     `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another issue for its
     first five minutes or its first hour, `returned-by-first-slot`, `rework-first` and
     `rework-first-keep` place returned work first, `arrival-order` places every issue by its
@@ -66,7 +70,9 @@ body: |-
     `legion state` prints a `slots:` line under its admission line. It says what each holder of a
     slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
     it), how many started issues wait for a slot, in two readings, and how many holders rank below
-    the first issue that waits for one in the line's own order, which puts priority first. With
+    the first issue that waits for one in the line's own order, which puts priority first. The
+    second reading, `in all`, also counts each started parent in `awaiting_children` that holds no
+    slot. With
     daemon API entry `20261125162112` (`slots-reading`), `legion state --json` carries the same
     reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
     each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
