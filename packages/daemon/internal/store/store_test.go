@@ -1239,6 +1239,11 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 		{"a database at the idle release", func(m migrations.Migration) bool {
 			return !thisRelease[m.Version] && m.Version <= idleRelease
 		}},
+		// A database main migrated once it took the merge holds' 20261126110259, which is every
+		// deployment running main since then. It lacks only the done-by-checks migration, which
+		// stands below 20261126110259, so the upgrade applies it after that list. Its list is then
+		// the last word, and it must name merge_holds_changed too.
+		{"a database main migrated with the merge holds", func(m migrations.Migration) bool { return m.Version != doneByChecksVersion }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

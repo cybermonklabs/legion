@@ -291,8 +291,9 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // before reads. Block B leaves the store exactly as the release before migrated it, which is the
 // store that release boots on: each column, constraint, function, index and version recorded. The
 // release before applies every embedded migration but this one, those that sort above it among
-// them. So a difference is what the block leaves of this migration, or what it takes of the release
-// before.
+// them. 20261126110259 sorts above it and writes outbox_kind_check whole, close_read and
+// close_wait_publish among its kinds, so block B leaves that check as it stands. So a difference
+// is what the block leaves of this migration, or what it takes of the release before.
 // Before that, a delivery's copy in the release before's form is read through design_news_credits,
 // and so through design_news_current, and counts as a credit, and step_run_witness answers for an
 // issue: neither fails on the dropped tree_generation.

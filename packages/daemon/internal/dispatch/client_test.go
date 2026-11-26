@@ -1432,6 +1432,15 @@ func clientWrites() []clientWrite {
 			body:   `{"name":"rescue-pod-9d3f0c7a","content":"# The full list\n","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 			answer: `{"artifact":{"id":"artifact-3","slug":"rescue-pod-9d3f0c7a"}}`,
 		},
+		{
+			method: "UploadArtifactOver", route: "POST /api/v1/issues/OTHER-7/artifacts",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.UploadArtifactOver(ctx, "OTHER-7", "close-wait.md", "# Waits\n", "sha256:standing")
+				return err
+			},
+			body:   `{"name":"close-wait.md","content":"# Waits\n","actor":{"kind":"session","id":"legion-daemon:OTHER"},"precondition":{"document":"sha256:standing"}}`,
+			answer: `{"artifact":{"slug":"close-wait-md"}}`,
+		},
 	}
 }
 
@@ -1502,9 +1511,9 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 // *HTTPClient is a row of that table or one of the reads below, which send no actor, and each name
 // the two lists hold is a method the client has.
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
-	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
-		"EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff",
-		"Whoami"}
+	reads := []string{"ListIssues", "GetIssue", "IssueResults", "IssueResultsAt", "WebhookAppInstalled", "Artifacts", "ArtifactToken",
+		"Ask", "Reviews", "DocumentVersion", "EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges",
+		"PlanDocument", "Handoff", "Whoami"}
 	listed := map[string]string{}
 	for _, read := range reads {
 		listed[read] = "the list of reads"
