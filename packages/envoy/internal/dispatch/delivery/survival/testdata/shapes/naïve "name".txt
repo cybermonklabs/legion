@@ -1,0 +1,2 @@
+the first line of a file whose path git quotes
+the second line of that file
