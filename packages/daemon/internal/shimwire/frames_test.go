@@ -349,6 +349,33 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 			}},
 		},
 		{
+			// OpenAI's cyber-policy refusal, relayed by a gateway as a 503: the status alone reads
+			// as "not now", and only the code says that sending it again is refused again. Oh My
+			// Pi's promptError builds the object in this order: it marks the failure not
+			// retryable and adds the code, then adds the status last; `#report` writes the error
+			// after `sessionSettled` (packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts at
+			// the pinned tag). Synthetic refusal text, as Oh My Pi's own test of it uses.
+			"a turn OpenAI refused for cyber policy, relayed as a 503",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error","sessionSettled":true,` +
+				`"error":{"message":"503 cyber_policy: This content was flagged for possible cybersecurity risk.","provider":"openai","model":"gpt-5.5","retryable":false,"code":"cyber_policy","httpStatus":503}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "503 cyber_policy: This content was flagged for possible cybersecurity risk.", Provider: "openai",
+				Model: "gpt-5.5", HTTPStatus: 503, Code: "cyber_policy",
+			}},
+		},
+		{
+			// A request Oh My Pi's cost gate refused once the session reached `session.maxCost`:
+			// no request went out, so the error names no provider, model or status, only the code
+			// (`#costCapOutcome` there).
+			"a turn the session's cost cap stopped",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error","sessionSettled":true,` +
+				`"error":{"message":"Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.","retryable":false,"code":"cost_cap"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+				Code:    "cost_cap",
+			}},
+		},
+		{
 			// `id` is optional in the schema, and a result that names no request names no
 			// delivery either; it still decodes, and the daemon drops it downstream.
 			"a result of no request of the daemon's",
@@ -373,9 +400,8 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 				t.Fatalf("Reason() = %q, want %q", result.Reason(), reason)
 			}
 			// Each member of the error object by itself: the daemon decides what a failed turn
-			// means from four of the members beside the message, so one dropped here is a
-			// failure it reads as something else; code, which nothing reads, is kept so the
-			// frame survives whole.
+			// means from the members beside the message, the status and the code among them, so
+			// one dropped here is a failure it reads as something else.
 			if want := tc.want.Error; want != nil {
 				got := result.Error
 				if got == nil {

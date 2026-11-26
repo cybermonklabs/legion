@@ -130,8 +130,8 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		case <-waiting:
 		case err := <-answer:
 			t.Fatalf("the publish answered %v without entering the reconnect wait", err)
-		case <-time.After(5 * time.Second):
-			t.Fatal("the publish never entered the reconnect wait")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish had not entered the reconnect wait by the test's deadline")
 		}
 		release()
 		f.proxy.refuse.Store(false)
