@@ -827,6 +827,32 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
   expect(drawn("message")).toMatchObject({ tag: null });
 });
 
+// A criterion is what a person wants to be able to do, which the work is held to as it is to
+// the spec's statements: its bullet and its tag take a statement's colour, and never the ink of
+// a person's turn.
+test("a criterion row draws its bullet and its tag in a statement's colour", () => {
+  const view = renderRow(
+    node({ id: "criterion-1", text: "I can see what waits on me.", type: "criterion" })
+  );
+  try {
+    const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+    const dot = view.container.querySelector("[data-node-bullet] i");
+    expect(tag?.textContent, "the criterion's row draws no tag of its kind").toBe(
+      NODE_TYPE_NAMES.criterion
+    );
+    expect([...(dot?.classList ?? [])], "the criterion's bullet").toContain(
+      pageKindBullet.statement
+    );
+    expect([...(tag?.classList ?? [])], "the criterion's tag").toContain(pageKindTag.statement);
+    expect([...(dot?.classList ?? [])], "the criterion's bullet").not.toContain(
+      pageKindBullet.person
+    );
+    expect([...(tag?.classList ?? [])], "the criterion's tag").not.toContain(pageKindTag.person);
+  } finally {
+    view.unmount();
+  }
+});
+
 // Decision 246: a `requirement` block is a statement only in the issue's spec (`isStatement`).
 // The same block of the plan, or of any other document, is a block and nothing more, so its row
 // draws its type's own word and none of a statement's marks - not its word, its shape or its

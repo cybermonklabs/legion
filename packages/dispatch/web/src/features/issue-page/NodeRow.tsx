@@ -560,10 +560,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "comment":
     case "message":
       return author === "person" ? "person" : "agent";
-    // A criterion is what a person wants to be able to do, in their own words (`page-words`), a
-    // node only a person writes: it takes a person's ink.
+    // A criterion is what a person wants to be able to do, in their own words (`page-words`):
+    // what the work is held to, as it is to the spec's statements, so it takes their colour.
     case "criterion":
-      return "person";
+      return "statement";
     case "decision":
       return "decision";
     // A reading is an agent's reading of a person's answer, inside the ask or the decision it
