@@ -820,17 +820,18 @@ TIE_WILD = re.compile(r"[*?\\[]")
 def tie_entry(glob: str) -> str | None:
     """The narrowest Tie entry that contains every repository path glob can select: the glob
     itself when it holds no wildcard; the directory before its first wildcard part with `*` when
-    that part is the last one and holds no `**`, which stays inside one directory; and that
-    directory with `**` otherwise, since a later part or a `**` (glob_regex reads it as any run of
-    characters, `/` included, so `a/b**` selects `a/bc/d`) reaches below it. None when the first
-    part holds a wildcard, which leaves no directory before it."""
+    that part is the last one and holds no `**` and no `[` class, which stays inside one directory;
+    and that directory with `**` otherwise, since a later part, a `**` or a class reaches below it:
+    glob_regex reads `**` as any run of characters, `/` included, so `a/b**` selects `a/bc/d`, and
+    copies a class into its regex, where `[^x]` matches `/`, so `a/b[^x]c` selects `a/b/c`. None
+    when the first part holds a wildcard, which leaves no directory before it."""
     parts = glob.split("/")
     wild = next((i for i, part in enumerate(parts) if TIE_WILD.search(part)), None)
     if wild is None:
         return glob
     if wild == 0:
         return None
-    if wild == len(parts) - 1 and "**" not in parts[wild]:
+    if wild == len(parts) - 1 and "**" not in parts[wild] and "[" not in parts[wild]:
         return "/".join(parts[:wild] + ["*"])
     return "/".join(parts[:wild] + ["**"])
 

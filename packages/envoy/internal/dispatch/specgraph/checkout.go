@@ -13,14 +13,14 @@ import (
 )
 
 // CommitName is the full object name of the commit that rev names in the clone at Dir, and
-// whether git could read one. --no-replace-objects keeps a replace ref from naming another commit
-// in its place, and --end-of-options makes git read a rev that starts with "-" as a revision,
-// never as an option, as Changed does.
+// whether git could read one. command's --no-replace-objects keeps a replace ref from naming
+// another commit in its place, and --end-of-options makes git read a rev that starts with "-" as a
+// revision, never as an option, as Changed does.
 func (g GitHistory) CommitName(rev string) (string, bool) {
 	if g.dirFault() != nil {
 		return "", false
 	}
-	name, err := g.git("", "--no-replace-objects", "rev-parse", "--verify", "--quiet", "--end-of-options", rev+"^{commit}")
+	name, err := g.git("", "rev-parse", "--verify", "--quiet", "--end-of-options", rev+"^{commit}")
 	return strings.TrimSpace(string(name)), err == nil
 }
 
@@ -96,7 +96,7 @@ func (g GitHistory) Checkout(commit string) (Checkout, error) {
 		c.Remove()
 		return fault(err)
 	}
-	read := g.command("--no-replace-objects", "-c", "index.sparse=false", "read-tree", "--end-of-options", commit)
+	read := g.command("-c", "index.sparse=false", "read-tree", "--end-of-options", commit)
 	read.Env = append(read.Env, "GIT_INDEX_FILE="+filepath.Join(dir, "index"))
 	if _, err := read.Output(); err != nil {
 		c.Remove()
@@ -117,7 +117,7 @@ const maxLinkTarget = 4096
 // git writes no tree of, is an error, and nothing is written outside root. A path that git would
 // not check out (checkoutFault) is an error too.
 func (g GitHistory) writeTree(commit, root string) error {
-	out, err := g.git("", "--no-replace-objects", "ls-tree", "-r", "-z", "--full-tree", "--end-of-options", commit)
+	out, err := g.git("", "ls-tree", "-r", "-z", "--full-tree", "--end-of-options", commit)
 	if err != nil {
 		return fmt.Errorf("git ls-tree: %s", gitReason(err))
 	}
@@ -194,7 +194,7 @@ func (g GitHistory) writeBlobs(root string, blobs []treeEntry) (links []treeLink
 		objects.WriteString(blob.object + "\n")
 	}
 	var stderr strings.Builder
-	cat := g.command("--no-replace-objects", "cat-file", "--batch")
+	cat := g.command("cat-file", "--batch")
 	cat.Stdin = strings.NewReader(objects.String())
 	cat.Stderr = &stderr
 	stdout, err := cat.StdoutPipe()

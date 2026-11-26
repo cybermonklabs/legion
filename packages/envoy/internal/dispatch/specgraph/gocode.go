@@ -72,7 +72,7 @@ func (g *GoCode) Find(t Test) (int, error) {
 		}
 		g.found[path] = p
 	}
-	if file, excluded := p.excluded[name]; excluded && p.err == nil && p.count[name] == 0 {
+	if file, excluded := p.excluded[name]; excluded && p.count[name] == 0 {
 		return 0, &ExcludedTestError{Name: name, File: file}
 	}
 	return p.count[name], p.err

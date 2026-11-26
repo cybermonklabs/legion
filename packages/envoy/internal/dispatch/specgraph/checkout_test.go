@@ -5,7 +5,9 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -263,6 +265,18 @@ func TestTheGitCallsOfACheckoutAreTheSameUnderEachSetting(t *testing.T) {
 			defer base.Remove()
 			if got := treeFiles(t, base.Tree()); !maps.Equal(got, row.want) {
 				t.Errorf("Checkout(B) wrote %q; want %q", got, row.want)
+			}
+			// The index of the checkout is what the base's go-test-reads.sh lists through Environ: it
+			// must list each path of B's tree, and no path of a commit that a replace ref puts in B's
+			// place.
+			ls := exec.Command("git", "ls-files", "-z")
+			ls.Dir, ls.Env = base.Tree(), base.Environ
+			out, err := ls.Output()
+			if err != nil {
+				t.Fatalf("git ls-files in the checkout of B: %v", err)
+			}
+			if got, want := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00"), slices.Sorted(maps.Keys(row.want)); !slices.Equal(got, want) {
+				t.Errorf("the index of the checkout of B lists %q; want %q", got, want)
 			}
 			if row.shallow {
 				if name, ok := h.CommitName(a); ok {
