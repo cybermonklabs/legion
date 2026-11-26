@@ -905,8 +905,8 @@ func (s *server) routes() []apiRoute {
 	// and 6th below) act on every process serving the database, answering once each has
 	// (test_hooks_fanout.go); outside-schema and newer-content (the 4th and 5th) write the stored
 	// history, which every process reads, and the room, room-counter, persistence and live-write
-	// hooks, the slow-write arm, the new-issue settings and the queued messages (the last three)
-	// each act on the process whose call they land on.
+	// hooks, the slow-write and fail-between arms, the new-issue settings and the queued messages
+	// (the last four) each act on the process whose call they land on.
 	if s.deps.TestHooksEnabled {
 		rows = append(rows,
 			routeRow{http.MethodPost, "/api/v1/live/_test/disconnect", authAny, "Test hook: close every open live socket on every process with 1012, as a restart does.", s.disconnectLiveSockets},

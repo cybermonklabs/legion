@@ -1438,11 +1438,14 @@ So for each surface the two builds share, this is what build N+1 may change whil
   no handler ran, and the next attempt can reach the other build.
   After the last attempt they say that the action is not offered yet because a release is in progress.
   A route is removed only in the release after the one that stops calling it, so no page or command still serving calls a route that is gone.
+  `dispatch inbox` calls `GET /api/v1/me/inbox`, which this release adds, so where the server answers `404` for it, it falls back to `GET /api/v1/inbox` and `GET /api/v1/me/replies`, the reads it replaces.
 
 - **Query values and opaque tokens** (a cursor, a `kind`, an enum value in a query): reader-first.
   The release that reads a new value or token shape ships before the release that sends or mints it.
   A reader that meets a value it does not know answers without it where it can:
   `GET /api/v1/references?kind=` answers no edges of a kind this build does not emit and lists that kind in `unknown_kinds`.
+  This release crosses that order once: it both reads and sends the scopeless `GET /api/v1/asks/open`, with neither `author_session` nor `project`, which a pod of the release before refuses with `400 AUTHOR_SESSION_OR_PROJECT_REQUIRED`;
+  the page falls back on that refusal to the reads the scopeless form replaces.
 
 - **Socket frames.**
   A new member is additive: the delivery socket (`/ws/delivery`) ignores a member a frame does not declare (`decodeSocketClientFrame`).
@@ -3897,7 +3900,7 @@ The kinds are:
 
   - What a projection does not hold by design is a figure of its own on a `census: store kind=<kind> narrowing=<name> count=<n>` line and never a difference or a silence:
     for `user_threads`, participation in a thread whose root names no project, participation in an ask that reached the person as who it waits on or that their own move of the ask onto themselves stated with no delivery (a person never sees their own event), participation stated under a mention's own event, the relations into a thread whose row the removal of its document deleted, and a session's participation, which no row of people holds;
-    for `published_destinations`, an owner's topic, which names no node, the topics of an event about no comment or message the store holds, the topics of events appended before the store existed, the delivery of a mention attempt the listener took and a fallback copy, each projected by a row of its own.
+    for `published_destinations`, an owner's topic, which names no node, the topics of an event about no comment or message the store holds, the topics of events appended before the store existed, and three deliveries no topic of an event's array names, each projected by a row of its own: the delivery of a mention attempt the listener took, a fallback copy, and the delivery of a mention attempt a session's reply flipped to sent, which the reply's write states under its `comment.answered` and the answered attempt's `comment_deliveries` row projects (`answered_deliveries`).
     A mark whose row a build of the release before deleted - an unsnooze, a prune of a reply read, a restore of an Agent dismissal - is one such figure too (`left_by_an_older_delete`), told apart by the evidence that release leaves: the person's log holds the event that release's deleting route appends, after the event that stated the mark, with no tuple of this release under it, as the node store's backfill tells a document an older build re-indexed by two versions and no row.
     A mark with no row and no such event stays a difference, since no writer of this release can clear one: a writer that read the store's mark to retract it would be a reconcile, which R9 rules out.
 
@@ -5121,18 +5124,33 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the two fallbacks of a roll (Two builds at once, above), and the Inbox reads `GET /api/v1/me/inbox`.
   List the caller's Inbox threads, in the state's own order, of the kinds `kind` names:
   `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask on an open issue that waits on them, which the Inbox already lists;
   `agent`, their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
   `reply,agent`, both in one order.
-  `state` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since they read them, newest reply first;
+  `state` is `unread`, the default, which lists the rows somebody else has written in since they read them, newest reply first;
   `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first;
   or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `cursor`, which is the `next_cursor` the page before it answered.
   `limit` or `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`.
   A row names the thread, its owner, its issue's priority, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
   `issue` or `artifact` narrows to one owner (both is `400 INVALID_QUERY`, and either leaves out every agent row, which has neither).
-  An absent `limit` is every row, which is what the Inbox reads; a `limit` the caller names is 1–200.
-  The answer carries `as_of`, the database time of the one snapshot every row was read in, which is what Mark all read passes back as its read mark.
+  An absent `limit` is every row; a `limit` the caller names is 1–200.
+  The answer carries `as_of`, the database time of the one snapshot every row was read in, which a page of the release before passes back to Mark all read as its read mark.
+
+- `/api/v1/me/inbox?kind=&state=&project=&issue=|artifact=&limit=&offset=&cursor=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  The one read of everything tied to the caller's own person, newest first, which the Inbox, its count and `dispatch inbox` read:
+  each node that holds a current relation to their person node, or to a session the server proved theirs, at either end, once, as `{node, relations, moment}`, with every relation kind that ties it to them (`{kind, direction, at}`, `direction` `inbound` or `outbound`).
+  The kinds are the store's, so a kind a later write appends is an entry the day it is appended, and a node the caller may not see is in no entry and no count.
+  `kind`, a comma list of relation kinds and repeatable, narrows to the entries of those kinds;
+  `state` (`unread`, `inbox` or `dismissed`) narrows to the rows the Inbox draws in that state, the threads `GET /api/v1/me/replies` answers in it and, under `inbox`, the open asks that wait on the caller, and with no `state` the entries are the walk of the tuples.
+  An entry whose node is a row the page draws carries exactly one of `ask` (the Inbox's ask row with its thread), `thread` (a Reply row) or `agent` (an Agent row with its `conversation`).
+  `project` narrows every entry by its node's own project, and `issue` or `artifact` keeps the page's rows of that owner and drops every other entry.
+  An absent `limit` is every entry, but under `state=dismissed` one page of 200, and a named one is 1–200 from `offset`;
+  `cursor`, the `next_cursor` of the page before, resumes after the last entry it answered.
+  A `state` of none of the three, a `limit` that is not 1–200, an `offset` that is not 0 or more or is too large to add the page to, a `cursor` this route did not answer, both `issue` and `artifact`, an `artifact` that is not a document id, and any key the route does not declare, `login`, `person`, `assignee` and `session` among them, are each `400 INVALID_QUERY`.
+  The read is at the event horizon notifications read at, and answers `{person, as_of, horizon, total, limit, offset, next_cursor, entries}`, `total` counting every entry, but under `state=dismissed` the page it answers.
 
 - `/api/v1/me/threads/{id}/read` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -5198,6 +5216,14 @@ Each item below names a path with its method and identity, then its purpose.
   `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
   Not an authorization boundary: direct-message text already reaches every caller through `GET /api/v1/events`, and a person may read any session's list.
+
+- `/api/v1/agents/{session_id}/conversation` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  One session's conversation, newest activity first, read for the person the credential acts for:
+  each root message that reaches the session, targeted at it or named by a delivery attempt to it whatever that attempt's state, as `{message, replies}` with every reply under it and each message's delivery attempts.
+  It lists the 50 conversations that moved last and, past them, every conversation holding a reply of the session's that the caller has not read, each such root carrying `unread: true`.
+  `GET /api/v1/agents/{session_id}/messages` answers the same rows, kept for the clients of the release before.
+  It reads `session` as every person route does: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
@@ -5722,6 +5748,18 @@ Each item below names a path with its method and identity, then its purpose.
   `thread=1` adds `thread`, its `replies`, `edits`, `answers` and `followers`, batched over the list so no card fetches its own;
   without it no `thread` is returned, which is what the readers that render the ask alone want from this unpaged list.
   Any other `thread` value is `400 INVALID_ASK_THREAD`.
+
+- `/api/v1/asks/open?author_session=|project=&waiting_on=&since=` (GET; cookie, trusted header, or bearer)
+
+  List open asks on open issues and project documents, by priority and then oldest first, with counts:
+  `author_session` keeps one session's own, `project` every open ask on one project's issues and documents, and neither every open ask of every project.
+  No row is an ask the caller may not see.
+  Naming both is `400 AUTHOR_SESSION_OR_PROJECT_CONFLICT`, and either one sent blank is `400 INVALID_QUERY` naming it, since read as left out it would widen the read to every project.
+  `waiting_on` narrows to the asks that wait on one person, a login of a person who has signed in, compared with the `waiting_on_person` each row names: the person the ask was handed to, else its issue's assignee, else its project's default assignee;
+  a blank value, a repeated key or a login nobody has signed in as is `400 INVALID_QUERY`.
+  `since` (one RFC3339 time, else `400 INVALID_SINCE`) sets `opened_since` to whether an ask of the scope, in any state, opened at or after it, and `as_of` is the moment the read answers in, so a caller that sends it back as its next `since` is told of every ask opened after it.
+  Each row is the open-ask row an ask card draws, with `ref`, `age_seconds`, `owner`, `human_replied`, `waiting_on` (`human` or `agent`) and `waiting_on_person` beside it, and the answer is `{session_id, as_of, opened_since, count, waiting_on_human, waiting_on_agent, asks}`.
+  A pod of the release before refuses the form with neither `author_session` nor `project` with `400 AUTHOR_SESSION_OR_PROJECT_REQUIRED` (Two builds at once, above).
 
 - `/api/v1/asks/{id}` (GET; cookie, trusted header, or bearer)
 
