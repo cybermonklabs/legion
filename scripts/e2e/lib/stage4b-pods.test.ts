@@ -517,7 +517,7 @@ describe("the pod shape's reservation rule", () => {
       },
     };
     expect(reservationProblems(pinned)).toEqual([
-      'affinity {"podAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname"}]}}: a Legion pod asks nothing of its placement beyond the pool',
+      'affinity {"podAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname"}]}}: a Legion pod asks nothing of its placement beyond the operator\'s scheduling',
     ]);
   });
 

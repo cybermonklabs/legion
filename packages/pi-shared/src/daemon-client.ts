@@ -27,12 +27,15 @@ import {
   type LegionOwed,
   LegionOwedRequest,
   LegionOwedResponse,
+  LegionP0BoundResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
   LegionPlanRegisterResponse,
   LegionPodUpdateRequest,
   LegionPodUpdateResponse,
+  LegionProjectP0BoundClearRequest,
+  LegionProjectP0BoundRequest,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -275,6 +278,18 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's `set_p0_bound`: the daemon sets how many P0 issues may hold a slot at once
+   * outside the cap, `bound`, or none with `unbounded`, from the change's own admission pass on, and
+   * records who set it and why; the effect `legion project set-p0-bound` runs for an operator. The
+   * answer is the bound in force, legion.yaml's and the live one. */
+  readonly p0Bound: (
+    input: z.input<typeof LegionProjectP0BoundRequest>
+  ) => Promise<z.output<typeof LegionP0BoundResponse>>;
+  /** The controller's `clear_p0_bound`: the daemon returns to legion.yaml's P0 bound, and records
+   * who cleared the live one and why. The answer is the bound in force and legion.yaml's. */
+  readonly p0BoundClear: (
+    input: z.input<typeof LegionProjectP0BoundClearRequest>
+  ) => Promise<z.output<typeof LegionP0BoundResponse>>;
   /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
    * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
    * every open record of that consumer at or below that stream sequence, through the handling a
@@ -824,6 +839,20 @@ export function createLegionDaemonClient(
         "/legion/v1/project/resume",
         LegionProjectResumeRequest,
         LegionProjectResumeResponse,
+        input
+      ),
+    p0Bound: (input) =>
+      post(
+        "/legion/v1/project/p0-bound",
+        LegionProjectP0BoundRequest,
+        LegionP0BoundResponse,
+        input
+      ),
+    p0BoundClear: (input) =>
+      post(
+        "/legion/v1/project/p0-bound/clear",
+        LegionProjectP0BoundClearRequest,
+        LegionP0BoundResponse,
         input
       ),
     intakeReplay: (input) =>

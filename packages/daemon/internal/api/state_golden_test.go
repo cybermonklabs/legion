@@ -64,6 +64,7 @@ advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
 admission_cap: 4
+admission_p0_bound: 4
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
@@ -329,6 +330,13 @@ func populatedState(t *testing.T) State {
 		Admission: Admission{
 			Cap:    5,
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// LEGION-212 is the one P0 issue among them, by its own priority, and holds its slot
+			// outside the cap (the P0 start's entry); the P0 bound stands at 3, set live over legion.yaml's
+			// 4 by the controller, so every key of the bound's view is in the record.
+			P0Holders: new(1),
+			P0Bound: &P0BoundView{Bound: new(3), Configured: new(4), Live: &P0BoundLiveView{Bound: new(3),
+				SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"}, SetAt: time.Date(2026, 9, 22, 9, 10, 0, 0, time.UTC),
+				Reason: "the P0 issues outran the gateway"}},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -1226,6 +1234,22 @@ func populatedState(t *testing.T) State {
 			continue
 		}
 		issue.Priority = &noPriority
+		state.Issues[key] = issue
+	}
+	// The priority Dispatch resolves each issue to (the P0 start's entry): LEGION-211's is its own
+	// P1; LEGION-207, which has no priority of its own, takes P2 from OTHER-5, an ancestor in
+	// another project, which `priorityFrom` names; and LEGION-214 has none of its own and none
+	// above it, which Dispatch sends as a null, a known none. Every other issue stands as a
+	// Dispatch release before dispatch://INFRA-5793 left it, with no resolved priority at all, so
+	// the fixture holds every reading of the field: a number of the issue's own, an inherited
+	// number, a known none, and none sent.
+	resolvedP1, resolvedP2, resolvedNone := PriorityView(record.P1), PriorityView(record.P2), PriorityView(record.NoPriority)
+	for key, resolved := range map[string]struct {
+		priority *PriorityView
+		from     string
+	}{"LEGION-211": {&resolvedP1, ""}, "LEGION-207": {&resolvedP2, "OTHER-5"}, "LEGION-214": {&resolvedNone, ""}} {
+		issue := state.Issues[key]
+		issue.ResolvedPriority, issue.PriorityFrom = resolved.priority, resolved.from
 		state.Issues[key] = issue
 	}
 	for key, issue := range state.Issues {

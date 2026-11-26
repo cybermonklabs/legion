@@ -159,8 +159,9 @@ func (issuePod) container() string { return runtime.IssuePodContainer }
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
 
-// serviceAccount is the operator's runtime.kubernetes.pod.service_account, every pod's but the
-// controller's.
+// serviceAccount is the operator's runtime.kubernetes.pod.service_account, the account every pod
+// runs as but the controller's where controller_service_account names one, and a repository
+// cache's while its bucket is on (cachePodAccount).
 func (issuePod) serviceAccount(r *Runtime) string { return r.pod.ServiceAccount }
 
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
@@ -582,8 +583,8 @@ func (controllerPod) container() string { return runtime.ControllerPodContainer 
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
 
 // serviceAccount is runtime.kubernetes.pod.controller_service_account where the operator names one,
-// and the account every other pod runs as (service_account) where not, so a deployment that names
-// no controller account runs its controller as it always did.
+// and runtime.kubernetes.pod.service_account, the issue pods' account, where not, so a deployment
+// that names no controller account runs its controller as it always did.
 func (controllerPod) serviceAccount(r *Runtime) string {
 	return cmp.Or(r.pod.ControllerServiceAccount, r.pod.ServiceAccount)
 }

@@ -52,8 +52,11 @@ const olderReleasesNewestMigration = 20261112180548
 // 20261112215432_delivery_resume adds the four answered-document columns
 // (awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact and
 // awaiting_answered_step), and none of the other columns it adds, which its header names, is one
-// the phase entry reads or writes; 20261124060500_issue_priority adds issues.priority.
-var appliedWithTheFixture = []int{20261112215432, 20261124060500}
+// the phase entry reads or writes; 20261124060500_issue_priority adds issues.priority, and
+// 20261125181828_p0_bound adds issues.resolved_known, issues.resolved_priority and
+// issues.priority_from (it also makes the table project_p0_bound_changes, which the phase entry
+// does not read).
+var appliedWithTheFixture = []int{20261112215432, 20261124060500, 20261125181828}
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is

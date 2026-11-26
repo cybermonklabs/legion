@@ -87,7 +87,13 @@ func (r *Runtime) HoldReplaceIssuePod(hold func()) {
 // PodDrift records its call and answers what ScriptPodDrift set for the claim, nil for a claim no
 // call named and for one with no process, as a runtime answers a claim that runs nowhere, and
 // runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
-// recorded pod is not there.
+// recorded pod is not there. A claim whose recorded pod a round's own replacement took
+// (roundTook) answers nil whatever was scripted for it, whichever claim of the pod, or the issue,
+// the replacement was made through: the Sandbox runtime reads the pod's drift off the issue's one
+// Sandbox, which the round's replacement suspended under its own mark, and answers every claim of
+// that pod drifted from nothing until the pod ends (the Sandbox runtime's PodDrift). A sweep after
+// the round's end that read the replaced pod's drift through another of its claims would open the
+// round again over the pod its own replacement took.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,6 +106,9 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	}
 	if r.gone[k.Claim] {
 		return nil, runtime.ErrPodGone
+	}
+	if k.Locator.Sandbox != nil && r.roundTook[k.Locator.Sandbox.PodUID] {
+		return nil, nil
 	}
 	return append([]string(nil), r.drift[k.Claim]...), nil
 }
@@ -153,11 +162,14 @@ func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
 // (FindNoPodToReplace), asks due whether the replacement is still due, and only then replaces
 // anything. A due that refuses records a ReplacePodNotDue call and changes nothing — no
 // replacement was made, so no ReplacePod call stands for one — and its error is returned as the
-// runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the place
-// it named is gone, and the one built in its stead is built from the configuration the runtime
-// has now — and what FailReplacePod set is answered, nil by default. A pod whose Sandbox stands
-// suspended over it (suspendedOver) is a pod no longer there to replace, as FindNoPodToReplace's
-// is; one that FailReplacePodAfterItsSuspension holds lands its suspension and returns that error.
+// runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten and the pod
+// taken (took, roundTook), so every claim recorded in the pod reads drifted from nothing
+// (PodDrift) — the place it named is gone, and the one built in its stead is built from the
+// configuration the runtime has now — and what FailReplacePod set is answered, nil by default. A
+// pod whose Sandbox stands suspended over it (suspendedOver) is a pod no longer there to replace,
+// as FindNoPodToReplace's is; one that FailReplacePodAfterItsSuspension holds lands its suspension,
+// which leaves every claim of the pod reading drifted from nothing too (roundTook), and returns
+// that error.
 func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
 	r.mu.Lock()
 	hold := r.holdReplace
@@ -187,6 +199,7 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	r.calls = append(r.calls, Call{Method: "ReplacePod", Pod: copyKnown(k)})
 	if err := r.failures["ReplacePodAfterItsSuspension"]; err != nil {
 		r.suspendedOver[pod] = true
+		r.roundTook[pod] = true
 		return err
 	}
 	if err := r.failures["ReplacePod"]; err != nil {
@@ -194,6 +207,7 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	}
 	delete(r.drift, k.Claim)
 	r.took[pod] = true
+	r.roundTook[pod] = true
 	return nil
 }
 
@@ -269,8 +283,9 @@ func (r *Runtime) podTaken(issue, pod string) bool {
 // ReplaceIssuePodNoPod and asks nothing. A due that refuses records a ReplaceIssuePodNotDue call
 // and changes nothing, and its error is returned as the runtime hands it back. Otherwise the call
 // is recorded and what FailReplaceIssuePod set is answered. A replacement that is not refused is
-// remembered (replaced): IssuePod answers no pod for it from then on, and a launch scripted into
-// it comes up in a new pod (launchInto).
+// remembered (replaced): IssuePod answers no pod for it from then on, a launch scripted into it
+// comes up in a new pod (launchInto), and every claim recorded in it reads drifted from nothing
+// (roundTook, PodDrift).
 func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error {
 	r.mu.Lock()
 	hold := r.holdIssue
@@ -304,5 +319,6 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 		return err
 	}
 	r.replaced[podUID] = ""
+	r.roundTook[podUID] = true
 	return nil
 }

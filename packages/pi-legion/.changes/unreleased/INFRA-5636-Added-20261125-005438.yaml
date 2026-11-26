@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The controller's `legion` tool sets the P0 bound while the daemon runs, on a person's cited word:
+  `set_p0_bound` with `bound`, how many P0 issues may hold a slot outside the cap, a whole number
+  from 1 to 2147483647, or `unbounded: true` for none, and a `reason`, and `clear_p0_bound` with a
+  `reason`, which returns to `legion.yaml`'s `admission_p0_bound`. `read_state`'s summary gives a
+  `p0 holders` line: the P0 issues holding a slot, the bound in force and the value set that stands.
+time: 2026-11-25T00:54:38Z
+custom:
+    Issue: INFRA-5636

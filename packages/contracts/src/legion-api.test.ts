@@ -45,9 +45,11 @@ import {
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
+  LegionOperatorProjectP0BoundRequest,
   LegionOperatorProjectPauseRequest,
   LegionOwedRequest,
   LegionOwedResponse,
+  LegionP0BoundResponse,
   LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
@@ -55,6 +57,7 @@ import {
   LegionPlanRegisterResponse,
   LegionPodUpdateRequest,
   LegionPodUpdateResponse,
+  LegionProjectP0BoundRequest,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -229,6 +232,13 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  // The P0 bound the controller's set and clear left in force (the P0 start's contract entry), each written from
+  // what the route itself answers (internal/api's TestP0BoundRouteGoldens): a set of 2 over
+  // legion.yaml's 3, a set of none after it, whose bound in force and live bound are null, and the
+  // clear after that.
+  "p0-bound.json": LegionP0BoundResponse,
+  "p0-bound-none.json": LegionP0BoundResponse,
+  "p0-bound-clear.json": LegionP0BoundResponse,
   // The replay and the discard of the intake's give-ups (contract 228), written by internal/api's
   // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
   // a replay with one record of each outcome and one left, and the ids a discard closed.
@@ -509,6 +519,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "project-resume": [LegionProjectResumeResponse],
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
+  "p0-bound": [LegionP0BoundResponse],
   "pod-update": [LegionPodUpdateResponse],
   owed: [LegionOwedResponse],
 };
@@ -3278,16 +3289,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
   // The mark holds no `daemon`: `TestStateNarrowedRepositoriesGolden` takes out the daemon's own
   // number, which an entry moves, and holds it to that number apart.
-  // Eight bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // Seven bands stand above 199: the repositories block's at 202; contract 220's, which takes
   // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
   // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
-  // stand two entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and the
-  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and
-  // the repository correction's (dispatch://INFRA-3136), entry 20261125181104's, which serves each
-  // issue without its `repoBefore`, `repoCorrectedAt`, `repoChangePending` and `repoChangeReason`.
+  // stand three entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
+  // the P0 start's, entry 20261125181047's, which serves each issue without its
+  // `resolvedPriority` and `priorityFrom` and the admission without its `p0Holders` and `p0Bound`;
+  // and the repository correction's (dispatch://INFRA-3136), entry 20261125181104's, which serves
+  // each issue without its `repoBefore`, `repoCorrectedAt`, `repoChangePending` and
+  // `repoChangeReason`.
   // So the golden's issues, rows and claim views are compared without them. One value strip stands
   // above 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract
   // 213, so that row is served here without its `source`, every other field of it and every other
@@ -3335,9 +3349,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   };
   const narrowedIssues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+      // A caller below the P0 start's contract entry is served each issue without the two keys it
+      // added (the daemon's `withoutResolvedPriority`), and a caller below the repository
+      // correction's entry without the four it added.
       const {
         podHold: _podHold,
         priority: _priority,
+        resolvedPriority: _resolvedPriority,
+        priorityFrom: _priorityFrom,
         repoBefore: _repoBefore,
         repoCorrectedAt: _repoCorrectedAt,
         repoChangePending: _repoChangePending,
@@ -3380,10 +3399,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
+  // A caller below the P0 start's contract entry is served the admission without the two keys it
+  // added (the daemon's `withoutP0Start`), and a caller below 202 is below the entry.
+  const {
+    p0Holders: _p0Holders,
+    p0Bound: _p0Bound,
+    ...admission
+  } = z.record(z.string(), z.unknown()).parse(rest.admission);
   expect(narrowedRest).toEqual({
     ...rest,
     issues: narrowedIssues,
     capabilities: withoutCachesSource,
+    admission,
   });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
@@ -3705,6 +3732,90 @@ test("the state golden names the daemon's Dispatch credential, and the key may b
   }
 });
 
+// Each issue's two Dispatch priorities (C1 and C5 of dispatch://INFRA-5636, check c-mirror):
+// `priority`, the issue's own (contract 250), and `resolvedPriority`, the one Dispatch resolves it
+// to and admission reads (the P0 start's contract entry), are each `number | null`: 0 for P0 to 3
+// for P3, null for none, and absent where the daemon serves no such key. `priorityFrom` names the
+// issue a resolved priority comes from, and is absent where it is the issue's own or none.
+// state.json holds every reading the daemon writes of the resolved priority: LEGION-211's own P1,
+// LEGION-207's P2 inherited from OTHER-5, LEGION-214's known none, which the key says with a null,
+// and no key at all on every other issue, as a Dispatch release that sends no resolved priority
+// leaves it. The issue record answers the state's issue view, so each row is read through both
+// schemas. What is refused is anything but a whole number from 0 to 3 or null, and a
+// `priorityFrom` that is no issue key.
+test("each issue's priority and resolved priority are a number from 0 to 3 or null, and may be absent", () => {
+  const state = fixtureBody("state.json");
+  const issues = state.issues;
+  if (!isJsonObject(issues)) {
+    throw new Error("state.json carries no issues");
+  }
+  const issue = (key: string): Record<string, unknown> => {
+    const found = issues[key];
+    if (!isJsonObject(found)) {
+      throw new Error(`state.json carries no issue ${key}`);
+    }
+    return found;
+  };
+  /** The issue as each reader of it parses body: the issue record's schema, and the state's with
+   * body in the place of the golden's issue of that key. */
+  const readings = (key: string, body: Record<string, unknown>) => {
+    const record = LegionIssueRecordResponse.safeParse(body);
+    const served = LegionStateResponse.safeParse({ ...state, issues: { ...issues, [key]: body } });
+    return [
+      { reader: "the issue record", success: record.success, issue: record.data },
+      { reader: "the state", success: served.success, issue: served.data?.issues[key] },
+    ];
+  };
+
+  const parsed = LegionStateResponse.parse(state).issues;
+  expect(parsed["LEGION-211"]).toMatchObject({ priority: 1, resolvedPriority: 1 });
+  expect(parsed["LEGION-207"]).toMatchObject({
+    priority: null,
+    resolvedPriority: 2,
+    priorityFrom: "OTHER-5",
+  });
+  expect(issue("LEGION-214").resolvedPriority).toBeNull();
+  expect(parsed["LEGION-214"]).toMatchObject({ priority: null, resolvedPriority: null });
+  for (const key of ["LEGION-211", "LEGION-214"]) {
+    expect(issue(key)).not.toHaveProperty("priorityFrom");
+  }
+  expect(issue("LEGION-208")).not.toHaveProperty("resolvedPriority");
+  expect(parsed["LEGION-208"]?.resolvedPriority).toBeUndefined();
+
+  const known = issue("LEGION-214");
+  for (const field of ["priority", "resolvedPriority"] as const) {
+    for (const value of [0, 1, 2, 3, null]) {
+      for (const read of readings("LEGION-214", { ...known, [field]: value })) {
+        const row = `${read.reader}, ${field} ${value}`;
+        expect(read.success, row).toBeTrue();
+        expect(read.issue?.[field], row).toBe(value);
+      }
+    }
+    const { [field]: _absent, ...without } = known;
+    for (const read of readings("LEGION-214", without)) {
+      expect(read.success, `${read.reader}, ${field} absent`).toBeTrue();
+      expect(read.issue?.[field], `${read.reader}, ${field} absent`).toBeUndefined();
+    }
+    for (const refused of ["0", true, 4, -1, 1.5]) {
+      for (const read of readings("LEGION-214", { ...known, [field]: refused })) {
+        expect(read.success, `${read.reader}, ${field} ${JSON.stringify(refused)}`).toBeFalse();
+      }
+    }
+  }
+
+  const inherited = issue("LEGION-207");
+  const { priorityFrom: _from, ...fromNone } = inherited;
+  for (const read of readings("LEGION-207", fromNone)) {
+    expect(read.success, `${read.reader}, priorityFrom absent`).toBeTrue();
+    expect(read.issue?.priorityFrom, `${read.reader}, priorityFrom absent`).toBeUndefined();
+  }
+  for (const refused of ["other-5", "OTHER", "OTHER-", "", 5, null]) {
+    for (const read of readings("LEGION-207", { ...inherited, priorityFrom: refused })) {
+      expect(read.success, `${read.reader}, priorityFrom ${JSON.stringify(refused)}`).toBeFalse();
+    }
+  }
+});
+
 // The project's pause (contract 178). state.json is the state of a paused project: it names the
 // pause that stands, who paused, the claim whose stop the pause still waits on and the two rows
 // it holds, one for a claim and one that names none. state-last-pause.json is the state of a
@@ -3867,6 +3978,32 @@ test("a pause rejects an empty reason", () => {
     LegionProjectPauseRequest.safeParse({ grantId: "controller-grant-1", reason: "" }).success
   ).toBeFalse();
   expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
+});
+
+// A set of the P0 bound names a bound, a whole number from 1 to 2147483647, the most the daemon's
+// store holds, as the daemon takes it (`INVALID_P0_BOUND` otherwise): the controller's request and
+// the operator's take the same bounds, and the answer carries no other.
+test("a set of the P0 bound takes a bound from 1 to 2147483647 and refuses one past either end", () => {
+  const grantId = "controller-grant-1";
+  const reason = "the P0 issues outran the gateway";
+  for (const [bound, taken] of [
+    [1, true],
+    [2147483647, true],
+    [0, false],
+    [2147483648, false],
+  ] as const) {
+    expect(
+      LegionProjectP0BoundRequest.safeParse({ grantId, bound, reason }).success,
+      `${bound}`
+    ).toBe(taken);
+    expect(
+      LegionOperatorProjectP0BoundRequest.safeParse({ bound, reason }).success,
+      `${bound}`
+    ).toBe(taken);
+    expect(LegionP0BoundResponse.safeParse({ bound, configured: bound }).success, `${bound}`).toBe(
+      taken
+    );
+  }
 });
 
 // The intake's open give-ups (contract 228). The golden counts two consumers' and lists three

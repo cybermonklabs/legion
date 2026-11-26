@@ -290,11 +290,12 @@ tree1_children=2
 # gathering: the four slot holders of issue-independence, and, at children-first-acceptance, tree
 # 1 with its pod and no slot beside tree 3 and children 3 and 4, which is four pods against three
 # slots. The run launches no controller pod: its controller starts from
-# the operator shell (controller). preflight refuses, BLOCKED, a pool with room for fewer.
+# the operator shell (controller). preflight refuses, BLOCKED, a run whose pods admission refuses
+# (preflight_room), and runs on a cluster with no node for them now, which may add nodes.
 run_pods_at_once=$admission_cap
 # The run's reservations: the cpu and memory every container of an issue pod carries as both its
 # request and its limit, and the ephemeral storage it carries as a limit over a smaller request
-# (runtime.kubernetes.resources.issue, write_legion_config), which preflight sizes the pool's room by
+# (runtime.kubernetes.resources.issue, write_legion_config), which preflight counts the run's room by
 # (cpu and memory) and pod-shape holds every container of every issue pod to. The defaults are the
 # daemon's, config.DefaultResources() in packages/daemon/internal/config/kubernetes.go, written once
 # here as data. The override is this run's, chosen so that the issue pod's reservation comes from
@@ -321,6 +322,17 @@ run_resources="${run_resources%,}},\"controller\":{"
 for field in $reservation_fields; do run_resources+="\"$field\":\"${default_controller[$field]}\","; done
 run_resources="${run_resources%,}}}"
 unset field
+# The run's scheduling, as JSON: the node labels every pod of the run selects and the taints it
+# tolerates (runtime.kubernetes.scheduling's node_selector and tolerations, scheduling_block). The
+# run sets none, so its pods may use every node of the cluster that RuntimeClass gvisor's own
+# scheduling, which admission adds, lets them onto. preflight reads the two together as the pods
+# carry them once admitted (admitted_scheduling, run_pod_room) and counts the room on the nodes they
+# admit; the reachability pod carries the run's and runs under that RuntimeClass, and the memory
+# hog, pinned to a tree's node, carries the admitted tolerations, so each stands where a Sandbox pod
+# of the run stands.
+run_node_selector='{}'
+run_tolerations='[]'
+admitted_scheduling=
 # The daemon's log text the children's and tree 1's Sandboxes are judged by: the delete a child's
 # stop logs — its close as done here, and a park the same way, since SuspendIssue deletes the
 # Sandbox and the six role Secrets it owns once the pod is gone, and the disk went with that pod
@@ -368,7 +380,7 @@ torn_down=
 snapshotted=
 compared=
 locked=
-# A timed-out wait first asks whether the pool's limits starved it (limit_pending_blocked); a wait
+# A timed-out wait first asks whether a NodePool's limits starved it (limit_pending_blocked); a wait
 # that sets a hook of its own sets this one back after it.
 timeout_hook=limit_pending_blocked
 daemon_pid=
@@ -408,10 +420,9 @@ child4_pod=
 tree2=
 tree3=
 tree4=
-# How preflight read the legion NodePool's instance bounds against two of the run's pods
-# (lib/stage4b-room.jq two_pods_per_instance): issue-independence asserts two or more nodes only
-# when no allowed instance can hold two.
-two_pods_fit=
+# How preflight read the nodes the run's pods may use against two of its pods (run_pod_room's
+# two_pods, lib/stage4b-room.jq two_pods_per_node), which issue-independence notes beside the nodes
+# tree 1's pods landed on.
 two_pods_reason=
 pr_number=
 smoke_file=
@@ -484,30 +495,34 @@ blocked() {
 
 rk() { timeout --foreground 300 kubectl --kubeconfig "$runtime_kubeconfig" --context "$runtime_context" "$@"; }
 
-# ---- capacity: the pool's room for the run's pods ------------------------------------------------
+# ---- capacity: the room for the run's pods -------------------------------------------------------
 # No pod asks for or keeps off another pod's node (LEGION-632: every issue pod owns its volume and
-# shares nothing with another pod), so the scheduler bin-packs the run's pods where the legion pool
-# has room, and Karpenter adds nodes under the pool's limits. An issue pod's one `roles` container
-# reserves cpu and memory for all six roles (run_resources' `issue`), so the room is counted in pods
-# of that one reservation, against what the pool's Ready nodes have free and what its limits leave.
+# shares nothing with another pod), so the scheduler bin-packs the run's pods wherever a node their
+# scheduling admits has room, and the cluster adds nodes when none has. An issue pod's one `roles`
+# container reserves cpu and memory for all six roles (run_resources' `issue`), so the room is
+# counted in pods of that one reservation, against what those nodes have free.
 
-# pool_pod_room prints, as JSON, how many of the run's pods the legion pool can place now
-# (lib/stage4b-room.jq pool_room): the pod's reservation (cores, bytes); each pool node that is
-# Ready, schedulable, not tainted karpenter.sh/disrupted and not being deleted, with what its
-# allocatable has free beside every non-terminal pod's effective request there, of every namespace,
-# and how many of the run's pods fit in it; the pods the pool's cpu and memory limits leave room for
-# beside what it already runs; and their sum, null when the pool has no limits to bound it. The
-# reads go through files in the run's work directory: a cluster's pods can exceed the argument list
-# a --argjson would put them in.
-# expected_issue_pod_reservation reads the cpu and memory reservation the run passes to the pool
-# capacity checks. A malformed run_resources must stop preflight before the pool-room read.
+# run_pod_room prints, as JSON, the room for the run's pods on the nodes they may use
+# (lib/stage4b-room.jq run_room): the pod's reservation (cores, bytes); the scheduling the pods
+# carry once admitted, the run's (run_node_selector, run_tolerations) with RuntimeClass gvisor's
+# scheduling, which admission adds to every pod that runs under it (admitted_scheduling), or the
+# conflicts for which admission refuses them; each node of the cluster that scheduling admits
+# that is Ready, schedulable, not tainted karpenter.sh/disrupted and not being deleted, with what
+# its allocatable has free beside every non-terminal pod's effective request there, of every
+# namespace, and how many of the run's pods fit in it, which bounds nothing: no one NodePool's
+# limits bound the run's pods, and the cluster may add nodes; and `two_pods`, whether one of those
+# nodes' allocatable holds two of the run's pods (two_pods_per_node), {fit: true|null, reason},
+# null when none does, since a node the cluster adds may. The reads go through files in the run's
+# work directory: a cluster's pods can exceed the argument list a --argjson would put them in.
+# expected_issue_pod_reservation reads the cpu and memory reservation the run passes to the
+# capacity checks. A malformed run_resources must stop preflight before the room read.
 expected_issue_pod_reservation() {
   jq -cn -L "$root/scripts/e2e/lib" --argjson expected "$run_resources" '
     include "stage4b-room";
     issue_pod_reservation($expected)'
 }
 
-# preflight_issue_pod_reservation stops before the pool-room read when the run does not describe
+# preflight_issue_pod_reservation stops before the room read when the run does not describe
 # its issue pod's CPU or memory reservation.
 preflight_issue_pod_reservation() {
   if ! expected_pod_reservation=$(expected_issue_pod_reservation 2>&1); then
@@ -515,29 +530,43 @@ preflight_issue_pod_reservation() {
   fi
 }
 
-pool_pod_room() {
-  kubectl --context "$operator" --request-timeout=30s get nodepool legion -o json >"$work/room-pool.json" || return 1
-  kubectl --context "$operator" --request-timeout=30s get nodes -l karpenter.sh/nodepool=legion -o json >"$work/room-nodes.json" || return 1
+run_pod_room() {
+  kubectl --context "$operator" --request-timeout=30s get nodes -o json >"$work/room-nodes.json" || return 1
+  kubectl --context "$operator" --request-timeout=30s get runtimeclass gvisor -o json >"$work/room-runtimeclass.json" || return 1
   kubectl --context "$operator" --request-timeout=60s get pods -A -o json >"$work/room-pods.json" || return 1
-  jq -cn -L "$root/scripts/e2e/lib" --slurpfile pool "$work/room-pool.json" --slurpfile nodes "$work/room-nodes.json" \
+  jq -cn -L "$root/scripts/e2e/lib" --argjson selector "$run_node_selector" --argjson tolerations "$run_tolerations" \
+    --slurpfile runtime_class "$work/room-runtimeclass.json" --slurpfile nodes "$work/room-nodes.json" \
     --slurpfile pods "$work/room-pods.json" --argjson expected "$run_resources" '
     include "stage4b-room";
-    pool_room($pool[0]; $nodes[0]; $pods[0]; issue_pod_reservation($expected))'
+    issue_pod_reservation($expected) as $pod
+    | admitted_scheduling($selector; $tolerations; $runtime_class[0]) as $scheduling
+    | run_room($scheduling; $nodes[0]; $pods[0]; $pod)
+    | .two_pods = two_pods_per_node($scheduling; $nodes[0]; $pod)'
 }
-# pool_two_pods_per_instance prints, as JSON, whether an instance type the legion NodePool allows
-# can hold two of the run's pods, from the pool's instance-cpu and instance-memory requirements
-# alone (lib/stage4b-room.jq two_pods_per_instance): {fit: true|false|null, reason}, null when the
-# requirements bound no maximum. It reads the NodePool pool_pod_room fetched.
-pool_two_pods_per_instance() {
-  jq -c -L "$root/scripts/e2e/lib" --argjson expected "$run_resources" '
-    include "stage4b-room";
-    two_pods_per_instance(issue_pod_reservation($expected))' "$work/room-pool.json"
+
+# preflight_room judges preflight's room read (room, run_pod_room's JSON) and notes it: the nodes
+# the run's pods may use, each with what it has free against the run's pods. Where RuntimeClass
+# gvisor's admission refuses the run's pods (admitted_scheduling's conflicts), no node the cluster
+# has or adds can place one, and the run ends BLOCKED naming each conflict. Otherwise the run goes
+# on whatever the read found, a read that keeps no node included, which it notes: no one
+# NodePool's limits bound the run's pods and the cluster may add nodes, so the read cannot say the
+# pods will not be placed, and a pod-placement wait that a NodePool's limits starve ends BLOCKED
+# there (limit_pending_blocked). It sets pod_reservation and admitted_scheduling, which later
+# checks read.
+preflight_room() {
+  pod_reservation=$(jq -r '"\(.pod.cpu) CPU, \(.pod.memory / 1073741824) GiB"' <<<"$room")
+  admitted_scheduling=$(jq -c .scheduling <<<"$room")
+  note "[operator] the $(jq -r '.free_nodes | length' <<<"$room") nodes the run's pods may use (the run's node_selector $run_node_selector and tolerations $run_tolerations, admitted under RuntimeClass gvisor as $admitted_scheduling), against the run's pods ($pod_reservation each, an issue pod under this run's reservations; the free nodes bound nothing): $(jq -c '[.free_nodes[] | {node, fits, free: {cpu: .free.cpu, memoryGiB: (.free.memory / 1073741824 * 100 | floor / 100)}}]' <<<"$room")"
+  jq -e '.scheduling.conflicts == null' <<<"$room" >/dev/null ||
+    blocked "capacity: RuntimeClass gvisor's admission refuses every pod of the run, since its node selector names a label the run's node_selector $run_node_selector names at another value ($(jq -r '.scheduling.conflicts | join(" // ")' <<<"$room")), so no node the cluster has or adds can place the $run_pods_at_once pods of $pod_reservation the run needs at once: tree 1's root, its $tree1_children children and tree 2's root"
+  jq -e '.free_nodes != []' <<<"$room" >/dev/null ||
+    note "[operator] no Ready, schedulable node the run's pods may use stands now, and the cluster may add one, so the run goes on: a wait whose pods a NodePool's limits starve ends BLOCKED there"
 }
 
 # limit_pending SELECTOR prints each pod of the run matching SELECTOR (label pairs added to the
-# run's project label) that the scheduler cannot place because the legion pool is at its limits:
+# run's project label) that the scheduler cannot place because any NodePool is at its limits:
 # Pending and PodScheduled=False Unschedulable, and Karpenter's current word on it is that every
-# instance type exceeds the pool's limits. That word is Karpenter's newest event of any reason
+# instance type exceeds its NodePool's limits. That word is Karpenter's newest event of any reason
 # naming this pod by uid, which must be the FailedScheduling limit message and no older than the
 # pod's Unschedulable transition. A Sandbox pod keeps its Sandbox's name across replacements, and
 # events outlive the pod they name, so a name match is no evidence. The transition does not move
@@ -572,7 +601,7 @@ limit_pending() {
     | . as $pod
     | ([$seen[] | select(.uid == $pod.uid and .component == "karpenter")] | max_by(.t)) as $current
     | select($current != null and $current.reason == "FailedScheduling"
-        and ($current.message | contains("exceed limits for nodepool (NodePool=legion)")) and $current.t >= $pod.since)
+        and ($current.message | contains("exceed limits for nodepool (NodePool=")) and $current.t >= $pod.since)
     | ([$seen[] | select(.uid == $pod.uid and .component == "default-scheduler" and .reason == "FailedScheduling")] | max_by(.t)) as $scheduler
     | "pod \($pod.name) (uid \($pod.uid)): Karpenter at \($current.at): \($current.message | tojson); PodScheduled \($pod.condition.reason) since \($pod.condition.lastTransitionTime): \(($pod.condition.message // "") | tojson); default scheduler: \(if $scheduler == null then "none" else ($scheduler.message | tojson) end)"' "$work/limit-pods.json" | sort -u ||
     echo "limit_pending's jq could not read $work/limit-pods.json or $work/limit-events.json" >&2
@@ -661,7 +690,7 @@ limit_pending_exhausted() {
     | ([$seen[] | select(.uid == $c.uid and .component == "karpenter" and .first_t <= $c.failed_at)
         | . + {t: ([.last_t, $c.failed_at] | min)}] | max_by(.t)) as $current
     | select($current != null and $current.reason == "FailedScheduling"
-        and ($current.message | contains("exceed limits for nodepool (NodePool=legion)")))
+        and ($current.message | contains("exceed limits for nodepool (NodePool=")))
     | "pod uid \($c.uid), issue \($c.issue), unschedulable before its claims launch failures ran out: Karpenter at \($current.at): \($current.message | tojson)"
   ' | sort -u ||
     echo "limit_pending_exhausted's jq could not read the daemon log, the pod watch, or the events it fetched" >&2
@@ -695,7 +724,7 @@ on_issue() {
 }
 
 # limit_pending_blocked is the run's timeout_hook (lib/rig.sh until_true). A wait that timed out
-# while one of its own subject's pods was still Pending on the pool's limits (limit_pending), or
+# while one of its own subject's pods was still Pending on a NodePool's limits (limit_pending), or
 # was starved before its claim's launch failures ran out (limit_pending_exhausted, placement after
 # that failure still counts), was starved by capacity, which is no verdict on the change, so the
 # check ends BLOCKED naming the pod rather than a bare timeout FAIL. BLOCKED applies only to those
@@ -711,7 +740,7 @@ limit_pending_blocked() {
   if [ -z "$pending" ]; then
     pending=$(limit_pending_exhausted "$capacity_subject") || pending=
   fi
-  [ -z "$pending" ] || blocked "capacity: the legion pool is at its limits, so the scheduler cannot place $(awk 'NR > 1 { printf " // " } { printf "%s", $0 }' <<<"$pending")"
+  [ -z "$pending" ] || blocked "capacity: a NodePool the run's pods use is at its limits, so the scheduler cannot place $(awk 'NR > 1 { printf " // " } { printf "%s", $0 }' <<<"$pending")"
 }
 
 # ---- the runtime seam: a claim's process is a role's namespaces in one issue pod's container ------
@@ -1507,7 +1536,7 @@ runtime:
     plugins:
       pi_legion: "$pi_legion_version"
       pi_envoy: "$pi_envoy_version"
-$(resources_block)
+$(resources_block; scheduling_block)
     pod:
 EOF
   if [ -n "$pod_file" ]; then
@@ -1542,6 +1571,14 @@ resources_block() {
   done
   [ -z "$fields" ] || echo "      issue: { $fields }"
   [ -z "$controller_cpu" ] || echo "      controller: { cpu: \"$controller_cpu\", memory: 1Gi }"
+}
+# scheduling_block prints the run's `runtime.kubernetes.scheduling` block from run_node_selector and
+# run_tolerations, and nothing while the run sets neither, so the file and preflight's room read
+# cannot drift apart. JSON is YAML, so each is written as it is.
+scheduling_block() {
+  if [ "$run_node_selector" != '{}' ] || [ "$run_tolerations" != '[]' ]; then
+    echo "    scheduling: { node_selector: $run_node_selector, tolerations: $run_tolerations }"
+  fi
 }
 # render_operator_pod writes the run's copy of the operator route's pod.yml, the gateway's audience
 # and LEGION_E2E_POD_SERVICE_ACCOUNT's ServiceAccount each in place of its placeholder.
@@ -2082,8 +2119,9 @@ start_pod_watch() {
 }
 
 # start_memory_hog NODE is the pod watch's negative control: a pod the operator pins to a tree's
-# node, labelled as the run's control, with its own 64Mi limit, which it allocates past. Only its
-# own cgroup OOM-kills it, so no tree pod sees node pressure; pod_watch_verdict excludes it by its
+# node, tolerating what the run's Sandbox pods tolerate once admitted (admitted_scheduling),
+# labelled as the run's control, with its own 64Mi limit, which it allocates past. Only its own
+# cgroup OOM-kills it, so no tree pod sees node pressure; pod_watch_verdict excludes it by its
 # label and requires that it was seen OOMKilled.
 start_memory_hog() {
   local node=$1 hog=$work/memory-hog.yaml
@@ -2097,7 +2135,7 @@ spec:
   restartPolicy: Never
   nodeName: $node
   automountServiceAccountToken: false
-  tolerations: [{ key: legion.dev/pool, operator: Equal, value: legion, effect: NoSchedule }]
+  tolerations: $(jq -c .tolerations <<<"$admitted_scheduling")
   securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
   containers:
     - name: hog
@@ -2132,10 +2170,11 @@ block_account() {
 # check_pod_shape SPEC prints each way the pod object SPEC departs from the issue-pod shape, or
 # nothing, with its Secrets' values as they are now: gVisor; the operator's ServiceAccount and one
 # projected token; the one `roles` container, mounting the route ConfigMap where every role's
-# profile reads it; the pool; restricted security; every container, the init containers included,
-# reserving cpu and memory as both request and limit and ephemeral-storage as a request under its
-# limit, each the issue pod's one reservation under the run's override and the defaults
-# (run_resources), so the pod is Guaranteed and bounded on the node's disk, and no affinity
+# profile reads it; no selector or toleration of the retired Legion pool; restricted security;
+# every container, the init containers included, reserving cpu and memory as both request and
+# limit and ephemeral-storage as a request under its limit, each the issue pod's one reservation
+# under the run's override and the defaults (run_resources), so the pod is Guaranteed and bounded
+# on the node's disk, and no affinity
 # (lib/stage4b-pods.jq reservation_problems); the launcher dialing the worker stream the daemon
 # served when the pod was created, at advertise_host; each role's gh files in a volume of its own
 # under its directory of the roles directory, read-only; no Secret value in a container's
@@ -2167,8 +2206,8 @@ shape_problems() {
         | if ($route_volumes | length) != 1 then "no one volume of the route ConfigMap \($route)"
           elif ([$c.volumeMounts[]? | select(.name == $route_volumes[0] and .mountPath == "/var/run/legion/home/.omp/profiles/legion/agent/models.yml")] | length) != 1
           then "the roles container does not mount models.yml of \($route) where every role profile reads it" else empty end),
-      (if $s.nodeSelector["legion.dev/pool"] != "legion" then "nodeSelector \($s.nodeSelector)" else empty end),
-      (if ([$s.tolerations[]? | select(.key == "legion.dev/pool")] | length) == 0 then "no legion.dev/pool toleration" else empty end),
+      (if $s.nodeSelector["legion.dev/pool"] != null then "nodeSelector \($s.nodeSelector): a Legion pod selects no legion.dev/pool" else empty end),
+      (if ([$s.tolerations[]? | select(.key == "legion.dev/pool")] | length) != 0 then "tolerations \($s.tolerations): a Legion pod tolerates no legion.dev/pool taint" else empty end),
       # Pod Security "restricted": non-root and RuntimeDefault seccomp may be set on the pod; the
       # escalation and capability rules are set on each container.
       ([$s.initContainers[]?, $s.containers[]] | .[] as $k
@@ -3390,25 +3429,21 @@ jq -e '.status.userInfo.groups | index("legion-daemon")' <<<"$who" >/dev/null ||
 [ "$(rk auth can-i list secrets -n "$namespace" 2>/dev/null)" = no ] || fail "the runtime identity can list Secrets in $namespace"
 note "[runtime] $(jq -r .status.userInfo.username <<<"$who"); list secrets -n $namespace: no"
 kubectl --context "$operator" get crd sandboxes.agents.x-k8s.io -o name >/dev/null || fail "the Agent Sandbox CRD is not installed"
-floor=$(kubectl --context "$operator" get nodepool legion -o json |
-  jq -c '[.spec.template.spec.requirements[] | select(.key == "karpenter.k8s.aws/instance-cpu")]')
-jq -e 'any(.[]; .operator == "Gt" and (.values | index("3")))' <<<"$floor" >/dev/null || fail "the legion NodePool has no instance-cpu Gt 3 floor: $floor"
-note "[operator] CRD sandboxes.agents.x-k8s.io installed; NodePool legion floor $floor"
+note "[operator] CRD sandboxes.agents.x-k8s.io installed"
 # The run needs run_pods_at_once pods placed at once (tree 1's root and its two children beside tree
-# 2's root), each holding the issue pod reservation; whatever already runs on the pool's nodes,
-# of any namespace, counts against it, as does what the pool's limits already hold.
+# 2's root), each holding the issue pod reservation, on the nodes the scheduling they carry once
+# admitted lets them onto: the run's, with RuntimeClass gvisor's; whatever already runs on those
+# nodes, of any namespace, counts against it. No one NodePool's limits bound those pods and the
+# cluster may add nodes, so the read blocks the run only where admission refuses its pods, and a
+# cluster with no node for them now is noted and runs (preflight_room).
 preflight_issue_pod_reservation
-room=$(pool_pod_room) || blocked "the operator context could not read the legion NodePool, its nodes or the cluster's pods"
-pod_reservation=$(jq -r '"\(.pod.cpu) CPU, \(.pod.memory / 1073741824) GiB"' <<<"$room")
-note "[operator] legion pool room for the run's pods ($pod_reservation each, an issue pod under this run's reservations): $(jq -c '{room, new_pods, free_nodes: [.free_nodes[] | {node, fits, free: {cpu: .free.cpu, memoryGiB: (.free.memory / 1073741824 * 100 | floor / 100)}}]}' <<<"$room")"
-jq -e --argjson need "$run_pods_at_once" '.room == null or .room >= $need' <<<"$room" >/dev/null ||
-  blocked "capacity: the legion pool can place $(jq -r .room <<<"$room") more pods of $pod_reservation ($(jq -r '[.free_nodes[].fits] | add // 0' <<<"$room") on its $(jq -r '.free_nodes | length' <<<"$room") Ready nodes, $(jq -r .new_pods <<<"$room") under its limits), and the run needs $run_pods_at_once at once: tree 1's root, its $tree1_children children and tree 2's root"
-# Whether two of the run's pods can share a node, read from the NodePool's instance bounds alone:
-# issue-independence asserts two or more nodes for tree 1's root and children only when they cannot.
-two_pods=$(pool_two_pods_per_instance) || fail "the legion NodePool's instance requirements could not be read against the run's pod reservation"
-two_pods_fit=$(jq -r '.fit' <<<"$two_pods")
-two_pods_reason=$(jq -r '.reason' <<<"$two_pods")
-note "[operator] NodePool legion instance bounds against two of the run's pods: $two_pods_reason"
+room=$(run_pod_room) || blocked "the operator context could not read the cluster's nodes, its pods or RuntimeClass gvisor"
+preflight_room
+# Whether two of the run's pods can share a node, read from the allocatable of the nodes they may
+# use: the read says they may, or decides nothing, never that they cannot, so issue-independence
+# asserts no node count.
+two_pods_reason=$(jq -r '.two_pods.reason' <<<"$room")
+note "[operator] the nodes the run's pods may use against two of its pods: $two_pods_reason"
 # The run's Dispatch bearer authenticates as an agent session, the actor Dispatch's routes and its
 # document websocket require, and the read is what says so: the same read with an invalid bearer
 # is refused 401.
@@ -3449,8 +3484,8 @@ for subject in "notifications.dispatch.issue.>" "notifications.github.sjawhar.le
     blocked "production NATS $stream carries no message on $subject (bun scripts/e2e/lib/nats-stream.ts last \$LEGION_E2E_NATS_URL $stream '$subject'): the daemon's intake would miss that half of the workflow"
   note "production NATS $stream carries $subject: newest $(jq -c . <<<"$seen")"
 done
-# From a throwaway pod on the Legion pool, with the restricted pod shape: every service a Sandbox
-# pod reaches.
+# From a throwaway pod placed as the run's Sandbox pods are (run_node_selector, run_tolerations),
+# with the restricted pod shape: every service a Sandbox pod reaches.
 reach=$work/reach.yaml
 cat >"$reach" <<EOF
 apiVersion: v1
@@ -3462,8 +3497,8 @@ spec:
   restartPolicy: Never
   runtimeClassName: gvisor
   automountServiceAccountToken: false
-  nodeSelector: { legion.dev/pool: legion }
-  tolerations: [{ key: legion.dev/pool, operator: Equal, value: legion, effect: NoSchedule }]
+  nodeSelector: $run_node_selector
+  tolerations: $run_tolerations
   securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
   containers:
     - name: reach
@@ -3505,7 +3540,7 @@ while read -r service answer; do
     nats) source=LEGION_E2E_NATS_URL ;;
     *) fail "the reachability pod printed a line naming no service: $(scrub <<<"$service $answer")" ;;
   esac
-  case "$answer" in 000 | unreachable* | "") fail "a pod on the Legion pool cannot reach $service ($source): $answer ($evidence/reach.txt)" ;; esac
+  case "$answer" in 000 | unreachable* | "") fail "a pod placed as the run's Sandbox pods are cannot reach $service ($source): $answer ($evidence/reach.txt)" ;; esac
   note "[pod] $service ($source) → $answer"
 done <"$evidence/reach.txt"
 pass
@@ -3907,9 +3942,10 @@ begin issue-independence
 # volume, and the API server prunes every label off a Sandbox's claim template, so no label selects
 # one), no affinity on any of the three pods, and no pod able to
 # read another issue's workspace, the root's and child 1's each way. Where the three land is the
-# scheduler's: with no affinity they bin-pack where the pool has room, so two or more nodes are
-# asserted only when preflight read the NodePool's instance bounds as holding no two of the run's
-# pods (two_pods_fit); otherwise the placement is recorded and the count noted. Tree 2's planner
+# scheduler's: with no affinity they bin-pack wherever a node the run's pods may use has room. No
+# node count is asserted: preflight's read of those nodes says at most that two of the run's pods
+# may share one, never that they cannot (two_pods_reason), so the placement is recorded and the
+# count noted. Tree 2's planner
 # holds for the driver as before. The four issues the daemon has started — tree 1's root, its two children and
 # tree 2's root — are the whole of admission_cap 4, which is where the run reads the line: tree 3,
 # set todo here, waits in it until one of them leaves (child-release). The memory hog stays: it is
@@ -3978,14 +4014,7 @@ for pair in "$root_pod architect $child1_pod planner $child1" "$child1_pod plann
 done
 nodes=$(op get pods "$root_pod" "$child1_pod" "$child2_pod" -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u | grep .)
 node_count=$(grep -c . <<<"$nodes")
-case $two_pods_fit in
-  false)
-    [ "$node_count" -ge 2 ] || fail "tree 1's root and children are all on node $nodes, though $two_pods_reason"
-    note "the three pods are on $node_count nodes ($(paste -sd ',' <<<"$nodes")): two or more, as asserted because $two_pods_reason"
-    ;;
-  true) note "the three pods are on $node_count nodes ($(paste -sd ',' <<<"$nodes")); no node count is asserted: $two_pods_reason" ;;
-  *) note "the three pods are on $node_count nodes ($(paste -sd ',' <<<"$nodes")); no node count is asserted, since $two_pods_reason" ;;
-esac
+note "the three pods are on $node_count nodes ($(paste -sd ',' <<<"$nodes")); no node count is asserted: $two_pods_reason"
 send_agent "$tree1" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 on_tree "$tree1" wait_for_phase "$tree1" implementing "$plan_seconds"
 on_tree "$tree1" wait_for_worker "$tree1" implementer
@@ -4940,7 +4969,7 @@ begin children-first-acceptance
 # later). The root in accepting and then in awaiting_children holds no slot of its own, so tree 3
 # and these two children are three of admission_cap 4 — tree 2 left the workflow at
 # issue-cap-moves and child 2 is on the backlog again — and the root's pod beside their three is
-# the four pods preflight sized the pool for. And an issue
+# the four pods preflight read the room for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
 # child at admitted and starts nothing for it (CHILD_UNDER_ACCEPTED_PARENT, record.Accepted),
 # so accepting is the last moment of tree 1's run at which a child of it still runs.
@@ -5800,7 +5829,7 @@ shape_checked_blocked() {
     if [ -z "$pending" ]; then
       pending=$(limit_pending_exhausted "legion.dev/issue=$issue") || pending=
     fi
-    [ -z "$pending" ] || blocked "capacity: the legion pool is at its limits, so the scheduler cannot place $(awk 'NR > 1 { printf " // " } { printf "%s", $0 }' <<<"$pending")"
+    [ -z "$pending" ] || blocked "capacity: a NodePool the run's pods use is at its limits, so the scheduler cannot place $(awk 'NR > 1 { printf " // " } { printf "%s", $0 }' <<<"$pending")"
   done < <(jq -r '.[] | [.issue, .podUid] | @tsv' <<<"$claims")
 }
 timeout_hook=shape_checked_blocked
@@ -6697,7 +6726,7 @@ begin production-check-bound
 # once it has closed.
 until_true 900 "the bound to start the last look of $tree1's production check" last_look_started "$tree1"
 state_file check-look-2
-# The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
+# The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed like any pod.
 # A tester that reported the last look before this read has had its pod taken again. The
 # daemon's task names the last look and its rule (its pending is only for an issue with no
 # requirement that only the deploy can show, as here: write on the pull request why the check did
@@ -6722,9 +6751,9 @@ begin node-release
 # (linger.go beginLinger), which deletes that member's Sandbox, with the six role Secrets it owned,
 # once its pod is gone, and the disk went with the pod; children 2, 3 and 4 had already lost theirs
 # to their parks — and no pod of tree 1 is left on any node a pod of tree 1 ran on. No pod asks for
-# or keeps off a node (LEGION-632): a node empties when the pods on it stop, and the pool
+# or keeps off a node (LEGION-632): a node empties when the pods on it stop, and its NodePool
 # consolidates an empty node after consolidateAfter. So each such node is gone, unless another pod
-# keeps it, placed there because the pool had room: another project's (a production daemon running
+# keeps it, placed there because the node had room: another project's (a production daemon running
 # beside the run), the run's repository cache (legion.dev/cache=true, one per repository of the
 # project, which lives as long as the daemon and is no tree's), or another tree of the run's. Such a
 # pod keeps the node from the moment it is bound, Pending through its init containers included, and
@@ -6775,7 +6804,7 @@ node_pods_judged() {
        others: [.[] | select(.project != $run or .cache or (.tree != null and .tree != $tree)) | "\(.project)/\(.name) \(.phase)"]}'
 }
 # node_released NODE: the node is gone, or carries no pod of tree 1 while another pod keeps it; a
-# node with no pod at all is not released until the pool takes it. Each read is held to its exit
+# node with no pod at all is not released until its NodePool takes it. Each read is held to its exit
 # status (see child1_released). node_release says which.
 node_release=
 node_released() {
@@ -6794,8 +6823,8 @@ node_released() {
   node_release="node $1 stays, carrying no pod of tree 1 while other pods keep it ($others)"
 }
 # A timed-out wait says what the node held: a pod of tree 1 that never left, a pod that keeps the
-# node, or nothing the pool ever deleted; each pod with its project and tree labels, or `cache` for
-# the repository cache.
+# node, or nothing its NodePool ever deleted; each pod with its project and tree labels, or `cache`
+# for the repository cache.
 report_node_release() {
   local out
   if ! out=$(timeout 120 kubectl --context "$operator" get node "$node" -o name --ignore-not-found 2>&1); then

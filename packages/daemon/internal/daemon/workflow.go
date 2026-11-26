@@ -839,6 +839,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
