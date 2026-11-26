@@ -312,10 +312,13 @@ function DetailsDrawer({
     // the navigation's sheet, the list of keys - closes on its own Escape and leaves the drawer
     // open under it, with the focus on the dialog itself (its first frame), on its field, or gone
     // to the page (a press on the list's text), and a menu open in the drawer closes before the
-    // drawer does, since Escape closes the innermost layer. A `<select>` and a list's trigger take
-    // no text, so an Escape on one closes the drawer, as on a button: shut, neither holds a text
-    // of the reader's for Escape to leave, and a list's open panel takes its Escape before the
-    // drawer hears it (`AnchoredPanel`).
+    // drawer does, since Escape closes the innermost layer. So does a menu open beside the
+    // drawer - the header's Issue actions, the view row's menu - which takes the press in the
+    // capture phase and marks it taken (`defaultPrevented`): the drawer opened first, so its
+    // listener, added first, would else hear the press before the menu's. A `<select>` and a
+    // list's trigger take no text, so an Escape on one closes the drawer, as on a button: shut,
+    // neither holds a text of the reader's for Escape to leave, and a list's open panel takes its
+    // Escape before the drawer hears it (`AnchoredPanel`).
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;

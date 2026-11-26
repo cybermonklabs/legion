@@ -27,7 +27,7 @@ import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { propertyControlSelector } from "../issue/property-control";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
-import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine, useIssuePriorityWrite } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
@@ -401,6 +401,11 @@ export function IssueMarginPanel({
   const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
   const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
   const priority = usePriorityHandOffs(issue, developmentHeading);
+  // The priority line's write, with its hold and its refusal, held here rather than in the line:
+  // the line is drawn in one of two places, and the first priority added and the last one
+  // removed take it from the place the write was made in to the other as the read after that
+  // write is drawn (`useIssuePriorityWrite`).
+  const priorityWrite = useIssuePriorityWrite(issue.key);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
   // suggestion of the project's default repository comes from, costs the suggestion and says
@@ -548,7 +553,9 @@ export function IssueMarginPanel({
         {/* The priorities the issue advances, with the control that adds and removes one: an
             issue that advances none draws no such row, and its control stands beside the add
             control below, where a focus in the row moves on as the reader's own removal of the
-            last one lands (`usePriorityHandOffs`). */}
+            last one lands (`usePriorityHandOffs`), and that removal's write goes on with it:
+            its hold, its refusal, and why the reads it made stale have not settled
+            (`priorityWrite`). */}
         {advances.length === 0 ? null : (
           <Row
             glyph="↗"
@@ -557,7 +564,12 @@ export function IssueMarginPanel({
             valueRef={priority.advancesValue}
           >
             <div className="contents" ref={priority.rowLeft}>
-              <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
+              <IssuePriorityLine
+                disabled={isClosed}
+                inRow
+                issue={issue}
+                priorityWrite={priorityWrite}
+              />
             </div>
           </Row>
         )}
@@ -786,7 +798,8 @@ export function IssueMarginPanel({
             its control; and, while the issue advances no priority, the control that adds one,
             which is the priority row (`IssuePriorityLine`) with nothing in it yet. The focus it
             holds as the reader's own first priority lands and moves the line goes on to the
-            Advances row (`usePriorityHandOffs`). */}
+            Advances row (`usePriorityHandOffs`), and so does that write, with its hold and its
+            refusal (`priorityWrite`). */}
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={priority.addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
@@ -797,7 +810,12 @@ export function IssueMarginPanel({
           />
           {advances.length === 0 ? (
             <div className="contents" data-testid="issue-advances" ref={priority.besideAddLeft}>
-              <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
+              <IssuePriorityLine
+                disabled={isClosed}
+                inRow
+                issue={issue}
+                priorityWrite={priorityWrite}
+              />
             </div>
           ) : null}
         </div>

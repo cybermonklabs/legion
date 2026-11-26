@@ -33,7 +33,7 @@ import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, referenceTargetsQuery, userStateQuery } from "../../api/queries";
@@ -4308,6 +4308,152 @@ test("the last priority removed hands the focus from its picker's trigger to the
     ).toBe(screen.getByRole("button", { name: addPriorityControlName("CORE-1") }));
   } finally {
     unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The reader's removal of the last priority lands, and the read of the issue it sets off draws
+// the issue advancing none while its read of the priorities goes unanswered: the line moves from
+// the Advances row to beside Add with that read still out. The write and its hold through its
+// reads are Details' (`priorityWrite`), not the line's that went, so at the request deadline the
+// line beside Add says why the priorities are not read, once, as the line in the Advances row says
+// it for a removal that leaves a priority (`IssuePriorityLine.test.tsx`).
+test("the last priority removed while the read of the priorities is out says why beside Add, once, at the request deadline", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancingEvals(4));
+  const removed: IssueDetails = { ...advancesOnly, advances_revision: 5 };
+  patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
+  const reread = Promise.withResolvers<Priorities>();
+  const why = `${ANSWER_LINES.priorities_unreadable} Dispatch did not answer within 30 seconds.`;
+  const view = renderDetails();
+  try {
+    const trigger = await waitFor(advancesRowTrigger);
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    await evalsOption();
+    await user.keyboard("{Enter}");
+    // The issue's read after the removal draws it advancing none; the priorities' is held. The
+    // clock is held from the close that sends the removal, so the row moves it to the deadline.
+    getIssue.mockResolvedValue(removed);
+    priorities.mockImplementation(() => reread.promise);
+    jest.useFakeTimers();
+    await userOnFakeClock().keyboard("{Escape}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        screen.queryByText(PROPERTY_LABELS.advances, {
+          exact: true,
+          selector: "[data-page-chrome]",
+        }),
+        "the issue advances nothing, and Details still draws the Advances row"
+      ).toBeNull()
+    );
+    expect(priorities, "the removal read the priorities again").toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(why), "the line said why before the request deadline").toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    const besideAdd = screen.getByTestId("issue-advances");
+    expect(
+      screen.queryAllByText(why).map((line) => besideAdd.contains(line)),
+      "at the request deadline the line beside Add did not say, once, why the priorities are not read"
+    ).toEqual([true]);
+  } finally {
+    view.unmount();
+    reread.resolve(oneLivePriority);
+    realClock();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The reader's removal of the last priority is refused (409 ADVANCES_REVISION: another session
+// moved the set meanwhile), and the read of the issue the refusal sets off draws the issue
+// advancing none, as that session left it: the line moves beside Add. The refusal is the write's,
+// which Details holds for the line in both places (`priorityWrite`), so the line beside Add says
+// it, once, as the line in the Advances row says a refusal that leaves it there.
+test("a refused removal of the last priority whose read draws the line beside Add says the refusal there", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancingEvals(4));
+  const refusal = advancesRefusal();
+  patchIssue.mockImplementationOnce(() => Promise.reject(refusal));
+  const view = renderDetails();
+  try {
+    const trigger = await waitFor(advancesRowTrigger);
+    // The read after the refusal: the other session took the priority off.
+    getIssue.mockResolvedValue({ ...advancesOnly, advances_revision: 6 });
+    await toggleEvals(user, trigger);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        screen.queryByText(PROPERTY_LABELS.advances, {
+          exact: true,
+          selector: "[data-page-chrome]",
+        }),
+        "the issue advances nothing, and Details still draws the Advances row"
+      ).toBeNull()
+    );
+    const besideAdd = screen.getByTestId("issue-advances");
+    expect(
+      screen.queryAllByText(refusal.message).map((line) => besideAdd.contains(line)),
+      "the line beside Add did not say, once, why the removal was refused"
+    ).toEqual([true]);
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The reader's removal of the last priority lands, and the read of the issue it sets off draws
+// the issue advancing none while its read of the priorities is still out: the line moves beside
+// Add with the write still holding through that read. The write is Details' (`priorityWrite`), so
+// the add control beside Add is held as the picker's trigger in the Advances row was - it keeps
+// the focus the hand-off gives it and takes no press (`aria-disabled`) - until the read answers.
+test("the add control beside Add that the last priority's removal moved the line to is held, with the focus, until the removal's reads answer", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancingEvals(4));
+  const removed: IssueDetails = { ...advancesOnly, advances_revision: 5 };
+  patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
+  const reread = Promise.withResolvers<Priorities>();
+  const view = renderDetails();
+  try {
+    const trigger = await waitFor(advancesRowTrigger);
+    getIssue.mockResolvedValue(removed);
+    priorities.mockImplementation(() => reread.promise);
+    await toggleEvals(user, trigger);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    const addControl = await screen.findByRole("button", {
+      name: addPriorityControlName("CORE-1"),
+    });
+    await settleFocus();
+    expect(
+      addControl,
+      "the add control took a press while the removal's read of the priorities was out"
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(document.activeElement, "the focus did not go on to the held add control").toBe(
+      addControl
+    );
+
+    await act(async () => reread.resolve(oneLivePriority));
+    await waitFor(() =>
+      expect(
+        addControl,
+        "the add control still refused a press once the removal's reads answered"
+      ).not.toHaveAttribute("aria-disabled")
+    );
+    expect(document.activeElement, "the add control lost the focus as it was let go").toBe(
+      addControl
+    );
+  } finally {
+    view.unmount();
+    reread.resolve(oneLivePriority);
     priorities.mockRestore();
     restore();
   }

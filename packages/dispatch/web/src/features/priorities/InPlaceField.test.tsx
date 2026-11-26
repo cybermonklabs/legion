@@ -10,6 +10,7 @@ import {
 } from "../../__tests__/before-effects";
 import { jump, onFakeClock, realClock, settle } from "../../__tests__/fake-clock";
 import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { createApiClient, priorityPatchRequest } from "../../api/client";
 import { InPlaceField, SAVE_AFTER_MS } from "./InPlaceField";
@@ -963,6 +964,48 @@ test.each([
     expect(writes).toEqual(["Old name, mine", "Old name, mine too"]);
   } finally {
     view.unmount();
+  }
+});
+
+// A heading's open box is as tall as the title it holds. The window resized while it is open
+// wraps the title anew at the box's new width, and the box is made as tall as its text again, so
+// no line of it is scrolled out of the box and nothing under it moves as it closes. The height the
+// box sets itself changes its size too, and at the same width that sets nothing more. happy-dom
+// lays nothing out, so the row says how wide the box is and how tall its text is, and tells the
+// box's observer when that changed.
+test("a heading's open box the window narrows is made as tall as its text again, and its own height sets nothing more", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const { box, opener, view } = closedField("heading");
+  try {
+    await user.click(opener());
+    const opened = box();
+    if (opened === null) throw new Error("the heading opened no box");
+    const laidOut = { text: 28, width: 600 };
+    // The box's text and padding (`scrollHeight`) at its width, inside a 1 px border above and
+    // below: drawn 2 px taller than the area inside it.
+    for (const [name, read] of [
+      ["clientWidth", () => laidOut.width],
+      ["scrollHeight", () => laidOut.text],
+      ["offsetHeight", () => 30],
+      ["clientHeight", () => 28],
+    ] as const) {
+      Object.defineProperty(opened, name, { configurable: true, get: read });
+    }
+    sizes.resize(opened);
+    expect(opened.style.height, "the box laid out 600 px wide").toBe("30px");
+
+    Object.assign(laidOut, { text: 84, width: 300 });
+    sizes.resize(opened);
+    expect(opened.style.height, "the box the window narrowed to 300 px").toBe("86px");
+
+    // Measured again, the box would be 114 px tall: at the same width it is not measured.
+    laidOut.text = 112;
+    sizes.resize(opened);
+    expect(opened.style.height, "the box's own height change, at the same width").toBe("86px");
+  } finally {
+    view.unmount();
+    sizes.restore();
   }
 });
 

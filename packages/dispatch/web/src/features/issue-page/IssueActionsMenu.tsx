@@ -64,12 +64,15 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
       }
     };
     // The press is the open group's alone, as a menu's is: the page's own Escape - which closes
-    // a document opened in place of the outline (`OpenedDocument.tsx`) - waits for the next one.
-    // A press in a field that takes text is the field's, which leaves the field, by the field
-    // test the keymap reads (`takesText`), as Details reads it for its own Escape (`Margin.tsx`):
-    // a focus that fell to the page's body leaves the group open (`closeOnFocusAway`), and a Tab
-    // from there into a field moves no focus out of the group, so the group stays open around a
-    // field the reader types in.
+    // a document opened in place of the outline (`OpenedDocument.tsx`) - waits for the next one,
+    // and so does Details' (`Margin.tsx`). The group reads the press in the capture phase and
+    // marks it taken, as the header's other menus do (`IssueAddMenu.tsx`, `IssuePresets.tsx`), so
+    // it marks the press before any listener of the page's that a layer under it added earlier:
+    // Details, opened before the group, added its listener first. A press in a field that takes
+    // text is the field's, which leaves the field, by the field test the keymap reads
+    // (`takesText`), as Details reads it for its own Escape: a focus that fell to the page's body
+    // leaves the group open (`closeOnFocusAway`), and a Tab from there into a field moves no
+    // focus out of the group, so the group stays open around a field the reader types in.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (event.target instanceof Element && takesText(event.target)) return;
@@ -88,11 +91,11 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
     };
     const box = wrapper.current;
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", closeOnEscape, true);
     box?.addEventListener("focusout", closeOnFocusAway);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", closeOnEscape, true);
       box?.removeEventListener("focusout", closeOnFocusAway);
     };
   }, [open]);

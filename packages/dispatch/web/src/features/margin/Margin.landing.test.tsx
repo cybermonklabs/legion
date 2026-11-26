@@ -11,6 +11,7 @@ import { nextFrame as oneFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
 import { useDrawerPage } from "../issue-page/drawer-page";
+import { IssueActionsMenu } from "../issue-page/IssueActionsMenu";
 import {
   type MarginDrawer,
   type MarginDrawerPage,
@@ -18,6 +19,7 @@ import {
   MarginSlotProvider,
   useFillMarginSlot,
 } from "../issue-page/margin-slot";
+import { CONTROL_LABELS } from "../issue-page/page-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -543,6 +545,55 @@ test("at a desktop width Escape closes Details from beside it but in a field tha
       }
     }
   } finally {
+    restoreMatchMedia();
+  }
+});
+
+// R14: Escape closes the innermost layer. With Details open, the header's Issue actions menu
+// opened beside it is that layer, and it takes the press before Details hears it, though Details
+// opened first and so added its listener first: one Escape closes the menu, gives the focus back
+// to Issue actions and leaves Details open. The next Escape, with the menu shut, closes Details.
+test("with Details open, one Escape in the header's Issue actions menu closes the menu alone, and the next closes Details", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <KeymapProvider>
+          <MarginProvider>
+            <Details open>
+              <Margin />
+            </Details>
+            <IssueActionsMenu actions={[{ id: "pin", run: () => undefined, text: "Pin" }]} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    const trigger = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    expect(trigger, "Enter on Issue actions opened no menu").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Pin" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(trigger, "one Escape left the menu open").toHaveAttribute("aria-expanded", "false");
+    expect(trigger, "one Escape left the focus off Issue actions").toHaveFocus();
+    expect(details.hasAttribute("hidden"), "the Escape the menu took closed Details").toBe(false);
+
+    await user.keyboard("{Escape}");
+    expect(details.hasAttribute("hidden"), "an Escape with the menu shut left Details open").toBe(
+      true
+    );
+  } finally {
+    view.unmount();
     restoreMatchMedia();
   }
 });

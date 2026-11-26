@@ -124,6 +124,15 @@ function heldText(draft: string, base: string, required: boolean): string {
   return required && typed === "" ? base : typed;
 }
 
+/** Makes a heading's box as tall as the text it holds at the width it has now. At `auto` the box
+ *  is one line tall (`rows={1}`), so its `scrollHeight` is its text's height and its padding, and
+ *  a box that held more lines gives back those its text no longer fills; its border, which
+ *  `offsetHeight` counts and `clientHeight` does not, is added. */
+function fitHeading(node: HTMLElement): void {
+  node.style.height = "auto";
+  node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
+}
+
 /** The type an issue's title is drawn in, in its header (`IssueHeader.tsx`): a field drawn as a
  *  heading reads in it, and so does the box it opens into. */
 const TITLE_TYPE = "text-[22px] leading-7 font-semibold tracking-tight";
@@ -354,9 +363,27 @@ export function InPlaceField({
   useLayoutEffect(() => {
     const node = box.current;
     if (closed !== "heading" || node === null) return;
-    node.style.height = "auto";
-    node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
+    fitHeading(node);
   }, [closed, draft, opened]);
+  // A width the open box changes to - the window resized while the reader writes - wraps the
+  // title on more lines or fewer, so the box is made as tall as its text again. Only a new width
+  // does: the height set here changes the box's size too, which the observer hears, and the same
+  // text wraps the same at the same width. The observer starts from the width the box has as the
+  // effect above sets its height, in the same commit, so no change of width falls between the
+  // two. Where there is no `ResizeObserver` the box keeps the height its text last gave it.
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (closed !== "heading" || !opened || node === null) return;
+    if (typeof ResizeObserver === "undefined") return;
+    let width = node.clientWidth;
+    const sizes = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      fitHeading(node);
+    });
+    sizes.observe(node);
+    return () => sizes.disconnect();
+  }, [closed, opened]);
 
   // One of the reader's kept texts, put back in the field and written at once, even where the
   // field holds it already: the page offered it beside the other person's text, which it goes over.

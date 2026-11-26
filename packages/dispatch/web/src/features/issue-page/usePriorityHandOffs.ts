@@ -5,11 +5,12 @@ import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
 import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import { propertyControlSelector } from "../issue/property-control";
 import type { KeyedPress } from "../writes/useKeyedWrite";
+import { canHoldFocus } from "./focus-keeper";
 import { firstUsable } from "./usable-control";
 
-/** The priority line's write as the mutation cache holds it (`IssuePriorityLine`): the press its
- *  keyed write made (`KeyedPress`), with the set of the issue's own priorities it sends and the
- *  revision of the read that set was drawn from, as the issue's PATCH body names them. */
+/** The priority line's write as the mutation cache holds it (`useIssuePriorityWrite`): the press
+ *  its keyed write made (`KeyedPress`), with the set of the issue's own priorities it sends and
+ *  the revision of the read that set was drawn from, as the issue's PATCH body names them. */
 type AdvancesSave = KeyedPress<Pick<UpdateIssueInput, "advances" | "advances_revision">>;
 
 /** The set of priorities `press` sent, where it is a priority line's write (`AdvancesSave`), else
@@ -60,8 +61,12 @@ function sameMembers<T>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => 
  * Advances row it goes to the trigger beside Add, "Add a priority to CORE-1", the one control the
  * line draws there, and where a close drawn in the same read disables that, to
  * `developmentHeading`, the button that opens and closes the section these rows are in. Each
- * trigger is found by its property mark, and each hand-off passes over a control that takes no
- * press (`usableControl`).
+ * trigger is found by its property mark. Details holds the line's write for both places
+ * (`useIssuePriorityWrite`), so the trigger in the place the line moves to is held
+ * (`aria-disabled`) while the write that moved it still holds its reads, and it takes the focus
+ * all the same: a held control keeps the focus by design (`components/held-press.ts`). A trigger
+ * that can take no focus - disabled, or under a hidden element (`canHoldFocus`) - passes it on,
+ * and the link and the heading take it only where they take a press (`usableControl`).
  *
  * Answers the refs that take the box of the Advances row's value (`advancesValue`) and the row the
  * line stands in beside Add (`addRow`), and the refs that take the line in each place.
@@ -108,17 +113,20 @@ export function usePriorityHandOffs(
           sameMembers(answered, drawn, (x, y) => x.id === y.id && x.inherited === y.inherited)))
     );
   };
+  // The line's trigger in `place`, held or not, where it can take the focus.
+  const triggerIn = (place: HTMLElement | null): HTMLElement | undefined => {
+    const found = place?.querySelector<HTMLElement>(trigger);
+    return canHoldFocus(found) ? found : undefined;
+  };
   const besideAddLeft = useFocusHandOff(() =>
     movedByOwnWrite()
-      ? firstUsable(
-          advancesValue.current?.querySelector<HTMLElement>(trigger),
-          advancesValue.current?.querySelector<HTMLElement>("a[href]")
-        )
+      ? (triggerIn(advancesValue.current) ??
+        firstUsable(advancesValue.current?.querySelector<HTMLElement>("a[href]")))
       : null
   );
   const rowLeft = useFocusHandOff(() =>
     movedByOwnWrite()
-      ? firstUsable(addRow.current?.querySelector<HTMLElement>(trigger), developmentHeading.current)
+      ? (triggerIn(addRow.current) ?? firstUsable(developmentHeading.current))
       : null
   );
   return { addRow, advancesValue, besideAddLeft, rowLeft };
