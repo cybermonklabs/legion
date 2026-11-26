@@ -334,7 +334,7 @@ func anyRecord(map[string]any) bool { return true }
 // line naming entries keys.
 func awaitTaskRead(t *testing.T, rig *taskRig, entries int) {
 	t.Helper()
-	waitFor(t, 10*time.Second, fmt.Sprintf("the task relay's read of the bucket's %d keys", entries), func() bool {
+	waitFor(t, fmt.Sprintf("the task relay's read of the bucket's %d keys", entries), func() bool {
 		return logRecords(rig.harness.logs.String(), taskRelayName+" cache warm-up", func(record map[string]any) bool {
 			return record["entries"] == float64(entries)
 		}) > 0
@@ -412,7 +412,7 @@ func TestTaskRelayDoesNotRunAtTheEdge(t *testing.T) {
 	t.Run("without the edge's grant", func(t *testing.T) {
 		_, session, replica, socket, epoch, revision := start(t, nil)
 		session.next(t, 5*time.Second).require(t, claim, legiontasks.OpPut, epoch, revision, encodedTask(t, 3))
-		waitFor(t, 5*time.Second, "the socket replica passing over the task frame", func() bool {
+		waitFor(t, "the socket replica passing over the task frame", func() bool {
 			return strings.Contains(replica.logs.String(), passedOver) && strings.Contains(replica.logs.String(), taskFrameReplyToken)
 		})
 		socket.none(500*time.Millisecond, "the relay socket offered a task frame")
@@ -664,7 +664,7 @@ func TestTaskRelayForgetsAPurgedDeleteAtItsScheduledRead(t *testing.T) {
 	putTask(t, kv, held, 1)
 	deleteTask(t, kv, finished)
 	session.next(t, 5*time.Second).require(t, finished, legiontasks.OpDelete, epoch, lastTaskRevision(t, js), nil)
-	waitFor(t, 5*time.Second, "the relay's record of the relayed delete", func() bool {
+	waitFor(t, "the relay's record of the relayed delete", func() bool {
 		op, holds, relayed := relayedRecord(rig, finished)
 		return holds && relayed && op == legiontasks.OpDelete
 	})
@@ -680,7 +680,7 @@ func TestTaskRelayForgetsAPurgedDeleteAtItsScheduledRead(t *testing.T) {
 		t.Fatalf("purge the delete marker of %s: %v", finished, err)
 	}
 
-	waitFor(t, 10*time.Second, "the scheduled read to drop the purged key's record", func() bool {
+	waitFor(t, "the scheduled read to drop the purged key's record", func() bool {
 		_, holds, relayed := relayedRecord(rig, finished)
 		return !holds && !relayed
 	})
@@ -804,7 +804,7 @@ func TestTaskRelayWithoutTheGrantKeepsServingAndLogsTheGrant(t *testing.T) {
 		listener.waitHealthy(t)
 		refusals := func() int { return countRecords(listener, taskRelayRefusedLine, refusedRecord) }
 		// The lookup waits out its JetStream wait, ten seconds, before it reads the refusal.
-		waitFor(t, 30*time.Second, "the task relay's ERROR naming "+refused, func() bool { return refusals() > 0 })
+		waitFor(t, "the task relay's ERROR naming "+refused, func() bool { return refusals() > 0 })
 
 		conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 		if err != nil {
@@ -857,7 +857,7 @@ func TestTaskRelayWithoutTheGrantKeepsServingAndLogsTheGrant(t *testing.T) {
 		startTestTaskRelay(t, rig, relays, interval, taskRelayReadInterval, 200*time.Millisecond)
 		relays.setOwned(true)
 		refusals := func() int { return logRecords(rig.harness.logs.String(), taskRelayRefusedLine, refusedRecord) }
-		waitFor(t, 10*time.Second, "the task relay's first ERROR naming "+refused, func() bool { return refusals() > 0 })
+		waitFor(t, "the task relay's first ERROR naming "+refused, func() bool { return refusals() > 0 })
 		first := time.Now()
 
 		time.Sleep(10 * interval)
@@ -931,7 +931,7 @@ func TestTaskRelayWaitsQuietlyForAnAbsentBucket(t *testing.T) {
 	session := startTaskStandIn(t, rig.url, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	claimTaskRole(t, rig.sessionConsumerRig, sessionID, claim)
-	waitFor(t, 5*time.Second, "the task relay's line that it waits for the bucket", func() bool {
+	waitFor(t, "the task relay's line that it waits for the bucket", func() bool {
 		return logRecords(rig.harness.logs.String(), taskRelayWaitLine, anyRecord) > 0
 	})
 
