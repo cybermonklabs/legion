@@ -166,3 +166,55 @@ func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
 		t.Fatalf("the implementer's starts = %+v, want one more, on the task the restart held, which holds %q", started, restartedBy)
 	}
 }
+
+// A start of a step of a role the deployment defines is work before the retro, so an open child
+// holds it as it holds the starts of planning through accepting (record.OpenChildHolds). The plan
+// `implementer checker` moves on from the implementer's completion to the checker's step, whose
+// start is held: the root waits in awaiting_children holding step at the checker's place, and no
+// checker is started. The return once the child is done starts the checker there.
+func TestAnOpenChildHoldsTheStartOfADeploymentStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := deploymentEngine()
+	waiting := waitsOnItsChild(t, pool, engine, "implementer", "checker")
+	if waiting.ChildrenWait.Start != phase.Step {
+		t.Fatalf("%s holds the start of %s, want step", waiting.Key, waiting.ChildrenWait.Start)
+	}
+	assertWalksAt(t, pool, engine, waiting.Key, phase.AwaitingChildren, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	if starts := roleStartsOf(t, pool, waiting.Key, "checker"); len(starts) != 0 {
+		t.Fatalf("the checker's starts during the wait = %+v, want none", starts)
+	}
+
+	returnsFromChildren(t, pool, engine, waiting.Key)
+
+	assertWalksAt(t, pool, engine, waiting.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	if starts := roleStartsOf(t, pool, waiting.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
+		t.Fatalf("the checker's starts after the return = %+v, want one of step", starts)
+	}
+}
+
+// A parent that stands at a step of a role the deployment defines waits for an open child as a
+// parent in any other worker phase does: the checker's pass would start the reviewer, and the
+// open child holds that start, so the root waits in awaiting_children holding reviewing. The cause
+// the held start keeps names the checker, the role whose step the move ended (Walk.endingRole).
+func TestAParentAtADeploymentStepWaitsForAnOpenChild(t *testing.T) {
+	pool := migratedPool(t)
+	engine := deploymentEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "checker", "reviewer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	mirrorChild(t, pool, cwChild, root.Key, "todo", 1)
+
+	move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+
+	waiting := issueOf(t, pool, engine, root.Key)
+	if waiting.Phase != phase.AwaitingChildren || waiting.ChildrenWait == nil || waiting.ChildrenWait.Start != phase.Reviewing ||
+		!strings.Contains(waiting.ChildrenWait.Reason, "the checker completed step") {
+		t.Fatalf("%s after the checker's pass stands in %s holding %+v, want awaiting_children holding reviewing for the checker's completion",
+			root.Key, waiting.Phase, waiting.ChildrenWait)
+	}
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleReviewer); len(starts) != 0 {
+		t.Fatalf("the reviewer's starts during the wait = %+v, want none", starts)
+	}
+}

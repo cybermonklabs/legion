@@ -127,7 +127,10 @@ func cwVerdict(trigger TriggerKind) string {
 // one of those phases is held while a Dispatch child of it is open, whatever the move is — a
 // completion, a review, or a worker's or the architect's move back — and the parent waits in
 // awaiting_children holding that start, with no worker started and the one awaiting-children
-// notice in place of the phase-finished the start would have sent.
+// notice in place of the phase-finished the start would have sent. The rule holds step too, the
+// phase of a role the deployment defines. Today's line has no step, so the table this test walks
+// holds no row of it: TestAnOpenChildHoldsTheStartOfADeploymentStep and
+// TestAParentAtADeploymentStepWaitsForAnOpenChild hold step on a plan that names such a role.
 func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)

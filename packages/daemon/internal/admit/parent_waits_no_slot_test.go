@@ -292,8 +292,11 @@ func pnArchitect(t *testing.T) claim.Token {
 	return pwRoleToken(t, spParent, claim.RoleArchitect)
 }
 
-// pnHeldStarts is every start a parent can hold (record.OpenChildHolds): planning, implementing,
-// testing, reviewing and accepting.
+// pnHeldStarts is every start a parent can hold (record.OpenChildHolds) on today's line: planning,
+// implementing, testing, reviewing and accepting. The rule holds step too, the phase of a role the
+// deployment defines, which today's line has none of; internal/workflow's
+// TestAnOpenChildHoldsTheStartOfADeploymentStep and TestAParentAtADeploymentStepWaitsForAnOpenChild
+// hold it on a plan that names such a role.
 func pnHeldStarts(t *testing.T) []pnHeldStart {
 	t.Helper()
 	const replan = "the plan missed the empty list"
