@@ -57,6 +57,60 @@ BROKER_WI_MEMBER=""
 # account; step-code-iam.sh sets it once the pool project's number is read, and "" leaves it unaccepted.
 BROKER_PRINCIPAL=""
 
+# resolve_unique_id NUMBER: sets UNIQUE_EMAIL to the email of the Google service account whose
+# uniqueId is NUMBER, or "" with UNIQUE_WHY saying what was tried. A ClusterRoleBinding may name a
+# Google account by its uniqueId beside, or in place of, its email, and it is judged as that account.
+# The sources, in order, the first two being data the check reads anyway: the service accounts the
+# IAM previews declare (their outputs' uniqueId and email); the service accounts listed in each
+# project the check names (`gcloud iam service-accounts list`, which needs iam.serviceAccounts.list
+# there); then `gcloud iam service-accounts describe NUMBER` (iam.serviceAccounts.get on it).
+declare -A UNIQUE_IDS=() UNIQUE_DONE=()
+UNIQUE_READ=false UNIQUE_SOURCES=""
+unique_ids_read() {
+  local file project projects=() seen=" " n=0 id email
+  UNIQUE_READ=true
+  for file in ${IAM_PREVIEWS[@]+"${IAM_PREVIEWS[@]}"}; do
+    n=$((n + 1))
+    while IFS=$'\t' read -r id email; do
+      [ -z "$id" ] || [ -z "$email" ] || UNIQUE_IDS[$id]="$email"
+    done < <(jq -r '.steps[]? | .newState // empty | select((.type // "") == "gcp:serviceaccount/account:Account")
+      | .outputs // {} | select((.uniqueId | type == "string") and (.email | type == "string")) | [.uniqueId, .email] | @tsv' "$file" 2>/dev/null)
+  done
+  UNIQUE_SOURCES="the service accounts the $n IAM preview(s) declare"
+  for project in "$PROJECT" "$POOL_PROJECT" "$GSA_PROJECT" "$BROKER_PROJECT" "$RENDERS_PROJECT"; do
+    [ -n "$project" ] && [[ "$seen" != *" $project "* ]] || continue
+    seen+="$project "
+    projects+=("$project")
+  done
+  for project in ${projects[@]+"${projects[@]}"}; do
+    if gcloud iam service-accounts list --project="$project" --format=json --quiet >"$WORK/service-accounts.json" 2>"$WORK/service-accounts.err"; then
+      while IFS=$'\t' read -r id email; do
+        [ -z "$id" ] || [ -z "$email" ] || UNIQUE_IDS[$id]="$email"
+      done < <(jq -r '.[]? | select((.uniqueId | type == "string") and (.email | type == "string")) | [.uniqueId, .email] | @tsv' "$WORK/service-accounts.json" 2>/dev/null)
+      UNIQUE_SOURCES+=", the service accounts of project $project"
+    else
+      UNIQUE_SOURCES+=", the service accounts of project $project (whose list was refused: $(first_line "$WORK/service-accounts.err"))"
+    fi
+  done
+}
+resolve_unique_id() {
+  local email
+  UNIQUE_EMAIL="" UNIQUE_WHY=""
+  if [ -z "${UNIQUE_DONE[$1]:-}" ]; then
+    [ "$UNIQUE_READ" = true ] || unique_ids_read
+    if [ -z "${UNIQUE_IDS[$1]:-}" ]; then
+      if gcloud iam service-accounts describe "$1" --format=json --quiet >"$WORK/unique-id.json" 2>"$WORK/unique-id.err" &&
+        email="$(jq -er '.email | select(type == "string" and endswith(".gserviceaccount.com"))' "$WORK/unique-id.json" 2>/dev/null)"; then
+        UNIQUE_IDS[$1]="$email"
+      else
+        UNIQUE_DONE[$1]="$UNIQUE_SOURCES, and gcloud iam service-accounts describe $1, which was refused or found none: $(first_line "$WORK/unique-id.err")"
+      fi
+    fi
+    UNIQUE_DONE[$1]="${UNIQUE_DONE[$1]:-resolved}"
+  fi
+  UNIQUE_EMAIL="${UNIQUE_IDS[$1]:-}" UNIQUE_WHY="${UNIQUE_DONE[$1]}"
+}
+
 # k8s_subject KIND NAMESPACE NAME: sets SUBJECT, the principal's name in a finding, and SUBJECT_OK,
 # whether it is allowed (the header's "Group and User subjects"). Allowed: a person (a User that is
 # an email outside gserviceaccount.com), a Kubernetes component (a system: User or Group other than
@@ -82,6 +136,19 @@ k8s_subject() {
       esac
       ;;
     User)
+      # A Google service account named by its uniqueId is judged as its email; one no source
+      # resolves is a stranger, and a finding names the number and how to resolve it by hand.
+      if [[ "$name" =~ ^[0-9]{10,30}$ ]]; then
+        resolve_unique_id "$name"
+        if [ -n "$UNIQUE_EMAIL" ]; then
+          name="$UNIQUE_EMAIL"
+        else
+          SUBJECT="user:$name"
+          finding "$SUBJECT" "is a binding subject named by a number no source the check reads resolves to a Google service account ($UNIQUE_WHY), so it is judged as a stranger; it may be an accepted account under its uniqueId: resolve it by hand with gcloud iam service-accounts describe $name and compare the email" \
+            "binding subject" "user:$name" "" "RBAC: a User subject named by a number"
+          return
+        fi
+      fi
       case "$name" in
         system:serviceaccount:*:*)
           SUBJECT="$name"

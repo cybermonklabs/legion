@@ -2089,7 +2089,7 @@
     {
       "principal": "system:serviceaccount:legion:worker",
       "right": "create pods/portforward in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
       "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
@@ -2098,7 +2098,7 @@
     {
       "principal": "system:serviceaccount:legion:dispatch-measure",
       "right": "create pods/exec in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
       "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
@@ -2107,7 +2107,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "create pods/exec in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
       "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
@@ -2116,7 +2116,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "get pods/exec in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
       "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
@@ -2145,7 +2145,7 @@
     {
       "principal": "system:serviceaccount:legion:worker",
       "right": "create pods/portforward in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
       "tracked_by": "INFRA-4604"
@@ -2153,7 +2153,7 @@
     {
       "principal": "system:serviceaccount:legion:dispatch-measure",
       "right": "create pods/exec in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
       "tracked_by": "INFRA-4604"
@@ -2161,7 +2161,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "create pods/exec in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
       "tracked_by": "INFRA-4604"
@@ -2169,7 +2169,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "get pods/exec in dispatch",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
       "tracked_by": "INFRA-4604"

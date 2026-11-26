@@ -26,6 +26,20 @@ for arg in "$@"; do
 done
 refuse() { echo "ERROR: (gcloud.$1) PERMISSION_DENIED: $2" >&2; exit 1; }
 case "${words[*]}" in
+  "iam service-accounts list")
+    # A project's service accounts, from service-accounts/<project>.json; a project the world
+    # holds none for is refused, as IAM refuses iam.serviceAccounts.list to a caller without it.
+    [ -e "$world/service-accounts/${flag[project]:-}.json" ] ||
+      refuse iam.service-accounts.list "Permission 'iam.serviceAccounts.list' denied on resource (or it may not exist)."
+    cat "$world/service-accounts/${flag[project]:-}.json"
+    ;;
+  "iam service-accounts describe "*)
+    # A service account by its uniqueId, from unique-ids.json ({uniqueId: email}), or NOT_FOUND.
+    id="${words[3]}"
+    email="$(jq -r --arg id "$id" '.[$id] // ""' "$world/unique-ids.json" 2>/dev/null || true)"
+    [ -n "$email" ] || { echo "ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account." >&2; exit 1; }
+    jq -n --arg e "$email" --arg id "$id" '{email: $e, uniqueId: $id, name: "projects/-/serviceAccounts/\($e)"}'
+    ;;
   "iam roles describe "*)
     role="${words[3]}"
     [ ! -e "$world/refuse-describe" ] || refuse iam.roles.describe "Permission 'iam.roles.get' denied on resource (or it may not exist)."

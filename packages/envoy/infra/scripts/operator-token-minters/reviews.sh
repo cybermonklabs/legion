@@ -607,8 +607,11 @@ bound_subjects() {
     k8s_subject "$kind" "" "$name"
     [ "$SUBJECT_OK" != true ] || continue
     case "$SUBJECT" in system:serviceaccount:*) continue ;; esac
-    [ -z "${held[$SUBJECT]:-}" ] || continue
-    held[$SUBJECT]=1
+    # A subject is held by its label and the name the API server knows it by: an account bound by
+    # its email and by its uniqueId is one label (k8s_subject) reviewed under each name, since each
+    # binding grants its own rights.
+    [ -z "${held[$SUBJECT]:-}" ] && [ -z "${held[$SUBJECT$US$name]:-}" ] || continue
+    held[$SUBJECT$US$name]=1
     if [ "$name" = system:anonymous ]; then
       printf '%s\x1f%s\x1fsystem:unauthenticated\n' "$SUBJECT" "$name" >>"$WORK/principals.rec"
     else

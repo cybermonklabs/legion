@@ -86,7 +86,12 @@ else
   # operator's included, by a path no review here sees.
   [ "${AUTOPILOT["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}" = true ] ||
     unknown "$step" "the cluster is GKE Standard, not Autopilot, so a privileged or hostPath pod on the operator's node can read the kubelet's credentials and the operator's ServiceAccount token there, a node escape no RBAC review here sees"
-  masters_bindings "$step" "" "cluster:$CLUSTER"
+  # The cluster's label in every finding, credit and residual here: <project>/<location>/<name>, as
+  # every other cluster of the pool is labelled (step-workload-identity.sh). The location is
+  # --location, which live: clusters requires to be the project's list's own for this name, or the
+  # list's when --location is not given; so one name in two locations is two labels.
+  op_res="cluster:$PROJECT/$OPERATOR_LOCATION/$CLUSTER"
+  masters_bindings "$step" "" "$op_res"
   # A right a role limits to a resource by name never answers a review that names nothing, so
   # those are read rather than reviewed: live_named below reads the cluster's own Roles and
   # ClusterRoles for each rule whose resourceNames limit one of the rights reviewed, and names the
@@ -106,12 +111,12 @@ else
     unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject, so there is no principal to review"
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights" "$FENCE_CREDITED"; then
     unknown "$step" "$REVIEW_ERROR"
-  elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
+  elif judge_reviews "$step" "" "$op_res"; then
     RBAC_OK=true
-    live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$rights" "$FENCE_CREDITED"
-    csr_chains "" "cluster:$CLUSTER"
-    follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER" "$FENCE_CREDITED"
-    remember_cluster "$KUBE" "$step" "" "cluster:$CLUSTER" "$FENCE_CREDITED"
+    live_named "$KUBE" "$step" "" "$op_res" "$rights" "$FENCE_CREDITED"
+    csr_chains "" "$op_res"
+    follow_becomes "$KUBE" "$step" "" "$op_res" "$FENCE_CREDITED"
+    remember_cluster "$KUBE" "$step" "" "$op_res" "$FENCE_CREDITED"
     if unchanged; then
       credits="$(credited)"
       pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each reviewed, and every rule of the cluster's roles that limits one of them by name read: none allowed$([ "$credits" -eq 0 ] || echo " but $credits grants whose use on the broker's pods its pod fence refuses")"

@@ -136,7 +136,7 @@ if row fa; then
               and ($c.declared | test("^sha256:[0-9a-f]{64}$")) and ($c.live | startswith($c.declared + "; "))
               and ($c.live | endswith("; ValidatingAdmissionPolicy \($c.policy) generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding \($c.policy) generation 1 resourceVersion 7001")))
       and any(.credited[]; .principal == $cd and .right == "get pods/exec in dispatch" and .policy == "broker-pod-connect"
-              and .resource == "cluster:operator-cluster" and (.granted_at | startswith("RBAC: allowed by ")))
+              and .resource == "cluster:example-project/us-central1/operator-cluster" and (.granted_at | startswith("RBAC: allowed by ")))
       and any(.credited[]; .principal == $cd and .granted_at == "RoleBinding dispatch/comment-delivery")
       and ([.residuals[] | {principal, right, resource, granted_at}] == [.credited[] | {principal, right, resource, granted_at}])
       and all(.residuals[]; keys == ["granted_at", "principal", "residual", "resource", "right", "tracked_by"]

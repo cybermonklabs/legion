@@ -4847,6 +4847,47 @@ its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
 `gcloud` and `curl`.
 
+**Which right makes a finding.** Any one right a reviewed principal is allowed is a finding, never
+only the full set: each allowed review is judged alone (`operator-token-minters/reviews.sh`,
+`judge_reviews` and `judge_grant`).
+
+- On the operator's cluster, the rights are the table in `operator-token-minters/rights.sh`
+  (`RIGHTS_TABLE`) for each guarded pair. That table includes create `serviceaccounts/token` by the
+  pair's name; impersonation; exec, attach and port forward into pods; create, patch and update of
+  pods and of each workload kind; and reads of Secrets. The guard rights below are added.
+- On every other cluster of the pool, the rights are the guard rights
+  (`operator-token-minters/guard-rights.jq`): create or patch namespaces cluster-wide; the
+  escalation rights (impersonate, escalate or bind roles, write bindings and roles, `nodes/proxy`);
+  and, in each guarded namespace, create or patch of ServiceAccounts, create or patch of pods (each
+  a right of its own), and the writes of roles and RoleBindings. The cluster's custom resources'
+  and admission objects' writes are added. A guarded namespace that exists there is a finding too.
+- `serviceaccounts/token` alone is a finding on the operator's cluster only, except under the node
+  escape below.
+- A principal that may create pods in a guarded namespace, and no ServiceAccounts, is a finding on
+  any cluster of the pool.
+- Each right is asked in the guarded namespaces, so a ClusterRoleBinding grants it there, and a
+  RoleBinding in another namespace does not.
+
+Who is reviewed: each ServiceAccount outside the system namespaces (`kube-system`, `gke-*` and
+`gmp-*`), Kubernetes' own groups, anyone unauthenticated, and each binding subject the check does
+not allow. A `system:*` User is an allowed Kubernetes component, never reviewed. A person's email
+is allowed. A ServiceAccount of a system namespace is reviewed only under the node escape: a
+non-operator cluster that `gcloud container clusters describe` reads as GKE Standard, where that
+account has a running pod on a node. A User named by a number is judged as the Google service account whose uniqueId it is. The number is resolved first from the IAM previews' service accounts, then from each named project's service-account list, then by `gcloud iam service-accounts describe`. A number no source resolves is a finding naming the number.
+
+**Labels.** A finding's `resource` names its cluster as `cluster:<project>/<location>/<name>` on
+every cluster, the operator's included.
+
+- On the operator's cluster, the name is `--cluster`. The location is `--location`, which must be
+  that name's location in the project's cluster list.
+- On another cluster of `--project` or the pool project, the location is the one
+  `gcloud container clusters list` gives: the region for a regional cluster, the zone for a zonal
+  one.
+- On a GKE fleet member, the label is the project, location and name of the membership's cluster
+  link.
+- The check compares no label with any list of its own. `live: audited clusters` compares each
+  `--audited-cluster` with those labels' `<project>/<location>/<name>`, exactly.
+
 ### Minter-auditor render inputs
 
 The auditor receives the following objects as immutable render files.

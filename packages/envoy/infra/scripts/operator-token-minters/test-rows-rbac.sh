@@ -41,6 +41,12 @@
 #   (aw) a User that is no email is reviewed: deployer-bot bound to cluster-admin on a non-GKE fleet
 #        member, a principal:// User allowed to create pods in envoy-operator, and a render binding
 #        deployer-bot to cluster-admin each exit 1 naming it;
+#   (nu) a User named by a number (a Google service account's uniqueId) is judged as the account it
+#        resolves to: from an IAM preview's service account outputs, from the service accounts
+#        listed in a project the check reads, or by describe; resolved to the operator's own account
+#        it is allowed, to a stranger it is a finding naming the account, never the number; one no
+#        source resolves is a finding naming the number and how to resolve it by hand (each
+#        resolved case's control is that world with its source taken away);
 #   (ax) Kubernetes' own groups are findings: system:authenticated or system:serviceaccounts:apps
 #        allowed to create pods in envoy-operator on another cluster, system:serviceaccounts on the
 #        operator's, a live binding of system:masters other than the bootstrap one, and a render
@@ -458,6 +464,52 @@ user_row() {
 if row aw; then
   each user_row member principal code
   passed "(aw) a User that is no email (deployer-bot on a non-GKE fleet member, a principal:// name, a render's deployer-bot) is reviewed and exits 1 naming it"
+fi
+
+# --- (nu) A User named by a uniqueId is judged as the account it resolves to. ---
+readonly numeric_user=112233445566778899001
+numeric_row() {
+  base_world
+  add_cluster other-cluster us-east1
+  subject_grant other-cluster "$(user_subject "$numeric_user")" create "" pods "" envoy-operator ""
+  local stranger="FINDING serviceAccount:$ci_gsa: create pods in envoy-operator" by_number="FINDING user:$numeric_user: "
+  case "$1" in
+    preview-stranger | preview-accepted)
+      local email="$ci_gsa"
+      [ "$1" = preview-stranger ] || email="$gsa"
+      edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:serviceaccount/account:Account::acct", provider: "example-provider",
+        newState: {type: "gcp:serviceaccount/account:Account", inputs: {accountId: ($e | split("@")[0])}, outputs: {email: $e, uniqueId: $n}}}]' \
+        --arg e "$email" --arg n "$numeric_user"
+      ;;
+    list)
+      mkdir -p "$world/service-accounts"
+      jq -n --arg e "$ci_gsa" --arg n "$numeric_user" '[{email: $e, uniqueId: $n}]' >"$world/service-accounts/$project.json"
+      ;;
+    describe) jq -n --arg e "$ci_gsa" --arg n "$numeric_user" '{($n): $e}' >"$world/unique-ids.json" ;;
+    unresolved) : ;;
+  esac
+  run
+  case "$1" in
+    preview-accepted)
+      ! has_prefix "$by_number" || fail "a uniqueId resolved to the operator's own account was a finding by its number"
+      ! has_prefix "FINDING serviceAccount:$gsa: create pods in envoy-operator" || fail "the operator's own account, by its uniqueId, was a finding"
+      ;;
+    preview-stranger | list | describe)
+      want_status 1 "a uniqueId resolved to a stranger ($1)"
+      want_text "$stranger" "a uniqueId resolved to a stranger ($1)"
+      ! has_prefix "$by_number" || fail "a uniqueId resolved by $1 was still a finding by its number"
+      ;;
+    unresolved)
+      want_status 1 "a uniqueId no source resolves"
+      want_text "${by_number}is a binding subject named by a number no source the check reads resolves to a Google service account" "a uniqueId no source resolves"
+      want_text "gcloud iam service-accounts describe $numeric_user" "a uniqueId no source resolves"
+      want_text "FINDING user:$numeric_user: create pods in envoy-operator" "a uniqueId no source resolves"
+      ;;
+  esac
+}
+if row nu; then
+  each numeric_row preview-stranger preview-accepted list describe unresolved
+  passed "(nu) a uniqueId User is judged as the account an IAM preview, a project's service account list or describe resolves it to; one none resolves is a finding naming the number"
 fi
 
 # --- (ax) Kubernetes' own groups, whatever Google Groups for RBAC says. ---

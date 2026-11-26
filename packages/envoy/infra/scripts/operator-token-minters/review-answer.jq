@@ -28,7 +28,7 @@ one_array($principals; "the principals") as $principals | one_array($rights; "th
    | ([$a.verb, $a.group, $a.resource, $a.subresource, $a.namespace, $a.name] | map(. // "") | join("|")) as $key
    | ("\(.spec.user // "")|\((.spec.groups // []) | join(","))") as $who
    | (if .status.allowed == true then "allowed" elif (.status.evaluationError // "") != "" then "error" else "refused" end) as $verdict
-   | {pair: (if ($names | has($who)) and ($by_key | has($key)) then [$names[$who], $key] else null end),
+   | {pair: (if ($names | has($who)) and ($by_key | has($key)) then [$who, $key] else null end),
       row: ([($names[$who] // ""), ($by_key[$key].label // ""), $verdict, (.status.evaluationError // ""), (.status.reason // "")]
             + (if $verdict == "allowed" and $by_key[$key] then fence_fields($fence; $by_key[$key]) else ["", ""] end))}] as $answers
 | ([$answers[].pair | select(. != null)] | unique | length) as $answered

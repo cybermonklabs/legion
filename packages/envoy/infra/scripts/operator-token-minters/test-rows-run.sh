@@ -250,9 +250,9 @@ if row v; then
       and .resource == $res and .granted_at == $res and (.permissions | index("container.serviceAccounts.createToken") != null))' "$report" >/dev/null ||
     fail "the IAM finding's parts are not principal, roles/container.admin, $project_res and its permissions: $(jq -c --arg p "serviceAccount:$ci_gsa" '[.findings[] | select(.principal == $p)]' "$report")"
   jq -e 'any(.findings[]; .principal == "system:serviceaccount:legion:worker" and .role == "create pods/exec in envoy-operator"
-      and .resource == "cluster:operator-cluster" and .permissions == ["create pods/exec in envoy-operator"]
+      and .resource == "cluster:example-project/us-central1/operator-cluster" and .permissions == ["create pods/exec in envoy-operator"]
       and (.granted_at | startswith("RBAC: allowed by")))' "$report" >/dev/null ||
-    fail "the RBAC finding's parts are not its label, cluster:operator-cluster and the API server's reason: $(jq -c '[.findings[] | select(.principal == "system:serviceaccount:legion:worker")]' "$report")"
+    fail "the RBAC finding's parts are not its label, cluster:example-project/us-central1/operator-cluster and the API server's reason: $(jq -c '[.findings[] | select(.principal == "system:serviceaccount:legion:worker")]' "$report")"
   passed "(v) the report's findings carry role, resource, permissions and granted_at, on an IAM finding and on an RBAC finding"
 fi
 
