@@ -1895,6 +1895,34 @@ digits after it, up to where another placeholder starts, or a kind's own `placeh
 the 32 letters and digits after it, where the character before it is no ASCII letter or digit —
 replaced by `[placeholder]`.
 
+A request that still carries a whole placeholder after the swap is refused `403`
+(`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service. This includes a placeholder of
+an ended grant, another session, a second grant beside the one the request is handled for, or one
+outside the headers its kind names. The refusal line names the grant the placeholder was minted
+for in `placeholder_grant`, while the broker still holds the release's row or while a minted
+capability's grant lives.
+
+The scan reads the command-written headers, trailers, path and query. It leaves out only the
+placeholder the proxy replaced in a named header, substituting a space so text on either side is
+never joined; a second, ended or unknown placeholder in the same header is refused. On the AWS
+sign path, the three headers the signer writes (`Authorization`, `X-Amz-Date`,
+`X-Amz-Security-Token`) are left out because the signer wrote them; the query is scanned as the
+command wrote it, since the sign path does not rewrite it and presigned URLs are refused earlier.
+A whole placeholder is the default `agent-secrets-placeholder-` prefix, or a kind's
+`placeholder_prefix`, followed by 32 letters and digits; the default prefix also opens a minted
+capability's form (`agent-secrets-placeholder-`, a kind word, a hyphen, and 32 letters and
+digits). The default prefix has no left boundary. A kind prefix must start the text or have a
+character that is not an ASCII letter or digit before it, so `tml-` does not match inside
+`html-`.
+
+A trailer reaches the broker in time for this scan only where the broker has already read the body
+to its end: an AWS call it signs with the body's hash, and a `Limited` name's post it reads to find
+the channel. On every other request the body is streamed to the service, and the proxy copies the
+trailer map before any value has arrived in it. A placeholder in the body goes to the service as
+the command wrote it. The Azure token exchange instead decides its form and refuses `TOKEN_ASSERTION`
+unless the assertion is this grant's own placeholder. In each case a command gives away its own
+placeholder to a service its grant already lets it call.
+
 A path that holds a `.` or `..` segment is refused on every bound host (`path has a dot
 segment`), whatever the kind allows, because a reader that resolves such a path first — which is
 what RFC 3986 says it means — reads it as a path the prefix does not bound. Where the kind or the
