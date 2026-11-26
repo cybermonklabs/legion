@@ -2,6 +2,8 @@ package api
 
 // 20261125162112 slots-reading: #4771 -- the slots reading. `GET /legion/v1/state` gains
 // `admission.slots`, what the slots in use are spent on (record.SlotsReading): `inUse` and `cap`;
+// `p0`, how many of the holders are P0, the number `admission.p0Holders` gives, counted by the one
+// rule that counts it (record.SlotHolders.Add), so the slots in use can be more than the cap;
 // the holders counted by what each is doing, `working`, `stopped`, `person`, `issue` and `idle`,
 // each a `count` with the `oldest` time a holder of it entered that state where the record holds
 // one (record.HolderStateOf); the two readings of started work that waits without a slot,
@@ -9,7 +11,9 @@ package api
 // of `admission.blocked`) and `startedWithoutSlot` (every member of that part that holds no slot),
 // each a `count` and an `oldest`; `belowFirstWaiting`, the `count` of holders that rank below the
 // first issue that waits for a slot and that issue's key as `first`; and `line`, the reading as
-// the one sentence `legion state` prints right after its admission count line (record.SlotsLine).
+// the one sentence `legion state` prints right after its admission count line, which gives the P0
+// holders after the slots in use, `slots: <inUse> of <cap> in use (<p0> P0): ...`, `(0 P0)` among
+// them (record.SlotsLine).
 // Each issue of the project gains `rank`, its own Dispatch rank, and `rootRank`, its tree root's,
 // and each holder's `slot` gains `state`, one of the five words, and `since`, when it entered that
 // state, absent where the record holds no such time. The controller's tick notice gains `slots`,

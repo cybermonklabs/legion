@@ -23,7 +23,7 @@
 
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
-  slots: 3 of 4 in use: 1 working (oldest 2026-10-03T10:12Z), 0 stopped, 1 person (oldest 2026-10-02T16:20Z), 0 issue, 1 idle (oldest 2026-10-03T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-03T09:58Z), 1 in all (oldest 2026-10-03T09:58Z). 2 holders rank below WIDGETS-14, which waits for a slot.
+  slots: 3 of 4 in use (0 P0): 1 working (oldest 2026-10-03T10:12Z), 0 stopped, 1 person (oldest 2026-10-02T16:20Z), 0 issue, 1 idle (oldest 2026-10-03T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-03T09:58Z), 1 in all (oldest 2026-10-03T09:58Z). 2 holders rank below WIDGETS-14, which waits for a slot.
   P0: 0 of the 3 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound none in force, none in legion.yaml; none set while the daemon runs
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.

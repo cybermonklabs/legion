@@ -1,10 +1,13 @@
 kind: Added
 body: |-
     The daemon API mirror reads the `slots-reading` entry (`20261125162112`). `api.Admission` carries `slots`, the slots reading:
-    the slots in use and the cap, the holders counted by what each does (`working`, `stopped`,
+    the slots in use and the cap, `p0`, how many of those holders are P0 (the number
+    `admission.p0Holders` gives, so the slots in use can be more than the cap), the holders counted
+    by what each does (`working`, `stopped`,
     `person`, `issue` and `idle`, each with its count and oldest time), the two readings of started
     work that waits for a slot (`waitOnlyForSlot` and `startedWithoutSlot`), `belowFirstWaiting`,
-    and `line`, the sentence that `legion state` prints. Each slot carries its holder's `state` and
+    and `line`, the sentence that `legion state` prints, which gives the P0 holders after the slots
+    in use as `(<p0> P0)`. Each slot carries its holder's `state` and
     `since`, and each issue carries its own Dispatch `rank` and its tree root's `rootRank`. Every
     new field is optional, because the daemon serves none of them to a caller below that entry.
     The entry's fixture records the added fields.
