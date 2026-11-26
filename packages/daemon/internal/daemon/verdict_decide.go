@@ -71,6 +71,7 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 	combined.kind, combined.reason, combined.noReader = headOutput(at, numbers, combined.conclusion)
 	combined.unanswered = nil
 	for _, each := range at {
+		combined.answered = combined.answered || each.answered
 		if combined.conclusion == verdict.Undecided && combined.unanswered == nil {
 			combined.unanswered = each.unanswered
 		}

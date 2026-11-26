@@ -294,10 +294,10 @@ func (v *verdictWriter) sweepBegun(repository string, listed map[string]int) {
 // passes with no answer, sweep being whether the writers' sweep asked for the write. A sweep's write
 // of an undecided head counts one, once in the pass that listed the head, however many pull requests
 // stand there. A sweep's write of a head decided otherwise starts the count again, and so does any
-// write whose read of the change GitHub answered. A fact's or a merge group's write of an undecided
-// head, or one that read no change, leaves the count as it stands: GitHub has not answered. It
-// answers the count, and whether this write brought it to noAnswerSweeps, the one time a run of such
-// passes is warned of.
+// write that read an answer of GitHub's about the head's change, its own pull request's or another's
+// at the head (atHead). A fact's or a merge group's write of an undecided head, or one that read no
+// change, leaves the count as it stands: GitHub has not answered. It answers the count, and whether
+// this write brought it to noAnswerSweeps, the one time a run of such passes is warned of.
 func (v *verdictWriter) countUnanswered(repository, head string, decided verdictDecision, sweep bool) (int, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -316,14 +316,6 @@ func (v *verdictWriter) countUnanswered(repository, head string, decided verdict
 		v.unanswered[key] = kept
 	}
 	return 0, false
-}
-
-// unansweredCount is how many of the writers' sweeps in a row found GitHub giving no answer to the
-// read of head's change (countUnanswered), which a merge group of a pull request at that head reads.
-func (v *verdictWriter) unansweredCount(repository, head string) int {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.unanswered[unansweredKey(repository, head)].count
 }
 
 // unansweredKey names head of repository in the writer's unanswered counts.

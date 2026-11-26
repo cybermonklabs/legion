@@ -2587,6 +2587,59 @@ func TestLegionVerdictTheNoAnswerCountIsOnePerHeadPerSweep(t *testing.T) {
 	rig.noReader(t, "code", wantUnreadOpening)
 }
 
+// Any read of a head's change that GitHub answers starts the head's count of sweeps with no answer
+// again, whichever write made it: a fact's write of another pull request at the head, which decides
+// CAPTURE-1's pull request 86 there too (atHead), and a merge group's write of pull request 86. So
+// after two sweeps with no answer, such an answer, and GitHub's silence again, the bound's third
+// sweep from the answer warns, and not the first.
+func TestLegionVerdictAnAnsweredReadOfTheHeadStartsTheCountAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer func(*testing.T, *sweepRig)
+	}{
+		{"a fact of the outside pull request at the head", func(t *testing.T, rig *sweepRig) {
+			review := outsideReview(1, "a-writer", "approved")
+			review.CommitID, review.HeadSHA = "code", "code"
+			rig.review(t, review)
+		}},
+		{"a merge group's write", func(t *testing.T, rig *sweepRig) {
+			rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode,
+				openCapture, sweptPull{number: 90, ref: "feature/faster-builds", head: "code"})
+			rig.apply(t, intake.OutsidePullRequest{Repo: "acme/widgets", Number: 90, Branch: "feature/faster-builds", HeadSHA: "code"})
+			rig.acceptedAndWritten(t)
+			answers := func(status int) {
+				rig.github.mu.Lock()
+				rig.github.compareStatus = status
+				rig.github.mu.Unlock()
+			}
+			warned := func(want int, after string) {
+				t.Helper()
+				if lines := loggedMessages(t, rig.logs.String(), noAnswerLine); len(lines) != want {
+					t.Fatalf("%q lines after %s = %v, want %d", noAnswerLine, after, lines, want)
+				}
+			}
+			answers(http.StatusBadGateway)
+			for range noAnswerSweeps - 1 {
+				rig.swept(t)
+			}
+			answers(0)
+			tc.answer(t, rig)
+			rig.written(t)
+			answers(http.StatusBadGateway)
+			for range noAnswerSweeps - 1 {
+				rig.swept(t)
+			}
+			warned(0, fmt.Sprintf("an answer and %d sweeps with no answer", noAnswerSweeps-1))
+			rig.swept(t)
+			warned(1, fmt.Sprintf("an answer and %d sweeps with no answer", noAnswerSweeps))
+		})
+	}
+}
+
 // A head the writers' sweep no longer lists, as when its pull request closed or moved on, keeps no
 // count of the sweeps that found it undecided: the next sweep forgets it, and the head, listed
 // again, needs noAnswerSweeps new sweeps with no answer before the WARN.

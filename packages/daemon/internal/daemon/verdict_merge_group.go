@@ -58,6 +58,8 @@ func (w *workflowRuntime) queueMergeGroupWrite(repository ghrepo.Repository, num
 // given no answer to a read its decision needs (verdict.Undecided), gets the group no run of the
 // daemon's own yet, as it gets the head none (writeDecided); once the writers' sweeps found that head
 // so noAnswerSweeps times in a row, the head is failure, and so is the group (unreadAfterNoAnswer).
+// A group's read of the head's change that GitHub answers starts the head's count again, as any
+// answered read of it does (countUnanswered), and adds none.
 // The group commit holds the pull requests ahead of it in the queue too, each with a group of its
 // own that the queue also waits for, so only the pull request the group's ref names is read.
 func (w *workflowRuntime) writeMergeGroup(ctx context.Context, target verdictTarget) error {
@@ -79,10 +81,11 @@ func (w *workflowRuntime) writeMergeGroup(ctx context.Context, target verdictTar
 			return err
 		}
 	}
+	sweeps, _ := w.verdicts.countUnanswered(target.repository.String(), decided.head, decided, false)
 	switch decided.conclusion {
 	case verdict.Success:
 	case verdict.Undecided:
-		if w.verdicts.unansweredCount(target.repository.String(), decided.head) >= noAnswerSweeps {
+		if sweeps >= noAnswerSweeps {
 			decided = unreadAfterNoAnswer(decided)
 		}
 	default:
