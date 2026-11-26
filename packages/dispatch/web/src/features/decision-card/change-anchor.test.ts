@@ -1,9 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { decision } from "../issue-page/decisions-filter/decisions-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { changeAnchor } from "./change-anchor";
+import { decision } from "./decision-fixture";
 
 /**
  * The place a Change of a decision is anchored on (`changeAnchor`), as the Change of every

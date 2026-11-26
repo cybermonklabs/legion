@@ -14,7 +14,9 @@ import { DECISION_KIND_WORDS } from "../web/src/features/decision-card/decision-
 import {
   createAsk,
   createIssue,
+  createIssueArtifact,
   createProject,
+  editArtifact,
   getAsk,
   getInbox,
   getIssueDecisions,
@@ -421,6 +423,29 @@ async function brokenWords(words: Locator): Promise<string[]> {
   });
 }
 
+/** The words of `words` that run past its own box's left or right edge: a word longer than the
+ *  room its line leaves, which the page neither breaks nor wraps, so it stands over whatever is
+ *  drawn beside it. */
+async function overrunWords(words: Locator): Promise<string[]> {
+  return words.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const overrun: string[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      for (const match of (node.textContent ?? "").matchAll(/\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        const rects = [...range.getClientRects()];
+        if (rects.some((rect) => rect.left < box.left - 1 || rect.right > box.right + 1)) {
+          overrun.push(match[0]);
+        }
+      }
+    }
+    return overrun;
+  });
+}
+
 // The comments margin is a column about 384 px wide at a desktop width, where the first line's
 // end (the kind, an agent's name control and the time) stands beside the words. The words must
 // keep room to wrap at their spaces there, as they do on a phone, and never break inside a word.
@@ -451,6 +476,94 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   expect(
     await brokenWords(words),
     "the margin breaks a word of the question over two lines"
+  ).toEqual([]);
+});
+
+/** Whether the issue's decisions read holds the agent's decision `heading` with its tie indexed,
+ *  as the seed waits for its own (`awaitDecisions` in `dashboard-seed.ts`): on a bare main the
+ *  bare member waiting for review with a link, and where decisions are nodes the entry of the
+ *  `decision` block `block`. */
+async function decisionWritten(key: string, heading: string, block: string): Promise<boolean> {
+  if (holds === undefined) throw new Error("The server probe did not run");
+  const read = await getIssueDecisions(key);
+  if (!holds.decisionsAreNodes) {
+    return (read.decisions ?? []).some(
+      (decision) =>
+        decision.heading === heading && decision.waiting_review && (decision.links ?? []).length > 0
+    );
+  }
+  return (
+    "entries" in read &&
+    Array.isArray(read.entries) &&
+    read.entries.some((entry) => entry.document?.block_id === block)
+  );
+}
+
+// The same margin draws an agent's decision by the decision card, whose first line's end (the
+// kind and the time) stood beside its heading and left the heading some 120 px: too few for a
+// word such as "internationalization", which ran past the heading's line under the kind. The
+// heading must take the whole line there and keep each word whole, neither broken over two
+// lines nor run past its line's end.
+test("in today's comments margin an agent's decision keeps each word of its heading whole", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  if (holds === undefined) throw new Error("The server probe did not run");
+  const heading = "Keep the internationalization troubleshooting section in the runbook";
+  const why = "Chosen so a reader finds each fix where they look for it.";
+  const asAgent = {
+    actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+    as: "agent",
+  } as const;
+  await createProject({ key: "WHOLE", name: "Whole words" });
+  const issue = await createIssue({
+    project: "WHOLE",
+    spec: ":::requirement{#r1}\nThe runbook keeps its troubleshooting section.\n:::\n",
+    title: "Whole words",
+  });
+  const shaped = `dispatch://${issue.key}/spec#b-r1`;
+  // The decision as the seed writes its own on each main R27 names (`writeDecisions` in
+  // `dashboard-seed.ts`): a `decision` block of the spec that shapes r1, where the server refuses
+  // a new `decisions.md` with `409 DECISIONS_ARE_NODES`, and else a section of a `decisions.md`
+  // whose reference to r1 ties it.
+  if (holds.decisionsAreNodes) {
+    await editArtifact(
+      issue.primary_artifact_id ?? "",
+      {
+        ops: [
+          {
+            after: "end",
+            markdown: `:::decision{#d-whole shaped="${shaped}"}\n### ${heading}\n\n${why}\n:::`,
+            op: "insert",
+          },
+        ],
+      },
+      asAgent
+    );
+  } else {
+    await createIssueArtifact(
+      issue.key,
+      { content: `## ${heading}\n\n${why} Shapes ${shaped}.\n`, name: "decisions.md" },
+      asAgent
+    );
+  }
+  await expect
+    .poll(() => decisionWritten(issue.key, heading, "d-whole"), {
+      message: "the decisions read never held the seeded decision with its tie",
+    })
+    .toBe(true);
+  await wide(page);
+  await page.goto(`/issues/${issue.key}/spec`);
+  const card = margin(page).locator(CARD).filter({ hasText: heading }).first();
+  const words = card.getByRole("heading", { exact: true, name: heading });
+  await expect(words).toBeVisible();
+  expect(
+    await brokenWords(words),
+    "the margin breaks a word of the decision's heading over two lines"
+  ).toEqual([]);
+  expect(
+    await overrunWords(words),
+    "a word of the decision's heading runs past its line, under the kind and the time beside it"
   ).toEqual([]);
 });
 
@@ -904,8 +1017,8 @@ test("today's Decisions tab and Spec margin read every statement's first line in
       await wide(page);
       const traffic = watchApiRequests(page);
       await page.goto(`/issues/${data.key}/${where}`);
-      // A card draws a statement by its first line once the batch has answered for it, and
-      // draws nothing for it before, so each line drawn here is the batch's.
+      // A card draws a statement by its first line once the batch has answered for it, and by
+      // the card's word for a statement it shaped before, so each line drawn here is the batch's.
       for (const entry of data.decisionCases) {
         if (where === "spec" && entry.case === "replaced") continue;
         const statements = decisionRoots(page, entry, where === "spec")
