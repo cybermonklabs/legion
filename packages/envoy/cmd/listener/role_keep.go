@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -1444,8 +1445,11 @@ const (
 	// keptCopyModeClaimed: a walk claimed the copy to end it with a dead letter because the
 	// role's live holder does not take its delivery mode, and no walk confirmed the dead letter.
 	keptCopyModeClaimed
-	// keptCopyExpiryClaimed: a walk claimed the copy to end it with a dead letter because its
-	// hour ended, and no walk confirmed the dead letter.
+	// keptCopyExpiryClaimed: a walk claimed the copy, because its hour ended, to end it with a
+	// dead letter (endKeptCopyWithDeadLetter) or, for a copy Dispatch's outbox kept, with an expiry
+	// notice (endKeptCopyWithExpiryNotice), and no walk confirmed that end. A walk that takes the
+	// claim over judges the copy expired again (judgeKeptRoleCopy), which sends a listener's copy's
+	// dead letter again and an outbox copy's notice again.
 	keptCopyExpiryClaimed
 )
 
@@ -1889,76 +1893,129 @@ func deadLetterRefusal(sender string, letter contracts.Envelope) error {
 }
 
 // endKeptCopyWithDeadLetter ends the copy stored at stored, which judged says is owed a dead letter,
-// for a walk whose cursor stands at kept. It reports whether the copy's last cursor write landed,
-// which makes the copy one the walk ended; whether it left the copy's dead letter sent and
-// unconfirmed; and the error that ends the walk.
+// for a walk whose cursor stands at kept, through the one order every end of a copy with a
+// publish takes (endKeptCopyWithPublish): the claim, written with the drop's reason, qualified,
+// whichever reason it is, where the copy's forward may have reached the holder
+// (keptRoleDrop.claimReason); the dead letter, published through cfg.publishDeadLetter
+// (keptRoleDeadLetter); and the confirm. It reports what endKeptCopyWithPublish reports.
 //
-// It ends the copy as a forward is ended: the cursor is written to {kept: unchanged, claiming: the
-// copy's sequence, dead_letter: the drop's reason, qualified, whichever reason it is, where the
-// copy's forward may have reached the holder (keptRoleDrop.claimReason)}, the dead letter is
-// published through cfg.publishDeadLetter (keptRoleDeadLetter), and the cursor is confirmed at
-// {kept: the copy's sequence} (roleKeepLaneCursor.confirm). The copy's report, the dead letter's
-// line and its count come only once that confirm has landed, so a walk that lost a write reports
-// nothing another walk reports, and a confirm that landed is reported even where another walk had
-// gone on from it, which ends this walk.
-//
-// A publish that failed for a reason that can pass - a stream that is full, a time-out, no
-// responders, a connection lost - is returned with the claim left where it is, so the walk ends
-// as a failed one and the walk that takes the claim over once it is past
-// bus.KeptRoleClaimWindow sends the dead letter again (judgeKeptRoleCopy), for the reason and
-// with the qualifier the claim names (keptCopyClaimOf). A refusal for good ends the copy all the
-// same, with one Error line and a count, and is not sent again: a refusal known before the publish
-// (deadLetterRefusal) in the one write {kept: the copy's sequence}, since there is nothing to claim
-// the copy for - a plain write, which no claim of this walk's makes worth reading back - and one
-// the publish met (forwardRefused) after the claim it made.
+// A refusal known before the publish (deadLetterRefusal) ends the copy in the one write {kept:
+// the copy's sequence}, since there is nothing to claim the copy for - a plain write, which no
+// claim of this walk's makes worth reading back - with one Error line and a count, and is not
+// sent again.
 func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role, item := lane.cfg, lane.role, judged.item
 	letter, msgID := keptRoleDeadLetter(role, stored, item, judged.at, judged.drop)
+	report := func(refused error) { reportKeptRoleDeadLetter(cfg, role, stored, judged, letter, refused) }
 	if refusal := deadLetterRefusal(item.SourceSession, letter); refusal != nil {
 		if err := lane.write(ctx, bus.KeptRoleCursor{Kept: stored.Sequence}); err != nil {
 			return false, false, err
 		}
-		reportKeptRoleDeadLetter(cfg, role, stored, judged, letter, refusal)
+		report(refusal)
 		return true, false, nil
 	}
-	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: judged.drop.claimReason()}); err != nil {
+	return endKeptCopyWithPublish(ctx, lane, kept, stored, keptCopyPublish{
+		claim:   judged.drop.claimReason(),
+		publish: func(ctx context.Context) error { return cfg.publishDeadLetter(ctx, letter.Topic, letter, msgID) },
+		what:    fmt.Sprintf("send the dead letter of role %s's kept message %s to %s", role, item.EventID, item.SourceSession),
+		report:  report,
+	})
+}
+
+// keptCopyPublish is what one end of a copy with a publish writes and says (endKeptCopyWithPublish):
+// the reason its claim names, the publish itself, what that publish is, for the error of one that
+// failed, and the report of a copy whose confirm landed, given the error that refused the publish
+// for good, or nil for one the stream took.
+type keptCopyPublish struct {
+	claim   string
+	publish func(ctx context.Context) error
+	what    string
+	report  func(refused error)
+}
+
+// endKeptCopyWithPublish ends the copy stored at stored, for a walk whose cursor stands at kept,
+// with end's publish, in the order a forward is ended in. It reports whether the copy's last
+// cursor write landed, which makes the copy one the walk ended; whether it left the copy's publish
+// sent and unconfirmed; and the error that ends the walk. It is the one copy of that order for a
+// dead letter (endKeptCopyWithDeadLetter) and an expiry notice (endKeptCopyWithExpiryNotice):
+//
+//  1. the cursor is written to {kept: unchanged, claiming: the copy's sequence, dead_letter:
+//     end.claim}, so a walk that takes the claim over knows why it was made (keptCopyClaimOf);
+//  2. end.publish stores the dead letter or the notice under the copy's own message id, so the
+//     stream holds one however many walks store it;
+//  3. the cursor is confirmed at {kept: the copy's sequence} (roleKeepLaneCursor.confirm).
+//
+// The copy's report, the publish's line and its count (end.report) come only once that confirm
+// has landed, so a walk that lost a write reports nothing another walk reports, and a confirm that
+// landed is reported even where another walk had gone on from it, which ends this walk.
+//
+// A walk that stops between two of these writes leaves a claim that a walk takes over once it is
+// past bus.KeptRoleClaimWindow, and that walk publishes again under the same id: one that stopped
+// after the claim and before the publish leaves nothing published, and one that stopped after the
+// publish and before the confirm leaves a copy the stream drops. A publish that failed for a reason
+// that can pass - a stream that is full, a time-out, no responders, a connection lost - is that
+// stop: it is returned with the claim left where it is, and the walk ends as a failed one. A
+// refusal for good (forwardRefused) ends the copy all the same, with one Error line and a count,
+// and is not sent again: nothing a later walk sends would be taken.
+func endKeptCopyWithPublish(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, end keptCopyPublish) (ended, unconfirmed bool, err error) {
+	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: end.claim}); err != nil {
 		return false, false, err
 	}
-	published := cfg.publishDeadLetter(ctx, letter.Topic, letter, msgID)
+	published := end.publish(ctx)
 	if published != nil && !forwardRefused(published) {
-		return false, false, fmt.Errorf("send the dead letter of role %s's kept message %s to %s: %w", role, item.EventID, item.SourceSession, published)
+		return false, false, fmt.Errorf("%s: %w", end.what, published)
 	}
 	landed, err := lane.confirm(ctx, bus.KeptRoleCursor{Kept: stored.Sequence})
 	if !landed {
 		return false, true, err
 	}
-	reportKeptRoleDeadLetter(cfg, role, stored, judged, letter, published)
+	end.report(published)
 	return true, false, err
 }
 
-// reportKeptRoleDeadLetter reports a copy a walk ended with a dead letter: the copy's own report
-// (keptCopyVerdict.report), then the dead letter's line and its count on
-// envoy_role_dead_letters_total - stored, or, for refused, the error that refused it for good at
-// Error.
-func reportKeptRoleDeadLetter(cfg listenerDeliveryHandlerConfig, role string, stored bus.StoredMessage, judged keptCopyVerdict, letter contracts.Envelope, refused error) {
+// keptCopyEndReport is what one end of a copy says once its confirm has landed
+// (reportKeptCopyEnd): the counter it is counted on, its lines for a publish stored and one refused
+// for good, and the attributes both lines carry.
+type keptCopyEndReport struct {
+	counter     *metrics.Counter
+	storedLine  string
+	refusedLine string
+	attrs       []slog.Attr
+}
+
+// reportKeptCopyEnd reports a copy a walk ended with a publish: the copy's own report
+// (keptCopyVerdict.report), then the publish's line and its count on report.counter - stored, or,
+// for refused, the error that refused it for good at Error. It is the one report of a dead letter
+// (reportKeptRoleDeadLetter) and an expiry notice (reportKeptCopyExpiry).
+func reportKeptCopyEnd(cfg listenerDeliveryHandlerConfig, judged keptCopyVerdict, report keptCopyEndReport, refused error) {
 	if judged.report != nil {
 		judged.report()
 	}
-	attrs := []slog.Attr{
-		slog.String("role", role),
-		slog.String("event_id", judged.item.EventID),
-		slog.String("source_session", judged.item.SourceSession),
-		slog.String("reason", string(judged.drop.reason)),
-		slog.String("dead_letter_event_id", letter.EventID),
-		slog.Uint64("sequence", stored.Sequence),
-	}
 	if refused != nil {
-		cfg.roleDeadLetters.Inc([2]string{"result", "refused"})
-		cfg.logger.Error(roleDeadLetterRefusedLine, append(attrs, slog.String("error", refused.Error()))...)
+		report.counter.Inc([2]string{"result", "refused"})
+		cfg.logger.Error(report.refusedLine, append(report.attrs, slog.String("error", refused.Error()))...)
 		return
 	}
-	cfg.roleDeadLetters.Inc([2]string{"result", "stored"})
-	cfg.logger.Info(roleDeadLetterStoredLine, attrs...)
+	report.counter.Inc([2]string{"result", "stored"})
+	cfg.logger.Info(report.storedLine, report.attrs...)
+}
+
+// reportKeptRoleDeadLetter reports a copy a walk ended with a dead letter (reportKeptCopyEnd), on
+// envoy_role_dead_letters_total.
+func reportKeptRoleDeadLetter(cfg listenerDeliveryHandlerConfig, role string, stored bus.StoredMessage, judged keptCopyVerdict, letter contracts.Envelope, refused error) {
+	reportKeptCopyEnd(cfg, judged, keptCopyEndReport{
+		counter:     cfg.roleDeadLetters,
+		storedLine:  roleDeadLetterStoredLine,
+		refusedLine: roleDeadLetterRefusedLine,
+		attrs: []slog.Attr{
+			slog.String("role", role),
+			slog.String("event_id", judged.item.EventID),
+			slog.String("source_session", judged.item.SourceSession),
+			slog.String("reason", string(judged.drop.reason)),
+			slog.String("dead_letter_event_id", letter.EventID),
+			slog.Uint64("sequence", stored.Sequence),
+		},
+	}, refused)
 }
 
 // keptCopyExpiry is the expiry notice of the copy item, stored at stored on role's kept lane and
@@ -1978,59 +2035,42 @@ func keptCopyExpiry(role string, stored bus.StoredMessage, item contracts.Envelo
 }
 
 // endKeptCopyWithExpiryNotice ends the copy stored at stored, an expired copy Dispatch's outbox
-// kept (keptCopyExpiryNotice), for a walk whose cursor stands at kept, as endKeptCopyWithDeadLetter
-// ends a copy owed a dead letter, and reports the same three things. The cursor is written to
-// {kept: unchanged, claiming: the copy's sequence, dead_letter: the expired claim}, the expiry
-// notice is stored on the role's expiry subject under the copy's own message id
-// (bus.Client.PublishKeptCopyExpiry, keptCopyExpiry), and the cursor is confirmed at {kept: the
-// copy's sequence}. Dispatch's outbox reads the notice and keeps the event again, or records it
-// undelivered once it has kept it its bound of times (internal/dispatch/outbox, readKeptExpiries).
-//
-// A publish that failed for a reason that can pass leaves the claim where it is, so the walk that
-// takes the claim over judges the copy expired again (keptCopyExpiryClaimed) and stores the notice
-// again under the same id, which the stream holds once. A refusal for good ends the copy with one
-// Error line and a count, as a dead letter's does: nothing a later walk sends would be taken.
+// kept (keptCopyExpiryNotice), for a walk whose cursor stands at kept, through the one order every
+// end of a copy with a publish takes (endKeptCopyWithPublish): the claim, written with the plain
+// expired reason - no forward of an outbox copy is ever claimed for this end, and a walk that takes
+// the claim over sends the notice again whatever a qualifier would say; the notice, stored on the
+// role's expiry subject under the copy's own message id through cfg.publishExpiryNotice
+// (bus.Client.PublishKeptCopyExpiry, keptCopyExpiry); and the confirm. Dispatch's outbox reads the
+// notice and keeps the event again, or records it undelivered once it has kept it its bound of
+// times (internal/dispatch/outbox, readKeptExpiries). It reports what endKeptCopyWithPublish
+// reports.
 func endKeptCopyWithExpiryNotice(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role := lane.cfg, lane.role
 	notice := keptCopyExpiry(role, stored, judged.item, judged.at)
-	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: string(deadLetterExpired)}); err != nil {
-		return false, false, err
-	}
-	published := cfg.client.PublishKeptCopyExpiry(ctx, notice)
-	if published != nil && !forwardRefused(published) {
-		return false, false, fmt.Errorf("tell Dispatch role %s's kept message %s ended: %w", role, judged.item.EventID, published)
-	}
-	landed, err := lane.confirm(ctx, bus.KeptRoleCursor{Kept: stored.Sequence})
-	if !landed {
-		return false, true, err
-	}
-	reportKeptCopyExpiry(cfg, stored, judged, notice, published)
-	return true, false, err
+	return endKeptCopyWithPublish(ctx, lane, kept, stored, keptCopyPublish{
+		claim:   string(deadLetterExpired),
+		publish: func(ctx context.Context) error { return cfg.publishExpiryNotice(ctx, notice) },
+		what:    fmt.Sprintf("tell Dispatch role %s's kept message %s ended", role, judged.item.EventID),
+		report:  func(refused error) { reportKeptCopyExpiry(cfg, stored, judged, notice, refused) },
+	})
 }
 
-// reportKeptCopyExpiry reports a copy a walk ended with an expiry notice: the copy's own report
-// (keptCopyVerdict.report), then the notice's line and its count on
-// envoy_role_kept_expiry_notices_total - stored, or, for refused, the error that refused it for good
-// at Error.
+// reportKeptCopyExpiry reports a copy a walk ended with an expiry notice (reportKeptCopyEnd), on
+// envoy_role_kept_expiry_notices_total.
 func reportKeptCopyExpiry(cfg listenerDeliveryHandlerConfig, stored bus.StoredMessage, judged keptCopyVerdict, notice bus.KeptCopyExpiry, refused error) {
-	if judged.report != nil {
-		judged.report()
-	}
-	attrs := []slog.Attr{
-		slog.String("role", notice.Role),
-		slog.String("event_id", notice.EventID),
-		slog.String("kept_by", keptByDispatchOutbox),
-		slog.Int("attempt", notice.Attempt),
-		slog.String("dedupe_key", notice.DedupeKey),
-		slog.Uint64("sequence", stored.Sequence),
-	}
-	if refused != nil {
-		cfg.roleKeptExpiryNotices.Inc([2]string{"result", "refused"})
-		cfg.logger.Error(roleExpiryRefusedLine, append(attrs, slog.String("error", refused.Error()))...)
-		return
-	}
-	cfg.roleKeptExpiryNotices.Inc([2]string{"result", "stored"})
-	cfg.logger.Info(roleExpiryNoticeLine, attrs...)
+	reportKeptCopyEnd(cfg, judged, keptCopyEndReport{
+		counter:     cfg.roleKeptExpiryNotices,
+		storedLine:  roleExpiryNoticeLine,
+		refusedLine: roleExpiryRefusedLine,
+		attrs: []slog.Attr{
+			slog.String("role", notice.Role),
+			slog.String("event_id", notice.EventID),
+			slog.String("kept_by", keptByDispatchOutbox),
+			slog.Int("attempt", notice.Attempt),
+			slog.String("dedupe_key", notice.DedupeKey),
+			slog.Uint64("sequence", stored.Sequence),
+		},
+	}, refused)
 }
 
 // keptRoleRefusalLines are the drain's own lines for a copy beforeForward refused, which it writes

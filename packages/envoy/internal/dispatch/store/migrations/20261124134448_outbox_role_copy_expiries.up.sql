@@ -19,7 +19,9 @@
 -- keeps them.
 --
 -- outbox_kept_expiry_cursor is its one row: the stream sequence of the last expiry notice the
--- outbox read, so a read goes on from the notice after it.
+-- outbox read, so a read goes on from the notice after it, and the identity of the stream that
+-- sequence counts in (bus.StreamIDMetadataKey), so a read of a stream created again since starts
+-- from that stream's first notice rather than from a sequence of the stream before it.
 --
 -- outbox_role_undelivered_notes holds one row per event recorded undelivered to a role, in the
 -- transaction that appends its role.undelivered record: the issue the message about it is posted
@@ -59,7 +61,8 @@ create index outbox_role_copy_expiries_unsettled on outbox_role_copy_expiries (r
 
 create table outbox_kept_expiry_cursor (
     id boolean primary key default true check (id),
-    sequence bigint not null
+    sequence bigint not null,
+    stream_id text not null
 );
 
 create table outbox_role_undelivered_notes (

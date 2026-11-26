@@ -68,7 +68,7 @@ const keptExpiryNotices = bus.KeptExpiredSubjectPrefix + ">"
 // stream to read the notices or the copies from, as it makes no keep's handover then
 // (Deps.KeptLanes).
 func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
-	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance)
+	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance, &o.keptStream)
 	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
 	postFull, postFailed := postUndeliveredNotes(ctx, o.deps, hold, o.instance)
 	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed
@@ -85,17 +85,66 @@ func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed
 // row and writes nothing - no expiry, no record, no cursor move - while instance does not hold it
 // (errNotTheHolder), and a pass past the hold's deadline reads nothing. So a process the hold has
 // left cannot record an expiry the holder's own pass is about to keep again.
-func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed bool) {
+//
+// The cursor's sequence counts in one stream, whose identity (bus.StreamIDMetadataKey) the cursor
+// names beside it. A stream created again, as a hub moved without its stream's snapshot is,
+// numbers its notices from its own first message, below a cursor of the stream before it, where a
+// read from the cursor would find none of them and say nothing. So the read takes the stream's
+// identity first (keptStreamRead), and a cursor that names another stream is set back to the
+// start of this one, with one Error line: the notices are read from the first the stream holds,
+// and a notice recorded already is a repeat that records nothing (recordExpiry).
+func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.UUID, stream *keptStreamRead) (full, failed bool) {
 	if deps.KeptLanes == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
 		return false, false
 	}
+	if err := stream.refresh(ctx, deps.KeptLanes, false); err != nil {
+		if !lostToContextEnd(ctx, err) {
+			slog.Error("dispatch outbox: read the stream's identity for the expiry notices' cursor", "error", err)
+		}
+		return false, true
+	}
 	var cursor int64
-	if err := deps.Store.Pool.QueryRow(ctx,
-		`select coalesce((select sequence from outbox_kept_expiry_cursor), 0)`).Scan(&cursor); err != nil {
+	var cursorStream string
+	err := deps.Store.Pool.QueryRow(ctx, `select sequence, stream_id from outbox_kept_expiry_cursor`).Scan(&cursor, &cursorStream)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		cursor, cursorStream = 0, stream.id
+	case err != nil:
 		if !lostToContextEnd(ctx, err) {
 			slog.Error("dispatch outbox: read the expiry notices' cursor", "error", err)
 		}
 		return false, true
+	}
+	if cursorStream != stream.id {
+		// The identity this process holds may be the one taken before the stream was created
+		// again, so the cursor is set back only on an identity taken now.
+		if err := stream.refresh(ctx, deps.KeptLanes, true); err != nil {
+			if !lostToContextEnd(ctx, err) {
+				slog.Error("dispatch outbox: read the stream's identity for the expiry notices' cursor", "error", err)
+			}
+			return false, true
+		}
+	}
+	if cursorStream != stream.id {
+		tag, err := deps.Store.Pool.Exec(ctx, `
+			update outbox_kept_expiry_cursor set sequence = 0, stream_id = $3
+			where sequence = $1 and stream_id = $2
+			  and exists (select 1 from duty_holds where name = $4 and holder = $5 and expires_at > now())
+		`, cursor, cursorStream, stream.id, publisherHold, instance)
+		if err != nil {
+			if !lostToContextEnd(ctx, err) {
+				slog.Error("dispatch outbox: set the expiry notices' cursor back to the stream's start", "error", err)
+			}
+			return false, true
+		}
+		if tag.RowsAffected() == 0 {
+			// The hold is not this process's, or another write moved the cursor since this read:
+			// the next pass reads the cursor as it stands then.
+			return false, false
+		}
+		slog.Error("dispatch outbox: the expiry notices' cursor counts in a stream created again since; it is set back to this stream's start, and its notices are read from the first it holds",
+			"cursor", cursor, "cursor_stream_id", cursorStream, "stream_id", stream.id)
+		cursor = 0
 	}
 	after := uint64(cursor)
 	for range batchSize {
@@ -109,7 +158,7 @@ func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.
 			}
 			return false, true
 		}
-		if err := recordKeptExpiry(ctx, deps, instance, stored); err != nil {
+		if err := recordKeptExpiry(ctx, deps, instance, stored, stream.id); err != nil {
 			if errors.Is(err, errNotTheHolder) {
 				slog.Warn("dispatch outbox: the publisher hold is no longer this process's, so the expiry notices are left to the hold's next pass",
 					"sequence", stored.Sequence)
@@ -123,6 +172,34 @@ func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.
 		after = stored.Sequence
 	}
 	return true, false
+}
+
+// keptStreamRead is the stream's identity as the expiry notices' read last took it
+// (readKeptExpiries), and when. The identity changes only when the stream is created again, so a
+// holder takes it once every keptExpiryReadEvery rather than on every pass: the pass after each
+// scan would otherwise send a stream info each time, which the stream's leader answers. It takes
+// it again at once before it sets a cursor of another identity back, so a cursor is never set
+// back on an identity this process took before the stream was created again. A pass that reads
+// with such an identity records the notices it finds under it, and the next take sets the cursor
+// back, so those notices are read again as repeats and the ones below the old cursor are read for
+// the first time.
+type keptStreamRead struct {
+	id string
+	at time.Time
+}
+
+// refresh takes the stream's identity from reader when force is set, when none was taken, or when
+// the last take is keptExpiryReadEvery old.
+func (r *keptStreamRead) refresh(ctx context.Context, reader KeptLaneReader, force bool) error {
+	if !force && !r.at.IsZero() && time.Since(r.at) < keptExpiryReadEvery {
+		return nil
+	}
+	id, err := reader.StreamID(ctx)
+	if err != nil {
+		return err
+	}
+	*r = keptStreamRead{id: id, at: time.Now()}
+	return nil
 }
 
 // errNotTheHolder is a holder transaction's answer when the publisher hold's row does not name the
@@ -207,61 +284,128 @@ func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, wri
 	return nil
 }
 
-// recordKeptExpiry records the expiry notice stored, and moves the cursor past it, in one holder
-// transaction (inHolderTransaction, recordExpiry) under recordTimeout, which publishes the
-// role.undelivered event that record appended, if any, once it has committed, and writes nothing
-// and answers errNotTheHolder while the publisher hold is not instance's.
+// recordKeptExpiry records the expiry notice stored, and moves the cursor past it in the stream
+// whose identity is streamID, in one holder transaction (inHolderTransaction, recordExpiry) under
+// recordTimeout, which publishes the role.undelivered event that record appended, if any, once it
+// has committed, and writes nothing and answers errNotTheHolder while the publisher hold is not
+// instance's.
 //
 // A notice is passed over with one Error line, and only the cursor moves, when it names no copy
 // this outbox kept for a role: its body does not decode; it names no source event; its role is no
 // role name (roles.Valid); it was stored on another role's expiry subject than the one its role
-// names; or the event it names was never routed to that role - the event's own destinations, and
+// names; the event it names was never routed to that role - the event's own destinations, and
 // its comment's fallback rows, do not name the role's topic - which an event the log does not hold
-// is not either. No read of such a notice will ever name one. Only a NATS user on the listener's
-// grant can store a notice at all, so this guards the role that becomes a subject
-// (bus.KeptRoleSubject) and is written into a posted message, not a door. The notice's own attempt
-// decides nothing (recordExpiry).
-func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored bus.StoredMessage) error {
+// is not either; or the stream holds something else than that event's copy at the sequence the
+// notice names (noticedCopy). No read of such a notice will ever name one. Only a NATS user on
+// the listener's grant can store a notice at all, so this guards the role that becomes a subject
+// (bus.KeptRoleSubject) and is written into a posted message, and the event whose delivery to the
+// role a notice reopens or ends, not a door. The notice's own attempt decides nothing
+// (recordExpiry).
+func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored bus.StoredMessage, streamID string) error {
 	ctx, cancel := context.WithTimeout(ctx, recordTimeout)
 	defer cancel()
 	var notice bus.KeptCopyExpiry
 	decodeErr := json.Unmarshal(stored.Data, &notice)
 	eventID, parseErr := strconv.ParseInt(notice.SourceEventID, 10, 64)
+	refusal := errors.Join(decodeErr, parseErr)
+	var copyRefusal string
+	switch {
+	case refusal != nil:
+	case !roles.Valid(notice.Role):
+		refusal = fmt.Errorf("its role %q is no role name", notice.Role)
+	case stored.Subject != bus.KeptExpiredSubject(notice.Role):
+		refusal = fmt.Errorf("it was stored on %s, not on role %s's expiry subject", stored.Subject, notice.Role)
+	default:
+		// Read before the transaction, which holds no lock across a read of NATS.
+		var err error
+		if copyRefusal, err = noticedCopy(ctx, deps.KeptLanes, stored, notice); err != nil {
+			return err
+		}
+	}
 	return inHolderTransaction(ctx, deps, instance, func(tx pgx.Tx) (*model.Event, error) {
 		var appended *model.Event
-		refusal := errors.Join(decodeErr, parseErr)
-		switch {
-		case refusal != nil:
-		case !roles.Valid(notice.Role):
-			refusal = fmt.Errorf("its role %q is no role name", notice.Role)
-		case stored.Subject != bus.KeptExpiredSubject(notice.Role):
-			refusal = fmt.Errorf("it was stored on %s, not on role %s's expiry subject", stored.Subject, notice.Role)
-		default:
+		refused := refusal
+		if refused == nil {
 			routed, err := routedToRole(ctx, tx, eventID, notice.Role)
 			if err != nil {
 				return nil, err
 			}
-			if !routed {
-				refusal = fmt.Errorf("event %d was never routed to role %s", eventID, notice.Role)
+			switch {
+			case !routed:
+				refused = fmt.Errorf("event %d was never routed to role %s", eventID, notice.Role)
+			case copyRefusal != "":
+				refused = errors.New(copyRefusal)
 			}
 		}
-		if refusal != nil {
+		if refused != nil {
 			slog.Error("dispatch outbox: an expiry notice names no copy this outbox kept for a role; it is passed over",
-				"sequence", stored.Sequence, "subject", stored.Subject, "event_id", notice.EventID, "role", notice.Role, "error", refusal)
+				"sequence", stored.Sequence, "subject", stored.Subject, "event_id", notice.EventID, "role", notice.Role,
+				"copy_sequence", notice.Sequence, "error", refused)
 		} else {
 			var err error
 			if appended, err = recordExpiry(ctx, deps, tx, eventID, notice); err != nil {
 				return nil, err
 			}
 		}
+		// The cursor names the identity readKeptExpiries read it under, which set back a cursor of
+		// another stream before this notice was read, so the two differ here only when another
+		// holder wrote the row since: the row then takes this notice's sequence and this pass's
+		// identity, and a pass that reads another identity sets it back again.
 		if _, err := tx.Exec(ctx, `
-			insert into outbox_kept_expiry_cursor (id, sequence) values (true, $1)
-			on conflict (id) do update set sequence = greatest(outbox_kept_expiry_cursor.sequence, excluded.sequence)
-		`, int64(stored.Sequence)); err != nil {
+			insert into outbox_kept_expiry_cursor (id, sequence, stream_id) values (true, $1, $2)
+			on conflict (id) do update set
+				sequence = case when outbox_kept_expiry_cursor.stream_id = excluded.stream_id
+					then greatest(outbox_kept_expiry_cursor.sequence, excluded.sequence) else excluded.sequence end,
+				stream_id = excluded.stream_id
+		`, int64(stored.Sequence), streamID); err != nil {
 			return nil, err
 		}
 		return appended, nil
 	})
+}
+
+// noticedCopy reads the copy notice names back from reader, at the sequence it names on its role's
+// kept lane, and answers why that is not the copy of the notice's event a listener drops at the
+// end of its hour, or "" when it may be. A listener stores a copy's notice after it reads the
+// copy, so the copy's sequence is below the notice's own (stored). A copy the lane still holds at
+// that sequence is the notice's when it is Dispatch's copy of the notice's event under the
+// notice's dedupe key (copyOfEvent). A lane that holds nothing there either lost the copy to the
+// stream's retention - a copy that is gone, which the expiry pass ends its pair over
+// (readExpiredCopy, copy_gone) - or never held one: a sequence where the stream holds a message
+// on another subject is the second, and every other is taken for the first, since no read tells
+// them apart. A failed read is returned, and the notice is read again on the next pass.
+func noticedCopy(ctx context.Context, reader KeptLaneReader, stored bus.StoredMessage, notice bus.KeptCopyExpiry) (string, error) {
+	if notice.Sequence == 0 || notice.Sequence >= stored.Sequence {
+		return fmt.Sprintf("it names the copy at sequence %d, which is not below its own %d", notice.Sequence, stored.Sequence), nil
+	}
+	held, err := reader.NextStoredMessage(ctx, bus.KeptRoleSubject(notice.Role), notice.Sequence)
+	switch {
+	case err == nil && held.Sequence == notice.Sequence:
+		var item contracts.Envelope
+		if err := json.Unmarshal(held.Data, &item); err != nil || !copyOfEvent(item, notice.SourceEventID, notice.DedupeKey) {
+			return fmt.Sprintf("role %s's kept lane holds at sequence %d another copy than event %s's under dedupe key %s (event %q, source %q, dedupe key %q)",
+				notice.Role, notice.Sequence, notice.SourceEventID, notice.DedupeKey, item.SourceEventID, item.Source, item.DedupeKey), nil
+		}
+		return "", nil
+	case err != nil && !errors.Is(err, natsgo.ErrMsgNotFound):
+		return "", fmt.Errorf("read role %s's kept lane at %d: %w", notice.Role, notice.Sequence, err)
+	}
+	other, err := reader.NextStoredMessage(ctx, ">", notice.Sequence)
+	switch {
+	case errors.Is(err, natsgo.ErrMsgNotFound):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("read the stream at %d: %w", notice.Sequence, err)
+	case other.Sequence == notice.Sequence:
+		return fmt.Sprintf("the stream holds a message on %s at sequence %d, not a copy on role %s's kept lane", other.Subject, notice.Sequence, notice.Role), nil
+	}
+	return "", nil
+}
+
+// copyOfEvent reports whether item is Dispatch's copy of the event whose id is sourceEventID under
+// dedupeKey: what the outbox kept for that event (eventEnvelope), and what a notice of it names.
+func copyOfEvent(item contracts.Envelope, sourceEventID, dedupeKey string) bool {
+	return item.Source == "dispatch" && item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
 }
 
 // routedToRole reports, in tx, whether the outbox ever routed eventID to role: the role's topic is
@@ -341,44 +485,49 @@ func recordExpiry(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, noti
 			attempts, "keeps", attempt, "next_attempt", attempt+1)
 		return nil, nil
 	}
-	return endRoleDelivery(ctx, deps, tx, eventID, notice.Role, attempt, keptAt, droppedAt, model.RoleUndeliveredExpired)
+	return endRoleDelivery(ctx, deps, tx, model.RoleUndeliveredEventPayload{
+		EventID: eventID, Role: notice.Role, Keeps: attempt, KeptAt: keptAt, DroppedAt: droppedAt, Reason: model.RoleUndeliveredExpired,
+	})
 }
 
 // endRoleDelivery is the one way an event's delivery to a role ends, in tx, for both reasons it
 // ends - its last keep expired (recordExpiry) or no copy of it can be kept again (recordCannotKeep):
 // every row of the pair still owed a keep is settled undelivered, and the event's role.undelivered
 // record is appended (appendUndelivered) unless the pair had ended already, so the pair has one
-// record however many of its rows end, and no row of it is left owed. The caller has written its
-// own row, the attempt'th, settled undelivered; ended reads whether any other row of the pair was
-// undelivered before it.
-func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, role string, attempt int, keptAt, droppedAt time.Time, reason string) (*model.Event, error) {
+// record however many of its rows end, and no row of it is left owed. record is that record's
+// payload but for its EventType, which appendUndelivered reads: the pair (EventID, Role), the
+// caller's own row's attempt as Keeps, that copy's keep and drop times, and the reason. The caller
+// has written its own row, the Keeps'th, settled undelivered; ended reads whether any other row of
+// the pair was undelivered before it.
+func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, record model.RoleUndeliveredEventPayload) (*model.Event, error) {
 	var ended bool
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from outbox_role_copy_expiries where event_id = $1 and role = $2 and outcome = $3 and keep_attempt <> $4)
-	`, eventID, role, expiryUndelivered, attempt).Scan(&ended); err != nil {
+	`, record.EventID, record.Role, expiryUndelivered, record.Keeps).Scan(&ended); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 		update outbox_role_copy_expiries set settled_at = now(), outcome = $3
 		where event_id = $1 and role = $2 and settled_at is null
-	`, eventID, role, expiryUndelivered); err != nil {
+	`, record.EventID, record.Role, expiryUndelivered); err != nil {
 		return nil, err
 	}
 	if ended {
 		slog.Info("dispatch outbox: an event already recorded undelivered to a role ended again; it keeps its one record",
-			"event_id", eventID, "role", role, "keeps", attempt, "reason", reason)
+			"event_id", record.EventID, "role", record.Role, "keeps", record.Keeps, "reason", record.Reason)
 		return nil, nil
 	}
-	return appendUndelivered(ctx, deps, tx, eventID, role, attempt, keptAt, droppedAt, reason)
+	return appendUndelivered(ctx, deps, tx, record)
 }
 
-// appendUndelivered appends, in tx, the role.undelivered record of eventID's copy for role on that
-// event's own owner - its issue, its document or its project - written by the outbox's own system
-// actor (graphWriter), which notifies nobody (events.Broker.Notify), so the record wakes no route
-// and reaches no role: it is published to its owner's topic alone, where a person reads it in the
-// owner's history and a session that follows that topic is sent it. It also notes the event for
-// the message a person is sent about it (noteUndelivered). It logs the record at Warn and returns
-// it for the caller to publish once tx has committed.
+// appendUndelivered appends, in tx, the role.undelivered record whose payload is record, with the
+// event's own type as its EventType, on that event's own owner - its issue, its document or its
+// project - written by the outbox's own system actor (graphWriter), which notifies nobody
+// (events.Broker.Notify), so the record wakes no route and reaches no role: it is published to its
+// owner's topic alone, where a person reads it in the owner's history and a session that follows
+// that topic is sent it. It also notes the event for the message a person is sent about it
+// (noteUndelivered). It logs the record at Warn and returns it for the caller to publish once tx
+// has committed.
 //
 // An event the log does not hold records nothing but an Error line, and so does one that names no
 // owner. Every event the outbox keeps a copy of for a role is of an issue or of an issue's
@@ -386,52 +535,54 @@ func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, r
 // from the issue of its document (readBatchSQL, coalesce(i.route, ai.route)), and a role topic's
 // fallback row holds that route's copy (fallbackCopy.ofASessionsOwnTopic). So no write makes an
 // expiry of a project's own event or of a project document's, and none of those owners has a
-// place to post a message on.
-func appendUndelivered(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, role string, keeps int, keptAt, droppedAt time.Time, reason string) (*model.Event, error) {
-	record := model.Event{Type: model.RoleUndeliveredEventType, Actor: graphWriter}
+// place to post a message on (TestAProjectDocumentsEventReachesNoRole).
+func appendUndelivered(ctx context.Context, deps Deps, tx pgx.Tx, record model.RoleUndeliveredEventPayload) (*model.Event, error) {
+	event := model.Event{Type: model.RoleUndeliveredEventType, Actor: graphWriter}
 	var about undeliveredEvent
 	err := tx.QueryRow(ctx, `
 		select e.issue_key, e.artifact_id::text, e.project_key, e.type, coalesce(e.payload ->> 'id', ''),
-		       ar.id::text, ar.issue_key, coalesce(ar.slug, '')
+		       ar.id::text, ar.issue_key, coalesce(ar.project_key, ''), ar.session_id, coalesce(ar.slug, ''),
+		       coalesce(ar.kind, ''), coalesce(ar.is_primary, false)
 		from events e
 		left join artifacts ar on ar.id::text = coalesce(e.artifact_id::text, e.payload ->> 'artifact_id')
 		where e.id = $1
-	`, eventID).Scan(&record.IssueKey, &record.ArtifactID, &record.ProjectKey, &about.eventType, &about.postID,
-		&about.documentID, &about.documentIssue, &about.documentSlug)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && record.IssueKey == nil && record.ArtifactID == nil && record.ProjectKey == nil {
+	`, record.EventID).Scan(&event.IssueKey, &event.ArtifactID, &event.ProjectKey, &record.EventType, &about.postID,
+		&about.documentID, &about.documentIssue, &about.documentProject, &about.documentSession, &about.documentSlug,
+		&about.documentKind, &about.documentPrimary)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && event.IssueKey == nil && event.ArtifactID == nil && event.ProjectKey == nil {
 		slog.Error("dispatch outbox: an event's copy for a role reached no session, and the event names no owner to record it on",
-			"event_id", eventID, "role", role, "keeps", keeps, "reason", reason)
+			"event_id", record.EventID, "role", record.Role, "keeps", record.Keeps, "reason", record.Reason)
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	record.Payload = model.RoleUndeliveredEventPayload{
-		EventID: eventID, EventType: about.eventType, Role: role, Keeps: keeps, KeptAt: keptAt, DroppedAt: droppedAt, Reason: reason,
-	}
-	appended, err := deps.Broker.Append(ctx, tx, record)
+	event.Payload = record
+	appended, err := deps.Broker.Append(ctx, tx, event)
 	if err != nil {
-		return nil, fmt.Errorf("append the role.undelivered record of event %d: %w", eventID, err)
+		return nil, fmt.Errorf("append the role.undelivered record of event %d: %w", record.EventID, err)
 	}
 	slog.Warn("dispatch outbox: an event's copy for a role reached no session; it is recorded undelivered",
-		"event_id", eventID, "event_type", about.eventType, "role", role, "keeps", keeps, "reason", reason, "record_id", appended.ID)
-	about.issueKey = record.IssueKey
-	if err := noteUndelivered(ctx, tx, eventID, role, keeps, reason, about); err != nil {
+		"event_id", record.EventID, "event_type", record.EventType, "role", record.Role, "keeps", record.Keeps,
+		"reason", record.Reason, "record_id", appended.ID)
+	about.issueKey = event.IssueKey
+	if err := noteUndelivered(ctx, tx, record, about); err != nil {
 		return nil, err
 	}
 	return &appended, nil
 }
 
 // expiredCopy is one outbox_role_copy_expiries row the expiry pass claimed: the copy of eventID
-// kept for role for the attempt'th time, which the stream holds at sequence on role's kept lane,
-// the keep and drop times its notice named, how many of the pass's sends of it failed so far
-// (attempt_count), and claim, the next_attempt_at the pass's claim set, which every write of the
-// pass's record is guarded on.
+// kept for role for the attempt'th time under dedupeKey, which the stream holds at sequence on
+// role's kept lane, the keep and drop times its notice named, how many of the pass's sends of it
+// failed so far (attempt_count), and claim, the next_attempt_at the pass's claim set, which every
+// write of the pass's record is guarded on.
 type expiredCopy struct {
 	eventID   int64
 	role      string
 	attempt   int
 	sequence  uint64
+	dedupeKey string
 	keptAt    time.Time
 	droppedAt time.Time
 	failures  int
@@ -608,8 +759,12 @@ type cannotKeep struct {
 
 // readExpiredCopy reads held's copy back from its role's kept lane, at the stream sequence its
 // notice named, and decodes it. It reports false with no error when the stream no longer holds a
-// copy there - the stream's retention passed it - or holds one no read can decode, either of which
-// the pass cannot keep again.
+// copy there - the stream's retention passed it - or holds one no read can decode, or one that is
+// not Dispatch's copy of held's event under held's dedupe key (copyOfEvent), any of which the pass
+// cannot keep again. The notice's record read the same copy there (noticedCopy), so another copy
+// at that sequence is one a stream created again since then stored: held's copy is gone with the
+// stream before it, and keeping or forwarding the other one would send another event under
+// held's.
 func readExpiredCopy(ctx context.Context, deps Deps, held expiredCopy) (contracts.Envelope, bool, error) {
 	stored, err := deps.KeptLanes.NextStoredMessage(ctx, bus.KeptRoleSubject(held.role), held.sequence)
 	if errors.Is(err, natsgo.ErrMsgNotFound) {
@@ -624,6 +779,12 @@ func readExpiredCopy(ctx context.Context, deps Deps, held expiredCopy) (contract
 	}
 	if err := json.Unmarshal(stored.Data, &item); err != nil {
 		slog.Error("dispatch outbox: an expired copy cannot be decoded", "event_id", held.eventID, "role", held.role, "sequence", held.sequence, "error", err)
+		return contracts.Envelope{}, false, nil
+	}
+	if !copyOfEvent(item, strconv.FormatInt(held.eventID, 10), held.dedupeKey) {
+		slog.Error("dispatch outbox: the stream holds another copy than the expired one at its sequence; the expired copy is gone",
+			"event_id", held.eventID, "role", held.role, "sequence", held.sequence, "dedupe_key", held.dedupeKey,
+			"held_source", item.Source, "held_event_id", item.SourceEventID, "held_dedupe_key", item.DedupeKey)
 		return contracts.Envelope{}, false, nil
 	}
 	return item, true, nil
@@ -649,9 +810,9 @@ const expiryClaimQuery = `
 				limit $1
 				for update of pending skip locked
 			)
-			returning event_id, role, keep_attempt, copy_sequence, kept_at, dropped_at, attempt_count, next_attempt_at
+			returning event_id, role, keep_attempt, copy_sequence, dedupe_key, kept_at, dropped_at, attempt_count, next_attempt_at
 		)
-		select event_id, role, keep_attempt, copy_sequence, kept_at, dropped_at, attempt_count, next_attempt_at
+		select event_id, role, keep_attempt, copy_sequence, dedupe_key, kept_at, dropped_at, attempt_count, next_attempt_at
 		from claimed
 	`
 
@@ -669,7 +830,7 @@ func claimExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID) ([]e
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (expiredCopy, error) {
 		var held expiredCopy
 		var sequence int64
-		if err := row.Scan(&held.eventID, &held.role, &held.attempt, &sequence, &held.keptAt, &held.droppedAt,
+		if err := row.Scan(&held.eventID, &held.role, &held.attempt, &sequence, &held.dedupeKey, &held.keptAt, &held.droppedAt,
 			&held.failures, &held.claim); err != nil {
 			return expiredCopy{}, err
 		}
@@ -793,6 +954,8 @@ func recordCannotKeep(ctx context.Context, deps Deps, instance uuid.UUID, row ca
 				"event_id", held.eventID, "role", held.role, "attempt", held.attempt, "sequence", held.sequence, "reason", row.reason)
 			return nil, nil
 		}
-		return endRoleDelivery(ctx, deps, tx, held.eventID, held.role, held.attempt, held.keptAt, held.droppedAt, row.reason)
+		return endRoleDelivery(ctx, deps, tx, model.RoleUndeliveredEventPayload{
+			EventID: held.eventID, Role: held.role, Keeps: held.attempt, KeptAt: held.keptAt, DroppedAt: held.droppedAt, Reason: row.reason,
+		})
 	})
 }

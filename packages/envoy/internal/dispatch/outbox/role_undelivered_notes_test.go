@@ -219,9 +219,11 @@ func TestAnEventARoleDidNotTakeAfterItsWindowEndedOpensANewWindow(t *testing.T) 
 }
 
 // A document event a role did not take is told on the document's issue, whose route the role is,
-// as an issue message that names the document and links it. A document of an issue writes its
-// events on that issue (store.OwnerOf), naming the document in their payload, as a person's settled
-// edit does here. With the window pass taken away, nothing is posted.
+// as an issue message that names the document and links it by the address the dashboard copies
+// for it (refs.ArtifactRef): an issue's primary document, as here, is dispatch://<issue>/spec. A
+// document of an issue writes its events on that issue (store.OwnerOf), naming the document in
+// their payload, as a person's settled edit does here. With the window pass taken away, nothing is
+// posted; with the address written by hand, it reads dispatch://T-1/artifact/spec.
 func TestADocumentEventARoleNeverTookIsToldOnTheDocumentsIssue(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -233,8 +235,8 @@ func TestADocumentEventARoleNeverTookIsToldOnTheDocumentsIssue(t *testing.T) {
 	}
 	var artifactID string
 	if err := rig.database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
-		values ('T-1', 'TT', 'spec', 'spec.md', 'doc', '{"kind":"user","id":"alice"}')
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('T-1', 'TT', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
 		returning id::text
 	`).Scan(&artifactID); err != nil {
 		t.Fatalf("create T-1's document: %v", err)
@@ -256,9 +258,76 @@ func TestADocumentEventARoleNeverTookIsToldOnTheDocumentsIssue(t *testing.T) {
 	if len(posted) != 1 {
 		t.Fatalf("T-1 holds %d system messages, want one about its document's event", len(posted))
 	}
-	for _, want := range []string{fmt.Sprintf("event %d (artifact.human_edited)", event.ID), "on the document dispatch://T-1/artifact/spec"} {
+	for _, want := range []string{fmt.Sprintf("event %d (artifact.human_edited)", event.ID), "on the document dispatch://T-1/spec"} {
 		if !strings.Contains(posted[0].body, want) {
 			t.Errorf("the message on T-1 does not say %q:\n%s", want, posted[0].body)
 		}
+	}
+}
+
+// A project document's event reaches no role, so no message about it is owed: an event's route is
+// read from its issue or from its document's issue (readBatchSQL, coalesce(i.route, ai.route)),
+// and a project document has neither. The outbox keeps no copy of such an event for the role its
+// project's issue routes to, names no role among its destinations, records no expiry or
+// role.undelivered event for it, notes it for no window and posts no message about it. The
+// issue's own event, routed to the same role, is kept on the role's kept lane in the same scan, so
+// the lane read sees a copy where one is kept. With a route planted on every event of no issue in
+// the batch read, the project document's event is kept for the role and the test fails.
+func TestAProjectDocumentsEventReachesNoRole(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "project-document-role"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	issueEvent := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	var artifactID string
+	if err := rig.database.Pool.QueryRow(ctx, `
+		insert into artifacts (project_key, slug, name, kind, created_by)
+		values ('TT', 'notes-md', 'notes.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text
+	`).Scan(&artifactID); err != nil {
+		t.Fatalf("create the project's document: %v", err)
+	}
+	event := appendEvent(t, rig.database, rig.broker, model.Event{
+		ArtifactID: new(artifactID), Type: "artifact.human_edited", Actor: model.Actor{Kind: "user", ID: "alice"},
+		Payload: model.ArtifactHumanEditedEventPayload{ArtifactID: artifactID, Name: "notes.md", FromVersion: 1, ToVersion: 2, Editors: []string{"alice"}},
+	})
+	outbox := holding(t, rig.withIssueMessages(t, rig.deps()))
+	outbox.scan(ctx, unfenced{})
+
+	if publishedAt(t, rig.database, event.ID) == nil || publishedAt(t, rig.database, issueEvent.ID) == nil {
+		t.Fatalf("the scan left event %d or event %d unpublished, want both published", event.ID, issueEvent.ID)
+	}
+	lane := keptLane(t, rig.client, role)
+	if len(lane) != 1 || envelopeOf(t, lane[0]).SourceEventID != fmt.Sprint(issueEvent.ID) {
+		t.Fatalf("role %s's kept lane holds %d copies, want the issue event's one and none of the project document's", role, len(lane))
+	}
+	var destinations []string
+	if err := rig.database.Pool.QueryRow(ctx, `select coalesce(published_destinations, '{}') from events where id = $1`, event.ID).Scan(&destinations); err != nil {
+		t.Fatalf("read event %d's destinations: %v", event.ID, err)
+	}
+	for _, destination := range destinations {
+		if strings.HasPrefix(destination, contracts.RoleTopicPrefix) {
+			t.Fatalf("event %d names role topic %s among its destinations %v, want none", event.ID, destination, destinations)
+		}
+	}
+	outbox.passKeptExpiries(ctx, unfenced{})
+	endWindows(t, rig.database, role)
+	outbox.passKeptExpiries(ctx, unfenced{})
+
+	if rows := expiryRows(t, rig.database, event.ID, role); len(rows) != 0 {
+		t.Fatalf("the outbox recorded %+v for event %d, want nothing", rows, event.ID)
+	}
+	if records := undeliveredCount(t, rig.database, event.ID); records != 0 {
+		t.Fatalf("event %d has %d role.undelivered records, want none", event.ID, records)
+	}
+	var notes, messages int
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select (select count(*) from outbox_role_undelivered_notes),
+		       (select count(*) from messages where author ->> 'kind' = 'system')
+	`).Scan(&notes, &messages); err != nil {
+		t.Fatalf("count the notes and system messages: %v", err)
+	}
+	if notes != 0 || messages != 0 {
+		t.Fatalf("the outbox wrote %d notes and %d system messages, want none", notes, messages)
 	}
 }

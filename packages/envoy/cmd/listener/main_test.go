@@ -3999,6 +3999,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		roleKeptExpiryNotices: met.NewCounter("test_role_kept_expiry_notices", "test"),
 		roleKeptUndecodable:   met.NewCounter("test_role_kept_undecodable", "test"),
 		publishDeadLetter:     client.PublishStoredAs,
+		publishExpiryNotice:   client.PublishKeptCopyExpiry,
 		keepPublish:           client.PublishStoredAck,
 		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
 		// main.go's always has both; the harness's two handlers share these as main.go's do. The

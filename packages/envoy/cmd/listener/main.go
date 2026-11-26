@@ -1624,6 +1624,7 @@ func main() {
 		roleKeptExpiryNotices: roleKeptExpiryNotices,
 		roleKeptUndecodable:   roleKeptUndecodable,
 		publishDeadLetter:     client.PublishStoredAs,
+		publishExpiryNotice:   client.PublishKeptCopyExpiry,
 		keepPublish:           client.PublishStoredAck,
 
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,

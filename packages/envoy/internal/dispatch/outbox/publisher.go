@@ -98,19 +98,22 @@ type Deps struct {
 	Sessions   roles.SessionLookup
 	// KeptLanes is where the handover behind a keep reads the role's kept lane and its drain
 	// cursor, to tell whether the copy just kept is the one that lane's drain would hand over
-	// next (handOverKept). cmd/dispatch passes the same bus.Client it publishes through, whose
-	// grant covers that read. A nil reader makes no handover at all, as a nil role reader is
-	// errNoRoleReaders: the kept copy then waits for the listener's next handover of the lane -
-	// the role's next claim, a keep, the registration that makes a session holding the role live
-	// again or the claim route's refresh that does, or the sweep (handOverKept) - which is what
-	// this package's tests that publish through a stand-in with no stream behind it leave it to.
+	// next (handOverKept), and where the expiry pass reads the listeners' expiry notices, the
+	// copies they name and the stream's identity (passKeptExpiries). cmd/dispatch passes the same
+	// bus.Client it publishes through, whose grant covers those reads. A nil reader makes no
+	// handover at all, as a nil role reader is errNoRoleReaders: the kept copy then waits for the
+	// listener's next handover of the lane - the role's next claim, a keep, the registration that
+	// makes a session holding the role live again or the claim route's refresh that does, or the
+	// sweep (handOverKept) - which is what this package's tests that publish through a stand-in
+	// with no stream behind it leave it to. A nil reader reads no notice either.
 	KeptLanes KeptLaneReader
-	// PostIssueMessage posts a message on an issue as actor, a system actor, under the id
-	// messageID, and answers its id: the message that tells the issue's people which events a
-	// role did not take within an hour's window, once each had ended undelivered
-	// (postUndeliveredNotes). A post made again under one id writes no second message.
-	// cmd/dispatch passes the API server's own writer of an issue message
-	// (api.Background.PostSystemMessage). A nil one posts nothing, and the windows wait.
+	// PostIssueMessage posts message, written by actor, a system actor, on the issue
+	// message.IssueKey names, under the id message.ID, and answers the id of the message it
+	// stored: the message that tells the issue's people which events a role did not take within
+	// an hour's window, once each had ended undelivered (postUndeliveredNotes). A post made again
+	// under one id writes no second message. cmd/dispatch passes the API server's own writer of an
+	// issue message (api.Background.PostSystemMessage). A nil one posts nothing, and the windows
+	// wait.
 	PostIssueMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
 	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,

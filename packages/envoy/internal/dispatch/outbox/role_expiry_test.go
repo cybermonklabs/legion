@@ -489,7 +489,8 @@ func TestTheOutboxsCountDecidesAnExpirysAttempt(t *testing.T) {
 }
 
 // A notice that names no copy this outbox kept for its role is passed over, and only the cursor
-// moves past it: one for a role the event was never routed to, and one stored on another role's
+// moves past it: one for a role the event was never routed to, whose kept lane holds a copy of the
+// event all the same, so the routing check alone refuses it, and one stored on another role's
 // expiry subject than its own role's. With the routing and subject checks taken away, both are
 // recorded and kept again.
 func TestANoticeForACopyTheOutboxNeverKeptIsPassedOver(t *testing.T) {
@@ -503,8 +504,12 @@ func TestANoticeForACopyTheOutboxNeverKeptIsPassedOver(t *testing.T) {
 	outbox.scan(ctx, unfenced{})
 	lane := keptLane(t, rig.client, role)
 
+	planted, err := rig.client.JS().Publish(bus.KeptRoleSubject(other), lane[0].Data)
+	if err != nil {
+		t.Fatalf("store the event's copy on role %s's kept lane: %v", other, err)
+	}
 	unrouted := expiryNoticeOf(t, role, lane[0])
-	unrouted.Role = other
+	unrouted.Role, unrouted.Sequence = other, planted.Sequence
 	if err := rig.client.PublishKeptCopyExpiry(ctx, unrouted); err != nil {
 		t.Fatalf("store the notice for a role the event was never routed to: %v", err)
 	}
@@ -530,13 +535,14 @@ func TestANoticeForACopyTheOutboxNeverKeptIsPassedOver(t *testing.T) {
 	if lane := keptLane(t, rig.client, role); len(lane) != 1 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
 	}
-	if lane := keptLane(t, rig.client, other); len(lane) != 0 {
-		t.Fatalf("role %s's kept lane holds %d copies, want none", other, len(lane))
+	if lane := keptLane(t, rig.client, other); len(lane) != 1 {
+		t.Fatalf("role %s's kept lane holds %d copies, want the one the test planted", other, len(lane))
 	}
 }
 
 // A notice whose role is no role name (roles.Valid) is passed over, even when the event names that
-// role's topic among its destinations, so the routing check alone would take it, and when it was
+// role's topic among its destinations, so the routing check alone would take it, when that role's
+// kept lane holds a copy of the event, so the copy check alone would take it too, and when it was
 // stored on that role's own expiry subject: only the cursor moves past it. With the role check
 // taken away, the notice is recorded.
 func TestANoticeWhoseRoleIsNoRoleNameIsPassedOver(t *testing.T) {
@@ -553,8 +559,12 @@ func TestANoticeWhoseRoleIsNoRoleNameIsPassedOver(t *testing.T) {
 	`, event.ID, contracts.RoleTopicPrefix+invalid); err != nil {
 		t.Fatalf("name the invalid role's topic among event %d's destinations: %v", event.ID, err)
 	}
+	planted, err := rig.client.JS().Publish(bus.KeptRoleSubject(invalid), lane[0].Data)
+	if err != nil {
+		t.Fatalf("store the event's copy on role %s's kept lane: %v", invalid, err)
+	}
 	notice := expiryNoticeOf(t, role, lane[0])
-	notice.Role = invalid
+	notice.Role, notice.Sequence = invalid, planted.Sequence
 	if err := rig.client.PublishKeptCopyExpiry(ctx, notice); err != nil {
 		t.Fatalf("store the notice for role %s: %v", invalid, err)
 	}

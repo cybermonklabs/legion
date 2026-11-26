@@ -1974,8 +1974,9 @@ type SystemMessage struct {
 const (
 	// RoleUndeliveredExpired: each of the copy's keeps ended its hour with no session taking it.
 	RoleUndeliveredExpired = "expired"
-	// RoleUndeliveredCopyGone: the stream no longer held the copy that expired, so the outbox had
-	// nothing to keep again.
+	// RoleUndeliveredCopyGone: the stream no longer held the copy that expired - its retention
+	// passed it, or a stream created again since holds another message at its sequence - so the
+	// outbox had nothing to keep again.
 	RoleUndeliveredCopyGone = "copy_gone"
 )
 

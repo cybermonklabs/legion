@@ -1,5 +1,5 @@
-// What SessionConsumers reads of the notification stream itself: its identity and sequences, read
-// once for every call waiting on a read.
+// What SessionConsumers reads of the notification stream itself, its identity and sequences, read
+// once for every call waiting on a read, and the identity Client.StreamID reads for Dispatch's outbox.
 
 package bus
 
@@ -81,15 +81,15 @@ func (s *SessionConsumers) readStreamStates() {
 		}
 		s.streamMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), sessionStreamReadWait)
-		read.state, read.err = s.readStreamState(ctx)
+		read.state, read.err = s.client.readStreamState(ctx)
 		cancel()
 		close(read.done)
 	}
 }
 
 // readStreamState reads the stream's identity and sequences with one stream info.
-func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamState, error) {
-	reply, err := s.client.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
+func (c *Client) readStreamState(ctx context.Context) (sessionStreamState, error) {
+	reply, err := c.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
 	if err != nil {
 		return sessionStreamState{}, err
 	}
@@ -114,4 +114,15 @@ func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamSt
 		firstSeq: response.State.FirstSeq,
 		lastSeq:  response.State.LastSeq,
 	}, nil
+}
+
+// StreamID reads the stream's identity, its StreamIDMetadataKey metadata, with one stream info
+// within ctx's bound (storedMessageWait when ctx sets none), and "" for a stream that carries none.
+// Dispatch's outbox reads it to tell the stream its expiry notices' cursor counts in from one
+// created again since (internal/dispatch/outbox, readKeptExpiries): a cursor's sequence names a
+// message of the stream it was read from and no other. The read is the one SessionConsumers makes
+// (streamState), over a subject the listener's and Dispatch's grants both hold.
+func (c *Client) StreamID(ctx context.Context) (string, error) {
+	state, err := c.readStreamState(ctx)
+	return state.id, err
 }

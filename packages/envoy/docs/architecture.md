@@ -713,18 +713,26 @@ read it: no consumer filter takes it, no session may register an interest reachi
 hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
 `Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
 30 seconds, and after every scan, with the stored-message read it already holds
-(`readKeptExpiries`). It passes over a notice whose role is no valid role name, that was stored
-on another role's expiry subject, or whose event was never routed to that role. It records each
-other notice in `outbox_role_copy_expiries`, keyed by the event, the role and the attempt, which
-is the outbox's own next attempt for that pair (the notice's own attempt is logged), so a repeated
-notice reopens the event's delivery to that role once. It then keeps the event's copy again, read
+(`readKeptExpiries`). Its cursor in `outbox_kept_expiry_cursor` names the stream it counts in by
+the stream's identity (`bus.StreamIDMetadataKey`), which the outbox reads at most every 30
+seconds: a stream created again numbers its notices below a cursor of the one before it, so the
+outbox sets such a cursor back to the new stream's start, with one Error line, and reads its
+notices from the first. It passes over a notice whose role is no valid role name, that was stored
+on another role's expiry subject, whose event was never routed to that role, or that does not
+name that event's copy: the notice's sequence is not below its own, or the role's kept lane holds
+another copy there than Dispatch's copy of that event under the notice's dedupe key, or the
+stream holds a message of another subject there. It records each other notice in
+`outbox_role_copy_expiries`, keyed by the event, the role and the attempt, which is the outbox's
+own next attempt for that pair (the notice's own attempt is logged), so a repeated notice reopens
+the event's delivery to that role once. It then keeps the event's copy again, read
 back from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or
 forwards it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else
 of the event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops
 and appends a `role.undelivered` event on the event's own issue, document or project, written by
 a system actor so it reaches no role, which a person reads in that owner's history. It stops the
 same way, with fewer keeps, when a copy cannot be kept again: the stream no longer holds it, or
-holds one no read can decode, or NATS refused its keep or its forward for good. Where the bound
+holds one no read can decode or that is not the event's own, or NATS refused its keep or its
+forward for good. Where the bound
 is reached or no other copy carries its delivery on, every expiry of the event still owed a keep
 is settled, and its one `role.undelivered` record is appended, so nothing keeps it again. A copy
 that cannot be kept again ends nothing while another copy of the event carries its delivery on,

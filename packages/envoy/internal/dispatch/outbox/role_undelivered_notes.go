@@ -14,20 +14,26 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 )
 
 // undeliveredEvent is what the message about an undelivered event names of it, as appendUndelivered
-// reads it: its own issue, its type, the id of the post it carries, and the document it is about -
-// the event's own document, or the document an issue's document event names (payload artifact_id,
-// as artifact.version and artifact.human_edited carry it) - with that document's issue and slug.
+// reads it: its own issue, the id of the post it carries, and the document it is about - the
+// event's own document, or the document an issue's document event names (payload artifact_id, as
+// artifact.version and artifact.human_edited carry it) - with what that document's address is
+// written from (refs.ArtifactRef): its issue, project, session, slug, kind and whether it is its
+// issue's primary document.
 type undeliveredEvent struct {
-	issueKey      *string
-	eventType     string
-	postID        string
-	documentID    *string
-	documentIssue *string
-	documentSlug  string
+	issueKey        *string
+	postID          string
+	documentID      *string
+	documentIssue   *string
+	documentProject string
+	documentSession *string
+	documentSlug    string
+	documentKind    string
+	documentPrimary bool
 }
 
 // undeliveredNoteWindow is the hour one message about the events recorded undelivered to one role
@@ -37,17 +43,18 @@ type undeliveredEvent struct {
 // rather than one per event; the role.undelivered record of each is in the history at once.
 const undeliveredNoteWindow = time.Hour
 
-// noteUndelivered notes, in tx, eventID as undelivered to role, for the message postUndeliveredNotes
-// posts about it: on the event's own issue, or on the issue of its document, which is the issue
-// whose route the role is. It joins the window of that issue and role opened less than
-// undeliveredNoteWindow before whose message is not posted yet, and opens one at now when none
-// was. The note names the post an
-// issue's comment or message event carries (dispatch://<issue>/<kind>/<id>), or else the document a
-// document event is about (dispatch://<issue>/artifact/<slug>), and names nothing for any other
-// event, which the message names by its id and type alone. An event of neither an issue nor an
-// issue's document is noted nowhere, with an Error line (appendUndelivered says why no write makes
-// one). A repeat of the note for one event and role is no new note.
-func noteUndelivered(ctx context.Context, tx pgx.Tx, eventID int64, role string, keeps int, reason string, about undeliveredEvent) error {
+// noteUndelivered notes, in tx, the event record names as undelivered to its role, for the
+// message postUndeliveredNotes posts about it: on the event's own issue, or on the issue of its
+// document, which is the issue whose route the role is. It joins the window of that issue and role
+// opened less than undeliveredNoteWindow before whose message is not posted yet, and opens one at
+// now when none was. The note names the post an issue's comment or message event carries
+// (dispatch://<issue>/<kind>/<id>), or else the document a document event is about, by the
+// address the dashboard copies for it (refs.ArtifactRef: dispatch://<issue>/spec for an issue's
+// primary document), and names nothing for any other event, which the message names by its id and
+// type alone. An event of neither an issue nor an issue's document is noted nowhere, with an Error
+// line (appendUndelivered says why no write makes one). A repeat of the note for one event and
+// role is no new note.
+func noteUndelivered(ctx context.Context, tx pgx.Tx, record model.RoleUndeliveredEventPayload, about undeliveredEvent) error {
 	var issueKey string
 	switch {
 	case about.issueKey != nil:
@@ -56,16 +63,18 @@ func noteUndelivered(ctx context.Context, tx pgx.Tx, eventID int64, role string,
 		issueKey = *about.documentIssue
 	default:
 		slog.Error("dispatch outbox: an event recorded undelivered to a role is of neither an issue nor an issue's document, so no message is posted about it",
-			"event_id", eventID, "role", role)
+			"event_id", record.EventID, "role", record.Role)
 		return nil
 	}
 	var ref string
 	var document *string
-	switch kind := dispatchPostKind(about.eventType); {
+	switch kind := dispatchPostKind(record.EventType); {
 	case about.issueKey != nil && kind != "" && about.postID != "":
 		ref = "dispatch://" + issueKey + "/" + kind + "/" + about.postID
 	case about.documentID != nil && about.documentSlug != "":
-		ref, document = "dispatch://"+issueKey+"/artifact/"+about.documentSlug, about.documentID
+		ref = refs.ArtifactRef(about.documentIssue, about.documentProject, about.documentSession, about.documentSlug,
+			about.documentKind, about.documentPrimary)
+		document = about.documentID
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into outbox_role_undelivered_notes
@@ -75,8 +84,9 @@ func noteUndelivered(ctx context.Context, tx pgx.Tx, eventID int64, role string,
 			 where issue_key = $3 and role = $2 and window_opened_at > now() - $9::interval and posted_at is null),
 			now()))
 		on conflict (event_id, role) do nothing
-	`, eventID, role, issueKey, document, about.eventType, keeps, reason, ref, undeliveredNoteWindow); err != nil {
-		return fmt.Errorf("note event %d undelivered to role %s: %w", eventID, role, err)
+	`, record.EventID, record.Role, issueKey, document, record.EventType, record.Keeps, record.Reason, ref,
+		undeliveredNoteWindow); err != nil {
+		return fmt.Errorf("note event %d undelivered to role %s: %w", record.EventID, record.Role, err)
 	}
 	return nil
 }
@@ -201,13 +211,13 @@ func postUndeliveredNotes(ctx context.Context, deps Deps, hold fence, instance u
 			}
 			slog.Error("dispatch outbox: post the message about events undelivered to a role",
 				"issue_key", window.issueKey, "role", window.role, "events", len(window.notes), "error", err)
-			if err := markUndeliveredWindow(ctx, deps, instance, window, "", retry.Delay(window.failures+1)); err != nil {
+			if err := backOffUndeliveredWindow(ctx, deps, instance, window, retry.Delay(window.failures+1)); err != nil {
 				slog.Error("dispatch outbox: back off the message about events undelivered to a role",
 					"issue_key", window.issueKey, "role", window.role, "error", err)
 			}
 			continue
 		}
-		if err := markUndeliveredWindow(ctx, deps, instance, window, messageID, 0); err != nil {
+		if err := markUndeliveredWindowPosted(ctx, deps, instance, window, messageID); err != nil {
 			slog.Error("dispatch outbox: mark the events undelivered to a role posted",
 				"issue_key", window.issueKey, "role", window.role, "message_id", messageID, "error", err)
 			continue
@@ -246,24 +256,35 @@ func dueUndeliveredWindows(ctx context.Context, deps Deps, instance uuid.UUID) (
 	return windows, nil
 }
 
-// markUndeliveredWindow writes what the post of window's message came to on each of its notes,
-// while instance holds the publisher hold: posted with messageID, or, for an empty messageID, one
-// more failed attempt and a wait of retryAfter.
-func markUndeliveredWindow(ctx context.Context, deps Deps, instance uuid.UUID, window undeliveredWindow, messageID string, retryAfter time.Duration) error {
-	ids := make([]int64, 0, len(window.notes))
-	for _, note := range window.notes {
+// markUndeliveredWindowPosted marks each of window's notes posted with messageID, the id of the
+// window's message, while instance holds the publisher hold.
+func markUndeliveredWindowPosted(ctx context.Context, deps Deps, instance uuid.UUID, window undeliveredWindow, messageID string) error {
+	_, err := deps.Store.Pool.Exec(ctx, `
+		update outbox_role_undelivered_notes set posted_at = now(), message_id = $3::uuid, next_attempt_at = null
+		where event_id = any($1) and role = $2 and posted_at is null
+		  and exists (select 1 from duty_holds where name = $5 and holder = $4 and expires_at > now())
+	`, window.eventIDs(), window.role, messageID, instance, publisherHold)
+	return err
+}
+
+// backOffUndeliveredWindow counts one more failed post on each of window's notes and has the window
+// wait retryAfter before it is read again, while instance holds the publisher hold.
+func backOffUndeliveredWindow(ctx context.Context, deps Deps, instance uuid.UUID, window undeliveredWindow, retryAfter time.Duration) error {
+	_, err := deps.Store.Pool.Exec(ctx, `
+		update outbox_role_undelivered_notes set attempt_count = attempt_count + 1, next_attempt_at = now() + $3::interval
+		where event_id = any($1) and role = $2 and posted_at is null
+		  and exists (select 1 from duty_holds where name = $5 and holder = $4 and expires_at > now())
+	`, window.eventIDs(), window.role, retryAfter, instance, publisherHold)
+	return err
+}
+
+// eventIDs is the id of each event window's notes name, in note order.
+func (w undeliveredWindow) eventIDs() []int64 {
+	ids := make([]int64, 0, len(w.notes))
+	for _, note := range w.notes {
 		ids = append(ids, note.eventID)
 	}
-	_, err := deps.Store.Pool.Exec(ctx, `
-		update outbox_role_undelivered_notes set
-			posted_at = case when $3 <> '' then now() end,
-			message_id = nullif($3, '')::uuid,
-			attempt_count = attempt_count + case when $3 = '' then 1 else 0 end,
-			next_attempt_at = case when $3 = '' then now() + $4::interval end
-		where event_id = any($1) and role = $2 and posted_at is null
-		  and exists (select 1 from duty_holds where name = $6 and holder = $5 and expires_at > now())
-	`, ids, window.role, messageID, retryAfter, instance, publisherHold)
-	return err
+	return ids
 }
 
 // A window's events are named in lists of at most undeliveredMessageListItems events and

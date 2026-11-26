@@ -1073,19 +1073,25 @@ func (h *keptHandovers) handed(role, holder string, seq uint64) {
 	h.after[role] = keptHandover{holder: holder, sequence: seq}
 }
 
-// KeptLaneReader reads a role's kept lane and its drain cursor: the one capability beyond
-// publishing that the handover behind a keep needs (handOverKept, keptCopyLeadsTheLane). The
-// cursor read is the one the listener's own pass over a lane makes as well
-// (cmd/listener/role_keep.go, readKeptLaneHead), so the two writers of a lane decode one body one
-// way; the lane read differs, a pass reading the lane's last copy and this the first past the
-// cursor. bus.Client answers both over the stored-message API the outbox's own grant covers
-// (infra/core/permissions.go, DispatchPermissions), and is what cmd/dispatch passes.
+// KeptLaneReader reads a role's kept lane and its drain cursor, and the stream's identity: the one
+// capability beyond publishing that the handover behind a keep needs (handOverKept,
+// keptCopyLeadsTheLane), and the expiry pass's reads of the listeners' notices and of the copies
+// they name (readKeptExpiries, readExpiredCopy). The cursor read is the one the listener's own
+// pass over a lane makes as well (cmd/listener/role_keep.go, readKeptLaneHead), so the two writers
+// of a lane decode one body one way; the lane read differs, a pass reading the lane's last copy
+// and this the first past the cursor. bus.Client answers the lane and cursor reads over the
+// stored-message API and the identity with a stream info, both of which the outbox's own grant
+// covers (natsgrant.Dispatch), and is what cmd/dispatch passes.
 type KeptLaneReader interface {
 	// NextStoredMessage is the first message the stream holds at or after seq on subject.
 	NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error)
 	// ReadKeptRoleCursor is role's drain cursor as the stream holds it, the zero cursor for a
 	// lane no walk has written one for (bus.Client.ReadKeptRoleCursor).
 	ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error)
+	// StreamID is the stream's identity (bus.StreamIDMetadataKey), "" for a stream that carries
+	// none (bus.Client.StreamID): what tells the expiry notices' cursor to start again in a stream
+	// created again since it was written (readKeptExpiries).
+	StreamID(ctx context.Context) (string, error)
 }
 
 // keptCopyLeadsTheLane reports whether the copy of item just kept on role's kept lane is the one

@@ -135,6 +135,9 @@ type Outbox struct {
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
 	probeBeforeHold bool
+	// keptStream is the stream's identity as the expiry pass last took it (readKeptExpiries). Only
+	// the goroutine that runs the pass reads and writes it.
+	keptStream keptStreamRead
 }
 
 // New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the
