@@ -614,41 +614,68 @@ def entry_files(ref):
     return files
 
 
-def held_in_entry_files(files, entries, by_text):
-    """The entry file of files that holds each entry, by the entry's number, as (path, by_text). With
-    by_text, the one whose text opens with the entry's summary: an entry file writes the entry's text
-    verbatim after `// <id> <slug>: `. Else the one that declares the entry's constant: the constant
-    the entry declares, whose name an edit of the text after the conversion leaves as it was, or the
-    one this script names an entry that declares none; a second declaration would not compile."""
+def held_by_text(files, entries):
+    """The entry file of files whose text opens with each entry's summary, by the entry's number: an
+    entry file writes the entry's text verbatim after `// <id> <slug>: `."""
     held = {}
     for e in entries:
-        if by_text:
-            want = summary(e)
-            path = next((p for p, opening, _ in files
-                         if opening is not None and (opening == want or opening.startswith(want + " "))), None)
-        else:
-            path = next((p for p, _, consts in files if e["const"] in consts), None)
+        want = summary(e)
+        path = next((p for p, opening, _ in files
+                     if opening is not None and (opening == want or opening.startswith(want + " "))), None)
         if path:
-            held[e["number"]] = (path, by_text)
+            held[e["number"]] = path
     return held
 
 
-def held_refusal(held, entries, ref_name):
-    """The refusal of the entries held_in_entry_files found in the entry files of the ref, which
-    messages call ref_name: an entry held by its text is a base branch's that the ref took as a
-    squash; a constant the ref declares is that, or another change's that took the same name, and
-    two declarations of it do not compile either way."""
+def held_by_constant(files, entries):
+    """The entry file of files that declares each entry's constant, by the entry's number: the
+    constant the entry declares, whose name an edit of the text after the conversion leaves as it
+    was, or the one name_entries gives an entry that declares none. A second declaration of it would
+    not compile."""
+    held = {}
+    for e in entries:
+        path = next((p for p, _, consts in files if e["const"] in consts), None)
+        if path:
+            held[e["number"]] = path
+    return held
+
+
+def name_entries(entries):
+    """Each entry's slug, and the constant of each that declares none, as the conversion names them:
+    the slug from the constant the entry declares, else from the issue key its text opens with, else
+    from its number, a later entry of a slug taken getting -2, -3; the constant from the slug."""
+    taken = set()
+    for e in entries:
+        if e["const_path"]:
+            e["slug"] = kebab(re.sub(r"[Cc]ontract$", "", e["const"]))
+        else:
+            key = re.match(r"(?:dispatch://)?([A-Z][A-Z0-9]*-\d+)\b", HEADER.match(e["lines"][0]).group(2))
+            e["slug"] = key.group(1).lower() if key else f"entry-{e['number']}"
+        if not SLUG.match(e["slug"]):
+            e["slug"] = f"entry-{e['number']}"
+        slug, n = e["slug"], 2
+        while e["slug"] in taken:
+            e["slug"], n = f"{slug}-{n}", n + 1
+        taken.add(e["slug"])
+        if not e["const_path"]:
+            e["const"] = lower_camel(e["slug"]) + "Contract"
+
+
+def held_refusal(by_text, by_constant, entries, ref_name):
+    """The refusal of the entries that entry files of the ref, which messages call ref_name, hold: an
+    entry held by its text is a base branch's that the ref took as a squash; an entry held by its
+    constant is that, or the branch's own, whose name another change took, and two declarations of
+    the constant do not compile either way."""
     squash = f"with --base naming the base branch's last commit before the squash, then merge {ref_name}"
     either = (": two declarations of one constant in package api do not compile. Either "
               f"{ref_name} took that entry from a base branch as a squash after the cutover: run this "
               f"{squash}. Or another change took that name: ")
     by_number = {e["number"]: e for e in entries}
-    text, declared, named = [], [], []
-    for n, (path, by_text) in sorted(held.items()):
+    text = [f"entry {n} of this branch is {path} of {ref_name}" for n, path in sorted(by_text.items())]
+    declared, named = [], []
+    for n, path in sorted(by_constant.items()):
         const = by_number[n]["const"]
-        if by_text:
-            text.append(f"entry {n} of this branch is {path} of {ref_name}")
-        elif by_number[n]["const_path"]:
+        if by_number[n]["const_path"]:
             declared.append(f"entry {n} of this branch declares {const}, which {path} of {ref_name} declares too")
         else:
             named.append(f"entry {n} of this branch declares no constant, and the one this script names it, "
@@ -900,7 +927,8 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
     # branch to main: over its merge base with main the branch would convert it again under another
     # id, as a second entry file of one change. The entries left after those two are named, as they
     # would be with the others gone; then an entry file of main that declares an entry's constant
-    # holds it too.
+    # holds it too. An entry held so takes no name from the ones after it, so the entries left are
+    # named again, until a naming finds no more held.
     on_main = {summary(e): e["number"] for e in numbered(main_version)[2]}
     stale = {e["number"]: on_main[summary(e)] for e in entries if summary(e) in on_main}
     for number, theirs in sorted(stale.items()):
@@ -911,32 +939,24 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
             "branch first, then convert it")
     own = [e for e in entries if e["number"] not in stale]
     files = entry_files(main) if own else []
-    held = held_in_entry_files(files, own, by_text=True)
-    own = [e for e in own if e["number"] not in held]
-    taken = set()
-    for e in own:
-        if e["const"]:
-            e["slug"] = kebab(re.sub(r"[Cc]ontract$", "", e["const"]))
-        else:
-            key = re.match(r"(?:dispatch://)?([A-Z][A-Z0-9]*-\d+)\b", HEADER.match(e["lines"][0]).group(2))
-            e["slug"] = key.group(1).lower() if key else f"entry-{e['number']}"
-        if not SLUG.match(e["slug"]):
-            e["slug"] = f"entry-{e['number']}"
-        slug, n = e["slug"], 2
-        while e["slug"] in taken:
-            e["slug"], n = f"{slug}-{n}", n + 1
-        taken.add(e["slug"])
-        if not e["const"]:
-            e["const"] = lower_camel(e["slug"]) + "Contract"
-    held.update(held_in_entry_files(files, own, by_text=False))
-    for number, (path, _) in sorted(held.items()):
+    by_text = held_by_text(files, own)
+    own = [e for e in own if e["number"] not in by_text]
+    by_constant = {}
+    while True:
+        name_entries(own)
+        found = held_by_constant(files, own)
+        if not found:
+            break
+        by_constant |= found
+        own = [e for e in own if e["number"] not in found]
+    for number, path in sorted({**by_text, **by_constant}.items()):
         print(f"onmain {number} {path}")
-    if held and mode == "convert":
-        die(held_refusal(held, entries, main_name))
-    entries = [e for e in own if e["number"] not in held]
+    if (by_text or by_constant) and mode == "convert":
+        die(held_refusal(by_text, by_constant, entries, main_name))
+    entries = own
     if not entries:
         # An entry held by its constant can be the branch's own, whose name another change took.
-        if all(by_text for _, by_text in held.values()):
+        if not by_constant:
             print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
         return None
     numbers = {e["number"]: e for e in entries}
