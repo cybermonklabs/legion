@@ -36,6 +36,18 @@ pod_update_rounds_per_minute: 1        # pod-update rounds one sweep of the daem
 controller: operator                   # who runs the controller: operator (legion controller start,
                                        # the default) or daemon (a pod this daemon launches and keeps;
                                        # under runtime: tmux, a pane in a window of its own)
+# controller_turn_bound_minutes: 90    # under controller: daemon, how long a controller turn may stay
+#                                      # open, steps or none, before the daemon ends that launch and
+#                                      # counts the end against the session; once the session has
+#                                      # finished a turn, two such ends, or deaths, in a row with no
+#                                      # finished turn between start a fresh session.
+#                                      # 90 by default, decimals allowed, 0 the rule off
+# controller_session_max_age_hours: 72 # under controller: daemon, how old the controller's session,
+#                                      # read from its id, may grow before a relaunch the daemon
+#                                      # makes of it starts a fresh session instead of resuming it;
+#                                      # no live controller is stopped for it, and an operator's own
+#                                      # resume keeps the session. 72 by default, decimals allowed,
+#                                      # 0 the rule off
 worker_wakes_per_minute: 8             # how many wakes a minute the daemon lets out: the role processes it
                                        # starts, and the tasks and notices it queues to wake a session that is
                                        # already running. Each wake has its session read its whole context

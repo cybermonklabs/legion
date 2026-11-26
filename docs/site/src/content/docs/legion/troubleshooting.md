@@ -981,8 +981,10 @@ nobody read whether a turn of it runs. A claim stored working that no process st
 refused
 `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
 no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
-whose keeper does nothing while it is stored working, it names
-`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
+whose keeper ends its turn only once that turn has stayed open longer than
+`controller_turn_bound_minutes` (90 by default, `0` off), it names
+`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`, which
+wait for no bound.
 A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
 answered with no document, or with a result that is not an object (`Oh My Pi gave a handoff
 result that is not an object. The daemon cannot say if the session changed.`), is printed with
