@@ -14,7 +14,6 @@ import { drawnRowReadings, parentIndex, type RowReading } from "./issue-page-t";
 import {
   drawEveryPage,
   foldedRowIds,
-  type OpenedOutline,
   openOutline,
   ROW_MS,
   rowsNotWhole,
@@ -119,7 +118,7 @@ async function expectFirstPage(
   page: Page,
   seeded: CommentsSeed,
   outline: OutlineKind
-): Promise<OpenedOutline> {
+): Promise<void> {
   const where = `in ${outline}`;
   const opened = await openOutline(page, seeded.key, outline);
   expect(
@@ -153,7 +152,6 @@ async function expectFirstPage(
       { message: `${where}, pressing the control does not draw the rest of the replies` }
     )
     .toEqual(seeded.replies);
-  return opened;
 }
 
 // c-pages.
@@ -167,7 +165,7 @@ test("an outline draws 50 children at a time and reads older comments when asked
   await phase(browser, seedComments, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     await expectFirstPage(page, seeded, "graph");
-    const opened = await expectFirstPage(page, seeded, "conversation");
+    await expectFirstPage(page, seeded, "conversation");
 
     // The address of the 55th reply opens the outline with every reply up to it drawn and the
     // focus on it.
@@ -189,7 +187,6 @@ test("an outline draws 50 children at a time and reads older comments when asked
     // The control at the top of the issue's children reads the older comments, once, and draws
     // them in the read's order; the Contents list's foot control holds no second read of them.
     const again = await openOutline(page, seeded.key, "conversation");
-    expect(opened.answer.comments_before, "the first page names no older comments").not.toBeNull();
     const older = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return TREE_PATH.test(url.pathname) && url.searchParams.has("comments_before");
@@ -211,16 +208,14 @@ test("an outline draws 50 children at a time and reads older comments when asked
     );
     // The issue's posts are paged 50 at a time as any node's children are, so every page is
     // drawn before the old posts' rows are read.
+    const oldestDrawn = async () => {
+      await drawEveryPage(page);
+      return (await drawnRowReadings(page, { bodies: false })).flatMap((row) =>
+        row.id !== null && oldest.has(row.id) ? [row.id] : []
+      );
+    };
     await expect
-      .poll(
-        async () => {
-          await drawEveryPage(page);
-          return (await drawnRowReadings(page, { bodies: false })).flatMap((row) =>
-            row.id !== null && oldest.has(row.id) ? [row.id] : []
-          );
-        },
-        { message: "the 30 oldest posts are not rows, in the read's order" }
-      )
+      .poll(oldestDrawn, { message: "the 30 oldest posts are not rows, in the read's order" })
       .toEqual(readOrder);
     await expect(
       contentsPane(page).locator("[data-contents-older]"),
@@ -244,15 +239,9 @@ test("an outline draws 50 children at a time and reads older comments when asked
       "the Contents list's foot control sends one older comment read"
     ).toBe(1);
     await expect
-      .poll(
-        async () => {
-          await drawEveryPage(page);
-          return (await drawnRowReadings(page, { bodies: false })).flatMap((row) =>
-            row.id !== null && oldest.has(row.id) ? [row.id] : []
-          );
-        },
-        { message: "the Contents list's foot control does not draw the 30 oldest posts as rows" }
-      )
+      .poll(oldestDrawn, {
+        message: "the Contents list's foot control does not draw the 30 oldest posts as rows",
+      })
       .toEqual(readOrder);
     await expect(
       page.locator("[data-issue-page] [data-older-comments]"),

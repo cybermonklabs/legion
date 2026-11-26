@@ -5,9 +5,14 @@
 import type { Page } from "@playwright/test";
 
 import type { IssueTreeRead } from "../web/src/api/types";
-import { GAP_LINES, type GapKind, nodeFactLabel } from "../web/src/features/issue-page/page-words";
+import {
+  coverageGapKind,
+  GAP_LINES,
+  type GapKind,
+  nodeFactLabel,
+} from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { createComment, editArtifact, editComment, getIssue, getIssueCoverage } from "./api";
+import { createComment, editArtifact, editComment, getIssueCoverage } from "./api";
 import { seedReviewList, seedWholeIssue } from "./issue-layout-seed";
 import { asPlanner } from "./issue-layout-seed-support";
 import { requirementBlockId } from "./issue-layout-seed-text";
@@ -30,9 +35,11 @@ import {
   type SeededIssue,
 } from "./issue-page-t";
 import {
+  artifactSlugs,
   awaitIndexedCoverage,
   decisionsThatWait,
   firstLoad,
+  nodesById,
   openOutline,
   parentOfWords,
   ROW_MS,
@@ -124,7 +131,7 @@ test("a focused link in a row keeps the focus through a re-read", async ({ brows
     await expect(rowAct(row, "reply"), "the row's Reply stays drawn").toHaveCount(1);
 
     // Its author rewrites the post, keeping the link: the re-read paints other words, and the
-    // focus goes to the new link of the same address (decision 385).
+    // focus goes to the new link of the same address.
     await editComment(post.id, { body: EDITED_POST });
     await expect(
       row.locator("[data-node-words]"),
@@ -141,14 +148,24 @@ test("a focused link in a row keeps the focus through a re-read", async ({ brows
 // ---------------------------------------------------------------------------------------------
 
 // What row 13 can only read once Dashboard's part draws the ask body and the decision card: each
-// is a clause of c-ask-body that reads that part's marks, so it is built against them by whichever
-// of this part and that one reaches `main` second. Each is false here, and each fails the row
-// past its gate until it is built.
+// is a clause of c-ask-body that reads marks only that part draws, so it can be built only once
+// those marks are on this branch's base. Each is false here, and each fails the row past its gate
+// until it is built.
 /** Each ask's row is the ask body, with its options in their radio or checkbox roles, the answer
  *  box in place and "Answer". */
 const ASK_BODY_BUILT = false;
 /** Each agent decision is the decision card, with its author line and its level word. */
 const DECISION_CARD_BUILT = false;
+
+/** Fails unless the first row of decision `id` draws Keep and Change, once each; `what` names the
+ *  decision in each failure's words. */
+async function expectKeepAndChange(page: Page, id: string, what: string): Promise<void> {
+  const row = nodeRow(page, id).first();
+  const keep = row.locator('button[data-row-action="keep"]');
+  const change = row.locator('button[data-row-action="change"]');
+  await expect(keep, `${what} draws Keep`).toHaveCount(1);
+  await expect(change, `${what} draws Change`).toHaveCount(1);
+}
 
 /** Each of `rows` that stands under no row of `parent`, the ask the answer hangs it under, by
  *  the ids `idOf` gives the answer's nodes: an ask's replies are rows under it. */
@@ -157,7 +174,7 @@ function repliesOutOfPlace(
   answer: IssueTreeRead,
   idOf: (id: string) => string
 ): string[] {
-  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
+  const nodes = nodesById(answer);
   return (answer.nodes ?? []).flatMap((node) => {
     const ask = node.parent === null ? undefined : nodes.get(node.parent.id);
     if (node.supertag !== "comment" || ask?.supertag !== "ask") return [];
@@ -171,8 +188,8 @@ function repliesOutOfPlace(
 }
 
 // c-ask-body, owed on Dashboard's part (`dashboardPartGate`), which brings the ask body and the
-// decision card. Past the gate the row reads what this head lets it name, in Conversation and in
-// Graph, and fails on each clause that needs that part's marks until it is built.
+// decision card. Past the gate the row reads what the page draws without that part's marks, in
+// Conversation and in Graph, and fails on each clause that needs those marks until it is built.
 // SLOW(>=2s): two seeded issues, each loaded in two outlines with each load waited out.
 test("the outline draws each ask with the ask body and each decision with the card", async ({
   browser,
@@ -199,15 +216,7 @@ test("the outline draws each ask with the ask body and each decision with the ca
           row.id !== null && waits.has(row.id) ? [row.id] : []
         );
         for (const id of waiting) {
-          const actions = nodeRow(page, id).first();
-          await expect(
-            actions.locator('button[data-row-action="keep"]'),
-            `${where}, the waiting decision ${id} draws Keep`
-          ).toHaveCount(1);
-          await expect(
-            actions.locator('button[data-row-action="change"]'),
-            `${where}, the waiting decision ${id} draws Change`
-          ).toHaveCount(1);
+          await expectKeepAndChange(page, id, `${where}, the waiting decision ${id}`);
         }
         const asks = opened.rows.flatMap((row) =>
           row.kind.type === "ask" && row.id !== null ? [row.id] : []
@@ -245,9 +254,9 @@ const LONG_STATEMENT_LINES = 20;
 /** The height of one line of a row's words (`NodeRow.tsx`'s `leading-6`). */
 const WORDS_LINE_PX = 24;
 
-/** The kinds of fact a check's face draws of its own attributes (`NodeFacts`): when it runs, its
- *  surface, its run and its negative control, each where the check carries it. */
-const CHECK_FACTS = ["when", "surface", "run", "negative_control"] as const;
+/** The kinds of fact a check's face draws of its own attributes (`NodeFacts`) that every check
+ *  the seed writes carries (`verificationDocument`): when it runs, its surface and its run. */
+const CHECK_FACTS = ["when", "surface", "run"] as const;
 
 /** What row 14 reads of the whole issue beyond what `seedWholeIssue` writes. */
 interface FacesSeed {
@@ -264,7 +273,7 @@ interface FacesSeed {
 /** The whole issue, with a statement of twenty lines the planner writes through the route an
  *  agent writes through, and alice's post whose words hold a long `dispatch://` store address,
  *  which the row's words draw as written: a store address names no node a reference chip names,
- *  and nothing links one that names no node of the tree (decision 486, `refs/store-address.ts`). */
+ *  and nothing links one that names no node of the tree (`refs/store-address.ts`). */
 async function seedFaces(): Promise<FacesSeed> {
   const seeded = await seedWholeIssue();
   const lines = Array.from(
@@ -288,10 +297,7 @@ async function seedFaces(): Promise<FacesSeed> {
   const post = await createComment(seeded.key, {
     body: `The planner keeps the thread's store at ${address} until the run ends.`,
   });
-  const slug =
-    ((await getIssue(seeded.key)).artifacts ?? []).find(
-      (artifact) => artifact.id === seeded.specArtifactId
-    )?.slug ?? "";
+  const slug = (await artifactSlugs(seeded.key))(seeded.specArtifactId);
   return {
     branch: requirementBlockId(1),
     key: seeded.key,
@@ -324,15 +330,13 @@ function rowLooks(page: Page): Promise<string[]> {
 }
 
 /** Each check row of `rows` whose face draws not every fact the seed gives each check
- *  (`verificationDocument`: when it runs, its surface and its run), with what it lacks; and, where
- *  no check row draws its negative control, which every seeded check but one carries, that. */
+ *  (`CHECK_FACTS`), with what it lacks; and, where no check row draws its negative control,
+ *  which every seeded check but one carries, that. */
 function checksWithoutFacts(rows: readonly RowReading[]): string[] {
   const checks = rows.filter((row) => row.kind.type === "check");
   const lacking = checks.flatMap((row) => {
     const drawn = new Set(row.facts.map((fact) => fact.name));
-    const missing = CHECK_FACTS.filter(
-      (fact) => fact !== "negative_control" && !drawn.has(nodeFactLabel(fact))
-    );
+    const missing = CHECK_FACTS.filter((fact) => !drawn.has(nodeFactLabel(fact)));
     return missing.length === 0 ? [] : [`${row.id} draws no ${missing.join(", ")}`];
   });
   const control = nodeFactLabel("negative_control");
@@ -390,12 +394,23 @@ async function expectFaces(
   expect(statements.length, `${where}, no statement of the coverage read is drawn`).toBeGreaterThan(
     0
   );
+  // The statements no check serves, as the page reads the coverage read's lines
+  // (`coverageGapKind`): a proposed or an overtaken statement owes no work and draws no gap.
+  const unchecked = statements.filter(
+    ({ requirement }) =>
+      requirement.state !== "proposed" &&
+      requirement.state !== "overtaken" &&
+      (requirement.gaps ?? []).some((line) => coverageGapKind(line) === NO_CHECK)
+  );
   expect(
-    statements.flatMap(({ requirement, row }) =>
-      (requirement.gaps ?? []).includes(NO_CHECK) &&
-      !row.gaps.some((gap) => gap.kind === NO_CHECK && gap.line === GAP_LINES[NO_CHECK])
-        ? [row.id]
-        : []
+    unchecked.length,
+    `${where}, the coverage read names no drawn statement that no check serves`
+  ).toBeGreaterThan(0);
+  expect(
+    unchecked.flatMap(({ row }) =>
+      row.gaps.some((gap) => gap.kind === NO_CHECK && gap.line === GAP_LINES[NO_CHECK])
+        ? []
+        : [row.id]
     ),
     `${where}, each requirement no check serves draws its gap in full`
   ).toEqual([]);
@@ -410,19 +425,12 @@ async function expectFaces(
   // The decisions that wait on the reader's review, as the review list reads them, each drawn.
   const waits = decisionsThatWait(opened);
   const waiting = rows.flatMap((row) => (row.id !== null && waits.has(row.id) ? [row.id] : []));
-  expect(waiting.length, `${where}, a decision that waits draws no row`).toBeGreaterThanOrEqual(
-    waits.size
-  );
+  expect(
+    [...waits].filter((id) => !rows.some((row) => row.id === id)),
+    `${where}, every waiting decision has a row`
+  ).toEqual([]);
   for (const id of waiting) {
-    const row = nodeRow(page, id).first();
-    await expect(
-      row.locator('button[data-row-action="keep"]'),
-      `${where}, the decision ${id} that waits draws Keep`
-    ).toHaveCount(1);
-    await expect(
-      row.locator('button[data-row-action="change"]'),
-      `${where}, the decision ${id} that waits draws Change`
-    ).toHaveCount(1);
+    await expectKeepAndChange(page, id, `${where}, the decision ${id} that waits`);
   }
 
   if (seeded.longStatement !== undefined) {

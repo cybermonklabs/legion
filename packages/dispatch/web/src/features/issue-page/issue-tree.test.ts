@@ -44,7 +44,6 @@ import {
   firstLineOf,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeAsk,
   type TreeNode,
@@ -54,6 +53,7 @@ import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, NODE_TYPES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import {
+  drawnChip,
   nameOf,
   namesOf,
   nodeLineOf,
@@ -94,13 +94,6 @@ import {
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 const KEY = "CORE-1";
 const SPEC = "spec";
@@ -2071,6 +2064,14 @@ test("a document chip names a part only where the issue read names that document
       ...issueDetails([flagged, made, plan]),
       decisions_artifact_id: made.id,
       plan_artifact_id: plan.id,
+      queries: [
+        {
+          query: "plan",
+          artifact_id: plan.id,
+          takes: ["plan_task", "plan_role"],
+          subtree: `issue:${KEY}`,
+        },
+      ],
       primary_artifact_id: "",
     },
   });
@@ -2183,10 +2184,10 @@ test("an ask's answer is part of the ask's node and no node of its own", () => {
 // the ask, or, for a question asked of the issue itself, stand in the ask's own place - so each
 // ask stays one node, with the person's answer on it, and carries a chip for each node its
 // decision shaped. That edge is read from the ask's node as an agent's decision's is from its
-// own: a statement another node made that the decision says it shaped draws the disagreement,
-// one the ask's own block made draws none, and the decision key reaches the ask from what it
-// shaped. An agent's decision that settles the answered question is a decision of its own under
-// it, and the Decisions filter counts each once.
+// own: a statement another node made that the decision says it shaped draws no gap for the two
+// edges disagreeing, nor does one the ask's own block made, and the decision key reaches the ask
+// from what it shaped. An agent's decision that settles the answered question is a decision of
+// its own under it, and the Decisions filter counts each once.
 test("a person's decision is the answered ask's own node, which carries what it shaped", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const answer = { at: "2026-11-06T00:00:00Z", selected: [], text: "One read.", user: "alice" };
@@ -2248,8 +2249,9 @@ test("a person's decision is the answered ask's own node, which carries what it 
   expect(nodeOf(root, blockNodeId(SPEC, "q1"))?.chips.map((chip) => chip.ref)).toEqual([
     `dispatch://${KEY}/spec#b-r1`,
   ]);
-  // The edge is read from the ask's node.
-  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual(["shaped_disagreement"]);
+  // The edge is read from the ask's node, and its disagreeing with the statement's own origin
+  // draws no gap on the new page.
+  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual([]);
   expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual([]);
   expect(decisionBehind(root, blockNodeId(SPEC, "r-shaped"))?.id).toBe("ask-own");
   // The agent's decision that settles the question in the spec sits under it.
@@ -3456,6 +3458,20 @@ test("a requirement block outside the spec is no statement, and the spec's are, 
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
     });
 
@@ -3525,6 +3541,20 @@ test("a check block outside the Verification document draws no state and is coun
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
       ...(answered ? { results } : {}),
     });

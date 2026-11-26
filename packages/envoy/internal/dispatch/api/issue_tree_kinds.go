@@ -119,8 +119,10 @@ func (b *issueTreeBuilder) selects(target refs.Target) bool {
 // context (node), a comment on text never bringing in its node; each walk node a has_kind,
 // constrained_by, changed_by_run or decided_by tuple of a node it answers names, as context; and
 // an item's own blocks with their item, in its item's role. It marks in kindContext each context
-// node of the read with no view such a tuple names, which contextOrder answers alone. A context
-// node it adds brings in no further context, and no other node is in it.
+// node of the read with no view such a tuple names, which contextOrder answers alone, and takes
+// out of its order each node it marks as context that such a tuple names (untie), such as an
+// issue's own constraint a requirement's constrained_by names, so window places it as it places
+// those. A context node it adds brings in no further context, and no other node is in it.
 func (b *issueTreeBuilder) kindOrder(order []refs.Target) []refs.Target {
 	in := make(map[refs.Target]bool, len(order))
 	roles := make(map[refs.Target]string, len(order))
@@ -166,9 +168,7 @@ func (b *issueTreeBuilder) kindOrder(order []refs.Target) []refs.Target {
 	b.kindContext = map[refs.Target]bool{}
 	for _, target := range answering {
 		for _, relation := range b.facts[target].Relations {
-			switch relation.Kind {
-			case graphstore.TupleHasKind, graphstore.TupleConstrainedBy, graphstore.TupleChangedByRun, graphstore.TupleDecidedBy:
-			default:
+			if !contextTie(relation.Kind) {
 				continue
 			}
 			entry, held := b.entries[relation.To]
@@ -194,7 +194,7 @@ func (b *issueTreeBuilder) kindOrder(order []refs.Target) []refs.Target {
 		}
 		answered = append(answered, target)
 	}
-	return answered
+	return b.untie(answered, b.kindContext)
 }
 
 // isItemBlockKind is whether a node of kind is a block of an ask, a comment or a message.

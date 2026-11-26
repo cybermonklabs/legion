@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The words of the issue every fixture of TestOnlyAPersonChangesAPersonsDecision starts from, each
@@ -129,10 +130,12 @@ func (k *personKeptRig) send(t *testing.T, caller personKeptCaller, method, path
 }
 
 // snapshot is what a refused write must leave as it is, once every write the test made before has
-// settled: a fingerprint of each table of personKeptTables, and the text of each document.
+// settled and the queries those settlements moved hold their versions: a fingerprint of each table
+// of personKeptTables, and the text of each document.
 func (k *personKeptRig) snapshot(t *testing.T) map[string]string {
 	t.Helper()
 	awaitSettled(t, k.database, k.documents...)
+	k.awaitQueriesDrained(t)
 	awaitBackgroundWrites(t, k.served)
 	held := make(map[string]string, len(personKeptTables)+len(k.documents))
 	for _, table := range personKeptTables {
@@ -160,6 +163,25 @@ func (k *personKeptRig) requireUnchanged(t *testing.T, what string, before map[s
 			t.Errorf("%s stored something: %s changed", what, part)
 		}
 	}
+}
+
+// awaitQueriesDrained waits until no issue of the documents the test has written owes its queries
+// a version (issue_query_marks). The settlement of a document of an issue room writes no version
+// of a query it moved: its batch marks the issue's queries owed, and the drain writes their
+// versions once the settlement has committed (docs.Service.DrainOwedQueries), so a document that
+// owes no settlement (awaitSettled) may still have them to come.
+func (k *personKeptRig) awaitQueriesDrained(t *testing.T) {
+	t.Helper()
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the issues of documents %v to owe no query drain (issue_query_marks)", k.documents), func() (int, bool) {
+		var owed int
+		if err := k.database.Pool.QueryRow(context.Background(), `
+			select count(*) from issue_query_marks m
+			where m.issue_key in (select a.issue_key from artifacts a where a.id = any($1::uuid[]))
+		`, k.documents).Scan(&owed); err != nil {
+			t.Fatalf("read the query marks: %v", err)
+		}
+		return owed, owed == 0
+	})
 }
 
 // requireRefusal fails t unless response is status with code, its message holding each of names,
@@ -588,8 +610,10 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		f := k.issue(t, "PKA")
 		requirePersonKeptTaken(t, "the shared token's decision ad1", k.send(t, shared, http.MethodPost, f.edits(),
 			map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": personKeptAgentDecisionCode}}}, ""), http.StatusOK)
+		// A typed block's opening line carries braces (pmdoc's malformedDirectiveReason), so the
+		// plan's decision names an id of its own.
 		plan := k.send(t, shared, http.MethodPost, f.uploads(), map[string]any{
-			"name": "plan.md", "content": "# Plan\n\n" + personKeptQuestion + " The ledger.\n\n:::decision\n" + personKeptWords + "\n:::\n",
+			"name": "plan.md", "content": "# Plan\n\n" + personKeptQuestion + " The ledger.\n\n:::decision{#td1}\n" + personKeptWords + "\n:::\n",
 		}, "")
 		requirePersonKeptTaken(t, "the shared token's plan holding alice's words", plan, http.StatusCreated)
 		k.documents = append(k.documents, decodeBody[struct {
@@ -639,12 +663,19 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		words := k.entry(t, f, "pd2")
 		for _, move := range []struct {
 			what string
-			op   map[string]any
+			ops  []map[string]any
 		}{
-			{"agent move of alice's decision past its siblings", map[string]any{"op": "move", "block": "pd2", "after": "end"}},
-			{"agent move of alice's decision into the section s2", map[string]any{"op": "move", "block": "pd2", "after": "Another section."}},
+			{"agent move of alice's decision past its siblings", []map[string]any{
+				{"op": "move", "block": "pd2", "after": "end"},
+			}},
+			// A move by quote uses the top-level boundary. To nest the decision, relocate
+			// the same block id and words in one batch with an explicit container.
+			{"agent move of alice's decision into the section s2", []map[string]any{
+				{"op": "delete", "block": "pd2"},
+				{"op": "insert", "into": "block:s2", "markdown": ":::decision{#pd2}\n" + personKeptWords + "\n:::\n"},
+			}},
 		} {
-			requirePersonKeptTaken(t, move.what, k.send(t, shared, http.MethodPost, f.edits(), map[string]any{"ops": []map[string]any{move.op}}, ""), http.StatusOK)
+			requirePersonKeptTaken(t, move.what, k.send(t, shared, http.MethodPost, f.edits(), map[string]any{"ops": move.ops}, ""), http.StatusOK)
 			awaitSettled(t, k.database, f.spec.id)
 			if moved := k.entry(t, f, "pd2"); moved.Document == nil || moved.Document.ArtifactID != f.spec.id || moved.Text != words.Text {
 				t.Fatalf("after the %s it reads %s, want it in the spec %s with its words %q", move.what, entryJSON(t, moved), f.spec.id, words.Text)
@@ -664,8 +695,9 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			what string
 			op   map[string]any
 		}{
+			// The reading's opening line carries braces for the same reason as the plan's decision.
 			{"agent reading inserted into alice's decision", map[string]any{
-				"op": "insert", "into": "block:pd2", "markdown": ":::reading\nThe agent reads it as one ledger for every writer.\n:::\n",
+				"op": "insert", "into": "block:pd2", "markdown": ":::reading{#g1}\nThe agent reads it as one ledger for every writer.\n:::\n",
 			}},
 			{"agent retype writing the shaped of alice's decision", map[string]any{
 				"op": "retype", "block": "pd2", "type": "decision", "attributes": map[string]any{"shaped": []string{pointer}},
@@ -730,9 +762,9 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		requirePersonKeptTaken(t, "alice's overtaken of her decision", k.state(t, browser, f.key, pd2, graphstore.StateOvertaken), http.StatusOK)
 		before = k.snapshot(t)
 		k.requireKept(t, "agent state live of "+pd2, k.state(t, shared, f.key, pd2, graphstore.StateLive), before, strconv.Quote(personKeptWords))
-		k.requireRefusal(t, "agent state proposed of "+pd2, k.state(t, shared, f.key, pd2, graphstore.StateProposed), before, http.StatusForbidden, codeStateNotPermitted, pd2)
+		k.requireRefusal(t, "agent state proposed of "+pd2, k.state(t, shared, f.key, pd2, graphstore.StateProposed), before, http.StatusForbidden, codeStateNotPermitted, f.block("pd2"))
 		for _, value := range []string{graphstore.StateSettled, graphstore.StateGone} {
-			k.requireRefusal(t, "agent state "+value+" of "+pd2, k.state(t, shared, f.key, pd2, value), before, http.StatusConflict, codeStateNotWritable, pd2)
+			k.requireRefusal(t, "agent state "+value+" of "+pd2, k.state(t, shared, f.key, pd2, value), before, http.StatusConflict, codeStateNotWritable, f.block("pd2"))
 		}
 		if held := k.stateOf(t, refs.BlockNodeKind, pd2); held != graphstore.StateOvertaken {
 			t.Fatalf("the agent's refused state writes left alice's decision %s, want the overtaken she wrote", held)

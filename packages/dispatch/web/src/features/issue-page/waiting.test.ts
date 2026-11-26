@@ -289,7 +289,19 @@ const isCoverageStatement = coverageStatements(issue, coverage);
 
 /** The issue's plan, whose `requirement` blocks no coverage row holds, and the issue with it. */
 const plan = issueDocument("artifact-plan", "plan-md");
-const planned: IssueDetails = { ...quiet, artifacts: [spec, plan], plan_artifact_id: plan.id };
+const planned: IssueDetails = {
+  ...quiet,
+  artifacts: [spec, plan],
+  plan_artifact_id: plan.id,
+  queries: [
+    {
+      query: "plan",
+      artifact_id: plan.id,
+      takes: ["plan_task", "plan_role"],
+      subtree: `issue:${KEY}`,
+    },
+  ],
+};
 
 /** The decisions of `tree`: its decision nodes (`decisionNodes`). */
 function decisionsOf(tree: TreeAnswer) {

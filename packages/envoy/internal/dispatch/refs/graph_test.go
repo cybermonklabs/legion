@@ -569,14 +569,16 @@ func (a edgesBlockArm) String() string {
 // which must hold a position; a comment's reply to a comment's block and to an ask's part, told
 // apart by the ask/ that starts an ask part's node id; a message's reply to a message's block; the
 // store's own arm over graph_tuples (migrations 20261121034242 and
-// 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter), which answers the links of the
-// block_refs rows that name their node, a block's link and an answered ask's shaped among them
-// (keyedTupleArm), a document's mention where the document's row names its node
-// (keyedMentionArm), and the relations it answers from the tuples alone (keyedStoreArm); and its
-// arm over the tuples of a lens's findings (keyedFindingArm). refs.Edges' in read reads each of
-// them by the node's block ids, and the fixture writes a link of each into each read node's
-// blocks. The arms case holds the view to this list, so an arm a later migration adds fails it
-// until it is listed here, read by block ids and written in the fixture.
+// 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter, restated by
+// 20261125150001_issue_tree_graph_edges_block_node_listed to test a pointer's target through
+// block_node_listed, R26 of the issue-tree spec), which answers the links of the block_refs rows
+// that name their node, a block's link and an answered ask's shaped among them (keyedTupleArm), a
+// document's mention where the document's row names its node (keyedMentionArm), and the relations
+// it answers from the tuples alone (keyedStoreArm); and its arm over the tuples of a lens's
+// findings (keyedFindingArm). refs.Edges' in read reads each of them by the node's block ids, and
+// the fixture writes a link of each into each read node's blocks. The arms case holds the view to
+// this list, so an arm a later migration adds fails it until it is listed here, read by block ids
+// and written in the fixture.
 var edgesBlockArms = []edgesBlockArm{
 	{
 		arm: graphViewArm{table: "refs"},
@@ -624,8 +626,8 @@ var edgesBlockArms = []edgesBlockArm{
 			`RAY['anchored_to'::text, 'owned_by'::text])) OR tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) OR` +
 			` tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text OR tuple.from_kind = 'ask'::text AND tuple.kind = 'shaped'::text) ORDER BY tuple.t` +
 			`o_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) edge JOIN graph_nodes node ON node.kind = edge.from_kind AND node.id ` +
-			`= edge.node_id WHERE edge.asserted AND node.state <> 'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text OR block_r` +
-			`ef_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE edge.projects WHEN 'store'::text THEN true WHEN 'block'::text THEN (` +
+			`= edge.node_id WHERE edge.asserted AND node.state <> 'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text OR block_n` +
+			`ode_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE edge.projects WHEN 'store'::text THEN true WHEN 'block'::text THEN (` +
 			`EXISTS ( SELECT 1 FROM document_blocks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) WHEN ` +
 			`'issue_parent'::text THEN (EXISTS ( SELECT 1 FROM issues projected WHERE projected.key = edge.from_id AND projected.node_kind = edge.from_kind AND pro` +
 			`jected.node_address = edge.from_id AND projected.parent_key = edge.to_id OFFSET 0)) WHEN 'issue_link'::text THEN (EXISTS ( SELECT 1 FROM issue_links p` +

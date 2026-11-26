@@ -232,3 +232,10 @@ export function nameOf(chip: NodeChip): string {
   const { lines, names } = projectedKnown(new Map([[chip.ref, chip.reading]]));
   return chipName(parseNodeReference(chip.ref), lines.get(chip.ref) ?? names.get(chip.ref) ?? "");
 }
+
+/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
+ *  reading. */
+export function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
+  const { reading: _reading, ...fields } = chip;
+  return { ...fields, name: nameOf(chip) };
+}

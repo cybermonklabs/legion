@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerBlockId, askOpenerLines } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerBlockId, askOpenerLines } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -44,25 +44,16 @@ export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
  *  id is read as `askOpeners` reads it (`askOpenerBlockId`). */
 // kept for one release: release-before-text
 function openerOf(line: string): TextAsk | undefined {
-  const end = line.lastIndexOf("}");
-  const start = line.indexOf("ask{");
-  if (end <= start) return undefined;
-  const attributes = line.slice(start + "ask{".length, end);
-  const values = new Map<string, string>();
-  for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
-    values.set(name, attributeValue(raw));
-  }
   const id = askOpenerBlockId(line);
   if (id === undefined) return undefined;
-  const selected = selectionOf(values.get("selected"));
-  const words = values.get("answer");
+  const values = askOpenerAttributes(line);
   return {
     block_id: id,
-    ...optional("state", values.get("state") as TextAsk["state"]),
+    ...optional("state", values.get("state") as TextAsk["state"] | undefined),
     ...optional("answered_by", values.get("answered_by")),
     ...optional("answered_at", values.get("answered_at")),
-    ...optional("selected", selected),
-    ...optional("answer", words),
+    ...optional("selected", selectionOf(values.get("selected"))),
+    ...optional("answer", values.get("answer")),
     ...optional("copied_from", values.get("copied_from")),
     ...optional("copied_from_document", values.get("copied_from_document")),
   };
@@ -72,20 +63,6 @@ function openerOf(line: string): TextAsk | undefined {
 // kept for one release: release-before-text
 function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
   return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
-}
-
-/** A quoted attribute value with its character references read back: the renderer writes `"`
- *  as `&#x22;`, `&` as `&amp;`, and a line break as `&#xA;`. */
-// kept for one release: release-before-text
-function attributeValue(raw: string): string {
-  const named: Record<string, string> = { amp: "&", quot: '"', lt: "<", gt: ">", apos: "'" };
-  return raw.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, (whole, reference: string) => {
-    if (reference.startsWith("#x"))
-      return String.fromCodePoint(Number.parseInt(reference.slice(2), 16));
-    if (reference.startsWith("#"))
-      return String.fromCodePoint(Number.parseInt(reference.slice(1), 10));
-    return named[reference] ?? whole;
-  });
 }
 
 /** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
@@ -104,12 +81,20 @@ function selectionOf(value: string | undefined): string[] | undefined {
 }
 
 /**
- * One line per answered ask of `asks`, for a live read's trailer:
- * `Answered <block id> by <answerer> at <time>: <answer>`, the words quoted as JSON, so a line
- * break stays on the line, and the options chosen beside them where the answer chose any.
+ * One line per answered or resolved ask of `asks`, for a live read's trailer: `Answered <block id>
+ * by <answerer> at <time>: <answer>` for an answered ask, the words quoted as JSON, so a line break
+ * stays on the line, and the options chosen beside them where the answer chose any; and `Resolved
+ * <block id>` for a resolved or declined ask, which the markdown no longer shows by a `state`
+ * attribute, so an agent does not take it for an open one. A block id is the document writer's
+ * text and can hold a line feed, so it is quoted as JSON too, and a trailer line is never forged
+ * by one.
  */
-export function answeredAskLines(asks: readonly TextAsk[]): string[] {
+export function settledAskLines(asks: readonly TextAsk[]): string[] {
   return asks.flatMap((ask) => {
+    const id = JSON.stringify(ask.block_id);
+    if (ask.state === "resolved") {
+      return [`Resolved ${id}`];
+    }
     if (ask.state !== "answered" || ask.answered_by === undefined) return [];
     const words =
       ask.answer === undefined || ask.answer === "" ? undefined : JSON.stringify(ask.answer);
@@ -124,7 +109,7 @@ export function answeredAskLines(asks: readonly TextAsk[]): string[] {
           ? words
           : `${words} (${chose})`;
     return [
-      `Answered ${ask.block_id} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
+      `Answered ${id} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
     ];
   });
 }

@@ -8,14 +8,20 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
-import { issueCoverageQuery, issueResultsQuery, whoAmIQuery } from "../../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
 import type { Artifact, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import * as referenceNames from "../../refs/reference-names";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
-import type { IssueRoute } from "../../refs/routes";
+import { buildIssuePath, type IssueRoute } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -27,17 +33,20 @@ import {
   type ParentLine,
   type TreeNode,
 } from "../issue-tree";
+import { NodeFacts } from "../NodeFacts";
 import { FirstLine } from "../node-line";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
+  NODE_FACT_LABELS,
   NODE_TYPE_NAMES,
   type NodeType,
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
+import { presetView } from "../presets";
 import {
   blockReads,
   Publisher,
@@ -49,16 +58,16 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
-import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswerNode, viewQuery } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
  * What the Plan filter's body draws: it opens on the chart of time - one bar per step, after
- * every step it needs, each row saying what it needs, that it holds no size and what it serves
- * - and one control switches to the ordered steps, which are the outline's own rows; a cycle is
- * one line that lists its tasks.
+ * every step it needs and as long as its size, each row saying what it needs, its size or that it
+ * holds none, and what it serves - and one control switches to the ordered steps, which are the
+ * outline's own rows; a cycle is one line that lists its tasks. On an issue with issues under it
+ * the tasks of each stand in the same walk, each marked with its issue's key.
  *
  * The nodes are built as `presets.ts`'s `filterView` leaves them for the Plan filter: each task
  * a row of its own, the statement it serves its parent line, and any further statement a chip
@@ -67,11 +76,12 @@ import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody"
  * the tasks and the statements from (`planReads`). The body is drawn under the names store, with
  * what the page publishes for those tasks, their statements and their chips, by that rule too
  * (`publishedPlan`): the view draws the names the store projects from it and names no edge
- * itself.
+ * itself. A parent's plan is drawn from the view `presetView` makes of a held Plan read.
  *
- * Two cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
- * holds the reads the issue's tree is built from, for what the slot hands the body as the reads
- * change: the body kept mounted, and a refused read's line and Retry.
+ * Some cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
+ * holds the reads the issue's tree is built from, under the names store, for what the slot hands
+ * the body as the reads change and what it publishes: the body kept mounted, a refused read's
+ * line and Retry, and the names of a step's needs and statements.
  */
 
 const KEY = "CORE-1";
@@ -115,8 +125,8 @@ function taskRef(blockId: string): string {
   return `dispatch://${KEY}/artifact/${PLAN}#b-${blockId}`;
 }
 
-/** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
- *  `placeBlocks`), under the attribute's own word; `issue` names it as the tree names the task it
+/** The chip the tree draws for one `needs` pointer of a task's block (`tree-read/tree-nodes.ts`'
+ *  `needsChips`), under the attribute's own word; `issue` names it as the tree names the task it
  *  points at, once a test has built every task. */
 function need(blockId: string): NodeChip {
   return {
@@ -294,10 +304,13 @@ type DrawnBody = RenderResult & {
  *  publishes of its batched names read, which is published to the names store the body is drawn
  *  under and handed to the body, as the slot hands it: what it publishes for the whole plan
  *  (`publishedPlan`) where a case gives nothing else, one value for as long as the tree it is
- *  drawn over is the same, as the page's is. `client` is the query client, by default one whose
- *  reads never go stale. `container` is the element the body is drawn in, by default one the
- *  test adds to the page. `redraw` draws the same body again where it is mounted, over another
- *  `root` and `reads`, as the slot does when the issue's reads change. */
+ *  drawn over is the same, as the page's is. That value names by hand what the page and the
+ *  Plan view's own read publish together, so no case drawn here proves the slot publishes it: the
+ *  case drawn through the slot itself ("a step names the step it needs and the statements it
+ *  serves from the view's own tree") hands nothing by hand. `client` is the query client, by
+ *  default one whose reads never go stale. `container` is the element the body is drawn in, by
+ *  default one the test adds to the page. `redraw` draws the same body again where it is
+ *  mounted, over another `root` and `reads`, as the slot does when the issue's reads change. */
 function renderBody(
   root: TreeNode,
   {
@@ -428,8 +441,8 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
       "false"
     );
     expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
-    // One bar per step, and each starts one unit after the step it needs: today's model holds
-    // no size, so a bar is one unit long and its row says so.
+    // One bar per step, and each starts one unit after the step it needs: no task here holds a
+    // size, so a bar is one unit long and its row says so.
     expect(
       ["t1", "t3", "t2"].map((id) => [
         rowOf(view, id).getAttribute("data-plan-start"),
@@ -1017,6 +1030,24 @@ function issueRead(verification?: Artifact): IssueDetails {
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
     verification_artifact_id: verification?.id ?? "",
+    queries: [
+      ...(verification === undefined
+        ? []
+        : [
+            {
+              query: "verification" as const,
+              artifact_id: verification.id,
+              takes: ["check", "result"],
+              subtree: `issue:${KEY}`,
+            },
+          ]),
+      {
+        query: "plan",
+        artifact_id: PLAN_ARTIFACT,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${KEY}`,
+      },
+    ],
   };
 }
 
@@ -1068,7 +1099,9 @@ type DrawnSlot = RenderResult & { readonly redraw: (issue: IssueDetails) => void
 
 /** Draws the Plan view's slot (`slots/view-plan.tsx`) for `shown` over `client`, in the stage the
  *  page draws a view in (`slots/stage.tsx`), with the providers the page draws every slot under
- *  (`slots/providers.tsx`). `at` is the address the router holds and the slot's route for it,
+ *  (`slots/providers.tsx`), under the one names store the application draws every page under
+ *  (`app.tsx`'s `ReferenceNamesProvider`), so what the slot publishes names what it draws and
+ *  nothing names it by hand. `at` is the address the router holds and the slot's route for it,
  *  where a case gives one; where none is given the router holds no address the page reads, and
  *  the slot is handed the issue's own route. */
 function renderSlot(
@@ -1082,12 +1115,14 @@ function renderSlot(
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <ProvidersSlot issue={issue} route={route}>
-              <IssueScope />
-              <ViewStage>
-                <ViewPlanSlot issue={issue} route={route} />
-              </ViewStage>
-            </ProvidersSlot>
+            <ReferenceNamesProvider>
+              <ProvidersSlot issue={issue} route={route}>
+                <IssueScope />
+                <ViewStage>
+                  <ViewPlanSlot issue={issue} route={route} />
+                </ViewStage>
+              </ProvidersSlot>
+            </ReferenceNamesProvider>
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
@@ -1162,6 +1197,97 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     view.unmount();
     blocks.mockRestore();
     names.mockRestore();
+  }
+});
+
+// The Plan view's own read is the one read that holds the plan's tasks and the statement they
+// stand under: the outline's read, Conversation's, holds neither, so the page's names read names
+// none of them. The view publishes the reading of each block a chip or a parent line of its rows
+// names (`presets.ts`' `PresetView.readings`, `slots/view-readings.ts`), and the chart names a
+// step's need and the statement it serves by the line the names store projects from it. The case
+// draws the slot itself, so nothing hands the body a name the slot does not publish. The view
+// worked out again over the same answers names each block by equal readings, and publishes
+// nothing new: the store keeps the readings it holds.
+test("a step names the step it needs and the statements it serves from the view's own tree", async () => {
+  setViewport(1440);
+  const client = slotClient({ specHeld: false });
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeAnswer([treeNode(KEY, "issue", null)])
+  );
+  const words = (text: string) => ({ text, text_tree: displayTree(text) });
+  const step = (id: string, position: number, text: string): TreeAnswerNode =>
+    treeNode(id, "plan_task", "r1", {
+      document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
+      role: "query",
+      ...words(text),
+    });
+  client.setQueryData(
+    viewQuery(KEY, "plan").queryKey,
+    treeAnswer(
+      [
+        treeNode("r1", "requirement", KEY, {
+          document: { artifact_id: SPEC_ARTIFACT, position: 0, slug: SPEC },
+          role: "context",
+          ...words("Draw the chart of the plan."),
+        }),
+        step("t2", 1, "Stand the harness up."),
+        step("t1", 0, "Read every row of the harness."),
+      ],
+      [
+        treeTuple("needs", "t1", "t2"),
+        treeTuple("serves", "t1", "r1"),
+        treeTuple("serves", "t2", "r1"),
+      ],
+      { view: "plan" }
+    )
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const publishes = spyOn(referenceNames, "usePublishReferenceNames");
+  // The values the view publishes: the page's own names read answers no target here, so its
+  // value names no reading.
+  const viewValues = () =>
+    publishes.mock.calls.flatMap(([value]) =>
+      value === undefined || value.readings.size === 0 ? [] : [value]
+    );
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => {
+      expect(
+        [...rowOf(view, "t1").querySelectorAll("[data-plan-need]")].map((one) => [
+          one.getAttribute("data-plan-need"),
+          one.textContent,
+        ]),
+        "t1 does not name the step it needs"
+      ).toEqual([[D("t2"), "Stand the harness up."]]);
+      expect(
+        [...rowOf(view, "t1").querySelectorAll("[data-plan-serve]")].map((one) => [
+          one.textContent,
+          one.querySelector("a")?.getAttribute("href"),
+        ]),
+        "t1 does not name the statement it serves"
+      ).toEqual([["Draw the chart of the plan.", expect.stringMatching(/#b-r1$/)]]);
+    });
+
+    const before = viewValues();
+    const held = before.at(-1)?.readings;
+    expect(held, "the view publishes no reading").toBeDefined();
+    view.redraw(issueRead());
+    await waitFor(() => expect(viewValues().length).toBeGreaterThan(before.length));
+    expect(
+      viewValues()
+        .slice(before.length)
+        .filter((value) => value.readings !== held),
+      "the view worked out again over the same answers published its readings anew"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    publishes.mockRestore();
+    client.clear();
   }
 });
 
@@ -2126,5 +2252,176 @@ test("a need the tree has not named draws no empty need and no '· needs' with n
     expect(alone?.querySelector("[data-plan-facts]")?.textContent).not.toContain(PLAN_WORDS.needs);
   } finally {
     view.unmount();
+  }
+});
+
+/** A drawn row by its node's id, whatever the id's shape: a task of another issue is drawn by its
+ *  block id alone. */
+function rowById(view: RenderResult, id: string): HTMLElement {
+  const row = view.container.querySelector<HTMLElement>(
+    `[data-node-row][data-node-id="${CSS.escape(id)}"]`
+  );
+  if (row === null) throw new Error(`the body draws no row for ${id}`);
+  return row;
+}
+
+/** Each fact a row's body draws under Steps (`NodeFacts`), as its label and its value. */
+function stepFactsOf(row: HTMLElement): [string, string][] {
+  return [...row.querySelectorAll("[data-node-body] dt")].map((term) => [
+    term.textContent ?? "",
+    term.nextElementSibling?.textContent ?? "",
+  ]);
+}
+
+/** How wide a row's bar is, as a share of the chart's time column. */
+function barWidth(row: HTMLElement): number {
+  const style = row.querySelector("[data-plan-bar]")?.getAttribute("style") ?? "";
+  return Number.parseFloat(/width: ([\d.]+)%/.exec(style)?.[1] ?? "NaN");
+}
+
+// R19, R26: a step draws its size in words where the read holds one, beside its bar in the chart
+// and as a fact of its row under Steps, and "No size" only for the task that holds none. Each bar
+// is as long as its task's size on the chart's one scale, and the bar of the task with no size is
+// one line of the axis long and dashed. The axis carries the time at each line only where every
+// task holds a size.
+test("a step draws its size where the read holds one, and No size only where it holds none", async () => {
+  setViewport(1440);
+  const view = renderBody(
+    issue([
+      { ...task("t1"), size: 90 },
+      task("t2", { needs: ["t1"] }),
+      { ...task("t3", { needs: ["t1"] }), size: 45 },
+    ])
+  );
+  try {
+    expect(
+      ["t1", "t2", "t3"].map((id) => [
+        rowOf(view, id).querySelector("[data-plan-size]")?.textContent ?? null,
+        rowOf(view, id).querySelector("[data-plan-no-size]")?.textContent ?? null,
+      ])
+    ).toEqual([
+      ["1 h 30 min", null],
+      [null, PLAN_WORDS.no_size],
+      ["45 min", null],
+    ]);
+    expect(barWidth(rowOf(view, "t1")) / barWidth(rowOf(view, "t3"))).toBeCloseTo(2);
+    expect(rowOf(view, "t2").querySelector("[data-plan-bar]")?.className).toContain(
+      "border-dashed"
+    );
+    expect(rowOf(view, "t1").querySelector("[data-plan-bar]")?.className).toContain("border-solid");
+    expect(view.container.querySelectorAll("[data-plan-axis-time]")).toHaveLength(0);
+    await showSteps(view);
+    expect(["t1", "t2", "t3"].map((id) => stepFactsOf(rowOf(view, id)))).toEqual([
+      [[BLOCK_ATTRIBUTE_LABELS.size, "1 h 30 min"]],
+      [[BLOCK_ATTRIBUTE_LABELS.size, PLAN_WORDS.no_size]],
+      [[BLOCK_ATTRIBUTE_LABELS.size, "45 min"]],
+    ]);
+  } finally {
+    view.unmount();
+  }
+  const sized = renderBody(
+    issue([
+      { ...task("t1"), size: 90 },
+      { ...task("t3", { needs: ["t1"] }), size: 45 },
+    ])
+  );
+  try {
+    expect(
+      [...sized.container.querySelectorAll("[data-plan-head] [data-plan-axis-time]")].map(
+        (one) => one.textContent
+      )
+    ).toEqual(["30 min", "1 h", "1 h 30 min", "2 h", "2 h 30 min"]);
+  } finally {
+    sized.unmount();
+  }
+});
+
+// R19: on an issue with issues under it the Plan read answers the tasks of every issue under it
+// beside the issue's own, as context marked with their issue, and the view takes each as a row
+// (`presets.ts`' `heldFilterView`). The chart and the steps draw them in part K's walk, the
+// issue's own first and then the child's, whose `c` needs its `a`, as on the child's own page;
+// each task of the child is marked with its issue's key, a link to that issue (`ChildIssueTag`),
+// on its bar's row and as a fact of its row under Steps; the issue's own tasks carry none. The key
+// is a control inside a row: out of the tab order on every row, the focused one included, as
+// every control of a row of the outline or the chart is (the chart's and the outline's `f` reach
+// it), and in it in a view whose rows take tab stops (`tabStops`).
+test("a parent's plan draws the tasks of each issue under it in part K's walk, each marked with its issue's key, and its own with none", async () => {
+  setViewport(1440);
+  const child = "CORE-2";
+  const own = (id: string): TreeNode => ({ ...task(id), readId: `${KEY}/${PLAN}#${id}` });
+  const childTask = (id: string, needs: readonly string[] = []): TreeNode => ({
+    ...task(id),
+    chips: needs.map((one) => ({
+      ...need(one),
+      reading: { words: `Task ${one}` },
+      ref: `dispatch://${child}/artifact/${PLAN}#b-${one}`,
+    })),
+    id,
+    readId: `${child}/${PLAN}#${id}`,
+    reference: `dispatch://${child}/artifact/${PLAN}#b-${id}`,
+  });
+  const answer = treeAnswer(
+    [
+      treeNode("a", "plan_task", KEY, { in: PLAN, role: "query" }),
+      treeNode("xa", "plan_task", child, { in: PLAN, issue: child, role: "context" }),
+      treeNode("xb", "plan_task", child, { in: PLAN, issue: child, role: "context" }),
+      treeNode("xc", "plan_task", child, { in: PLAN, issue: child, role: "context" }),
+      treeNode("b", "plan_task", KEY, { in: PLAN, role: "query" }),
+    ],
+    [],
+    { view: "plan" }
+  );
+  const outline = issue([own("a"), own("b")]);
+  const root: TreeNode = {
+    ...outline,
+    views: {
+      plan: answer,
+      trees: {
+        plan: {
+          ...outline,
+          children: [childTask("xa"), childTask("xb"), childTask("xc", ["xa"])],
+        },
+      },
+    },
+  };
+  const whole = presetView(root, "plan", "");
+  const view = renderBody(whole.root, { plan: whole.root.children });
+  const order = [D("a"), D("b"), "xb", "xa", "xc"];
+  const href = buildIssuePath({ key: child, kind: "issue" });
+  const marks = () =>
+    order.map((id) => {
+      const key = rowById(view, id).querySelector("[data-child-key]");
+      return key === null
+        ? null
+        : [key.textContent, key.getAttribute("href"), key.getAttribute("tabindex")];
+    });
+  const mark = [child, href, "-1"];
+  const marked = [null, null, mark, mark, mark];
+  try {
+    expect(rowIds(view.container)).toEqual(order);
+    expect(marks(), "the chart marks the tasks with their issue's key").toEqual(marked);
+    await showSteps(view);
+    expect(rowIds(view.container)).toEqual(order);
+    expect(marks(), "the steps mark the tasks with their issue's key").toEqual(marked);
+    expect(stepFactsOf(rowById(view, "xa"))).toEqual([
+      [NODE_FACT_LABELS.issue, child],
+      [BLOCK_ATTRIBUTE_LABELS.size, PLAN_WORDS.no_size],
+    ]);
+    act(() => rowById(view, "xa").focus());
+    expect(focusedRow()).toBe("xa");
+    expect(marks()).toEqual(marked);
+  } finally {
+    view.unmount();
+  }
+  const facts = render(
+    <MemoryRouter>
+      <NodeFacts facts={[{ draw: "issue", name: "issue", value: child }]} tabStops />
+    </MemoryRouter>
+  );
+  try {
+    const key = facts.container.querySelector("[data-child-key]");
+    expect([key?.getAttribute("href"), key?.getAttribute("tabindex")]).toEqual([href, null]);
+  } finally {
+    facts.unmount();
   }
 });

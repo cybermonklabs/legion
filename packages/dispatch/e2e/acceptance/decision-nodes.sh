@@ -48,7 +48,9 @@
 # (`envoy-dispatch restore-answered-asks` and `convert-decisions`, --project SEED). It reads every
 # ask block of each version the conversion wrote - the versions its line of each issue names
 # (spec_version, decisions_version) and counts (other_versions), as the artifact.version events the
-# step appends in its own name name them - and each holds the form R10 keeps, each value equal to
+# step appends in its own name name them, every such event after the conversion started read with
+# no limit and held to as many as the lines count, so no version it wrote goes unread - and each
+# holds the form R10 keeps, each value equal to
 # its ask's node as the store states it: `state` where the ask is answered or resolved and none
 # where it is open, `answered_by` and `answered_at` where it is answered, and `copied_from` and
 # `copied_from_document` on a copy of an ask of another document; a block that has no ask row and
@@ -76,13 +78,17 @@
 # standing Keep, none citing an answered ask a person removed or none such under `## Replaced`, each
 # of which the fixture seeds; a reading's part_of is read from the store against the ask the capture
 # names. E's two sections, which the fixture records as the ones citing the answered ask its person
-# removed (deleted_by), are read by R9's deleting rule: each heading takes one moved_to, to_kind ask
-# and to_id that ask; no reading hangs under that ask; no decision keeps its heading id, as a node
-# or a document's block; and the
-# ask's node still answers the person's answer, character for character the answer the base's
-# capture holds for that ask. It reads the approved specs still approved at their newest version,
-# whose only change over the restore's version is the decision blocks, the readings inside answered
-# asks and the shaped pointers; it pairs each captured section of A, B and E with the ask node the
+# removed (deleted_by), are read by R9's deleting rule: each heading takes one current moved_to, to
+# kind ask and id that ask; no reading hangs under that ask; no decision keeps its heading id, as a
+# node or a document's block; and the ask's node still answers the person's answer, character for
+# character the answer the base's capture holds for that ask. Every moved_to of a section's heading
+# is read as the current tuple out of it (current_of: the newest tuple of each far end, where it
+# asserts), so a tuple asserted and later retracted is none. It reads the approved specs still
+# approved at their newest version, as the server's own approval read answers, and its comparison
+# of that version's markdown with the restore's finds no change but decision blocks of the
+# `## Decisions` part, reading blocks inside the blocks of answered asks, and shaped pointers added
+# to ask blocks, each a link of a captured section naming that block's ask, none taken out; it
+# pairs each captured section of A, B and E with the ask node the
 # capture names for it or with the decision node that keeps its heading block id, which entries and
 # the old `decisions` member must each answer once under the address entries give it, and prints
 # missing, extra and unpaired with every reference, a `deleted:` line for each of E's sections,
@@ -302,8 +308,9 @@ rows() {
     fail sql "read $1" "psql: $(<"$work/psql")"
 }
 
-# current_of KIND FROM_KIND FROM_ID TUPLE: the far ends of the current TUPLE tuples out of the node
-# KIND/ID, `to_kind:to_id` one a line, sorted, in $work/rows.
+# current_of FROM_KIND FROM_ID TUPLE: the far ends of the current TUPLE tuples out of the node
+# FROM_KIND/FROM_ID - the newest tuple of each far end, where it asserts - `to_kind:to_id` one a
+# line, sorted, in $work/rows. A tuple asserted and later retracted is none of them.
 current_of() {
   rows "select c.to_kind || ':' || c.to_id from (
           select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted from graph_tuples t
@@ -484,16 +491,16 @@ kept_form() {
   pass "$section" "the $blocks ask blocks of version $number of $document, $what, each hold the form R10 keeps, each value its ask's node's"
 }
 
-# step_events SECTION MARKER ISSUE LIMIT: the artifact.version events the decisions step appended
-# in its own name (docs.DecisionStepActor) after event MARKER, of ISSUE ("" for every issue), the
-# first LIMIT of them ("all" for every one), `document number` one a line, oldest first, in
-# $work/step-events.
+# step_events SECTION MARKER ISSUE: every artifact.version event the decisions step appended in its
+# own name (docs.DecisionStepActor) after event MARKER, of ISSUE ("" for every issue), `document
+# number` one a line, oldest first, in $work/step-events. It reads them all, with no limit, so a
+# version the step wrote and no line of it reports is read too.
 step_events() {
   env -u PGHOSTADDR psql "$database_url" -XAtq -F ' ' -c "
     select e.payload->>'artifact_id', e.payload->'version'->>'number' from events e
     where e.id > $2 and ('$3' = '' or e.issue_key = '$3') and e.type = 'artifact.version'
       and e.actor->>'kind' = 'system' and e.actor->>'id' = 'dispatch-decisions-step'
-    order by e.id limit $4" >"$work/step-events" 2>"$work/psql" ||
+    order by e.id" >"$work/step-events" 2>"$work/psql" ||
     fail "$1" "read the versions the decisions step wrote after event $2" "psql: $(<"$work/psql")"
 }
 
@@ -501,25 +508,29 @@ step_events() {
 # $work/NAME.out, wrote, `document number` one a line, into $work/NAME.versions. Its line of each
 # issue names the version it wrote of the spec (spec_version) and of the decisions document
 # (decisions_version), 0 for none, and counts the versions it wrote of the issue's other documents
-# (other_versions). It writes them in the issue's one transaction, each with its artifact.version
-# event in its own name, so the first of those events of the issue after event MARKER, as many as
-# the line counts, are its versions: they must hold the spec's and the decisions document's under
-# the numbers the line names, and they name the other documents.
+# (other_versions). It writes each with its artifact.version event in its own name, and nothing
+# else writes in that name while the step is held, so every such event of the issue after event
+# MARKER, read once the command has ended and with no limit, is one of its versions: there must be
+# as many as the line counts, none for an issue whose line counts none, and they must hold the
+# spec's and the decisions document's under the numbers the line names, and name the other
+# documents. Every such event of any issue after MARKER must then be one the lines count, so a
+# version of an issue no line names fails too. The caller reads each version's ask blocks after.
 step_versions() {
-  local section="$1" name="$2" marker="$3" line issue spec_version decisions_version others count spec
+  local section="$1" name="$2" marker="$3" line issue spec_version decisions_version others count spec reported=0
   : >"$work/$name.versions"
   while IFS= read -r line <&3; do
     [[ "$line" =~ \ issue=([^ ]+)\ .*\ spec_version=([0-9]+)\ decisions_version=([0-9]+)\ other_versions=([0-9]+)\  ]] ||
       fail "$section" "the line of $name names the versions it wrote" "$line"
     issue="${BASH_REMATCH[1]}" spec_version="${BASH_REMATCH[2]}" decisions_version="${BASH_REMATCH[3]}" others="${BASH_REMATCH[4]}"
     count=$(((spec_version > 0) + (decisions_version > 0) + others))
+    step_events "$section" "$marker" "$issue"
+    [[ "$(wc -l <"$work/step-events")" == "$count" ]] ||
+      fail "$section" "the step appended an artifact.version event for each of the $count versions $name reports of $issue, and no other" \
+        "it appended $(wc -l <"$work/step-events") after event $marker: $(tr '\n' ';' <"$work/step-events")"
     [[ "$count" -gt 0 ]] || continue
-    step_events "$section" "$marker" "$issue" "$count"
+    reported=$((reported + count))
     query "$section" "read the spec of $issue" "select id from artifacts where issue_key = '$issue' and is_primary and kind = 'doc'"
     spec="$answer"
-    [[ "$(wc -l <"$work/step-events")" == "$count" ]] ||
-      fail "$section" "the step appended the artifact.version event of each of the $count versions $name wrote of $issue" \
-        "it appended $(wc -l <"$work/step-events") after event $marker: $(tr '\n' ';' <"$work/step-events")"
     [[ "$spec_version" == 0 ]] || grep -qx -- "$spec $spec_version" "$work/step-events" ||
       fail "$section" "the versions $name wrote of $issue hold version $spec_version of its spec $spec" "$(tr '\n' ';' <"$work/step-events")"
     [[ "$decisions_version" == 0 ]] ||
@@ -529,6 +540,10 @@ step_versions() {
     printf '%s: the versions %s wrote of %s (document number): %s\n' "$section" "$name" "$issue" "$(tr '\n' ';' <"$work/step-events")"
     cat "$work/step-events" >>"$work/$name.versions"
   done 3< <(grep -E '^[a-z-]+: issue=[^ ]+ restored=' "$work/$name.out")
+  step_events "$section" "$marker" ""
+  [[ "$(wc -l <"$work/step-events")" == "$reported" ]] ||
+    fail "$section" "every artifact.version event the step appended after event $marker is one of the $reported versions the lines of $name report" \
+      "it appended $(wc -l <"$work/step-events"): $(tr '\n' ';' <"$work/step-events")"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -820,8 +835,7 @@ census census census
 # that one among them, and reads it resolved only while the ask's node is live.
 readonly removed_ask="${seed_ids[ask_e_removed]}"
 readonly removed_heading="$issue_e/decisions-md#${seed_ids[section_removed]}"
-rows "select to_kind || ':' || to_id from graph_tuples
-      where kind = 'moved_to' and from_kind = 'block' and from_id = '$removed_heading' and asserted"
+current_of block "$removed_heading" moved_to
 [[ "$(<"$work/rows")" == "ask:$removed_ask" ]] ||
   fail removed "the heading $removed_heading of the section citing ask $removed_ask, which its person removed, takes one moved_to to that ask's node" \
     "it takes $(tr '\n' ' ' <"$work/rows")"
@@ -996,15 +1010,17 @@ read_rules() {
         pass rules "the section $heading of $issue cites ask $removed, which its person removed from the spec, and R9 deletes it: one moved_to from its heading to ask:$removed, no reading under that ask, no decision keeping its heading id, and the ask's node still answers $captured_answer, character for character as the base did"
         continue
       fi
-      rows "select to_id from graph_tuples where kind = 'moved_to' and from_kind = 'block' and from_id = '$heading_node' and asserted"
+      # The current moved_to tuples out of the heading, `to_kind:to_id`: a tuple asserted and later
+      # retracted is none of them.
+      current_of block "$heading_node" moved_to
       moved="$(<"$work/rows")"
-      [[ "$(wc -l <<<"$moved")" == 1 && -n "$moved" ]] || fail rules "one moved_to tuple from the heading of section $heading" "${moved:-none}"
+      [[ "$(wc -l <<<"$moved")" == 1 && -n "$moved" ]] || fail rules "one current moved_to tuple from the heading of section $heading" "${moved:-none}"
       text="$(section_text "$issue" "$heading")"
       if [[ "$ask" != - ]]; then
         query rules "read the block of ask $ask" "select block_id from asks where id = '$ask'"
         ask_block="$issue/spec#$answer"
-        [[ "$moved" == "$ask_block" ]] ||
-          fail rules "the section $heading, which cites or holds ask $ask, moves to that ask's block" "it moves to $moved, the block is $ask_block"
+        [[ "$moved" == "block:$ask_block" ]] ||
+          fail rules "the section $heading, which cites or holds ask $ask, moves to that ask's block" "it moves to $moved, the block is block:$ask_block"
         current_of ask "$ask" shaped
         sed 's/^block://' "$work/rows" >"$work/shaped"
         jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .links[].to.id' "$work/capture/decisions.$issue.json" |
@@ -1044,7 +1060,7 @@ read_rules() {
       fi
       # A section that cites no ask: a decision block that keeps its heading block id.
       decision="$issue/spec#$heading"
-      [[ "$moved" == "$decision" ]] || fail rules "the section $heading moves to the decision that keeps its id" "it moves to $moved"
+      [[ "$moved" == "block:$decision" ]] || fail rules "the section $heading moves to the decision that keeps its id" "it moves to $moved, want block:$decision"
       entry "$issue" block "$decision"
       [[ -s "$work/entry" ]] || fail rules "the section $heading becomes a decision node of the spec under its heading id" "no entry for $decision"
       expect rules "the section $heading is an agent's decision" '"agent"' '.kind'
@@ -1093,12 +1109,12 @@ pass rules "the rule that deletes a section citing an answered ask its person re
 # ---------------------------------------------------------------------------------------------
 # R9's four further kinds, each on the section that carries it.
 # ---------------------------------------------------------------------------------------------
-# moved_from ADDRESS: the far end of the one asserted moved_to tuple out of the block ADDRESS, in
-# $moved; there must be one.
+# moved_from ADDRESS: the far end of the one current moved_to tuple out of the block ADDRESS,
+# `to_kind:to_id`, in $moved; there must be one. A tuple asserted and later retracted is none.
 moved_from() {
-  rows "select to_id from graph_tuples where kind = 'moved_to' and from_kind = 'block' and from_id = '$1' and asserted"
+  current_of block "$1" moved_to
   moved="$(<"$work/rows")"
-  [[ "$(wc -l <<<"$moved")" == 1 && -n "$moved" ]] || fail kinds "one moved_to tuple from $1" "${moved:-none}"
+  [[ "$(wc -l <<<"$moved")" == 1 && -n "$moved" ]] || fail kinds "one current moved_to tuple from $1" "${moved:-none}"
 }
 send agent GET "/api/v1/artifacts/$spec_a/text"
 want_status 200 kinds "read the newest version of $spec_a"
@@ -1108,8 +1124,8 @@ jq -j '.markdown' "$work/body" >"$work/converted-a.md"
 # second shape, under its own id, and the rest of the section converted by R9's rules.
 held_heading="${seed_ids[section_held]}"
 moved_from "$issue_a/decisions-md#q-shelf"
-[[ "$moved" == "$issue_a/spec#q-shelf" ]] ||
-  fail kinds "the ask block q-shelf the section $held_heading held moves into the spec under its id" "it moves to $moved"
+[[ "$moved" == "block:$issue_a/spec#q-shelf" ]] ||
+  fail kinds "the ask block q-shelf the section $held_heading held moves into the spec under its id" "it moves to $moved, want block:$issue_a/spec#q-shelf"
 grep -qF ':::ask{#q-shelf ' "$work/converted-a.md" ||
   fail kinds "the spec's newest version holds the moved ask block q-shelf" "$(grep -F 'q-shelf' "$work/converted-a.md" || echo 'no line names q-shelf')"
 query kinds "read the rows naming a block of the decisions document of $issue_a" \
@@ -1117,8 +1133,8 @@ query kinds "read the rows naming a block of the decisions document of $issue_a"
 [[ "$answer" == 0 ]] || fail kinds "no row names a block of the retired decisions document" "$answer rows do"
 held_decision="$issue_a/spec#$held_heading"
 moved_from "$issue_a/decisions-md#$held_heading"
-[[ "$moved" == "$held_decision" ]] ||
-  fail kinds "the rest of the section $held_heading becomes the decision that keeps its heading id" "it moves to $moved"
+[[ "$moved" == "block:$held_decision" ]] ||
+  fail kinds "the rest of the section $held_heading becomes the decision that keeps its heading id" "it moves to $moved, want block:$held_decision"
 entry "$issue_a" block "$held_decision"
 [[ -s "$work/entry" ]] || fail kinds "the rest of the section $held_heading is a decision node of the spec" "no entry for $held_decision"
 expect kinds "the rest of the section $held_heading is an agent's decision" '"agent"' '.kind'
@@ -1143,7 +1159,7 @@ for kind in two_asks issue_level body; do
   heading="${seed_ids[section_$kind]}"
   decision="$issue_a/spec#$heading"
   moved_from "$issue_a/decisions-md#$heading"
-  [[ "$moved" == "$decision" ]] || fail kinds "the section $heading ($kind) moves to the decision that keeps its heading id" "it moves to $moved"
+  [[ "$moved" == "block:$decision" ]] || fail kinds "the section $heading ($kind) moves to the decision that keeps its heading id" "it moves to $moved, want block:$decision"
   entry "$issue_a" block "$decision"
   [[ -s "$work/entry" ]] || fail kinds "the section $heading ($kind) is a decision node of the spec" "no entry for $decision"
   expect kinds "the section $heading ($kind) is an agent's decision" '"agent"' '.kind'
@@ -1189,8 +1205,8 @@ jq -e --arg h "$replaced_two" --arg s "${seed_ids[ask_first_store]}" --arg f "${
   fail replaced "the capture holds the section $replaced_two under ## Replaced, citing ask_first_store and ask_first_format" \
     "$(jq -c --arg h "$replaced_two" '[.decisions[] | select(.block_id == $h) | {block_id, replaced, asks}]' "$work/capture/decisions.$issue_a.json")"
 replaced_decision="$issue_a/spec#$replaced_two"
-rows "select to_id from graph_tuples where kind = 'moved_to' and from_kind = 'block' and from_id = '$issue_a/decisions-md#$replaced_two' and asserted"
-[[ "$(<"$work/rows")" == "$replaced_decision" ]] ||
+current_of block "$issue_a/decisions-md#$replaced_two" moved_to
+[[ "$(<"$work/rows")" == "block:$replaced_decision" ]] ||
   fail replaced "the heading of the section $replaced_two, under ## Replaced and citing two answered asks, takes one moved_to, to the decision that keeps its id" \
     "it takes $(tr '\n' ' ' <"$work/rows")"
 query replaced "count the decisions that keep the heading id $replaced_two" "
@@ -1237,23 +1253,88 @@ query replaced "count the decisions that keep the heading id $replaced_removed" 
   fail replaced "the converter writes no decision for the section $replaced_removed under ## Replaced, which cites ask $removed_ask, which its person removed" "$answer nodes and blocks keep its id"
 pass replaced "the section $replaced_removed under ## Replaced cites ask $removed_ask, which its person removed from the spec, and is deleted by R9's rule for that ask: its heading moves to ask:$removed_ask, and no decision keeps its id"
 
-# The approved specs still read approved, at a version whose only change is the conversion's.
-# conversion_only FILE: FILE without decision blocks, reading blocks, the shaped pointers of ask
-# blocks, a nested ask's wider fence and repeated blank lines. The blank lines before a removed
-# block go with it: they are the separator its insertion wrote, so a reading added after an
-# ask's last option leaves no blank line above the ask's closing fence.
+# The approved specs still read approved, at a version whose only change is the conversion's. That
+# the approval stands is the server's own answer (approval.state and approval.version below); what
+# changed is this run's comparison of the two versions' markdown, which takes out only what the
+# conversion may add and holds what it added to the sections the capture read.
+# conversion_only FILE ANSWERED: FILE without each decision block of its `## Decisions` part (from
+# that heading to the next heading of level one or two), each reading block nested in an ask block
+# whose id ANSWERED, a space-separated list, names, and the shaped attribute of every ask block,
+# which shaped_given compares on its own; an ask block's wider fence is written as the narrowest,
+# and repeated blank lines as one. A decision block anywhere else, and a reading block anywhere
+# else - at the top level, in a decision, or in an ask block ANSWERED does not name - stays, so the
+# comparison shows it. The blank lines before a removed block go with it: they are the separator
+# its insertion wrote, so a reading added after an ask's last option leaves no blank line above the
+# ask's closing fence.
 conversion_only() {
-  awk '
+  awk -v answered=" $2 " '
     skip { if ($0 == fence) { skip = 0 } ; next }
-    /^:+(decision|reading)\{/ { held = 0; skip = 1; match($0, /^:+/); fence = substr($0, 1, RLENGTH); next }
+    !ask_fence && /^##? / { decisions = ($0 == "## Decisions") }
+    (!ask_fence && decisions && /^:+decision\{/) || (ask_answered && /^:+reading\{/) {
+      held = 0; skip = 1; match($0, /^:+/); fence = substr($0, 1, RLENGTH); next
+    }
     $0 == "" { held++; next }
     { for (; held > 0; held--) print "" }
-    /^::::+ask\{/ { sub(/^:+/, ":::"); asking = 1 }
-    asking && /^::::+$/ { $0 = ":::"; asking = 0 }
-    /^:+ask\{/ { gsub(/ shaped="[^"]*"/, "") }
+    !ask_fence && /^:+ask\{#/ {
+      match($0, /^:+/); ask_fence = substr($0, 1, RLENGTH)
+      id = $0; sub(/^:+ask\{#/, "", id); sub(/[ }].*$/, "", id)
+      ask_answered = index(answered, " " id " ") > 0
+      sub(/^:+/, ":::"); gsub(/ shaped="[^"]*"/, ""); print; next
+    }
+    ask_fence && $0 == ask_fence { ask_fence = ""; ask_answered = 0; print ":::"; next }
     { print }
   ' "$1" | cat -s | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
 }
+# shaped_pointers FILE: each shaped pointer each ask block of FILE holds, `<block id> <pointer>` one
+# a line, sorted, read off the block's opening line (attribute_of).
+shaped_pointers() {
+  local opening id shaped pointer
+  local -a pointers
+  while IFS= read -r opening; do
+    [[ "$opening" =~ ^:+ask\{#([^\ }]+) ]] || continue
+    id="${BASH_REMATCH[1]}"
+    shaped="$(attribute_of "$opening" shaped)"
+    shaped="${shaped#shaped=}"
+    shaped="${shaped#\"}"
+    read -ra pointers <<<"${shaped%\"}"
+    for pointer in "${pointers[@]}"; do
+      printf '%s %s\n' "$id" "$pointer"
+    done
+  done < <(grep -E '^:+ask\{' "$1" || true) | LC_ALL=C sort -u
+}
+# shaped_given SPEC ISSUE: every shaped pointer an ask block of the restore's version of SPEC holds,
+# the same block of the converted version ($work/converted.md) holds too, and each pointer that block
+# holds beyond them is a link of a captured section of ISSUE that names the block's ask - the
+# capture's ask column, the one answered ask a section cites or holds - as R9 gives such a section's
+# links to its ask: `dispatch://<document>#b-<block>` of each link's node. read_rules holds the
+# store's side of the same rule: each such section's links are among its ask's shaped tuples. The
+# pointers added, `<block id> <pointer>` one a line, go to $work/shaped.added.
+shaped_given() {
+  local spec="$1" issue="$2" heading ask
+  shaped_pointers "$work/restored.$spec.md" >"$work/shaped.restored"
+  shaped_pointers "$work/converted.md" >"$work/shaped.converted"
+  LC_ALL=C comm -23 "$work/shaped.restored" "$work/shaped.converted" >"$work/shaped.taken"
+  [[ ! -s "$work/shaped.taken" ]] ||
+    fail approval "the conversion's version of $spec keeps every shaped pointer the restore's version held" \
+      "taken out: $(tr '\n' ';' <"$work/shaped.taken")"
+  : >"$work/shaped.allowed"
+  while IFS=$'\t' read -r _ heading ask _; do
+    [[ "$ask" != - ]] || continue
+    query approval "read the block of ask $ask in $spec" \
+      "select coalesce((select block_id from asks where id::text = '$ask' and block_artifact_id = '$spec'), '')"
+    [[ -n "$answer" ]] || continue
+    jq -r --arg h "$heading" --arg b "$answer" \
+      '.decisions[] | select(.block_id == $h) | .links[].to.id | $b + " dispatch://" + sub("#"; "#b-")' \
+      "$work/capture/decisions.$issue.json" >>"$work/shaped.allowed"
+  done <"$work/capture/sections.$issue"
+  LC_ALL=C sort -u -o "$work/shaped.allowed" "$work/shaped.allowed"
+  LC_ALL=C comm -13 "$work/shaped.restored" "$work/shaped.converted" >"$work/shaped.added"
+  LC_ALL=C comm -23 "$work/shaped.added" "$work/shaped.allowed" >"$work/shaped.unlinked"
+  [[ ! -s "$work/shaped.unlinked" ]] ||
+    fail approval "each shaped pointer the conversion gave an ask block of $spec is a link of a captured section naming that block's ask" \
+      "no such link: $(tr '\n' ';' <"$work/shaped.unlinked"); the links: $(tr '\n' ';' <"$work/shaped.allowed")"
+}
+declare -A issue_of_spec=(["$spec_a"]="$issue_a" ["$spec_b"]="$issue_b")
 for spec in "$spec_a" "$spec_b"; do
   send agent GET "/api/v1/artifacts/$spec"
   want_status 200 approval "read the spec $spec"
@@ -1266,11 +1347,17 @@ for spec in "$spec_a" "$spec_b"; do
   send agent GET "/api/v1/artifacts/$spec/versions/$latest"
   want_status 200 approval "read version $latest of $spec"
   jq -j '.markdown' "$work/body" >"$work/converted.md"
-  conversion_only "$work/converted.md" >"$work/converted.left"
-  conversion_only "$work/restored.$spec.md" >"$work/restored.left"
+  # The block ids of the spec's answered asks, by their asks rows.
+  query approval "read the answered asks of $spec" \
+    "select coalesce(string_agg(block_id, ' ' order by block_id), '') from asks where block_artifact_id = '$spec' and block_id is not null and state = 'answered'"
+  answered_blocks="$answer"
+  conversion_only "$work/converted.md" "$answered_blocks" >"$work/converted.left"
+  conversion_only "$work/restored.$spec.md" "$answered_blocks" >"$work/restored.left"
   diff "$work/restored.left" "$work/converted.left" >"$work/diff" ||
-    fail approval "version $latest of $spec changes only the decision blocks, the readings and the shaped pointers over version ${restored_version[$spec]}" "$(<"$work/diff")"
-  pass approval "$spec reads approved at version $latest, whose only change over version ${restored_version[$spec]} is the decision blocks, the readings inside answered asks and the shaped pointers"
+    fail approval "version $latest of $spec changes nothing over version ${restored_version[$spec]} but decision blocks of its ## Decisions part, reading blocks inside its answered asks' blocks and shaped pointers" "$(<"$work/diff")"
+  shaped_given "$spec" "${issue_of_spec[$spec]}"
+  printf 'approval: the shaped pointers version %s of %s adds: %s\n' "$latest" "$spec" "$(tr '\n' ';' <"$work/shaped.added")"
+  pass approval "$spec reads approved at version $latest, as the server's approval read answers; this run's comparison of its markdown with version ${restored_version[$spec]} finds no change but decision blocks of its ## Decisions part, reading blocks inside the blocks of its answered asks ($answered_blocks) and $(wc -l <"$work/shaped.added") shaped pointers added to ask blocks, each a link of a captured section naming that block's ask, none taken out"
 done
 
 # ---------------------------------------------------------------------------------------------
@@ -1530,7 +1617,7 @@ pass owed "/healthz answers decisions_step_owed 0, $(($(date +%s) - started)) s 
 # issue C among them - holds the form R10 keeps, as those of the versions the conversion by hand
 # wrote do.
 wait_settled boot
-step_events boot "$before_boot" "" all
+step_events boot "$before_boot" ""
 cp "$work/step-events" "$work/boot.versions"
 [[ -s "$work/boot.versions" ]] ||
   fail boot "the step wrote a version at boot" "no artifact.version event in its name after event $before_boot"

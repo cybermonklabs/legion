@@ -972,9 +972,11 @@ type Issue struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 	ClosedAt          *time.Time `json:"closed_at"`
 	PrimaryArtifactID string     `json:"primary_artifact_id"`
-	// VerificationArtifactID and PlanArtifactID are the issue's documents by role
-	// (Artifact.Role): the one created as verification.md and the one created as plan.md, each ""
-	// when the issue holds none. They are resolved on read, as PrimaryArtifactID is.
+	// VerificationArtifactID and PlanArtifactID are kept for clients of the previous release.
+	// Each names its query node's artifact, or its role document on an unconverted issue, and
+	// is empty when the issue has neither. New callers use the issue read's queries instead.
+	//
+	// kept for one release: role-artifact-ids
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
 	// DecisionsArtifactID is the id of the issue's decisions document while it stands
@@ -1369,6 +1371,11 @@ type WriteSuggestion struct {
 // questions of the other projects that stand closest to it in meaning. Each item is one such
 // answered question, and its Owner.Project names the project that holds it. Every other write
 // leaves it empty.
+//
+// Neighbours and Neighbourhood ride an issue create's check alone, beside the text search and not
+// in its place (R24 of the issue-tree spec): Neighbours is the closest existing issues of the new
+// issue's project by its graph neighbourhood, at most five, and Neighbourhood says how that read
+// went. Every other write, and a server built before the read, leaves both absent.
 type Suggestions struct {
 	Outcome         string               `json:"outcome"`
 	Search          string               `json:"search,omitempty"`
@@ -1380,6 +1387,29 @@ type Suggestions struct {
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`
 	NearCopyCheck   string               `json:"near_copy_check,omitempty"`
+	Neighbours      []IssueNeighbour     `json:"neighbours,omitempty"`
+	Neighbourhood   *NeighbourhoodCheck  `json:"neighbourhood,omitempty"`
+}
+
+// IssueNeighbour is one issue the graph neighbourhood read names beside a newly created issue
+// (refs.IssueNeighbours): an issue of the same project that shares at least one graph target with
+// it, by its key, status and title, with Shares, the dispatch:// reference of each target the two
+// share, and Href, the issue's link.
+type IssueNeighbour struct {
+	Key    string   `json:"key"`
+	Status string   `json:"status"`
+	Title  string   `json:"title"`
+	Shares []string `json:"shares"`
+	Href   string   `json:"href"`
+}
+
+// NeighbourhoodCheck is how the graph neighbourhood read of a new issue went: Outcome is "made"
+// where it named at least one neighbour (Suggestions.Neighbours), "none" where it found no issue
+// that shares a target, and "not_made" where it did not answer, Missing then saying why, as
+// Suggestions.Missing says it of the related search.
+type NeighbourhoodCheck struct {
+	Outcome string `json:"outcome" enum:"made,none,not_made"`
+	Missing string `json:"missing,omitempty"`
 }
 
 // RelatedChecksReport is GET /api/v1/related-checks: how the related-item checks recorded in
@@ -1740,8 +1770,14 @@ type ArtifactReview struct {
 	CreatedAt           time.Time `json:"created_at"`
 	ContentSHA256       *string   `json:"content_sha256"`
 	ContentSHA256Source *string   `json:"content_sha256_source"`
-	CarriedFromVersion  *int      `json:"carried_from_version,omitempty"`
-	EventSeq            *int64    `json:"-"`
+	// CarriedFromVersion is the version whose approval Dispatch carried forward to this review
+	// (artifact_review_carries, else the version its carried reason names), and null on a review a
+	// person or a plan review gave itself: every answer of this build writes the member, null
+	// included, so a reader never takes its absence for a person's own act. Under the rolling-deploy
+	// rule (api/openapi.go's openAPIOlderServersOmit), a server of the release before answers the
+	// review without it during a roll, so OpenAPI marks it optional (`required:"false"`).
+	CarriedFromVersion *int   `json:"carried_from_version" required:"false"`
+	EventSeq           *int64 `json:"-"`
 }
 
 // ArtifactApproval is a document's approval state as of its latest version:
@@ -1757,7 +1793,13 @@ type ArtifactReview struct {
 // a rollout or a rollback, so a missing Seq does not prove an older review: the
 // owner's row lock orders its events as they commit, so Seq places the review
 // among them where At, its transaction's start, cannot. Seq orders; Version, not
-// Seq, says which version the review covers.
+// Seq, says which version the review covers. CarriedFromVersion is the latest
+// review's (ArtifactReview.CarriedFromVersion): the version whose approval Dispatch
+// carried forward to it, and null where that review is a person's or a plan review's
+// own act or where no review stands. Every answer of this build writes it, null
+// included; under the rolling-deploy rule (api/openapi.go's openAPIOlderServersOmit),
+// a server of the release before answers without it during a roll, so OpenAPI marks it
+// optional (`required:"false"`).
 type ArtifactApproval struct {
 	State               string  `json:"state"`
 	LatestVersion       int     `json:"latest_version"`
@@ -1769,7 +1811,7 @@ type ArtifactApproval struct {
 	AskID               *string `json:"ask_id,omitempty"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
-	CarriedFromVersion  *int    `json:"carried_from_version,omitempty"`
+	CarriedFromVersion  *int    `json:"carried_from_version" required:"false"`
 	RequestedBy         *Actor  `json:"requested_by,omitempty"`
 	WaitingOn           string  `json:"waiting_on,omitempty"`
 	// Kind is the latest review's Kind, so a reader can say an approval is a plan review's
@@ -1785,7 +1827,11 @@ type ArtifactApproval struct {
 // ArtifactReviewEventPayload is the payload of artifact.approved and
 // artifact.changes_requested: the review pinned to its version, and the approval
 // ask it answered (nil when given from the document header with no request open at
-// that version).
+// that version). CarriedFromVersion is the review's (ArtifactReview.CarriedFromVersion),
+// written on every payload of this build: the version a carry came from, and null for a
+// person's or a plan review's own act. Under the rolling-deploy rule (api/openapi.go's
+// openAPIOlderServersOmit), a payload the release before wrote holds none, so the schema
+// marks it optional (`required:"false"`).
 type ArtifactReviewEventPayload struct {
 	ArtifactID          string  `json:"artifact_id"`
 	Name                string  `json:"name"`
@@ -1796,7 +1842,7 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
-	CarriedFromVersion  *int    `json:"carried_from_version,omitempty"`
+	CarriedFromVersion  *int    `json:"carried_from_version" required:"false"`
 }
 
 // DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
@@ -2125,8 +2171,9 @@ type OwedDocument struct {
 // Coverage is `gap` for a requirement no check serves, `unproven` for one no check of which holds
 // a passing result against the words it holds now, `proved` for one a check of which does,
 // `proposed` for a requirement still a question, which raises no gap, and `closed` for one whose
-// node or a node above it is overtaken, which lists nothing; Proof is each check that serves it,
-// once, with where its newest result that stands leaves it.
+// node or a node above it is overtaken, which lists no gap and no proof row and still counts the
+// checks and plan tasks that serve it; Proof is each check that serves a requirement that is not
+// closed, once, with where its newest result that stands leaves it.
 type RequirementCoverage struct {
 	BlockID   string             `json:"block_id"`
 	Ref       string             `json:"ref"`
@@ -2196,6 +2243,17 @@ type ArtifactHumanEditedEventPayload struct {
 	Editors       []string `json:"editors"`
 	Diff          string   `json:"diff"`
 	DiffTruncated bool     `json:"diff_truncated"`
+}
+
+// ArtifactIndexedEventPayload is the payload of artifact.indexed, which the block-index
+// reconciliation appends on an issue once a pass of it has committed the block index of documents
+// of that issue that owed one (docs' queueIndexedEvent): ArtifactIDs names each document whose
+// owed index the pass cleared, the issue's tree artifact among them where it owed one, sorted. Each
+// read that answers otherwise while a document owes its index - the coverage read's
+// owed_documents and gaps, the tree read, the decisions read, a Verification document's indexed
+// checks and a document's blocks - answers from the index from then on.
+type ArtifactIndexedEventPayload struct {
+	ArtifactIDs []string `json:"artifact_ids"`
 }
 
 // ArtifactBlock is an addressable document block and its byte range in canonical markdown. Table

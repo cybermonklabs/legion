@@ -40,6 +40,7 @@
 # /api/v1/issues/{key}/tree to routes_table.go. It reads the routes of routes_table.go at
 # BASELINE_SHA and in this checkout, and finds every route of the first in the second, GET
 # /api/v1/issues/{key}/decisions among them; a route missing at this head fails, naming it.
+# It searches Go source only: the Verification fixture quotes the names but implements neither lookup.
 #
 # Last it reads O's one dependency through GET /api/v1/issues/{key}, GET
 # /api/v1/issues/{key}/summary and GET /api/v1/issues/{key}/events, blocked_by beside needs in
@@ -479,14 +480,15 @@ for name in "${deleted_lookups[@]}"; do
   deletion=""
   while IFS= read -r commit; do
     [[ -n "$commit" ]] || continue
-    if git -C "$checkout" grep -qw "$name" "$commit^" -- packages/envoy && ! git -C "$checkout" grep -qw "$name" "$commit" -- packages/envoy; then
+    if git -C "$checkout" grep -qw "$name" "$commit^" -- 'packages/envoy/*.go' &&
+      ! git -C "$checkout" grep -qw "$name" "$commit" -- 'packages/envoy/*.go'; then
       deletion="$commit"
     fi
-  done < <(git -C "$checkout" log --reverse --format=%H -S"$name" origin/main..HEAD)
+  done < <(git -C "$checkout" log --reverse --format=%H -S"$name" origin/main..HEAD -- 'packages/envoy/*.go')
   [[ -n "$deletion" && -n "${position[$deletion]:-}" ]] ||
-    fail "$section" "a commit of origin/main..HEAD deletes $name" "git log -S$name finds no commit after which packages/envoy names it no more"
-  ! git -C "$checkout" grep -qw "$name" HEAD -- packages/envoy ||
-    fail "$section" "$name stays deleted at HEAD" "packages/envoy names it again at HEAD"
+    fail "$section" "a commit of origin/main..HEAD deletes $name" "git log -S$name finds no commit after which Go source names it no more"
+  ! git -C "$checkout" grep -qw "$name" HEAD -- 'packages/envoy/*.go' ||
+    fail "$section" "$name stays deleted at HEAD" "Go source names it again at HEAD"
   ((position[$deletion] > position[$route_commit])) ||
     fail "$section" "the commit deleting $name lands after the one adding $tree_route" \
       "$deletion is number $((position[$deletion] + 1)) and $route_commit number $((position[$route_commit] + 1)) of ${#landed[@]}"

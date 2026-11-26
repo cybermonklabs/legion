@@ -438,6 +438,7 @@ exec "${listen[@]}" env \
   "${parent_status_rule_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
+  DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \
   DISPATCH_TEST_MARK_WAIT="$mark_wait" \
   DISPATCH_TEST_ROSTER_UNCACHED=1 \

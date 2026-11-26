@@ -14,7 +14,7 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
 import {
   pageDecisionText,
@@ -76,7 +76,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useBlocksRunning, useTreeRead, viewQuery } from "../tree-read/tree-read";
-import { issueAskThreadsQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
+import { type NamesFailure, useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";

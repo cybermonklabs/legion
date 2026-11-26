@@ -2,7 +2,7 @@ import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 
 import type { Actor, DispatchEvent } from "../../api/types";
 import { queuedWait } from "../conversation/delivery";
-import { blockInvalidDescription } from "../issue/event-description";
+import { blockInvalidDescription, documentCount } from "../issue/event-description";
 import { textSourceOf } from "../refs/text-references";
 import { askQuestionProse, askResolvedParts, eventProse, type SentencePart } from "./SentenceParts";
 
@@ -125,10 +125,14 @@ function describe(
       return `renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
     case "artifact.removed":
       return `removed ${event.payload.artifact.name}`;
+    case "document.retired":
+      return `retired ${event.payload.name}`;
     case "artifact.version":
       return `saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":
       return `edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
+    case "artifact.indexed":
+      return `finished indexing ${documentCount(event.payload.artifact_ids.length)}`;
     case "comment.created":
       if (event.payload.ask_id !== null) {
         return event.payload.ask_question === undefined

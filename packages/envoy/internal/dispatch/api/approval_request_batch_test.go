@@ -133,15 +133,15 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  3. a batch of 2: the issue's spec and whether it has a plan, and whether the issue is a view on
-//     the spec of an issue above it (issueCoverage's readCoverageSpecAndView, docs.QueueViewOf);
-//  4. the room the spec is edited in and its stored state's stamp, one statement, to read its text
-//     at (docs.Text's documentReadRoom, through requirementBlocksIn);
-//  5. begin, that text read's read-only snapshot;
-//  6. the document's stored snapshot;
-//  7. the updates after it;
-//  8. commit, which ends the text read; this spec marks no requirement, so the coverage asks
-//     nothing further - no descendant walk and no count of what serves each requirement;
+//  3. refs.TurnJITOff (`set local jit = off`, issueCoverageOverTuplesAndOwedGaps);
+//  4. a batch of 2: the issue's spec and whether it has a plan, and the documents that owe their
+//     block index with their gap lines (queueOwedDocumentGaps);
+//  5. the head cut of the tuple log (docs.WalkIssueTree's refs.HeadCut);
+//  6. the issue's conversation items, of which there are none (refs.ConversationNodes);
+//  7. the recursive subtree walk under the issue (refs.TreeSubtrees);
+//  8. the issue's ancestor chain and view mark (docs.readViewChain); this spec marks no
+//     requirement, so readTreeRequirements returns without loading block nodes and the coverage
+//     asks nothing further - no descendant walk and no count of what serves each requirement;
 //  9. begin, the request's own transaction;
 //  10. the artifact row (loadArtifact);
 //  11. a batch of 3: that artifact's versions, its latest review and its open approval request
@@ -151,33 +151,41 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     transaction id, and the read is a statement of its own because a statement's snapshot is
 //     taken before it waits;
 //  13. the document's settled version number (settledVersionNumber);
-//  14. a batch of 3: the approval before the write - the latest review and the open request
-//     (attachApproval's queueApprovals) - and the transaction's now(), which dates the new ask's
-//     node and is the default its row's created_at takes (requestArtifactApproval);
+//  14. a batch of 4: the approval before the write - the latest review and the open request
+//     (attachApproval's queueApprovals) - the transaction's now(), which dates the new ask's node
+//     and is the default its row's created_at takes, and the head's cut of the tuple log, whose
+//     seq the new ask's node pins as the store revision the request was taken at
+//     (requestArtifactApproval, refs.QueueHeadCut);
 //  15. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
 //  16. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
 //     every read of that person shares), read over the owner before the ask's row is queued;
 //  17. the latest approved review the request carries (docs.LatestApprovedReview); the new ask's
-//     id is drawn in the process (openApprovalAsk) and its time was read in 14, so neither costs
-//     a round trip;
+//     id is drawn in the process (openApprovalAsk), its time and its store revision were read in
+//     14, and the ref_key that spells the version node its approves tuple names was read with the
+//     document's row in 10, so none of them costs a round trip;
 //  18. the question's references as they stand, which the replacement is planned against
 //     (queueNewAskReferences, through refs.PlanReplace);
 //  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  20. a batch of 21: the whole write phase, sent back to back - the ask's node, in its
+//  20. a batch of 24: the whole write phase, sent back to back - the ask's node, in its
 //     document's project, which costs no read of its own since the document was read with its
 //     project, and its author's (graphstore.AskFacts), in the four statements of the store's
 //     node write (graphstore.QueueNodes: the read of the supertags the nodes are typed by, the
 //     insert, the check that no node moves project, and the move), the ask row naming its node,
-//     its block state and the part rows of its question and options, the references and the row
-//     the ask owes the grammar's re-index queue, deleted with them (refs.Replacement.Queue), the
-//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the ask's
-//     authored_by and the base attributes the node write stated - its visibility, its state and
-//     its project - appended under that event (graphstore.QueueCaused), the author's follow, its
-//     follower row marked for the ask's node in one statement, and its followed_by stated under
-//     that ask.opened in the statement after it (asks.PlanFollowNewAsk, which reads nothing for an
-//     ask this request creates), and the approval as the request leaves it;
+//     the references and the row the ask owes the grammar's re-index queue, deleted with them
+//     (refs.Replacement.Queue), its block state, the lock of that row, the part rows of its
+//     question and options and their texts, the row it owes the forms index and its row of the
+//     Decisions page's queue, each settled in a statement of its own, the ask.opened event in four
+//     (the owner's lock, the issue's row, the append with its payload and the issue's last_seq, and
+//     its own id written into that payload), the reference stamps of the question and of its parts,
+//     the ask's authored_by, the base attributes the node write stated - its visibility, its state
+//     and its project - its store revision and its approves tuple, appended under that event
+//     (graphstore.QueueCaused), the head rows of the nodes the write names (graphstore.QueueHeads),
+//     the author's follow, its follower row marked for the ask's node in one statement, its
+//     followed_by stated under that ask.opened in the statement after it, and the head rows of the
+//     node the follow names (asks.PlanFollowNewAsk, which reads nothing for an ask this request
+//     creates);
 //  21. commit;
 //  22. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);

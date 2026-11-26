@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -37,10 +38,10 @@ import (
 // A node stands under key when the issue it is located by is key: the issue itself, a document
 // of the issue and each of its blocks, an ask, a comment or a message of the issue and each of
 // their blocks, and a lens, a finding, a risk or a constraint whose part_of walk ends at one of
-// those, as the registry's loaders answer IssueKey. An address that decodes to nothing, a node of
-// another issue or of none, and a node who may not see (the kind's predicate, which refs.Node
-// binds) all answer one 404 NOT_FOUND (nodeNotFound), the same words for each, so the answer says
-// nothing of whether such a node exists.
+// those, as the registry's loaders answer IssueKey. An issue node also stands in the tree of an
+// ancestor that reaches it through visible children (issueNodeBelow). An address that decodes to
+// nothing, a node that does not stand under key, and a node who may not see all answer the same
+// 404 NOT_FOUND (nodeNotFound), so the answer says nothing of whether such a node exists.
 func FindNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, id string) (model.GraphNode, error) {
 	kind, address, ok, err := resolvedNodeAddress(ctx, q, id)
 	if err != nil {
@@ -53,10 +54,42 @@ func FindNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, ke
 	if err != nil {
 		return model.GraphNode{}, err
 	}
-	if !found || node.IssueKey == nil || *node.IssueKey != key {
+	if !found || node.IssueKey == nil {
 		return model.GraphNode{}, nodeNotFound(key, id)
 	}
+	if *node.IssueKey != key {
+		if kind != graphstore.KindIssue {
+			return model.GraphNode{}, nodeNotFound(key, id)
+		}
+		below, err := issueNodeBelow(ctx, q, who, node.ID, key)
+		if err != nil {
+			return model.GraphNode{}, err
+		}
+		if !below {
+			return model.GraphNode{}, nodeNotFound(key, id)
+		}
+	}
 	return node, nil
+}
+
+// issueNodeBelow tests one branch of the tree read's IssueDescendants walk, from its named issue
+// up, without reading its siblings. A hidden issue cannot make a descendant reachable.
+func issueNodeBelow(ctx context.Context, q refs.Queryer, who model.Actor, child, key string) (bool, error) {
+	var below bool
+	err := q.QueryRow(ctx, `
+		with recursive chain (key, parent_key, depth) as (
+			select i.key, i.parent_key, 0 from issues i where i.key = $1
+			union all
+			select p.key, p.parent_key, c.depth + 1 from chain c
+			join issues p on p.key = c.parent_key
+			where c.depth < $3 and c.key <> $2 and `+refs.VisibleKind(graphstore.KindIssue, "p.key", "$4")+`
+		)
+		select exists (select 1 from chain where key = $2 and depth > 0)
+	`, child, key, refs.IssueDepthCap, refs.VisibilityArg(who)).Scan(&below)
+	if err != nil {
+		return false, fmt.Errorf("read whether issue %s stands under %s: %w", child, key, err)
+	}
+	return below, nil
 }
 
 // nodeNotFound is the one 404 NOT_FOUND of an address id that names no node the caller may see

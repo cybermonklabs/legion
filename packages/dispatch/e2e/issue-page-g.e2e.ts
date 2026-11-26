@@ -637,7 +637,7 @@ const HELD_FRAMES = 60;
 
 /** Waits out `HELD_FRAMES` frames, and fails unless the first row wholly in view that `jump`
  *  read stands within a pixel of where it stood, and unless it and row `crossing`, which the jump
- *  left across the view's top, are drawn whole: a row in view keeps its length (decision 261). */
+ *  left across the view's top, are drawn whole: a row in view keeps its length. */
 async function expectFirstHeld(
   page: Page,
   crossing: string,
@@ -681,16 +681,16 @@ async function middleRow(page: Page, rows: readonly string[], where: string): Pr
   return middle ?? "";
 }
 
-// Decisions 252 and 260: a long jump into the middle of the page - a fast drag of the scrollbar -
-// lands on rows no frame has laid out yet, and the first row wholly in view stays where it stood.
+// A long jump into the middle of the page - a fast drag of the scrollbar - lands on rows no
+// frame has laid out yet, and the first row wholly in view stays where it stood.
 // At each width the row jumps to 40 px above the foot of the words of the row that holds the
 // page's middle: that row crosses the view's top, and the one under it is the first row wholly
 // in view. Then it jumps to 40 px above the foot of the words of the planner's row right above
 // the reader's own run of long rows: the planner's row crosses the view's top, and the reader's
 // rows alone stand in view under it. After each jump the first row wholly in view stands where
-// it stood, within a pixel, for a second of frames, and both rows are drawn whole (decision
-// 261). It carries `@phone` because the phone project lays the page out at three device pixels
-// to the CSS pixel, where the scroll that holds the row snaps to a device pixel.
+// it stood, within a pixel, for a second of frames, and both rows are drawn whole. It carries
+// `@phone` because the phone project lays the page out at three device pixels to the CSS pixel,
+// where the scroll that holds the row snaps to a device pixel.
 // SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, and two jumps into them at each,
 // each held for a second of frames.
 test("a long jump into the middle of the page keeps the first row wholly in view where it stood @phone", async ({
@@ -736,8 +736,8 @@ interface FirstViewFrame {
   readonly view: number;
 }
 
-// Decision 263, as R11 leaves it: a row that stands in view as the page opens is drawn whole on
-// the first frame it is drawn in, and never changes its height in view after. At each width a
+// R11: a row that stands in view as the page opens is drawn whole on the first frame it is
+// drawn in, and never changes its height in view after. At each width a
 // script that runs before the page's own reads the planner's long statement, the body's first
 // row, at each animation frame from the first one it is drawn in: it draws no control for more
 // words on that first frame, and its height is the same 60 frames later. The row is drawn from

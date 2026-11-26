@@ -19,6 +19,9 @@
 // fails when the after median is above the before median times 1.10 plus 0.505 ms rather than
 // when it is not below it: it is the pair of a statement whose change keys its reads rather than
 // making it faster, where a slower after text is a regression and a faster one is not required.
+// PairMovedRead holds a moved read to the root spec's R22 rule: the after median is at most two
+// times the before median, or at most 1 ms more than the before median where the after median is
+// under 2 ms, and logs both medians and their ratio on one line.
 //
 // A before text is the text the caller measures against, which each package holds as its
 // equality oracle and reads from there rather than copying it again. For every pair of api and
@@ -79,6 +82,12 @@ const (
 	// --scale 1 with jit off, the block loader at 256 ids reading 3.871 against 3.366 ms. The
 	// tenth withinBound adds besides covers the larger statements, whose spread grows with them.
 	withinSpread = 505 * time.Microsecond
+
+	// movedReadFastCeiling and movedReadFastSlack are the root spec's R22 short-read clause for a
+	// moved read (PairMovedRead): where the after median is under 2 ms, it may be at most 1 ms
+	// above the before median; otherwise it may be at most 2 times the before median.
+	movedReadFastCeiling = 2 * time.Millisecond
+	movedReadFastSlack   = time.Millisecond
 )
 
 // Statement is one statement text with the arguments one call binds to it. The two sides of a
@@ -190,6 +199,15 @@ func (r *Runner) PairWithin(t *testing.T, name string, before, after []Statement
 	r.pair(t, name, before, after, requireWithin)
 }
 
+// PairMovedRead measures a statement's before text against its after text under the root spec's
+// R22 rule for a read that moves (dispatch://INFRA-1098/spec#b-r-no-regression): the after median
+// is at most 2 times the before median, or, where the after median is under 2 ms, at most 1 ms
+// more than the before median. It logs both medians and their ratio on one line of its own.
+func (r *Runner) PairMovedRead(t *testing.T, name string, before, after Statement) {
+	t.Helper()
+	r.pair(t, name, []Statement{before}, []Statement{after}, requireMovedRead)
+}
+
 // rule is what a pair holds its after median to, against its before median, failing t naming
 // the pair when the after median breaks it.
 type rule func(t *testing.T, name string, before, after time.Duration)
@@ -226,6 +244,36 @@ func requireWithin(t *testing.T, name string, before, after time.Duration) {
 // median: before times 1.10, plus withinSpread.
 func withinBound(before time.Duration) time.Duration {
 	return before + before/10 + withinSpread
+}
+
+// requireMovedRead is the rule of PairMovedRead (root R22): the after median is at most two times
+// the before median, or at most movedReadFastSlack (1 ms) above the before median where the after
+// median is under movedReadFastCeiling (2 ms). It always logs both medians and their ratio.
+func requireMovedRead(t *testing.T, name string, before, after time.Duration) {
+	t.Helper()
+	ratio := movedReadRatio(before, after)
+	t.Logf("%s: moved read before=%v after=%v ratio=%.2fx", name, before, after, ratio)
+	if !movedReadWithinBound(before, after) {
+		t.Errorf("%s: the after text's median is %v (%.2fx the before text's %v), breaking root R22 (at most 2x, or at most +%v under %v); %s",
+			name, after, ratio, before, movedReadFastSlack, movedReadFastCeiling, plansLogged(name))
+	}
+}
+
+// movedReadWithinBound reports whether after satisfies root R22 against before: at most 2 times
+// before, or at most movedReadFastSlack more than before where after is under movedReadFastCeiling.
+func movedReadWithinBound(before, after time.Duration) bool {
+	if after <= 2*before {
+		return true
+	}
+	return after < movedReadFastCeiling && after <= before+movedReadFastSlack
+}
+
+// movedReadRatio is after / before as a float64, or 0 where before is non-positive.
+func movedReadRatio(before, after time.Duration) float64 {
+	if before <= 0 {
+		return 0
+	}
+	return float64(after) / float64(before)
 }
 
 // plansLogged points the reader of a failed pair at the two lines its plans were logged in, by
