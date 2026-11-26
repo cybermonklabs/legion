@@ -112,7 +112,10 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 				c.UpdateRound = supervise.PodRound("6f1c0c2a-1d1e-4a44-9d2c-0b7c1f3a9e55")
 			}},
 		{issue: cfg.Project + "-11", role: claim.RoleImplementer, state: supervise.StateIdle, counted: true,
-			shape: func(c *supervise.Claim) { c.UpdateRound = supervise.PodRound("0d8e2b71-5c3a-4f19-b6e4-7a1c9d2f3e80") }},
+			shape: func(c *supervise.Claim) {
+				c.PluginContract = oldContract()
+				c.UpdateRound = supervise.PodRound("0d8e2b71-5c3a-4f19-b6e4-7a1c9d2f3e80")
+			}},
 		{issue: cfg.Project + "-9", role: claim.RoleReviewer, state: supervise.StateIdle},
 		{issue: cfg.Project + "-10", role: claim.RoleImplementer, state: supervise.StateIdle,
 			shape: func(c *supervise.Claim) { c.Session = "" }},

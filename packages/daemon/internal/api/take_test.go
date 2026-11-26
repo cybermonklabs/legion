@@ -287,9 +287,9 @@ func TestTakeRouteAnswersAStaleClaimRefusedStalePluginRatherThan409(t *testing.T
 // stale-plugin relaunch and run again by the next process. The claim here is the shape every
 // contract raise leaves: idle, its take's turn ended on the worker stream before the report
 // arrived, and its plugin on a contract other than the daemon's that names the number (the
-// contract after this one stands in for the take contract once the next raise lands, since this
-// daemon's own contract is the take contract). The report naming the number finishes the task,
-// while the claim's ready, which the stale refusal covers, is still refused.
+// contract after this daemon's own is stale and at or above TaskTakeContract() whatever entry a
+// later build adds). The report naming the number finishes the task, while the claim's ready,
+// which the stale refusal covers, is still refused.
 func TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask(t *testing.T) {
 	h := newHarness(t)
 	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
