@@ -10,36 +10,42 @@
  *  arguments; `gcloud`, which answers `logging read` with the row's lines and records its
  *  arguments; and `date`, which answers `date -u +%s` with the row's own now and records its
  *  arguments. So every time a row reads is the row's own, and a row holds the exact line the
- *  script prints. DISPATCH_URL names a host no row reaches.
+ *  script prints. DISPATCH_URL names a host no row reaches. What this file shares with
+ *  `priority-list-production.test.ts`, the stand-in `gh` among it, is
+ *  `production-look-fixture.ts`'s.
  *
  *  A row of the negative control (WINDOW_START) has a `curl` and a `gh` that fail and are
  *  recorded where they run, so the row holds that the look tested no commit of the fleet.
  */
 
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
-import { masked, rowLimit, runBounded } from "./bounded-subprocess";
-
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-
-/** MERGE_SHA, and the commit production's fleet serves in every row that names none of its own. */
-const mergeSha = "4f1c2b9e8d7a6c5b4a39281706f5e4d3c2b1a090";
-const fleetSha = "9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3";
-/** DISPATCH_URL in every row: a host no row reaches. */
-const dispatchUrl = "https://dispatch.internal.example";
-/** The arguments of `gh` for GitHub's compare of MERGE_SHA with `fleetSha`. */
-const fleetCompare = `api repos/cybermonklabs/legion/compare/${mergeSha}...${fleetSha} --jq .status`;
-
-/** The inputs every look requires. The logging project is made up. */
-const required: Readonly<Record<string, string>> = {
-  DISPATCH_URL: dispatchUrl,
-  MERGE_SHA: mergeSha,
-  LOGGING_PROJECT: "example-logging-project",
-};
+import { rowLimit, runBounded } from "./bounded-subprocess";
+import {
+  accessLogRead,
+  curlArguments,
+  dispatchPackage,
+  dispatchUrl,
+  distinct,
+  fleetCompare,
+  fleetSha,
+  gcloudCalls,
+  gcloudRecord,
+  gh,
+  healthz,
+  lookEnv,
+  mergeSha,
+  type Printed,
+  printed,
+  recorded,
+  requestLine,
+  requiredInputs,
+  said,
+  standInBin,
+  times,
+} from "./production-look-fixture";
 
 /** The host's clock in every row that names none of its own. */
 const now = "2026-11-25T12:00:00Z";
@@ -66,24 +72,11 @@ interface Production {
 /** Writes the four stand-ins into `dir`/bin and the log into `dir`/log. What they record goes
  *  beside them in `dir`. */
 function standIns(dir: string, production: Production): string {
-  const bin = join(dir, "bin");
-  const fleet = production.fleetCommit === undefined ? fleetSha : production.fleetCommit;
-  const healthz = JSON.stringify({ ok: true, commit: fleet, fleet_commit: fleet });
   const refuse = production.testsNoCommit
     ? ['echo "$0: this look was to test no commit of the fleet" >&2', "exit 7"]
     : [];
   const curl = [
-    "#!/bin/sh",
-    "out='' url=''",
-    'while [ "$#" -gt 0 ]; do',
-    "  case $1 in",
-    "    -o) out=$2; shift ;;",
-    "    -w | --max-time) shift ;;",
-    "    -*) ;;",
-    "    *) url=$1 ;;",
-    "  esac",
-    "  shift",
-    "done",
+    ...curlArguments,
     `printf '%s\\n' "$url" >>'${join(dir, "curl-calls")}'`,
     ...refuse,
     ...(production.healthzDown
@@ -94,23 +87,14 @@ function standIns(dir: string, production: Production): string {
         ]
       : []),
     "case $url in",
-    `  */healthz) printf '%s' '${healthz}' >"$out"; printf '200' ;;`,
+    `  */healthz) printf '%s' '${healthz(production.fleetCommit)}' >"$out"; printf '200' ;;`,
     `  *) echo "curl: no answer for $url" >&2; exit 6 ;;`,
     "esac",
     "",
   ].join("\n");
-  const gh = [
-    "#!/bin/sh",
-    `printf '%s\\n' "$*" >>'${join(dir, "gh-calls")}'`,
-    ...refuse,
-    production.compare === "unanswered"
-      ? "echo 'HTTP 502: Bad Gateway (https://api.github.com/repos/cybermonklabs/legion/compare)' >&2; exit 1"
-      : `echo '${production.compare ?? "ahead"}'`,
-    "",
-  ].join("\n");
   const gcloud = [
     "#!/usr/bin/env bash",
-    `{ printf 'call\\0'; printf '%s\\0' "$@"; } >>'${join(dir, "gcloud-calls")}'`,
+    gcloudRecord(dir),
     ...(production.logRefused
       ? [
           "echo 'ERROR: (gcloud.logging.read) PERMISSION_DENIED: Permission denied for all log views.' >&2",
@@ -128,38 +112,16 @@ function standIns(dir: string, production: Production): string {
     `echo ${epoch}`,
     "",
   ].join("\n");
-  mkdirSync(bin, { recursive: true });
-  for (const [name, text] of Object.entries({ curl, gh, gcloud, date })) {
-    writeFileSync(join(bin, name), text, { mode: 0o755 });
-  }
-  writeFileSync(join(dir, "log"), (production.log ?? []).map((line) => `${line}\n`).join(""));
-  return bin;
+  return standInBin(
+    dir,
+    { curl, gh: gh(dir, production.compare, refuse), gcloud, date },
+    production.log
+  );
 }
 
-/** The text of a file of `dir`, empty where the file is missing. Any other failure to read it
- *  throws. */
-function recordedText(dir: string, name: string): string {
-  try {
-    return readFileSync(join(dir, name), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
-}
-
-/** The lines a file of `dir` holds, none where the file is missing. */
-function recorded(dir: string, name: string): string[] {
-  return recordedText(dir, name).split("\n").slice(0, -1);
-}
-
-/** What one look did: its exit code and output, the lines of its stdout but the empty ones, and
- *  what the stand-ins recorded: each URL `curl` was asked for, and the arguments of each `gh`,
- *  `gcloud` and `date` run. */
-interface Look {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly lines: readonly string[];
+/** What one look did: what it printed, and what the stand-ins recorded: each URL `curl` was asked
+ *  for, and the arguments of each `gh`, `gcloud` and `date` run. */
+interface Look extends Printed {
   readonly urls: readonly string[];
   readonly gh: readonly string[];
   readonly gcloud: readonly (readonly string[])[];
@@ -168,7 +130,7 @@ interface Look {
 
 /** One look: the script run from the package root with the stand-ins of `production` first on
  *  PATH, the required inputs with `inputs` over them (an undefined one taken away), and `label` as
- *  DISPATCH_E2E_CASE, which the script never reads and which tells the cost lines apart. */
+ *  DISPATCH_E2E_CASE. */
 async function look(
   label: string,
   production: Production,
@@ -176,40 +138,20 @@ async function look(
 ): Promise<Look> {
   const dir = directories();
   const bin = standIns(dir, production);
-  const env: Record<string, string> = {
-    DISPATCH_E2E_CASE: label,
-    HOME: process.env.HOME ?? "",
-    PATH: `${bin}:${process.env.PATH ?? ""}`,
-    ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
-  };
-  for (const [name, value] of Object.entries({ ...required, ...inputs })) {
-    if (value !== undefined) env[name] = value;
-  }
   const run = await runBounded({
     argv: ["bash", "e2e/acceptance/priorities-production.sh"],
     bound: "short",
     cwd: dispatchPackage,
-    env,
+    env: lookEnv(label, bin, { ...requiredInputs, ...inputs }),
     from: import.meta.url,
   });
   return {
-    code: run.code,
-    stdout: run.stdout,
-    stderr: run.stderr,
-    lines: run.stdout.split("\n").filter((line) => line !== ""),
+    ...printed(run),
     urls: recorded(dir, "curl-calls"),
     gh: recorded(dir, "gh-calls"),
-    gcloud: recordedText(dir, "gcloud-calls")
-      .split("call\0")
-      .slice(1)
-      .map((call) => call.split("\0").slice(0, -1)),
+    gcloud: gcloudCalls(dir),
     date: recorded(dir, "date-calls"),
   };
-}
-
-/** What a row's failure says of a look: its exit code and all it printed. */
-function said({ code, stdout, stderr }: Look): string {
-  return ` The script exited ${code}. Its stdout read:\n${stdout || "(nothing)"}\nIts stderr read:\n${masked(stderr) || "(nothing)"}`;
 }
 
 /** How many programs past the host a look ran: curl, gh and gcloud. */
@@ -217,9 +159,8 @@ function reads(run: Look): number {
   return run.urls.length + run.gh.length + run.gcloud.length;
 }
 
-/** One access log line as Dispatch's server writes it through slog's text handler (the example of
- *  "Access log" in `packages/envoy/cmd/dispatch/README.md`), for a read of the priorities that
- *  took `elapsed` ms and sent `bytes`. */
+/** One access log line (`requestLine`) for a read of the priorities that took `elapsed` ms and
+ *  sent `bytes`. */
 function accessLine(
   elapsed: number,
   bytes: number,
@@ -230,7 +171,17 @@ function accessLine(
     agent = '"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"',
   }: { status?: number; method?: string; route?: string; agent?: string } = {}
 ): string {
-  return `time=2026-11-25T09:00:00.000Z level=INFO msg="dispatch: request" method=${method} route=${route} path=/api/v1/priorities caller_kind=user caller=someone@example.com address=203.0.113.9 peer=10.8.0.12 user_agent=${agent} status=${status} elapsed_ms=${elapsed} bytes=${bytes}`;
+  return requestLine({
+    method,
+    route,
+    path: "/api/v1/priorities",
+    callerKind: "user",
+    caller: "someone@example.com",
+    agent,
+    status,
+    elapsed,
+    bytes,
+  });
 }
 
 /** The bytes of a full read and of a summary, as production's lines carry them. */
@@ -244,14 +195,6 @@ function fullLines(elapsed: readonly number[], bytes = fullBytes): string[] {
 function summaryLines(elapsed: readonly number[], bytes = summaryBytes): string[] {
   return elapsed.map((ms) => accessLine(ms, bytes));
 }
-
-/** `count` of `value`. */
-function times<T>(count: number, value: T): T[] {
-  return Array.from({ length: count }, () => value);
-}
-
-/** 200 distinct times from 200 down to 1 ms: their p90, the 180th in ascending order, is 180. */
-const distinct = Array.from({ length: 200 }, (_, index) => 200 - index);
 
 /** Lines the gcloud filter may hand back that are no GET of the route answered 200. Each took
  *  9 s, so counting any of them in either form changes a verdict. The first four are lines of the
@@ -283,21 +226,11 @@ function verdict(run: Look): string[] {
 
 /** The `gcloud` arguments of a look at the three hours from `start` to `end`. */
 function logRead(start: string, end: string): string[] {
-  return [
-    "logging",
-    "read",
-    [
-      'resource.type="k8s_container"',
-      'resource.labels.namespace_name="dispatch"',
-      'textPayload:"msg=\\"dispatch: request\\""',
-      'textPayload:"route=/api/v1/priorities "',
-      `timestamp>="${start}"`,
-      `timestamp<"${end}"`,
-    ].join(" AND "),
-    "--project",
-    "example-logging-project",
-    "--format=value(textPayload)",
-  ];
+  return accessLogRead(
+    'textPayload:"route=/api/v1/priorities "',
+    `timestamp>="${start}"`,
+    `timestamp<"${end}"`
+  );
 }
 
 /** FLEET_SINCE of a look whose three hours have passed: four hours before `now`. */

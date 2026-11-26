@@ -31,7 +31,6 @@
 # the merge or serves no one commit, a compare GitHub does not answer, three hours still to come,
 # or a form with fewer than 200 reads). Exit 1 comes before exit 3.
 
-# shellcheck disable=SC2016 # the single-quoted jq filters name jq variables, not shell ones
 set -euo pipefail
 set +x
 
@@ -50,12 +49,7 @@ USAGE
 require_env DISPATCH_URL MERGE_SHA LOGGING_PROJECT
 require_commands curl date gcloud gh jq sort
 
-# cannot_measure WHY: the look cannot measure (exit 2).
-cannot_measure() {
-  printf '%s\n' "$1" >&2
-  exit 2
-}
-
+# shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 readonly merge="$MERGE_SHA"
 [[ "$merge" =~ ^[0-9a-f]{40}$ ]] || cannot_measure "MERGE_SHA is $merge, not a commit's 40 hex digits"
@@ -66,7 +60,6 @@ readonly route=/api/v1/priorities
 readonly forms=(full summary)
 declare -rA title=([full]='the full read' [summary]='the summary')
 readonly summary_below=2048 bound_ms=200 reads_wanted=200 window_s=10800 max_time_s=60
-readonly time_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
 work_dir
 trap 'rm -rf "$work"' EXIT
@@ -77,24 +70,6 @@ now() {
   seconds="$(date -u +%s)"
   [[ "$seconds" =~ ^[0-9]+$ ]] || cannot_measure "date -u +%s answered $seconds, not a count of seconds"
   printf '%s' "$seconds"
-}
-# stamp SECONDS: the time SECONDS after the epoch, as this script prints a time.
-stamp() { jq -rn --argjson s "$1" '$s | todateiso8601'; }
-# epoch NAME: sets `epoch_s` to the time the variable NAME holds, in seconds since the epoch. A
-# time this script does not print cannot be measured against.
-epoch() {
-  [[ "${!1}" =~ $time_pattern ]] ||
-    cannot_measure "$1 is ${!1}, not a time as this script prints one (YYYY-MM-DDTHH:MM:SSZ)"
-  epoch_s="$(jq -rn --arg t "${!1}" '$t | fromdateiso8601 | floor')"
-}
-
-# p90 FILE: the p90 of the numbers FILE holds, one a line: the value at rank ceil(0.9 n) of them in
-# ascending order.
-p90() {
-  local -a sorted
-  mapfile -t sorted < <(sort -n "$1")
-  local rank=$(((9 * ${#sorted[@]} + 9) / 10))
-  printf '%s' "${sorted[rank - 1]}"
 }
 
 if [[ -n "${WINDOW_START:-}" ]]; then
@@ -116,34 +91,14 @@ else
   # First: the commit every live server process serves, and whether it carries the merge.
   code="$(curl --compressed --max-time "$max_time_s" -sS -o "$work/healthz" -w '%{http_code}' \
     "$base/healthz" 2>"$work/curl" </dev/null)" || code=000
-  [[ "$code" =~ ^[0-9]{3}$ && "$code" != 000 ]] ||
-    cannot_measure "GET $base/healthz got no answer: $(head -c 300 "$work/curl" | tr '\n' ' ')"
-  fleet="$(jq -r '.fleet_commit // empty' "$work/healthz" 2>/dev/null)" || fleet=''
-  if [[ ! "$fleet" =~ ^[0-9a-f]{40}$ ]]; then
-    printf "production's fleet serves no one commit: GET /healthz answered HTTP %s with fleet_commit %s\n" \
-      "$code" "${fleet:-null}"
-    exit 3
-  fi
+  fleet_commit "$code"
   readonly fleet
-  if ! compared="$(gh api "repos/cybermonklabs/legion/compare/$merge...$fleet" --jq .status \
-    2>"$work/gh" </dev/null)"; then
-    printf 'GitHub did not answer whether %s carries %s: %s\n' "$fleet" "$merge" \
-      "$(head -c 300 "$work/gh" | tr '\n' ' ')"
+  carries "$fleet"
+  if [[ "$carried" == no ]]; then
+    printf "production's fleet serves %s, which does not carry %s (GitHub's compare: %s)\n" \
+      "$fleet" "$merge" "$compared"
     exit 3
   fi
-  case "$compared" in
-    identical | ahead) ;;
-    behind | diverged)
-      printf "production's fleet serves %s, which does not carry %s (GitHub's compare: %s)\n" \
-        "$fleet" "$merge" "$compared"
-      exit 3
-      ;;
-    *)
-      printf "GitHub's compare of %s with %s answered %s, which says neither way whether it carries it\n" \
-        "$merge" "$fleet" "${compared:-nothing}"
-      exit 3
-      ;;
-  esac
 
   # Second: the three hours from FLEET_SINCE, or from now where no earlier look named it.
   now_s="$(now)"
@@ -168,17 +123,7 @@ end="$(stamp "$end_s")"
 readonly start end
 
 # Third: the access log lines of the route in those three hours.
-printf -v filter '%s AND %s AND %s AND %s AND %s AND %s' \
-  'resource.type="k8s_container"' \
-  'resource.labels.namespace_name="dispatch"' \
-  'textPayload:"msg=\"dispatch: request\""' \
-  "textPayload:\"route=$route \"" \
-  "timestamp>=\"$start\"" \
-  "timestamp<\"$end\""
-readonly filter
-gcloud logging read "$filter" --project "$LOGGING_PROJECT" --format='value(textPayload)' \
-  >"$work/log" 2>"$work/gcloud" </dev/null ||
-  cannot_measure "gcloud logging read failed: $(head -c 600 "$work/gcloud" | tr '\n' ' ')"
+access_log "textPayload:\"route=$route \"" "timestamp>=\"$start\"" "timestamp<\"$end\""
 
 # Fourth: the lines of GET answered 200, each form told by its bytes. The fields before `path` are
 # the first a line holds, and `status`, `elapsed_ms` and `bytes` the last but `credential` and
@@ -205,7 +150,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   status=$((10#${BASH_REMATCH[1]}))
   elapsed=$((10#${BASH_REMATCH[2]}))
   bytes=$((10#${BASH_REMATCH[3]}))
-  [[ "$method" == GET ]] && ((status == 200)) || continue
+  if [[ "$method" != GET ]] || ((status != 200)); then continue; fi
   kept=$((kept + 1))
   if ((bytes < summary_below)); then form=summary; else form=full; fi
   printf '%d\n' "$elapsed" >>"$work/elapsed-$form"
