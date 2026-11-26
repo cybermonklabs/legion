@@ -814,9 +814,11 @@ The token the exchange mints for that identity names it as its service and no pe
 records a daemon's or a workflow's write under its session and its own account, and under no
 person. The token holds no OAuth scope, so a route that needs one refuses it with
 `403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A token whose entry names one
-project writes that project, and the project check judges its write to another project as it
-judges a person's `named` token's for the same project: `403 PROJECT_SCOPE` until
-dispatch://INFRA-4799 changes that answer for both. A token whose entry names
+project writes that project. The project check judges its write to another project as it judges
+a person's `named` token's for the same project: it writes another project's objects as a token
+that names no project does, and an object of a private project that the entry does not name gets
+the answer of an object that does not exist. A write that belongs to the deployment, such as a
+project create, is refused `403 PROJECT_SCOPE_DEPLOYMENT`. A token whose entry names
 `public` writes wherever a token that names no project may, and its list limits no write at
 this release. A GitHub Actions job trades its run's token with
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`

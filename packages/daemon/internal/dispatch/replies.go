@@ -7,7 +7,7 @@ import (
 )
 
 // The answer loop's writes, each made as the stopped agent's own session (sessionActor) rather than
-// the daemon's (daemonActor): Dispatch accepts a reply to a delivery only from the session the
+// the daemon's (HTTPClient.actor): Dispatch accepts a reply to a delivery only from the session the
 // delivery went to (packages/envoy/internal/dispatch/api message_delivery.go replyMessage,
 // comment_delivery.go replyComment), and an answer reads as the agent's.
 

@@ -26,7 +26,9 @@ func strictBody(t *testing.T, r *http.Request, into any) {
 
 // Each answer is written as the agent's own session, on the route and with exactly the fields that
 // route's handler takes (packages/envoy/internal/dispatch/api: replyMessage, replyComment,
-// createComment, the last for a reply on an ask's thread and for one in a comment's thread).
+// createComment, the last for a reply on an ask's thread and for one in a comment's thread). The
+// client writes as the daemon's session (WritesAs), as it does under dispatch_token_broker, and
+// the answers name the agent's session all the same.
 func TestAnAnswerIsPostedAsTheAgentsSession(t *testing.T) {
 	type sessionActor struct {
 		Kind string `json:"kind"`
@@ -94,7 +96,7 @@ func TestAnAnswerIsPostedAsTheAgentsSession(t *testing.T) {
 		writeJSONStatus(t, w, http.StatusCreated, map[string]any{"id": "reply"})
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil))
+	client := New(server.URL, BearerTransport(dispatchToken, nil), WritesAs("legion-daemon:LEGION"))
 	ctx := context.Background()
 	if err := client.ReplyToMessage(ctx, "m-1", 2, "ses_tester", "Plum."); err != nil {
 		t.Fatal(err)

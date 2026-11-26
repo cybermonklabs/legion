@@ -543,9 +543,9 @@ modelRoles:
   review: $model
   oracle: $model
   deep: $model
-# AskGate (pi-envoy, in every pane) reviews each Dispatch write inside one tool_call handler and
-# holds its deadline 5 s under this limit. At Oh My Pi's 30 s default the deadline is 25 s, a review
-# of a long session often times out, and a write whose review times out posts unreviewed
+# AskGate (pi-envoy, in every pane) reviews each gated Dispatch write inside one tool_call handler
+# and holds its deadline 5 s under this limit. At Oh My Pi's 30 s default the deadline is 25 s, a
+# review of a long session often times out, and a write whose review times out posts unreviewed
 # (packages/pi-envoy/README.md, "The time limit").
 extensionHandlers:
   toolCallTimeoutMs: 120000

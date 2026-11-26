@@ -253,7 +253,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
@@ -746,6 +746,8 @@ var nestedKeys = []memberGroup{
 			Description: "Where each of those volumes is mounted in every pod, read-only unless the mount says otherwise."},
 		{Name: "service_account", Default: "the namespace's `default` ServiceAccount", RequiredBy: "no",
 			Description: "The ServiceAccount the agents' pods run as; it needs no permission of its own, and its projected token can be the model route's credential."},
+		{Name: "controller_service_account", Default: "the controller's pod runs as `service_account`", RequiredBy: "no",
+			Description: "The ServiceAccount the daemon-launched controller's pod runs as in place of `service_account`, so that pod presents a cloud identity of its own; only `controller: daemon` may set it, since `controller: operator` launches no controller pod."},
 	}},
 	{Path: podKey + ".volumes[]", Members: []member{
 		{Name: "name", Default: "none: a volume that names no name is refused", RequiredBy: "yes",

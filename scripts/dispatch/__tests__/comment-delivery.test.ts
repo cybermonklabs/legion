@@ -349,7 +349,7 @@ describe("the document", () => {
     );
     expect(first.stdout).toContain(
       `- Comment ${id(7)}: \`session:01a1f001-0000-7000-8000-00000000000f\`, first at ` +
-        "2026-10-20T04:00:01.000Z, `sami-rocqperf:/home/sami/.omp/agent/sessions/a/" +
+        "2026-10-20T04:00:01.000Z, `devbox:/home/user/.omp/agent/sessions/a/" +
         "01a1f001-0000-7000-8000-00000000000f.jsonl:40`"
     );
     expect(first.stdout).toContain(
