@@ -110,7 +110,8 @@ func TestProbeSendsNoBearerWithoutAToken(t *testing.T) {
 
 // Gone: nobody claimed the role, its holder reached the gone horizon, another session holds it, or
 // a listener of an earlier release named no state with its 404 — that listener's lapsed holder is
-// no holder at all.
+// no holder at all. Which 404 bodies read as gone and which do not is
+// TestA404IsGoneOnlyWhenItsBodyIsTheListenersRoleRefusal's.
 func TestProbeIsGone(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -122,7 +123,6 @@ func TestProbeIsGone(t *testing.T) {
 			wantLogs: []string{"unclaimed"}},
 		{name: "the holder is gone", status: http.StatusNotFound, body: lapsed("gone"), wantLogs: []string{"holder_lapsed", "gone"}},
 		{name: "an older listener names no state", status: http.StatusNotFound, body: `{"error":"no live holder for role legion-demo-controller"}`},
-		{name: "a 404 whose body is not JSON", status: http.StatusNotFound, body: "<html>"},
 		{name: "another session holds the role", status: http.StatusOK, body: holder("ses_other", probeNow),
 			wantLogs: []string{"ses_other", "ses_ctl"}},
 	} {
@@ -137,6 +137,45 @@ func TestProbeIsGone(t *testing.T) {
 				if !strings.Contains(log.String(), want) {
 					t.Errorf("log %q does not name %q", log.String(), want)
 				}
+			}
+		})
+	}
+}
+
+// A 404 reads as gone only where its body is the Envoy listener's own role refusal
+// (listenerwire.RoleRefusal, a JSON object with a non-empty error) naming no unresponsive holder
+// (dispatch://INFRA-2045 R5). A 404 of anything else — a proxy's page, an empty body, JSON of
+// another shape — says nothing of the role and reads as unknown, which is never a death verdict,
+// and its line says the body was not the listener's refusal. An earlier listener's refusal, an
+// error and no reason, is still the listener's own word, and reads as gone. The control: on main,
+// whose probe ignored the decode's error, the proxy's page, the empty body and the other JSON each
+// read gone.
+func TestA404IsGoneOnlyWhenItsBodyIsTheListenersRoleRefusal(t *testing.T) {
+	const notRefusal = "is not its role refusal"
+	for _, tc := range []struct {
+		name, body string
+		want       Liveness
+		wantLog    string
+	}{
+		{name: "the listener's refusal of a role nobody claimed", want: Gone, wantLog: "the controller is gone",
+			body: `{"error":"no holder for role legion-demo-controller","reason":"unclaimed","claim_revision":0}`},
+		{name: "the listener's refusal naming a gone holder", body: lapsed("gone"), want: Gone, wantLog: "the controller is gone"},
+		{name: "the listener's refusal naming an unresponsive holder", body: lapsed("unresponsive"), want: Unknown, wantLog: "unresponsive, not gone"},
+		{name: "a proxy's HTML page", body: "<html><body><h1>404 Not Found</h1></body></html>", want: Unknown, wantLog: notRefusal},
+		{name: "an empty body", body: "", want: Unknown, wantLog: notRefusal},
+		{name: "JSON of another shape", body: `{"status":404,"message":"route not found"}`, want: Unknown, wantLog: notRefusal},
+		{name: "an earlier listener's refusal, an error and no reason", body: `{"error":"no live holder for role legion-demo-controller"}`,
+			want: Gone, wantLog: "the controller is gone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var log bytes.Buffer
+			l := &listener{status: http.StatusNotFound, body: tc.body}
+			url := l.serve(t)
+			if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != tc.want {
+				t.Fatalf("Probe of a 404 with body %q = %s, want %s; log %s", tc.body, got, tc.want, log.String())
+			}
+			if !strings.Contains(log.String(), tc.wantLog) {
+				t.Errorf("log %q does not say %q", log.String(), tc.wantLog)
 			}
 		})
 	}

@@ -388,6 +388,16 @@ var topLevelKeys = func() []keyDescriptor {
 			Positive:    &positiveKey{Value: 3600, Duration: func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
 		},
 		{
+			Name: "controller_turn_bound_minutes", Default: "`90`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many minutes a turn of the project's controller may stay open, whether or not steps still arrive in it, before the daemon ends that launch as its stall backstop ends one and counts the end against the session; the next launch resumes the session, and, once the session has finished a turn, a second such end with no finished turn between starts a fresh session. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readMinutesOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerTurnBound = v }),
+		},
+		{
+			Name: "controller_session_max_age_hours", Default: "`72`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many hours old, read from its session id, the project controller's session may grow before a launch the daemon makes of it starts a fresh session instead of resuming it: every launch of the controller that no operator's request raised, a death's, a launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among them. The daemon stops no live controller for it, and an operator's own resume, or a task an operator delivers to a suspended controller, keeps the session. The fresh session is told which session it replaces and why. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readHoursOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerSessionMaxAge = v }),
+		},
+		{
 			Name: "launch_failure_limit", RequiredBy: "no",
 			Description: "How many failed launches, and deaths of a ready agent while it had work outstanding, a claim takes before the daemon fails it.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.LaunchFailureLimit }},
@@ -705,6 +715,10 @@ var nestedKeys = []memberGroup{
 			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
+		{Name: "bucket", Default: "no bucket: an issue pod's feed comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
+			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's fetch downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
+		{Name: "service_account", Default: "the cache pods run as `pod.service_account`, as every issue pod does", RequiredBy: "when `bucket` is set",
+			Description: "The Kubernetes ServiceAccount the cache pods alone run as, the one the bucket's grant goes to; it must differ from the account the issue pods run as (`pod.service_account`, or `default` while that is unset), so no issue pod holds a grant on the bucket, and from `pod.controller_service_account` where that is set, so the controller's pod holds none either."},
 	}},
 	{Path: kubernetesKey + ".repository_cache.resources", Members: []member{
 		{Name: "cpu", Default: "`1`", RequiredBy: "no",
