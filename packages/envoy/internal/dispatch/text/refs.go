@@ -164,10 +164,12 @@ func extractAt(body, serverURL string, bounded bool) []Located {
 // so a reader that walks the gaps between them as well - Mentions, reading what a text writes
 // bare - scans body for them once. It reads body's code contexts once here too (codeRanges),
 // marking each reference that sits in one, and hands them back for that same reader to mark what
-// it finds in the gaps: no consumer reads them a second time.
+// it finds in the gaps: no consumer reads them a second time. The spans are in body order, so
+// they are marked by one walk of the code contexts (codeCursor).
 func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Located, []codeRange) {
 	refs := []Located{}
 	code := codeRanges(body)
+	spanInCode := codeCursor{ranges: code}
 	var base *url.URL
 	baseParsed := false
 	baseOf := func() *url.URL {
@@ -183,7 +185,7 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Locate
 			continue
 		}
 		if ref, ok := locateSpan(raw, baseOf, bounded); ok {
-			refs = append(refs, Located{Ref: ref, Offset: span[0], InCode: inCode(code, span[0])})
+			refs = append(refs, Located{Ref: ref, Offset: span[0], InCode: spanInCode.inCode(span[0])})
 		}
 	}
 	return refs, code

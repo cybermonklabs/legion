@@ -1,0 +1,5610 @@
+[
+  {
+    "name": "an indented block after a paragraph and a blank line",
+    "body": "Pasted from the handbook:\n\n    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n",
+    "ranges": [
+      {
+        "start": 27,
+        "end": 85,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fenced block with an info string after a linked paragraph",
+    "body": "Ask [the reviewer](dispatch://role/reviewer) to run:\n\n```sh\ndispatch send-to-agent dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n```\n",
+    "ranges": [
+      {
+        "start": 54,
+        "end": 141,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a code span holding a party",
+    "body": "Run `dispatch message --to dispatch://role/reviewer` before the deploy.",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 52,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "the four spaces of a nested bullet are its own text",
+    "body": "- step one\n    - ask dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "a numbered item's paragraph four columns in",
+    "body": "1. step one\n\n    more about dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "a marker and three spaces indent its item's text four columns",
+    "body": "-   See this:\n\n    dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "a marker and five spaces leave indented code inside the item",
+    "body": "-     dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 31,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a lazy line holds an item open over a blank line",
+    "body": "1.  step one\nlazy line\n\n    more about dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "a fence inside a quote",
+    "body": "> ```\n> dispatch://role/reviewer\n> ```\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 39,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fence inside a quote inside a quote",
+    "body": "> > ```\n> > dispatch://role/reviewer\n> > ```\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 45,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "an indented block inside a quote",
+    "body": "> See this:\n>\n>     dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 14,
+        "end": 45,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fence inside a list item",
+    "body": "- Run this:\n\n  ```\n  dispatch://role/reviewer\n  ```\n",
+    "ranges": [
+      {
+        "start": 13,
+        "end": 52,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fence inside a quote inside a list item",
+    "body": "- Ask:\n\n  > ```\n  > dispatch://role/reviewer\n  > ```\n",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 53,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fence closed by the line that leaves its quote",
+    "body": "> ```\n> text\n\ndispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 13,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "an indented block under a thematic break",
+    "body": "***\n    dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 33,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a backtick fence",
+    "body": "```\ndispatch://CORE-1\n```",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 25,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a backtick fence with an info string",
+    "body": "```sh\ndispatch://CORE-1\n```",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 27,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a tilde fence",
+    "body": "~~~\ndispatch://CORE-1\n~~~",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 25,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fence closed by a longer run",
+    "body": "```\ndispatch://CORE-1\n`````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 27,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a run too short to close a fence",
+    "body": "````\n``\ndispatch://CORE-1\n````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 30,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a fence nothing closes",
+    "body": "```\ndispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 21,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "fences indented three spaces",
+    "body": "   ```\ndispatch://CORE-1\n   ```",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 31,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "prose after a closed fence",
+    "body": "```\nx\n```\ndispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a tilde fence whose info string holds a backtick",
+    "body": "~~~`sh\ndispatch://CORE-1\n~~~",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 28,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a backtick fence whose info string holds a backtick is no fence",
+    "body": "```a`b\ndispatch://CORE-1\n```",
+    "ranges": [
+      {
+        "start": 25,
+        "end": 28,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "an indented block after a blank line",
+    "body": "See:\n\n    dispatch://CORE-1\n",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 28,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "an indented block opening the body",
+    "body": "    dispatch://CORE-1\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 22,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a block indented by a tab",
+    "body": "See:\n\n\tdispatch://CORE-1\n",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 25,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "an indented block holding a blank line",
+    "body": "See:\n\n    x\n\n    dispatch://CORE-1\n",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 35,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "four columns under a paragraph are its own text",
+    "body": "See:\n    dispatch://CORE-1\n",
+    "ranges": []
+  },
+  {
+    "name": "prose after an indented block",
+    "body": "See:\n\n    x\n\ndispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 12,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a span of one backtick",
+    "body": "Run `dispatch://CORE-1` now.",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 23,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a span of two backticks",
+    "body": "Run ``dispatch://CORE-1`` now.",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 25,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a longer run inside a span closes nothing",
+    "body": "Run `` dispatch://CORE-1 ``` ``",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 31,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a run nothing closes is literal text",
+    "body": "Run `dispatch://CORE-1 now.",
+    "ranges": []
+  },
+  {
+    "name": "two spans with prose between them",
+    "body": "`a` dispatch://CORE-1 `b`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 3,
+        "block": false
+      },
+      {
+        "start": 22,
+        "end": 25,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a span across a line ending",
+    "body": "Run `one\ndispatch://CORE-1` now.",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 27,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a backtick inside a fenced block opens nothing",
+    "body": "```\n`\n```\ndispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "prose alone",
+    "body": "See dispatch://CORE-1 now.",
+    "ranges": []
+  },
+  {
+    "name": "a blank line ends the search of a run nothing closes",
+    "body": "Rename the `foo field.\n\n[Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) please check `bar` too.",
+    "ranges": [
+      {
+        "start": 102,
+        "end": 107,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an item's marker ends the search of a run nothing closes",
+    "body": "- Rename `foo field\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 97,
+        "end": 102,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a bare quote marker ends the search of a run nothing closes",
+    "body": "> Rename `foo\n>\n> [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) `bar`",
+    "ranges": [
+      {
+        "start": 83,
+        "end": 88,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a blank line ends a paragraph",
+    "body": "Rename `foo field\n\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 94,
+        "end": 99,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an ATX heading ends a paragraph",
+    "body": "Rename `foo field\n# Next up\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 103,
+        "end": 108,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a thematic break ends a paragraph",
+    "body": "Rename `foo field\n***\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 97,
+        "end": 102,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a -- underline ends a paragraph",
+    "body": "Rename `foo field\n--\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 96,
+        "end": 101,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an === underline ends a paragraph",
+    "body": "Rename `foo field\n===\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 97,
+        "end": 102,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an indented block under an ATX heading",
+    "body": "# Where to ask\n    dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 15,
+        "end": 44,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "an indented block under an === underline",
+    "body": "Where to ask\n============\n    dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 26,
+        "end": 55,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a footnote definition's four columns are its own text",
+    "body": "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "an indented footnote definition's four columns are its own text",
+    "body": "  [^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "item 2. ends item 1.'s paragraph",
+    "body": "1. Rename `foo field\n2. ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 99,
+        "end": 104,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "item 2) ends item 1)'s paragraph",
+    "body": "1) Rename `foo field\n2) ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 99,
+        "end": 104,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an empty item ends the paragraph above it",
+    "body": "- Rename `foo\n-\n  ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "ranges": [
+      {
+        "start": 93,
+        "end": 98,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an indented block under a -- underline",
+    "body": "Where to ask\n--\n    dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 16,
+        "end": 45,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a lazy === line under a quote is no underline",
+    "body": "> Where to ask\n===\n    dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "a lazy === line under an item is no underline",
+    "body": "- Where to ask\n===\n    dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "an escaped backtick opens no span",
+    "body": "Type \\` for a backtick, ask dispatch://role/reviewer, then run `dispatch status`.",
+    "ranges": [
+      {
+        "start": 63,
+        "end": 80,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an escaped backtick closes a span as written",
+    "body": "Run `grep \\` here` then ask dispatch://role/reviewer.",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 12,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a list marker past the nesting bound is text",
+    "body": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -     dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "four columns after the last list marker within the nesting bound are code",
+    "body": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -     dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 129,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a quote marker past the nesting bound is text",
+    "body": "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >     dispatch://role/reviewer\n",
+    "ranges": []
+  },
+  {
+    "name": "four columns after the last quote marker within the nesting bound are code",
+    "body": "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >     dispatch://role/reviewer\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 229,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "spans, a fenced block holding backticks and an indented block",
+    "body": "`a` and `b`\n\n```\nfenced `x`\n```\n\n    indented `y`\n\nlast `z`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 3,
+        "block": false
+      },
+      {
+        "start": 8,
+        "end": 11,
+        "block": false
+      },
+      {
+        "start": 13,
+        "end": 32,
+        "block": true
+      },
+      {
+        "start": 33,
+        "end": 50,
+        "block": true
+      },
+      {
+        "start": 56,
+        "end": 59,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a party in a span and outside it",
+    "body": "Run `dispatch://role/reviewer` and ask dispatch://role/reviewer about it.",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 30,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a key in a span and in an indented block",
+    "body": "`CORE-1` and #q2 and\n\n    CORE-1\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": false
+      },
+      {
+        "start": 22,
+        "end": 33,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a run of two closes no span of one",
+    "body": "`dispatch://CORE-2/artifact/diagram-png`` See dispatch://CORE-2/artifact/design-md. See dispatch://CORE-2/artifact/quoted-md\".",
+    "ranges": []
+  },
+  {
+    "name": "lines holding a code span, each followed by a fenced block",
+    "body": "`CORE-1` and\n```\ncode\n```\n`CORE-1` and\n```\ncode\n```\n`CORE-1` and\n```\ncode\n```\n`CORE-1` and\n```\ncode\n```\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": false
+      },
+      {
+        "start": 13,
+        "end": 26,
+        "block": true
+      },
+      {
+        "start": 26,
+        "end": 34,
+        "block": false
+      },
+      {
+        "start": 39,
+        "end": 52,
+        "block": true
+      },
+      {
+        "start": 52,
+        "end": 60,
+        "block": false
+      },
+      {
+        "start": 65,
+        "end": 78,
+        "block": true
+      },
+      {
+        "start": 78,
+        "end": 86,
+        "block": false
+      },
+      {
+        "start": 91,
+        "end": 104,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "code spans and fenced blocks parted by blank lines",
+    "body": "`a` b\n\n```\nc\n```\n`a` b\n\n```\nc\n```\n`a` b\n\n```\nc\n```\n`a` b\n\n```\nc\n```\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 3,
+        "block": false
+      },
+      {
+        "start": 7,
+        "end": 17,
+        "block": true
+      },
+      {
+        "start": 17,
+        "end": 20,
+        "block": false
+      },
+      {
+        "start": 24,
+        "end": 34,
+        "block": true
+      },
+      {
+        "start": 34,
+        "end": 37,
+        "block": false
+      },
+      {
+        "start": 41,
+        "end": 51,
+        "block": true
+      },
+      {
+        "start": 51,
+        "end": 54,
+        "block": false
+      },
+      {
+        "start": 58,
+        "end": 68,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "code spans each followed by a reference",
+    "body": "`CORE-1` CORE-2 `CORE-1` CORE-2 `CORE-1` CORE-2 `CORE-1` CORE-2 ",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": false
+      },
+      {
+        "start": 16,
+        "end": 24,
+        "block": false
+      },
+      {
+        "start": 32,
+        "end": 40,
+        "block": false
+      },
+      {
+        "start": 48,
+        "end": 56,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "keys and addresses each written in a span and outside one",
+    "body": "`CORE-1` CORE-2 `dispatch://CORE-3` dispatch://CORE-4 `CORE-1` CORE-2 `dispatch://CORE-3` dispatch://CORE-4 `CORE-1` CORE-2 `dispatch://CORE-3` dispatch://CORE-4 `CORE-1` CORE-2 `dispatch://CORE-3` dispatch://CORE-4 ",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": false
+      },
+      {
+        "start": 16,
+        "end": 35,
+        "block": false
+      },
+      {
+        "start": 54,
+        "end": 62,
+        "block": false
+      },
+      {
+        "start": 70,
+        "end": 89,
+        "block": false
+      },
+      {
+        "start": 108,
+        "end": 116,
+        "block": false
+      },
+      {
+        "start": 124,
+        "end": 143,
+        "block": false
+      },
+      {
+        "start": 162,
+        "end": 170,
+        "block": false
+      },
+      {
+        "start": 178,
+        "end": 197,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "unclosed backtick runs of distinct widths",
+    "body": " ` `` ``` ```` ````` `````` ``````` ```````` `````````          ",
+    "ranges": []
+  },
+  {
+    "name": "a run a wider opener's search read closes a later span",
+    "body": "`` a ` b ` c",
+    "ranges": [
+      {
+        "start": 5,
+        "end": 10,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a run read inside a span is passed by a later opener",
+    "body": "a ``b` c`` d `e`",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 10,
+        "block": false
+      },
+      {
+        "start": 13,
+        "end": 16,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "a wider run inside a span closes nothing",
+    "body": "`a``b`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 6,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "runs read in one paragraph close nothing in the next",
+    "body": "`` a ` b\n\n` c `",
+    "ranges": [
+      {
+        "start": 10,
+        "end": 15,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "runs read before a fenced block close nothing after it",
+    "body": "x `` a ` b\n```\nc\n```\n` d `",
+    "ranges": [
+      {
+        "start": 11,
+        "end": 21,
+        "block": true
+      },
+      {
+        "start": 21,
+        "end": 26,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "an escaped backtick leaves the rest of its run an opener",
+    "body": "\\``a`",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 5,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "characters of two and four bytes before spans",
+    "body": "😀 `é` 😀 ``x`` é",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 6,
+        "block": false
+      },
+      {
+        "start": 10,
+        "end": 15,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "CR LF line endings",
+    "body": "a\r\n```\r\nb\r\n```\r\n`c`\r\n\r\n    d\r\n",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 16,
+        "block": true
+      },
+      {
+        "start": 16,
+        "end": 19,
+        "block": false
+      },
+      {
+        "start": 23,
+        "end": 30,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "a lone CR is a line's own character",
+    "body": "a `b\rc` d",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 7,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "tabs around spans",
+    "body": "a\t`b`\t``c``\t`",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 5,
+        "block": false
+      },
+      {
+        "start": 6,
+        "end": 11,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 1 drawn from seed 3",
+    "body": "+ ```````\\```````````````\n--\n> ```````😀`code```\t`\n> - `\\\\\\\\\t  a\r\n- > ===\n\t\r\n   \n>      x y```\r\n```````\\\\é````````é\\\n-       ````````\\````````````````\n",
+    "ranges": [
+      {
+        "start": 40,
+        "end": 50,
+        "block": false
+      },
+      {
+        "start": 81,
+        "end": 96,
+        "block": true
+      },
+      {
+        "start": 117,
+        "end": 151,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 2 drawn from seed 3",
+    "body": " \n``````\\x y `[l](dispatch://role/r)é``\n[^n]: \t\n",
+    "ranges": []
+  },
+  {
+    "name": "body 3 drawn from seed 3",
+    "body": "1. CORE-2``````\n   édispatch://CORE-1\n`\\\\CORE-2``CORE-2\\`  ````\n",
+    "ranges": [
+      {
+        "start": 38,
+        "end": 57,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 4 drawn from seed 3",
+    "body": " `````````````````code```\n````````  ``````\n   \t\n      \\````dispatch://CORE-1\t😀\r\n      `````😀dispatch://CORE-1 😀``😀```\r\n[^n]: dispatch://CORE-1```````````  CORE-2```````\\CORE-2\n> - ``````````\n",
+    "ranges": [
+      {
+        "start": 48,
+        "end": 123,
+        "block": true
+      },
+      {
+        "start": 180,
+        "end": 195,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 5 drawn from seed 3",
+    "body": "> - a``😀#q1```````dispatch://CORE-1  ``\t\n>CORE-2````code😀`\\`\n  \n[^n]: #q1\\\\\n* `#q1x y`😀````\\`````````é\n   * * *\n  ``😀😀dispatch://CORE-1\n  [^n]: \n[^n]: ```\n",
+    "ranges": [
+      {
+        "start": 5,
+        "end": 40,
+        "block": false
+      },
+      {
+        "start": 59,
+        "end": 62,
+        "block": false
+      },
+      {
+        "start": 80,
+        "end": 88,
+        "block": false
+      },
+      {
+        "start": 150,
+        "end": 160,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 6 drawn from seed 3",
+    "body": "```\n-     ``` `````````😀\n\r\n``` sh\n- `````````` x yé\r\n  `````\t\n___\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 63,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 7 drawn from seed 3",
+    "body": "````````\r\n\t😀[l](dispatch://role/r)```code\n+ code\r\n* * *\r\n\\\n># h\n> > #no\n-     ---\r\n-     ___\n  [^n]: \\\\x y ```````````  \n\t```é``\t\\",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 131,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 8 drawn from seed 3",
+    "body": "``````````\n>     # h\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 21,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 9 drawn from seed 3",
+    "body": "dispatch://CORE-1CORE-2`````\n> ``````\t\t``````CORE-2\r\n1. ``\n* ``````a\\\\`````````````x y`\r>x y``````\n\t\r\n   \t\t````\\\\````é````````\n>```",
+    "ranges": [
+      {
+        "start": 31,
+        "end": 45,
+        "block": false
+      },
+      {
+        "start": 61,
+        "end": 98,
+        "block": false
+      },
+      {
+        "start": 102,
+        "end": 127,
+        "block": true
+      },
+      {
+        "start": 127,
+        "end": 131,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 10 drawn from seed 3",
+    "body": "      dispatch://CORE-1dispatch://CORE-1dispatch://CORE-1é\n       \n> > ~~~`x\n> [l](dispatch://role/r)`````````````````[l](dispatch://role/r)\n* * *\nx y```````  ````````\t`\n  code#q1````#q1``\t``\n2) ---\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 59,
+        "block": true
+      },
+      {
+        "start": 67,
+        "end": 77,
+        "block": true
+      },
+      {
+        "start": 186,
+        "end": 191,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 11 drawn from seed 3",
+    "body": "  code\r\n+ ***\n[^n]: ___\r\n- ``\n2) `````````code```é\n   \t````\n ````code\n",
+    "ranges": [
+      {
+        "start": 51,
+        "end": 60,
+        "block": true
+      },
+      {
+        "start": 60,
+        "end": 70,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 12 drawn from seed 3",
+    "body": "> ` \r\n> > ```  x y`````\t`````\n> ````[l](dispatch://role/r)``\\`````   `",
+    "ranges": [
+      {
+        "start": 18,
+        "end": 29,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 13 drawn from seed 3",
+    "body": "> - `````\\\\x y\\`a`````\r\n-     ````````\t```` \r\n\t#q1`😀\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 22,
+        "block": false
+      },
+      {
+        "start": 24,
+        "end": 46,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 14 drawn from seed 3",
+    "body": " * * *\n `code[l](dispatch://role/r)``````````x ya\n> > ````😀`\\````é\n`````````\n+ ",
+    "ranges": [
+      {
+        "start": 54,
+        "end": 66,
+        "block": false
+      },
+      {
+        "start": 68,
+        "end": 80,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 15 drawn from seed 3",
+    "body": ">     #no\n> ``` `````\t`\\`\r\n    `a\n  ````````\n   code```````#q1é````\n \tdispatch://CORE-1\n>#q1#q1```````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      },
+      {
+        "start": 22,
+        "end": 25,
+        "block": false
+      },
+      {
+        "start": 34,
+        "end": 102,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 16 drawn from seed 3",
+    "body": "`😀\\a` ````\\``\r\n+ ````x y\n `é`ax y``````x ydispatch://CORE-1\n* \\\\```  ````😀\\\\\r\n      ```  ````dispatch://CORE-1\\\\x y\r\n- #q1\tCORE-2`[l](dispatch://role/r) \\``",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 6,
+        "block": false
+      },
+      {
+        "start": 16,
+        "end": 26,
+        "block": true
+      },
+      {
+        "start": 27,
+        "end": 30,
+        "block": false
+      },
+      {
+        "start": 65,
+        "end": 89,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 17 drawn from seed 3",
+    "body": "* ``````[l](dispatch://role/r)CORE-2#q1```````` `\r\n- > #q1`````\\`#q1```\\\\\r\n> - ``` sh\n- > # h\n* CORE-2😀 \n>     \n+ ###### h\n> - \\\\CORE-2#q1 \n  \\`````````\\``````😀\n> ``````a`[l](dispatch://role/r)`codeéCORE-2\r`````` \tCORE-2é```é```",
+    "ranges": [
+      {
+        "start": 75,
+        "end": 86,
+        "block": true
+      },
+      {
+        "start": 165,
+        "end": 214,
+        "block": false
+      },
+      {
+        "start": 223,
+        "end": 230,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 18 drawn from seed 3",
+    "body": ">     ```a`b\n>     ```````` \n2) \\\\\n>`````code\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 29,
+        "block": true
+      },
+      {
+        "start": 35,
+        "end": 46,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 19 drawn from seed 3",
+    "body": "- > ###### h\n",
+    "ranges": []
+  },
+  {
+    "name": "body 20 drawn from seed 3",
+    "body": "```````codecode``\n>\r```a`b\n \t\r\n ````\n    `x y\\````a\n      \n``````é```a```````````````\n>````````\n* 😀`````````[l](dispatch://role/r)```\n ``[l](dispatch://role/r)a``\r",
+    "ranges": [
+      {
+        "start": 31,
+        "end": 164,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 21 drawn from seed 3",
+    "body": "      \\` ``````x y`é`````````````\n   ````\n[^n]: dispatch://CORE-1```CORE-2\nCORE-2````````````````codecode\r\n> - \\```  \t`😀x y````x y\n`````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 34,
+        "block": true
+      },
+      {
+        "start": 34,
+        "end": 137,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 22 drawn from seed 3",
+    "body": "`````` [l](dispatch://role/r)é\n-       ``\\#q1\r\n+ #q1dispatch://CORE-1`\r\n> > ---\n\n[^n]: ``CORE-2code````   \\````````````````\r\n```a`b\r\n> ```\n-     ``\r\n1. ``\n  [^n]: #q1aa`😀é \n codedispatch://CORE-1``a ```````CORE-2x y",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 216,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 23 drawn from seed 3",
+    "body": "- > \t[l](dispatch://role/r)````````````\n> > ~~~~\r\\`[l](dispatch://role/r)#q1``[l](dispatch://role/r)````  \r\n-     ````````````````code\\\\\\é",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 40,
+        "block": true
+      },
+      {
+        "start": 40,
+        "end": 108,
+        "block": true
+      },
+      {
+        "start": 108,
+        "end": 138,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 24 drawn from seed 3",
+    "body": "````````\n>     `````````\n   ```a`b\n  [^n]: ```\n    ``````    x y`````````é\n-     ``````````````\\\\`\r\n2) `````````````\n    \\\\``\t `😀```````code\\\n    #no\r\n  [^n]: x y\n ``````dispatch://CORE-1\\```\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 193,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 25 drawn from seed 3",
+    "body": "  [^n]: ``#q1#q1  ``é``x y``````\n  ```\t````\n \t~~~~\n \t`code```````é`dispatch://CORE-1\n`````\\`````\n`\té\r\n>     [l](dispatch://role/r)`code😀code`````\n>     \n  `dispatch://CORE-1`````é\r> > code````x y``````\\\\```\r>***",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 20,
+        "block": false
+      },
+      {
+        "start": 44,
+        "end": 85,
+        "block": true
+      },
+      {
+        "start": 85,
+        "end": 96,
+        "block": false
+      },
+      {
+        "start": 102,
+        "end": 147,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 26 drawn from seed 3",
+    "body": "2) ````\n* ___\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 27 drawn from seed 3",
+    "body": "2) ---\n>#q1\t``````````a`\\```````````\r\n[^n]: \\\\````````````CORE-2`é\n> CORE-2```é\r\n  [^n]: ~~~\n- ```\n #q1`\\``\n      ___\r\n> \t\n>     ``\n\t\n",
+    "ranges": [
+      {
+        "start": 81,
+        "end": 93,
+        "block": true
+      },
+      {
+        "start": 93,
+        "end": 99,
+        "block": true
+      },
+      {
+        "start": 123,
+        "end": 132,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 28 drawn from seed 3",
+    "body": "\t```é\tcode\\\n\\\\édispatch://CORE-1éCORE-2[l](dispatch://role/r)😀\n \t\r\tx y`````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 12,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 29 drawn from seed 3",
+    "body": "      \r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 30 drawn from seed 3",
+    "body": "\t````dispatch://CORE-1\n\ta`\\\\`é😀``\\`\n- é😀\\``code\n-     ``\t\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 37,
+        "block": true
+      },
+      {
+        "start": 50,
+        "end": 61,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 31 drawn from seed 3",
+    "body": "\\\\ `😀\r\n-     ``\\\r\n>     `dispatch://CORE-1code````````CORE-2\\\\````\n \t````\n-     \n>     \r\n>😀`dispatch://CORE-1a```é```````\r````\t``````é\t\\`\n> ```\t\\\\codeédispatch://CORE-1[l](dispatch://role/r)`````\n* é#q1`````\\`\\`x yx y`",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 19,
+        "block": true
+      },
+      {
+        "start": 19,
+        "end": 68,
+        "block": true
+      },
+      {
+        "start": 68,
+        "end": 75,
+        "block": true
+      },
+      {
+        "start": 93,
+        "end": 139,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 32 drawn from seed 3",
+    "body": "`````a\t \n~~~~\n[^n]: ````[l](dispatch://role/r)#q1``````\\``#q1\n>````````````````````\\\\CORE-2\\``\r> #q1[l](dispatch://role/r)````\n> ``````\té```\r\n```CORE-2\n> `````CORE-2\\\n- a #q1```é\n --\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 184,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 33 drawn from seed 3",
+    "body": "\t````\\\\é``````````\r      --\n>     ``````é`````code`x y`😀CORE-2\n``````````\\\\````````````\r\n> > dispatch://CORE-1```````````\t\n`😀\t#q1 😀\t\r\n#no",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 28,
+        "block": true
+      },
+      {
+        "start": 28,
+        "end": 64,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 34 drawn from seed 3",
+    "body": "\tCORE-2  codeCORE-2\t`\\`\n      ```go\n* `[l](dispatch://role/r)```````\r\n> x y\\\\aa\n      ` \\\\```\n-     éx y``\tCORE-2code```\n***\n\t\t\r\n      ###### h\n>     \\#q1\n\r\n---\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 36,
+        "block": true
+      },
+      {
+        "start": 94,
+        "end": 121,
+        "block": true
+      },
+      {
+        "start": 129,
+        "end": 144,
+        "block": true
+      },
+      {
+        "start": 144,
+        "end": 155,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 35 drawn from seed 3",
+    "body": " é\\\\  dispatch://CORE-1\né``````````a`x y\\\n  * * *\r\n      ___\n> > ``\n `\\\\[l](dispatch://role/r)``#q1``\n\t---\n      ```````````````",
+    "ranges": [
+      {
+        "start": 51,
+        "end": 61,
+        "block": true
+      },
+      {
+        "start": 65,
+        "end": 96,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 36 drawn from seed 3",
+    "body": "-     ````\n   ~~~~\r      \n> ___\r\n`\\\n[^n]: ```😀dispatch://CORE-1\r\n\\`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      },
+      {
+        "start": 11,
+        "end": 26,
+        "block": true
+      },
+      {
+        "start": 36,
+        "end": 66,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 37 drawn from seed 3",
+    "body": "😀\n   ~~~~\r\n>     `\\`a````````\n```",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 34,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 38 drawn from seed 3",
+    "body": "[^n]: ```\n>\\\r\n> ---\n* \\\\ `````  `````code``````\r\n~~~ x\r\n  [^n]: \\\\````code`````\n> \r\n2) ````\\\\``````[l](dispatch://role/r)😀",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      },
+      {
+        "start": 25,
+        "end": 37,
+        "block": false
+      },
+      {
+        "start": 49,
+        "end": 123,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 39 drawn from seed 3",
+    "body": "- \n> ```é````\t``````a\r\n2) ```a`b\r\n2)   ``````````````\r\n> > `````a``\r\n-     \tcode``x y`\\\t\n- > `````\\`\\\\é😀`\t`````\n* * *\r\n  [^n]: CORE-2````\\````dispatch://CORE-1é\n",
+    "ranges": [
+      {
+        "start": 34,
+        "end": 55,
+        "block": true
+      },
+      {
+        "start": 69,
+        "end": 89,
+        "block": true
+      },
+      {
+        "start": 93,
+        "end": 112,
+        "block": false
+      },
+      {
+        "start": 134,
+        "end": 143,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 40 drawn from seed 3",
+    "body": "===\n      ````\r\n> - a``````dispatch://CORE-1```  \\````\n>```a`b\n   x y`````````````\\\\#q1````\r\n>#q1`````````````````é\n-     a a```x y  ``````[l](dispatch://role/r)\n ===\n>`````é\n[^n]: CORE-2```````````code```dispatch://CORE-1\\\\````\r\n",
+    "ranges": [
+      {
+        "start": 44,
+        "end": 59,
+        "block": false
+      },
+      {
+        "start": 116,
+        "end": 162,
+        "block": true
+      },
+      {
+        "start": 167,
+        "end": 175,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 41 drawn from seed 3",
+    "body": " \t \r\n2) ``\r\n    ``````  \\```\r> ~~~`x\r\n1. ``````\r\n",
+    "ranges": [
+      {
+        "start": 38,
+        "end": 49,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 42 drawn from seed 3",
+    "body": "* ```` `````````````````\n[^n]:  `code`\t```\n    ```[l](dispatch://role/r)é\\`#q1CORE-2[l](dispatch://role/r)`\\\\\n>\r  ###### h\r\n \t``\\\\`\n2) ~~~\r\n[^n]: dispatch://CORE-1``````é`````😀\r\n- > \t```x y 😀#q1x yé\n```  `````\n",
+    "ranges": [
+      {
+        "start": 32,
+        "end": 38,
+        "block": false
+      },
+      {
+        "start": 39,
+        "end": 50,
+        "block": false
+      },
+      {
+        "start": 132,
+        "end": 140,
+        "block": true
+      },
+      {
+        "start": 179,
+        "end": 201,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 43 drawn from seed 3",
+    "body": "-  CORE-2`````\n>     ~~~~\n> ```\n \t`````a``\n* `````CORE-2\\\\😀``````code\r\n `\\\\é````` `````\r\n",
+    "ranges": [
+      {
+        "start": 15,
+        "end": 26,
+        "block": true
+      },
+      {
+        "start": 26,
+        "end": 32,
+        "block": true
+      },
+      {
+        "start": 32,
+        "end": 43,
+        "block": true
+      },
+      {
+        "start": 45,
+        "end": 82,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 44 drawn from seed 3",
+    "body": "  [^n]: ###### h\n  aCORE-2#q1CORE-2\n```\t``````````` \\`é\n``````` ``````````````\\`x y[l](dispatch://role/r)```````\n~~~\n  [^n]: ``\\````\n`é``````\n>     dispatch://CORE-1``````````\n\\code````",
+    "ranges": [
+      {
+        "start": 56,
+        "end": 112,
+        "block": false
+      },
+      {
+        "start": 113,
+        "end": 185,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 45 drawn from seed 3",
+    "body": "    ```",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 7,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 46 drawn from seed 3",
+    "body": "1. ``\t```é`````````\r\n>x ydispatch://CORE-1dispatch://CORE-1é\\\\a`````[l](dispatch://role/r)````\n```go\n>\\``[l](dispatch://role/r)code  \t\n``a\\\\`\n \t````x y `a````````\n",
+    "ranges": [
+      {
+        "start": 95,
+        "end": 163,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 47 drawn from seed 3",
+    "body": "[l](dispatch://role/r)`````code```\\\\``````\n- > `\n ~~~`x\n",
+    "ranges": [
+      {
+        "start": 49,
+        "end": 56,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 48 drawn from seed 3",
+    "body": "\\\\😀```\\` `code",
+    "ranges": []
+  },
+  {
+    "name": "body 49 drawn from seed 3",
+    "body": " [l](dispatch://role/r)\r    code`````````\n\t``dispatch://CORE-1``````\n  ````````\t\n````````[l](dispatch://role/r)`````\\`\r\n- > éCORE-2 \\\r\n \\x ydispatch://CORE-1`\r\n>\n>     ````````````\n \t``#q1x y``````````",
+    "ranges": [
+      {
+        "start": 69,
+        "end": 201,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 50 drawn from seed 3",
+    "body": "x y```\\\\``\n  éé\n    ``CORE-2````dispatch://CORE-1``````dispatch://CORE-1```` \n      ````  `\n  ``\\``dispatch://CORE-1a#q1`````````````\r> 😀`\r\n      éCORE-2\t`````é````\n\tCORE-2\\`\n>     ```\n> > #no",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 22,
+        "block": false
+      },
+      {
+        "start": 28,
+        "end": 76,
+        "block": false
+      },
+      {
+        "start": 84,
+        "end": 165,
+        "block": false
+      },
+      {
+        "start": 176,
+        "end": 186,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 51 drawn from seed 3",
+    "body": "*   \\``````dispatch://CORE-1\r\n- \r\n ````````````\n[^n]: ===",
+    "ranges": [
+      {
+        "start": 34,
+        "end": 57,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 52 drawn from seed 3",
+    "body": "> - dispatch://CORE-1\n>```\n`\\\\``````````#q1``dispatch://CORE-1  \n>     `dispatch://CORE-1#q1`\n      #q1x y  ```````\r\n* ``````[l](dispatch://role/r)`\r\n+ \\`code \\\\`\n2) [l](dispatch://role/r)\\````CORE-2``dispatch://CORE-1code``x ya\r\nCORE-2[l](dispatch://role/r)`\n>     ~~~\r\n",
+    "ranges": [
+      {
+        "start": 22,
+        "end": 27,
+        "block": true
+      },
+      {
+        "start": 65,
+        "end": 94,
+        "block": true
+      },
+      {
+        "start": 94,
+        "end": 117,
+        "block": true
+      },
+      {
+        "start": 199,
+        "end": 224,
+        "block": false
+      },
+      {
+        "start": 260,
+        "end": 271,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 53 drawn from seed 3",
+    "body": ">___\r     ",
+    "ranges": []
+  },
+  {
+    "name": "body 54 drawn from seed 3",
+    "body": "``````````````\t```````\n  `````#q1``é\na😀```\n+ code",
+    "ranges": []
+  },
+  {
+    "name": "body 55 drawn from seed 3",
+    "body": "[^n]: \\``dispatch://CORE-1#q1😀é`😀``\r\n2) #q1[l](dispatch://role/r)#q1\n  [^n]: ``````\t`````\n   \t``    ``````\t````ax y\n> ---\n> > `CORE-2\\````[l](dispatch://role/r)`é\t``````\ndispatch://CORE-1```````\\`code`\r\n+ \n2) code```\\\\dispatch://CORE-1\t`````a😀\n ###### h\r\n>     [l](dispatch://role/r)`\r\n",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 33,
+        "block": false
+      },
+      {
+        "start": 79,
+        "end": 108,
+        "block": false
+      },
+      {
+        "start": 128,
+        "end": 163,
+        "block": false
+      },
+      {
+        "start": 258,
+        "end": 289,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 56 drawn from seed 3",
+    "body": "    é```` \n- > `CORE-2`````dispatch://CORE-1`é\\\\`````\n~~~\n# h\n#q1a``````CORE-2`\r\n- \n    # h\r> - \\\\\\a\\\\#q1``#q1`\n> > codedispatch://CORE-1adispatch://CORE-1\r\n> > ```````\t😀``\\\\\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      },
+      {
+        "start": 15,
+        "end": 45,
+        "block": false
+      },
+      {
+        "start": 54,
+        "end": 177,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 57 drawn from seed 3",
+    "body": "````a ``[l](dispatch://role/r)\n1. `dispatch://CORE-1```````#q1`````\n> - `````\\x y````\n    dispatch://CORE-1`````````````  aCORE-2``  `\n      ````````\t😀```````dispatch://CORE-1#q1`écode\n- > ``\n>     ````😀😀#q1\\\\\n\t```````#q1````  dispatch://CORE-1😀\t\r\n   CORE-2````````CORE-2\n>\t\n[^n]: #q1`````  \tdispatch://CORE-1x y``a``````\n",
+    "ranges": [
+      {
+        "start": 133,
+        "end": 180,
+        "block": false
+      },
+      {
+        "start": 193,
+        "end": 213,
+        "block": true
+      },
+      {
+        "start": 213,
+        "end": 252,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 58 drawn from seed 3",
+    "body": "> - ```````````````````dispatch://CORE-1```\n> ``\na#q1é\\``\\`\\`code  \n> ````````CORE-2````é\n+ ``x y````\n[^n]: \\\\codex y[l](dispatch://role/r)\t`\\`\n``` sh\n2) \n- ````\n",
+    "ranges": [
+      {
+        "start": 46,
+        "end": 57,
+        "block": false
+      },
+      {
+        "start": 140,
+        "end": 143,
+        "block": false
+      },
+      {
+        "start": 144,
+        "end": 162,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 59 drawn from seed 3",
+    "body": "> > \n``\\\\\\\\\\ ```\n \t``````#q1\r\n  ````\n+ é\n",
+    "ranges": [
+      {
+        "start": 30,
+        "end": 41,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 60 drawn from seed 3",
+    "body": "* codeé😀`````\\`#q1\n```go\r\n      \\\\`\n>  ``\\`````#q1CORE-2dispatch://CORE-1```\n> - a`````````````#q1code\r\n> - \t\r\n  ``````[l](dispatch://role/r)``  `````#q1\\\\`\r> - code`CORE-2\\`aé\n[^n]:   `\n>###### h\n2) ``[l](dispatch://role/r)```````````aax y😀\n````  `\\`a\n",
+    "ranges": [
+      {
+        "start": 20,
+        "end": 255,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 61 drawn from seed 3",
+    "body": "> \n\\x y  \\` ```\n---\n+ CORE-2\t```````a`````````````````````\r\n      ``````````````\\```😀```x y``\r\n> > dispatch://CORE-1```\\`````\r\n>``CORE-2a```````#q1`\r\n1. CORE-2\n- > `a`````````CORE-2\r\n",
+    "ranges": [
+      {
+        "start": 82,
+        "end": 94,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 62 drawn from seed 3",
+    "body": "   [l](dispatch://role/r)x y``````````````\n      \\` ``\\````````````````````\n  ````````\\\\ \n1. ``````` `\\\r\n\\```````````\t\\",
+    "ranges": [
+      {
+        "start": 76,
+        "end": 119,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 63 drawn from seed 3",
+    "body": "``````````````\ndispatch://CORE-1`dispatch://CORE-1 CORE-2[l](dispatch://role/r)CORE-2#q1````CORE-2\r\n2) ```code``````code\r\n  [^n]: ~~~\r\n\t___\n    ``````code`dispatch://CORE-1``CORE-2``````\n>     `````code\t``\\````#q1\n> > `  ```````\n \t`\\````\t````[l](dispatch://role/r)```\n\t\n   [l](dispatch://role/r)````````x y``aa\t\t\n> ````  `",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 322,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 64 drawn from seed 3",
+    "body": "\n\t```  ``\\\\`````````\n* \n      #q1``````dispatch://CORE-1`````  \n- ---\nx y`code````````a``\n2) ```CORE-2\n> > dispatch://CORE-1`\\`é\\``````\\``\n",
+    "ranges": [
+      {
+        "start": 1,
+        "end": 21,
+        "block": true
+      },
+      {
+        "start": 24,
+        "end": 64,
+        "block": true
+      },
+      {
+        "start": 124,
+        "end": 127,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 65 drawn from seed 3",
+    "body": "  `é ````````````\r\n \\\\\n- > ``````\\`````````\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 66 drawn from seed 3",
+    "body": "  [^n]: \t\n\t```\\``````````\n-     CORE-2````````````\\`\\````\n+ ``\n ````😀CORE-2  \t````\n",
+    "ranges": [
+      {
+        "start": 26,
+        "end": 58,
+        "block": true
+      },
+      {
+        "start": 64,
+        "end": 83,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 67 drawn from seed 3",
+    "body": " \t[l](dispatch://role/r)`````dispatch://CORE-1````` `````\r\n \t```` éé\\ `\n    \\`éa``` ",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 84,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 68 drawn from seed 3",
+    "body": "- > ``é\\\\`\n* ---\r  \n  [^n]: ``CORE-2  \\``````\n+ ```",
+    "ranges": [
+      {
+        "start": 46,
+        "end": 51,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 69 drawn from seed 3",
+    "body": "- > 😀code```\n``````CORE-2\\\\\\``\n> - `[l](dispatch://role/r)```````  ``````````#q1```",
+    "ranges": []
+  },
+  {
+    "name": "body 70 drawn from seed 3",
+    "body": "> - ```````````é[l](dispatch://role/r)`a`\r\naé``````` 😀#q1\n ***\n      [l](dispatch://role/r)aéx y```",
+    "ranges": [
+      {
+        "start": 38,
+        "end": 41,
+        "block": false
+      },
+      {
+        "start": 64,
+        "end": 100,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 71 drawn from seed 3",
+    "body": "\t \n- # h\n> - \\\\\r\n* \\\\````\n- > ```````a\\a`\n \té \r\n \t[l](dispatch://role/r)\\😀````````\r\n>     ```\n2) --\n2) \t````````````\\``\n",
+    "ranges": [
+      {
+        "start": 85,
+        "end": 95,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 72 drawn from seed 3",
+    "body": "> > ===\n2) ___\n  * * *\r\n  #no\n+ #q1`````````  \\`\n    ````` dispatch://CORE-1```````a`x y```````\n      ```````dispatch://CORE-1``````\\`\n- [l](dispatch://role/r)dispatch://CORE-1`dispatch://CORE-1\\\\``````  \n> --\na#q1x y",
+    "ranges": [
+      {
+        "start": 76,
+        "end": 95,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 73 drawn from seed 3",
+    "body": "-     é``````````````\t\n      `````\n`\né  `codeCORE-2````````CORE-2``\n- ````````x y`\n- ````é````\r\n[^n]: ````````\\``````````\\x y\\",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 35,
+        "block": true
+      },
+      {
+        "start": 35,
+        "end": 41,
+        "block": false
+      },
+      {
+        "start": 85,
+        "end": 94,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 74 drawn from seed 3",
+    "body": "`CORE-2dispatch://CORE-1é\r\n- ````\n***\r\n* # h\r\n> > ````````a\\\\\n- \\\\[l](dispatch://role/r)````code``\tdispatch://CORE-1é\r\n\\``x y`````😀```````x y\n ````````````code`````````````````\\\r\n\\```#q1code\\\n>     `    a``````CORE-2\n",
+    "ranges": [
+      {
+        "start": 27,
+        "end": 34,
+        "block": true
+      },
+      {
+        "start": 46,
+        "end": 62,
+        "block": true
+      },
+      {
+        "start": 96,
+        "end": 122,
+        "block": false
+      },
+      {
+        "start": 193,
+        "end": 218,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 75 drawn from seed 3",
+    "body": "    ax y#q1[l](dispatch://role/r)x y``\n1. ###### h\n``````\n-     x y````````a\r\n    ```````é \\\\a````` \n-     dispatch://CORE-1  ```\\é`````\\\n- > ``x y```````x y😀````\n- a",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 39,
+        "block": true
+      },
+      {
+        "start": 51,
+        "end": 167,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 76 drawn from seed 3",
+    "body": ">===\n    é\\`😀\n> CORE-2\\`\\`\\``acode\n  [^n]: ~~~~\n",
+    "ranges": [
+      {
+        "start": 36,
+        "end": 49,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 77 drawn from seed 3",
+    "body": "   CORE-2`[l](dispatch://role/r)``````````\r\n- > ***\n2) \tcode``````\t````````````\n      `  [l](dispatch://role/r)\t\r    `````````\n  [^n]: é\t😀\t\n> >  a😀[l](dispatch://role/r)#q1`````\\`dispatch://CORE-1\n😀CORE-2`````é``````\\`\r\n",
+    "ranges": [
+      {
+        "start": 174,
+        "end": 212,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 78 drawn from seed 3",
+    "body": "> > ```````\\\\\r\n     \n* ~~~`x\r\n>\\`dispatch://CORE-1`x y#q1\n> > \\`\r\n\tdispatch://CORE-1\n \t===\n+ ```````\\\\[l](dispatch://role/r)``` \\````#q1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 15,
+        "block": true
+      },
+      {
+        "start": 21,
+        "end": 30,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 79 drawn from seed 3",
+    "body": "2) \\````````````````\r\n- > ``````x y`é   ``\\`\n> > ***\n- \\````\\\\ ``",
+    "ranges": [
+      {
+        "start": 35,
+        "end": 44,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 80 drawn from seed 3",
+    "body": "      \\`\\```\\`\n- > `\\``\n\t  ``````x y  ```````x y`\r\n> - CORE-2````` #q1\n`dispatch://CORE-1\\```\r\n> `a```\n- > #q1`x y`````code\n> > CORE-2`````\n2) \\\\``````````````#q1code`\nx yx y\r> #q1````\t```````````é`\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 15,
+        "block": true
+      },
+      {
+        "start": 19,
+        "end": 49,
+        "block": false
+      },
+      {
+        "start": 71,
+        "end": 98,
+        "block": false
+      },
+      {
+        "start": 166,
+        "end": 198,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 81 drawn from seed 3",
+    "body": "2) ``````code```````\r\n``\t😀````😀\\\\dispatch://CORE-1``````````` \r\na\\````😀é``\n[^n]: \r\n- > \n+ ```go",
+    "ranges": [
+      {
+        "start": 22,
+        "end": 77,
+        "block": false
+      },
+      {
+        "start": 91,
+        "end": 98,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 82 drawn from seed 3",
+    "body": "  [^n]:   CORE-2CORE-2\n  ````code`\t\n`code``````\t`\\\\\\\n~~~\r- `[l](dispatch://role/r)````é😀a😀```#q1\n2) ***\né``````\n      \\\\`````````x y`\n\t```````````CORE-2 a`#q1`\n",
+    "ranges": [
+      {
+        "start": 33,
+        "end": 37,
+        "block": false
+      },
+      {
+        "start": 53,
+        "end": 162,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 83 drawn from seed 3",
+    "body": "   ```\n- > --\n> --\n``\n***\n      ```a`b\r\n---\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 44,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 84 drawn from seed 3",
+    "body": "> - dispatch://CORE-1`\tCORE-2\t\t😀\\````\n~~~~\n-     `````\r\n*  `CORE-2`\n- dispatch://CORE-1  dispatch://CORE-1\r\n``\\``dispatch://CORE-1`````code````` \r\n      ```\n```CORE-2😀\\\\\n \t`  ``````` ```é```````\n>code",
+    "ranges": [
+      {
+        "start": 39,
+        "end": 202,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 85 drawn from seed 3",
+    "body": "###### h\n😀\\\\````````````é``x y😀\n* ``  `#q1\r\n~~~\r\n  `\r\n- ``````é`````",
+    "ranges": [
+      {
+        "start": 46,
+        "end": 70,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 86 drawn from seed 3",
+    "body": "1. ````#q1``#q1`````\r",
+    "ranges": []
+  },
+  {
+    "name": "body 87 drawn from seed 3",
+    "body": "[l](dispatch://role/r)[l](dispatch://role/r)``\n> - `\\\\````x y\\\\a[l](dispatch://role/r)x y\nx y```````\\\\x yCORE-2`\n- > \n   édispatch://CORE-1😀x y```\n    ```\n2) \\`#q1é😀CORE-2\n  [^n]: \r\n",
+    "ranges": [
+      {
+        "start": 51,
+        "end": 112,
+        "block": false
+      },
+      {
+        "start": 148,
+        "end": 156,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 88 drawn from seed 3",
+    "body": "- `````  ``😀 `#q1a`\r\n",
+    "ranges": [
+      {
+        "start": 14,
+        "end": 20,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 89 drawn from seed 3",
+    "body": "> - #q1a😀\n  ",
+    "ranges": []
+  },
+  {
+    "name": "body 90 drawn from seed 3",
+    "body": "\t\n+ ---\r\n> ***\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 91 drawn from seed 3",
+    "body": "````code\r\n  [^n]: ```\r\n\tx y```é````````codecode\r\n  `````\n \t😀[l](dispatch://role/r)`\n\t[l](dispatch://role/r)``````\n  ~~~`x\n> > codedispatch://CORE-1``````````\n#q1`\\``codea\\`\r\n+ ```a````  ``````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 57,
+        "block": true
+      },
+      {
+        "start": 57,
+        "end": 115,
+        "block": true
+      },
+      {
+        "start": 115,
+        "end": 193,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 92 drawn from seed 3",
+    "body": "- > \t\\\\```x y\n- #q1```😀[l](dispatch://role/r)`\n\t\\``  ````codex y\n> - ``😀dispatch://CORE-1a\t```  \\\\```\n-     * * *\r\n[^n]: ````\n> \\\\  `é``\n>````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 14,
+        "block": true
+      },
+      {
+        "start": 93,
+        "end": 103,
+        "block": false
+      },
+      {
+        "start": 104,
+        "end": 117,
+        "block": true
+      },
+      {
+        "start": 117,
+        "end": 128,
+        "block": true
+      },
+      {
+        "start": 139,
+        "end": 148,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 93 drawn from seed 3",
+    "body": "> - `\n",
+    "ranges": []
+  },
+  {
+    "name": "body 94 drawn from seed 3",
+    "body": "      é``é\r\n  [^n]: #q1`a`````😀`\n`````\n[^n]: x yx y``````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 12,
+        "block": true
+      },
+      {
+        "start": 23,
+        "end": 33,
+        "block": false
+      },
+      {
+        "start": 34,
+        "end": 59,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 95 drawn from seed 3",
+    "body": "\t`````````code  \r-     😀code``````code`\té\\`````\n1. #q1code`\\\\`` ```\r\n>  \\\\\\\n+ `````[l](dispatch://role/r)`````\\`````\n`\n>\\\\\n  [^n]: ``😀#q1[l](dispatch://role/r)  `\n\\x y``\\`\n+ ``````x y``````\n`````\\```````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 49,
+        "block": true
+      },
+      {
+        "start": 79,
+        "end": 111,
+        "block": false
+      },
+      {
+        "start": 132,
+        "end": 171,
+        "block": false
+      },
+      {
+        "start": 176,
+        "end": 191,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 96 drawn from seed 3",
+    "body": "\t````\n- ``````````\n- > `\n> - ````#q1`````` ```````\r\n[l](dispatch://role/r)#q1\\`x y\n- ``````  ````\n--\n>     ```a`b",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 6,
+        "block": true
+      },
+      {
+        "start": 6,
+        "end": 19,
+        "block": true
+      },
+      {
+        "start": 101,
+        "end": 113,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 97 drawn from seed 3",
+    "body": "> - ===\n  \\\\\r\n- ``````#q1```a\n- >   ```  ```CORE-2````````#q1dispatch://CORE-1\r\n😀``éCORE-2\\``\t````x y\n\t \n ````````code``CORE-2`````\n[l](dispatch://role/r)#q1code```\\\n> > ``````é```````````  éCORE-2[l](dispatch://role/r)\n-     `#q1x y````````  ````\n",
+    "ranges": [
+      {
+        "start": 36,
+        "end": 44,
+        "block": false
+      },
+      {
+        "start": 82,
+        "end": 94,
+        "block": false
+      },
+      {
+        "start": 221,
+        "end": 249,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 98 drawn from seed 3",
+    "body": "  #no\n- \\`\n- ``````````[l](dispatch://role/r)\n   \n2) ~~~ x\n  [^n]: ````````````\\a\\`` ``\r\n      ````\n[^n]: \t\t````x y\n",
+    "ranges": [
+      {
+        "start": 11,
+        "end": 50,
+        "block": true
+      },
+      {
+        "start": 50,
+        "end": 59,
+        "block": true
+      },
+      {
+        "start": 89,
+        "end": 100,
+        "block": true
+      },
+      {
+        "start": 100,
+        "end": 116,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 99 drawn from seed 3",
+    "body": "`  a````x y````a````",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 15,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 100 drawn from seed 3",
+    "body": "> ``````````\\\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 14,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 101 drawn from seed 3",
+    "body": "    😀  `#q1``````x y\\\\````  \\\n\t###### h\n2) #q1code`a#q1``\n```\n* ``````éx y\\``  ``  [l](dispatch://role/r)\n2) ```\n>``````CORE-2`````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 41,
+        "block": true
+      },
+      {
+        "start": 59,
+        "end": 132,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 102 drawn from seed 3",
+    "body": "`CORE-2\t`\r\n- ````` ``\n[^n]: ***\n   😀`` é```dispatch://CORE-1[l](dispatch://role/r)\n-     dispatch://CORE-1[l](dispatch://role/r)``````````````\\\\\n\r\né``\\\\\\`\n    ~~~ x\n \t```\\\\code````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 9,
+        "block": false
+      },
+      {
+        "start": 84,
+        "end": 146,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 103 drawn from seed 3",
+    "body": "    ``é\n\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 104 drawn from seed 3",
+    "body": "> > --\r\n\t😀```a\\````\\é````````````\r\n> * * *\n>``\\``\r\n   # h\n   ``````````\n1. \n- > ###### h\r\n`````\r\n \t\\  codex y````\n",
+    "ranges": [
+      {
+        "start": 45,
+        "end": 50,
+        "block": false
+      },
+      {
+        "start": 59,
+        "end": 115,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 105 drawn from seed 3",
+    "body": ">     CORE-2`````\\`\\`#q1```\n[^n]:  \n- \\\\\\````\\```é\n````````code[l](dispatch://role/r)#q1[l](dispatch://role/r)",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 28,
+        "block": true
+      },
+      {
+        "start": 42,
+        "end": 49,
+        "block": false
+      },
+      {
+        "start": 51,
+        "end": 110,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 106 drawn from seed 3",
+    "body": "CORE-2```écode\r\n  ===\r\n- > `x y\tx y`````\r\n- ```code`\\````````adispatch://CORE-1CORE-2\n2) #no\r> \\`",
+    "ranges": []
+  },
+  {
+    "name": "body 107 drawn from seed 3",
+    "body": "``````\\\\`a`[l](dispatch://role/r)\r```#q1x y`a\n- ~~~ x\n- > \\\\`code```````code\r\n   😀\t```#q1[l](dispatch://role/r)x y\n   \n* ``````x yx y```````a\n    \t\n- ~~~~\n- > \\````#q1``😀\\\n-      \r\n[^n]: `",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 11,
+        "block": false
+      },
+      {
+        "start": 46,
+        "end": 54,
+        "block": true
+      },
+      {
+        "start": 149,
+        "end": 156,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 108 drawn from seed 3",
+    "body": "   ---\r\n``````\t`````é``\r\n> \t``````````CORE-2é\\\\\r\n\n```\\\n",
+    "ranges": [
+      {
+        "start": 25,
+        "end": 49,
+        "block": true
+      },
+      {
+        "start": 50,
+        "end": 55,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 109 drawn from seed 3",
+    "body": ">   `````#q1`````\\```\n \r\n \tdispatch://CORE-1`\\````dispatch://CORE-1\\``````\n- > #q1``\\\\``````#q1#q1\r\n    ````  `````x yCORE-2``\n- > ``\t😀\n\tx y````````\n[^n]: \n> - ````````````  ",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 17,
+        "block": false
+      },
+      {
+        "start": 25,
+        "end": 75,
+        "block": true
+      },
+      {
+        "start": 82,
+        "end": 126,
+        "block": false
+      },
+      {
+        "start": 157,
+        "end": 175,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 110 drawn from seed 3",
+    "body": "      ``😀\n \t[l](dispatch://role/r)dispatch://CORE-1```````` ``\\`\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 67,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 111 drawn from seed 3",
+    "body": "`\\ ``\n   `😀```\\``CORE-2``````\n\t~~~",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 112 drawn from seed 3",
+    "body": "\\\\```````````a````\\\n\t```\r\n\t`````\n2) a`dispatch://CORE-1``\\`x y\r\n> ```````[l](dispatch://role/r)\n* a`````\n[^n]: a```` code`code```\n>     # h\n  [^n]: ```\t```\n2) #no\r> > dispatch://CORE-1 `\r\n",
+    "ranges": [
+      {
+        "start": 37,
+        "end": 59,
+        "block": false
+      },
+      {
+        "start": 64,
+        "end": 96,
+        "block": true
+      },
+      {
+        "start": 130,
+        "end": 140,
+        "block": true
+      },
+      {
+        "start": 148,
+        "end": 155,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 113 drawn from seed 3",
+    "body": "* ``\n[^n]: ```\\\\#q1``````````\n-     😀dispatch://CORE-1code\r\n>     ``[l](dispatch://role/r)codeCORE-2\\````#q1```#q1`\n      ```````[l](dispatch://role/r)\ta#q1dispatch://CORE-1`\n      ~~~\n \ta\\#q1é```x y\\\\x y\\\\\r\n  [^n]: ~~~ x\n>     `😀`",
+    "ranges": [
+      {
+        "start": 30,
+        "end": 61,
+        "block": true
+      },
+      {
+        "start": 61,
+        "end": 117,
+        "block": true
+      },
+      {
+        "start": 117,
+        "end": 209,
+        "block": true
+      },
+      {
+        "start": 209,
+        "end": 223,
+        "block": true
+      },
+      {
+        "start": 223,
+        "end": 233,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 114 drawn from seed 3",
+    "body": "1. `\\`#q1```````````````````\na\t```````````CORE-2\r\n> #no\n```````````😀#q1\t\\\\```\n>``````````dispatch://CORE-1#q1[l](dispatch://role/r)```````\n  [^n]: ``````\\\\CORE-2```  ``````  a\n+ \\`````````\\\\\\`\\`é``````````\n\\\\😀```````\n``dispatch://CORE-1` \\\\``  \t```\r\n>     CORE-2``````  \\\\``\\`😀\n``` sh\n  #no\n",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 6,
+        "block": false
+      },
+      {
+        "start": 148,
+        "end": 173,
+        "block": false
+      },
+      {
+        "start": 219,
+        "end": 244,
+        "block": false
+      },
+      {
+        "start": 252,
+        "end": 281,
+        "block": true
+      },
+      {
+        "start": 281,
+        "end": 294,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 115 drawn from seed 3",
+    "body": " x y\n-     \\\\#q1````` #q1  ``````\r\n      `````````````\r\n\t\t\\`dispatch://CORE-1````é\n2) ``````````[l](dispatch://role/r)\\x y\r\n2) é````écodea[l](dispatch://role/r)``````\n \t\r\n\tdispatch://CORE-1`````````\t```[l](dispatch://role/r)\n2) CORE-2dispatch://CORE-1`````x y\\\n    [l](dispatch://role/r)`````` ``````````````\n>     #no\n",
+    "ranges": [
+      {
+        "start": 5,
+        "end": 83,
+        "block": true
+      },
+      {
+        "start": 83,
+        "end": 124,
+        "block": true
+      },
+      {
+        "start": 309,
+        "end": 319,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 116 drawn from seed 3",
+    "body": "\\\\\\`x y`#q1\n> > ``\\\\````````\n- > code``a`a``\ncode😀```````\r\n> `dispatch://CORE-1``dispatch://CORE-1````\n- code😀   \\\\``` `````\r \t``````#q1``````dispatch://CORE-1\n+ ```\n> `````````code\\\\`````CORE-2\\\\\r\nCORE-2a```````#q1\\`\\`````\n`dispatch://CORE-1#q1😀é#q1  acode\n",
+    "ranges": [
+      {
+        "start": 37,
+        "end": 44,
+        "block": false
+      },
+      {
+        "start": 129,
+        "end": 144,
+        "block": false
+      },
+      {
+        "start": 162,
+        "end": 168,
+        "block": true
+      },
+      {
+        "start": 185,
+        "end": 225,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 117 drawn from seed 3",
+    "body": ">codecode`code`````é````dispatch://CORE-1``\n- \n  dispatch://CORE-1`#q1``````\n> ===\r\n\t\\``````````````[l](dispatch://role/r)\n  [^n]: \\`dispatch://CORE-1``[l](dispatch://role/r)\n[^n]: # h\n   😀`````` \\```\n- \n> -  \n* `CORE-2``````````````\r> `\t`````CORE-2\\\\``````\n",
+    "ranges": [
+      {
+        "start": 213,
+        "end": 238,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 118 drawn from seed 3",
+    "body": "2) #no\n>```\n> > ``````````é[l](dispatch://role/r)#q1[l](dispatch://role/r)``````",
+    "ranges": [
+      {
+        "start": 7,
+        "end": 80,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 119 drawn from seed 3",
+    "body": "[^n]: `````code[l](dispatch://role/r)dispatch://CORE-1`````a😀`````\n",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 59,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 120 drawn from seed 3",
+    "body": "[^n]:  \n `\\a`#q1\\é\n [l](dispatch://role/r)````````````dispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 9,
+        "end": 13,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 121 drawn from seed 3",
+    "body": "   \r\n1. \t\t```\\\\``\r>  `````````````[l](dispatch://role/r)\n2) \t\n```````\\`\n  \\``````````😀code``\t`\n+ \r\n\t``CORE-2\\a` `CORE-2",
+    "ranges": [
+      {
+        "start": 5,
+        "end": 57,
+        "block": true
+      },
+      {
+        "start": 91,
+        "end": 103,
+        "block": false
+      },
+      {
+        "start": 111,
+        "end": 114,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 122 drawn from seed 3",
+    "body": "> - #q1````dispatch://CORE-1`[l](dispatch://role/r)😀`dispatch://CORE-1```\n   ---\n> -  \n ``é``x y`````é````\r\nx y``````````````😀`````\\\\é\n1. ```\\\\  [l](dispatch://role/r)````[l](dispatch://role/r)dispatch://CORE-1\n1. `````\\\\a``\\\t\r\n- > ###### h\r\n ```",
+    "ranges": [
+      {
+        "start": 28,
+        "end": 54,
+        "block": false
+      },
+      {
+        "start": 89,
+        "end": 94,
+        "block": false
+      },
+      {
+        "start": 97,
+        "end": 133,
+        "block": false
+      },
+      {
+        "start": 244,
+        "end": 248,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 123 drawn from seed 3",
+    "body": " * * *\r\n- \t````  ``#q1``````\n> > \\\\```````\\`a\r\n-     \r- > ``\n-     ``x y``a\\`\n",
+    "ranges": [
+      {
+        "start": 47,
+        "end": 61,
+        "block": true
+      },
+      {
+        "start": 61,
+        "end": 78,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 124 drawn from seed 3",
+    "body": "  CORE-2\n",
+    "ranges": []
+  },
+  {
+    "name": "body 125 drawn from seed 3",
+    "body": "> -  \n  [^n]: \r``````\r>  `  ```x y```\r\n\t``````````````é`````\n- # h\n> > `\t`````[l](dispatch://role/r)`\n```\n- > ```\n> - a```  ````````\n",
+    "ranges": [
+      {
+        "start": 28,
+        "end": 37,
+        "block": false
+      },
+      {
+        "start": 71,
+        "end": 101,
+        "block": false
+      },
+      {
+        "start": 102,
+        "end": 133,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 126 drawn from seed 3",
+    "body": "[^n]: [l](dispatch://role/r)x y#q1a ````````````\n>     * * *\nx ycode`x y\r\n",
+    "ranges": [
+      {
+        "start": 49,
+        "end": 61,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 127 drawn from seed 3",
+    "body": "é\n~~~ x\n> > ````````````````#q1  `\n>`\\`codeé```````\n       ````\r\n-  \n ---\r\n",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 75,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 128 drawn from seed 3",
+    "body": "[^n]: ___\n",
+    "ranges": []
+  },
+  {
+    "name": "body 129 drawn from seed 3",
+    "body": "1. ~~~\n>  x y```\\`````` \r\na\r\n- >  ``````\\\\[l](dispatch://role/r)`````dispatch://CORE-1``\n`````code\\[l](dispatch://role/r)a``\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 7,
+        "block": true
+      },
+      {
+        "start": 64,
+        "end": 94,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 130 drawn from seed 3",
+    "body": ">     \\`  \\\\`\n\ta```\\``````\\codeé\n* \t😀dispatch://CORE-1\r\n- ``````x y`````````\r\n+ `````\t````````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 14,
+        "block": true
+      },
+      {
+        "start": 14,
+        "end": 33,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 131 drawn from seed 3",
+    "body": "  `````😀````é\r\n      \r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 132 drawn from seed 3",
+    "body": "`````````````#q1 ``\n``é``#q1`````````````\r\n> - ````````\\`\\`code`\\CORE-2",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 41,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 133 drawn from seed 3",
+    "body": "```dispatch://CORE-1``````  ````````😀\n* [l](dispatch://role/r)\t\r\n+ ```````````\n```\\CORE-2`````````x y\n[^n]: é```😀\\\t#q1\n2) ===\n- `````codecode```````\r\n \t😀`😀````[l](dispatch://role/r)````\n> \t\t[l](dispatch://role/r)`````\\`\n    \n* ``#q1````\t`",
+    "ranges": [
+      {
+        "start": 66,
+        "end": 80,
+        "block": true
+      },
+      {
+        "start": 159,
+        "end": 189,
+        "block": false
+      },
+      {
+        "start": 190,
+        "end": 224,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 134 drawn from seed 3",
+    "body": "  dispatch://CORE-1\r\n>     code``#q1`````[l](dispatch://role/r)CORE-2````\r\n>     ***\r\n  [^n]: ````\t``\n-     # h",
+    "ranges": [
+      {
+        "start": 21,
+        "end": 86,
+        "block": true
+      },
+      {
+        "start": 102,
+        "end": 111,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 135 drawn from seed 3",
+    "body": "  \\`[l](dispatch://role/r)````````\\\n ```\n> -   [l](dispatch://role/r)dispatch://CORE-1dispatch://CORE-1\\`\n`code``dispatch://CORE-1\\\\#q1````````\r\n``````\t``\n`\r\n[^n]: `````\ncode ``````",
+    "ranges": [
+      {
+        "start": 36,
+        "end": 181,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 136 drawn from seed 3",
+    "body": "    ``` sh\n\t\\#q1\n> - * * *\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 17,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 137 drawn from seed 3",
+    "body": "```\n      ***\n\t[l](dispatch://role/r)\n>é#q1``CORE-2``dispatch://CORE-1CORE-2`\n>``😀adispatch://CORE-1dispatch://CORE-1`\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 121,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 138 drawn from seed 3",
+    "body": "> - ` #q1\\\\a\r\n+ \t\r\n``  ````````````````````````\n \t#no\n  ~~~ x",
+    "ranges": [
+      {
+        "start": 54,
+        "end": 61,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 139 drawn from seed 3",
+    "body": "> > \r\n---\n~~~`x\n> - ~~~~",
+    "ranges": [
+      {
+        "start": 10,
+        "end": 24,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 140 drawn from seed 3",
+    "body": "-     * * *\n> ```a\n``",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 12,
+        "block": true
+      },
+      {
+        "start": 12,
+        "end": 19,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 141 drawn from seed 3",
+    "body": ">~~~~\n-     x y\\\\\t`\\\\\r\n> \r\n  code````````dispatch://CORE-1\n a````````\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 6,
+        "block": true
+      },
+      {
+        "start": 6,
+        "end": 23,
+        "block": true
+      },
+      {
+        "start": 33,
+        "end": 69,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 142 drawn from seed 3",
+    "body": "\\```a\n> - 😀````\n    `````````\\`\n    ````````a```\\`\t`````````````\n",
+    "ranges": []
+  },
+  {
+    "name": "body 143 drawn from seed 3",
+    "body": "\t\t````code\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 144 drawn from seed 3",
+    "body": "- > ``\r\n é`````dispatch://CORE-1éCORE-2\\````\n___\r\n ````[l](dispatch://role/r)\\`CORE-2\n#q1````[l](dispatch://role/r)😀[l](dispatch://role/r)````````\n> ```````````\n  [^n]: ```````  x y\\\\````codeé\t\r\n``````````a#q1\n`[l](dispatch://role/r)`````\n- > ````dispatch://CORE-1```\tx y[l](dispatch://role/r)dispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 51,
+        "end": 93,
+        "block": false
+      },
+      {
+        "start": 148,
+        "end": 162,
+        "block": true
+      },
+      {
+        "start": 196,
+        "end": 311,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 145 drawn from seed 3",
+    "body": "-     \\``````CORE-2\\\\dispatch://CORE-1`````\n``éaa`` x y````\r      ````\\\\",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 44,
+        "block": true
+      },
+      {
+        "start": 44,
+        "end": 51,
+        "block": false
+      },
+      {
+        "start": 55,
+        "end": 70,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 146 drawn from seed 3",
+    "body": "```dispatch://CORE-1``😀```````\n+ \n+ CORE-2```  \\\\\r\n      ``code``````\\`😀x y\n>``😀 ``\\\\```[l](dispatch://role/r)\n[l](dispatch://role/r)``  \n>`````````a`#q1`\r\n2) ```````\t``\r    \\`[l](dispatch://role/r) \\\\`\r\n- > ```````  😀 \\\\#q1\r\n``````````code`\r\n",
+    "ranges": [
+      {
+        "start": 79,
+        "end": 86,
+        "block": false
+      },
+      {
+        "start": 152,
+        "end": 157,
+        "block": false
+      },
+      {
+        "start": 207,
+        "end": 230,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 147 drawn from seed 3",
+    "body": "[^n]: CORE-2\\\\````````\n```````\\````a\n* * *\n[^n]: \n-     ~~~\n```a`b\n```😀adispatch://CORE-1`````\nCORE-2\ré`````````[l](dispatch://role/r)`````\t\n\t\t``dispatch://CORE-1```````` \n    😀\\\n",
+    "ranges": [
+      {
+        "start": 50,
+        "end": 60,
+        "block": true
+      },
+      {
+        "start": 60,
+        "end": 70,
+        "block": false
+      },
+      {
+        "start": 90,
+        "end": 140,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 148 drawn from seed 3",
+    "body": "---\r\n````````aCORE-2`\t`\n\\``````` \t\\`````````\r\n",
+    "ranges": [
+      {
+        "start": 20,
+        "end": 23,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 149 drawn from seed 3",
+    "body": "2) 😀\\````````````````````````",
+    "ranges": []
+  },
+  {
+    "name": "body 150 drawn from seed 3",
+    "body": "\\\\``a\na``````\t\n> - \n\t```dispatch://CORE-1é\t\n   `\\`````````\n> `````\n \t~~~`x\r\n   # h\n> `\\\\`\tax y\t`",
+    "ranges": [
+      {
+        "start": 20,
+        "end": 44,
+        "block": true
+      },
+      {
+        "start": 59,
+        "end": 67,
+        "block": true
+      },
+      {
+        "start": 67,
+        "end": 76,
+        "block": true
+      },
+      {
+        "start": 85,
+        "end": 89,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 151 drawn from seed 3",
+    "body": "- \\\\éCORE-2```\n___\n\t````````😀`\\`\n+ ***\n   😀``CORE-2````````CORE-2\\\\``\n a````\tdispatch://CORE-1``````\r\n",
+    "ranges": [
+      {
+        "start": 19,
+        "end": 34,
+        "block": true
+      },
+      {
+        "start": 45,
+        "end": 71,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 152 drawn from seed 3",
+    "body": "-     \\````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 153 drawn from seed 3",
+    "body": "-     ___\n \t#no\n``\tcode\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 154 drawn from seed 3",
+    "body": ">     ***\n> a```#q1a`````````#q1\n   ````aé``x y`éx y``\n \t\\\\#q1#q1CORE-2````dispatch://CORE-1````````\n- > code``````````````` `\\`\nCORE-2\\\\\\\\\\\\[l](dispatch://role/r)a``\t\n> ```go\r\n\\`x y\\`code\\`\\\\\r\n   ###### h\n>     éé\\````\r\n      ``````code\\`\\code\n````````\\` #q1 \n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      },
+      {
+        "start": 36,
+        "end": 75,
+        "block": false
+      },
+      {
+        "start": 125,
+        "end": 128,
+        "block": false
+      },
+      {
+        "start": 168,
+        "end": 177,
+        "block": true
+      },
+      {
+        "start": 206,
+        "end": 221,
+        "block": true
+      },
+      {
+        "start": 221,
+        "end": 245,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 155 drawn from seed 3",
+    "body": "\tdispatch://CORE-1```\\``\\\\\n dispatch://CORE-1``````code````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 27,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 156 drawn from seed 3",
+    "body": " é`\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 157 drawn from seed 3",
+    "body": "```````````\r\n- [l](dispatch://role/r)`CORE-2  ``\\\\\\\r\n-     code` \\`x y````````\n    #no",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 86,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 158 drawn from seed 3",
+    "body": "      \r\n+ ``````é`````````\\``\n- ~~~~\r\n  [^n]: `````````\n\\\\a\\```````````\n2) ===\nCORE-2CORE-2CORE-2```````````code\r\n      \r\nCORE-2😀dispatch://CORE-1[l](dispatch://role/r)```````\n",
+    "ranges": [
+      {
+        "start": 30,
+        "end": 56,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 159 drawn from seed 3",
+    "body": " \\\\\r\n-     #q1``\t[l](dispatch://role/r)``````````````````\né#q1\\\\CORE-2``````````````\n-     ````\\`\\\n> \\\\`\\`\t\r\n2) \n> \t\r\n> ````````````😀```````````````\n===\n1. ``````😀CORE-2````[l](dispatch://role/r)````````\r\n>dispatch://CORE-1 code",
+    "ranges": [
+      {
+        "start": 5,
+        "end": 58,
+        "block": true
+      },
+      {
+        "start": 85,
+        "end": 99,
+        "block": true
+      },
+      {
+        "start": 103,
+        "end": 106,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 160 drawn from seed 3",
+    "body": "   `\\`````\n`````````\n>     é```\\\\\n\\\\\n* ````````   \\  \\code\r\n+ a``````````````````\r\n ```````````code``````#q1\\`😀\r\n``````````````` \r\n",
+    "ranges": [
+      {
+        "start": 11,
+        "end": 132,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 161 drawn from seed 3",
+    "body": "   a`aCORE-2code😀\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 162 drawn from seed 3",
+    "body": "[^n]: \n ``\n``\n  ``````` dispatch://CORE-1\n    ````é`a`````dispatch://CORE-1\n* \t``\n- ```a`b\n😀````\t",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 13,
+        "block": false
+      },
+      {
+        "start": 14,
+        "end": 98,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 163 drawn from seed 3",
+    "body": "2) 😀[l](dispatch://role/r)````````a\r\n> - ```😀`CORE-2\n[^n]: ````\n``````````x y````\r> CORE-2[l](dispatch://role/r)```````code``",
+    "ranges": [
+      {
+        "start": 55,
+        "end": 66,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 164 drawn from seed 3",
+    "body": "* ```````\\````dispatch://CORE-1```` ```\\\\CORE-2\n  [^n]: `````````\r\n  `😀````CORE-2\\\\\\\\x y```\n``` sh\n>````````\n> > * * *\r \t***\r\n[l](dispatch://role/r)```````````\n>     ``````😀  ````\n+ dispatch://CORE-1\\`    ``",
+    "ranges": [
+      {
+        "start": 11,
+        "end": 39,
+        "block": false
+      },
+      {
+        "start": 48,
+        "end": 67,
+        "block": true
+      },
+      {
+        "start": 93,
+        "end": 209,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 165 drawn from seed 3",
+    "body": " \t``\\```````````\n```\n2)  [l](dispatch://role/r)``````````````CORE-2😀``  é\n \t\t\t``😀[l](dispatch://role/r)code\r\n\n> > \\\\`a\n2) ``é``````é```\n>     `````\n  [^n]: \t `````\\\\````x y\t\n``x y``\\\\code\\` #q1a\n-     #q1  \\[l](dispatch://role/r)\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 17,
+        "block": true
+      },
+      {
+        "start": 17,
+        "end": 232,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 166 drawn from seed 3",
+    "body": "1. `````\n[^n]: `````````````CORE-2é[l](dispatch://role/r)``\n       \n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 9,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 167 drawn from seed 3",
+    "body": "    `[l](dispatch://role/r)a😀\\```\r###### h\n2) dispatch://CORE-1\\\\``#q1\\\n+ é[l](dispatch://role/r)`````````````a\\``é\n1. ```````#q1``a😀[l](dispatch://role/r)\\\\``\t  ",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 44,
+        "block": true
+      },
+      {
+        "start": 130,
+        "end": 161,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 168 drawn from seed 3",
+    "body": "``` sh\n#q1``````a\\\\``#q1#q1😀\n ``````x y\r\n\t```````dispatch://CORE-1`````````````code",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 84,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 169 drawn from seed 3",
+    "body": "    ~~~\n* * *\r\n`CORE-2`````````````````code``````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 8,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 170 drawn from seed 3",
+    "body": "> > CORE-2`é`````[l](dispatch://role/r)éé😀````\n   \\\n``````` é``\n   `\n> > ~~~ x\n  ````CORE-2\\``\r\n",
+    "ranges": [
+      {
+        "start": 10,
+        "end": 69,
+        "block": false
+      },
+      {
+        "start": 70,
+        "end": 80,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 171 drawn from seed 3",
+    "body": "[l](dispatch://role/r)``` \n",
+    "ranges": []
+  },
+  {
+    "name": "body 172 drawn from seed 3",
+    "body": "```````````\n  [^n]: x y\n1. `#q1   `````````\\dispatch://CORE-1a\n      \n1. ``\n[^n]: code```````\n    ````` ``dispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 123,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 173 drawn from seed 3",
+    "body": "> ``\r\n    ---\n😀#q1````#q1``\r\n \t\t\r\n      😀``````````😀 `````````😀``````````\r  [^n]: ~~~ x\n- > `\n \t````\n***\n  \n    ```\r\n    ```a`b\r",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 28,
+        "block": false
+      },
+      {
+        "start": 35,
+        "end": 92,
+        "block": true
+      },
+      {
+        "start": 98,
+        "end": 105,
+        "block": true
+      },
+      {
+        "start": 112,
+        "end": 132,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 174 drawn from seed 3",
+    "body": "      ###### h\n-     CORE-2```````CORE-2\r\n  `\n````\n>     `\r\n``CORE-2code````````code``",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 15,
+        "block": true
+      },
+      {
+        "start": 15,
+        "end": 42,
+        "block": true
+      },
+      {
+        "start": 46,
+        "end": 86,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 175 drawn from seed 3",
+    "body": "-     code\n+ ``````\\\r\n>     ````````````\r~~~ x\r-     ***\n--\n \t\n``````````#q1code``édispatch://CORE-1```\r\n```\\\\\r\n````````````\r\n>     `````````a```\t``````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      },
+      {
+        "start": 11,
+        "end": 22,
+        "block": true
+      },
+      {
+        "start": 22,
+        "end": 57,
+        "block": true
+      },
+      {
+        "start": 105,
+        "end": 126,
+        "block": true
+      },
+      {
+        "start": 126,
+        "end": 156,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 176 drawn from seed 3",
+    "body": "[^n]: ````\r\n\\\\\\\\code```````\n   --\r\n-     ``````````````CORE-2````code`\n#q1😀\n* ~~~\rdispatch://CORE-1  `````````````😀```````\n[^n]: a```````````\\``\\``\n- ===\n      aCORE-2``  code```\r\n    [l](dispatch://role/r)\\[l](dispatch://role/r)````````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 12,
+        "block": true
+      },
+      {
+        "start": 35,
+        "end": 71,
+        "block": true
+      },
+      {
+        "start": 77,
+        "end": 125,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 177 drawn from seed 3",
+    "body": "   \\````````\n>* * *\n+  \t````[l](dispatch://role/r)``````````CORE-2\r\n ```````` ``\\\\\n   ###### h\n-     dispatch://CORE-1`a`````#q1\n* adispatch://CORE-1😀[l](dispatch://role/r)dispatch://CORE-1```````````[l](dispatch://role/r)\n- > é\t\n> ~~~ x\n`````\r\n`",
+    "ranges": [
+      {
+        "start": 95,
+        "end": 129,
+        "block": true
+      },
+      {
+        "start": 231,
+        "end": 239,
+        "block": true
+      },
+      {
+        "start": 239,
+        "end": 247,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 178 drawn from seed 3",
+    "body": "2) ````[l](dispatch://role/r)``````\\\\\r\n+ ~~~\r```\n\t# h\r\n>😀😀\\`dispatch://CORE-1```\r\n-     \\\\code[l](dispatch://role/r)  é```````\\`",
+    "ranges": [
+      {
+        "start": 39,
+        "end": 55,
+        "block": true
+      },
+      {
+        "start": 84,
+        "end": 130,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 179 drawn from seed 3",
+    "body": "- \r\n[^n]:  `#q1 ``````````````x y  \n[^n]: \\\\é````````````éa\n````````````[l](dispatch://role/r)````\r\n-     ===\r-     dispatch://CORE-1````````````#q1``\\`\n  [^n]: ``\n> - \\x y\n```\\````x y\n\tdispatch://CORE-1\\`code#q1#q1  `\t\n> #no\r\n>***",
+    "ranges": [
+      {
+        "start": 45,
+        "end": 72,
+        "block": false
+      },
+      {
+        "start": 100,
+        "end": 153,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 180 drawn from seed 3",
+    "body": "1. \r\n* ___\n",
+    "ranges": []
+  },
+  {
+    "name": "body 181 drawn from seed 3",
+    "body": " ``````````\tdispatch://CORE-1[l](dispatch://role/r)\r  `#q1`\r\n    `````\\codeCORE-2\r\n-     \n* [l](dispatch://role/r)\\[l](dispatch://role/r)```    \n  ```\r\n>     [l](dispatch://role/r)`CORE-2  ``````CORE-2  `\n      `````\r   ``\\\\``é```\\\\`````\n",
+    "ranges": [
+      {
+        "start": 54,
+        "end": 59,
+        "block": false
+      },
+      {
+        "start": 145,
+        "end": 152,
+        "block": true
+      },
+      {
+        "start": 152,
+        "end": 205,
+        "block": true
+      },
+      {
+        "start": 205,
+        "end": 238,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 182 drawn from seed 3",
+    "body": "    `` `\t``````````````x y\r\n```\n> -  ``\t```code\n\t```````CORE-2a````\n  #q1x y`\\\\   acode``\r\n      \n[^n]:   dispatch://CORE-1 ``````\\`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 28,
+        "block": true
+      },
+      {
+        "start": 28,
+        "end": 132,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 183 drawn from seed 3",
+    "body": "> ```` `````CORE-2\r\n  code\n      adispatch://CORE-1`````````\r\n---\n ``````  `````\t\\`\n`\\````x y`code\\`\r>````` ```",
+    "ranges": [
+      {
+        "start": 75,
+        "end": 107,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 184 drawn from seed 3",
+    "body": "  [^n]: ````````a```\n``é`````````\n> - `\\`\r-     `````x ya`````\n      ``[l](dispatch://role/r)``````CORE-2`````\\\\``\n",
+    "ranges": [
+      {
+        "start": 38,
+        "end": 41,
+        "block": false
+      },
+      {
+        "start": 48,
+        "end": 62,
+        "block": false
+      },
+      {
+        "start": 69,
+        "end": 114,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 185 drawn from seed 3",
+    "body": "   x y\\\\```\\``````\n> > ```\n``````````````x y[l](dispatch://role/r)````````\\\n  [^n]: [l](dispatch://role/r)``\r\n> - `\\   \\\\😀x yx y`````\n[^n]: [l](dispatch://role/r)`a",
+    "ranges": [
+      {
+        "start": 19,
+        "end": 27,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 186 drawn from seed 3",
+    "body": "- `a\n",
+    "ranges": []
+  },
+  {
+    "name": "body 187 drawn from seed 3",
+    "body": "\t``😀é#q1```````[l](dispatch://role/r)```````\\\\``\n>     ``\\``````````é```\\\\\n> ```x y`é#q1aé`\t\\\n- ````````````\\```codedispatch://CORE-1\n- > ````````  \té\n```code😀😀``code`CORE-2```\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 50,
+        "block": true
+      },
+      {
+        "start": 50,
+        "end": 76,
+        "block": true
+      },
+      {
+        "start": 84,
+        "end": 92,
+        "block": false
+      },
+      {
+        "start": 135,
+        "end": 152,
+        "block": true
+      },
+      {
+        "start": 152,
+        "end": 179,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 188 drawn from seed 3",
+    "body": "\t`````````#q1`````````\n+ ```\t```````\n- x y\\`dispatch://CORE-1\n   ``#q1\ndispatch://CORE-1\t  [l](dispatch://role/r)\\\\```````x y`\r\n\\`\n> - ```````````x y```CORE-2\r\n    `````\n\\`dispatch://CORE-1 \n+ \n- dispatch://CORE-1```\\😀``````````code`\n[^n]:   `````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 23,
+        "block": true
+      },
+      {
+        "start": 125,
+        "end": 130,
+        "block": false
+      },
+      {
+        "start": 235,
+        "end": 248,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 189 drawn from seed 3",
+    "body": " \t`\\`````😀``````\n***\n       \n      ````````\t\\\t  ```````😀\n+ éCORE-2``\té```\\\r\n> > ",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 18,
+        "block": true
+      },
+      {
+        "start": 30,
+        "end": 59,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 190 drawn from seed 3",
+    "body": ">\n> - ````aaé``x y😀\n>``````\\\\\n[^n]: \\```````````\\`\\`CORE-2``\n   #no\n  ```````\t\n>~~~`x\n+ codeCORE-2`` \n>```\n1. ```````\n\r\n> >  \t[l](dispatch://role/r) \\\\\\` [l](dispatch://role/r)\\`  ",
+    "ranges": [
+      {
+        "start": 21,
+        "end": 31,
+        "block": true
+      },
+      {
+        "start": 69,
+        "end": 181,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 191 drawn from seed 3",
+    "body": "> `code\n      #q1#q1\\CORE-2````````\n> - \t````",
+    "ranges": [
+      {
+        "start": 36,
+        "end": 45,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 192 drawn from seed 3",
+    "body": "  dispatch://CORE-1CORE-2#q1a`code\n ===\n- dispatch://CORE-1``````````````````````` code\n\t\\\n* \\\\````````\\dispatch://CORE-1````` ```\n\t\r",
+    "ranges": []
+  },
+  {
+    "name": "body 193 drawn from seed 3",
+    "body": "~~~`x\r\n    [l](dispatch://role/r)`#q1code\\`````````\r\n+ \n  ===\r\n[^n]: CORE-2\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 76,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 194 drawn from seed 3",
+    "body": ">😀``\t```dispatch://CORE-1CORE-2é\t\nCORE-2````````\\\\\\\\`\n``code\\`é``````````\n> \\`\n+ dispatch://CORE-1#q1\t``````````  ```\\`\\\r   \\`\\`````\\`😀\\\n \t[l](dispatch://role/r)`````` ``codea`````` ````\r\n      code````\\\t````aé\r\n `````adispatch://CORE-1\r      ```\\``CORE-2CORE-2[l](dispatch://role/r)\n      `\n* ````",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 57,
+        "block": false
+      },
+      {
+        "start": 115,
+        "end": 248,
+        "block": false
+      },
+      {
+        "start": 250,
+        "end": 293,
+        "block": false
+      },
+      {
+        "start": 294,
+        "end": 300,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 195 drawn from seed 3",
+    "body": "````éx y`\t````````\\`code`\n>     dispatch://CORE-1````dispatch://CORE-1``a````[l](dispatch://role/r)\r\n[l](dispatch://role/r)\n``ax y\\\n```````````x y😀\\`  ```  \\\\\r>     ~~~\n😀`````````\\``CORE-2```````\r\n      \n>a\\`é\\`[l](dispatch://role/r)x y``````  \n*  \né```dispatch://CORE-1``#q1````\\`\\\\\r\n",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 20,
+        "block": false
+      },
+      {
+        "start": 26,
+        "end": 101,
+        "block": true
+      },
+      {
+        "start": 124,
+        "end": 184,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 196 drawn from seed 3",
+    "body": "``````\r\n>```\\``````CORE-2\r\n ``````\r\n[^n]: #q1#q1``\t ````````x y\n\\````\n \r\n2) \t\n#q1x y`````````😀`\\\\`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 36,
+        "block": true
+      },
+      {
+        "start": 95,
+        "end": 99,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 197 drawn from seed 3",
+    "body": "    ```````````````CORE-2[l](dispatch://role/r)`````\n+ CORE-2CORE-2```````` ``````\n>* * *",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 53,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 198 drawn from seed 3",
+    "body": " \t``  ``dispatch://CORE-1\\\\`#q1😀`````\t\n      [l](dispatch://role/r)````\r- > 😀[l](dispatch://role/r)`\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 104,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 199 drawn from seed 3",
+    "body": "   ``````#q1code😀```\n- ```😀code\n2) é\n``````````\\``\n- > ````````\n   x y\\\\``````😀``\r\n#q1`\\`[l](dispatch://role/r)```CORE-2code`` ``````\n  [^n]: ```````\\\\``````x y\n+ `CORE-2😀``````````````\r\n+ ```````````\r\n",
+    "ranges": [
+      {
+        "start": 22,
+        "end": 34,
+        "block": true
+      },
+      {
+        "start": 53,
+        "end": 66,
+        "block": true
+      },
+      {
+        "start": 74,
+        "end": 136,
+        "block": false
+      },
+      {
+        "start": 191,
+        "end": 206,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 200 drawn from seed 3",
+    "body": "    `````\r\n``\\````````x y\n2) `````\r\n[^n]: \t\n1. \t\n``\n  `````````#q1\\\\a\\\n[^n]: ```  `````dispatch://CORE-1 😀dispatch://CORE-1`\n   ``\n- > \\`x yé😀 \n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      },
+      {
+        "start": 52,
+        "end": 146,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 201 drawn from seed 3",
+    "body": "-     a````dispatch://CORE-1é```[l](dispatch://role/r)#q1\n    \\\\``\né😀\\\\````````acode\r- `x y`a`\\\\````\n  [^n]: \\```````CORE-2``\\\\\n2) \n\t😀\r\n>\t``\n``````````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 58,
+        "block": true
+      },
+      {
+        "start": 88,
+        "end": 93,
+        "block": false
+      },
+      {
+        "start": 143,
+        "end": 157,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 202 drawn from seed 3",
+    "body": "``` sh\n-     ~~~",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 16,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 203 drawn from seed 3",
+    "body": "* ```#q1````\n1. \\`\n \t`````````````````  `\n[^n]: ``é\nCORE-2` ```````` \n> - ``😀CORE-2code\\`\n\n \t😀`````````\\x y[l](dispatch://role/r)\r\n```code`````\n> \\`dispatch://CORE-1``````x y CORE-2 x y\n> -   ```````x y```````````\\`\n   `````````\r\n",
+    "ranges": [
+      {
+        "start": 92,
+        "end": 133,
+        "block": true
+      },
+      {
+        "start": 218,
+        "end": 232,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 204 drawn from seed 3",
+    "body": " \r\n- aa```````````[l](dispatch://role/r)`\\\\\n# h\r \n    ````````` ``\n",
+    "ranges": [
+      {
+        "start": 50,
+        "end": 67,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 205 drawn from seed 3",
+    "body": "> - ``😀````#q1``````````\n",
+    "ranges": []
+  },
+  {
+    "name": "body 206 drawn from seed 3",
+    "body": "      --\n   \t\\```\r\n  [l](dispatch://role/r)\\``````\\`\\\n````````\r\n  [^n]: ````````CORE-2\r```é``x y````\n````\té😀`\n      ###### h\n \ta`\\`\\\t`[l](dispatch://role/r)``\n+ `````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 19,
+        "block": true
+      },
+      {
+        "start": 54,
+        "end": 167,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 207 drawn from seed 3",
+    "body": "2) ````\\```````a\\````\n",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 21,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 208 drawn from seed 3",
+    "body": "  [^n]: ````dispatch://CORE-1\\````\t😀```````\n\t``````````x y```````\t  \t```````\n* ```\r\n1. ***\n\té``````````````\\dispatch://CORE-1#q1`\n  [^n]:   😀\n2) x yé\na\\``#q1`````dispatch://CORE-1code\n> > ~~~\r\n \t😀",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 34,
+        "block": false
+      },
+      {
+        "start": 37,
+        "end": 66,
+        "block": false
+      },
+      {
+        "start": 78,
+        "end": 85,
+        "block": true
+      },
+      {
+        "start": 186,
+        "end": 195,
+        "block": true
+      },
+      {
+        "start": 195,
+        "end": 199,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 209 drawn from seed 3",
+    "body": "~~~\ncode`````    ````````\r* ```````````😀```\\`  \r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 50,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 210 drawn from seed 3",
+    "body": "2) `````````\\x y😀```x y#q1dispatch://CORE-1#q1\r\n      [l](dispatch://role/r) x y```#q1x y#q1\ncode```````\\`\n\t```go\r\n> - #no\r\n \tdispatch://CORE-1\r\n```````#q1  ````#q1 \n    dispatch://CORE-1````\n-     `\n#q1CORE-2",
+    "ranges": [
+      {
+        "start": 18,
+        "end": 84,
+        "block": false
+      },
+      {
+        "start": 108,
+        "end": 116,
+        "block": true
+      },
+      {
+        "start": 158,
+        "end": 192,
+        "block": false
+      },
+      {
+        "start": 193,
+        "end": 201,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 211 drawn from seed 3",
+    "body": "[^n]: ```````````[l](dispatch://role/r)dispatch://CORE-1`#q1`\n    éédispatch://CORE-1[l](dispatch://role/r)```````\tx y\n+ `````\n+ adispatch://CORE-1\t`dispatch://CORE-1\\\\CORE-2a````\n      `````````````\\\\``````````\n    dispatch://CORE-1`\r\n\tx y\\ \né`x y\r\nx y`dispatch://CORE-1`````\n\t``\n___\n",
+    "ranges": [
+      {
+        "start": 56,
+        "end": 61,
+        "block": false
+      },
+      {
+        "start": 119,
+        "end": 127,
+        "block": true
+      },
+      {
+        "start": 148,
+        "end": 234,
+        "block": false
+      },
+      {
+        "start": 244,
+        "end": 254,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 212 drawn from seed 3",
+    "body": "-     [l](dispatch://role/r)[l](dispatch://role/r)`\t`````````````````\r\n- > \r\n    ````\\\\x yCORE-2dispatch://CORE-1\n> > ---\n1. --\n\\\\[l](dispatch://role/r)CORE-2code````````\\\n1. ===",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 71,
+        "block": true
+      },
+      {
+        "start": 77,
+        "end": 114,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 213 drawn from seed 3",
+    "body": "1. ``\n>``````\n```\r\n",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 14,
+        "block": true
+      },
+      {
+        "start": 14,
+        "end": 19,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 214 drawn from seed 3",
+    "body": "* \\`````````\n \t``a````````\\\\````\n \tcode[l](dispatch://role/r)``",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 26,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 215 drawn from seed 3",
+    "body": " \t``a`😀`````\n``` sh\n> > code`````[l](dispatch://role/r)a😀\\\\\\``\r\n    ---\n2) ``\r\n dispatch://CORE-1```````CORE-2````````\n+ ```````acode  \n~~~",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 14,
+        "block": true
+      },
+      {
+        "start": 14,
+        "end": 141,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 216 drawn from seed 3",
+    "body": "-     ``````dispatch://CORE-1é\\\\\\`😀\\`\n\t```CORE-2\\````````\\\r\n2) \\`x y`x y[l](dispatch://role/r)\r\n> > ===\r\tcode`\t\r``\\`\\```é\\`  \r\n\\```CORE-2CORE-2``écode\n \t```\\`é#q1\n  [^n]: ````````````````\r+ ``````````\\`  \\`",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 39,
+        "block": true
+      },
+      {
+        "start": 110,
+        "end": 117,
+        "block": false
+      },
+      {
+        "start": 119,
+        "end": 146,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 217 drawn from seed 3",
+    "body": "[^n]: ~~~\r\n`````\n```````````#q1\r      ``` sh\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 11,
+        "block": true
+      },
+      {
+        "start": 11,
+        "end": 46,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 218 drawn from seed 3",
+    "body": "  \n* * *\n+ CORE-2a[l](dispatch://role/r)``````````\\`\n> #no\ncode```\t``````\n   --\n\t`` \\```\n   ``\\\\\ta``\\``\\\\``````\n",
+    "ranges": [
+      {
+        "start": 63,
+        "end": 88,
+        "block": false
+      },
+      {
+        "start": 92,
+        "end": 100,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 219 drawn from seed 3",
+    "body": "* \\\r\n\t````````````````#q1a\\``\n\n",
+    "ranges": []
+  },
+  {
+    "name": "body 220 drawn from seed 3",
+    "body": "   ééa```\n1. \\code````acode \n  😀`````😀`````\\````````````````\r\n* ``\n``code\t\n*  ``😀``éCORE-2````````````a\r\n-     `````````````[l](dispatch://role/r) `````dispatch://CORE-1\nx y``````````CORE-2\r* ```\n> > \t``````",
+    "ranges": [
+      {
+        "start": 33,
+        "end": 45,
+        "block": false
+      },
+      {
+        "start": 66,
+        "end": 71,
+        "block": false
+      },
+      {
+        "start": 80,
+        "end": 86,
+        "block": false
+      },
+      {
+        "start": 108,
+        "end": 173,
+        "block": true
+      },
+      {
+        "start": 199,
+        "end": 210,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 221 drawn from seed 3",
+    "body": "\t \n1. a```\n> \\````\n  [^n]: #q1\n \t``````````````#q1😀dispatch://CORE-1\r# h",
+    "ranges": [
+      {
+        "start": 31,
+        "end": 73,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 222 drawn from seed 3",
+    "body": "+ `dispatch://CORE-1```\\  ````` `x ya\n1. 😀``````````````````````\n>CORE-2\tx y``````````code```  \n\t===",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 33,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 223 drawn from seed 3",
+    "body": "+ \t\r\n    #q1\\\\```````😀\n2) #no\n- ``` sh\r\n* \\CORE-2`   ````dispatch://CORE-1\n- x y``\\`\r\n😀````````\n\\\\``x y````\t```\\`\r\n ___\n1. ```\n ```a`b",
+    "ranges": [
+      {
+        "start": 31,
+        "end": 41,
+        "block": true
+      },
+      {
+        "start": 81,
+        "end": 102,
+        "block": false
+      },
+      {
+        "start": 122,
+        "end": 129,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 224 drawn from seed 3",
+    "body": "[l](dispatch://role/r)#q1`````````\\\\ ``\n````\n-     `````````[l](dispatch://role/r)a x y\n> ``````😀é\r\n \tx y`````code[l](dispatch://role/r)[l](dispatch://role/r)[l](dispatch://role/r)```````#q1\r\n\n \t\n",
+    "ranges": [
+      {
+        "start": 40,
+        "end": 197,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 225 drawn from seed 3",
+    "body": "2) ###### h",
+    "ranges": []
+  },
+  {
+    "name": "body 226 drawn from seed 3",
+    "body": "> > CORE-2\\` ``````````````````\n    \\  [l](dispatch://role/r) `````````\n    \\\n \t``````````\r\n> - `\\#q1\n-     \t``````😀``CORE-2\r\n    \n#q1`\\\\dispatch://CORE-1\r\n* * *\r\n+ `````\n `é```😀\n\t``````é😀[l](dispatch://role/r)``````",
+    "ranges": [
+      {
+        "start": 102,
+        "end": 127,
+        "block": true
+      },
+      {
+        "start": 164,
+        "end": 172,
+        "block": true
+      },
+      {
+        "start": 182,
+        "end": 219,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 227 drawn from seed 3",
+    "body": "[^n]: `é`\n",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 9,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 228 drawn from seed 3",
+    "body": "> code\t  CORE-2#q1dispatch://CORE-1\\  `\n-     `code``````\r\n[^n]: ___",
+    "ranges": [
+      {
+        "start": 40,
+        "end": 59,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 229 drawn from seed 3",
+    "body": "> > ```aCORE-2`````\t``",
+    "ranges": []
+  },
+  {
+    "name": "body 230 drawn from seed 3",
+    "body": "a\tdispatch://CORE-1\n>     \n* a[l](dispatch://role/r)\\\\\\",
+    "ranges": []
+  },
+  {
+    "name": "body 231 drawn from seed 3",
+    "body": "2) \n> #no\r\n[^n]: ```go\n- ``````CORE-2\n  [l](dispatch://role/r)``\né`````````\n+ ``` sh\n````[l](dispatch://role/r)`CORE-2  [l](dispatch://role/r)```````\n  \\````````````\r===",
+    "ranges": [
+      {
+        "start": 11,
+        "end": 23,
+        "block": true
+      },
+      {
+        "start": 23,
+        "end": 65,
+        "block": true
+      },
+      {
+        "start": 76,
+        "end": 85,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 232 drawn from seed 3",
+    "body": "\n-     `````\n* 😀code[l](dispatch://role/r)```[l](dispatch://role/r)CORE-2``\n- ````````````\n\t\t`#q1``````````#q1code````\r\n   a#q1CORE-2😀```` \r\n\t``\n+ ``\n ###### h",
+    "ranges": [
+      {
+        "start": 1,
+        "end": 13,
+        "block": true
+      },
+      {
+        "start": 77,
+        "end": 147,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 233 drawn from seed 3",
+    "body": "1. \\```\\\n- > \\```\\[l](dispatch://role/r)``````\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 234 drawn from seed 3",
+    "body": "[l](dispatch://role/r)\t#q1#q1`\n",
+    "ranges": []
+  },
+  {
+    "name": "body 235 drawn from seed 3",
+    "body": "2) ```é``\n\t````````a``````é`x y\n[^n]: x y````CORE-2 \n   ```a`b\n2) `é\\`\t``\\\\\n      é```\\`\n> CORE-2```[l](dispatch://role/r)```````\r\n\t\\x y``code````\n``````a`\\`[l](dispatch://role/r)\ta\n> - ax y``````````````````\r\n \n code\n",
+    "ranges": [
+      {
+        "start": 66,
+        "end": 70,
+        "block": false
+      },
+      {
+        "start": 154,
+        "end": 157,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 236 drawn from seed 3",
+    "body": "😀``a\\\\é\n2) CORE-2\n  [^n]: [l](dispatch://role/r)   ``````````\\``x y\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 237 drawn from seed 3",
+    "body": " \n2) \r+ ``\\````\\\\é\\\\`````\r \t```````````````  a\r\n\tdispatch://CORE-1``\n- ````````````\r````` ```````x y````````\r\n  [^n]: dispatch://CORE-1\n  ```a`b\n- >  \n",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 68,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 238 drawn from seed 3",
+    "body": "# h\n\t`````\n\t``\nx yéx ydispatch://CORE-1\r\n>      \n> > dispatch://CORE-1````````é`é\n  [^n]: \n   ###### h\r\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 15,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 239 drawn from seed 3",
+    "body": "\\`  `  ``````````\n```\\\\````é\n\t[l](dispatch://role/r)`[l](dispatch://role/r) \r\n[^n]: ``````CORE-2``😀x y```````````😀\r\n`\\ `````  ``\n> ~~~\n \t#no\r\n[^n]: `````` ```\\`\n-     ___\n>     \\```````````#q1  éé  \n- * * *\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 53,
+        "block": false
+      },
+      {
+        "start": 96,
+        "end": 130,
+        "block": false
+      },
+      {
+        "start": 131,
+        "end": 137,
+        "block": true
+      },
+      {
+        "start": 137,
+        "end": 144,
+        "block": true
+      },
+      {
+        "start": 163,
+        "end": 173,
+        "block": true
+      },
+      {
+        "start": 173,
+        "end": 201,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 240 drawn from seed 3",
+    "body": "    `````````  \r\n>  \n2) ~~~\n      \\```\\`\n* \n    code````😀\n- > [l](dispatch://role/r)``dispatch://CORE-1x y[l](dispatch://role/r)a```\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 17,
+        "block": true
+      },
+      {
+        "start": 21,
+        "end": 41,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 241 drawn from seed 3",
+    "body": "- dispatch://CORE-1``\n",
+    "ranges": []
+  },
+  {
+    "name": "body 242 drawn from seed 3",
+    "body": "    \n___\n+ \\`\ncode``dispatch://CORE-1a[l](dispatch://role/r)\té`````\n \t```#q1\n      ___\r\n> - ``````\\\\``````````````\n1. --\n- > ``` sh\n1. dispatch://CORE-1[l](dispatch://role/r)[l](dispatch://role/r)[l](dispatch://role/r)\\\\a",
+    "ranges": [
+      {
+        "start": 68,
+        "end": 88,
+        "block": true
+      },
+      {
+        "start": 121,
+        "end": 132,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 243 drawn from seed 3",
+    "body": "2) [l](dispatch://role/r)`````a ```  `\r\n  acode```` ````[l](dispatch://role/r)\n- ``````````x ya\n\té`code```#q1``\r\n    #q1#q1\\\\\\`é```  \r\n- > ```````\\é`\r\n>````````\\dispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 47,
+        "end": 56,
+        "block": false
+      },
+      {
+        "start": 79,
+        "end": 135,
+        "block": true
+      },
+      {
+        "start": 151,
+        "end": 178,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 244 drawn from seed 3",
+    "body": "    \t````````\\\\\\  \r\n  dispatch://CORE-1`\\\\``````#q1``````a\\``\n+ ```a`b\r\n~~~\n```x y\\[l](dispatch://role/r) \n>     `   `é \n>     [l](dispatch://role/r)CORE-2\\\\a``😀\n```😀CORE-2```ax y\n\tdispatch://CORE-1é`````\\\n>```[l](dispatch://role/r)\\\\````\\`x ya\\`\r\n \t```\r\n    ````x ya````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 20,
+        "block": true
+      },
+      {
+        "start": 42,
+        "end": 57,
+        "block": false
+      },
+      {
+        "start": 72,
+        "end": 274,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 245 drawn from seed 3",
+    "body": " \t````  `x ycodeé\n- ___\r\n> * * *\r\n  [^n]: * * *\r\n>     ```\\```😀 code`````````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 18,
+        "block": true
+      },
+      {
+        "start": 49,
+        "end": 79,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 246 drawn from seed 3",
+    "body": ">```a`b\r2) ``` sh\r\n* ``\t````\t``\\`````\n> > x y\r\n> > [l](dispatch://role/r)\\\r\n>     ``\n> - ```\n\n1. dispatch://CORE-1``\n* \n> - `CORE-2\n``````````\\``\n",
+    "ranges": [
+      {
+        "start": 1,
+        "end": 14,
+        "block": false
+      },
+      {
+        "start": 21,
+        "end": 31,
+        "block": false
+      },
+      {
+        "start": 85,
+        "end": 93,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 247 drawn from seed 3",
+    "body": "1. codea`````````\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 248 drawn from seed 3",
+    "body": "- adispatch://CORE-1`````\n>--\ndispatch://CORE-1[l](dispatch://role/r)`````````\\\\```````````\n      `````\n\ta````````\t\r`#q1😀\\`a\\`dispatch://CORE-1\r\n- > ===\n \t``````````````é\r\n    * * *\r\n",
+    "ranges": [
+      {
+        "start": 116,
+        "end": 124,
+        "block": false
+      },
+      {
+        "start": 154,
+        "end": 184,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 249 drawn from seed 3",
+    "body": "    \\#q1`  a`````\n+ code[l](dispatch://role/r)é````````é\t`😀a\n>     dispatch://CORE-1`  ```````\n`````code \r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 18,
+        "block": true
+      },
+      {
+        "start": 62,
+        "end": 96,
+        "block": true
+      },
+      {
+        "start": 96,
+        "end": 108,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 250 drawn from seed 3",
+    "body": "+ ``x yx y😀#q1``\n> > code\\\\```code\\`````#q1\n[^n]: `````x y\n2) `````````````\r\n- > ~~~ x\r\n- \\\\``````\\` \tax y```\r\n>`` \n~~~`x\r\n- > \t``````\\dispatch://CORE-1#q1```😀 \n \t\r\n> [l](dispatch://role/r)\\\\\\\\`😀\r\n>😀[l](dispatch://role/r)``````\\[l](dispatch://role/r)\\`CORE-2",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 17,
+        "block": false
+      },
+      {
+        "start": 45,
+        "end": 60,
+        "block": true
+      },
+      {
+        "start": 60,
+        "end": 78,
+        "block": true
+      },
+      {
+        "start": 78,
+        "end": 89,
+        "block": true
+      },
+      {
+        "start": 117,
+        "end": 262,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 251 drawn from seed 3",
+    "body": "~~~ x\r\n      ```````dispatch://CORE-1\\dispatch://CORE-1``code`````\\`\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 69,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 252 drawn from seed 3",
+    "body": " #q1``é#q1````[l](dispatch://role/r)\r\n`\r\n[^n]: ``\\\\\\\\````dispatch://CORE-1```CORE-2",
+    "ranges": []
+  },
+  {
+    "name": "body 253 drawn from seed 3",
+    "body": "  [l](dispatch://role/r)`````````\n___\n-   dispatch://CORE-1\n* ```x y\\````````\r",
+    "ranges": []
+  },
+  {
+    "name": "body 254 drawn from seed 3",
+    "body": "- x y``````````[l](dispatch://role/r)``````\r\né\n",
+    "ranges": []
+  },
+  {
+    "name": "body 255 drawn from seed 3",
+    "body": "-     \t\n>     ---\r  [^n]: ```a`b\r",
+    "ranges": [
+      {
+        "start": 8,
+        "end": 33,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 256 drawn from seed 3",
+    "body": "> > `````````\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 14,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 257 drawn from seed 3",
+    "body": "- ```````\\\\```x yécodea``\\\\\r\n* [l](dispatch://role/r)[l](dispatch://role/r)CORE-2````\\\\\n\t\n2) code````````\t\\code ``\\`\n",
+    "ranges": []
+  },
+  {
+    "name": "body 258 drawn from seed 3",
+    "body": " ```code[l](dispatch://role/r)``````\n[^n]: #q1``😀`````\néx y `a\n> > \\\n--\n \té\n\\`````    a#q1```\\`code\n",
+    "ranges": []
+  },
+  {
+    "name": "body 259 drawn from seed 3",
+    "body": " \t```\t``\\\\``dispatch://CORE-1`\n      \\\r\n#no\n-     ```````code```\tcodea\\```\n\t~~~\n> - ``\n[l](dispatch://role/r)  \\```````CORE-2\\\\a\n  😀\r\n`\r\n* ~~~\r+ ``` sh\r\n- `````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 40,
+        "block": true
+      },
+      {
+        "start": 44,
+        "end": 75,
+        "block": true
+      },
+      {
+        "start": 75,
+        "end": 80,
+        "block": true
+      },
+      {
+        "start": 138,
+        "end": 154,
+        "block": true
+      },
+      {
+        "start": 154,
+        "end": 161,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 260 drawn from seed 3",
+    "body": "* \n      dispatch://CORE-1😀  😀  \\\\`\n   #q1é``code \r> * * *\r\n    a",
+    "ranges": [
+      {
+        "start": 3,
+        "end": 38,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 261 drawn from seed 3",
+    "body": "  ```````😀\n \n-     \r\n- \t😀😀\\a`😀\n[^n]: ```a`b\n \t \n     😀```\n```a`b\n~~~`x\r    ***\r\n> - \\CORE-2code#q1\n>```",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 108,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 262 drawn from seed 3",
+    "body": "````dispatch://CORE-1``````dispatch://CORE-1\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 263 drawn from seed 3",
+    "body": "#no\n> - ````\n> - \t```````dispatch://CORE-1  `\\````\n      `\\\\```````````\n> > x yé#q1CORE-2code```\n\t\n>     `  ``\\\\  \r\n\tcode``#q1\r\n- ```\r\n> - a`\\\\`dispatch://CORE-1\t\\CORE-2\n\\`\n1. ````dispatch://CORE-1`\\\tCORE-2\r\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 13,
+        "block": true
+      },
+      {
+        "start": 13,
+        "end": 51,
+        "block": true
+      },
+      {
+        "start": 51,
+        "end": 72,
+        "block": true
+      },
+      {
+        "start": 99,
+        "end": 116,
+        "block": true
+      },
+      {
+        "start": 116,
+        "end": 128,
+        "block": true
+      },
+      {
+        "start": 128,
+        "end": 135,
+        "block": true
+      },
+      {
+        "start": 140,
+        "end": 144,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 264 drawn from seed 3",
+    "body": ">#q1``````````````#q1\\`\r\n***\r\n    ```\na\\`[l](dispatch://role/r)😀  ````x y\r\n* 😀 code\\`CORE-2 \r>``\\` ````````````\n  \n\t* * *\r\n  `````\n[^n]: ```````\t[l](dispatch://role/r)````````````````\r      ````\n",
+    "ranges": [
+      {
+        "start": 30,
+        "end": 38,
+        "block": true
+      },
+      {
+        "start": 125,
+        "end": 133,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 265 drawn from seed 3",
+    "body": "\\`#q1x y  ```````````` \n  [^n]: code[l](dispatch://role/r)``\n   ###### h\n  [^n]: ___\n> - \\`  \n> > ``````[l](dispatch://role/r)#q1\n> `😀````````dispatch://CORE-1````\t\r\n \t```````éé`````code😀\n   `\n      ````a`````\n",
+    "ranges": [
+      {
+        "start": 94,
+        "end": 130,
+        "block": true
+      },
+      {
+        "start": 132,
+        "end": 194,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 266 drawn from seed 3",
+    "body": "    x yCORE-2\r\n    \\`CORE-2a`````\r\n+ ```\n[^n]: ``\r\n --",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 35,
+        "block": true
+      },
+      {
+        "start": 35,
+        "end": 41,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 267 drawn from seed 3",
+    "body": "> > ```é ````\r\n> > `\n* x y```CORE-2\r\n  \\\\code`dispatch://CORE-1`\n2) \t\n-     é`\n\\```````\\\\\r\n>     ````` `",
+    "ranges": [
+      {
+        "start": 45,
+        "end": 64,
+        "block": false
+      },
+      {
+        "start": 70,
+        "end": 79,
+        "block": true
+      },
+      {
+        "start": 91,
+        "end": 104,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 268 drawn from seed 3",
+    "body": "      ~~~`x\n \t\n>     ~~~\n``````` ``````    ```````  \n2) `[l](dispatch://role/r)\\``é``````````\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 12,
+        "block": true
+      },
+      {
+        "start": 15,
+        "end": 25,
+        "block": true
+      },
+      {
+        "start": 25,
+        "end": 50,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 269 drawn from seed 3",
+    "body": "  ```\n`````\n\\\\`[l](dispatch://role/r)`\\\\ \\\\``\n`````\n[l](dispatch://role/r)\\\\`\\code```\n# h\n    ---\n2) [l](dispatch://role/r)\\``[l](dispatch://role/r) dispatch://CORE-1x y```\n   \\`\\\\`  ``````\n1. ``````dispatch://CORE-1``````````````\r\na``````\\\\``\t\\```\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 12,
+        "block": true
+      },
+      {
+        "start": 14,
+        "end": 38,
+        "block": false
+      },
+      {
+        "start": 46,
+        "end": 250,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 270 drawn from seed 3",
+    "body": "\\`#q1\\`dispatch://CORE-1```\\\n  `dispatch://CORE-1\t\n- > ~~~\n``````  \\\\\n--\n#no\r\n`",
+    "ranges": [
+      {
+        "start": 51,
+        "end": 59,
+        "block": true
+      },
+      {
+        "start": 59,
+        "end": 79,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 271 drawn from seed 3",
+    "body": "1. \\\\\n> - \n\t```````\n+ ```````````````````\n~~~~\rx ydispatch://CORE-1`````dispatch://CORE-1``````````````x yx y\n> > ```\r\n\t\n\\``````#q1``````\\x y\n",
+    "ranges": [
+      {
+        "start": 11,
+        "end": 20,
+        "block": true
+      },
+      {
+        "start": 20,
+        "end": 42,
+        "block": true
+      },
+      {
+        "start": 42,
+        "end": 142,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 272 drawn from seed 3",
+    "body": "-     ~~~\n>   \\`\t\\\\``  code\n- > 😀\n`````\r\n\t````````````x y\\\\\r\n1. `x y\t````````````\r\n* ```  \\```````\\\\``````\n      #q1````dispatch://CORE-1a ````````\\````````\r\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      },
+      {
+        "start": 35,
+        "end": 159,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 273 drawn from seed 3",
+    "body": "CORE-2a``````[l](dispatch://role/r)a```dispatch://CORE-1```\n-     `\r",
+    "ranges": [
+      {
+        "start": 36,
+        "end": 59,
+        "block": false
+      },
+      {
+        "start": 60,
+        "end": 68,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 274 drawn from seed 3",
+    "body": "\tCORE-2`\\\n> CORE-2code\n`\n[^n]: x yx y\t\n  ``````x y`````````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 275 drawn from seed 3",
+    "body": "* * *\n   \t`````````édispatch://CORE-1```\n>     \t\r\n CORE-2CORE-2\\```````\n> - \\``````code``  ``````",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 41,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 276 drawn from seed 3",
+    "body": "\t```````\\`édispatch://CORE-1````#q1\n> ` ```[l](dispatch://role/r)    \\\\`\r\n  `````😀\r",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 36,
+        "block": true
+      },
+      {
+        "start": 38,
+        "end": 72,
+        "block": false
+      },
+      {
+        "start": 74,
+        "end": 84,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 277 drawn from seed 3",
+    "body": "  ``    CORE-2`ax y`\\\n1. ```\n-     \n     `a\n>```\n1. \\#q1#q1`\r\n2) ` \ta``````[l](dispatch://role/r)\r\n\t```\n",
+    "ranges": [
+      {
+        "start": 14,
+        "end": 20,
+        "block": false
+      },
+      {
+        "start": 22,
+        "end": 29,
+        "block": true
+      },
+      {
+        "start": 44,
+        "end": 49,
+        "block": true
+      },
+      {
+        "start": 99,
+        "end": 104,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 278 drawn from seed 3",
+    "body": " --\r```````\r\n1. ###### h\n# h\n> 😀\n- > \\\n- > `é````a````````\\```````\\`\n    \\😀`````\\  `````````\n```\n2) dispatch://CORE-1CORE-2\t\n~~~\n* \t`\r\n",
+    "ranges": [
+      {
+        "start": 44,
+        "end": 69,
+        "block": false
+      },
+      {
+        "start": 95,
+        "end": 137,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 279 drawn from seed 3",
+    "body": "* ``[l](dispatch://role/r) \n \t``\n-     * * *\n",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 32,
+        "block": false
+      },
+      {
+        "start": 33,
+        "end": 45,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 280 drawn from seed 3",
+    "body": "  \n ``````  dispatch://CORE-1``````[l](dispatch://role/r)\r\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 35,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 281 drawn from seed 3",
+    "body": "> - \\\r\n````````````````````\r2) \\code#q1code[l](dispatch://role/r)x yé😀\n````````[l](dispatch://role/r)````CORE-2x y````\n-     ```\n> - \n \ta\r\n````````````````#q1`````\n```  \n- > ``````#q1```````````\n",
+    "ranges": [
+      {
+        "start": 7,
+        "end": 196,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 282 drawn from seed 3",
+    "body": "> > # h\n   \\code😀\r\n> CORE-2````\r\n  [^n]: ```\n*  [l](dispatch://role/r)dispatch://CORE-1`\n- ````````` code\n+ ```````````codex y```\\😀code\r\n* ``\t`\\``dispatch://CORE-1  x y\n  [^n]: ```\n+ ```x ycode```````\t`",
+    "ranges": [
+      {
+        "start": 34,
+        "end": 46,
+        "block": true
+      },
+      {
+        "start": 90,
+        "end": 107,
+        "block": true
+      },
+      {
+        "start": 141,
+        "end": 148,
+        "block": false
+      },
+      {
+        "start": 171,
+        "end": 183,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 283 drawn from seed 3",
+    "body": "> - 😀``\tcodex y```\\`\r\n",
+    "ranges": []
+  },
+  {
+    "name": "body 284 drawn from seed 3",
+    "body": "  [^n]: \\```CORE-2`````\n😀\n \t\\`a#q1\r\n- `````\n* `\\\r",
+    "ranges": [
+      {
+        "start": 37,
+        "end": 45,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 285 drawn from seed 3",
+    "body": "~~~ x\r>\\\\\t\n> > `  😀``````x y``````x y`````dispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 60,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 286 drawn from seed 3",
+    "body": "> #q1[l](dispatch://role/r)``aa````\r",
+    "ranges": []
+  },
+  {
+    "name": "body 287 drawn from seed 3",
+    "body": "* `````  `````\n+   é ``\n> \\\\codeCORE-2\n  [^n]: `````\t``\\`\t\n````adispatch://CORE-1é`````````\n``\\`x y \\\\``\\\\😀`\n``\n> ###### h\n```\n",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 14,
+        "block": false
+      },
+      {
+        "start": 53,
+        "end": 94,
+        "block": false
+      },
+      {
+        "start": 102,
+        "end": 112,
+        "block": false
+      },
+      {
+        "start": 124,
+        "end": 128,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 288 drawn from seed 3",
+    "body": "> \n1. `` ``CORE-2```é```````\r\n\t``\r\n> > [l](dispatch://role/r)`````  ``````#q1\r\n `a😀```\n[^n]: é`[l](dispatch://role/r)````````dispatch://CORE-1#q1````````\r\n> ```#q1\r\n  `dispatch://CORE-1\r\n-     ```\\```````😀`x y````````",
+    "ranges": [
+      {
+        "start": 6,
+        "end": 11,
+        "block": false
+      },
+      {
+        "start": 118,
+        "end": 154,
+        "block": false
+      },
+      {
+        "start": 156,
+        "end": 166,
+        "block": true
+      },
+      {
+        "start": 188,
+        "end": 219,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 289 drawn from seed 3",
+    "body": "2) ___\n",
+    "ranges": []
+  },
+  {
+    "name": "body 290 drawn from seed 3",
+    "body": "`\\``````[l](dispatch://role/r)\\`[l](dispatch://role/r)a `CORE-2\n",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 32,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 291 drawn from seed 3",
+    "body": "- code x y\\`\n  ````\\\\[l](dispatch://role/r)```x y```\t  \n````\n2) dispatch://CORE-1``\\```  `[l](dispatch://role/r)```",
+    "ranges": [
+      {
+        "start": 43,
+        "end": 52,
+        "block": false
+      },
+      {
+        "start": 56,
+        "end": 115,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 292 drawn from seed 3",
+    "body": "- `a  \\`a````\n\tCORE-2 ````\\\\dispatch://CORE-1``\n> > \\```\n> - ````````a````\\\\```",
+    "ranges": [
+      {
+        "start": 2,
+        "end": 8,
+        "block": false
+      },
+      {
+        "start": 9,
+        "end": 26,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 293 drawn from seed 3",
+    "body": "-     \n",
+    "ranges": []
+  },
+  {
+    "name": "body 294 drawn from seed 3",
+    "body": "1. ###### h\r\na```a\\`````\\`\n`````\r\n    ``` sh\r\n>---",
+    "ranges": [
+      {
+        "start": 27,
+        "end": 50,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 295 drawn from seed 3",
+    "body": "`#q1```CORE-2\n \t `````é```#q1\n-     ````dispatch://CORE-1```````````dispatch://CORE-1\n- \\\n> #no\n    codea\\`\n``` 😀\n>      😀é\\````\\\\\n> > éCORE-2`\n \t``````\r\n> - ```dispatch://CORE-1é ````aa\n",
+    "ranges": [
+      {
+        "start": 4,
+        "end": 26,
+        "block": false
+      },
+      {
+        "start": 30,
+        "end": 86,
+        "block": true
+      },
+      {
+        "start": 108,
+        "end": 189,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 296 drawn from seed 3",
+    "body": "1. * * *\n2) \\[l](dispatch://role/r)```````````é\n  ``\n`\r\n  ```````\\`\n\\`````a```````````````\n>😀é#q1CORE-2`````\n dispatch://CORE-1a\r\n  ```a`b\r\n``😀\n2) [l](dispatch://role/r)[l](dispatch://role/r)\n",
+    "ranges": [
+      {
+        "start": 53,
+        "end": 67,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 297 drawn from seed 3",
+    "body": "-     😀é ``\\\\```````",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 21,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 298 drawn from seed 3",
+    "body": "- \r> > `````````````[l](dispatch://role/r)\n> > ````\n1. #q1\n> ``````````````````````````é\n>````` `a\n    \t\nCORE-2CORE-2``````````code`````\\`",
+    "ranges": [
+      {
+        "start": 43,
+        "end": 52,
+        "block": true
+      },
+      {
+        "start": 59,
+        "end": 99,
+        "block": true
+      }
+    ]
+  },
+  {
+    "name": "body 299 drawn from seed 3",
+    "body": "***\n\\\\éé```é\\\n* dispatch://CORE-1\\`code``````#q1\r\n```````[l](dispatch://role/r)\t``````\\\\```````````\n>     `````````\t\ncode``x y``CORE-2````\t#q1[l](dispatch://role/r)",
+    "ranges": [
+      {
+        "start": 39,
+        "end": 86,
+        "block": false
+      },
+      {
+        "start": 100,
+        "end": 117,
+        "block": true
+      },
+      {
+        "start": 121,
+        "end": 128,
+        "block": false
+      }
+    ]
+  },
+  {
+    "name": "body 300 drawn from seed 3",
+    "body": "> > ~~~ x\n \t\\``\n  \t [l](dispatch://role/r)  \\\\\n  \n-     ___\n  code`x y```\\````\n   ``````#q1````````` \\\\dispatch://CORE-1",
+    "ranges": [
+      {
+        "start": 0,
+        "end": 10,
+        "block": true
+      },
+      {
+        "start": 10,
+        "end": 47,
+        "block": true
+      },
+      {
+        "start": 50,
+        "end": 60,
+        "block": true
+      }
+    ]
+  }
+]

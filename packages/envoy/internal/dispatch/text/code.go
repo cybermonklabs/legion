@@ -1,9 +1,6 @@
 package text
 
-import (
-	"slices"
-	"strings"
-)
+import "strings"
 
 // codeRange is a half-open byte range of a body, [start, end). block is true for a fenced or an
 // indented code block and false for a code span, set by codeRanges as it places the range, so
@@ -68,7 +65,7 @@ const (
 // codeRanges is every code context of body, in order and never overlapping: a reference written
 // inside one is read and indexed as every other reference is and names nobody, so no party is
 // delivered to for it (Located.InCode). It is computed once per body, by the one walk every
-// extraction goes through (extractSpans), and read with inCode.
+// extraction goes through (extractSpans), and read with a codeCursor.
 //
 // Every line is read through the containers open at it - a block quote's `>` with the one space
 // after it, a list item's own content indentation, a footnote definition's four columns - so a
@@ -150,18 +147,20 @@ const (
 //     closed by a run after it.
 func codeRanges(body string) []codeRange {
 	blocks, breaks := codeBlocks(body)
-	if len(blocks) == 0 {
-		return appendCodeSpans(nil, body, 0, len(body), breaks)
+	reading := spanReading{body: body, breaks: breaks}
+	if len(blocks) > 0 {
+		reading.spans = make([]codeRange, 0, 2*len(blocks)+1)
 	}
-	ranges := make([]codeRange, 0, 2*len(blocks)+1)
 	at := 0
 	for _, block := range blocks {
-		ranges = appendCodeSpans(ranges, body, at, block.start, breaks)
+		readerStep()
+		reading.appendCodeSpans(at, block.start)
 		block.block = true
-		ranges = append(ranges, block)
+		reading.spans = append(reading.spans, block)
 		at = block.end
 	}
-	return appendCodeSpans(ranges, body, at, len(body), breaks)
+	reading.appendCodeSpans(at, len(body))
+	return reading.spans
 }
 
 // CodeRange is one code context of a body, the half-open byte range [Start, End) codeRanges
@@ -188,19 +187,51 @@ func CodeRanges(body string) []CodeRange {
 	return exported
 }
 
-// inCode reports whether the byte at offset is inside one of ranges, which codeRanges wrote in
-// order: the reference whose first character it is was written in a code context.
-func inCode(ranges []codeRange, offset int) bool {
-	_, found := slices.BinarySearchFunc(ranges, offset, func(candidate codeRange, offset int) int {
-		switch {
-		case candidate.end <= offset:
-			return -1
-		case candidate.start > offset:
-			return 1
-		}
-		return 0
-	})
-	return found
+// codeCursor answers whether the byte at each offset it is asked about is inside one of ranges,
+// which codeRanges wrote in order: the reference whose first character it is was written in a
+// code context. The offsets are asked in order, never one before the last, so each answer goes
+// on through the ranges from where the last one stopped (next, the index of the first range
+// that does not end at or before the last offset asked about), and a body's references cost one
+// walk of its ranges rather than a search of them each. The dashboard's codeCursor reads them
+// the same way (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
+type codeCursor struct {
+	ranges []codeRange
+	next   int
+}
+
+// inCode reports whether the byte at offset, which is at or past every offset asked about
+// before, is inside one of the cursor's ranges.
+func (c *codeCursor) inCode(offset int) bool {
+	for c.next < len(c.ranges) && c.ranges[c.next].end <= offset {
+		readerStep()
+		c.next++
+	}
+	return c.next < len(c.ranges) && c.ranges[c.next].start <= offset
+}
+
+// readerSteps is the step count of this package's reading of code contexts where it is held to
+// one pass: every loop of the reading of the code spans of the text the blocks leave
+// (codeRanges, appendCodeSpans, appendParagraphSpans, and the search for closing runs,
+// closingRun and backtickRunEnd) and of codeCursor, which marks a body's references in code,
+// calls readerStep once a turn. The package's rows hold those loops to one pass over the text
+// they read by counting those turns on a text and on one four times as long, since no clock can
+// say that: a pass that takes twice as long on a loaded machine is still one pass
+// (`code_test.go`, stepsAtNAndFourN), as the dashboard counts the loops of its own copy
+// (`packages/contracts/src/reader-steps.ts`). What strings.IndexByte does inside one call is no
+// turn of a loop, so the reader calls it only where the line it stands on bounds it: for the end
+// of that line (lineBounds) and for a backtick in a fence's info string (fenceOpener).
+//
+// Outside countReaderSteps (`code_test.go`) it is nil and a step is a load and a branch: no
+// lock, no allocation, and no write that goroutines reading bodies at once could race on. A test
+// that counts sets it, so it counts only in a test that does not call t.Parallel, which go test
+// runs while none of the package's parallel tests runs.
+var readerSteps *int
+
+// readerStep is one turn of a loop readerSteps counts.
+func readerStep() {
+	if readerSteps != nil {
+		*readerSteps++
+	}
 }
 
 // codeBlocks is the fenced and indented code blocks of body, in order, each from the first byte
@@ -616,30 +647,63 @@ func indentTo(body string, at, end, col, want int) (int, int) {
 	return at, col
 }
 
-// appendCodeSpans appends the code spans of body[from:to] to spans, in order, each read inside
-// the paragraph that holds it: the search for a span's closing run ends where that paragraph
-// ends, at the first of breaks past where the search began, which codeBlocks writes one of for
-// every line that ends a paragraph, so an unmatched backtick mutes nothing written past its own
-// paragraph. The dashboard's appendCodeSpans reads the same rule
-// (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
-func appendCodeSpans(spans []codeRange, body string, from, to int, breaks []int) []codeRange {
+// backtickRuns is the runs of backticks of one width that the search for closing runs read and
+// closed no span with (closingRun), and how far the searches of that width have passed through
+// them: starts is where each run starts, in order, and next the index in starts of the first run
+// no search of this width has passed.
+type backtickRuns struct {
+	starts []int
+	next   int
+}
+
+// spanReading is what reading the code spans of body carries from one stretch of it to the next,
+// the stretches the blocks leave and the paragraphs in them being read in order (codeRanges):
+// the paragraph breaks codeBlocks read, in order, and the index in them of the first break the
+// reading has not passed; where the search for closing runs stopped reading body (closingRun);
+// the runs that search read and closed no span with, by width, nil until it files one; and the
+// code contexts read so far, in order.
+type spanReading struct {
+	body      string
+	breaks    []int
+	nextBreak int
+	scanned   int
+	runs      map[int]*backtickRuns
+	spans     []codeRange
+}
+
+// appendCodeSpans appends the code spans of body[from:to] to the reading's spans, in order, each
+// read inside the paragraph that holds it: the search for a span's closing run ends where that
+// paragraph ends, at the first of the breaks past where the search began, which codeBlocks writes
+// one of for every line that ends a paragraph, so an unmatched backtick mutes nothing written
+// past its own paragraph. The stretches are read in order, so the breaks are walked once for all
+// of them, each going on from where the last one stopped. The dashboard's appendCodeSpans reads
+// the same rule the same way (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
+func (r *spanReading) appendCodeSpans(from, to int) {
 	// A break on from itself cuts nothing, the paragraph starting there.
-	index, _ := slices.BinarySearch(breaks, from+1)
-	start := from
-	for ; index < len(breaks) && breaks[index] < to; index++ {
-		spans = appendParagraphSpans(spans, body, start, breaks[index])
-		start = breaks[index]
+	for r.nextBreak < len(r.breaks) && r.breaks[r.nextBreak] <= from {
+		readerStep()
+		r.nextBreak++
 	}
-	return appendParagraphSpans(spans, body, start, to)
+	start := from
+	for ; r.nextBreak < len(r.breaks) && r.breaks[r.nextBreak] < to; r.nextBreak++ {
+		readerStep()
+		r.appendParagraphSpans(start, r.breaks[r.nextBreak])
+		start = r.breaks[r.nextBreak]
+	}
+	r.appendParagraphSpans(start, to)
 }
 
 // appendParagraphSpans appends the code spans of [from, to), a stretch of body no paragraph
 // break cuts: the run of backticks at a span's start is closed by the next run of exactly that
 // length, a longer run being no closer, and a run with no closer is literal text that the next
 // character is read on from. A backslash takes the character after it, so an escaped backtick
-// opens no span; a run that closes one is read as written, as CommonMark reads a closer.
-func appendParagraphSpans(spans []codeRange, body string, from, to int) []codeRange {
+// opens no span; a run that closes one is read as written, as CommonMark reads a closer. The
+// closer is found by closingRun, which reads each run of body once, never by reading the rest of
+// the paragraph again from each opener.
+func (r *spanReading) appendParagraphSpans(from, to int) {
+	body := r.body
 	for at := from; at < to; {
+		readerStep()
 		if body[at] == '\\' {
 			at += 2
 			continue
@@ -650,41 +714,73 @@ func appendParagraphSpans(spans []codeRange, body string, from, to int) []codeRa
 		}
 		opener := backtickRunEnd(body, at, to)
 		width := opener - at
-		closer := nextBacktickRun(body, opener, to, width)
+		closer := r.closingRun(width, opener, to)
 		if closer < 0 {
 			at = opener
 			continue
 		}
-		spans = append(spans, codeRange{start: at, end: closer + width})
+		r.spans = append(r.spans, codeRange{start: at, end: closer + width})
 		at = closer + width
 	}
-	return spans
+}
+
+// closingRun is where the first run of exactly width backticks starting in [from, to) starts,
+// or -1 when none does: a run of any other length closes no span of that width. from is where an
+// opener's run ends, and a body's openers are read in order, so body is read for runs once, each
+// search going on from where the last one stopped (scanned) and filing every run it reads that
+// closes nothing by its width, where a later opener of that width finds it; each width's runs
+// are passed once however many openers look among them. cmark, CommonMark's reference parser,
+// likewise keeps where it read the runs of each length (`scan_to_closing_backticks`) rather than
+// reading the rest of the paragraph again from each opener, and so does the dashboard's
+// closingRun (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
+//
+// A run is read whole wherever its reading starts: from is past an opener's whole run, and
+// scanned past a closer's whole run or on the end of a stretch, which is a line's start or the
+// body's end, so the runs filed are the runs the rest of the paragraph holds from any opener
+// after them, as a search from that opener would read them.
+func (r *spanReading) closingRun(width, from, to int) int {
+	if same := r.runs[width]; same != nil {
+		for same.next < len(same.starts) && same.starts[same.next] < from {
+			readerStep()
+			same.next++
+		}
+		if same.next < len(same.starts) && same.starts[same.next] < to {
+			return same.starts[same.next]
+		}
+	}
+	body := r.body
+	for at := max(r.scanned, from); at < to; {
+		readerStep()
+		if body[at] != '`' {
+			at++
+			continue
+		}
+		end := backtickRunEnd(body, at, to)
+		if end-at == width {
+			r.scanned = end
+			return at
+		}
+		if r.runs == nil {
+			r.runs = map[int]*backtickRuns{}
+		}
+		if other := r.runs[end-at]; other != nil {
+			other.starts = append(other.starts, at)
+		} else {
+			r.runs[end-at] = &backtickRuns{starts: []int{at}}
+		}
+		at = end
+	}
+	r.scanned = to
+	return -1
 }
 
 // backtickRunEnd is the end of the run of backticks starting at offset, within [offset, to).
 func backtickRunEnd(text string, offset, to int) int {
 	for offset < to && text[offset] == '`' {
+		readerStep()
 		offset++
 	}
 	return offset
-}
-
-// nextBacktickRun is where the first run of exactly width backticks at or after from starts,
-// within [from, to), or -1 when there is none: a run of any other length closes no span of that
-// width, so the search carries on past it.
-func nextBacktickRun(text string, from, to, width int) int {
-	for at := from; at < to; {
-		found := strings.IndexByte(text[at:to], '`')
-		if found < 0 {
-			return -1
-		}
-		start := at + found
-		at = backtickRunEnd(text, start, to)
-		if at-start == width {
-			return start
-		}
-	}
-	return -1
 }
 
 // lineBounds is where the line starting at offset ends, before its line ending, and where the
