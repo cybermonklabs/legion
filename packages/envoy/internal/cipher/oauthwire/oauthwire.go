@@ -389,7 +389,7 @@ type Introspection struct {
 	// NotHeldUntil is when the broker's answer that the person this token names is not held stops
 	// being good, in seconds since the epoch, rounded down: the deadline an IAP deployment's
 	// Dispatch put on that answer (its not_held_until), which the broker's hold gate serves until
-	// and not at (hold.Gate.CheckUntil). The broker's introspection writes it beside a not-held
+	// and not at (hold.Gate.Decide). The broker's introspection writes it beside a not-held
 	// answer that has one. The Envoy listener keeps the answer no later than it
 	// (ciphertoken.Caller.NotHeldUntil), and refuses the token as unavailable once it has passed;
 	// Dispatch will do the same once it reads it, and does not yet. A
