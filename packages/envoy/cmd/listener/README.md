@@ -511,6 +511,7 @@ A grant applied after the pod started is so taken within one wait, with no resta
   A record that is not released counts as held at that first read, one whose holder died included: the pod stands by, and its lease takes the record once it has stood unchanged for the TTL, as any standby's does, with the settle hold an expired record asks for.
 
 - A stop ends a join still trying before it stops receiving, and waits for it, within the receive stop's budget ("Graceful stop order" above): a lease the join took as the pod stopped is ended with the pod's receiving, its term handed back as any holder's is, or released by the stop when the pod had not taken it up yet, so no standby waits out the record of a pod that stopped gracefully (`durableReceiver.Stop`).
+  The join's wait for its next try of the bucket, up to 30 s, ends at the stop too, so it spends none of that budget, and an open that succeeds once the stop came makes no lease (`joinDeliveryLease`).
   A shutdown that comes as the lease joins ends the term the pod received on without a lease, its subscription drained and what it holds NAKed, rather than handing that term to the lease (`durableReceiver.receive`); one that comes once the lease has taken the term over ends it as the holder's term, with the hand-back a holder's stop makes (`durableReceiver.run`).
 
 Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;

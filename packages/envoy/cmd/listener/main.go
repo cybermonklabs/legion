@@ -1100,10 +1100,11 @@ func listenerInstance() (string, error) {
 // nextRefusedWait instead (waitOutClusterState, waitOutGrantRefusal, waitOutAccountState).
 const startRetry = 2 * time.Second
 
-// clusterStateLine is the line the start logs at each try of a request the NATS server answered
-// from its cluster's state (bus.ClusterStateAnswer), the second group of the start rule
-// (cmd/listener/README.md, "Start"), with what the request was for, the copies it asked, the
-// answer's code, the server's text and the wait before the next try (waitOutClusterState).
+// clusterStateLine is the line a start step or the lease join (joinDeliveryLease) logs at each try
+// of a request the NATS server answered from its cluster's state (bus.ClusterStateAnswer), the
+// second group of the start rule (cmd/listener/README.md, "Start"), with what the request was for,
+// the copies it asked, the answer's code, the server's text and the wait before the next try
+// (logClusterState).
 const clusterStateLine = "start refused by the NATS cluster's state; retrying"
 
 // clusterUnavailableWarnFor is how long a start step logs clusterStateLine at WARN, not ERROR,
@@ -1114,8 +1115,8 @@ const clusterStateLine = "start refused by the NATS cluster's state; retrying"
 // for nothing; an answer that has lasted this long is logged at ERROR at each try after.
 const clusterUnavailableWarnFor = 30 * time.Second
 
-// clusterStateWait is what one start step carries across the answers the NATS server gives it
-// from its cluster's state (waitOutClusterState).
+// clusterStateWait is what one start step, or the lease join, carries across the answers the NATS
+// server gives it from its cluster's state (logClusterState).
 type clusterStateWait struct {
 	// next is the wait before the step's next try: durableBindPoll at first, then twice the last
 	// up to durableRefusedRetryCap (nextRefusedWait).
@@ -1125,15 +1126,17 @@ type clusterStateWait struct {
 	unavailableSince time.Time
 }
 
-// waitOutClusterState logs clusterStateLine for err, a start step's request the NATS server
-// answered from its cluster's state with the JetStream API error code code
-// (bus.ClusterStateAnswer): what names what the step opens (the stream, a bucket or a store's
-// buckets), replicas the copies the deployment asks for (bus.ReplicasEnvVar). The line is an
-// ERROR, but a WARN for a "temporarily unavailable" answer while the step's first such answer
-// came less than clusterUnavailableWarnFor ago. It then sleeps wait.next, and doubles it up to
+// logClusterState logs clusterStateLine for err, a request of a start step or of the lease join
+// (joinDeliveryLease) the NATS server answered from its cluster's state with the JetStream API
+// error code code (bus.ClusterStateAnswer): what names what the step opens (the stream, a bucket
+// or a store's buckets), replicas the copies the deployment asks for (bus.ReplicasEnvVar). The
+// line is an ERROR, but a WARN for a "temporarily unavailable" answer while the step's first such
+// answer came less than clusterUnavailableWarnFor ago. It returns wait.next, the wait before the
+// step's next try, which the line names as retry_in, and doubles wait.next up to
 // durableRefusedRetryCap for the step's next such answer (nextRefusedWait), as a refused
-// durable's retries wait.
-func waitOutClusterState(logger *logging.Logger, wait *clusterStateWait, what slog.Attr, replicas, code int, err error) {
+// durable's retries wait. It waits nothing itself: a start step sleeps the wait out
+// (waitOutClusterState), and the lease join waits it out until its context ends (waitUnlessDone).
+func logClusterState(logger *logging.Logger, wait *clusterStateWait, what slog.Attr, replicas, code int, err error) time.Duration {
 	level := slog.LevelError
 	if code == int(nats.JSErrCodeJetStreamNotAvailable) || code == int(nats.JSErrCodeInsufficientResourcesErr) {
 		if wait.unavailableSince.IsZero() {
@@ -1150,8 +1153,15 @@ func waitOutClusterState(logger *logging.Logger, wait *clusterStateWait, what sl
 		slog.String("error", err.Error()),
 		slog.String("retry_in", wait.next.String()),
 	)
-	time.Sleep(wait.next)
+	next := wait.next
 	wait.next = nextRefusedWait(wait.next)
+	return next
+}
+
+// waitOutClusterState is logClusterState for a step of the start: it logs the line and sleeps
+// the wait logClusterState returns before the step's next try.
+func waitOutClusterState(logger *logging.Logger, wait *clusterStateWait, what slog.Attr, replicas, code int, err error) {
+	time.Sleep(logClusterState(logger, wait, what, replicas, code, err))
 }
 
 // The ERRORs the start logs at each try of a step the NATS grant refused (waitOutGrantRefusal),
@@ -1173,23 +1183,32 @@ const (
 	streamRefusedLine = "notification stream refused by the NATS grant; retrying"
 )
 
-// waitOutGrantRefusal logs line at ERROR for err, a start step's request the NATS grant refused:
-// what names what the step opens, then the refused subject (refusedSubject), the server's text and
-// the wait before the next try. It then sleeps *wait, and doubles *wait up to
-// durableRefusedRetryCap for the step's next refusal (nextRefusedWait), as a refused durable's
-// retries wait; a step of the start starts *wait at durableBindPoll, and the join of the listener
-// state bucket (joinDeliveryLease) at twice that, since the start's own ERROR named durableBindPoll
-// as the wait before the join's first try. Every pod of the machine connects as the same NATS user
-// and would be refused alike, and an exit would send each into a crash loop whose backoff delays
-// the recovery by minutes once the grant is fixed.
-func waitOutGrantRefusal(logger *logging.Logger, wait *time.Duration, line string, err error, what ...slog.Attr) {
+// logGrantRefusal logs line at ERROR for err, a request of a start step or of the lease join
+// (joinDeliveryLease) the NATS grant refused: what names what the step opens, then the refused
+// subject (refusedSubject), the server's text and *wait, the wait before the next try, as
+// retry_in. It returns *wait and doubles *wait up to durableRefusedRetryCap for the step's next
+// refusal (nextRefusedWait), as a refused durable's retries wait; a step of the start starts *wait
+// at durableBindPoll, and the join of the listener state bucket at twice that, since the start's
+// own ERROR named durableBindPoll as the wait before the join's first try. Every pod of the machine
+// connects as the same NATS user and would be refused alike, and an exit would send each into a
+// crash loop whose backoff delays the recovery by minutes once the grant is fixed. It waits
+// nothing itself: a start step sleeps the wait out (waitOutGrantRefusal), and the lease join waits
+// it out until its context ends (waitUnlessDone).
+func logGrantRefusal(logger *logging.Logger, wait *time.Duration, line string, err error, what ...slog.Attr) time.Duration {
 	logger.Error(line, append(what,
 		slog.String("subject", refusedSubject(err)),
 		slog.String("error", err.Error()),
 		slog.String("retry_in", wait.String()),
 	)...)
-	time.Sleep(*wait)
+	next := *wait
 	*wait = nextRefusedWait(*wait)
+	return next
+}
+
+// waitOutGrantRefusal is logGrantRefusal for a step of the start: it logs line and sleeps the wait
+// logGrantRefusal returns before the step's next try.
+func waitOutGrantRefusal(logger *logging.Logger, wait *time.Duration, line string, err error, what ...slog.Attr) {
+	time.Sleep(logGrantRefusal(logger, wait, line, err, what...))
 }
 
 // listenerGrant names the grant that gives the listener's NATS user its KV buckets and its
@@ -1662,7 +1681,7 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 // listenerStateRefusedLine is the ERROR a listener delivering without a lease logs at each try of
 // the listener state bucket its NATS grant refuses again (joinDeliveryLease), with the bucket, the
 // grant it lacks, the refused subject, the server's text and the wait before the next try, as the
-// start's refused steps log theirs (waitOutGrantRefusal).
+// start's refused steps log theirs (logGrantRefusal).
 const listenerStateRefusedLine = "listener state bucket refused by the NATS grant; delivering without a lease and retrying"
 
 // joinDeliveryLease opens the listener state bucket on conn, the lease connection of a listener
@@ -1670,27 +1689,36 @@ const listenerStateRefusedLine = "listener state bucket refused by the NATS gran
 // delivery lease over it once it opens: a grant applied after the pod started is picked up without
 // a restart, as the start rule has it for every dependency that answers late (cmd/listener/README.md,
 // "Start"). It tries again after the start's ERROR's wait (durableBindPoll), and each refusal after
-// waitOutGrantRefusal, which logs listenerStateRefusedLine with the wait before the next try,
-// twice durableBindPoll after the first refusal, doubling up to durableRefusedRetryCap; an open
-// the cluster's state answers waits out waitOutClusterState, and any other failure startRetry, as
-// the start's open does. The pod delivers without a lease meanwhile. It returns nil once ctx has
-// ended.
+// the wait logGrantRefusal returns, which logs listenerStateRefusedLine with the wait before the
+// next try, twice durableBindPoll after the first refusal, doubling up to durableRefusedRetryCap;
+// an open the cluster's state answers after the wait logClusterState returns, and any other
+// failure after startRetry, as the start's open does. The pod delivers without a lease meanwhile.
+//
+// Every wait between two tries is the loop's waitUnlessDone, which ends when ctx ends, and the
+// open itself runs under ctx (openListenerState), so the join returns nil as soon as ctx has
+// ended, wherever it is. The shutdown ends ctx and waits for the try the join runs in, within
+// stopHTTPGrace (durableReceiver.startJoin, durableReceiver.Stop): a join that slept its retry_in
+// out, up to durableRefusedRetryCap, would spend that budget, and a lease it made after waking
+// would take the record and renew it until the process exits. An open that succeeds once ctx has
+// ended returns nil too, with no lease made over it.
 func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machineID, instance string, logger *logging.Logger) *lease {
 	wait, refusedWait := durableBindPoll, nextRefusedWait(durableBindPoll)
 	clusterWait := clusterStateWait{next: durableBindPoll}
 	for waitUnlessDone(ctx, wait) == nil {
 		kv, err := openListenerState(ctx, conn, replicas, listenerStateRequestWait)
 		if err == nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			logger.Info("listener state bucket opened: joining the machine's delivery lease", slog.String("bucket", bus.ListenerStateBucket))
 			return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger)
 		}
-		wait = 0
 		if code, ok := bus.ClusterStateAnswer(err); ok {
-			waitOutClusterState(logger, &clusterWait, slog.String("bucket", bus.ListenerStateBucket), replicas, code, err)
+			wait = logClusterState(logger, &clusterWait, slog.String("bucket", bus.ListenerStateBucket), replicas, code, err)
 			continue
 		}
 		if errors.Is(err, errListenerStateRefused) {
-			waitOutGrantRefusal(logger, &refusedWait, listenerStateRefusedLine, err, slog.String("bucket", bus.ListenerStateBucket), slog.String("grant", listenerGrant))
+			wait = logGrantRefusal(logger, &refusedWait, listenerStateRefusedLine, err, slog.String("bucket", bus.ListenerStateBucket), slog.String("grant", listenerGrant))
 			continue
 		}
 		logger.Warn("listener state bucket open failed; retrying",

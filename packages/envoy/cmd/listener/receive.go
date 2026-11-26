@@ -429,8 +429,9 @@ func (r *durableReceiver) join(l *lease) {
 // startJoin runs try, the join of its machine's lease that a pod started without one makes
 // (joinDeliveryLease and the steps main.go takes after it), on a goroutine of its own and under a
 // context of its own, which Stop ends, and hands the receive loop the lease try returns (join). try
-// returns nil when it ends with no lease, and returns once its context has ended. It is called
-// once, after Start.
+// returns nil when it ends with no lease, and returns as soon as its context has ended, wherever
+// it is, a wait between two of its tries included (joinDeliveryLease waits each through
+// waitUnlessDone): Stop waits for it within the shutdown's budget. It is called once, after Start.
 func (r *durableReceiver) startJoin(try func(ctx context.Context) *lease) {
 	ctx, stop := context.WithCancel(context.Background())
 	tried := make(chan struct{})
@@ -474,9 +475,11 @@ func (r *durableReceiver) Start() {
 // A pod still trying to join its machine's lease (startJoin) has that try ended first, and Stop
 // waits for it to return, within ctx, before it stops the receive loop: a join that completes
 // after the stop began would otherwise take the record and renew it until the process exits,
-// which leaves a standby to wait it out as an expired one. A lease the try handed over before it
-// returned is taken up by the receive loop, whose term then ends as any term of the lease does,
-// or, when the loop did not take it up (join), is released here all the same.
+// which leaves a standby to wait it out as an expired one. The try returns as soon as its context
+// ends, from a wait between two of its tries too (startJoin), so no such wait spends ctx. A lease
+// the try handed over before it returned is taken up by the receive loop, whose term then ends as
+// any term of the lease does, or, when the loop did not take it up (join), is released here all
+// the same.
 func (r *durableReceiver) Stop(ctx context.Context) {
 	r.mu.Lock()
 	stop, done, stopJoining, joinTried := r.stop, r.done, r.stopJoining, r.joinTried
