@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -941,7 +941,10 @@ func (v *issueVolume) startPacksCache(t *testing.T, bucket bool) (*packsCacheRun
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := testnats.ListenLoopback()
+	// The cmd/legion test binary links no testcontainers (TestThisTestBinaryLinksNoTestcontainers),
+	// and internal/testnats does, so the double listens on a loopback port of the kernel's choosing
+	// here.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for the double: %v", err)
 	}
