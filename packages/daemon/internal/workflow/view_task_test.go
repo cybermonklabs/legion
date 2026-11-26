@@ -94,14 +94,14 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 				t.Fatalf("the root = %s after admission's pass, want planning", got)
 			}
 			planner := phaseStartTask(t, pool, claim.RolePlanner, phase.Planning)
-			want := "Continue root. Issue: LEGION-208. Phase: planning."
+			want := "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: planning."
 			if tc.view {
 				want += " " + viewTaskSentence
 			}
-			// The view sentence comes right after the opening, before the step's standing (its
-			// working copy, its task and its place on the walk), which every step's task carries.
-			if !strings.HasPrefix(planner, want+" Working copy: ") {
-				t.Fatalf("the planner's task = %q, want it to open with %q and then the step's working copy", planner, want)
+			// The task opens with the step's working copy line, then the continue line; the view
+			// sentence comes right after the continue line, before the task's place on the walk.
+			if !strings.HasPrefix(planner, want+" Task: ") {
+				t.Fatalf("the planner's task = %q, want it to open with %q and then the step's task", planner, want)
 			}
 			if got := phaseResumeTask(t, pool, engine, gatedRoot); !strings.HasPrefix(got, want+" ") {
 				t.Fatalf("the resume task of the planning phase = %q, want it to open with %q", got, want)
