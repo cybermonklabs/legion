@@ -15,6 +15,13 @@
 // (survival.MeasureOutput, survival.Fingerprint, survival.DayStatus, survival.Change and
 // survival.Pair), so the run hands what Measure answered to the store and the store's reads to
 // SelectDays, ChangedDays and the regroup with no conversion between.
+//
+// Every transaction that builds projects' day rows of the two code evals (the run's results,
+// WriteMarks, the rebuild of a repository that turned unreadable or readable, and the regroup)
+// takes its locks in one order (prepare, rows.go): first each project's row of code_projects
+// (LockProject), in key order, then each project's group series with the code evals' locks
+// (evals.WriteCodeGroupSeriesTx), in key order, then it writes the day rows. So no two of them
+// wait for each other in a cycle.
 package codesurvival
 
 import (
@@ -113,17 +120,19 @@ func PutRepo(ctx context.Context, db Querier, r Repo) error {
 
 // ReplaceDays stores one run's results in the caller's transaction: the rows of days in
 // code_changes, code_pairs and code_days are replaced whole, and the fingerprints of the other days
-// the run replayed are written beside them. days are the days the run selected, UTC midnights, and
-// out is what survival.Measure answered for them.
+// the run replayed are written beside them. days are the days the run selected, UTC midnights, out
+// is what survival.Measure answered for them, at is the moment of the run, and reasons says, by the
+// blocking commit's SHA, why the patch of each commit that blocks a day could not be read whole.
 //
 // For each selected day it deletes the day's rows (a change's pairs go with it) and inserts out's:
 // the changes and pairs, and one code_days row, measured or blocked as the day's result says, with
-// the fingerprint out holds for it, the time of the replace as measured_at (of a measured day) and
-// as tried_at, and, for a blocked day, the commit that blocked it and the count of its files. A
-// day's old row carries nothing over, so a replace clears the mark of a day it measures and the
-// blocking commit of a day it no longer blocks. Every other day out fingerprints is written as
-// replayed, a fingerprint and nothing else, and only where the table holds no row of the day or a
-// replayed one: a measured, marked or blocked day is never overwritten by a fingerprint.
+// the fingerprint out holds for it, at as measured_at (of a measured day) and as tried_at, and, for
+// a blocked day, the commit that blocked it, the count of its files and the reason reasons gives
+// it (none where it gives none). A day's old row carries nothing over, so a replace clears the mark
+// of a day it measures and the blocking commit of a day it no longer blocks. Every other day out
+// fingerprints is written as replayed, a fingerprint and nothing else, and only where the table
+// holds no row of the day or a replayed one: a measured, marked or blocked day is never
+// overwritten by a fingerprint.
 //
 // It refuses before it writes anything an output that does not match days: a day that is no UTC
 // midnight, a selected day with no result or no fingerprint, a result of a day that was not
@@ -131,7 +140,7 @@ func PutRepo(ctx context.Context, db Querier, r Repo) error {
 // and a pair whose adder is no change of out. A row the table refuses, a change whose lines outrun
 // its added lines, say, fails the call after the statements before it ran, so the caller rolls the
 // transaction back and the store is as it was: the run's results go in whole or not at all.
-func ReplaceDays(ctx context.Context, tx pgx.Tx, repo string, days []time.Time, out survival.MeasureOutput) error {
+func ReplaceDays(ctx context.Context, tx pgx.Tx, repo string, days []time.Time, out survival.MeasureOutput, at time.Time, reasons map[string]string) error {
 	plan, err := planReplace(days, out)
 	if err != nil {
 		return fmt.Errorf("replace the days of %s: %w", repo, err)
@@ -163,27 +172,31 @@ func ReplaceDays(ctx context.Context, tx pgx.Tx, repo string, days []time.Time, 
 	}
 
 	var (
-		selectedDays = make([]time.Time, len(plan.days))
-		commits      = make([]int, len(plan.days))
-		digests      = make([][]byte, len(plan.days))
-		states       = make([]string, len(plan.days))
-		blockedSHAs  = make([]*string, len(plan.days))
-		blockedFiles = make([]*int, len(plan.days))
+		selectedDays   = make([]time.Time, len(plan.days))
+		commits        = make([]int, len(plan.days))
+		digests        = make([][]byte, len(plan.days))
+		states         = make([]string, len(plan.days))
+		blockedSHAs    = make([]*string, len(plan.days))
+		blockedFiles   = make([]*int, len(plan.days))
+		blockedReasons = make([]*string, len(plan.days))
 	)
 	for i, day := range plan.days {
 		result, fp := plan.results[dayKey(day)], plan.prints[dayKey(day)]
 		selectedDays[i], commits[i], digests[i], states[i] = day, fp.Commits, fp.Digest[:], string(result.State)
 		if result.State == survival.DayBlocked {
 			blockedSHAs[i], blockedFiles[i] = &result.BlockedSHA, &result.BlockedFiles
+			if reason := reasons[result.BlockedSHA]; reason != "" {
+				blockedReasons[i] = &reason
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into code_days (repo, day, commits, digest, state, measured_at, blocked_sha, blocked_files, tried_at)
-		select $1::text, d.day, d.commits, d.digest, d.state, case when d.state = 'measured' then now() end,
-			d.blocked_sha, d.blocked_files, now()
-		from unnest($2::date[], $3::int[], $4::bytea[], $5::text[], $6::text[], $7::int[])
-			as d(day, commits, digest, state, blocked_sha, blocked_files)`,
-		repo, selectedDays, commits, digests, states, blockedSHAs, blockedFiles); err != nil {
+		insert into code_days (repo, day, commits, digest, state, measured_at, blocked_sha, blocked_files, blocked_reason, tried_at)
+		select $1::text, d.day, d.commits, d.digest, d.state, case when d.state = 'measured' then $9::timestamptz end,
+			d.blocked_sha, d.blocked_files, d.blocked_reason, $9::timestamptz
+		from unnest($2::date[], $3::int[], $4::bytea[], $5::text[], $6::text[], $7::int[], $8::text[])
+			as d(day, commits, digest, state, blocked_sha, blocked_files, blocked_reason)`,
+		repo, selectedDays, commits, digests, states, blockedSHAs, blockedFiles, blockedReasons, at); err != nil {
 		return fmt.Errorf("store the selected days of %s: %w", repo, err)
 	}
 
@@ -322,6 +335,34 @@ func MarkDays(ctx context.Context, tx pgx.Tx, repo string, days []time.Time, at 
 	}
 	slices.SortFunc(marked, time.Time.Compare)
 	return marked, nil
+}
+
+// RefreshFingerprints writes each of prints, fingerprints of the chain a run read, as the one its
+// day's row of repo holds, whatever the day's state, and leaves every other column as it is; a day
+// with no row gets none. A run writes them for the days it found changed once their marks have
+// committed (WriteMarks): a changed day's stored fingerprint then says the run has seen the chain
+// those days hold now, so the next pass finds them changed again only where the branch moved
+// again, and marks no day it has measured since. A marked day keeps its mark, and is measured again
+// from the chain whose fingerprint it now holds.
+func RefreshFingerprints(ctx context.Context, db Querier, repo string, prints []survival.Fingerprint) error {
+	if len(prints) == 0 {
+		return nil
+	}
+	days, commits, digests := make([]time.Time, len(prints)), make([]int, len(prints)), make([][]byte, len(prints))
+	for i, print := range prints {
+		if err := checkMidnight(print.Day); err != nil {
+			return fmt.Errorf("refresh the fingerprints of %s: %w", repo, err)
+		}
+		days[i], commits[i], digests[i] = print.Day, print.Commits, print.Digest[:]
+	}
+	if _, err := db.Exec(ctx, `
+		update code_days c set commits = d.commits, digest = d.digest
+		from unnest($2::date[], $3::int[], $4::bytea[]) as d(day, commits, digest)
+		where c.repo = $1 and c.day = d.day and (c.commits, c.digest) is distinct from (d.commits, d.digest)`,
+		repo, days, commits, digests); err != nil {
+		return fmt.Errorf("refresh the fingerprints of %s: %w", repo, err)
+	}
+	return nil
 }
 
 // FingerprintsFrom is the fingerprint of every day of repo that holds one, whatever the day's

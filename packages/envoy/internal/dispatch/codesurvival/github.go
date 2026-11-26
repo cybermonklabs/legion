@@ -632,11 +632,15 @@ func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Com
 
 // PatchRead is one commit's patch as Patch read it: the replay's form of it, the route it came
 // through, and the bytes GitHub answered for it, which the run's stream holds until the replay
-// applied it.
+// applied it. Reason says, for a patch read through files[] in place of a diff GitHub refused, how
+// the diff route refused it and how many of the commit's files files[] withheld, as
+// code_days.blocked_reason keeps it for a commit that blocks a day: "diff refused (406), files[]
+// withheld 3 of 12 files", say.
 type PatchRead struct {
-	Patch survival.Patch
-	Route Route
-	Bytes int
+	Patch  survival.Patch
+	Route  Route
+	Bytes  int
+	Reason string
 }
 
 // Patch reads the patch of commit, a commit of r's first-parent chain, within readLimit and
@@ -646,7 +650,8 @@ type PatchRead struct {
 // diff (githubapp.Client.ReadDiff): what the commit brought onto the branch.
 //
 // A patch GitHub refuses (refusal) is read once through the commit's files[] in its place, every
-// page of it, in the replay's form, with the files GitHub withheld counted (survival.FilesPatch).
+// page of it, in the replay's form, with the files GitHub withheld counted (survival.FilesPatch)
+// and the refusal and the count named in the read's Reason.
 // A failure that may pass is asked again (get), and one that still fails after the last try, or a
 // failure that is no refusal, fails the read: the run stores nothing and tries again at its next
 // pass. A rate limit is the budget's, returned at once as the *githubapp.RateLimitError.
@@ -657,7 +662,12 @@ func (g *GitHub) Patch(ctx context.Context, r Repository, commit survival.Commit
 	}
 	got, err := g.get(ctx, r, route, path)
 	if refusal(got, err) {
-		return g.filesPatch(ctx, r, commit.SHA)
+		read, files, filesErr := g.filesPatch(ctx, r, commit.SHA)
+		if filesErr != nil {
+			return PatchRead{}, filesErr
+		}
+		read.Reason = fmt.Sprintf("%s, files[] withheld %d of %d files", refused(route, got, err), read.Patch.Withheld, files)
+		return read, nil
 	}
 	if err != nil {
 		return PatchRead{}, fmt.Errorf("read the patch of %s %s: %w", r.Repo, commit.SHA, err)
@@ -672,29 +682,39 @@ func (g *GitHub) Patch(ctx context.Context, r Repository, commit survival.Commit
 	return PatchRead{Patch: survival.Patch{Files: files}, Route: route, Bytes: len(got.body)}, nil
 }
 
+// refused is how route refused a patch, as a reason names it: "diff refused (406)" or "compare
+// refused (502)" for a status, and "diff answer past 32 MiB" for an answer past readLimit.
+func refused(route Route, got answer, err error) string {
+	var tooLarge *githubapp.ResponseTooLargeError
+	if errors.As(err, &tooLarge) {
+		return fmt.Sprintf("%s answer past %d MiB", route, readLimit>>20)
+	}
+	return fmt.Sprintf("%s refused (%d)", route, got.status)
+}
+
 // filesPatch reads the files[] of commit sha, every page of it
 // (`GET /repos/{owner}/{repo}/commits/{sha}?per_page=100&page=n`, following each page's Link
-// header), into the replay's form.
-func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (PatchRead, error) {
+// header), into the replay's form, and answers how many files the pages listed.
+func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (PatchRead, int, error) {
 	var entries []survival.FilesEntry
 	read := 0
 	for path := r.repoPath() + "/commits/" + url.PathEscape(sha) + "?per_page=" + strconv.Itoa(perPage) + "&page=1"; path != ""; {
 		got, err := g.readJSON(ctx, r, RouteFiles, path, githubapp.CheckResponse)
 		if err != nil {
-			return PatchRead{}, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
+			return PatchRead{}, 0, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
 		}
 		var page struct {
 			Files []survival.FilesEntry `json:"files"`
 		}
 		if err := json.Unmarshal(got.body, &page); err != nil {
-			return PatchRead{}, fmt.Errorf("decode the files of %s %s: %w", r.Repo, sha, githubapp.ShownErr(err))
+			return PatchRead{}, 0, fmt.Errorf("decode the files of %s %s: %w", r.Repo, sha, githubapp.ShownErr(err))
 		}
 		entries = append(entries, page.Files...)
 		read += len(got.body)
 		if path, err = g.client.NextPage(got.header); err != nil {
-			return PatchRead{}, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
+			return PatchRead{}, 0, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
 		}
 	}
 	files, withheld := survival.FilesPatch(entries)
-	return PatchRead{Patch: survival.Patch{Files: files, Withheld: withheld}, Route: RouteFiles, Bytes: read}, nil
+	return PatchRead{Patch: survival.Patch{Files: files, Withheld: withheld}, Route: RouteFiles, Bytes: read}, len(entries), nil
 }

@@ -133,14 +133,14 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 	}
 }
 
-// main.go gives each of the four loops that read GitHub under a lease its recorder, and each its
+// main.go gives each of the five loops that read GitHub under a lease its recorder, and each its
 // own read's name: the real binary, with NATS, the App's settings and a loopback GitHub that
 // answers every request 503, and a database holding what makes each loop send a request (a
 // project's default repository and the CI state bucket, the delivery settings, and one enabled
-// architecture source), names all four failed, each with a cause that names a request of its own
+// architecture source), names all five failed, each with a cause that names a request of its own
 // loop. A loop left without its recorder leaves its entry no_attempt, and two loops given each
-// other's names put a cause under the wrong key; either fails naming the entry.
-// The fifth read, code_survival, reads off: no loop of this server records it yet.
+// other's names put a cause under the wrong key; either fails naming the entry. The code survival
+// run reads the project's default repository, from a tick at start.
 //
 // The test settings bring every loop's pass inside the test's window: the sweep's and the CI
 // reconcile's intervals, and a first pass at start for the delivery reconcile and the
@@ -173,9 +173,9 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})
 	process.waitHealthy(t)
 
-	// The loops this server starts, each of which records its own read. code_survival is not one:
-	// no loop of this server records it yet, so its entry reads off.
-	loops := []githubreads.Read{githubreads.WebhookRedelivery, githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile}
+	// The loops this server starts, each of which records its own read.
+	loops := []githubreads.Read{githubreads.WebhookRedelivery, githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile,
+		githubreads.CodeSurvival}
 	answer := process.waitForGitHubReads(t, func(answer healthzAnswer) string {
 		var missing []string
 		for _, read := range loops {
@@ -189,18 +189,16 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	if answer.status != http.StatusOK || !answer.OK {
 		t.Fatalf("/healthz with every GitHub read failed = %d %s, want 200 with ok true", answer.status, answer.body)
 	}
-	if entry := answer.reads[string(githubreads.CodeSurvival)]; entry.State != "off" || entry.At != nil || entry.Cause != nil {
-		t.Errorf("%s of a read no loop of this server records is not off with at and cause null: %s", githubreads.CodeSurvival, answer.body)
-	}
 	// What a request of each loop names: the sweep's listing, the CI reconcile's default repository
-	// (GitHub-cased where GitHub named it), the delivery settings' deploy repository, and the
+	// (GitHub-cased where GitHub named it), the delivery settings' deploy repository, the
 	// architecture source's repository or its installation's token mint, whichever the import's
-	// resolve sends first.
+	// resolve sends first, and the default repository the code survival run reads.
 	names := map[githubreads.Read][]string{
 		githubreads.WebhookRedelivery:  {"/app/hook/deliveries"},
 		githubreads.ArchitectureImport: {"acme/arch", "/app/installations/1/access_tokens"},
 		githubreads.DeliveryReconcile:  {"acme/deploy"},
 		githubreads.CIReconcile:        {ciReconcileRow},
+		githubreads.CodeSurvival:       {ciReconcileRow},
 	}
 	for _, read := range loops {
 		cause := *answer.reads[string(read)].Cause

@@ -90,8 +90,14 @@ func begin(t *testing.T, database *store.Store) pgx.Tx {
 // replace stores a run's results in a transaction of their own, which it commits.
 func replace(t *testing.T, database *store.Store, days []time.Time, out survival.MeasureOutput) {
 	t.Helper()
+	replaceWith(t, database, days, out, nil)
+}
+
+// replaceWith is replace with reasons, the reason of each blocking commit by its SHA.
+func replaceWith(t *testing.T, database *store.Store, days []time.Time, out survival.MeasureOutput, reasons map[string]string) {
+	t.Helper()
 	tx := begin(t, database)
-	if err := ReplaceDays(t.Context(), tx, widgets, days, out); err != nil {
+	if err := ReplaceDays(t.Context(), tx, widgets, days, out, time.Now(), reasons); err != nil {
 		t.Fatalf("ReplaceDays: %v", err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
@@ -298,7 +304,7 @@ func TestTheSelectedDaysAreReplacedWholeOrNotAtAll(t *testing.T) {
 			}
 			failure.build(&rerun)
 			tx := begin(t, database)
-			err := ReplaceDays(t.Context(), tx, widgets, failure.days, rerun)
+			err := ReplaceDays(t.Context(), tx, widgets, failure.days, rerun, time.Now(), nil)
 			requireRefusal(t, err, "23514", failure.constraint)
 			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatalf("roll back the failed replace: %v", err)
@@ -421,7 +427,7 @@ func TestAReplaceRefusesAnOutputThatDoesNotMatchItsDays(t *testing.T) {
 			}
 			tc.mutate(&rerun)
 			tx := begin(t, database)
-			err := ReplaceDays(t.Context(), tx, widgets, tc.days, rerun)
+			err := ReplaceDays(t.Context(), tx, widgets, tc.days, rerun, time.Now(), nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ReplaceDays = %v, want an error saying %q", err, tc.want)
 			}
@@ -465,7 +471,7 @@ func TestAMarkOutlivesARunThatFails(t *testing.T) {
 
 	// The run that follows replaces the marked day's rows, then fails.
 	failing := begin(t, database)
-	if err := ReplaceDays(t.Context(), failing, widgets, days, out); err != nil {
+	if err := ReplaceDays(t.Context(), failing, widgets, days, out, time.Now(), nil); err != nil {
 		t.Fatalf("ReplaceDays: %v", err)
 	}
 	if err := failing.Rollback(t.Context()); err != nil {
@@ -510,7 +516,7 @@ func TestAReplaceClearsTheMarkAndTheBlockOfTheDaysItMeasures(t *testing.T) {
 	blocked := out
 	blocked.Days = []survival.DayResult{measured(0), {Day: dayN(1), State: survival.DayBlocked, BlockedSHA: shaOf(77), BlockedFiles: 3}}
 	blocked.Changes, blocked.Pairs = out.Changes[:2], out.Pairs[:1]
-	replace(t, database, days, blocked)
+	replaceWith(t, database, days, blocked, map[string]string{shaOf(77): "the diff route answered 406; files[] withheld 3 of 12 files"})
 
 	statuses, err := DayStatuses(t.Context(), database.Pool, widgets, dayN(0), dayN(1))
 	if err != nil {
@@ -520,10 +526,13 @@ func TestAReplaceClearsTheMarkAndTheBlockOfTheDaysItMeasures(t *testing.T) {
 		statuses[0].TriedAt.IsZero() || statuses[1].TriedAt.IsZero() {
 		t.Fatalf("the states after a run that blocked day 1 are %+v, want day 0 measured and day 1 blocked, each tried", statuses)
 	}
-	var sha string
-	var files int
-	if err := database.Pool.QueryRow(t.Context(), `select blocked_sha, blocked_files from code_days where repo = $1 and day = $2`, widgets, dayN(1)).Scan(&sha, &files); err != nil || sha != shaOf(77) || files != 3 {
-		t.Fatalf("the blocked day holds %q and %d files (%v), want the commit and its 3 files", sha, files, err)
+	var (
+		sha, reason string
+		files       int
+	)
+	if err := database.Pool.QueryRow(t.Context(), `select blocked_sha, blocked_files, blocked_reason from code_days where repo = $1 and day = $2`, widgets, dayN(1)).
+		Scan(&sha, &files, &reason); err != nil || sha != shaOf(77) || files != 3 || reason != "the diff route answered 406; files[] withheld 3 of 12 files" {
+		t.Fatalf("the blocked day holds %q, %d files and the reason %q (%v), want the commit, its 3 files and the run's reason", sha, files, reason, err)
 	}
 
 	tx := begin(t, database)

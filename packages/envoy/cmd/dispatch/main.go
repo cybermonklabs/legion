@@ -904,10 +904,10 @@ func main() {
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
 	parentStatusFixLeases := reserve("parent status fix")
-	// The code survival run (codesurvival.Lease): a leased loop like the rest, reserved here so that
-	// this process's count is the same whatever work it finds. Its loop takes this reservation when
-	// it starts: until a loop does, the connection is reserved and no consumer holds it.
-	_ = reserve(codesurvival.Lease)
+	// The code survival run (codesurvival.Run, lease codesurvival.Lease): a leased loop like the
+	// rest, reserved here so that this process's count is the same with the GitHub App off, where
+	// the run does not start.
+	codeSurvivalLeases := reserve(codesurvival.Lease)
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -1078,6 +1078,11 @@ func main() {
 	signalsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	signalsSettingsWake := listenerHub.Wake(delivery.SettingsChannel)
 	signalsRevertsWake := listenerHub.Wake(signals.RevertsChannel)
+	// The code survival regroup's own wake on a save of a project's delivery settings, whose code
+	// groups its day rows are built under (codesurvival.Regroup). A Wake is a channel of its own,
+	// which one reader takes, so it registers its own beside the production signals' and the
+	// intakes', and whatever NATS and the GitHub App are: the regroup reads no GitHub.
+	codeGroupsWake := listenerHub.Wake(delivery.SettingsChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
@@ -1207,7 +1212,7 @@ func main() {
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
 
-	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
+	// Each of the five loops below that reads GitHub under a lease records its newest attempt in
 	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
 	// this process keeps a copy of the record, loaded at start and again at every write any
 	// process makes (the wake above), which GET /healthz answers from (gitHubReads), so the probe
@@ -1485,6 +1490,23 @@ func main() {
 		Settings:   signalsSettingsWake,
 		Reverts:    signalsRevertsWake,
 	})
+	// dispatch://INFRA-3206: the code survival and post-merge rework evals. The regroup is a woken
+	// loop with no lease (duty.RunWoken): one pass at start, which rebuilds the code evals' day rows
+	// of every project whose code groups moved while no process ran, then a pass on each save of a
+	// project's delivery settings. It reads no GitHub, so it runs whatever NATS and the App are, as
+	// on the eval bench. The daily run is a leased loop of an hourly tick, from a tick at start
+	// (duty.RunLeased), so one process runs each tick: a tick does each default repository's daily
+	// pass where it is due one (codesurvival.Run.Pass). It reads GitHub through the App, so it runs
+	// only where the server has one, and records each pass as the code_survival read of /healthz.
+	go (&codesurvival.Regroup{Pool: database.Pool, Build: processBuild()}).Run(ctx, codeGroupsWake)
+	codeSurvival := appCfg != nil && appCtx.GitHub() != nil
+	if codeSurvival {
+		run := &codesurvival.Run{Pool: database.Pool, Client: appCtx.GitHub(), Attributor: attributor, Build: processBuild(), GitHubReads: recordGitHubRead}
+		slog.Info("dispatch: measuring code survival and post-merge rework from each default repository's patches", "client_id", appCfg.ClientID, "tick", codesurvival.Tick)
+		go duty.RunLeased(ctx, codeSurvivalLeases, codesurvival.Lease, codesurvival.Tick, duty.TickAtStart, run.Pass)
+	} else {
+		slog.Info("dispatch: the code survival run is off: it needs the GitHub App private key; the regroup still runs")
+	}
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
@@ -1504,8 +1526,7 @@ func main() {
 			githubreads.ArchitectureImport: appCtx.Architecture().HasApp(),
 			githubreads.DeliveryReconcile:  reconcile.HasApp(),
 			githubreads.CIReconcile:        reconciler != nil,
-			// No loop of this server records the code survival read yet, so it reads off.
-			githubreads.CodeSurvival: false,
+			githubreads.CodeSurvival:       codeSurvival,
 		}}
 	}
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
