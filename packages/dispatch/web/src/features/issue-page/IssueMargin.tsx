@@ -1,5 +1,13 @@
 import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -31,8 +39,15 @@ import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { AgentName } from "../refs/AgentName";
+import { AgentName, useAgentText } from "../refs/AgentName";
+import { type BlockItemKind, routeItem } from "../refs/block-reference";
+import { deletedLineText, postDeletion } from "../refs/post-marks";
 import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
+import {
+  type PublishedReferences,
+  useKnownReferences,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -80,7 +95,7 @@ import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { IssuePins } from "./IssuePins";
 import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
-import { drawnLine, firstLineOf } from "./issue-tree";
+import { drawnLine, firstLineOf, targetNaming } from "./issue-tree";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NodeGlyph } from "./NodeGlyph";
 import { NoTooltips } from "./NoTooltips";
@@ -123,7 +138,8 @@ function closedStoppedNote(
 }
 
 /** What a row of Details says where a names read of the issues it lists failed, as it draws those
- *  issues by their keys alone: Blocked by's and Blocks' alike. */
+ *  issues by their keys alone: Blocked by's, Blocks' and the row of the issue this one repeats
+ *  (`PROPERTY_LABELS.duplicate_of`) alike. */
 export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
 
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`. While that read
@@ -147,47 +163,67 @@ function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
 }
 
-/** The kinds of item an issue can be filed out of (INFRA-1253's `filed_from`). */
-type FiledItemKind = "ask" | "comment" | "message";
-
-/** The kind of item `route` names, where `route` is the address of an issue's `filed_from`: an
- *  ask, a comment or a message of an issue, or an ask or a comment of a project's document, the
- *  forms the contract gives that field (`IssueDetails["filed_from"]`); undefined for any other
- *  address, which names no item an issue is filed out of. */
-function filedItemKind(route: DispatchReferenceRoute | undefined): FiledItemKind | undefined {
-  if (route === undefined) return undefined;
-  if (route.kind === "document") return route.item?.kind;
-  return route.kind === "ask" || route.kind === "comment" || route.kind === "message"
-    ? route.kind
-    : undefined;
-}
-
 /**
  * The item an issue was filed out of, as Details names it, in the form of Details' list of what
  * references a row (`NodeReferences.tsx`): the page's word for its kind
- * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its first line (`firstLineOf` of
- * the words its names read answers, an ask's question or a comment's or a message's body) as the
- * way to it. While that read has not answered, or answers no words for it, the word alone is the
- * way to it, since an address is no name. An item Dispatch answers gone - deleted, or one the
- * reader may not see - opens no page, so it is drawn as the page's chip draws one (`NodeRow.tsx`'s
- * `Chip`): its word, then Deleted, with no link.
+ * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its first line as the way to it.
+ * The line is cut by R1's rule (`firstLineOf`) from the name the names store projected for the
+ * item's address out of what the relations' names read answered, which the panel publishes
+ * there (`IssueMarginPanel`): an ask's question or a post's body read as a title over one
+ * record, as a link to the item and the page's chip name it, so no mark of the stored Markdown is
+ * drawn, a mention reads as its words and an address as its short form. While that read has not
+ * answered, or answers no words for it, the word alone is the way to it, since an address is no
+ * name. A comment or a message its author deleted keeps its page, and is drawn as the page's chip
+ * draws one (`NodeRow.tsx`'s `Chip`): its word, then the deleted line without its time, in the
+ * deleted line's italic, as the way to it. An item Dispatch answers gone - one nothing answers to
+ * now, or one the reader may not see - opens no page, so it is drawn as the chip draws one: its
+ * word, then Deleted, with no link.
  */
 function FiledItemLine({
   kind,
   route,
   target,
 }: {
-  kind: FiledItemKind;
+  kind: BlockItemKind;
   route: DispatchReferenceRoute;
   target: ReferenceTarget | undefined;
 }): ReactNode {
   const word = NODE_REFERENCES_WORDS.kinds[kind];
   const href = referenceHref(route);
   const gone = target?.gone === true;
-  const line = target === undefined || gone ? "" : drawnLine(firstLineOf(target.name));
-  const named = line !== "";
-  // The way to the item: its first line, which is its author's words, or the page's word alone.
+  const deleted = gone ? null : postDeletion(target);
+  const agentText = useAgentText();
+  const { names } = useKnownReferences();
+  // A deleted post by the deleted line, its actor named from the delete as the chip names it, and
+  // never by the store's name for it, which names the actor as no registry knows it.
+  const deletedLine =
+    deleted === null ? undefined : deletedLineText(deleted, { label: agentText.author });
+  const name = target === undefined || gone || deleted !== null ? undefined : names.get(target.ref);
+  const line = name === undefined ? "" : drawnLine(firstLineOf(name));
+  const named = line !== "" || deletedLine !== undefined;
+  // The way to the item: its first line or its deleted line, which are its author's words, or the
+  // page's word alone. The deleted line's opening is the page's own words, and its actor is not
+  // (INFRA-1523, R3).
   const marks = named ? authorText : pageChrome;
+  const opening =
+    deleted !== null && deleted.by === null
+      ? CONTROL_LABELS.post_deleted
+      : CONTROL_LABELS.post_deleted_by;
+  const shown =
+    deletedLine === undefined ? (
+      line === "" ? (
+        word
+      ) : (
+        line
+      )
+    ) : (
+      <span className="italic" data-post-deleted="" {...pageChrome}>
+        {opening}
+        {deletedLine === opening ? null : (
+          <span {...authorText}>{deletedLine.slice(opening.length)}</span>
+        )}
+      </span>
+    );
   return (
     <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
       {named || gone ? (
@@ -200,10 +236,10 @@ function FiledItemLine({
       {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
       ) : href === undefined ? (
-        <span {...marks}>{named ? line : word}</span>
+        <span {...marks}>{shown}</span>
       ) : (
         <Link className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`} to={href} {...marks}>
-          {named ? line : word}
+          {shown}
         </Link>
       )}
     </span>
@@ -510,7 +546,7 @@ export function IssueMarginPanel({
   const duplicateOf = issue.duplicate_of ?? "";
   const filedFrom = issue.filed_from ?? "";
   const filedRoute = filedFrom === "" ? undefined : parseNodeReference(filedFrom);
-  const filedKind = filedItemKind(filedRoute);
+  const filedKind = filedRoute === undefined ? undefined : routeItem(filedRoute)?.kind;
   const relationRefs = [
     ...(duplicateOf === "" ? [] : [buildDispatchReference({ key: duplicateOf, kind: "issue" })]),
     ...(filedKind === undefined ? [] : [filedFrom]),
@@ -523,6 +559,20 @@ export function IssueMarginPanel({
     placeholderData: keptUntilFailed(queryClient, relationRead.queryKey),
   });
   const filedTarget = relationNames.data?.targets.find((target) => target.ref === filedFrom);
+  // The item's words are the name the names store projects from what this read answered for it
+  // (`FiledItemLine`), so the panel publishes that answer there, as the page publishes its own
+  // names read (`useIssueTree.ts`) and a filter's view the parents only its tree holds
+  // (`slots/view-parents.ts`): the page's read is asked only for what its outline cites. It is
+  // named by the rule a chip naming it is named by (`targetNaming`), so the row, a link and a chip
+  // read the item alike, and published only once this read has answered for it.
+  const filedNaming = useMemo<PublishedReferences | undefined>(
+    () =>
+      filedTarget === undefined
+        ? undefined
+        : { ...targetNaming({ issue, targets: [filedTarget] }), asked: new Set([filedTarget.ref]) },
+    [filedTarget, issue]
+  );
+  usePublishReferenceNames(filedNaming);
   // The read's failure is said in each relation row it feeds: the duplicate's in the words of the
   // titles' reads above, since it is an issue, and the item's in words of its own, since a
   // question, a comment or a message has no title. Each line goes as theirs does

@@ -8834,3 +8834,109 @@ test.each(
     restore();
   }
 });
+
+/** When the message CORE-1 was filed from was deleted, in the case below. */
+const FILED_DELETED_AT = "2026-09-10T03:00:00Z";
+
+/** Each delete of the message CORE-1 was filed from that the case below reads: how it is named,
+ *  who the names read says deleted it, and the deleted line the row draws for it, which holds no
+ *  time. The server records the actor on every delete; a payload that carries the time alone
+ *  reads as Deleted with no one named, as the chip reads it (`postDeletion`). */
+const FILED_DELETES: readonly (readonly [string, Actor | undefined, string])[] = [
+  [
+    "by a session nobody named",
+    UNNAMED_SESSION,
+    `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author}`,
+  ],
+  ["with no actor named", undefined, CONTROL_LABELS.post_deleted],
+];
+
+// A message its author deleted keeps its place, so the names read answers it not gone, named "",
+// with the delete's marks (`reference_targets.go`). Filed from draws it as the page's chip draws
+// one (`NodeRow.tsx`'s `Chip`): the kind's word, then the deleted line without its time, in the
+// deleted line's italic, its actor named as the page names an author, as a link to the post,
+// whose page still opens. Read by `gone` alone, the row drew the kind's word as a link, as though
+// the read had not answered, and nothing said the post was deleted.
+test.each(
+  FILED_DELETES
+)("Filed from draws a message deleted %s by the deleted line, as a link to it", async (_name, by, deletedWords) => {
+  const { restore } = stubRelations(relatedIssue, async (refs) => ({
+    targets: (namedTargets(refs, RELATED_NAMES).targets ?? []).map((target) =>
+      target.ref === FILED_MESSAGE
+        ? {
+            ...target,
+            deleted_at: FILED_DELETED_AT,
+            ...(by === undefined ? {} : { deleted_by: by }),
+            name: "",
+          }
+        : target
+    ),
+  }));
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: deletedWords }));
+    expect(link, "Filed from does not link the deleted message").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the deleted message by its kind's word and the deleted line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${deletedWords}`);
+    const line = link.querySelector("[data-post-deleted]");
+    expect(line, "the deleted line is not drawn in its italic").toHaveClass("italic");
+    expect(line, "the deleted line's words are not the page's own").toHaveAttribute(
+      "data-page-chrome"
+    );
+    expect(
+      line?.querySelector("[data-author-text]")?.textContent,
+      "the deleted line does not name its actor as the page names an author"
+    ).toBe(by === undefined ? undefined : ` ${CONTROL_LABELS.unnamed_author}`);
+    expect(link.textContent, "the deleted line names its actor by its id").not.toContain(
+      UNNAMED_SESSION.id.slice(0, 8)
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The names read answers a post's body as stored: Markdown, whose marks are no word of it and
+// whose references are addresses (`itemExcerpt`, refs/heads.go). Filed from draws the first line
+// of the name the names store projects from that answer, as a link to the post and the page's
+// chip name it: a title over one record, read by the one reader, so a mention reads as its words,
+// an address as its short form, and no mark is drawn. Cut from the stored text, the line drew
+// the mention's link, the bold's `**` and the bare address.
+test("Filed from draws a first line holding a mention and an address as projected words, with no Markdown marks and no address", async () => {
+  await warmMarkdownRenderer();
+  const cited = `dispatch://CORE-3/comment/${FORM_ID}`;
+  const body = `Ask [@Planner](dispatch://agent/planner-session) to **cut** ${cited} first. Then wait.`;
+  const line = "Ask @Planner to cut CORE-3 comment first.";
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, { ...RELATED_NAMES, [FILED_MESSAGE]: { kind: "message", name: body } })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: line }));
+    expect(link, "Filed from does not link the message by its projected line").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    expect(link, "the message's projected line is not drawn as the author's words").toHaveAttribute(
+      "data-author-text"
+    );
+    const drawn = detailsRow(PROPERTY_LABELS.filed_from).textContent ?? "";
+    expect(
+      drawn,
+      "Filed from does not name the message by its kind's word and its projected line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${line}`);
+    for (const mark of ["dispatch://", "**", "[", "]", "(", ")"]) {
+      expect(drawn, `Filed from draws ${mark} of the stored Markdown`).not.toContain(mark);
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
