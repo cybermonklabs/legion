@@ -95,6 +95,7 @@ import {
   focusThePage,
   nodeRow,
   PHONE,
+  rowWords,
   tree,
   unfoldEveryBranch,
 } from "./issue-page-g";
@@ -5292,27 +5293,29 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
     // The list is drawn and settled: every row was counted and pressed down above, so one read of
     // its excerpts is the state the row checks. An excerpt is the element the renderer draws a
     // citing comment's words in, under its row's line of the time, in the comment's card.
-    const cards = panel.locator("[data-reference-card]");
-    const excerpts = await measureWords(
-      cards.locator("[data-reference-rows] > div > .dispatch-markdown")
-    );
+    const excerpts = await measureWords(referenceRows.locator(":scope > div > .dispatch-markdown"));
     for (let number = 1; number <= LONG_LIST; number += 1) {
       const lines = citingNoteLines(seeded.key, number);
       const drawn = excerpts.filter((excerpt) => excerpt.text.includes(lines[1] ?? ""));
       expect(drawn, `Referenced by draws no citing comment ${number}`).toHaveLength(1);
       for (const excerpt of drawn) {
-        for (const line of [(lines[0] ?? "").replace(/ dispatch:.*$/u, ""), ...lines.slice(1)]) {
+        // Every line of the comment, the first on each side of the address it cites, which the
+        // renderer draws as its target's name.
+        for (const line of [...(lines[0] ?? "").split(/ dispatch:\S+ /u), ...lines.slice(1)]) {
           expect(excerpt.text, `Referenced by cut citing comment ${number}`).toContain(line);
         }
         expectWordsWhole(excerpt, `citing comment ${number}`);
       }
-      await expect(
-        cards
-          .filter({ hasText: lines[1] ?? "" })
-          .getByRole("button", { name: /^Show (?:more|less)$/u }),
-        `Referenced by draws a control that cuts citing comment ${number}`
-      ).toHaveCount(0);
     }
+    // No citing comment's card draws a control of the excerpt's own that cuts it: one read of the
+    // settled list for every card that holds a citing comment's second line.
+    await expect(
+      panel
+        .locator("[data-reference-card]")
+        .filter({ hasText: /Line 2 of note \d{2}\./u })
+        .getByRole("button", { name: /^Show (?:more|less)$/u }),
+      "Referenced by draws a control that cuts a citing comment"
+    ).toHaveCount(0);
 
     // What references the statement, from its facts.
     const facts = await focusedRowFacts(page, seeded.statement);
@@ -6143,7 +6146,7 @@ test("a row's chip whose target is gone wraps inside the page at 390 px", async 
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectLoadSettled(settling);
       await expectIssuePageDrawn(page);
-      const chip = nodeRow(page, seeded.comment).locator("[data-node-words] [data-row-chip]");
+      const chip = rowWords(nodeRow(page, seeded.comment)).locator("a[data-row-chip]");
       await expect(chip, "the comment's row draws no chip in its words").toHaveCount(1);
       await expect(chip, "the chip does not draw its target's whole address").toHaveText(
         seeded.address
