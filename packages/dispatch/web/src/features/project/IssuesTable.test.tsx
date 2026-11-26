@@ -283,6 +283,8 @@ test("a row shows ten of its labels and a +N, and its opened labels stay open wh
 
   const search = screen.getByRole("searchbox", { name: "Search issues" });
   await user.type(search, "sextant");
+  // A query longer than the box ends in an ellipsis, so the whole query is the box's title.
+  expect(search).toHaveAttribute("title", "sextant");
   await waitFor(() =>
     expect(screen.queryByRole("row", { name: "CORE-1 Work with many labels" })).toBeNull()
   );

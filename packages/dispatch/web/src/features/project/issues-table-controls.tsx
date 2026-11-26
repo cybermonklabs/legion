@@ -351,11 +351,11 @@ export function IssueTableStatus({
       </div>
       {legend ? (
         // The copy the bar is measured against: the segments with their names, each at its
-        // natural width, in a strip that takes no height and clips them, so nothing of it is
-        // drawn and the page grows no wider. It stands before the bar, so nothing a reader
-        // reads under the bar holds it.
-        <div aria-hidden className="h-0 overflow-hidden">
-          <div className="invisible flex w-max" ref={namesRef}>
+        // natural width, in a strip that takes no height, is not drawn and clips them, so the
+        // page grows no wider. It stands before the bar, so nothing a reader reads under the bar
+        // holds it.
+        <div aria-hidden className="invisible h-0 overflow-hidden">
+          <div className="flex w-max" ref={namesRef}>
             {shown.map((status) => (
               <span className={SEGMENT} key={status}>
                 {statusLabel(status)} {statusCounts.get(status)}
@@ -445,15 +445,17 @@ export function IssueTableToolbar({
           beside a priority's margin, the search box takes a row of its own and the controls the
           row under it, rather than cut the placeholder and leave the last control alone. From
           1280 px up every control stands at one height (`toolbarControlHeight`); below it each
-          takes the 44 px floor `styles.css` gives a control. */}
+          takes the 44 px floor `styles.css` gives a control. A query longer than the box ends
+          in an ellipsis while the reader is not in it, with the whole query as its title. */}
       <div className="@container flex flex-wrap items-center gap-2">
         <input
           aria-label="Search issues"
-          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm text-ellipsis sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
           onChange={(event) => {
             setSearch(event.target.value);
           }}
           placeholder="Search issues: key, title, epic, assignee, author, labels"
+          title={search === "" ? undefined : search}
           type="search"
           value={search}
           maxLength={SEARCH_QUERY_MAX}
