@@ -1,0 +1,488 @@
+/** the rows time the new issue page's loads in Chromium, its processor slowed, on an issue the
+ *  server seeds at the largest issue's shape: how soon each view's first screen is painted, how
+ *  soon each act shows its result during the load and after it, and whether a box the page drew
+ *  moves, which the server's own answers to the issue, tree and view reads, their timing, the
+ *  live socket's events and the edit notices of the seed's documents decide */
+
+import { setTimeout as sleep } from "node:timers/promises";
+import type { BrowserContext } from "@playwright/test";
+
+import { presetPath } from "../web/src/features/issue-page/issue-address";
+import type { Preset } from "../web/src/features/issue-page/page-words";
+import {
+  ACT_MS,
+  AFTER_LOAD_TITLE,
+  actAddress,
+  actRowTitle,
+  afterLoadOrder,
+  boundWord,
+  FIRST_SCREEN_MS,
+  fiveLoads,
+  holdAct,
+  holdBound,
+  holdTasks,
+  LAYOUT_SHIFT,
+  LOAD_ACTS,
+  LOAD_VIEWS,
+  LOADS,
+  lastOutlineRow,
+  loadCpuRate,
+  loadWidth,
+  makeSteps,
+  type OpenedLoad,
+  oneLoad,
+  outlineRowSelector,
+  printReading,
+  rowAddress,
+  test,
+} from "./issue-page-load";
+import { WAITING_QUESTION } from "./issue-page-t-scale";
+import { owedUnless } from "./issue-page-t-tree";
+import { typefaceAddress } from "./issue-page-typeface";
+import {
+  actReading,
+  boxesMoved,
+  firstScreenOf,
+  firstScreenPaint,
+  groupsUndrawn,
+  type LoadCapture,
+  type LoadRecord,
+  largestContentfulPaint,
+  layoutShift,
+  longestTaskAfterViewRow,
+  moveLine,
+  namedRowAt,
+  pageShape,
+  recordOf,
+  underHeader,
+  waitForLoadEnd,
+} from "./load-instruments";
+import { refuseASharedRun } from "./main-thread-hold";
+import { expect } from "./test";
+
+/**
+ * The load rows of `c-load-1440` and `c-load-390`, in the projects `chromium-load` (1440 by 900,
+ * the processor slowed by 2) and `iphone-load` (390 px, slowed by 4), one worker and no retry.
+ * Each bound is read over five loads of the seed (`seedLargestShape`), each in a new browser
+ * context so its cache is empty, and holds when the fourth smallest of its five readings meets
+ * it; each row prints one reading line for each bound it reads (`holdBound`). A row reads the
+ * clock, so it refuses a run of more than one worker before it reads one (`refuseASharedRun`).
+ *
+ * - Row 1 (R1, R2, R3): a load of each view's own address with no input paints its first screen,
+ *   the rows in the viewport under the header as the load ends, within 2.5 s by Element Timing,
+ *   and its largest contentful paint by then; no task after the first drawing of the view row
+ *   runs over 200 ms; the layout shift is at most 0.1; and no control of the view row or the
+ *   header, nor the header's band, nor a row in the viewport changes its box after its first
+ *   drawing, but in a frame of the typeface's swap. Dashboard, Threads and Documents are owed
+ *   until their parts add them to the view row's list.
+ * - Row 2 (R3): the row an address names, and the ask the root's first focus names, stand in the
+ *   viewport at the first drawing of the rows and keep their place until the load has ended.
+ * - Row 3 (R3): with the typeface's file answered 3 s late, the layout shift is at most 0.1.
+ * - Row 4 (R2): each act of the width, made at the first moment it can be made, shows its result
+ *   within 200 ms, as `holdAct` reads an act that needs a read; no Event Timing entry and no task
+ *   after the first drawing of the view row runs over 200 ms.
+ * - Row 5 (R2): each act, made once in each load after it has ended, shows its result within
+ *   200 ms, read as Row 4 reads it.
+ *
+ * The rows of one worker share its seed (`test` of `e2e/issue-page-load.ts`), so they run in the
+ * order they are written, and Row 2, whose first focus seeds an ask that waits on the reader in
+ * a phase of its own, comes last: a row after it would seed the shape again first.
+ */
+
+// The rows share the worker's seed, and are read in the order written: `default` runs them in
+// one worker in that order, where `serial` would skip every row after one that failed and print
+// none of its readings.
+test.describe.configure({ mode: "default" });
+
+/** How long a row of five loads may take. */
+const LOAD_ROW_MS = 300_000;
+
+/** How long the row of every act after the load may take: five loads, each with every act of
+ *  its width made once and waited out. */
+const AFTER_LOAD_ROW_MS = 900_000;
+
+/** How long the row of the named rows may take: eleven loads and the seed of its first focus. */
+const NAMED_ROW_MS = 900_000;
+
+/** How long the row of the held typeface holds the typeface's file back. */
+const TYPEFACE_HOLD_MS = 3_000;
+
+/** A load once it has ended: when it did, and what the init script collected. */
+async function ended({
+  page,
+  requests,
+}: OpenedLoad): Promise<{ readonly end: number; readonly record: LoadRecord }> {
+  const end = await waitForLoadEnd(page, requests);
+  return { end, record: await recordOf(page) };
+}
+
+/** Holds the typeface's file back on a load's context: `address` is answered 3 s late. */
+function holdTypeface(address: string): (context: BrowserContext) => Promise<void> {
+  return async (context) => {
+    // A predicate, not the address as a pattern: Playwright reads a string as a glob.
+    await context.route(
+      (url) => url.href === address,
+      async (route) => {
+        // The hold is what the row reads: the page's text stands in the fallback face for these
+        // 3 s, and the swap that ends them is the shift the row bounds.
+        await sleep(TYPEFACE_HOLD_MS);
+        await route.continue();
+      }
+    );
+  };
+}
+
+for (const view of LOAD_VIEWS) {
+  // SLOW(>=2s): five cold loads of the seeded issue at the slowed rate, each waited out to its end.
+  test(`a load of ${view.name} draws its first screen within 2.5 s`, async ({
+    browser,
+    loadSeeds,
+  }, testInfo) => {
+    refuseASharedRun();
+    owedUnless(view.gate);
+    test.setTimeout(LOAD_ROW_MS);
+    const rate = loadCpuRate(testInfo.project.name);
+    const seeded = await loadSeeds.shape();
+    const loads = await fiveLoads(
+      browser,
+      rate,
+      { address: presetPath(seeded.key, view.view as Preset), boxes: "all" },
+      async (load) => ({
+        ...(await ended(load)),
+        screen: await firstScreenOf(load.page),
+        shape: view.view === "conversation" ? await pageShape(load.page) : null,
+      })
+    );
+    const prefix = `first-screen.${view.view}`;
+    const paints = loads.map((load) => firstScreenPaint(load.screen));
+    holdBound({
+      bound: `${prefix}.paint-ms`,
+      limit: FIRST_SCREEN_MS,
+      rate,
+      readings: paints.map((paint) => paint.reading),
+    });
+    holdBound({
+      bound: `${prefix}.largest-contentful-paint-ms`,
+      limit: FIRST_SCREEN_MS,
+      rate,
+      readings: loads.map((load) => largestContentfulPaint(load.record.lcp, load.end)),
+    });
+    holdBound({
+      bound: `${prefix}.longest-task-ms`,
+      limit: ACT_MS,
+      rate,
+      readings: loads.map((load) => longestTaskAfterViewRow(load.record)),
+    });
+    holdBound({
+      bound: `${prefix}.layout-shift`,
+      limit: LAYOUT_SHIFT,
+      rate,
+      readings: loads.map((load) => layoutShift(load.record.cls)),
+    });
+    for (const [at, load] of loads.entries()) {
+      const which = `load ${at + 1} of ${LOADS}`;
+      if (load.shape !== null) {
+        printReading(
+          `page-shape.${view.view} rate=${rate} load=${at + 1} rows=${load.shape.rows} ` +
+            `elements=${load.shape.elements} bytes=${load.shape.bytes}`
+        );
+      }
+      expect
+        .soft(
+          paints[at]?.unpainted,
+          `${which}: rows of the first screen whose first line has no Element Timing entry`
+        )
+        .toEqual([]);
+      expect
+        .soft(
+          groupsUndrawn(load.record.boxes),
+          `${which}: groups of boxes R3 holds that matched no element at this width`
+        )
+        .toEqual([]);
+      expect
+        .soft(
+          boxesMoved(load.record, load.end).map(moveLine),
+          `${which}: boxes that changed after their first drawing, outside the typeface's swap, ` +
+            "before the load ended"
+        )
+        .toEqual([]);
+    }
+  });
+}
+
+// SLOW(>=2s): one load to read the typeface's address, then five cold loads with it held back 3 s.
+test("a load with the typeface held back for 3 s moves nothing", async ({
+  browser,
+  loadSeeds,
+}, testInfo) => {
+  refuseASharedRun();
+  test.setTimeout(LOAD_ROW_MS);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const address = presetPath(seeded.key, "conversation");
+  const font = await oneLoad(browser, rate, { address, boxes: "none" }, async (load) => {
+    await waitForLoadEnd(load.page, load.requests);
+    return await typefaceAddress(load.page);
+  });
+  const loads = await fiveLoads(
+    browser,
+    rate,
+    { address, boxes: "none", prepare: holdTypeface(font) },
+    ended
+  );
+  holdBound({
+    bound: "typeface-held.layout-shift",
+    limit: LAYOUT_SHIFT,
+    rate,
+    readings: loads.map((load) => layoutShift(load.record.cls)),
+  });
+  for (const [at, load] of loads.entries()) {
+    // A load whose typeface came on time read no held typeface, and would pass for nothing.
+    const held = load.record.resource.find((entry) => entry.name === font);
+    expect
+      .soft(
+        held === undefined ? null : held.responseEnd - held.startTime,
+        `load ${at + 1} of ${LOADS}: the typeface's file ${font} was not answered ` +
+          `${TYPEFACE_HOLD_MS} ms late`
+      )
+      .toBeGreaterThanOrEqual(TYPEFACE_HOLD_MS);
+  }
+});
+
+/** Every act of either width, once: each project runs the rows of its own width's acts, and its
+ *  `grepInvert` (`e2e/playwright.config.ts`) leaves out the row of the other width's act. */
+const ACT_NAMES = [...new Set([...LOAD_ACTS[1440], ...LOAD_ACTS[390]].map((act) => act.name))];
+
+for (const name of ACT_NAMES) {
+  // SLOW(>=2s): five cold loads at the slowed rate, the act made at its first moment in each.
+  test(actRowTitle(name), async ({ browser, loadSeeds }, testInfo) => {
+    refuseASharedRun();
+    test.setTimeout(LOAD_ROW_MS);
+    const width = loadWidth(testInfo);
+    const act = LOAD_ACTS[width].find((each) => each.name === name);
+    if (act === undefined) {
+      throw new Error(
+        `${name} is no act at ${width} px, so ${testInfo.project.name} runs no row of it: its ` +
+          "grepInvert in e2e/playwright.config.ts leaves this row out"
+      );
+    }
+    const rate = loadCpuRate(testInfo.project.name);
+    const seeded = await loadSeeds.shape();
+    const loads = await fiveLoads(
+      browser,
+      rate,
+      { address: actAddress(seeded.key, act), boxes: "none" },
+      async ({ page, requests }) => {
+        const made = await makeSteps(page, 0, act.steps, act.when);
+        await waitForLoadEnd(page, requests);
+        return { last: made.last, record: await recordOf(page) };
+      }
+    );
+    const prefix = `during-load.${boundWord(name)}`;
+    holdAct(
+      prefix,
+      rate,
+      loads.map((load) => actReading(load.record, load.last))
+    );
+    holdTasks(
+      prefix,
+      rate,
+      loads.map((load) => load.record)
+    );
+  });
+}
+
+// SLOW(>=2s): five cold loads, each waited out and then every act of its width made once in it.
+test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
+  refuseASharedRun();
+  test.setTimeout(AFTER_LOAD_ROW_MS);
+  const acts = afterLoadOrder(LOAD_ACTS[loadWidth(testInfo)]);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const loads = await fiveLoads(
+    browser,
+    rate,
+    { address: presetPath(seeded.key, "conversation"), boxes: "none" },
+    async ({ page, requests }) => {
+      await waitForLoadEnd(page, requests);
+      // Each act is made once the page has gone quiet again after the one before it.
+      const settle = () => waitForLoadEnd(page, requests);
+      const measured: number[] = [];
+      let next = 0;
+      for (const act of acts) {
+        const made = await makeSteps(page, next, act.steps, "now", settle);
+        measured.push(made.last);
+        next = (await makeSteps(page, made.next, act.after, "now")).next;
+      }
+      await waitForLoadEnd(page, requests);
+      return { measured, record: await recordOf(page) };
+    }
+  );
+  for (const [at, act] of acts.entries()) {
+    holdAct(
+      `after-load.${boundWord(act.name)}`,
+      rate,
+      loads.map((load) => actReading(load.record, load.measured[at] ?? -1))
+    );
+  }
+  holdTasks(
+    "after-load",
+    rate,
+    loads.map((load) => load.record)
+  );
+});
+
+/** Prints one load's raw readings as one line of the run's log, `LOAD-CAPTURE <name> <json>`,
+ *  which is cut into `e2e/__tests__/fixtures/load-readings/<name>.json`. */
+function printCapture(name: string, capture: LoadCapture): void {
+  console.log(`LOAD-CAPTURE ${name} ${JSON.stringify(capture)}`);
+}
+
+/** One load's raw readings once it has ended. */
+async function captured(rate: number, { page, requests }: OpenedLoad): Promise<LoadCapture> {
+  const end = await waitForLoadEnd(page, requests);
+  const record = await recordOf(page);
+  return {
+    end,
+    firstScreen: await firstScreenOf(page),
+    rate,
+    record,
+    requests: requests.spans(record.timeOrigin),
+  };
+}
+
+// SLOW(>=2s): up to four cold loads at the slowed rate, one with its typeface held back 3 s.
+test("capture the raw readings of one load", async ({ browser, loadSeeds }, testInfo) => {
+  test.skip(
+    process.env.ISSUE_PAGE_LOAD_CAPTURE !== "1",
+    "the capture runs only where ISSUE_PAGE_LOAD_CAPTURE=1, for the fixtures of load-readings.test.ts"
+  );
+  refuseASharedRun();
+  test.setTimeout(LOAD_ROW_MS);
+  const width = loadWidth(testInfo);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const address = presetPath(seeded.key, "conversation");
+  printCapture(
+    `conversation-${width}`,
+    await oneLoad(browser, rate, { address, boxes: "all" }, (load) => captured(rate, load))
+  );
+  // The other two fixtures are one load each, at 1440 px.
+  if (width !== 1440) return;
+  const font = await oneLoad(browser, rate, { address, boxes: "none" }, async (load) => {
+    await waitForLoadEnd(load.page, load.requests);
+    return await typefaceAddress(load.page);
+  });
+  printCapture(
+    "typeface-held-back",
+    await oneLoad(browser, rate, { address, boxes: "all", prepare: holdTypeface(font) }, (load) =>
+      captured(rate, load)
+    )
+  );
+  // A press on Spec after the load: the seed's issue is no child, so a load of Conversation sends
+  // no read of Spec's view, and the press sends it.
+  const spec = LOAD_ACTS[1440].find((act) => act.kind === "view" && act.view === "spec");
+  if (spec === undefined) throw new Error("the acts at 1440 px hold no press on Spec");
+  printCapture(
+    "view-press-read",
+    await oneLoad(browser, rate, { address, boxes: "none" }, async (load) => {
+      await waitForLoadEnd(load.page, load.requests);
+      await makeSteps(load.page, 0, spec.steps, "now");
+      return await captured(rate, load);
+    })
+  );
+});
+
+/** Holds the five loads of a named row to R3 under `prefix`: at the first drawing of the rows
+ *  the named row stands in the viewport under the header; it keeps its box until the load has
+ *  ended, but in a frame of the typeface's swap; and the layout shift is at most 0.1. */
+function holdNamedRow(
+  prefix: string,
+  rate: number,
+  loads: readonly { readonly end: number; readonly record: LoadRecord }[]
+): void {
+  holdBound({
+    bound: `${prefix}.layout-shift`,
+    limit: LAYOUT_SHIFT,
+    rate,
+    readings: loads.map((load) => layoutShift(load.record.cls)),
+  });
+  for (const [at, load] of loads.entries()) {
+    const which = `load ${at + 1} of ${LOADS}`;
+    const rows = load.record.frames.findIndex((frame) => frame.rows);
+    const frame = load.record.frames[rows];
+    const box = rows === -1 ? null : namedRowAt(load.record, rows);
+    expect
+      .soft(
+        box !== null && frame !== undefined && underHeader(box, frame),
+        `${which}: at the first drawing of the rows the named row was ${
+          box === null
+            ? "not drawn"
+            : `at ${box.y} px, outside the viewport under the header's foot at ${frame?.foot} px`
+        }`
+      )
+      .toBe(true);
+    expect
+      .soft(
+        boxesMoved(load.record, load.end).map(moveLine),
+        `${which}: the named row changed its place before the load ended`
+      )
+      .toEqual([]);
+  }
+}
+
+// SLOW(>=2s): a load to find the last row, five cold loads of its address, the seed of an ask that
+// waits on the reader with its waits, and five cold loads of it.
+test("a load draws the named row in the viewport at once and keeps it there", async ({
+  browser,
+  loadSeeds,
+}, testInfo) => {
+  refuseASharedRun();
+  test.setTimeout(NAMED_ROW_MS);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  // The last row the page draws once the load has ended, before any control of the paging rule
+  // is pressed, named by its own address.
+  const last = await oneLoad(
+    browser,
+    rate,
+    { address: presetPath(seeded.key, "conversation"), boxes: "none" },
+    async (load) => {
+      await waitForLoadEnd(load.page, load.requests);
+      return await lastOutlineRow(load.page);
+    }
+  );
+  holdNamedRow(
+    "named-row.last-row",
+    rate,
+    await fiveLoads(
+      browser,
+      rate,
+      {
+        address: rowAddress(seeded.key, last),
+        boxes: "named",
+        named: { selector: outlineRowSelector(last.id), text: null },
+      },
+      ended
+    )
+  );
+  // The root's rule for the first focus names the ask that waits on the reader.
+  const waiting = await loadSeeds.waiting();
+  holdNamedRow(
+    "named-row.first-focus",
+    rate,
+    await fiveLoads(
+      browser,
+      rate,
+      {
+        address: presetPath(waiting.key, "conversation"),
+        boxes: "named",
+        named: {
+          selector: '[data-issue-body] [data-node-row][data-node-type="ask"]',
+          text: WAITING_QUESTION,
+        },
+      },
+      ended
+    )
+  );
+});

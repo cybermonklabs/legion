@@ -18,7 +18,7 @@
     "dispatch:local": "bun e2e/local-instance.ts",
     "build:contracts": "bun run --filter @legion/contracts build:dispatch",
     "e2e": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts",
-    "e2e:clock": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1",
+    "e2e:clock": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=chromium-load --project=iphone-load --workers=1",
     "e2e:embedder": "bun run build:contracts && bun run build:web && DISPATCH_E2E_EMBEDDER=fake playwright test --config e2e/playwright.config.ts --project=chromium search-tiers",
     "e2e:multiprocess": "bun run build:contracts && bun run build:web && DISPATCH_BUILD=e2e-b vite build --config web/vite.config.ts --outDir dist-b && DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_EMBEDDER=1 DISPATCH_E2E_WEB_DIST_B=${DISPATCH_E2E_WEB_DIST_B:-../dispatch/web/dist-b} playwright test --config e2e/playwright.config.ts",
     "e2e:deployed": "bun run build:contracts && playwright test --config e2e/playwright.config.ts",
@@ -48,7 +48,8 @@
     "happy-dom": "^20.14.0",
     "msw": "3.0.4",
     "typescript": "^5",
-    "vite": "^5"
+    "vite": "^5",
+    "web-vitals": "6.2.3"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.22",

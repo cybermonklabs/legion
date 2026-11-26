@@ -248,8 +248,9 @@ export function tagged(tag: string): RegExp {
  *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
- *  the three wall-clock projects below carry `default: false` and are outside it, measured at
- *  this head as 1,373 rows in 191 files against the whole suite's 1,427 in 194. Every
+ *  the wall-clock projects below carry `default: false` and are outside it, measured before the
+ *  two load projects were added as 1,373 rows in 191 files against the whole suite's 1,427 in
+ *  194. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
@@ -279,45 +280,62 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
 }
 
 /** The projects whose rows are read from the wall clock: that a card's draw holds the main thread
- *  for less than a second, measured through `e2e/main-thread-hold.ts`, and what the agent
- *  surfaces cost in time, measured by `agent-workspace-timing.e2e.ts` itself. They run one row at
- *  a time so that a reading is the page's own work rather than what three other lanes took. They
- *  are named here rather than in the config for the reason `stubProjectNames` above gives: the
- *  config selects its own projects with this list, a bun test holds each of them to the fields
- *  that keep them out of the default selection and at one row at a time, and the three modules
- *  that account for the whole suite list these projects beside the default ones, since a listing
- *  that names no project holds no row of theirs once they are out of the default selection. A
- *  fourth wall-clock project added to the config and missed here is a project no accounting sees.
- *  The order is the config's own. */
+ *  for less than a second, measured through `e2e/main-thread-hold.ts`, what the agent surfaces
+ *  cost in time, measured by `agent-workspace-timing.e2e.ts` itself, and how soon the new issue
+ *  page draws and answers on a load, at 1440 px and 390 px (`chromium-load` and `iphone-load`,
+ *  `e2e/issue-page-load.e2e.ts`). They run one row at a time so that a reading is the page's own
+ *  work rather than what three other lanes took. They are named here rather than in the config
+ *  for the reason `stubProjectNames` above gives: the config selects its own projects with this
+ *  list, a bun test holds each of them to the fields that keep them out of the default selection
+ *  and at one row at a time, and the three modules that account for the whole suite list these
+ *  projects beside the default ones, since a listing that names no project holds no row of
+ *  theirs once they are out of the default selection. Another wall-clock project added to the
+ *  config and missed here is a project no accounting sees. The order is the config's own. */
 export const clockProjectNames: readonly string[] = [
   "chromium-alone",
   "firefox-alone",
   "webkit-alone",
+  "chromium-load",
+  "iphone-load",
 ];
 
-/** The three specs those projects run, each by the part of its file name that is its own:
- *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A
- *  wall-clock file is spelled once here and read twice - by the pattern below, which is how the
- *  projects select their files, and by `clockFileOnCommandLine`, which is how a command that
- *  names one of those files with no project is refused - so a fourth such file is one edit of
- *  this list. */
+/** The four specs those projects run, each by the part of its file name that is its own:
+ *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts` and
+ *  `issue-page-load.e2e.ts`. A wall-clock file is spelled once here and read twice - by the
+ *  pattern below, which is how the projects select their files, and by `clockFileOnCommandLine`,
+ *  which is how a command that names one of those files with no project is refused - so another
+ *  such file is one edit of this list. */
 export const clockSpecNames: readonly string[] = [
   "agent-workspace-timing",
   "heavy-bodies",
   "nested-directive",
+  "issue-page-load",
 ];
 
 /** The files the wall-clock projects select, which is `chromium-alone`'s `testMatch` in
- *  `e2e/playwright.config.ts` and the `testIgnore` of the four parallel projects that would
- *  otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
+ *  `e2e/playwright.config.ts`, less the load rows' file, which that project's `testIgnore` leaves
+ *  to `chromium-load` and `iphone-load`, and the `testIgnore` of the four parallel projects that
+ *  would otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
  *  `clockSpecNames` rather than written a second time, so the two cannot drift apart. The
  *  `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
- *  modules those specs import and no project may select them as test files. */
+ *  modules those specs import and no project may select them as test files, and
+ *  `issue-page-load-same.e2e.ts`, a file of the parallel projects, is none of them. */
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
+
+/** The wall-clock spec whose whole name `word` holds, or `undefined`: a name counts only where
+ *  the character after it is neither `-` nor a word character, so a filter naming
+ *  `e2e/issue-page-load-same.e2e.ts`, a file of the parallel projects that begins with the load
+ *  rows' name, names no wall-clock spec, while the bare `heavy-bodies` still does. */
+export function clockSpecIn(word: string): string | undefined {
+  return clockSpecNames.find((name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`${escaped}(?![-\\w])`).test(word);
+  });
+}
 
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
- *  the three wall-clock projects are out of the default selection, so no run that names no
+ *  the wall-clock projects are out of the default selection, so no run that names no
  *  project holds a row of the file such a command named, whatever Playwright then does with the
  *  rest of the line - for example, answer "No tests found", or run the whole default selection,
  *  which is what a filter dropped after a `--` leaves (the post-dash drop below). No such answer
@@ -339,7 +357,8 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  or a spelling that carries its own value, and is passed over. What is left is a positional
  *  filter, which Playwright matches as a regular expression against absolute file paths; this
  *  reader answers such a filter only where its text holds a wall-clock file's whole name, which
- *  is the rule the refusal is written for. A PARTIAL name is left alone: measured at this head,
+ *  is the rule the refusal is written for (`clockSpecIn`). A PARTIAL name is left alone:
+ *  measured at this head,
  *  `bunx playwright test --config e2e/playwright.config.ts --list nested` is not refused here
  *  and exits 1 with Playwright's own "No tests found. Make sure that arguments are regular
  *  expressions matching test files." above "Total: 0 tests in 0 files". That filter does select
@@ -447,7 +466,7 @@ export function clockFileOnCommandLine(argv: readonly string[]): string | undefi
     }
     if (word.startsWith("-")) continue;
     // The first such filter is held rather than answered, so that a `--ui` after it still wins.
-    if (file === undefined && clockSpecNames.some((name) => word.includes(name))) file = word;
+    if (file === undefined && clockSpecIn(word) !== undefined) file = word;
   }
   return file;
 }

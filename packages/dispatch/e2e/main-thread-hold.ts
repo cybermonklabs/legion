@@ -95,6 +95,10 @@ function refuseASharedRun(): void {
   );
 }
 
+// The load rows (`e2e/issue-page-load.e2e.ts`) read the clock too, and each calls this before it
+// reads one, so a run of more than one worker fails them as it fails a measuring row here.
+export { refuseASharedRun };
+
 /**
  * Installs a heartbeat before the page's own scripts - a `setTimeout(0)` loop whose gap between
  * ticks a parse holding the main thread widens to the parse's length - and starts the record

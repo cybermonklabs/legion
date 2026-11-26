@@ -4,6 +4,7 @@ import { baseUrl } from "./api";
 import {
   clockFileOnCommandLine,
   clockProjectNames,
+  clockSpecIn,
   clockSpecPattern,
   stubProjectNames,
   tagged,
@@ -133,42 +134,6 @@ const stub = stubSelection({
   projects: stubProjectNames,
 });
 
-// A command that names a wall-clock spec file as a filter while naming no project
-// (`clockFileOnCommandLine`, e2e/configurations.ts). The three wall-clock projects
-// (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
-// names no project holds a row of the file such a command named, whatever Playwright then does
-// with the rest of the line - for example, answer "No tests found", or run the whole default
-// selection, which is what a filter dropped after a `--` leaves (e2e/configurations.ts). No such
-// answer names a cure; this says the command that does run the file. Throwing as this module
-// evaluates is what puts the message on standard error and the run's status above zero, and
-// Playwright prints a config error with a stack after it, so the first line is the command and
-// nothing else.
-//
-// That line names its own worker count. The measurement a wall-clock row makes is a reading
-// only in a run one worker wide, and `refuseASharedRun` (e2e/main-thread-hold.ts) fails a
-// measuring row in any wider run, so the command printed here says `--workers=1` rather than
-// resting on this config's default (`workers: 1` below), which a `--workers` of the reader's
-// own would override without changing a word of this line.
-//
-// It stands under no guard at all, where the reuse-servers refusal above is the only other one
-// this file makes: a command line that would list nothing is as wrong in a run of the stubbed
-// layer alone as in any other.
-const clockFile = clockFileOnCommandLine(process.argv);
-if (clockFile !== undefined) {
-  throw new Error(
-    `bun run e2e -- --project=chromium-alone ${clockFile} --workers=1\n` +
-      `\nThat is how ${clockFile} is run, and this command named no project. The wall-clock ` +
-      `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
-      "their rows are read from the wall clock and need the machine to themselves, so no run " +
-      "that names no project holds a row of that file, whatever Playwright then does with the " +
-      'rest of this command line - for example, answer "No tests found", or run the whole ' +
-      "default selection, which is what a filter dropped after a `--` leaves. Write the " +
-      "project as --project=<name> and never --project <name>: the option is variadic, so the " +
-      "file after it would be read as a second project name. To run every wall-clock row in " +
-      "all three engines, run `bun run e2e:clock`."
-  );
-}
-
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
 // when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
 // the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
@@ -289,6 +254,11 @@ const readersPlaceRows =
 // this one too for the reason given above `webkit`: without a `testMatch` a project sees every
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
+
+// The load rows' one file (`issue-page-load.e2e.ts`), a wall-clock spec that `chromium-load` and
+// `iphone-load` run at the widths its rows are read at, and that `chromium-alone`, whose
+// `testMatch` is every wall-clock spec, leaves to them.
+const loadSpec = /issue-page-load\.e2e\.ts/;
 
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
@@ -471,31 +441,32 @@ const parallelProjects = [
  * The projects a command names: the rows whose claim is a wall-clock time, with the machine to
  * themselves.
  *
- * Each sets `default: false`, which leaves all three out of a run that names no project and
+ * Each sets `default: false`, which leaves all five out of a run that names no project and
  * takes nothing from a run that names one. `filterProjects` answers
  * `projects.filter(p => includeNonDefault || p.default)` where the command line named no
  * project, and ignores `default` altogether where it named any (`function filterProjects` at
  * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
  * `default?: boolean` is a field of `TestProject` and is `true` where it is unset
  * (playwright/types/test.d.ts:170). So `--project=chromium-alone` selects this project as it
- * always did, `bun run e2e:clock` selects all three, and a run that names none holds no row of
+ * always did, `bun run e2e:clock` selects all five, and a run that names none holds no row of
  * theirs.
  *
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
  * Each of these projects named every project before it in `dependencies` until
  * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
- * command naming one of their three files, because a filter narrows a project it selects and
+ * command naming one of their files, because a filter narrows a project it selects and
  * never a project selected to run before it. With no dependency and no place in the default
- * selection, such a command now selects nothing at all, so the configuration refuses it at the
- * top of this file and prints the command that runs the file.
+ * selection, such a command now selects nothing at all, so the configuration refuses it below
+ * these projects and prints the command that runs the file.
  *
  * What gives these rows the quiet machine is no longer the order they run in: it is a run one
  * worker wide. For the rows that measure through `e2e/main-thread-hold.ts` the row itself holds
  * the run to that: its guard fails a measuring row in a run of more than one worker rather than
  * letting it report a reading of what the other workers were running, so such a reading survives
- * only where it was taken alone, whatever project it was taken in. The rows of
+ * only where it was taken alone, whatever project it was taken in. The load rows call the same
+ * guard before they read a clock. The rows of
  * `agent-workspace-timing.e2e.ts` read a clock of their own and reach that guard nowhere, so
- * what holds them to one worker is the command: the refusal at the top of this file prints
+ * what holds them to one worker is the command: the refusal below these projects prints
  * `--workers=1`, and `bun run e2e:clock` names it too.
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
@@ -518,10 +489,18 @@ const parallelProjects = [
  * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
  * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
  *
- * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
+ * These five select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
  * asserts, because what puts it here is that its claim is a wall-clock time, and
  * `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
+ *
+ * `chromium-load` and `iphone-load` run the load rows of the new issue page,
+ * `issue-page-load.e2e.ts`, which `chromium-alone` leaves to them: at the two widths those rows
+ * are read at, 1440 by 900 and Playwright's iPhone 13 in Chromium (390 px), where
+ * `chromium-alone` opens 1280 by 720. The file declares the row of each act of both widths once,
+ * and each of the two inverts the row of the act its width does not have: below 1280 px the view
+ * row is one control, which 1440 px does not draw, and at 760 px and below it draws no Keys.
+ * Neither records a trace, whose snapshots of the document would run in the page they time.
  *
  * Each also sets `retries: 0`, which Playwright takes per project as it takes `workers`,
  * against the one retry the run takes on CI. The reason is these rows' own, and holds whatever
@@ -535,6 +514,8 @@ const aloneProjects = [
     name: "chromium-alone",
     default: false,
     testMatch: clockSpecPattern,
+    // A project's own `testIgnore` replaces this config's, so the two it holds are named again.
+    testIgnore: [loadSpec, multiprocessSpecs, stubSpecs],
     use: { ...devices["Desktop Chrome"] },
     workers: 1,
     retries: 0,
@@ -556,7 +537,79 @@ const aloneProjects = [
     workers: 1,
     retries: 0,
   },
+  {
+    name: "chromium-load",
+    default: false,
+    testMatch: loadSpec,
+    grepInvert: /a press on the one control shows its result/,
+    use: {
+      ...devices["Desktop Chrome"],
+      // A trace snapshots the document in the page at each action and records its screen, which
+      // would put that work in the readings: the rows' evidence is the lines they print.
+      trace: "off",
+      viewport: { height: 900, width: 1440 },
+    },
+    workers: 1,
+    retries: 0,
+  },
+  {
+    name: "iphone-load",
+    default: false,
+    testMatch: loadSpec,
+    grepInvert: /a press on Keys shows its result/,
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const, trace: "off" },
+    workers: 1,
+    retries: 0,
+  },
 ] satisfies Project[];
+
+// A command that names a wall-clock spec file as a filter while naming no project
+// (`clockFileOnCommandLine`, e2e/configurations.ts). The wall-clock projects
+// (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
+// names no project holds a row of the file such a command named, whatever Playwright then does
+// with the rest of the line - for example, answer "No tests found", or run the whole default
+// selection, which is what a filter dropped after a `--` leaves (e2e/configurations.ts). No such
+// answer names a cure; this says the command that does run the file, in the first of the
+// projects above that selects it. Throwing as this module evaluates is what puts the message on
+// standard error and the run's status above zero, and Playwright prints a config error with a
+// stack after it, so the first line is the command and nothing else. It stands below the
+// projects, which it reads, and above every other use of them.
+//
+// That line names its own worker count. The measurement a wall-clock row makes is a reading
+// only in a run one worker wide, and `refuseASharedRun` (e2e/main-thread-hold.ts) fails a
+// measuring row in any wider run, so the command printed here says `--workers=1` rather than
+// resting on this config's default (`workers: 1` below), which a `--workers` of the reader's
+// own would override without changing a word of this line.
+//
+// It stands under no guard at all, where the reuse-servers refusal above is the only other one
+// this file makes: a command line that would list nothing is as wrong in a run of the stubbed
+// layer alone as in any other.
+const clockFile = clockFileOnCommandLine(process.argv);
+if (clockFile !== undefined) {
+  const spec = `${clockSpecIn(clockFile) ?? ""}.e2e.ts`;
+  const selects = (selector: unknown) =>
+    [selector].flat().some((pattern) => pattern instanceof RegExp && pattern.test(spec));
+  const runner = aloneProjects.find(
+    (project: Project) => selects(project.testMatch) && !selects(project.testIgnore)
+  );
+  if (runner === undefined) {
+    throw new Error(
+      `${clockFile} names a wall-clock spec, ${spec}, that no wall-clock project runs`
+    );
+  }
+  throw new Error(
+    `bun run e2e -- --project=${runner.name} ${clockFile} --workers=1\n` +
+      `\nThat is how ${clockFile} is run, and this command named no project. The wall-clock ` +
+      `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
+      "their rows are read from the wall clock and need the machine to themselves, so no run " +
+      "that names no project holds a row of that file, whatever Playwright then does with the " +
+      'rest of this command line - for example, answer "No tests found", or run the whole ' +
+      "default selection, which is what a filter dropped after a `--` leaves. Write the " +
+      "project as --project=<name> and never --project <name>: the option is variadic, so the " +
+      "file after it would be read as a second project name. To run every wall-clock row, run " +
+      "`bun run e2e:clock`."
+  );
+}
 
 /**
  * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
