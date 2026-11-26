@@ -15,12 +15,15 @@ import (
 //
 // It is protocol 1: the two texts differ in SQL alone, and one schema runs both, since the schema
 // keeps events_person_words_with_declines, which main's text reads, beside
-// events_person_words_destinations, which the read reads on the seeded database's window. There
-// is one pair for each of the three sessions benchtime binds by the rule the seed's report prints
-// them by (answerswindow.Read): the session with old deliveries, and the sessions with the most
-// and the fewest deliveries in the window. Each side is bound as List binds the read: the
-// session, the start of the seed's answers window, read from the database by its one rule, and
-// the session's topic.
+// events_person_words_destinations, which the read reads on the window of the --scale 1 seed;
+// on a smaller seed, whose window holds fewer deliveries (cmd/dispatch-seed's sizes,
+// WindowDeliveries), the plan for its values can read events_person_words_with_declines instead.
+// The test reads whichever database DISPATCH_BENCH_DATABASE_URL names. There is one pair for each
+// of the three sessions benchtime binds by the rule the seed's report prints them by
+// (answerswindow.Read): the session with old deliveries, and the sessions with the most and the
+// fewest deliveries in the window. Each side is bound as List binds the read: the session, the
+// start of the seed's answers window, read from the database by its one rule, and the session's
+// topic.
 //
 // For each session, the two texts must answer the same rows, at least one, compared as
 // TestTheAnswersReadAnswersMainsRows compares them (requireTheSameAnswerRows); the pair is timed

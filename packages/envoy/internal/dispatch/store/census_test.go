@@ -1237,8 +1237,10 @@ func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
 
 // answersDestinationsIndexVersion builds events_person_words_destinations, the partial GIN index of
 // (published_destinations, created_at) that the answers read (sessionanswers.List) finds a
-// session's events in its window through. GIN indexes created_at by an operator class of
-// btree_gin, which btreeGinVersion creates.
+// session's events in its window through on a database of production's size and shape; where the
+// window holds far fewer of a person's events, the read takes events_person_words_with_declines
+// instead. GIN indexes created_at by an operator class of btree_gin, which btreeGinVersion
+// creates.
 const answersDestinationsIndexVersion = 20261125131000
 
 // backlogMovesIndexVersion builds events_backlog_moves, the partial index of (issue_key, seq) that

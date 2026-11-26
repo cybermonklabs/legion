@@ -2929,10 +2929,11 @@ func DeliveryTaken(state string) bool {
 // PersonWordsEventTypesSQL is the five event types that carry a person's words to a session, as
 // the SQL list an `in` test over an event's type takes: an answer (ask.answered), a comment
 // (comment.created), a new message (message.created), a reply to a message (message.answered),
-// and an ask's resolution (ask.resolved), of which the readers take the declines. Each query that
-// asks it reads this one definition: the agents' answers read (sessionanswers.query, its
-// reached_by_destination), and the rule for the window it is measured over and its sessions
-// (answerswindow.DeliveredPersonEvent and answerswindow.SessionsQuery). The predicates of the
+// and an ask's resolution (ask.resolved). Each query that asks it reads this one definition: the
+// agents' answers read (sessionanswers.query, its reached_by_destination), which lists only the
+// declines among the resolutions (declinedResolution), and the rule for the window it is measured
+// over and its sessions (answerswindow.DeliveredPersonEvent and answerswindow.SessionsQuery),
+// whose predicates test the type alone and so hold for every ask.resolved. The predicates of the
 // partial indexes that read is served by hold the same list in the same order, written out in
 // their migrations, which Go cannot reach (events_person_words_with_declines, 20261111002444, and
 // events_person_words_destinations, 20261125131000): a change of this list is a new index too.

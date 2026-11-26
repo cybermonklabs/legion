@@ -896,9 +896,11 @@ const destinationsIndex = "events_person_words_destinations"
 // relation of its own, at the resolution's own time, carrying the four sentences Dispatch wrote
 // and the person's note in parts of their own. No other resolution is listed at all. The plans at
 // the end hold the rolling update: this release's read, the five types by @>, reads
-// destinationsIndex, and the read of the release before it, the five types by = any, still reads
-// declineIndex, which this release keeps. The read of the releases before 20261111002444, which
-// names four types, reads declineIndex too, since 20261111002445 dropped the four-type index.
+// destinationsIndex over this fixture's window, which seedEvents fills with other sessions'
+// events, as a window of production's size and shape is filled, and the read of the release
+// before it, the five types by = any, still reads declineIndex, which this release keeps. The
+// read of the releases before 20261111002444, which names four types, reads declineIndex too,
+// since 20261111002445 dropped the four-type index.
 func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	t.Parallel()
 	f := newAnswersFixture(t)
