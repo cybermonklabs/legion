@@ -619,9 +619,8 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 
 // limitPlaces is each text that states the limits of the guard's rule: the doc of
 // ciFilesThatCompare, the package doc, the doc of TestCIFilesThatCompareLeavesAFormOutsideTheClaim,
-// and the changelog fragment of #4183, which stays where it is: no release moves or deletes a
-// fragment (.github/scripts/release-push.sh, the doc of group_commits: "every fragment a release
-// ever shipped stays under .changes/unreleased/").
+// and the changelog fragment of #4183. The release that folds the fragment into the
+// changelog takes it off this list.
 var limitPlaces = []string{
 	"cifiles.go",
 	"main.go",

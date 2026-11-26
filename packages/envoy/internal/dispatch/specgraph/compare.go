@@ -56,7 +56,7 @@ func Compare(files Tree, a Approved) Comparison {
 	c := Comparison{Holds: map[string]Holding{}}
 	texts := make(map[string]map[string]int, len(a.Nodes)) // id -> digest -> its newest version
 	for id, n := range a.Nodes {
-		if !n.removed() {
+		if !n.Removed {
 			c.Holds[id] = Holding{}
 		}
 		texts[id] = map[string]int{}
@@ -74,11 +74,11 @@ func Compare(files Tree, a Approved) Comparison {
 		switch {
 		case !held:
 			detail = detailUnapprovedID
-		case !approvedText && approved.removed():
+		case !approvedText && approved.Removed:
 			detail = detailRemovedID
 		case !approvedText:
 			detail = detailUnapprovedText
-		case approved.removed():
+		case approved.Removed:
 			// The files still hold a text of a removed node; it holds no current text.
 			if !slices.Contains(c.Removed, f.id) {
 				c.Removed = append(c.Removed, f.id)

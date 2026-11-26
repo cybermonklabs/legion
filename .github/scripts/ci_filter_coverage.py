@@ -812,6 +812,22 @@ def apply_rules(session: Session, rules: dict, source: str, seen: set) -> list:
     return reads
 
 
+def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
+    """Read the closure of `go test <pkgs>` in workdir for spec-check citations."""
+    import ci_job_reads as data
+
+    session = Session()
+    why = f"go test {' '.join(pkgs)} in {workdir}"
+    tested = run(workdir, pkgs, why, env=env)
+    reads = closure(session, data.RULES, tested, set())
+    for pkg in session.named(tested):
+        if not pkg.get("Dir") and not pkg.get("Standard"):
+            cause = " ".join((pkg.get("Error") or {}).get("Err", "").split())[:300]
+            session.problems.append(error(None, f"go list finds no directory of {pkg.get('ImportPath')} for {why}, so "
+                                                f"its closure is unknown: {cause}"))
+    return sorted({read.glob for read in reads if read.glob}), [problem.message for problem in session.problems]
+
+
 GO_FILE_NAMES = ("go.mod", "go.sum", "go.work", "go.work.sum")
 
 

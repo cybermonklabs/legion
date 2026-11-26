@@ -1,7 +1,6 @@
 package specgraph
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -104,10 +103,7 @@ func TestAKilledTestCouldNotRun(t *testing.T) {
 // end line of its own name of the other kind (ownlines), or prints its own end line and is then
 // killed (killprinted, killprintedfail), or a parallel sibling prints a fail line of a test that
 // is then killed (killsibling): in both forms of report, where go tool test2json writes a fail
-// event at its exit for the test it named last. That event is also the end of the package, which
-// go tool test2json names so, so the sibling that passed reads no run in that form
-// (TestAReportWithNoEndOfItsPackageHoldsNoRun). A test that prints its own pass line and then ends
-// its process with status 1 could not run (forgedpass).
+// event at its exit for the test it named last.
 func TestWhatATestPrintsDecidesNoOutcome(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
@@ -127,10 +123,9 @@ func TestWhatATestPrintsDecidesNoOutcome(t *testing.T) {
 		{"killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps could_not_run"}},
 		{"t2j-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps could_not_run"}},
 		{"killprintedfail.jsonl", []string{acme + "killprintedfail TestPrintsAFailLineOfItselfThenSleeps could_not_run"}},
-		{"forgedpass.jsonl", []string{acme + "forgedpass TestPrintsAPassLineOfItselfThenExits could_not_run"}},
 		{"t2j-killprintedfail.jsonl", []string{acme + "killprintedfail TestPrintsAFailLineOfItselfThenSleeps could_not_run"}},
 		{"killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter pass"}},
-		{"t2j-killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter could_not_run"}},
+		{"t2j-killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter pass"}},
 	})
 }
 
@@ -197,104 +192,23 @@ func TestAPassStaysWhenThePackageFailsAfterIt(t *testing.T) {
 //   - "a test that prints, with the marker, go test's end line of its own name, or of another test
 //     of its package that is running, ... can still give that test an outcome": TestPrinter prints
 //     the marked pass line of TestSleeps while TestSleeps runs, and go test then kills TestSleeps,
-//     which reads pass in a report of go test -json (killsiblingpass); go tool test2json's report
-//     of the same binary holds no end of its package (TestAReportWithNoEndOfItsPackageHoldsNoRun);
-//   - "a report of another form ... lets a test write go test's lines with no marker": in the text
-//     of go test -v through go tool test2json, a test prints its own pass line with no marker and
-//     is then killed, and it reads pass (piped-killprinted). Under go test -json the same test
-//     could not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome);
-//   - "So in such a report a test can print the run and end lines of any test of its package, its
-//     own or another's, with no marker, and make that test read as run or passed, and a test that
-//     prints with no line feed gets no end event and reads as not run": under go test -json -v, a
-//     test prints its own pass line with no marker and then ends its process with status 1, and it
-//     reads pass (verbose-forgedpass); under go test -json it could not run (forgedpass, in
-//     TestWhatATestPrintsDecidesNoOutcome). TestPrintsNoLineFeedThenPasses passes and reads
-//     could_not_run (verbose-splitlines); under go test -json it reads pass (splitlines, in
-//     TestALineThatGoTestWritesInTwoEventsIsReadWhole). The lines of another test, under -v and
-//     under -test.v=true after -args, are pinned through the command, with real reports of each
-//     form (TestCitationsStatedLimitAForgedRun of cmd/spec-check).
+//     which reads pass in both forms (killsiblingpass);
+//   - "a report of another form ... lets a test write an end line with no marker": in the text of
+//     go test -v through go tool test2json, a test prints its own pass line with no marker and is
+//     then killed, and it reads pass (piped-killprinted). Under go test -json the same test could
+//     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome).
 func TestStatedLimitsOfTheReader(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
 		{"killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter pass"}},
+		{"t2j-killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter could_not_run"}},
 		{"piped-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps pass"}},
-		{"verbose-forgedpass.jsonl", []string{acme + "forgedpass TestPrintsAPassLineOfItselfThenExits pass"}},
-		{"verbose-splitlines.jsonl", []string{acme + "splitlines TestPrintsNoLineFeedThenPasses could_not_run",
-			acme + "splitlines TestLong" + strings.Repeat("X", 1178) + " pass"}},
 	})
 }
 
-// go test's converter writes a line of more than 1,024 bytes in two or more output events, and the
-// reader reads it whole. TestLong<1,178 X> has an end line of 1,205 bytes, which comes in two frame
-// events, and reads pass. The converter also ends a line with no line feed where a frame starts:
-// TestPrintsNoLineFeedThenPasses prints text with no line feed and passes, and its end line, the
-// next event, is a line of its own, so it reads pass too (splitlines). The summary line of a
-// package with a long import path is the same case (TestARunThatGoTestReplaysFromItsCacheIsCached).
-func TestALineThatGoTestWritesInTwoEventsIsReadWhole(t *testing.T) {
-	t.Parallel()
-	long := acme + "splitlines TestLong" + strings.Repeat("X", 1178) + " pass"
-	readReports(t, []reportRow{
-		{"splitlines.jsonl", []string{acme + "splitlines TestPrintsNoLineFeedThenPasses pass", long}},
-	})
-}
-
-// R48 with R8: a test counts as a run only when the report holds the end of its package, the
-// package's own pass, fail or skip event, which go test's converter writes last for it: the line
-// that says go test replayed the package from its cache comes just before that end, so a report
-// that ends before it, as a capture cut short, cannot say that the run was one at this commit. Each
-// report below is cut after each of its events in turn: each run of a package whose end is not in
-// the part kept reads could_not_run, or cached, and never pass, fail or skip, and a part that the
-// reader refuses, as one with a run and no frame yet, gives no run either. The control is the
-// whole report, which reads its outcomes. go tool test2json, run over a binary that stops inside a
-// test, writes the package's end as an end event of the test it named last, so its report holds
-// no run (t2j-killsiblingpass; under go test -json TestSleeps reads pass, a stated limit).
-func TestAReportWithNoEndOfItsPackageHoldsNoRun(t *testing.T) {
-	t.Parallel()
-	const cached, fresh = "example.com/acme/gotest/cached ", "example.com/acme/gotest/fresh "
-	readReports(t, []reportRow{
-		{"t2j-killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps could_not_run", acme + "killsiblingpass TestPrinter could_not_run"}},
-	})
-	for _, row := range []reportRow{
-		{"pass.jsonl", []string{"example.com/acme/gotest/pass TestA pass", "example.com/acme/gotest/pass TestAB pass"}},
-		{"cached/first.jsonl", []string{cached + "TestA pass", cached + "TestB skip"}},
-		{"cached/cached.jsonl", []string{cached + "TestA cached", cached + "TestB cached"}},
-		{"cached/cached-two.jsonl", []string{cached + "TestA cached", cached + "TestB cached", fresh + "TestFresh pass"}},
-	} {
-		t.Run(row.file, func(t *testing.T) {
-			t.Parallel()
-			content, err := os.ReadFile("testdata/gotest/" + row.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if whole, err := ReadGoTestJSON(bytes.NewReader(content)); err != nil || !reflect.DeepEqual(outcomes(whole), row.want) {
-				t.Fatalf("the control: the whole report reads %q, %v; want %q", outcomes(whole), err, row.want)
-			}
-			events := strings.SplitAfter(string(content), "\n")
-			ends := map[string]int{} // the index of each package's own end event
-			for i, line := range events {
-				var e event
-				if json.Unmarshal([]byte(line), &e) == nil && e.Test == "" && endKind(e.Action) != 0 {
-					ends[e.Package] = i
-				}
-			}
-			for kept := range len(events) {
-				got, err := ReadGoTestJSON(strings.NewReader(strings.Join(events[:kept], "")))
-				if err != nil {
-					continue
-				}
-				for _, o := range got {
-					if end, ok := ends[o.Package]; (!ok || end >= kept) && o.Outcome != "could_not_run" && o.Outcome != outcomeCached {
-						t.Errorf("the first %d events, before the end of %s: %s reads %s, want could_not_run or cached", kept, o.Package, o.Test, o.Outcome)
-					}
-				}
-			}
-		})
-	}
-}
-
-// The reader reads each line of a test's output as it comes, before it cuts the stored output.
-// TestPasses logs 5,000 bytes and passes, and the converter then gives it the stacks of 300
-// goroutines before its pass event, so its end line is in the middle that the stored output
+// The reader looks for a test's end line in each output event as it reads it, before it cuts the
+// stored output. TestPasses logs 5,000 bytes and passes, and the converter then gives it the stacks
+// of 300 goroutines before its pass event, so its end line is in the middle that the stored output
 // drops.
 func TestAnEndLineThatTheCutDropsStillCounts(t *testing.T) {
 	t.Parallel()

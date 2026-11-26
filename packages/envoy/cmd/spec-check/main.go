@@ -195,6 +195,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -219,7 +220,10 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
          and a failing example that the test caught, or a run of the test of a program check of
          production or of the graph, counts at another commit only when the check's tie is known at both
          and no path that changed between them is covered by the tie at either; one that the test missed
-         never counts at another commit)`
+         never counts at another commit)
+       spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
+           --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
+       spec-check changed --repo <root> --base <commit> [--head <commit>]`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
 // checks and of state, the blocks of print, and the statement, check and wait lines of state.
@@ -228,13 +232,15 @@ const prefix = "spec-check: "
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
 // the exit status.
 var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"tree":    runTree,
-	"changes": runChanges,
-	"checks":  runChecks,
-	"compare": runCompare,
-	"print":   runPrint,
-	"guard":   runGuard,
-	"state":   runState,
+	"tree":      runTree,
+	"changes":   runChanges,
+	"checks":    runChecks,
+	"compare":   runCompare,
+	"print":     runPrint,
+	"guard":     runGuard,
+	"state":     runState,
+	"citations": runCitations,
+	"changed":   runChanged,
 }
 
 func main() {
@@ -322,6 +328,21 @@ func absolute(stderr io.Writer, path string) (string, bool) {
 		return "", false
 	}
 	return abs, true
+}
+
+// isDirectory is whether path is a directory; when not, it has written the line that says why.
+func isDirectory(stderr io.Writer, path string) bool {
+	switch info, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		say(stderr, "%s: does not exist", path)
+	case err != nil:
+		say(stderr, "%s: cannot be read: %s", path, err)
+	case !info.IsDir():
+		say(stderr, "%s: is not a directory", path)
+	default:
+		return true
+	}
+	return false
 }
 
 // judged is one directory of spec files, read and judged: its tree, every problem of Parse and,

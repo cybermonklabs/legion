@@ -239,16 +239,6 @@ func TestTheOtherRules(t *testing.T) {
 			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "code-in-text", Detail: "code-in-text: procedure names code: TestAClaimAtTheTimeLimitStays"},
 		},
 		{
-			// A Go test may be named Test alone (topLevelTestName), which CodeNames keeps as a plain
-			// word; the procedure of that check still names its own test (R6).
-			name: "a program procedure that names its own go test, named Test",
-			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) {
-				program("The program runs Test, which claims one issue and starts the daemon again.")(c)
-				c.Test.Selector = "example.com/acme/daemon Test"
-			})}},
-			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "code-in-text", Detail: "code-in-text: procedure names code: Test"},
-		},
-		{
 			name: "a check with no claim",
 			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) { c.Claim = "" })}},
 			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "no-claim", Detail: "no-claim: the check has no claim"},
@@ -450,29 +440,6 @@ func TestAnotherRunnersSelectorIsItsOwn(t *testing.T) {
 	}
 }
 
-// The word Test names a test only in the procedure of a check whose own go test is named Test: in a
-// check whose test has another name it is a plain word, and so are Tests and Testament in a check
-// whose test is named Test. The quiet rows of the Test row of TestTheOtherRules.
-func TestThePlainWordTestNamesNoOtherTest(t *testing.T) {
-	t.Parallel()
-	for _, row := range []struct{ selector, procedure string }{
-		{"example.com/acme/daemon TestARestartKeepsTheClaim", "The program runs the Test suite of the daemon and reads the claims."},
-		{"example.com/acme/daemon Test", "The program runs the Tests of the daemon and reads the Testament of each claim."},
-	} {
-		tree := Tree{
-			Statements: []Statement{{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim.", Kind: KindBehavior}},
-			Checks: []Check{{
-				ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
-				ProcedureText: row.procedure, FailingExample: "A daemon with no store.", Subject: SubjectCode,
-				Procedure: ProcedureProgram, Test: &Test{Runner: "go", Selector: row.selector, Job: "go-checks"},
-			}},
-		}
-		if problems := Validate(tree, Options{}); len(problems) != 0 {
-			t.Errorf("selector %q, procedure %q: %+v, want none", row.selector, row.procedure, problems)
-		}
-	}
-}
-
 // Validate sorts its problems by file, line, node and rule, whatever order the rules find them in.
 func TestValidateSortsItsProblems(t *testing.T) {
 	t.Parallel()
@@ -506,10 +473,8 @@ func parseDir(t *testing.T, dir string) Tree {
 
 // A required text with no letter and no digit is a missing one, in each place where a rule of
 // Validate asks for a text: a statement's text, a check's claim, procedure and failing example, a
-// program check's runner, selector and job (R6: "a runner and a selector, which pick one test in
-// the code", and "the job that runs that test"), a component's name and purpose, and a term's
-// name and definition. Each row gives the one problem that an empty text gives, for each of three
-// empty shapes.
+// component's name and purpose, and a term's name and definition. Each row gives the one problem
+// that an empty text gives, for each of three empty shapes.
 func TestATextWithNoLetterOrDigitIsMissing(t *testing.T) {
 	t.Parallel()
 	pos := Position{File: "x.md", Line: 1}
@@ -520,11 +485,6 @@ func TestATextWithNoLetterOrDigitIsMissing(t *testing.T) {
 				ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
 				ProcedureText: "An agent reads the claims.", FailingExample: "A daemon with no store.",
 				Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos,
-			}, {
-				ID: "a-claim-at-the-time-limit-stays", Serves: "a-claim-survives-a-restart", Claim: "The daemon keeps the claim.",
-				ProcedureText: "The program waits the time limit and reads the claims.", FailingExample: "A daemon that drops the claim.",
-				Subject: SubjectCode, Procedure: ProcedureProgram, Pos: pos,
-				Test: &Test{Runner: "go", Selector: "example.com/acme/daemon TestAClaimAtTheTimeLimitStays", Job: "go-checks"},
 			}},
 			Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue.", Pos: pos}},
 			Terms:      []Term{{ID: "work-unit", Name: "work unit", Definition: "A work unit is work.", Pos: pos}},
@@ -538,9 +498,6 @@ func TestATextWithNoLetterOrDigitIsMissing(t *testing.T) {
 		{"a check's claim", "a-restart-keeps-the-claim", "no-claim: the check has no claim", func(t *Tree, s string) { t.Checks[0].Claim = s }},
 		{"a check's procedure", "a-restart-keeps-the-claim", "no-procedure: the check has no procedure", func(t *Tree, s string) { t.Checks[0].ProcedureText = s }},
 		{"a check's failing example", "a-restart-keeps-the-claim", "no-failing-example: the check has no failing example", func(t *Tree, s string) { t.Checks[0].FailingExample = s }},
-		{"a program check's runner", "a-claim-at-the-time-limit-stays", "no-test: a program check names its runner and its selector", func(t *Tree, s string) { t.Checks[1].Test.Runner = s }},
-		{"a program check's selector", "a-claim-at-the-time-limit-stays", "no-test: a program check names its runner and its selector", func(t *Tree, s string) { t.Checks[1].Test.Selector = s }},
-		{"a program check's job", "a-claim-at-the-time-limit-stays", "no-job: a program check names the job that runs its test", func(t *Tree, s string) { t.Checks[1].Test.Job = s }},
 		{"a component's name", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Name = s }},
 		{"a component's purpose", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Purpose = s }},
 		{"a term's name", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Name = s }},

@@ -33,7 +33,18 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	root, ok := absolute(stderr, *rootFlag)
-	if !ok || !isDirectory(stderr, root) {
+	if !ok {
+		return 2
+	}
+	switch info, err := os.Stat(root); {
+	case errors.Is(err, fs.ErrNotExist):
+		say(stderr, "%s: does not exist", root)
+		return 2
+	case err != nil:
+		say(stderr, "%s: cannot be read: %s", root, err)
+		return 2
+	case !info.IsDir():
+		say(stderr, "%s: is not a directory", root)
 		return 2
 	}
 
