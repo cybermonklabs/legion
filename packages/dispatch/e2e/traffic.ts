@@ -14,13 +14,62 @@ export interface Traffic {
   reset(): void;
 }
 
+/**
+ * The page's requests in flight, which `quietFor` reads in `watchTraffic` and `watchApiRequests`.
+ * A request is in flight from its `request` event until its `requestfinished` or `requestfailed`.
+ * The returned `quietFor(ms)` is true once none is and `ms` have passed since the last one ended.
+ *
+ * When the main frame commits a new document, every request still held that is not a navigation
+ * request is dropped, and the quiet counts from the commit. Those are reads of the page being
+ * left, and Playwright does not always end them. The row
+ * `issue-page-i.e2e.ts [iphone] the children are one group of rows of the outline @phone` failed
+ * its first attempt in merge-queue runs 45607339493 and 45852270285 with "the page never went
+ * quiet". In both traces, the page being left sent a read within 1 ms of the navigation's document
+ * request. The trace holds no response and no failure for those reads, and then nothing was in
+ * flight for 7 s and more. So Playwright sent neither `requestfinished` nor `requestfailed` for
+ * them, they stayed in the set, and the wait ran out. The new document's own requests all started
+ * after its document request was answered.
+ *
+ * A commit is a `framenavigated` of the main frame after a main-frame navigation request. One with
+ * no such request before it is a move inside the page (`history.pushState` or `replaceState`),
+ * whose reads still answer, so it drops nothing. A navigation request that fails commits nothing,
+ * so the `framenavigated` after it is not taken for its commit. The navigation request itself
+ * stays in the set: it ends normally. `isNavigationRequest()` is read before `frame()`, because
+ * `frame()` throws for a service worker's request.
+ */
+function trackInFlight(page: Page): (ms: number) => boolean {
+  const inFlight = new Set<Request>();
+  let lastSettledAt = Date.now();
+  /** The main-frame navigation request whose document has not committed yet. */
+  let navigation: Request | undefined;
+  page.on("request", (request) => {
+    inFlight.add(request);
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      navigation = request;
+    }
+  });
+  const settle = (request: Request) => {
+    if (inFlight.delete(request)) lastSettledAt = Date.now();
+  };
+  page.on("requestfinished", settle);
+  page.on("requestfailed", (request) => {
+    settle(request);
+    if (request === navigation) navigation = undefined;
+  });
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame() || navigation === undefined) return;
+    navigation = undefined;
+    for (const request of inFlight) if (!request.isNavigationRequest()) inFlight.delete(request);
+    lastSettledAt = Date.now();
+  });
+  return (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms;
+}
+
 export function watchTraffic(page: Page): Traffic {
   const gets: string[] = [];
   const issueReads = new Map<string, number>();
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
+  const quietFor = trackInFlight(page);
   page.on("request", (request) => {
-    inFlight.add(request);
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);
@@ -30,15 +79,10 @@ export function watchTraffic(page: Page): Traffic {
       issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
     }
   });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
   return {
     gets,
     issueReads: (key) => issueReads.get(key) ?? 0,
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
+    quietFor,
     reset: () => {
       gets.length = 0;
     },
@@ -107,10 +151,8 @@ export function apiRoute(pathname: string): string {
 
 export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
+  const quietFor = trackInFlight(page);
   page.on("request", (request) => {
-    inFlight.add(request);
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
@@ -119,11 +161,6 @@ export function watchApiRequests(page: Page): ApiRequests {
       route: apiRoute(url.pathname),
     });
   });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
   return {
     byRoute: () => {
       const counts = new Map<string, number>();
@@ -134,7 +171,7 @@ export function watchApiRequests(page: Page): ApiRequests {
         .map(([route, count]) => ({ count, route }))
         .sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
     },
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
+    quietFor,
     requests,
     reset: () => {
       requests.length = 0;
