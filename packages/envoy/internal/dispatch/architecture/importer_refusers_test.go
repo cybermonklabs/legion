@@ -45,7 +45,7 @@ type refusersRig struct {
 	database *store.Store
 	process  *Importer
 	lookups  atomic.Int32
-	taken    atomic.Int32
+	taken    *atomic.Int32 // countFlightsTaken
 	refusals atomic.Int32
 	// heldRefusal is the refusal, counted from 1, whose caller waits on late; 0 holds none.
 	heldRefusal int32
@@ -101,7 +101,7 @@ func newRefusersRig(t *testing.T, held int32) *refusersRig {
 	// Cleanups run last registered first: a test that fails while a refuser is held lets it go
 	// before Close waits for the flights.
 	t.Cleanup(rig.releaseLate)
-	rig.process.afterFlightTaken = func() { rig.taken.Add(1) }
+	rig.taken = countFlightsTaken(rig.process)
 	rig.process.afterSyncRefusal = func() {
 		if rig.refusals.Add(1) == rig.heldRefusal {
 			<-rig.late
@@ -138,8 +138,10 @@ func (rig *refusersRig) joinTheFirstFlight(t *testing.T, n int32) chan syncAnswe
 	for range n {
 		rig.syncOf(archRepo, refusers)
 	}
-	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, "the later callers to join the held flight",
-		func() bool { return rig.taken.Load() >= n+1 })
+	testwait.Until(t, "the later callers to join the held flight", func() (int32, bool) {
+		held := rig.taken.Load()
+		return held, held >= n+1
+	})
 	return refusers
 }
 
@@ -160,6 +162,7 @@ func commitOf(answer syncAnswer) string {
 // three callers make two head lookups: the first flight's, and the next one's, which the two
 // refusers share.
 func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 2)
 	first := rig.holdTheFirstFlight(t)
 	refusers := rig.joinTheFirstFlight(t, 2)
@@ -194,6 +197,7 @@ func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testin
 // starting a flight of its own. So the three callers make two head lookups, and both refusers
 // answer the one failure.
 func TestARefuserThatLooksAgainLateSharesTheNextFlightsFailure(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 2)
 	first := rig.holdTheFirstFlight(t)
 	refusers := rig.joinTheFirstFlight(t, 2)
@@ -225,6 +229,7 @@ func TestARefuserThatLooksAgainLateSharesTheNextFlightsFailure(t *testing.T) {
 // second source of the project, acme/infra, syncs to its end while the refuser of archRepo's
 // first flight is held, and the refuser, released, answers archRepo's row.
 func TestARefuserOfOneSourceIsNeverAnsweredAnotherSourcesFlight(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 1)
 	if _, err := rig.database.Pool.Exec(context.Background(), `
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)

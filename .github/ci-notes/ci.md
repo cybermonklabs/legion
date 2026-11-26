@@ -38,17 +38,21 @@ A change to the computation itself - the engine or the shared read table under .
 the two scripts that run them, or a file they read such as package.json (the generate mode lists
 them) - can make many filters select less while no filter selects the change: a read dropped from
 a helper every Bun gate shares narrows two dozen filters, and the committed file used to show that
-drop because every filter named the file. So when the run's base commit is known (the pull
-request's base, the merge group's base, a dispatched branch's merge base with main, which the
+drop because every filter named the file. So when the run's base commit is known (the commit the
+change lands onto: a merge group's base, the first parent of a pull request's merge commit, a
+dispatched branch's merge base with main, #the-commit-a-change-is-measured-against, which the
 generation step hands the script as `CI_FILTERS_BASE`) and the change touches one of those files,
 the script computes the base tree's filters too, with the base tree's own engine, and each filter whose
 patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
 could have moved runs. Each such filter is printed in the step's log and summary with the patterns
 only one side has. A base tree whose filters cannot be computed makes every filter `'**'`, as a
 failed computation does (below). A
-change that touches none of those files is not compared, and costs no second computation.
+change that touches none of those files is not compared, and costs no second computation. When
+the base is a commit a push to main left, the job restores the filters that push's own generation
+computed (`CI_FILTERS_BASE_COMPUTED`), and the script reads them in place of generating the base
+tree again (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores).
 
-When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
+When the computation fails for any reason - a step before it that failed (the Go install, Bun's setup
 and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
 read, a run past five minutes - the script writes instead a file in which every filter the changes
 job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
@@ -64,8 +68,16 @@ TypeScript listing, which only the changes job runs. The `full-ci` term still ho
 suites back on a pull request that has no label, as it does when their filters match; the merge
 group runs them.
 
-The job's setup-go keeps no Go cache: its key is exact, so each pull request's first run and
-every merge group missed it, and each miss saved 895 MB.
+The job keeps no Go cache: its key was exact, so each pull request's first run and every merge
+group missed it, and each miss saved 895 MB. It installs Go from go.dev's archive with
+.github/scripts/go-install-archive.sh rather than actions/setup-go, which spent 4.1 s of its 7 s
+copying the unpacked toolchain into the runner's tool cache, which no later job on that runner
+reads (the script's header). Its checkout starts from main's objects, which a push to main leaves
+in the cache (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores), and fetches
+only what the run's commit adds to them. The generation starts its TypeScript listings
+(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table: tsc's listing of the
+dashboard's program is 9 s of the generation's 16 s, and it then runs beside the load and the go
+commands rather than after the load.
 
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:
@@ -969,8 +981,9 @@ The directory rather than the workflows the check names one by one in
 ci_job_reads.py's reads for this gate: its rules read every
 workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
 this one that runs on merge_group, check_cache_round_trip holds every workflow's
-restore of a family ci-caches.yaml fills to the fill's key, and ci_only_documents
-reads them all to find the files only this one calls - and a rule that reads a
+restore of a family a fill workflow fills (ci-caches.yaml, ci-caches-changes.yaml) to
+the fill's key, and ci_only_documents reads them all to find the files only this one
+calls - and a rule that reads a
 workflow has to run on the change that adds or edits one, which a list of the
 names already there cannot select.
 
@@ -1276,19 +1289,22 @@ architecture-check and spec-check at this paragraph's end). dispatch-two-builds 
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of seven families with
+included). The jobs that cache Go restore, in steps of their own, one of eight families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-build, which build the
-listener, envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
-job, and envoy-go-race-docs), go-envoy-test (envoy-go, which
+listener, and envoy-go-checks, whose script tests run under the setup they had in
+envoy-go-build's job), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set, and the two jobs of ci-job-dispatch-two-builds.yaml,
-whose ceiling step and twobuild test step build out of it too), go-envoy-darwin-vet
+broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
+whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
+dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-race (every leg of
+envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
+no other family holds; .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family), go-envoy-darwin-vet
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
 so the standard library and the envoy module's dependencies compiled for darwin ride in
 neither the go-envoy nor the
@@ -1304,7 +1320,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
@@ -1454,8 +1470,9 @@ filter saying no, selects every job; a dispatch of a branch selects for each fil
 a merge group with the same verdict selects, and every job when every filter says yes; a tag
 dispatch and `every-job` select every job.
 
-The changes job's step "Find the merge base with main a dispatch of a branch is measured against"
-runs on such a dispatch and on no run that selects every job. It runs
+The changes job's step "Find the commit this run's change is measured against"
+runs on such a dispatch, on a pull request (#the-commit-a-change-is-measured-against) and on no
+run that selects every job. It runs
 .github/scripts/edited-migrations-base.sh, which finds the same commit for envoy-go-build's
 migration check: it fetches main into refs/remotes/origin/main and both histories deep enough that
 no newer common commit hides past the fetch, and prints the merge base, or fails the step when
@@ -1470,9 +1487,10 @@ The step must come before the generation step: the runner evaluates a step's `en
 step starts, so a generation step that ran first would read `steps.base.outputs.sha` unwritten and
 be handed no base. ci-router-outputs.test.sh holds the base the generation is handed on each
 event, reading the generation's `env:` where the step starts (.github/scripts/ci_router_outputs.py
-evaluates each step there), and three copies of ci.yaml fail it: one whose generation step reads
-no `steps.base.outputs.sha`, one whose base step runs on a dispatch of main, and one whose base
-step comes after the generation step.
+evaluates each step there), and five copies of ci.yaml fail it: one whose generation step reads
+no `steps.base.outputs.sha`, one whose generation step reads the pull request event's own
+`base.sha` first, one whose base step runs on no pull request, one whose base step runs on a
+dispatch of main, and one whose base step comes after the generation step.
 
 .github/workflows/browser-image.yaml's header still says a workflow_dispatch run of ci.yaml forces
 the browser_image output; on a dispatch of a branch the filter decides it now. That file is an
@@ -1480,6 +1498,30 @@ input of the browser image's recipe hash (.github/scripts/ci_images.py's recipe_
 edit of its text, a comment included, moves the hash off the pinned image's label and fails
 ci-images until the image is rebuilt: the header is corrected with the next change that rebuilds
 the image.
+
+## The commit a change is measured against
+
+The changes job hands the filter generation the commit the run's change lands onto
+(`CI_FILTERS_BASE`), and the generation compares the base tree's filters with this tree's when the
+change touches a file the filters are computed with: a merge group's `base_sha`; on a pull
+request, the first parent of the merge commit the run checked out, which is main as GitHub merged
+the branch into it; on a dispatch of a branch, its merge base with main
+(#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job). The step "Find the
+commit this run's change is measured against" finds the last two with
+.github/scripts/edited-migrations-base.sh, which picks the base of envoy-go-build's migration
+check by the same rule.
+
+The pull_request event's own `base.sha` is not that commit. It is the commit the branch is based
+on, older than the merge commit's first parent whenever main has moved since: in 98 of the 149
+pull-request runs created 2026-11-26 03:31-05:30 UTC. Measured against it, the diff to the merge
+commit holds main's own commits since then, so the generation counted main's files as files the
+change touches: 35 of those runs counted at least one, 21 of them none of the pull request's own,
+and each of those 21 ran the base tree's generation (about 18 s) for main's files alone. Every
+filter main's commits had moved since the branch's base was `'**'` in such a run, and selected its
+job though no file of the pull request reaches it: 474 job-minutes (530 billed) in those 21 runs,
+the browser suite's pull-request lane, dispatch-ui and envoy-infra-build among them. The
+paths-filter step takes no base on a pull request: it reads GitHub's list of the pull request's
+own files.
 
 ## The commit main pointed at before the push the bypass check read
 
@@ -2845,8 +2887,10 @@ outside the module cache on its directory.
 
 ## Why the envoy lanes with a database restore go-envoy-test
 
-dispatch-memory, dispatch-multiprocess, envoy-go-race and envoy-go-race-api restore go-envoy-test
-and save nothing, as the two-builds jobs and envoy-go-claim-model do. Until they did, they
+dispatch-memory and dispatch-multiprocess restore go-envoy-test and save nothing, as the
+two-builds jobs and envoy-go-claim-model do; envoy-go-race and envoy-go-race-api restored it too
+until go-envoy-race, which holds the same modules, the ceiling program's objects and their race
+objects, took its place for them (.github/ci-notes/ci-caches.md#the-envoy-race-lanes-family). Until they did, they
 restored no cache at all, so their first go command, the ceiling step's
 `go run ./internal/dispatch/store/cmd/connections`, downloaded 17 modules and compiled the store
 from nothing: a median of 19 to 20 s of the step in each (16 to 23 s), against 1 s in envoy-go,
@@ -2857,13 +2901,14 @@ after it downloaded more: 66 modules in dispatch-memory's memory step, which the
 envoy module, so it holds every module those steps download and the plain objects of every
 package they build. The two plain jobs build cmd/dispatch's tests under `-tags memory` and
 `-tags multiprocess`, so they reuse the entry's modules and the objects of the packages the tag
-leaves as they are; the two race jobs reuse its modules, and the ceiling step's plain `go run`,
-since a `-race` build compiles every package again. The restore costs the entry's download:
-17 to 21 s in envoy-go on the same arm64 runner (12 jobs of that window, before #5600 took the
-module zips out of the entry, 676 MiB at 2026-11-26T02:56Z). envoy-go-race-docs and
-envoy-session-stall restore go-envoy, 192 MiB in 1 to 4 s, after which their ceiling step
-downloaded 9 modules and their tests 2 and none, fewer seconds than go-envoy-test's larger
-download would add, so they keep go-envoy.
+leaves as they are; the two race jobs reused its modules, and the ceiling step's plain `go run`,
+since a `-race` build compiles every package again, which go-envoy-race now gives them. The
+restore costs the entry's download: 17 to 21 s in envoy-go on the same arm64 runner (12 jobs of
+that window, before #5600 took the module zips out of the entry, 676 MiB at 2026-11-26T02:56Z).
+envoy-session-stall restores go-envoy, 192 MiB in 1 to 4 s, after which its ceiling step
+downloaded 9 modules and its tests 2 and none, fewer seconds than go-envoy-test's larger download
+would add, so it keeps go-envoy; envoy-go-race-docs, which kept go-envoy for the same reason,
+restores go-envoy-race now.
 
 ## The server-change soak
 

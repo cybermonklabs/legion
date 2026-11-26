@@ -589,6 +589,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 							t.Fatalf("the handover of role %s reported %v", role, err)
 						}
 						rig.awaitForward(t, holder, item, time.Second)
+						requireLeftLines(t, rig.harness.logs.String(), role, 0, nil, "")
 						return
 					}
 					if err != nil || elapsed >= roleKeepDrainRetryPause || failed.Load() == 0 {
@@ -596,6 +597,13 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 							role, elapsed, failed.Load(), err)
 					}
 					rig.requireNoForward(t, time.Second)
+					// Nothing reported is not nothing said: the handover says at WARN that it left the
+					// lane to the role's next claim, naming the resolution that failed.
+					requireLeftLines(t, rig.harness.logs.String(), role, 1, map[string]any{
+						"read":              "listener kept role message could not resolve the role's holder",
+						"bound":             float64(roleKeepHolderWindow),
+						"claim_read_failed": true,
+					}, errRoleBucketReadFailed.Error())
 				})
 				t.Run("sweep", func(t *testing.T) {
 					const role = "act-held-sweep"
