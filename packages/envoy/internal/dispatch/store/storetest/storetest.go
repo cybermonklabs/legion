@@ -15,10 +15,11 @@
 // 12.7 MB template per clone, 16 GiB over one run of the api and docs packages. A file copy writes
 // a few hundred bytes of log; Postgres forces a checkpoint before and after the copy.
 //
-// The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the
-// whole server DatabaseURLEnv names, which can hold other databases (the one
+// The harness changes no setting of the server: fsync, full_page_writes and max_wal_size belong
+// to the whole server DatabaseURLEnv names, which can hold other databases (the one
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
-// outlives the run.
+// outlives the run. It sets one setting of each database it makes, which goes with the database:
+// JIT is off (testdb.WithoutJIT), as on production's database.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops, up to a bound (Run). Dropping a database forces a checkpoint and waits for it, and every
@@ -31,6 +32,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"maps"
 	"net/url"
@@ -137,6 +139,9 @@ func clone(t testing.TB, template string) *store.Store {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
+	if err := adminExec(t, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the clone %s: %v", name, err)
+	}
 	database, err := store.Open(context.Background(), testdb.WithConnectDeadline(t, databaseURL(shared.server, name)))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
@@ -156,6 +161,9 @@ func Empty(t testing.TB) string {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
+	if err := adminExec(t, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 	return testdb.WithConnectDeadline(t, databaseURL(shared.server, name))
 }
 
@@ -210,6 +218,10 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 		}
 		// Named once it exists, so Run drops exactly the templates that were made.
 		entry.name = name
+		if err := adminExec(t, testdb.WithoutJIT(name)); err != nil {
+			entry.err = fmt.Errorf("turn JIT off on the template database: %w", err)
+			return
+		}
 		if err := migrate(testdb.WithConnectDeadline(t, databaseURL(shared.server, entry.name))); err != nil {
 			entry.err = fmt.Errorf("migrate template database: %w", err)
 			return
@@ -275,6 +287,23 @@ func adminExec(t testing.TB, statement string) error {
 	defer connection.Release()
 	_, err = connection.Exec(context.Background(), statement)
 	return err
+}
+
+// DefaultParallel is how many tests of a package run at once when its TestMain calls
+// SetDefaultParallel and the command line names no -parallel: four, the parallelism the
+// build-cluster measurement of those packages ran at (a 4-CPU pod) and go test's default on CI's
+// 4-CPU runner. Left to go test's default of GOMAXPROCS, a machine with more CPUs would run more of
+// them at once than any run has measured. A package measured at a number of its own sets that
+// number in its own TestMain, with its reason (internal/dispatch/api, internal/dispatch/docs).
+const DefaultParallel = 4
+
+// SetDefaultParallel sets the test binary's default -parallel to DefaultParallel. A package's
+// TestMain calls it before Main or Run, and so before m.Run parses the command line, where a
+// -parallel still wins.
+func SetDefaultParallel() {
+	if err := flag.Set("test.parallel", strconv.Itoa(DefaultParallel)); err != nil {
+		panic("storetest: set the default -parallel: " + err.Error())
+	}
 }
 
 // Main runs the package's tests, then drops every template they were cloned from beside their

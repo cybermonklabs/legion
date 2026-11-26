@@ -71,7 +71,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // DispatchPriority. The four issues.memory_* columns are no part of it: what a unit was drawn is
 // an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
 // runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -296,14 +296,20 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// record's like every column above it, written whole by both halves, so a registration that
 	// finds no ancestor to be a view on writes the view away. The priority is written as
 	// Dispatch's own level, the record's Priority.Level, null for NoPriority, as issueColumns
-	// reads it back.
+	// reads it back, and the resolved priority beside it the same way, with resolved_known and
+	// priority_from: its level is null wherever Dispatch sent none, as the column's check holds it.
+	var resolvedLevel *int
+	if issue.Resolved.Known {
+		resolvedLevel = issue.Resolved.Priority.Level()
+	}
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, view_of,
-		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority)
+		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority,
+		resolved_known, resolved_priority, priority_from)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
-		$32, $33, $34, $35, nullif($36::text[], '{}'), $37, $38)
+		$32, $33, $34, $35, nullif($36::text[], '{}'), $37, $38, $39, $40, $41)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -320,14 +326,15 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		children_wait_start = excluded.children_wait_start, children_wait_task = excluded.children_wait_task,
 		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
 		children_wait_children = excluded.children_wait_children, children_waited_at = excluded.children_waited_at,
-		priority = excluded.priority
+		priority = excluded.priority, resolved_known = excluded.resolved_known, resolved_priority = excluded.resolved_priority,
+		priority_from = excluded.priority_from
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
 		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitChildren, issue.ChildrenWaitedAt,
-		issue.Priority.Level(),
+		issue.Priority.Level(), issue.Resolved.Known, resolvedLevel, issue.Resolved.From,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -542,18 +549,20 @@ func scanIssue(row scanner) (*Issue, error) {
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, childrenWaitSince, childrenWaitedAt *time.Time
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
 	var childrenWaitChildren []string
-	var priority *int
+	var priority, resolvedPriority *int
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
-		&childrenWaitedAt, &issue.MembersOwed, &priority); err != nil {
+		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From); err != nil {
 		return nil, err
 	}
-	// The column's check holds it to Dispatch's 0 to 3 or null, each of which DispatchPriority reads.
+	// The columns' checks hold both to Dispatch's 0 to 3 or null, each of which DispatchPriority
+	// reads, and the resolved one to null wherever Dispatch sent none.
 	issue.Priority, _ = DispatchPriority(priority)
+	issue.Resolved.Priority, _ = DispatchPriority(resolvedPriority)
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
 	}
@@ -2834,44 +2843,64 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 	return nil
 }
 
-// liveClaimStates are the claim states in which a claim's session holds its role: the states
-// supervise.HoldsCapability answers true for, a registered agent with a running process. A
-// suspended, a failed and a retired claim hold none, and neither does one still launching.
-var liveClaimStates = []string{
-	string(supervise.StateRegistered), string(supervise.StateReady), string(supervise.StateWorking), string(supervise.StateIdle),
+// roleHoldingStates and roleHoldingSources are the claim rows whose session holds its role, as
+// pairs a statement reads together (claims.state, claims.suspended_by): each state and suspension
+// source, the empty source of a claim that is not suspended among them, that supervise.HoldsRole
+// answers true for. They are derived from that one rule over every state and source the supervise
+// package declares, which are every value the claims table's checks allow, so no statement spells
+// the rule again and a state or a source added there is read here with nothing added. So a claim
+// the idle release or a pause's stop suspended (supervise.SuspendedByReleased) holds its role, and
+// so does one launched again over the session it kept; a failed or a retired claim holds none, and
+// neither does one any other source suspended.
+var roleHoldingStates, roleHoldingSources = roleHoldingPairs()
+
+func roleHoldingPairs() (states, sources []string) {
+	bys := append([]supervise.SuspendSource{""}, supervise.SuspendSources()...)
+	for _, state := range supervise.States() {
+		for _, by := range bys {
+			if supervise.HoldsRole(state, by) {
+				states, sources = append(states, string(state)), append(sources, string(by))
+			}
+		}
+	}
+	return states, sources
 }
 
-// RoleHolder is one live role of an issue and the session that holds it.
+// RoleHolder is one role of an issue and the session that holds it.
 type RoleHolder struct {
 	Role    claim.Role
 	Session string
 }
 
-// LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
-// liveClaimStates that records a session it holds. It is what a role-holder publication sends.
+// RoleHolders is the session of each claim of issue that holds its role, by role: a claim whose
+// state and suspension source hold it (supervise.HoldsRole, roleHoldingStates) and that records a
+// session it holds. It is what a role-holder publication sends. A claim the idle release suspended
+// is in it, so the release of an idle pod and the wake that brings it back leave Dispatch's set as
+// it was.
 //
 // A claim holds its session when claim_sessions holds every name its record gives the session
 // (supervise.RecordedHolds: the id, the file's name, the id an Oh My Pi file name gives, and the
 // Claude Code session a `<uuid>.jsonl` file names) for it, in its own project (internal/store's
 // HoldSessions, plan E's t-e-54), and none of those names is one no hold can cover
 // (supervise.UnholdableNames). Every session a registration records is held first, and the boot
-// holds every recorded name no row held before any machine exists. So a live claim's session is
-// left out only where the claim records a session it does not hold, which the boot suspends: a
+// holds every recorded name no row held before any machine exists. So a claim that holds its role
+// is left out only where it records a session it does not hold, which the boot suspends: a
 // name two claims recorded under a daemon from before the hold, or one past the bound, while that
 // claim's suspension waits for the end of its turn, or after a suspension the runtime refused.
 // Published, such a session would name the claim's role as the holder of another claim's session,
 // or of one no claim holds. The names are the supervise package's one rule, read here rather than
 // spelled again in SQL, and the holds of an issue's few claims are read in one statement.
-func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
+func (s *Postgres) RoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
 	type candidate struct {
 		token, project, file string
 		holder               RoleHolder
 	}
 	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file from claims c
-		where c.issue = $1 and c.session <> '' and c.state = any($2)
-		order by c.role`, issue, liveClaimStates)
+		where c.issue = $1 and c.session <> ''
+			and (c.state, c.suspended_by) in (select * from unnest($2::text[], $3::text[]))
+		order by c.role`, issue, roleHoldingStates, roleHoldingSources)
 	if err != nil {
-		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+		return nil, fmt.Errorf("read the role holders of %s: %w", issue, err)
 	}
 	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
 		var c candidate
@@ -2879,7 +2908,7 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 		return c, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+		return nil, fmt.Errorf("read the role holders of %s: %w", issue, err)
 	}
 	var claims, projects, kinds, names []string
 	for _, c := range candidates {
@@ -2894,13 +2923,13 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 				on h.project = want.project and h.kind = want.kind and h.name = want.name and h.claim = want.claim`,
 			claims, projects, kinds, names)
 		if err != nil {
-			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+			return nil, fmt.Errorf("read the holds of %s's role holders: %w", issue, err)
 		}
 		for rows.Next() {
 			var token, kind, name string
 			if err := rows.Scan(&token, &kind, &name); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+				return nil, fmt.Errorf("read the holds of %s's role holders: %w", issue, err)
 			}
 			if held[token] == nil {
 				held[token] = map[supervise.Hold]bool{}
@@ -2908,7 +2937,7 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 			held[token][supervise.Hold{Kind: supervise.HoldKind(kind), Name: name}] = true
 		}
 		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+			return nil, fmt.Errorf("read the holds of %s's role holders: %w", issue, err)
 		}
 	}
 	var holders []RoleHolder
@@ -2929,7 +2958,7 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 }
 
 // SessionHeld reports whether claim_sessions holds, for token in project, every name its record
-// gives session and sessionFile, by LiveRoleHolders' rule: every name supervise.RecordedHolds
+// gives session and sessionFile, by RoleHolders' rule: every name supervise.RecordedHolds
 // gives, none of them one supervise.UnholdableNames refuses. It only reads, in tx, which may be a
 // fact's transaction holding the fact lock (the daemon's step record): a savepoint, one select and
 // the savepoint's release, all on that transaction's own connection, so it waits on no other
@@ -2966,15 +2995,17 @@ func SessionHeld(ctx context.Context, tx pgx.Tx, project string, token claim.Tok
 }
 
 // RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
-// that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
-// claim write sets), in key order. The boot publishes each of them, for what a release that
-// published nothing left: the live ones because a daemon that starts over running sessions has
-// published nothing for them yet, and the recent ones because that release ended claims and
-// published none of those ends.
+// that has a claim that holds its role (roleHoldingStates), or a claim that changed at or after
+// since (claims.updated_at, which every claim write sets), in key order. The boot publishes each
+// of them, for what a release that published nothing, or published another set, left: the ones
+// whose role is held because a daemon that starts over their sessions has not published them yet,
+// a claim the idle release suspended under a release that left it out of the set among them, and
+// the recent ones because that release ended claims and published none of those ends.
 func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error) {
 	rows, err := tx.Query(ctx, `select distinct issue from claims
-		where starts_with(issue, $1 || '-') and (updated_at >= $2 or state = any($3))
-		order by issue`, dispatchProject, since, liveClaimStates)
+		where starts_with(issue, $1 || '-')
+			and (updated_at >= $2 or (state, suspended_by) in (select * from unnest($3::text[], $4::text[])))
+		order by issue`, dispatchProject, since, roleHoldingStates, roleHoldingSources)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
 	}
@@ -3644,12 +3675,13 @@ var (
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
 // phase-ended message, a hook's words, an update ask and a merge forward's message name the role of
 // the row's own issue, as the executors read it (the daemon's roleToken); the merge-queue message
-// goes to the issue's merger; a role message names the claim's token itself
-// (record.RoleMessage.Role).
+// and the message that the project's merge holds changed go to the issue's merger, whose token
+// their executors build (the daemon's mergeQueueRemoval and mergeHoldsChanged); a role message
+// names the claim's token itself (record.RoleMessage.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
-	case OutboxKindMergeQueueRemoval:
+	case OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
 		if _, ok := claim.Token(role).Role(); ok {
@@ -3870,6 +3902,53 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 		return fmt.Errorf("finish outbox row %d: %w", id, err)
 	}
 	return nil
+}
+
+func (s *Postgres) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	// The window's lock first, held to the end of tx: a transaction that finds no window and
+	// opens one commits before the next look at the same window runs, so two finishes never both
+	// find none.
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "hook-prompts-message:"+issue+":"+string(role)); err != nil {
+		return time.Time{}, false, fmt.Errorf("lock the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	// The lease test is read again once the row's lock is held (READ COMMITTED), so a run that
+	// leased the row while this waited for it leaves it out.
+	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and issue = $2 and payload->'hook_prompts'->>'role' = $3
+			and attempts = 0 and created_at > $5
+			and next_at > $4 and (lease_until is null or lease_until <= $4)
+		order by id limit 1 for update`,
+		string(OutboxKindDispatchMessage), issue, string(role), now, now.Add(-window)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		opened, err := NewOutboxRow(issue, UndeliveredHookPrompts{Role: role, Paragraphs: []string{paragraph}}.Message(issue), now.Add(window))
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("open the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+		}
+		opened.CreatedAt = now
+		if err := s.Enqueue(ctx, tx, opened); err != nil {
+			return time.Time{}, false, err
+		}
+		return opened.NextAt, true, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	payload, err := DecodeOutboxPayload(row)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	// The query took a message row whose payload names role's undelivered prompts, so the payload
+	// is such a message.
+	prompts := *payload.(MessagePost).HookPrompts
+	prompts.Paragraphs = append(prompts.Paragraphs, paragraph)
+	joined, err := NewOutboxRow(issue, prompts.Message(issue), row.NextAt)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("name a prompt in the message of %s's undelivered hook prompts on %s, outbox row %d: %w", role, issue, row.ID, err)
+	}
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2 where id = $1`, row.ID, string(joined.Payload)); err != nil {
+		return time.Time{}, false, fmt.Errorf("name a prompt in the message of %s's undelivered hook prompts on %s, outbox row %d: %w", role, issue, row.ID, err)
+	}
+	return row.NextAt, false, nil
 }
 
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one

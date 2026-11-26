@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // GroupRule signs in the members of Group, a Cognito sign-in pool's group (`cognito:groups`).
@@ -43,9 +44,10 @@ func (r GroupRule) Subject(claims oidc.Claims) string {
 	return ""
 }
 
-// BootLog logs the pool issuer, client and group boot is signing people in under.
+// BootLog logs the pool issuer, through redact.URL, the client and the group boot is signing people
+// in under.
 func (r GroupRule) BootLog(issuer, clientID string) {
-	slog.Info("dispatch: signing people in through the sign-in pool", "issuer", issuer, "client_id", clientID, "group", r.Group)
+	slog.Info("dispatch: signing people in through the sign-in pool", "issuer", redact.URL(issuer), "client_id", clientID, "group", r.Group)
 }
 
 // CanRefresh is always true: a group's row always has something to refresh.

@@ -617,11 +617,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "A block taken for a copy opens no ask and reaches nobody's Inbox",
     "a copy of an ask block opens no ask, so it is no question waiting on anyone",
   ],
-  [
-    "skills/legion-controller/references/finding-asks.md",
-    "a reference published then reaches nobody",
-    "a bus message published while no controller runs; the asks are the ones a session follows",
-  ],
   // History: an applied migration says what was true when it ran, and is never edited.
   [
     "packages/envoy/internal/dispatch/store/migrations/20261109221325_asks_asked_of.up.sql",
