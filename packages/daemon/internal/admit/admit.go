@@ -3973,7 +3973,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	weighed := kept[:0]
 	for _, keptRow := range kept {
-		token, err := record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries)
+		// CONTROL: weigh the claim of the role's own token, not the claim of the role's worker.
+		_ = entries
+		token, err := claim.NewToken(project, keptRow.owed.Issue, keptRow.owed.Role)
 		if err != nil {
 			continue
 		}
