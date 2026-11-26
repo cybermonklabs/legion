@@ -14,12 +14,14 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -42,6 +44,11 @@ const (
 	grace     = 3 * time.Second
 )
 
+// TestMain runs this binary as the fake OMP where fakeOMPEnv is set, and runs the tests otherwise.
+// Only TestMain makes the fake of a copy a test starts: in a build of these tests without it, such
+// a copy runs the tests, each of which starts copies that run them again. fakeOMPCopy refuses to
+// start a copy in such a process (fakeOMPCopyRefusal), and
+// TestACopyStartedAsTheFakeOMPRunsAsTheFake fails in such a build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeOMPEnv) == "1" {
 		os.Exit(fakeOMP())
@@ -49,6 +56,58 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in the shim's adoption (fixtureenv.MustGuard).
 	fixtureenv.MustGuard()
 	os.Exit(m.Run())
+}
+
+// fakeOMPCopy is the path of this test binary, which a test runs as the fake OMP with fakeOMPEnv=1
+// in the copy's environment. It fails t where fakeOMPCopyRefusal refuses.
+func fakeOMPCopy(t *testing.T) string {
+	t.Helper()
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// fakeOMPCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has fakeOMPEnv=1 was started as the fake OMP, and TestMain runs such a process as
+// the fake, so one that runs the tests runs in a build without TestMain, and a copy started there
+// would run the tests again.
+func fakeOMPCopyRefusal() error {
+	if os.Getenv(fakeOMPEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the fake OMP, but it runs the tests: this build of the tests has no TestMain that runs the fake, and a copy started here would run the tests again", fakeOMPEnv)
+	}
+	return nil
+}
+
+// fakeOMPCopyRefusal, which fakeOMPCopy asks before any copy starts, refuses a process that has
+// fakeOMPEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsTheFakeOMPStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeOMPEnv)
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeOMPEnv, err)
+	}
+	t.Setenv(fakeOMPEnv, "1")
+	if err := fakeOMPCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeOMPEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", fakeOMPEnv, err)
+	}
+}
+
+// A copy started with fakeOMPEnv=1 runs as the fake OMP: it says it is ready, with its pid. The
+// fake does not read -h. In a build without TestMain, the testing package reads -h before any test
+// runs, prints its own flag usage and exits, so this test fails there by name and its copy starts
+// no copy of its own.
+func TestACopyStartedAsTheFakeOMPRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cmd := exec.Command(fakeOMPCopy(t), "-h")
+	cmd.Env = append(os.Environ(), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+filepath.Join(dir, "marker"), "FAKE_OMP_LOG="+filepath.Join(dir, "log"))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil || string(out) != fmt.Sprintf(`{"type":"fake_ready","pid":%d}`+"\n", cmd.Process.Pid) {
+		t.Fatalf("a copy started as the fake OMP with -h: %v, printed %q, want exit 0 and its ready line alone\n%s", err, out, stderr.String())
+	}
 }
 
 // fakeOMP answers a prompt with OMP's own sequence — the ack, then the turn — records every line
@@ -515,7 +574,7 @@ func config(t *testing.T, path string, o *omp) shim.Config {
 		Network:   "unix",
 		Address:   path,
 		BootToken: bootToken,
-		Argv:      []string{os.Args[0]},
+		Argv:      []string{fakeOMPCopy(t)},
 		Env:       o.env,
 		Grace:     grace,
 	}
@@ -1046,9 +1105,11 @@ func TestShutdownOfAChildThatHonoursSIGTERMExitsWithItsStatus(t *testing.T) {
 
 // fakeJJ writes a `jj` that records how it was run and then does what mode says, in a directory
 // of its own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs. In
-// mode hang, once its record is whole, it marks so (recordedMark) and runs until the test's
-// cleanup writes its release, or until this test process is gone: never for a span of its own,
-// so no answer comes, and no assertion holds, by the jj's own exit.
+// mode hang, before anything else, it sets a SIGTERM trap that marks the stop's arrival
+// (termedMark) and exits, and marks its own start (startedMark); once its record is whole, it
+// marks so (recordedMark) and runs until the test's cleanup writes its release, or until this test
+// process is gone: never for a span of its own, so no answer comes, and no assertion holds, by the
+// jj's own exit.
 func fakeJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-invocation")
@@ -1060,6 +1121,10 @@ func fakeJJ(t *testing.T) (record string) {
 		}
 	})
 	script := `#!/bin/sh
+if [ "$FAKE_JJ_MODE" = hang ]; then
+  trap 'read -r up _ </proc/uptime; read -r stat </proc/$$/stat; printf "%s %s\n" "$up" "$stat" >"` + termedMark("$FAKE_JJ_RECORD") + `"; exit 143' TERM
+  read -r up _ </proc/uptime; read -r stat </proc/$$/stat; printf '%s %s\n' "$up" "$stat" >"` + startedMark("$FAKE_JJ_RECORD") + `"
+fi
 printf '%s\n' "$@" >> "$FAKE_JJ_RECORD"
 printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
@@ -1069,7 +1134,7 @@ hang)
   while [ ! -e '` + release + `' ] && kill -0 ` + fmt.Sprint(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake jj: %v", err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1078,6 +1143,44 @@ esac
 
 // recordedMark is the file fakeJJ writes in mode hang once its record is whole.
 func recordedMark(record string) string { return record + ".recorded" }
+
+// startedMark is the file fakeJJ writes in mode hang as its first act, and termedMark the one its
+// SIGTERM trap writes. Each holds the jj's reading of /proc/uptime as it wrote the mark and its own
+// /proc/<pid>/stat line, whose starttime the kernel set when the shim started the jj (jjHeld).
+func startedMark(record string) string { return record + ".started" }
+func termedMark(record string) string  { return record + ".termed" }
+
+// jjHeld answers how long after the shim started fakeJJ the latest mark the jj wrote came: its
+// termedMark where its trap took the budget's SIGTERM, else its startedMark. Both readings are on
+// the kernel's boot clock: the uptime in seconds, and the starttime (field 22 of the stat line) in
+// clock ticks, 100 to the second (USER_HZ). ok is false where the jj wrote neither mark, or the
+// mark does not read as one.
+func jjHeld(record string) (held time.Duration, ok bool) {
+	for _, mark := range []string{termedMark(record), startedMark(record)} {
+		raw, err := os.ReadFile(mark)
+		if err != nil {
+			continue
+		}
+		uptime, stat, cut := strings.Cut(strings.TrimSpace(string(raw)), " ")
+		end := strings.LastIndexByte(stat, ')')
+		if !cut || end < 0 {
+			return 0, false
+		}
+		// Field 3 (state) onwards, so starttime (field 22) is index 22-3.
+		fields := strings.Fields(stat[end+1:])
+		const starttime = 22 - 3
+		if len(fields) <= starttime {
+			return 0, false
+		}
+		seconds, err := strconv.ParseFloat(uptime, 64)
+		ticks, tickErr := strconv.ParseUint(fields[starttime], 10, 64)
+		if err != nil || tickErr != nil {
+			return 0, false
+		}
+		return time.Duration(seconds*float64(time.Second)) - time.Duration(ticks)*time.Second/100, true
+	}
+	return 0, false
+}
 
 // farBudget is the TimeoutMs of a request whose budget is not a row's subject: the rest of the
 // test binary's deadline (testwait.Remaining). A budget is counted from when the shim reads the
@@ -1090,57 +1193,47 @@ func farBudget(t *testing.T) int {
 }
 
 // timedOutOnceRecorded sends request, whose budget is the row's subject, to a shim whose PATH's
-// jj is fakeJJ in mode hang, and answers the shim's answer from a run of the right order: one in
-// which the jj was seen to have written its whole record (recordedMark) before the budget could
-// pass. The budget is counted from when the shim read the request, so it passes no sooner than
-// its TimeoutMs after the send. A loaded machine can hold the jj past that before it writes a
-// line, and the budget's stop then ends it with its record unwritten: a run that shows nothing of
-// a jj that outlives its budget. Such a run, one the budget cut, is sent again until a run of the
-// right order comes, within a minute. A run whose answer is no timeout is no run the budget cut,
-// and is answered as it is.
+// jj is fakeJJ in mode hang, and answers the shim's answer from a run it can judge. A run whose
+// jj wrote its whole record (recordedMark) before the budget's stop reached it is judged, and so is
+// a run whose answer is no timeout. A run whose stop cut the jj before its record is judged too, so
+// a budget that cuts the jj too soon (counted from too early, or shorter than TimeoutMs) fails the
+// row, unless the jj's own marks show that a loaded machine held it: its latest mark came more than
+// half its budget after the shim started it (jjHeld), its record still unwritten. A budget counted
+// from the shim's read passes no sooner than its TimeoutMs after the send, and a jj held that long
+// from its start can be cut by such a budget before its record; a jj whose start takes the
+// milliseconds a shell's start takes cannot. Only such a run is sent again, until a run of the
+// right order comes, within a minute. A jj that wrote no mark, which the stop met before its first
+// line or which never started, is judged: nothing of its own says it was held.
 func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCopy, record string) shimwire.Frame {
 	t.Helper()
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	mark := recordedMark(record)
+	recorded := recordedMark(record)
 	within := testwait.Bounded(t, time.Minute, budget+procgroup.StopGrace+procgroup.WaitDelay+time.Second)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
-		for _, path := range []string{record, mark} {
+		for _, path := range []string{record, recorded, startedMark(record), termedMark(record)} {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				t.Fatalf("clear the jj's record before run %d: %v", runs, err)
 			}
 		}
-		stop, seen := make(chan struct{}), make(chan time.Time, 1)
-		go func() {
-			defer close(seen)
-			for {
-				if _, err := os.Stat(mark); err == nil {
-					seen <- time.Now()
-					return
-				}
-				select {
-				case <-stop:
-					return
-				case <-time.After(testwait.Poll):
-				}
-			}
-		}()
-		sent := time.Now()
 		p.send(t, request)
+		// The shim answers once the budget's stop has ended the jj, so every mark it wrote is there.
 		answer := p.next(t)
-		close(stop)
-		at, recorded := <-seen
-		if recorded && at.Before(sent.Add(budget)) {
+		if _, err := os.Stat(recorded); err == nil {
 			return answer
 		}
 		if result, ok := answer.(shimwire.AdoptWorkingCopyResult); !ok || !strings.Contains(result.Error, "Command timed out") {
 			return answer
 		}
+		held, ok := jjHeld(record)
+		if !ok || held <= budget/2 {
+			return answer
+		}
 		if time.Now().Before(until) {
-			t.Logf("run %d: the jj was not seen to have written its whole record before its %s budget could pass, so the budget may have cut it first; sent again", runs, budget)
+			t.Logf("run %d is not judged: the budget's stop came before the jj's whole record, and the jj's own marks show it held %s after the shim started it, past half its %s budget; sent again", runs, held, budget)
 			continue
 		}
-		t.Fatalf("no run of the right order in %d runs over %s: in each, the jj was seen to have written its whole record only after its %s budget could pass", runs, within, budget)
+		t.Fatalf("no run of the right order in %d runs over %s: in each, the budget's stop came before the jj's whole record, and the jj's own marks show it held past half its %s budget after the shim started it", runs, within, budget)
 	}
 }
 
@@ -1151,8 +1244,8 @@ func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCo
 // TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH's case). A failure answers `ok: false`
 // with the command's report rather than taking the agent down. A row whose request names no
 // TimeoutMs runs under farBudget, its budget no subject of it. The row whose jj outlives its
-// budget is judged only on a run in which the jj had written its whole record before the budget
-// could pass (timedOutOnceRecorded).
+// budget is judged on every run but one in which the jj's own marks show a loaded machine held it
+// past half its budget, its record unwritten (timedOutOnceRecorded).
 func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -1317,7 +1410,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "jj-invocation")
 			if tc.jjOnPath {
 				script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\n"
-				if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 					t.Fatalf("write the fake jj: %v", err)
 				}
 			}
@@ -1432,7 +1525,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			// wrapper looking jj up on PATH never finds this one again.
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1605,7 +1698,7 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(tc.script(jj, lock)), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "jj"), []byte(tc.script(jj, lock)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1666,7 +1759,7 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	bin := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
 		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nexit 1\n", 2*shimwire.MaxFrameBytes, lock)
-	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

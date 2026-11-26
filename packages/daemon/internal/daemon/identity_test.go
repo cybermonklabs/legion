@@ -113,6 +113,7 @@ func otherApp(role claim.Role) appauth.AppRole {
 // App is asked once, the claim's own first, since every role of an App commits as that App's one
 // identity. The controller's launch carries none.
 func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -169,6 +170,7 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 // whose trailer names one keeps its author. The other App is asked once rather than once per
 // role, and the daemon logs one warning naming the claim, that App and the mint's error.
 func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -235,6 +237,7 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 // naming the claim, as one whose context ends during its own mint does, and logs no warning: an
 // ended context is no failure of the other App, so it is never read as one (roleIdentities).
 func TestALaunchWhoseContextEndsDuringTheOtherAppsMintFails(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -330,6 +333,7 @@ func (k *knownLaunchTokens) KnownIdentity(role appauth.AppRole) (runtime.GitIden
 // the source does not know the other App's identity yet, or answers no such read at all, as every
 // other fake does, the other App is minted once, after the claim's own.
 func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -395,6 +399,7 @@ func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
 // and its failure fails the launch, carrying the mint's error and naming the claim, before the
 // other App is asked anything.
 func TestALaunchWhoseOwnAppCannotBeMintedFails(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

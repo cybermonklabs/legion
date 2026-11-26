@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -27,6 +27,7 @@ import (
 
 // The command's refusals come before anything starts, each naming what is missing, as a usage error.
 func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("LEGION_ROLE", "implementer")
 	t.Setenv("LEGION_ISSUE", "ACME-7")
@@ -47,6 +48,7 @@ func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
 
 // A claude that cannot be started is the bridge's failure, exit 1, naming it.
 func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	// The bridge opens its inbox under the process TMPDIR, so a test that runs it in-process
 	// places that directory itself, with room for the inbox's socket.
@@ -62,6 +64,7 @@ func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
 // the bridge ends then as it ends on SIGTERM, stopping Claude Code and removing its inbox's
 // directory, so nothing it made stays in TMPDIR.
 func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -86,11 +89,16 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 // The bridge kills Claude Code claudebridge.Grace after its SIGTERM, on a clock of its own process
 // that this row cannot move, and the stand-in answers the SIGTERM, with the tool call and its exit
 // 0, only after the bridge has sent it: a loaded machine can hold the stand-in past the grace, and
-// that run, which the kill ended, shows nothing of this. Only a run whose stand-in was seen to exit
-// before the grace could pass is judged: the bridge sends its SIGTERM no sooner than the row's
-// SIGHUP, and the kill comes no sooner than the grace after that. The row starts the bridge again
-// until a run of the right order comes, within a minute.
+// that run, which the kill ended, shows nothing of the frame. The stand-in's trap writes a mark
+// before anything else, so the row reads from the stand-in whether the SIGTERM came. A run with no
+// mark is judged: the bridge sent no SIGTERM, and the row fails it. A run with the mark whose
+// stand-in was seen to exit only once the grace could pass is not judged (the bridge sends its
+// SIGTERM no sooner than the row's SIGHUP, and the kill comes no sooner than the grace after that),
+// and the row starts the bridge again until a run of the right order comes, within a minute. What
+// the bridge leaves in TMPDIR is judged on every run, the ones the kill ended too: the bridge
+// removes its inbox however Claude Code ended.
 func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
+	t.Parallel()
 	// The stand-in answers the bridge's SIGTERM with a tool call, which the bridge shows on the pane
 	// with a frame to the shim.
 	toolCall := filepath.Join(t.TempDir(), "tool-call.json")
@@ -100,8 +108,10 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	within := testwait.Bounded(t, time.Minute, testBoundMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
-		pidFile := filepath.Join(t.TempDir(), "claude.pid")
-		p := startClaudeBridge(t, "echo $$ >"+shellprefix.Literal(pidFile)+"\nTOOL_CALL="+shellprefix.Literal(toolCall)+"\ntrap 'kill $!; cat \"$TOOL_CALL\"; exit 0' TERM\n"+
+		dir := t.TempDir()
+		pidFile, termed := filepath.Join(dir, "claude.pid"), filepath.Join(dir, "termed")
+		p := startClaudeBridge(t, "echo $$ >"+shellprefix.Literal(pidFile)+"\nTOOL_CALL="+shellprefix.Literal(toolCall)+
+			"\nTERMED="+shellprefix.Literal(termed)+"\ntrap ': >\"$TERMED\"; kill $!; cat \"$TOOL_CALL\"; exit 0' TERM\n"+
 			"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 		// The stand-in writes its pid before it marks itself ready, which startClaudeBridge awaits.
 		raw, err := os.ReadFile(pidFile)
@@ -127,17 +137,27 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 		if !seen {
 			t.Fatalf("run %d: the stand-in (pid %d) was not seen to exit within %s (the bridge ended %v):\n%s", runs, pid, within, state, p.logged())
 		}
-		if !at.Before(hungUp.Add(claudebridge.Grace)) {
+		if len(left) > 0 {
+			t.Errorf("run %d: the bridge given SIGHUP with no shim left %q in TMPDIR", runs, left)
+		}
+		_, termErr := os.Stat(termed)
+		if termErr == nil && !at.Before(hungUp.Add(claudebridge.Grace)) {
+			// The kill may have ended this run, which then shows nothing of the frame; a run that
+			// left its inbox has failed already.
+			if t.Failed() {
+				return
+			}
 			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the stand-in took its SIGTERM, but was seen to exit only after the bridge's %s grace could pass", runs, claudebridge.Grace)
 				continue
 			}
 			t.Fatalf("no run of the right order in %d runs over %s: in each, the stand-in was seen to exit only after the bridge's %s grace could pass", runs, within, claudebridge.Grace)
 		}
+		if termErr != nil {
+			t.Errorf("run %d: the stand-in recorded no SIGTERM (%v): the bridge given SIGHUP ended it %v without sending one:\n%s", runs, termErr, state, p.logged())
+		}
 		if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
 			t.Errorf("run %d: the bridge given SIGHUP with no shim ended %v, want exit 0, Claude Code's status, after logging the frame it could not write:\n%s", runs, state, p.logged())
-		}
-		if len(left) > 0 {
-			t.Errorf("run %d: the bridge given SIGHUP with no shim left %q in TMPDIR", runs, left)
 		}
 		return
 	}
@@ -161,6 +181,7 @@ func standInExited(pid int) bool {
 // Claude Code ends a turn and exits while the shim reads slowly: the bridge waits for the shim to
 // read every frame, the turn's agent_end among them, whole, and exits as Claude Code did.
 func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
+	t.Parallel()
 	turn := filepath.Join(t.TempDir(), "turn")
 	content := strings.Repeat("x", 256<<10)
 	if err := os.WriteFile(turn, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"WAITING on CI"},`+
@@ -234,6 +255,7 @@ func goneShim(t *testing.T) *os.File {
 // (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
 // neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +309,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	p := &claudeBridgeProcess{t: t, tmp: testtmp.Dir(t, claudebridge.InboxLongestPath),
 		stderr: filepath.Join(dir, "stderr"), exited: make(chan struct{})}
 	claude := filepath.Join(dir, "claude")
-	if err := testexec.WriteFile(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := execfile.Write(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stderr, err := os.Create(p.stderr)
@@ -296,7 +318,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	}
 	defer stderr.Close()
 	ready := filepath.Join(dir, "ready")
-	p.cmd = exec.Command(os.Args[0], "claude-bridge", "--", claude, "--resume", "s")
+	p.cmd = exec.Command(legionCopy(t), "claude-bridge", "--", claude, "--resume", "s")
 	p.cmd.Env = append(os.Environ(), testMainEnv+"=1", "TMPDIR="+p.tmp, "CLAUDE_CONFIG_DIR="+t.TempDir(),
 		"LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7", "CLAUDE_STANDIN_READY="+ready)
 	p.cmd.Env = append(p.cmd.Env, env...)

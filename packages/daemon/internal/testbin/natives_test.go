@@ -123,7 +123,7 @@ func TestANativesFillShortOfAnEmbeddedSizeCachesNothing(t *testing.T) {
 }
 
 // A file under natives that is not a native the binary embeds is refused by its name. omp writes
-// each native to a `.tmp.<pid>.<ms>` file and renames it once it is whole, so a write that failed
+// each native to a `.tmp.<pid>.<uuid>` file and renames it once it is whole, so a write that failed
 // and whose cleanup failed too leaves that file in place of its native.
 func TestANativesFillHoldingALeftoverTemporaryFileCachesNothing(t *testing.T) {
 	dir := t.TempDir()
@@ -167,7 +167,7 @@ func TestANativesFillThatExtractsNothingCachesNothing(t *testing.T) {
 
 // A binary that lists no embedded natives is refused before it runs: with nothing to check an
 // extraction against, every file it wrote would be refused by name anyway, so refusing first fails
-// with a precise message and never runs omp to extract a native of about 123 MiB.
+// with a precise message and never runs omp to extract a native of about 124 MiB.
 func TestANativesFillRefusesABinaryThatListsNoEmbeddedNatives(t *testing.T) {
 	dir := t.TempDir()
 	runs := filepath.Join(dir, "runs")

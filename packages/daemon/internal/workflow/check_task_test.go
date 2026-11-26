@@ -8,6 +8,28 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
+	t.Parallel()
+	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
+	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
+	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
+	_, value, ok := strings.Cut(task, "check_opened_at `")
+	if !ok {
+		t.Fatal("the task gives no check identity to report")
+	}
+	value, _, ok = strings.Cut(value, "`")
+	if !ok {
+		t.Fatal("the task gives no closing delimiter for the check identity")
+	}
+	got, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || !got.Equal(opened) {
+		t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)
+	}
+	if value != "2026-10-19T06:00:00.123456Z" {
+		t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value)
+	}
+}
+
 // checkTaskWakes are the four wakes a look can have, each written as its own caller writes it:
 // the merge that opened the check (openCheck, the merge commit as the detail), the wake the
 // checking agent named on a pending report (checkReported, the report's summary), the retry of a

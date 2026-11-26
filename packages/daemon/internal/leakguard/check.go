@@ -94,7 +94,7 @@ func (g *Guard) Resolve() (string, error) {
 	}
 	nothingElse := func(none error) error {
 		if there := unusableOnPath(searchPath); there != "" {
-			return brokenCheck{path: there, error: fmt.Errorf("%s names none, %s on PATH is no executable file, and no pointer file names a check", CheckVar, there)}
+			return brokenCheck{path: there, error: fmt.Errorf("%s names none, %s on PATH is no executable file, and no pointer file names a check", CheckVar, shownText(there))}
 		}
 		return noneNamed{none}
 	}
@@ -110,7 +110,7 @@ func (g *Guard) Resolve() (string, error) {
 	pointer := filepath.Join(config, pointerFile)
 	content, err := os.ReadFile(pointer)
 	if err != nil {
-		err = fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
+		err = fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, shownText(pointer), withoutPath(err))
 		if _, statErr := os.Lstat(pointer); errors.Is(statErr, fs.ErrNotExist) {
 			return "", nothingElse(err)
 		}
@@ -118,9 +118,9 @@ func (g *Guard) Resolve() (string, error) {
 	}
 	named := strings.TrimSpace(string(content))
 	if named == "" {
-		return "", brokenCheck{path: pointer, error: fmt.Errorf("the pointer file %s names no check", pointer)}
+		return "", brokenCheck{path: pointer, error: fmt.Errorf("the pointer file %s names no check", shownText(pointer))}
 	}
-	return found(named, "the pointer file "+pointer)
+	return found(named, "the pointer file "+shownText(pointer))
 }
 
 // unusableOnPath is the first file of the check's name on an entry of searchPath that lookpath.On
@@ -239,15 +239,15 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 	switch {
 	case err != nil:
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
-			Err: fmt.Errorf("%s=%s, and the manifest of the check at %s could not be read: %w", CheckerVar, checker, check, err)}
+			Err: fmt.Errorf("%s=%s, and the manifest of the check at %s could not be read: %w", CheckerVar, checker, shownText(check), err)}
 	case !strings.EqualFold(held.digest, checker):
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
-			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, check, held.digest)}
+			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, shownText(check), held.digest)}
 	}
 	dir, err := held.privateCopy(PrivateCopyBase, privateCopyFallback)
 	if err != nil {
 		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
-			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", check, CheckerVar, checker, err)}
+			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", shownText(check), CheckerVar, checker, err)}
 	}
 	return sharedRun{path: filepath.Join(dir, checkName), program: held.files[checkProgram], dir: dir}, nil
 }
@@ -324,17 +324,19 @@ func (h heldCheck) privateCopy(base, fallback string) (string, error) {
 // the digest held need not be the file that runs. It is refused, as is a stale one, or one that
 // names a directory or a file with no execute bit, each reported as the broken setup it is rather
 // than as a child process that would not start; and every shape refuses it alike, a push included,
-// which runs the check through bash and would otherwise run a file the others cannot.
+// which runs the check through bash and would otherwise run a file the others cannot. The report
+// names the path as shownText shows it, and once: the error under it is what went wrong alone
+// (withoutPath).
 func found(path, source string) (string, error) {
 	if !filepath.IsAbs(path) {
-		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no absolute path", source, path)}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no absolute path", source, shownText(path))}
 	}
 	info, err := os.Stat(path)
 	switch {
 	case err != nil:
-		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, path, err)}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, shownText(path), withoutPath(err))}
 	case !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0:
-		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no executable file (%s)", source, path, info.Mode())}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no executable file (%s)", source, shownText(path), info.Mode())}
 	}
 	return path, nil
 }

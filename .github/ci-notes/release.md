@@ -332,7 +332,7 @@ program, only release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of
 tarball) and the pinned actions its steps use (actions/checkout, actions/setup-node, actions/download-artifact, actions/attest-build-provenance), so the scopes and the deploy key it holds never meet the
 code the build jobs ran. release-push.sh itself also runs curl, tar and one binary of its own:
 the gitleaks release it fetches and holds to a pinned sha256, which runs this repository's
-private-name rules (packages/daemon/internal/leakguard/private-names.toml, from this checkout)
+private-name rules (.github/private-names.toml, from this checkout)
 over every write this job's steps make to a public repository and refuses the write when they match. That
 binary reads what is about to be published and nothing else, and it is a pinned upstream
 release, not code from a build job.

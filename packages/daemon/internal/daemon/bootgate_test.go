@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/user"
@@ -388,6 +387,18 @@ func (f fakeOmp) read(t *testing.T, name string) string {
 	return string(raw)
 }
 
+// markedAt is when the fake, or its launch prefix, last wrote the file name: the file's
+// modification time, which the kernel stamps as the stand-in writes it, so a stand-in's marks are
+// read on no clock of the stand-in's own and no process it would have to start.
+func (f fakeOmp) markedAt(t *testing.T, name string) time.Time {
+	t.Helper()
+	info, err := os.Stat(filepath.Join(f.dir, name))
+	if err != nil {
+		t.Fatalf("read when %s was written: %v", name, err)
+	}
+	return info.ModTime()
+}
+
 // gateUnder is a gate over a pane environment whose HOME holds a pi-legion manifest declaring
 // legion (raw JSON) and a pi-envoy manifest beside it, each installed as `omp plugin install`
 // installs it — the profile's package directory a link to the unpacked plugin — run through f with
@@ -589,14 +600,21 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // answered before that, and must neither be retried for it nor wait for it. Attempts is capped at
 // 1 so a reintroduced regression (treating the lingering child as a transient non-answer) fails
 // fast with this test's own message, instead of retrying until go test's own timeout ends the run;
-// and the child must still be running when the gate returns, so a gate that waited for it to close
-// the pipe fails here too. With one attempt, a budget kill fails the test, which gateUnder's budget
-// (answerBudget, 20 s) keeps out of reach of the fake's own exit on a loaded box. The child stays
-// in the probe's process group, so this row holds the in-group side of a budget far away. An exit
-// inside the budget whose pipe is held past it is
-// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
+// and the gate must give its pass back within passWithin of the probe's exit, with the child still
+// running. The exit is read from the fake's last act before it (lingering.pid, fakeOmp.markedAt).
+// The child is held, so it never ends on a timer of its own, and a gate that held its pass for the
+// child's pipe long past the probe's exit, a WaitDelay far past procgroup.WaitDelay, would still
+// find it running: the bound fails that gate. A gate that waited for the child to close the pipe
+// would not return while the child is held, and fails at the test binary's deadline. With one
+// attempt, a budget kill fails the test, which gateUnder's budget (answerBudget, 20 s) keeps out
+// of reach of the fake's own exit on a loaded box. The child stays in the probe's process group,
+// so this row holds the in-group side of a budget far away. An exit inside the budget whose pipe
+// is held past it is TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
 	t.Parallel()
+	// passWithin is half a minute: the probe's exit, then procgroup.WaitDelay for the child's
+	// pipe, then the run's return, on a loaded machine.
+	const passWithin = 30 * time.Second
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
@@ -605,6 +623,7 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	if err := gate.verify(context.Background()); err != nil {
 		t.Fatalf("the gate refused a plugin that answered yes before a lingering child outlived it: %v", err)
 	}
+	returned := time.Now()
 
 	if n := f.attempts(t); n != 1 {
 		t.Fatalf("Oh My Pi ran %d times, want once: a lingering descendant is not a reason to retry an answer already given", n)
@@ -615,6 +634,9 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
 		t.Errorf("the lingering child (PID %d) was gone when the gate returned (%v): the gate waited for it to close the probe's output pipe", pid, err)
+	}
+	if waited := returned.Sub(f.markedAt(t, "lingering.pid")); waited > passWithin {
+		t.Errorf("the gate gave its pass back %s after the probe exited, past %s: it held the pass for the lingering child's pipe long after the probe answered", waited, passWithin)
 	}
 }
 
@@ -1072,7 +1094,11 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(shellprefix.Command([]string{f.prefix}) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
+			// The launch text is written out, not rendered with shellprefix.Command, the gate's own
+			// rendering, so a rendering that drops the prefix fails here. The prefix's path, under
+			// TMPDIR, holds only characters the rendering leaves bare: one it quoted would fail the
+			// row, never pass it. The invocation is already one shell word (fakeOmp.invocation).
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(f.prefix + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
@@ -1088,20 +1114,17 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // out-of-memory kill), says nothing about the plugin: the gate waits it out and asks again, as it
 // does a probe the budget cut off before it answered (TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime).
 // A pass slower than a second or two passes on the first attempt that answers, as it does on a
-// loaded machine. No budget cuts an attempt here (expire, a context that ends only with the gate's
-// own): each attempt ends at its own exit, so no load can cut the pass and ask once more, and the
-// gate's whole wait ends at the test binary's deadline less testwait's margin (testwait.Remaining).
+// loaded machine. Each attempt runs under gateUnder's budget (answerBudget, 20 s) on the gate's
+// own clock, which no attempt of the fake comes near: an attempt that takes longer is cut off, and
+// the row fails, on the gate's refusal or on an attempt past the three it asks for.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 	t.Parallel()
 	for _, step := range []string{"yes-then-die", "yes-then-killed"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes-slowly", "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)
-			gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(ctx) }
-			ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-			defer cancel()
 
-			if err := gate.verify(ctx); err != nil {
+			if err := gate.verify(context.Background()); err != nil {
 				t.Fatalf("the gate refused after transient failures: %v", err)
 			}
 			if n := f.attempts(t); n != 3 {
@@ -1142,11 +1165,15 @@ func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
 
 // A daemon stopped while its gate waits kills the probe it is running and starts no other. The
 // probe hangs until a signal ends it (held), so a gate that left it running would return only at
-// the end of its attempt's minute budget. The gate returns within gateStopsWithin of its start. A
-// run past that fails where the probe was seen running within half of it, since the stop then took
-// the other half. Where the probe started later, a loaded machine that held up its start cannot be
-// told from a slow stop, so that run is not judged, and the row runs again on a gate of its own,
-// until a run of the right order comes, within a minute.
+// the end of its attempt's minute budget. The gate returns within gateStopsWithin of its start, on
+// every run, less only the time its stand-in took to start once the gate's launch reached it: from
+// the launch prefix's mark (prefixed, the prefix's first act, once the gate's shell has exec'd the
+// launch) to the fake Oh My Pi's (count, written as its own first act). Nothing of the gate's runs
+// between the two marks, which the kernel stamps as the stand-ins write them (fakeOmp.markedAt):
+// only the stand-ins' own start, which a loaded machine can hold up. A run past gateStopsWithin
+// that this time accounts for is not judged, and the row runs again on a gate of its own, until a
+// judged run comes, within a minute. A gate slow before it execs the probe, or slow to stop it,
+// spends that time outside the two marks, and fails the run it is slow in.
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	t.Parallel()
 	// The last run may spend its attempt's minute budget and cutRunMargin for the row to fail in.
@@ -1159,27 +1186,24 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		// The cancellation this test is about is one that lands on a probe in flight, so it waits
 		// for the probe to be running rather than for a span: a fixed delay on a loaded machine
-		// fires before the probe starts, and the gate then cancels having run nothing. It sends when
-		// it saw the probe running, read after that fact, or the zero time where it never did.
-		running := make(chan time.Time, 1)
+		// fires before the probe starts, and the gate then cancels having run nothing. It closes
+		// watched once it has cancelled.
+		watched := make(chan struct{})
 		go func() {
+			defer close(watched)
 			defer cancel()
 			// Read here rather than through attempts: a helper that fails the test belongs to the
 			// test's own goroutine, and this one only needs to know the probe started.
-			var seen time.Time
-			if testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+			testwait.Holds(30*time.Second, testwait.Poll, func() bool {
 				raw, err := os.ReadFile(filepath.Join(f.dir, "count"))
 				return err == nil && strings.TrimSpace(string(raw)) == "1"
-			}) {
-				seen = time.Now()
-			}
-			running <- seen
+			})
 		}()
 
 		started := time.Now()
 		err := gate.verify(ctx)
 		elapsed := time.Since(started)
-		seen := <-running
+		<-watched
 
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("run %d: err = %v, want the daemon's cancellation", runs, err)
@@ -1190,19 +1214,17 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 		if t.Failed() || elapsed <= gateStopsWithin {
 			return
 		}
-		if !seen.IsZero() && seen.Sub(started) <= gateStopsWithin/2 {
-			t.Errorf("run %d: the gate took %s to stop, past %s, though its probe was seen running %s after the start: the daemon's stop did not end the probe in time", runs, elapsed, gateStopsWithin, seen.Sub(started))
+		late := f.markedAt(t, "count").Sub(f.markedAt(t, "prefixed"))
+		if elapsed-late > gateStopsWithin {
+			t.Errorf("run %d: the gate took %s to stop, past %s, and its stand-in started %s after the gate's launch reached it, which leaves %s of the gate's own: the gate was slow to start its probe, or the daemon's stop did not end the probe in time",
+				runs, elapsed, gateStopsWithin, late, elapsed-late)
 			return
 		}
-		went := "was never seen running"
-		if !seen.IsZero() {
-			went = fmt.Sprintf("was seen running %s after the start", seen.Sub(started))
-		}
 		if time.Now().Before(until) {
-			t.Logf("run %d is not judged: the gate took %s to stop, past %s, and its probe %s, not within half of it", runs, elapsed, gateStopsWithin, went)
+			t.Logf("run %d is not judged: the gate took %s to stop, past %s, and its stand-in started %s after the gate's launch reached it, which accounts for the overrun", runs, elapsed, gateStopsWithin, late)
 			continue
 		}
-		t.Fatalf("no run of the right order in %d runs over %s: the last took %s to stop, past %s, and its probe %s, not within half of it", runs, within, elapsed, gateStopsWithin, went)
+		t.Fatalf("no judged run in %d runs over %s: the last took %s to stop, past %s, and its stand-in started %s after the gate's launch reached it, which accounts for the overrun", runs, within, elapsed, gateStopsWithin, late)
 	}
 }
 

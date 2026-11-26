@@ -86,12 +86,11 @@ test("pruning removes handoff directories whose Claude process is gone and keeps
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-prune-"))
   try {
     const live = sessionHandoffDirectory(stateDirectory, process.pid)
-    // The id of a process that is gone, and that no process can hold while the sweep runs: Linux
-    // gives a process an id below pid_max, which cannot be set above 2 ** 22, and macOS one below
-    // 100000. 2 ** 22 - 1 is no such id: Linux hands it out wherever pid_max is at that ceiling,
-    // as systemd sets it, and a busy machine whose ids wrap around gives it to a process now and
-    // then, which the sweep then rightly keeps.
-    const dead = sessionHandoffDirectory(stateDirectory, 2 ** 22)
+    // The id of a process that is gone: a child this test started and waited for. The machine
+    // answers that id gone (ESRCH) until it hands the id to another process, which it does only
+    // once its ids have wrapped around. The id is below pid_max, as every id the machine hands out
+    // is, so a sweep that calls an id gone by its range and not by asking the machine keeps it.
+    const dead = sessionHandoffDirectory(stateDirectory, Bun.spawnSync(["true"]).pid)
     const junk = join(stateDirectory, "sessions", "not-a-pid")
     for (const directory of [live, dead, junk]) await mkdir(directory, { recursive: true })
     await writeFile(join(dead, "session-id"), "ses_dead")

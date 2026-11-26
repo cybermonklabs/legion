@@ -13,7 +13,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -37,6 +38,7 @@ import (
 // wait has the test binary's deadline as its only bound, and each stand-in sleeps about a day, so a
 // stop that never comes fails the row by name and no sleep ends by itself before it.
 func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
+	// Not parallel: it sets the package variable ghHelpTimeout.
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether gh's helper is still running", err)
 	}
@@ -62,7 +64,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		dir := t.TempDir()
 		gh, ghPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid")
 		const ghSeconds = "86398"
-		if err := testexec.WriteFile(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		killRecordedHelper(t, ghPid, ghSeconds)
@@ -81,7 +83,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
 		dir := t.TempDir()
 		gh, ran := filepath.Join(dir, "gh"), filepath.Join(dir, "ran")
-		if err := testexec.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		timeout := ghHelpTimeout
@@ -101,7 +103,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		gh, ghPid, helperPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid"), filepath.Join(dir, "helper.pid")
 		const ghSeconds, helperSeconds = "86400", "86399"
 		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >" + shellprefix.Literal(helperPid) + "\n" + holdsStandIn(ghPid, ghSeconds)
-		if err := testexec.WriteFile(gh, []byte(script), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		killRecordedHelper(t, helperPid, helperSeconds)
@@ -172,9 +174,11 @@ func (d *passedDeadline) Err() error {
 // held work's group the same way, and `legion gh` ends with 129.
 //
 // Every row runs with the role's state directory set, so `legion gh` keeps the helps gh prints
-// (ghHelpKeep). The help read's stand-in prints gh's whole help before it holds the read, and the
-// read the signal stopped leaves no copy: a stopped read is an error, whatever gh printed before
-// the stop, so it is never kept and no later call is answered with it.
+// (ghHelpKeep), and with the fixture's rule file named, since the guard reads the destination's
+// visibility only where the deployment names one. The help read's stand-in prints gh's whole
+// help before it holds the read, and the read the signal stopped leaves no copy: a stopped read
+// is an error, whatever gh printed before the stop, so it is never kept and no later call is
+// answered with it.
 //
 // On main the help read shared `legion gh`'s own process group, so the group's signal reached the
 // stand-in itself: a SIGINT ended it and `legion gh` refused the command with a help error, exit 2,
@@ -185,6 +189,7 @@ func (d *passedDeadline) Err() error {
 // (TestAHelpReadThatTimesOutStopsWhatGhStarted), would put the help read in that last case too
 // without the handling these rows read.
 func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
@@ -263,18 +268,19 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				dir := t.TempDir()
 				pidFile := filepath.Join(dir, "stand-in")
 				stub := filepath.Join(dir, "gh")
-				if err := testexec.WriteFile(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
+				if err := execfile.Write(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				state := t.TempDir()
 				env := map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
-					"XDG_STATE_HOME":    state,
+					"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
+					"XDG_STATE_HOME":       state,
+					leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 				}
 				if held.git != nil {
 					bin := t.TempDir()
-					if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
+					if err := execfile.Write(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
 						t.Fatal(err)
 					}
 					env["PATH"] = bin + string(os.PathListSeparator) + ghWrapperDir(t) + string(os.PathListSeparator) + os.Getenv("PATH")
