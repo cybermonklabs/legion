@@ -66,7 +66,11 @@ const HELD_OTHERWISE = [
  * A hard break and an atom hold no text, so the count at the start of the text after one is also
  * the end of the text before it. A press at the start of a drawn text with text counted before it
  * says so (`CaretAt`'s `next`), and the editor puts the caret in that text, where the press was:
- * on the line after the break, or after the atom.
+ * on the line after the break, or after the atom. A press past an atom that no text follows says
+ * so too, and the editor puts the caret after that atom, where its block ends; a press inside the
+ * atom still counts as at its start. An atom drawn with no text - a picture once it has loaded -
+ * counts as one too, so the walk reads each element drawn in place of the editor's text before
+ * its own texts.
  */
 export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   const doc = words.ownerDocument;
@@ -76,28 +80,33 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   if (node === undefined || !words.contains(node)) return { x, y, offset: 0 };
   const end = doc.createRange();
   end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
-  const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+  const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   // The words as the editor holds them, and the press's place in them once it is passed.
   let held = "";
   let offset: number | undefined;
-  // Whether that place is the start of a drawn text with text counted before it.
+  // Whether that place is the start of a drawn text with text counted before it, or past an atom.
   let next = false;
-  // The element drawn in place of the editor's text the last text counted belongs to, whose
-  // other texts count nothing more.
+  // The element drawn in place of the editor's text the last thing counted belongs to, whose
+  // texts count nothing more.
   let counted: Element | null = null;
-  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-    if (text.parentElement?.closest("[data-node-trail]") != null) continue;
-    const other = text.parentElement?.closest(HELD_OTHERWISE) ?? null;
-    if (other !== null && other === counted) continue;
+  for (let drawn = walker.nextNode(); drawn !== null; drawn = walker.nextNode()) {
+    const element = drawn instanceof Element ? drawn : drawn.parentElement;
+    if (element?.closest("[data-node-trail]") != null) continue;
+    const other = element?.closest(HELD_OTHERWISE) ?? null;
+    // An element counts only where it is drawn in place of the editor's text, and only once.
+    if (drawn instanceof Element ? drawn !== other : other !== null && other === counted) continue;
     if (offset === undefined) {
-      if (other?.contains(node) === true || end.comparePoint(text, 0) >= 0) {
+      if (other?.contains(node) === true || end.comparePoint(drawn, 0) >= 0) {
         offset = held.length;
         next = other === null && held !== "";
-      } else if (text === node) offset = held.length + end.startOffset;
+      } else if (drawn === node) offset = held.length + end.startOffset;
     }
     counted = other;
-    held += (other === null ? text.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "";
+    held += (other === null ? drawn.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "";
   }
+  // A press past everything counted, after an atom - an element drawn in place of no text of the
+  // editor's, as a reference is not - goes after that atom.
+  if (offset === undefined && counted?.hasAttribute(REFERENCE_WRITTEN) === false) next = true;
   const at = offset ?? held.length;
   return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
 }

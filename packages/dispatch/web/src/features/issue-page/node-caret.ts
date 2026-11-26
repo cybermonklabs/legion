@@ -151,7 +151,8 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 export type Point = readonly [node: Node, offset: number];
 
 /** A press on the row's words: where it was on screen, its count of the editor's characters before
- *  it, the word pressed as drawn, and `next` where it began a drawn text after counted text. */
+ *  it, the word pressed as drawn, and `next` where it began a drawn text after counted text, or
+ *  fell after an atom that ends the words. */
 export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: Word; next?: true }>;
 type Word = readonly [before: string, word: string, after: string, into: number];
 
@@ -820,8 +821,9 @@ function firstPlace(block: HTMLElement): Point {
 }
 
 /** `at.offset` characters into the editable text of `block` (into the next text, where one ends
- *  there, for a `next` press), or its last editable place; where the text there is not the word
- *  pressed between its neighbours, as far into the nearest place that is, if one is. */
+ *  there, for a `next` press, or after the atom that ends `block` where none does), or its last
+ *  editable place; where the text there is not the word pressed between its neighbours, as far
+ *  into the nearest place that is, if one is. */
 function placeAt(block: HTMLElement, at: CaretAt): Point {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
@@ -839,7 +841,23 @@ function placeAt(block: HTMLElement, at: CaretAt): Point {
     if (remaining < node.data.length + (at.next ? 0 : 1)) return [node, remaining];
     remaining -= node.data.length;
   }
-  return lastPlace(block);
+  return (at.next && afterEndingAtom(block)) ?? lastPlace(block);
+}
+
+/** The place after the atom that ends `block` - an element the caret cannot enter, with no text it
+ *  can enter after it - in the atom's parent, where one does. */
+function afterEndingAtom(block: HTMLElement): Point | undefined {
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  let atom: HTMLElement | undefined;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (node.parentElement?.isContentEditable !== true) continue;
+    if (node instanceof Text) atom = undefined;
+    else if (node instanceof HTMLElement && !node.isContentEditable) atom = node;
+  }
+  if (atom === undefined) return undefined;
+  const after = document.createRange();
+  after.setStartAfter(atom);
+  return [after.startContainer, after.startOffset];
 }
 
 /** The last place of `block` a caret can stand at: the end of its last text a caret can enter,

@@ -14,21 +14,36 @@ import { pressInWords } from "./pressed-words";
  * `pressed`, at the point (1, 2), where the browser's `caretPositionFromPoint` finds that place.
  */
 function pressIn(html: string, pressed: string, into: number): CaretAt {
+  return pressAt(html, (words) => {
+    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (text !== null && text.textContent !== pressed) text = walker.nextNode();
+    if (text === null) throw new Error(`the words draw no text "${pressed}"`);
+    return [text, into];
+  });
+}
+
+/** The end of the words' paragraph, past the last thing it draws: where a press past the end of
+ *  its line falls, as the browser finds the place. */
+function paragraphEnd(words: HTMLElement): readonly [Node, number] {
+  const paragraph = words.firstElementChild ?? words;
+  return [paragraph, paragraph.childNodes.length];
+}
+
+/** Draws `html` as a statement's drawn words and reads a press at the point (1, 2), where the
+ *  browser's `caretPositionFromPoint` finds the place `place` reads in them. */
+function pressAt(html: string, place: (words: HTMLElement) => readonly [Node, number]): CaretAt {
   const words = document.createElement("div");
   words.setAttribute("data-node-words", "");
   words.innerHTML = html;
   document.body.append(words);
-  const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-  let text = walker.nextNode();
-  while (text !== null && text.textContent !== pressed) text = walker.nextNode();
-  if (text === null) throw new Error(`the words draw no text "${pressed}"`);
   const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
-  Object.defineProperty(document, "caretPositionFromPoint", {
-    configurable: true,
-    value: (x: number, y: number) =>
-      x === 1 && y === 2 ? { offsetNode: text, offset: into } : null,
-  });
   try {
+    const [offsetNode, offset] = place(words);
+    Object.defineProperty(document, "caretPositionFromPoint", {
+      configurable: true,
+      value: (x: number, y: number) => (x === 1 && y === 2 ? { offsetNode, offset } : null),
+    });
     return pressInWords(words, 1, 2);
   } finally {
     if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
@@ -127,4 +142,55 @@ test("a press at the end of the text before a break, inside an atom or at the wo
   const start = pressIn(BROKEN, "Line one.", 0);
   expect(start).toEqual({ x: 1, y: 2, offset: 0, word: ["", "Line", " one.Line", 0] });
   expect(start.next).toBeUndefined();
+});
+
+const PICTURE = `data-dispatch-picture="dispatch://CORE-1/artifact/shot-png" data-picture-caption="shot.png" href="/CORE-1/artifact/shot-png"`;
+/**
+ * Each atom the view draws, with a place inside it a press can fall at: inline html, a footnote's
+ * reference, a picture by its caption's link, and a picture that has loaded, which draws no text.
+ */
+const ATOMS: readonly (readonly [
+  atom: string,
+  inside: (atom: Element) => readonly [Node, number],
+])[] = [
+  ['<span data-type="html">&lt;name&gt;</span>', (atom) => [atom.firstChild ?? atom, 2]],
+  ['<sup data-type="footnote_reference">1</sup>', (atom) => [atom.firstChild ?? atom, 0]],
+  [`<a ${PICTURE}><span>shot.png</span></a>`, (atom) => [atom.firstChild?.firstChild ?? atom, 3]],
+  [`<a ${PICTURE}><img alt="shot.png"></a>`, (atom) => [atom, 1]],
+];
+const NOTE = "Read the note";
+/** The press at the end of `NOTE`, before an atom after it. */
+const AT_NOTE_END: CaretAt = { x: 1, y: 2, offset: NOTE.length, word: ["the ", "note", "", 4] };
+
+// An atom that ends the words holds no text, so the count past it is also the end of the text
+// before it, as at the start of the text after one: the press says it was past the atom, for the
+// editor to put the caret after it, where the block ends. The editor holds a reference as text,
+// so the count past one that ends the words is past it already, and says nothing more.
+test("a press past an atom that ends the words says the caret goes after it", () => {
+  for (const [atom] of ATOMS) {
+    expect(pressAt(`<p>${NOTE}${atom}</p>`, paragraphEnd), atom).toEqual({
+      ...AT_NOTE_END,
+      next: true,
+    });
+  }
+  const cited = "dispatch://CORE-2";
+  const reference = `<a data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-2"><span>CORE-2</span> The other issue</a>`;
+  const past = pressAt(`<p>Read ${reference}</p>`, paragraphEnd);
+  expect(past).toEqual({
+    x: 1,
+    y: 2,
+    offset: "Read ".length + cited.length,
+    word: ["Read ", cited, "", cited.length],
+  });
+  expect(past.next).toBeUndefined();
+});
+
+test("a press inside an atom that ends the words goes before it", () => {
+  for (const [atom, inside] of ATOMS) {
+    const at = pressAt(`<p>${NOTE}${atom}</p>`, (words) =>
+      inside(words.firstElementChild?.lastElementChild ?? words)
+    );
+    expect(at, atom).toEqual(AT_NOTE_END);
+    expect(at.next, atom).toBeUndefined();
+  }
 });
