@@ -180,7 +180,7 @@
 # session, not a Legion pane, with no personal GH_TOKEN in its environment.
 #
 # Everything the run creates in the namespace carries its own project label (legion.dev/project,
-# the run's Dispatch project lowercased, which is the daemon's own claim token for it), and
+# the run's Dispatch project lowercased, which is the daemon's own project token for it), and
 # lib/namespace-rig.sh owns it: the teardown deletes everything labelled with that exact label —
 # never by label existence — and namespace-clean compares the run's own objects with the snapshot
 # taken before it, so another system's objects in the shared namespace cannot fail it. The bridge's
@@ -208,7 +208,7 @@ exec 7>&1
 ok=
 check=setup
 # The run's Dispatch project, and from it the namespace label every object of the run carries: the
-# daemon's own claim token for the project (claim.ProjectToken), which for a key of [A-Z][A-Z0-9]*
+# daemon's own project token for the project (claim.ProjectToken), which for a key of [A-Z][A-Z0-9]*
 # is the key lowercased.
 project="CCS$(( ($$ + $(date +%s)) % 10000000 ))"
 project=${project:0:10}

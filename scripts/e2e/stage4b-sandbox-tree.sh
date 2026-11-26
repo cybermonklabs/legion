@@ -322,8 +322,8 @@ unset field
 # (internal/runtime/sandbox/issue_suspend.go).
 deleted_msg="sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned"
 # How long a planner the driver has told to plan gets to finish: before its handoff it runs its two
-# model-backed plan checks, the gap analyst and up to three plan-review rounds (each a subagent
-# call), so planning takes a whole loop of its own (wait_for_phase).
+# model-backed plan checks, the gap analyst and as many plan-review rounds as its plan needs
+# (each a subagent call), so planning takes a whole loop of its own (wait_for_phase).
 plan_seconds=2700
 # One path for every run on the devbox holding this identity: today's single fixed path for the
 # default identity, so a default run collides with another default run exactly as before, and a

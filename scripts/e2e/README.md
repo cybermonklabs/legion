@@ -577,7 +577,9 @@ Each item below names a script, then what it proves.
 
 - `TestRealGitHubCredentialSurface`
 
-  the real `api.NewServer`'s App leases, rendered as the gh files a pane's `GH_CONFIG_DIR` holds, make the real `gh` identify as the implementer and reviewer bots, an empty `GH_CONFIG_DIR` authenticates nobody, and `git` clones the smoke repository through `gh auth git-credential` from the implement App's files alone.
+  the implement App's lease of the real `api.NewServer`, rendered as the gh files a pane's `GH_CONFIG_DIR` holds, makes the real `gh` identify as the implement App's bot.
+  An empty `GH_CONFIG_DIR` authenticates nobody.
+  `git` clones the smoke repository through `gh auth git-credential` from the implement App's files alone.
   Devbox only
 
 ## On a GitHub-hosted runner
@@ -1389,7 +1391,7 @@ that command runs here, once, in this shell's own environment, and the review Ap
 no token and no key passes through this shell either way, and the proof human is the devbox's ordinary `gh` acting as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)), so the run starts from the operator's own Oh My Pi session.
 
 Everything the run creates in namespace `legion` carries its own `legion.dev/project` label
-— the run's Dispatch project lowercased, which is the daemon's own claim token for it
+— the run's Dispatch project lowercased, which is the daemon's own project token for it
 — and [`lib/namespace-rig.sh`](#libnamespace-rigsh) owns it:
 `prerequisites` refuses to start while the namespace holds anything under that label, `snapshot` records the run's own objects before it, and the `EXIT` trap copies the implementer's transcript out of the session table, stops the daemon, removes its container and then (under `bridge`) stops the token refresher and removes the App credential files, stops the scratch services, removes the other containers, deletes everything under that label, closes any pull request of the run's project and deletes the issue's branch, and then compares the namespace with its snapshot.
 Under `bridge`, the bridge's own pod, Service and auth Secret carry the same label, and `bridge_stop` deletes them by their one exact name before that comparison runs.
@@ -1667,7 +1669,8 @@ Here:
    The harness waits for every listener's `tun: proxy#R:<port>=>` line in the bridge pod's log before any pod under test is started.
 
 3. **A dropped `kubectl port-forward` is recovered, not fatal**:
-   the watchdog that polls both processes every 5s restarts a dead port-forward itself, on the same local port, so the chisel client's own bounded reconnect (`--max-retry-count 30 --max-retry-interval 2s`, finite rather than chisel's default of forever) can pick the tunnel back up without reconfiguring anything.
+   the watchdog that polls both processes every 5s restarts a dead port-forward itself, on a new local port the kernel chooses.
+   It then replaces the chisel client with one that dials that port and asks for the same reverse listeners.
    Only two things still send the script itself `SIGTERM`, failing the run loudly:
    a port-forward that cannot be restarted within 60s of dropping, or the chisel client exiting because its own retry budget is exhausted.
    On either, the watchdog prints the bridge pod's last events, read with the operator context (its node's when the pod's are gone), so a preemption or an eviction is named with what caused it, then calls the caller's `kill_harness`, which stops what the run drives (here the Go test process;
@@ -2263,9 +2266,10 @@ What the run had to learn about GKE (`LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernete
 
 - **A dropped `kubectl port-forward` does not have to end the run.**
   Two full-length runs died outright to a transient drop during this lane's work.
-  `kubectl port-forward` never retries itself, but nothing about a drop invalidates the chisel client's tunnel state (its auth, its reverse listeners) if the port-forward comes back on the same local port
-  — so the bridge's watchdog now restarts a dropped port-forward itself (confirmed live:
-  killing the process mid-run let it recover and the run continue), only failing the run if a restart can't land within 60s, or the chisel client's own bounded reconnect (`--max-retry-count 30 --max-retry-interval 2s`, not chisel's default of forever) gives up first.
+  `kubectl port-forward` never retries itself, but a drop leaves the bridge pod, its server and its auth as they were.
+  So the bridge's watchdog now restarts a dropped port-forward itself, on a new local port, with a new chisel client that dials it.
+  Killing the process mid-run, live, let it recover and the run continue.
+  The run fails only if a restart can't land within 60s, or the chisel client's own bounded reconnect (`--max-retry-count 30 --max-retry-interval 2s`, not chisel's default of forever) gives up first.
 
 - **A lone pod on its own node is fair game for node consolidation.**
   A bridge pod without the eviction-protection annotations every issue pod carries ran fine for ten minutes, then vanished outright mid-run (not a graceful shutdown:
