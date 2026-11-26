@@ -1,0 +1,5 @@
+kind: Added
+body: '`DISPATCH_READING_SURFACES` gains `plan-task-line`, the excluded row for a task''s one line in the Plan view - the label of a step''s bar in the chart, and a task''s link in the line of tasks that need each other - which draws the task''s first line as its plain-text projection, a reference in it read by its target''s name, as the task''s folded line in the outline reads it.'
+time: 2026-11-22T09:40:01.000000000Z
+custom:
+    Issue: pr3125

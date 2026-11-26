@@ -20,6 +20,7 @@ const claimHandshakeVersion = 20261114020537
 // it was written, first with no confirmation and then with one, and through a store reopened as a
 // daemon restart reopens it, since a restarted daemon builds every claim from this table.
 func TestTheClaimHandshakeMigrationLeavesEveryClaimWithNoneAndTheHandshakeRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimHandshakeVersion-1)

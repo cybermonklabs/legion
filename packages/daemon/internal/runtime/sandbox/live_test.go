@@ -755,6 +755,7 @@ type liveRig struct {
 }
 
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := readLiveEnv(t)
 	r := newLiveRig(t, env)

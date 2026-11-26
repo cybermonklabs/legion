@@ -101,6 +101,8 @@ Each item below names a script, then what it proves.
   k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, and the run failed outright where a shape the script drives is gone from jj;
   k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met;
   and a `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`, which the image's jj wrapper must refuse before the upload starts, with exit 2, its `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote unchanged.
+  One more case, `jj-push-author-from-trailer`, drives the push step of `legion jj` in a repository of its own: one identity makes a commit with `jj new`, the implementer's identity describes it with `jj commit -m` and a `Legion-Role: implementer` trailer, and `jj git push --bookmark` sends it with `LEGION_ROLE_IDENTITIES` set for that push alone.
+  On the head's image the remote commit's author must be the implementer's identity, which the step sets, and on the control's image, which has no step, the identity that made the commit.
   The Job runs no launcher, so the daemon pushes it no shared check.
   It writes its own stand-in shared check into its `emptyDir`, and the rule file embedded in the image's `legion` decides every verdict;
   k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the Job says in its own log.
@@ -5732,6 +5734,33 @@ The planner's launch follows the move into planning, so the list the line names 
 
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
 `OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## look-names-its-check.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  bash scripts/e2e/look-names-its-check.sh
+```
+
+This proof builds and boots the whole daemon and a real Dispatch of this checkout, on databases of the caller's PostgreSQL server and a `nats-server` of its own.
+It needs Linux, Go, Git, jj, Bun after `bun install`, awk and Python 3, as [`owner-steps-client.sh`](#owner-steps-clientsh) does.
+`LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR` keeps its evidence.
+GitHub-hosted CI runs its row in `.github/e2e-scripts.json` with the `e2e` label, by manual dispatch and each night.
+
+`TestLookNamesItsCheckLive`, built with `-tags e2e`, walks one issue to its merge and close under `production_check: tester`.
+The tester takes look 1.
+The client is `executePhaseOp` with `createLegionDaemonClient`, run under Bun by the unchanged `owner-steps-client.ts` runner.
+
+- `control-client-look-unnamed` sends a report without `check_opened_at`.
+  It must throw `409 CHECK_LOOK_NOT_SERVED`, and the operator's `legion state --json` must still show look 1 open.
+
+- `client-look-named` reads the opening time from the task the fake runtime received, never from the store.
+  A `pending` with that `check_opened_at` and a `wake_at` must answer `{}`.
+  The same CLI must show the check still open, `lookOpen: false`, and `nextWakeAt` equal to the wake.
+
+The refused call is run first.
+A daemon that chooses a report from the claim's served look records that unnamed report, so the control fails before the named call can pass.
+The proof stands in for GitHub and each worker's runtime; Dispatch, the daemon, its operator CLI, and the plugin's phase operation and HTTP client are real.
 
 ## owner-steps-client.sh
 

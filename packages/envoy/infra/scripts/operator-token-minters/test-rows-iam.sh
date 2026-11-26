@@ -56,7 +56,12 @@
 #        legion/worker, who can become ci/runner and so act as grade-ci;
 #   (ch) GKE's service agent of a project number the check does not read (999999999999) holding
 #        roles/container.admin exits 1 naming the number; that of a fleet member's project
-#        (example-grade, 222222222222) holding it there exits 0.
+#        (example-grade, 222222222222) holding it there exits 0;
+#   (dm) Deployment Manager acts as the project's Google APIs service agent, which holds roles/editor:
+#        an agent's Google service account holding roles/deploymentmanager.editor on the project
+#        exits 1 naming it and the route, and a copy of the check without the step exits 0 in that
+#        world (the step's control); a role list without deploymentmanager.deployments.update reads
+#        UNKNOWN in the permission names, and a refused analysis UNKNOWN in the step.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -447,4 +452,51 @@ foreign_agent_row() {
 if row ch; then
   each foreign_agent_row unknown member
   passed "(ch) GKE's service agent of an unknown project number holding roles/container.admin exits 1 naming the number; a fleet member project's exits 0"
+fi
+
+# --- (dm) Who can make or change a Deployment Manager deployment acts as roles/editor. ---
+readonly dm_step="live: Deployment Manager on project $project"
+dm_row() {
+  local copy
+  base_world
+  case "$1" in
+    holder)
+      iam "$project_res" roles/deploymentmanager.editor "serviceAccount:$worker_gsa"
+      run
+      want_status 1 "an agent's account holding roles/deploymentmanager.editor"
+      want_line "FINDING serviceAccount:$worker_gsa: deploymentmanager.deployments.create, deploymentmanager.deployments.update on $project_res through roles/deploymentmanager.editor, granted at $project_res, by which Deployment Manager creates a deployment's resources as the project's Google APIs service agent, which holds roles/editor there" \
+        "an agent's account holding roles/deploymentmanager.editor"
+      [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "an agent's account holding roles/deploymentmanager.editor: an UNKNOWN beside the finding"
+      ;;
+    control)
+      # The same world, run by a copy without the step: what found the holder is the step.
+      iam "$project_res" roles/deploymentmanager.editor "serviceAccount:$worker_gsa"
+      copy="$temporary_dir/copy-without-dm-$$"
+      rm -rf "$copy"
+      mkdir -p "$copy"
+      cp "$check" "$copy/operator-token-minters.sh"
+      cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+      sed -i '/^live_iam dm$/d' "$copy/operator-token-minters/step-gke-iam.sh"
+      ! grep -qx 'live_iam dm' "$copy/operator-token-minters/step-gke-iam.sh" || fail "the test could not take the step out of its copy"
+      run_script="$copy/operator-token-minters.sh" run
+      want_status 0 "the holder of roles/deploymentmanager.editor, read by a copy without the step"
+      ;;
+    misspelt)
+      edit "$world/roles.json" '.["roles/deploymentmanager.editor"] -= ["deploymentmanager.deployments.update"]'
+      run
+      want_status 2 "a role list without deploymentmanager.deployments.update"
+      want_line "UNKNOWN permission names: deploymentmanager.deployments.update is not in roles/deploymentmanager.editor's includedPermissions, so no check that names it can find a holder" \
+        "a role list without deploymentmanager.deployments.update"
+      ;;
+    unread)
+      : >"$world/refuse-analyze"
+      run
+      want_status 2 "a refused analysis"
+      want_text "UNKNOWN $dm_step: Policy Analyzer refused the analysis" "a refused analysis"
+      ;;
+  esac
+}
+if row dm; then
+  each dm_row holder control misspelt unread
+  passed "(dm) an agent's Google service account that may make or change a Deployment Manager deployment exits 1 naming it and the route, which a copy without the step misses; a misspelt name and a refused analysis read UNKNOWN"
 fi

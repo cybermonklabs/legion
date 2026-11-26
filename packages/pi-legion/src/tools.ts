@@ -27,6 +27,7 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -433,6 +434,7 @@ function toolSchema(pi: PiApi): unknown {
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    check_opened_at: phaseOp.check_opened_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,
@@ -542,7 +544,7 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
+  /** Told of each successful step completion or backward move, never a look's report. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
@@ -778,15 +780,17 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to an earlier step of its task. Either way this session's phase is no longer open.
+          // A successful phase completion or backward move closes phase input: a backward move hands
+          // the issue to an earlier step of its task. A report with check_opened_at leaves it open
+          // for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
+          const effect = phaseInputAfter(operation, parameters);
+          if (effect === "phase-closed") {
             onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
+          } else if (effect === "update-answered") {
             onUpdateAnswered(context);
           }
           return jsonSuccess(answer);

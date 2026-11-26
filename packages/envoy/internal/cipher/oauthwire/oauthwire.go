@@ -1,10 +1,11 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
-// callers it answers share: the clients they present, the scope a machine login asks for and the
-// one a read token holds, the names the token exchange knows a subject token by, the header of a
-// read trade's holder proof, the fields the broker adds to a token answer, and the one grammar of
+// callers it answers share: the clients they present, the scope a machine login asks for, the one
+// a read token holds and the one a Legion daemon's token holds, the names the token exchange
+// knows a subject token by, the header of a read trade's holder proof, the fields the broker adds
+// to a token answer, the session prefix a Legion daemon's own entry fixes, and the one grammar of
 // a token's list of projects. It imports nothing of the broker — only the standard library and
-// the project-key rule internal/contracts generates — so the agent-secrets helper reads it
-// without the broker's storage.
+// the project-key rule internal/contracts generates — so the agent-secrets helper reads it without
+// the broker's storage.
 package oauthwire
 
 import (
@@ -39,6 +40,21 @@ const (
 	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
 	// scope is "read person". No other token holds it.
 	ScopePerson = "person"
+	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
+	// token of an account entry that names a project and fixes the session legion-daemon:<that
+	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
+	// it write a Legion issue's status where DISPATCH_LEGION_STATUS_SCOPE refuses that write to
+	// others but the architect of an issue above. The entry decides it, never the request: the
+	// exchange client is not registered for it, so the library refuses a request that names it
+	// invalid_scope. A resource server that does not read the word accepts the token and ignores it.
+	ScopeLegionStatus = "legion-status"
+	// LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's
+	// issues under: legion-daemon:<PROJECT>. The broker marks an entry that fixes it for its own
+	// project as a Legion daemon's own (exchange.Claims.LegionStatus), and Dispatch reads it
+	// through ciphertoken.LegionDaemonSessionPrefix: one spelling for both ends of this module.
+	// The daemon's DaemonSession (packages/daemon/internal/dispatch/client.go), another Go module,
+	// writes the name and changes together with this one.
+	LegionDaemonSessionPrefix = "legion-daemon:"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -344,8 +360,9 @@ type Introspection struct {
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
 	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
-	// its person; every other exchanged token holds no scope, and a machine login's own token
-	// holds Scope.
+	// its person; ScopeLegionStatus when a Legion daemon's own entry minted it and its trade did
+	// not ask for ScopeRead; every other exchanged token holds no scope, and a machine login's own
+	// token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
 	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of

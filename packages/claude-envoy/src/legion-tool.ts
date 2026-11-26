@@ -8,6 +8,7 @@ import {
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops"
@@ -83,4 +84,21 @@ export async function executeLegionTool(
     },
     input,
   )
+}
+
+/** Runs a successful call through the host's input hooks; a refusal changes no input gate. */
+export async function answerLegionTool(
+  runtime: LegionToolRuntime,
+  args: Record<string, unknown>,
+  hooks: {
+    readonly phaseClosed: () => void | Promise<void>
+    readonly updateAnswered: () => void | Promise<void>
+  },
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const answer = await executeLegionTool(runtime, args, signal)
+  const effect = phaseInputAfter(String(args["op"]), args)
+  if (effect === "phase-closed") await hooks.phaseClosed()
+  else if (effect === "update-answered") await hooks.updateAnswered()
+  return answer
 }
