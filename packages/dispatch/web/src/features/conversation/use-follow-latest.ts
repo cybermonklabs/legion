@@ -5,6 +5,29 @@ import { onMarkdownLatePaint } from "../refs/useRenderedMarkdown";
 const FOLLOW_POSITION_TOLERANCE_PX = 1;
 /** Every card and reply carries `data-turn`; the first in the document is the newest card. */
 const NEWEST_TURN_SELECTOR = "[data-turn]";
+/** The Conversation's docked composer: sticky above the list from `sm` up, fixed at the foot of
+ *  the screen below it (`MentionComposer`'s docked form). */
+const COMPOSER_SELECTOR = '[aria-label="Comment composer"]';
+
+/**
+ * The band of the screen the docked composer covers, as an IntersectionObserver `rootMargin`: the
+ * top of the screen down to the sticky composer's bottom from `sm` up, or the foot of the screen
+ * up to the fixed composer's top below it. A card's head in that band is under the composer.
+ */
+function composerBand(): string {
+  const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+  if (composer === null) return "0px";
+  const style = window.getComputedStyle(composer);
+  if (style.position === "sticky") {
+    const top = Number.parseFloat(style.top) || 0;
+    return `${-Math.round(top + composer.offsetHeight)}px 0px 0px 0px`;
+  }
+  if (style.position === "fixed") {
+    const covered = window.innerHeight - composer.getBoundingClientRect().top;
+    return `0px 0px ${-Math.max(0, Math.round(covered))}px 0px`;
+  }
+  return "0px";
+}
 
 export function useFollowLatest({
   enabled,
@@ -73,7 +96,7 @@ export function useFollowLatest({
     if (newest === null) {
       window.scrollTo({ top: 0 });
     } else {
-      const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
+      const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
       const composerAbove =
         composer !== null && window.getComputedStyle(composer).position !== "fixed";
       const composerHeight = composerAbove ? composer.getBoundingClientRect().height : 0;
@@ -97,19 +120,42 @@ export function useFollowLatest({
   // through an IntersectionObserver: the browser reports a crossing of the viewport's edge off
   // the scroll path, so a scroll costs no layout read (`ConversationTab.test.tsx` holds a scroll
   // to none). A resize, a card arriving and a late format all move the marker, and the observer
-  // reports each of them as the scroll does.
+  // reports each of them as the scroll does. The band the docked composer covers is no part of
+  // the screen here - a head under the composer is a head the reader cannot see - so the observer
+  // is built with that band taken off its root (`composerBand`), and built again when the band
+  // moves: the composer growing with a hint or a reply chip, or a resize that docks it elsewhere.
   useEffect(() => {
     // Nothing is watched while the caller is not live: a hidden tab draws no pill.
     if (listHead === null || !enabled) {
       setNewestHeadOnScreen(false);
       return;
     }
-    const observer = new IntersectionObserver((entries) => {
-      const last = entries.at(-1);
-      if (last !== undefined) setNewestHeadOnScreen(last.isIntersecting);
-    });
-    observer.observe(listHead);
-    return () => observer.disconnect();
+    let observer: IntersectionObserver | null = null;
+    let band = "";
+    const watch = () => {
+      const next = composerBand();
+      if (observer !== null && next === band) return;
+      band = next;
+      observer?.disconnect();
+      observer = new IntersectionObserver(
+        (entries) => {
+          const last = entries.at(-1);
+          if (last !== undefined) setNewestHeadOnScreen(last.isIntersecting);
+        },
+        { rootMargin: band }
+      );
+      observer.observe(listHead);
+    };
+    watch();
+    const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+    const sizes = composer === null ? null : new ResizeObserver(watch);
+    if (composer !== null) sizes?.observe(composer);
+    window.addEventListener("resize", watch);
+    return () => {
+      window.removeEventListener("resize", watch);
+      sizes?.disconnect();
+      observer?.disconnect();
+    };
   }, [enabled, listHead]);
 
   // The mutation's `onSuccess` bumps `ownSendCount` and invalidates the events query in the same
