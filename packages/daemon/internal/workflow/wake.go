@@ -565,6 +565,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 func OpenRoleAt(p phase.Phase, stepRole claim.Role) claim.Role {
 	return OpenRoleOf(record.Issue{Phase: p, StepRole: stepRole})
 }
+
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
 // the issue at its phase (record.Issue.RoleAt), read with the issue, which is the role of the claim
 // that works its task's place (at step the role of its running step, at accepting acceptance for a
