@@ -148,7 +148,8 @@ const SeriesUnownedP0 = "issues"
 
 // deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval whose rows a day
 // no longer holds the write of the day deletes (deleteStaleDays): neither the three failure
-// measures, whose rows failure_days.go writes, nor unowned-p0, which WriteUnownedP0Day writes.
+// measures, whose rows failure_days.go writes, nor unowned-p0, which WriteUnownedP0Day writes, nor
+// the code evals, which WriteCodeDaysTx writes.
 var deliveryDaySlugs = []string{
 	SlugDeployFrequency, SlugDeployRunSuccess, SlugMergeToProduction, SlugFirstCommitToProduction,
 	SlugOpenToProduction, SlugPROpenToMerge, SlugReworkShare, SlugPRCI, SlugStagingE2E,

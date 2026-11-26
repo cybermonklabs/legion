@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
@@ -74,6 +75,10 @@ var computedSources = map[string]computedSource{
 		}
 		return "issues"
 	}},
+	// The code evals' rows are each group's series and the status series (code_days.go): a group
+	// series states its share, and status its measured days.
+	SourceFoldSurvival:        {codeFold(fold.FoldSurvival, fold.SeriesSurvival), codeHeadline},
+	SourceFoldPostMergeRework: {codeFold(fold.FoldRework, fold.SeriesRework, fold.SeriesIteration, fold.SeriesNoIssue, fold.SeriesOther), codeHeadline},
 }
 
 // Every catalogue eval's source has its fold and its headline: checked once, when the package
@@ -679,6 +684,64 @@ func splittingStatistics(fold *metrics.SplittingFold, base string) Statistics {
 		return sampleStatistics(samples, "")
 	}
 	return Statistics{}
+}
+
+// codeFold is the fold of a code eval (code_days.go): each group series `<base>:<group>` of one of
+// bases folded by groupFold (fold.FoldSurvival or fold.FoldRework, codeGroupStatistics), the status
+// series by fold.FoldStatus over days (codeStatusStatistics), and any other name no figure.
+func codeFold(groupFold func([]measures.DayPart, string) fold.GroupFigures, bases ...string) seriesFold {
+	return func(parts []measures.DayPart, days Range, names []string) map[string]Statistics {
+		folded := make(map[string]Statistics, len(names))
+		for _, name := range names {
+			base, _, grouped := strings.Cut(name, ":")
+			switch {
+			case name == fold.SeriesStatus:
+				folded[name] = codeStatusStatistics(fold.FoldStatus(parts, days.From, days.To))
+			case grouped && slices.Contains(bases, base):
+				folded[name] = codeGroupStatistics(groupFold(parts, name))
+			default:
+				folded[name] = Statistics{}
+			}
+		}
+		return folded
+	}
+}
+
+// codeHeadline is a code eval's headline: measured_days of the status series, and share of every
+// group series.
+func codeHeadline(series string) string {
+	if series == fold.SeriesStatus {
+		return "measured_days"
+	}
+	return "share"
+}
+
+// A code eval's group series (fold.GroupFigures): share, lines (the lines alive at their marks, or
+// removed in the series' kind), added (the lines the group's changes added), changes, and
+// via_repository (those of them with no issue), each nil where the window reads "no data".
+func codeGroupStatistics(figures fold.GroupFigures) Statistics {
+	return Statistics{"share": figures.Share, "lines": figures.Lines, "added": figures.Added, "changes": figures.Changes,
+		"via_repository": figures.ViaRepository}
+}
+
+// A code eval's `status` (fold.Status): measured_days, marked_days, blocked_days, blocked_files,
+// first_marked_day (the oldest marked day's UTC midnight in Unix seconds, nil with none), groups
+// (the groups the rows were built under, nil with no row), repo_unreadable (the rows naming a
+// repository the App cannot read) and waiting_days (the days of the range after its newest row).
+func codeStatusStatistics(status fold.Status) Statistics {
+	stats := Statistics{
+		"measured_days": new(float64(status.MeasuredDays)), "marked_days": new(float64(status.MarkedDays)),
+		"blocked_days": new(float64(status.BlockedDays)), "blocked_files": new(float64(status.BlockedFiles)),
+		"first_marked_day": nil, "groups": nil,
+		"repo_unreadable": new(float64(status.RepoUnreadable)), "waiting_days": new(float64(status.WaitingDays)),
+	}
+	if status.FirstMarkedDay != nil {
+		stats["first_marked_day"] = new(float64(status.FirstMarkedDay.Unix()))
+	}
+	if status.Groups != nil {
+		stats["groups"] = new(float64(*status.Groups))
+	}
+	return stats
 }
 
 // readsSamples reports whether the fold of series, one of definition's eval, reads its day rows'

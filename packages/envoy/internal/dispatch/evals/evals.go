@@ -88,6 +88,8 @@ const (
 	SourceFoldSlotWait         = SourceComputedPrefix + "legion/metrics.FoldSlotWait"
 	SourceFoldRework           = SourceComputedPrefix + "legion/metrics.FoldRework"
 	SourceFoldSplitting        = SourceComputedPrefix + "legion/metrics.FoldSplitting"
+	SourceFoldSurvival         = SourceComputedPrefix + "delivery/survival/fold.FoldSurvival"
+	SourceFoldPostMergeRework  = SourceComputedPrefix + "delivery/survival/fold.FoldRework"
 )
 
 // RegistryActor is who the server's own writes to `evals-md` are by: the section a registration

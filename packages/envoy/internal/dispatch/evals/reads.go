@@ -295,8 +295,10 @@ type Built struct {
 // builds the rows of those: a logged eval's readings write writes its rows, and the zero rows they
 // leave owed through today, in its own transaction (writeLoggedZeros), and the daily fill writes
 // each new day's zero row in the pass the UTC midnight starts; unowned-p0's rows are written for
-// that day alone (WriteUnownedP0Day); change-fail-rate and failed-deploy-recovery get
-// no rows at all. So no day of theirs waits for a later write to build it from input it holds.
+// that day alone (WriteUnownedP0Day); the code evals' rows are written for the days the code
+// writer decides, and a day with no row waits (WriteCodeDaysTx); change-fail-rate and
+// failed-deploy-recovery get no rows at all. So no day of theirs waits for a later write to build
+// it from input it holds.
 func builtWalk(definition Definition) (walkKey, bool) {
 	switch {
 	case !definition.Computed():
@@ -595,7 +597,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 			from (
 				select o.owner, o.project_key, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
 					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
-					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at` + ownedRepo + `
+					` + viaAsRead("d.via_repository", "d.eval_id") + ` as via_repository, d.updated_at` + ownedRepo + `
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
 				where o.project_key = any($1::text[]) and ` + ownedKeys("d", "= any($1::text[])") + ` and d.listed
 				  and ` + cut + `

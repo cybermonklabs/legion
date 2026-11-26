@@ -228,14 +228,23 @@ func evalIDAs(key, evalID, of string) string {
 }
 
 // viaAsRead is via, the via_repository column of a day row of the owner o of eval_project_owners
-// names, as the project o names reads it: the rows a project reads through an issue of its own
-// count none through a repository (o.via false: its own rows, and an owner key's whose list picks
-// it), and an owner key's rows it reads through the repository count every row (o.via true), as
-// their via_repository does. Every read of a project's day rows through eval_project_owners reads
-// via_repository through it.
-func viaAsRead(via string) string {
-	return `case when o.via then ` + via + ` else 0 end`
+// names, as the project o names reads it, evalID being the row's eval id (as stored, or as the
+// project reads it): the rows a project reads through an issue of its own count none through a
+// repository (o.via false: its own rows, and an owner key's whose list picks it), and an owner
+// key's rows it reads through the repository count every row (o.via true), as their
+// via_repository does. The code evals' own rows (codeDaySlugs) are the one exception: their
+// writer counts in via_repository the changes with no issue that reached the project through its
+// default repository (dispatch://INFRA-3206/comment/81b94de5-418c-4aa5-8e61-c8b83e7ac984), so a
+// project reads its own rows of those evals as stored. No owner key holds a row of them. Every read
+// of a project's day rows through eval_project_owners reads via_repository through it.
+func viaAsRead(via, evalID string) string {
+	return `case when o.via then ` + via + ` when o.owner = o.project_key and substr(` + evalID + `, length(o.project_key) + 2) in (` +
+		ownViaSlugs + `) then ` + via + ` else 0 end`
 }
+
+// ownViaSlugs is codeDaySlugs as a list of SQL text literals, the slugs whose own rows viaAsRead
+// reads as stored. A slug holds no quote (slugPattern).
+var ownViaSlugs = "'" + strings.Join(codeDaySlugs, "', '") + "'"
 
 // ownedKeys is the condition that a row of eval_days or eval_day_members (alias) stands under one of
 // the keys the projects read (eval_project_owners), where projects is the condition on
@@ -273,7 +282,7 @@ func repoCut(alias, repos, project string) string {
 func ownedDayColumns(repo, samples string) string {
 	return `o.project_key, ` + evalIDAs("o.project_key", "d.eval_id", "o.owner") + `, d.deploy_repo, d.series, ` + repo + ` as cut_repo,
 	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, ` + samples + `, d.last_value, d.last_at, d.last_recorded_at,
-	coalesce(d.last_reading::text, ''), d.counts, ` + viaAsRead("d.via_repository") + `, d.built_by, d.updated_at`
+	coalesce(d.last_reading::text, ''), d.counts, ` + viaAsRead("d.via_repository", "d.eval_id") + `, d.built_by, d.updated_at`
 }
 
 // addOwnedRows is days, ordered by day, then series and repository, of one eval and deploy

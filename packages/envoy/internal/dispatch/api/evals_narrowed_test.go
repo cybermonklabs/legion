@@ -239,8 +239,9 @@ func stated(series []evals.SeriesValues) int {
 }
 
 // TestANarrowedReadWithNoFacetEqualsTheStoredNumber: every delivery and CI eval of the catalogue
-// but unowned-p0 has a read-time path (evals.ComputedAtRead), and unowned-p0, a count taken at
-// refresh time, is the one that has none. Over INFRA-2916's seeded history, with the failure
+// but unowned-p0 and the two code evals has a read-time path (evals.ComputedAtRead), and
+// unowned-p0, a count taken at refresh time, and the code evals, counts of a replay of GitHub's
+// patches, are the ones that have none. Over INFRA-2916's seeded history, with the failure
 // measures on from 20 days before today over a record of its deploys and their failures
 // (seedFailures), and the refresher caught up, at 7, 14, 28 and 84 days, each with and without the
 // compare range before it, and one custom range with a custom compare range, every statistic of
@@ -260,20 +261,22 @@ func TestANarrowedReadWithNoFacetEqualsTheStoredNumber(t *testing.T) {
 			continue
 		}
 		held[definition.Slug] = true
-		if definition.Slug == evals.SlugUnownedP0 {
+		if noReadTimePath := definition.Slug == evals.SlugUnownedP0 || definition.Slug == evals.SlugCodeSurvival ||
+			definition.Slug == evals.SlugPostMergeRework; noReadTimePath {
 			if evals.ComputedAtRead(definition) {
-				t.Errorf("unowned-p0, a count of open P0 issues taken at refresh time, has a read-time path, and no stored record of a past day holds that count")
+				t.Errorf("%s, whose rows no stored record of a past day can build again, has a read-time path", definition.Slug)
 			}
 			continue
 		}
 		if !evals.ComputedAtRead(definition) {
-			t.Errorf("%s, a %s eval of the catalogue, has no read-time path; unowned-p0 is the one eval that may have none", definition.Slug, definition.Kind)
+			t.Errorf("%s, a %s eval of the catalogue, has no read-time path; unowned-p0 and the code evals are the evals that may have none", definition.Slug, definition.Kind)
 			continue
 		}
 		built = append(built, entry)
 	}
-	if !held[evals.SlugUnownedP0] || len(built) == 0 {
-		t.Fatalf("the catalogue's delivery and CI evals are %v, which hold unowned-p0 %t and %d evals with a read-time path", held, held[evals.SlugUnownedP0], len(built))
+	if !held[evals.SlugUnownedP0] || !held[evals.SlugCodeSurvival] || !held[evals.SlugPostMergeRework] || len(built) == 0 {
+		t.Fatalf("the catalogue's delivery and CI evals are %v, which hold unowned-p0 %t, the code evals %t and %t, and %d evals with a read-time path",
+			held, held[evals.SlugUnownedP0], held[evals.SlugCodeSurvival], held[evals.SlugPostMergeRework], len(built))
 	}
 
 	var shapes []evalShape

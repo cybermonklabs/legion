@@ -262,7 +262,11 @@ type seedWrite struct {
 // work of the missing sections and the methods it takes over, one write of the document, runs in
 // the transaction's read phase, holding no transaction id; the document's writes and then the
 // versions are queued on the write's ledger, whose Commit sends them as one batch: a project's
-// first seed writes 21 versions and 94 of series, which one round trip each would make 115.
+// first seed writes 23 versions and 96 of series, which one round trip each would make 119.
+//
+// The series of a code eval's code groups (catalogueEntry.groups) are no series of the catalogue:
+// the code writer writes them (WriteCodeGroupSeriesTx), and the seed reads them as no series of
+// the eval, so it neither writes nor unlists one, and holding them writes no version.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	for i, entry := range catalogue {
@@ -336,7 +340,7 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 		first, takeover := taken[ids[i]]
 		unwritten := takeover && !missing && !setByPerson(existing.SetByPerson, fieldDocText, fieldDocBlock) &&
 			holdsRegistrationSentence(markdown, blocks, existing.DocBlock, first)
-		series := seriesToWrite(ids[i], entry.series, current[ids[i]], seededSeries[ids[i]])
+		series := seriesToWrite(ids[i], entry.series, entry.groupSeriesIn(current[ids[i]], false), seededSeries[ids[i]])
 		if has && seeded && !missing && len(series) == 0 && entry.definition.Computation.same(last.Computation) {
 			continue
 		}
@@ -499,6 +503,11 @@ func holdsRegistrationSentence(markdown string, blocks []model.ArtifactBlock, id
 // (computationField), a listed series is one every read folds and states, and a series no day
 // builder writes would read "no data" in every window. It stays a row of the registry, as every
 // version does.
+//
+// current is the series the write is over: the seed passes every series of the eval but a code
+// eval's group series (ensure), and the code writer those alone, with the groups' series as the
+// catalogue and current as seeded (WriteCodeGroupSeriesTx), so the series of a group the project
+// no longer names are unlisted by the same rule.
 func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Series) []Series {
 	var writes []Series
 	stated := make(map[string]bool, len(catalogue))

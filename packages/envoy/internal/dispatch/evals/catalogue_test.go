@@ -14,6 +14,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
@@ -231,6 +233,9 @@ func seriesNames(entry catalogueEntry) []string {
 // children cut of each of those, which no day row is ever written for.
 // Each delivery and CI eval's series are exactly those of its rows in the day builders' zero day
 // (ZeroDeliveryDay, under settings naming both staging jobs), pr-ci's job series row beside them.
+// Each code eval's series are exactly those of its rows of a measured day with no change, as
+// fold.BuildDays builds them and WriteCodeDaysTx writes them (CodeDayRows), under two code groups:
+// its status series and, for each group, the series its group forms name (catalogueEntry.groups).
 // The three failure measures (change-fail-rate, failed-deploy-recovery and deployment-rework-rate),
 // whose rows the record of deploys and failures builds rather than a delivery day, are the only
 // evals with no row of the zero day.
@@ -264,6 +269,12 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 	}
 	built[SlugUnownedP0] = append(built[SlugUnownedP0], SeriesUnownedP0)
 	built[SlugPRCI] = append(built[SlugPRCI], SeriesJobs)
+	survivalParts, reworkParts := fold.BuildDays(fold.BuildInput{Project: fold.Project{Key: "EVAL", DefaultRepo: codeRepo}, Groups: codeGroups,
+		Days: []fold.Day{{Day: day, State: survival.DayMeasured}}})
+	for _, row := range CodeDayRows("EVAL", "", survivalParts, reworkParts) {
+		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
+		built[slug] = append(built[slug], row.Series)
+	}
 	for slug := range built {
 		slices.Sort(built[slug])
 	}
@@ -277,7 +288,12 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 			}
 			continue
 		}
-		if got := seriesNames(entry); !slices.Equal(got, want) {
+		got := seriesNames(entry)
+		for _, series := range entry.groupSeries(groupNames(codeGroups)) {
+			got = append(got, series.Series)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
 			t.Errorf("%s: the catalogue holds series %v, the builders build %v", slug, got, want)
 		}
 		compared += len(want)
@@ -290,8 +306,9 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 		compared, len(catalogue)-3, unwritten)
 }
 
-// TestEveryCatalogueSeriesIsStatedByItsHeadline: each listed series of each catalogue eval states
-// its headline statistic (HeadlineStatistic) among the statistics its fold answers, so a target
+// TestEveryCatalogueSeriesIsStatedByItsHeadline: each listed series of each catalogue eval, and
+// each listed series a code eval holds for a code group (catalogueEntry.groupSeries), states its
+// headline statistic (HeadlineStatistic) among the statistics its fold answers, so a target
 // written with no judges, which judges the primary series' headline, judges a figure the read
 // states rather than one no read can give a value.
 func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
@@ -299,8 +316,9 @@ func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
 	days := Range{From: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)}
 	checked := 0
 	for _, entry := range catalogue {
-		folded := FoldStatistics(entry.definition, entry.series, nil, days)
-		for _, series := range entry.series {
+		held := append(slices.Clone(entry.series), entry.groupSeries(groupNames(codeGroups))...)
+		folded := FoldStatistics(entry.definition, held, nil, days)
+		for _, series := range held {
 			if !series.Listed {
 				continue
 			}
@@ -320,8 +338,12 @@ func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
 
 // TestTheRequiredMethodsSayWhatTheSpecRequires: slot wait's method states flow analysis version
 // 1's rule and value, this eval's rule and why the rule changed (R6, D3); deploy frequency's states
-// the with_prs rule change and its measured difference; and idle time's says it is not phase
-// time's idle segment and states D3's rule.
+// the with_prs rule change and its measured difference; idle time's says it is not phase time's
+// idle segment and states D3's rule; and each code eval's links dispatch://INFRA-3117's method as
+// its definition and its analysis as its measurement and says what the number is not, in the
+// method's words (dispatch://INFRA-3206 R1 and R14), and the rework eval's says what it counts, how
+// it differs from rework-share's title rule, and that the 8.2 per cent of the analysis is another
+// reading (R6, R14).
 func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
 	t.Parallel()
 	for slug, phrases := range map[string][]string{
@@ -342,6 +364,12 @@ func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
 			"merger: `merging` and `awaiting_merge`",
 			"before that observation reads \"no data\"",
 		},
+		SlugCodeSurvival: codeMethodPhrases,
+		SlugPostMergeRework: append(slices.Clone(codeMethodPhrases),
+			"the lines of a group's changes that a later change of the same group for a different issue removed within 30 days",
+			"Rework share counts pull requests whose title starts with fix, revert or hotfix",
+			"The 8.2 per cent of dispatch://INFRA-3117/artifact/analysis-md is read at the tip with no age limit, over Legion's merges of any age, and is not this number",
+		),
 	} {
 		method := entryOf(t, slug).method()
 		for _, phrase := range phrases {
@@ -349,5 +377,43 @@ func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
 				t.Errorf("%s's method does not say %q", slug, phrase)
 			}
 		}
+	}
+}
+
+// codeMethodPhrases is what each code eval's method says (dispatch://INFRA-3206 R1 and R14): the
+// links of its definition and its measurement, and each point of "What the number is not" of
+// dispatch://INFRA-3117/artifact/method-md, in its words.
+var codeMethodPhrases = []string{
+	"The definition of this number is dispatch://INFRA-3117/artifact/method-md",
+	"Its measurement over cybermonklabs/legion is dispatch://INFRA-3117/artifact/analysis-md",
+	"It is the replay's reading, not blame",
+	"The replay reads 1.2 points above blame for Legion and 4.8 for the other agent at 30 days, and the gap is uneven",
+	"It reads replacement and never whether the work was right",
+	"An edited line is a dead line",
+	"The diff is GitHub's, with three lines of context, no whitespace rule and no copy detection",
+}
+
+// TestTheCodeMethodsNeverStateTheMixedOrTheTipGap: neither code eval's method text, its question,
+// decision, body and failure modes as the seed writes them, states the gap between the replay and
+// blame at the tip (76.52 against 79.78 per cent, about 3 points) or the gap taken from the
+// published figures (1.843 and 6.979 points), which dispatch://INFRA-3117/artifact/method-md says a
+// page that carries the 30-day number never states (R14): only the same-age gap, 1.2 and 4.8.
+func TestTheCodeMethodsNeverStateTheMixedOrTheTipGap(t *testing.T) {
+	t.Parallel()
+	checked := 0
+	for _, slug := range codeDaySlugs {
+		method := entryOf(t, slug).method()
+		if !strings.Contains(method, "1.2 points") || !strings.Contains(method, "4.8 for the other agent") {
+			t.Errorf("%s's method does not state the same-age gap, so a check that it states no other proves little", slug)
+		}
+		for _, number := range []string{"1.8", "1.843", "7.0", "6.979", "76.52", "79.78"} {
+			if strings.Contains(method, number) {
+				t.Errorf("%s's method states %q, a gap taken at the tip or from the published figures", slug, number)
+			}
+		}
+		checked++
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d code evals' methods, want both", checked)
 	}
 }

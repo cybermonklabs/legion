@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
@@ -20,17 +21,20 @@ import (
 // the code the source names: the question and the decision it changes, how it is measured, what
 // it does not count and its failure modes, each with its guard (catalogueEntry.method).
 //
-// The series are those the day builders write (delivery_days.go, legion_days.go), every cut of a
-// Legion series included, so every stored day row names a series of its eval; and the splitting
-// eval's root figures in their children cut, which no day row holds (metrics.RootFigures count
-// roots alone), so every Legion series has its three cuts and the list read answers that one with
-// no value. A listed series is one the list read folds; pr-ci's job series are not, and are read
-// by the items route alone. A series is a headline one where a card of the eval states it, every
-// cut of a Legion series included (R6: a chart draws the cut it needs, and no toggle picks one),
-// and a control one where it qualifies another (pr-ci's job series). An eval's primary series is
-// the one its target judges, or the one its card leads with; an eval whose series are parts of
-// equal standing (a bar per role, a count per class of filing) has none, and a target set on it
-// names the series it judges.
+// The series are those the day builders write (delivery_days.go, legion_days.go, and the code
+// evals' fold.BuildDays), every cut of a Legion series included, so every stored day row names a
+// series of its eval; and the splitting eval's root figures in their children cut, which no day
+// row holds (metrics.RootFigures count roots alone), so every Legion series has its three cuts and
+// the list read answers that one with no value. A code eval's series of each code group are named
+// by the project's groups, so the catalogue states their form alone (catalogueEntry.groups), and
+// the code writer writes them (WriteCodeGroupSeriesTx). A listed series is one the list read
+// folds; pr-ci's job series are not, and are read by the items route alone. A series is a
+// headline one where a card of the eval states it, every cut of a Legion series included (R6: a
+// chart draws the cut it needs, and no toggle picks one), and a control one where it qualifies
+// another (pr-ci's job series, the code evals' status). An eval's primary series is the one its
+// target judges, or the one its card leads with; an eval whose series are parts of equal standing
+// (a bar per role, a count per class of filing, a share per code group) has none, and a target set
+// on it names the series it judges.
 //
 // The seeded targets are main's (measures.DefaultTargets) where main sets one, and off where it
 // sets none: "at least" is an inclusive target of a higher_better eval, "under" a strict one of a
@@ -47,11 +51,59 @@ const SlugDeploymentReworkRate = "deployment-rework-rate"
 
 // catalogueEntry is one computed eval of the catalogue: the fields its version 1 holds in every
 // project (all but its id, its project, its doc block, its state and its writer, which Ensure
-// sets), its series, and the body of its method block (methods/<slug>.md).
+// sets), its series, the form of the series it holds for each of a project's code groups, and the
+// body of its method block (methods/<slug>.md).
 type catalogueEntry struct {
 	definition Definition
 	series     []Series
-	body       string
+	// groups is, for a code eval (code_days.go), each series it holds once for each code group of
+	// its project, its Series the base the group's series is named from (`<base>:<group>`,
+	// fold.GroupSeries); none for every other eval. The seed writes none of them and keeps every one
+	// (ensure); the code writer writes them (WriteCodeGroupSeriesTx).
+	groups []Series
+	body   string
+}
+
+// groupSeries is the entry's series of each of groups, a project's code groups by name in order:
+// for each group, the series `<base>:<group>` of each of the entry's group bases, as that base's
+// form states it.
+func (e catalogueEntry) groupSeries(groups []string) []Series {
+	series := make([]Series, 0, len(groups)*len(e.groups))
+	for _, group := range groups {
+		for _, form := range e.groups {
+			one := form
+			one.Series = fold.GroupSeries(form.Series, group)
+			series = append(series, one)
+		}
+	}
+	return series
+}
+
+// isGroupSeries reports whether name is a series the entry holds for a code group: one of its group
+// bases, `:`, and a group's name.
+func (e catalogueEntry) isGroupSeries(name string) bool {
+	base, group, found := strings.Cut(name, ":")
+	if !found || group == "" {
+		return false
+	}
+	for _, form := range e.groups {
+		if form.Series == base {
+			return true
+		}
+	}
+	return false
+}
+
+// groupSeriesIn is the series of series, an eval's by name, that are group series of the entry
+// (isGroupSeries) where group is true, and all the others where it is false.
+func (e catalogueEntry) groupSeriesIn(series map[string]Series, group bool) map[string]Series {
+	kept := make(map[string]Series, len(series))
+	for name, one := range series {
+		if e.isGroupSeries(name) == group {
+			kept[name] = one
+		}
+	}
+	return kept
 }
 
 // methods holds the body of each eval's method block, one file per slug: how the eval is
@@ -136,12 +188,30 @@ const (
 	unitIssues  = "issues"
 	unitDeploys = "deploys"
 	unitRounds  = "rounds"
+	unitDays    = "days"
 )
 
 // timing is the one series of an eval of minutes: every value of each day timed, folded as a
 // quantile (the lead times, the time to restore, and the CI evals, whose parts count each outcome
 // beside their minutes).
 var timing = primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))
+
+// codeStatus is the status series of both code evals (code_days.go): the days of a range that are
+// measured, marked or blocked, and the days that still wait, counted (fold.FoldStatus). It
+// qualifies the group series, so it is a listed control series.
+var codeStatus = control(headline(fold.SeriesStatus, unitDays, AggSum))
+
+// codeFailureModes is modes, an eval's own failure modes, followed by those both code evals share:
+// the days that still wait, a force-push, a withheld patch, and a project with no readable default
+// repository or no code group.
+func codeFailureModes(modes ...FailureMode) []FailureMode {
+	return append(modes,
+		FailureMode{Mode: "A day waits 33 days from its start before it is measured, so the newest days of a window have no value yet.", Guard: "The status series counts the days of the window that still wait, and a window with no measured day reads \"no data\", never 0."},
+		FailureMode{Mode: "A force-push that rewrites a measured day would change the number with no sign of it.", Guard: "Each run compares each day's count of commits and the sha256 of their SHAs with the stored ones, and a window that holds a changed day reads \"no data\" and names the day until it is measured again."},
+		FailureMode{Mode: "A patch that GitHub does not give whole would leave lines out of the count.", Guard: "Each day whose 30 days hold that commit reads \"no data\" and names the commit and its count of files."},
+		FailureMode{Mode: "A project whose default repository the GitHub App cannot read, or that names no code group, has nothing to measure.", Guard: "The eval reads \"no data\" and names the repository or the missing setting."},
+	)
+}
 
 // catalogue is every computed eval, in the order a project's `evals-md` holds their sections.
 var catalogue = []catalogueEntry{
@@ -320,6 +390,44 @@ var catalogue = []catalogueEntry{
 			Kind: KindDelivery, Source: SourceFoldReworkShare,
 		},
 		series: []Series{primary(headline(measures.SeriesPRs, unitRatio, AggRatio))},
+	},
+	{
+		definition: Definition{
+			Slug:     SlugCodeSurvival,
+			Name:     "Code survival at 30 days",
+			Question: "Of the lines that a code group's merged changes added, what share is still on the default branch 30 days after each change?",
+			Decision: "Whether a group's changes need more care before they merge, because later work replaces too much of what they add within 30 days.",
+			FailureModes: codeFailureModes(
+				FailureMode{Mode: "An edited line counts as a removed line, so a line that later work improved reads like a line that was wrong.", Guard: "The post-merge rework eval and the items rows name the change that removed each line and its issue."},
+				FailureMode{Mode: "The replay reads higher than blame, by a different amount for each group, so the share does not compare with a figure read by blame.", Guard: "The method states the gap at 30 days for each agent, and the card names the replay's reading beside the value."},
+			),
+			Unit: unitRatio, Direction: DirectionHigherBetter,
+			Kind: KindDelivery, Source: SourceFoldSurvival,
+		},
+		series: []Series{codeStatus},
+		groups: []Series{headline(fold.SeriesSurvival, unitRatio, AggRatio)},
+	},
+	{
+		definition: Definition{
+			Slug:     SlugPostMergeRework,
+			Name:     "Post-merge rework at 30 days",
+			Question: "Of the lines that a code group's merged changes added, what share did a later change of the same group for a different issue remove within 30 days?",
+			Decision: "Whether a group's work on one issue too often removes what it added for another, so that the group's issues need clearer plans before the work starts.",
+			FailureModes: codeFailureModes(
+				FailureMode{Mode: "A later change can remove lines for a good reason, such as a planned rewrite, and it still counts as rework.", Guard: "Each removal is an items row with both issues, the lines removed and the days between, so a reader can check what the rule counted."},
+				FailureMode{Mode: "A change with no issue cannot be the same issue or a different one.", Guard: "Its removals count in `noissue:<group>`, apart from rework, and never in this number."},
+				FailureMode{Mode: "The number can be confused with Rework share, which counts pull requests by their titles.", Guard: "The eval is never named Rework share, and its method says how the two differ."},
+			),
+			Unit: unitRatio, Direction: DirectionLowerBetter,
+			Kind: KindDelivery, Source: SourceFoldPostMergeRework,
+		},
+		series: []Series{codeStatus},
+		groups: []Series{
+			headline(fold.SeriesRework, unitRatio, AggRatio),
+			control(headline(fold.SeriesIteration, unitRatio, AggRatio)),
+			control(headline(fold.SeriesNoIssue, unitRatio, AggRatio)),
+			control(headline(fold.SeriesOther, unitRatio, AggRatio)),
+		},
 	},
 	{
 		definition: Definition{

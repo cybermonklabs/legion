@@ -102,9 +102,10 @@ import (
 //
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change
-// (rewriteSettings), and the readings write (WriteReadings); the walks fold the days they wrote at
-// the end of their batch (refresh.foldWalked), the refresher's pass folds the ranges of each new
-// end day (refresh.walkFigures) and again the days of the changes a write left unfolded
+// (rewriteSettings), the readings write (WriteReadings), and the code writer's write of the code
+// evals' days (WriteCodeDaysTx); the walks fold the days they wrote at the end of their batch
+// (refresh.foldWalked), the refresher's pass folds the ranges of each new end day
+// (refresh.walkFigures) and again the days of the changes a write left unfolded
 // (refresh.figureChanges), whose read of the change log also marks stale each cut that holds a
 // stored figure of an eval a new version gave another fold key (markMovedKeys), and a rebuild
 // folds every figure of its projects aside and flips the ones that moved (rebuild.go). Every build
@@ -758,7 +759,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 			evalIDs[index], writers[index], firsts[index], lasts[index] = span.eval, span.writer, span.first, span.last
 		}
 		rows, err := q.Query(ctx, `
-			select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
+			select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository", "given.eval_id")+`
 			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
 			cross join eval_project_owners o
 			cross join lateral (
@@ -1028,7 +1029,7 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		rows, err := q.Query(ctx, `
 			select given.eval_id, d.deploy_repo, cut.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max,
 				case when (given.eval_id, d.series) in (select * from unnest($6::text[], $7::text[])) then d.samples end,
-				d.last_value, d.last_at, nullif(d.counts, '{}'), `+viaAsRead("d.via_repository")+`, d.updated_at, o.owner, d.repo
+				d.last_value, d.last_at, nullif(d.counts, '{}'), `+viaAsRead("d.via_repository", "given.eval_id")+`, d.updated_at, o.owner, d.repo
 			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
 			cross join eval_project_owners o
 			cross join lateral (

@@ -30,7 +30,9 @@ import (
 //
 // unowned-p0 has no read-time path: its row is the count of open P0 issues with no owner at the
 // moment the refresher wrote it (WriteUnownedP0Day), which no stored record of a past day holds.
-// The Legion and the logged evals have none either: no filter of the Evals tab narrows them.
+// The code evals have none either: their rows are the counts of a replay of GitHub's patches
+// (WriteCodeDaysTx), which a read never runs. The Legion and the logged evals have none either:
+// no filter of the Evals tab narrows them.
 
 // atReadFamily is what a delivery day reads for an eval's rows: the records its builder builds
 // them from.
@@ -55,7 +57,7 @@ const (
 )
 
 // atReadFamilies is the read-time path of each delivery and CI eval, by slug: every one of the
-// catalogue but unowned-p0.
+// catalogue but unowned-p0 and the code evals.
 var atReadFamilies = map[string]atReadFamily{
 	SlugMergeToProduction:       atReadPullRequests,
 	SlugFirstCommitToProduction: atReadPullRequests,

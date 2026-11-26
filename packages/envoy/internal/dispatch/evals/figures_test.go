@@ -1031,7 +1031,8 @@ func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
 // where repos names none; and the project's own rows stored under legionfacts.DefaultRepo, where repos
 // names the repository the project publishes as its default (owners.go). An owner key's row is read
 // under the project's eval id of its slug (asReader), its via_repository counted only where the
-// project reads the key through the repository (viaAsRead). Of each eval it keeps the rows of the
+// project reads the key through the repository, and a project's own row's counted only where it is
+// a row of a code eval (viaAsRead). Of each eval it keeps the rows of the
 // deploy repositories its read reads (DeployRepoOf), and of each row what the read sends of it: the
 // owner key and the repository it is stored under, which the fold orders a day's rows by
 // (sortWindowRows); the samples of a series whose fold reads them (readsSamples), the write of a
@@ -1067,7 +1068,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 			continue
 		}
 		part := row.DayPart
-		if !throughRepository {
+		if !throughRepository && (owner != c.project || !slices.Contains(codeDaySlugs, slugOf(owner, row.EvalID))) {
 			part.ViaRepository = 0
 		}
 		at := slices.IndexFunc(entry.Series, func(series Series) bool { return series.Series == part.Series })
