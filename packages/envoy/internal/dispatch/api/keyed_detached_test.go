@@ -726,8 +726,187 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 // rather than waiting for it.
 func requireRunBoundArmed(t *testing.T, fake *clocktest.Fake, at time.Time) {
 	t.Helper()
+	requireArmed(t, fake, "the close's run bound", at)
+}
+
+// requireArmed fails the test unless what's deadline, at, is pending on fake, the server's clock,
+// naming what is pending instead. A bound on another clock is pending on none of fake's.
+func requireArmed(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
+	t.Helper()
 	if armed := fake.Armed(); !slices.ContainsFunc(armed, at.Equal) {
-		t.Fatalf("the close's run bound, %v, is not pending on the server's clock, which holds %v: the run is not bounded on that clock",
-			at.Format(time.RFC3339Nano), armed)
+		t.Fatalf("%s, %v, is not pending on the server's clock, which holds %v: it is not bounded on that clock",
+			what, at.Format(time.RFC3339Nano), armed)
 	}
+}
+
+// The keyed layer's own work around the handler - the claim before it, and the two statements that
+// store or release its key after it - is bounded by keyedBookkeeping on the server's clock
+// (Deps.Clock), as the handler's run is. On the wall clock each of these bounds was ten seconds
+// from the moment the statement began, whatever the machine was doing, so a loaded machine, not
+// the test, decided whether a row that waited on its key's row ended at the bound or ran. Each row
+// below holds the request key's row in a transaction of its own, so the layer's statement waits,
+// and moves the fake past the bound it finds pending.
+
+// awaitKeyRowWaiter waits for a backend of database to wait on a lock while running a statement
+// of the keyed layer that matches the LIKE pattern like, and answers the call's own result and
+// true where that call ends first: such a call never waited on the row this test holds, and its
+// caller fails with what it answered.
+func awaitKeyRowWaiter[T any](t *testing.T, database *store.Store, like string, done <-chan T) (T, bool) {
+	t.Helper()
+	type seen struct {
+		answer  T
+		early   bool
+		waiting int
+	}
+	got := testwait.UntilPolling(t, 5*time.Millisecond,
+		"a statement of the keyed layer matching "+like+" to wait on the request key's row, or the call to end (the waiters last read)",
+		func() (seen, bool) {
+			select {
+			case early := <-done:
+				return seen{answer: early, early: true}, true
+			default:
+			}
+			waiting, err := storetest.CountLockWaits(context.Background(), database, like)
+			if err != nil {
+				t.Fatalf("read the database's lock waits: %v", err)
+			}
+			return seen{waiting: waiting}, waiting > 0
+		})
+	return got.answer, got.early
+}
+
+// holdRequestKeyRow holds the request_keys row of login's key in a transaction of its own, so a
+// statement of the keyed layer that writes it waits, and answers that transaction's rollback. The
+// row must exist: a claim's own insert of a row that does not is held by an uncommitted insert of
+// the same key instead.
+func holdRequestKeyRow(t *testing.T, database *store.Store, login, key string) (release func()) {
+	t.Helper()
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder's transaction: %v", err)
+	}
+	release = sync.OnceFunc(func() { _ = holder.Rollback(ctx) })
+	t.Cleanup(release)
+	var held string
+	if err := holder.QueryRow(ctx, `
+		select idempotency_key from request_keys where login = $1 and idempotency_key = $2 for update
+	`, login, key).Scan(&held); err != nil {
+		release()
+		t.Fatalf("hold the request key's row: %v", err)
+	}
+	return release
+}
+
+// A keyed claim whose insert waits on the row of a key another transaction is inserting ends at
+// the bookkeeping bound on the server's clock, and answers a 5xx under the key: nothing of the
+// machine's speed decides it.
+func TestAKeyedClaimHeldOnItsKeysRowEndsAtTheBookkeepingBound(t *testing.T) {
+	t.Parallel()
+	fake := clocktest.New(time.Now())
+	rig := newKeyedRigOn(t, keyedRigPattern, fake, answerRun)
+	ctx := context.Background()
+	// Another writer holds an uncommitted row for the same login and key, so the claim's own
+	// insert waits on its unique index until that transaction ends.
+	holder, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder's transaction: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, `
+		insert into request_keys (login, idempotency_key, request_digest, method, path)
+		values ($1, $2, 'other', 'POST', '/test/a/writes')
+	`, "alice", "claim-held"); err != nil {
+		t.Fatalf("hold the key's row: %v", err)
+	}
+	bound := fake.Now().Add(keyedBookkeeping)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- rig.send(t, "a", nil, "alice", "claim-held") }()
+	if early, answeredFirst := awaitKeyRowWaiter(t, rig.database, "%request_keys%", answered); answeredFirst {
+		t.Fatalf("the request answered status=%d body=%s before its claim waited on the key's row, with the bookkeeping bound not yet come",
+			early.Code, early.Body.String())
+	}
+	requireArmed(t, fake, "the claim's bookkeeping bound", bound)
+	fake.Set(bound)
+	response := testwait.Receive(t, "the claim held on the key's row to end at the bookkeeping bound", answered)
+	if response.Code < http.StatusInternalServerError {
+		t.Fatalf("a claim held past the bookkeeping bound: status=%d body=%s, want a 5xx", response.Code, response.Body.String())
+	}
+	if runs := rig.runs.Load(); runs != 0 {
+		t.Fatalf("the handler ran %d time(s) for a claim that never took the key, want none", runs)
+	}
+}
+
+// Storing a keyed answer whose row another writer holds ends at the bookkeeping bound on the
+// server's clock. The handler has run and is answered either way; the row keeps no answer, so a
+// repeat past the lease runs the request again.
+func TestStoringAKeyedAnswerHeldOnItsRowEndsAtTheBookkeepingBound(t *testing.T) {
+	t.Parallel()
+	fake := clocktest.New(time.Now())
+	rig := newKeyedRigOn(t, keyedRigPattern, fake, answerRun)
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into request_keys (login, idempotency_key, request_digest, method, path, leased_at)
+		values ($1, $2, 'digest', 'POST', '/test/a/writes', now())
+	`, "alice", "stored"); err != nil {
+		t.Fatalf("seed the key's row in flight: %v", err)
+	}
+	release := holdRequestKeyRow(t, rig.database, "alice", "stored")
+	claim := requestKeyClaim{login: "alice", key: "stored", attempt: 1}
+	answer := &keyedAnswer{w: httptest.NewRecorder()}
+	WriteJSON(answer, http.StatusCreated, map[string]int{"run": 1})
+	bound := fake.Now().Add(keyedBookkeeping)
+	stored := make(chan struct{})
+	go func() {
+		defer close(stored)
+		rig.server.settleRequestKey(context.Background(), claim, answer, true)
+	}()
+	if _, answeredFirst := awaitKeyRowWaiter(t, rig.database, "%request_keys%", stored); answeredFirst {
+		t.Fatal("the store of the answer returned while this test held the key's row, with the bookkeeping bound not yet come")
+	}
+	requireArmed(t, fake, "the answer store's bookkeeping bound", bound)
+	fake.Set(bound)
+	testwait.Receive(t, "the store of the answer held on the key's row to end at the bookkeeping bound", stored)
+	// Read under the hold: the statement the bound ended is still queued on the row in the
+	// database, and a rollback here would let it run.
+	var status *int
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select status from request_keys where idempotency_key = $1`, "stored").Scan(&status); err != nil {
+		t.Fatalf("read the key's row: %v", err)
+	}
+	if status != nil {
+		t.Fatalf("the store that ended at its bound left status %d, want none: it wrote nothing while the row was held", *status)
+	}
+	release()
+}
+
+// Releasing a keyed key whose row another writer holds ends at the bookkeeping bound on the
+// server's clock, and leaves the row for a repeat past the lease.
+func TestReleasingAKeyedKeyHeldOnItsRowEndsAtTheBookkeepingBound(t *testing.T) {
+	t.Parallel()
+	fake := clocktest.New(time.Now())
+	rig := newKeyedRigOn(t, keyedRigPattern, fake, answerRun)
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into request_keys (login, idempotency_key, request_digest, method, path, leased_at)
+		values ($1, $2, 'digest', 'POST', '/test/a/writes', now())
+	`, "alice", "released"); err != nil {
+		t.Fatalf("seed the key's row: %v", err)
+	}
+	release := holdRequestKeyRow(t, rig.database, "alice", "released")
+	bound := fake.Now().Add(keyedBookkeeping)
+	gave := make(chan struct{})
+	go func() {
+		defer close(gave)
+		rig.server.releaseRequestKey(context.Background(), requestKeyClaim{login: "alice", key: "released", attempt: 1})
+	}()
+	if _, answeredFirst := awaitKeyRowWaiter(t, rig.database, "%request_keys%", gave); answeredFirst {
+		t.Fatal("the release returned while this test held the key's row, with the bookkeeping bound not yet come")
+	}
+	requireArmed(t, fake, "the release's bookkeeping bound", bound)
+	fake.Set(bound)
+	testwait.Receive(t, "the release held on the key's row to end at the bookkeeping bound", gave)
+	// Read under the hold, as the row above does.
+	if rows := countRequestKeys(t, rig.database); rows != 1 {
+		t.Fatalf("the release that ended at its bound left %d request key rows, want the one it could not delete while the row was held", rows)
+	}
+	release()
 }

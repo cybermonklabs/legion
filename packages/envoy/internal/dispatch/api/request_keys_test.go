@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,7 +71,14 @@ func newKeyedRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *
 // upload's larger body limit - can be driven too.
 func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
 	t.Helper()
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	return newKeyedRigOn(t, pattern, nil, answer)
+}
+
+// newKeyedRigOn is newKeyedRigAt whose server's timers - the keyed run's bound and the layer's
+// bookkeeping around it - run on serviceClock; nil is the real clock.
+func newKeyedRigOn(t *testing.T, pattern string, serviceClock clock.Clock, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
+	t.Helper()
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: serviceClock})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
