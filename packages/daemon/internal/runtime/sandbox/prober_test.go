@@ -208,7 +208,9 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 // reads them within the same wait.
 func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	t.Parallel()
-	g := newProbeRig(t, nil).succeeds(okLine(3))
+	// The rig's own runtime never ticks (withNoRefreshTick): its refresher would read the role
+	// Secrets this test counts as the Prober's.
+	g := newProbeRig(t, nil, withNoRefreshTick()).succeeds(okLine(3))
 	g.autoStart.Store(true)
 	g.spawn(rootSpec(t))
 	g.autoStart.Store(false)

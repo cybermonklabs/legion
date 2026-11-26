@@ -603,7 +603,7 @@ func withoutController() rigOption { return func(g *rig, _ *Options) { g.noContr
 // runtime starts. start runs the gh refresher, whose every tick (gitHubRefreshInterval, a minute)
 // reads the caches' health through r.cacheDial on a goroutine of its own, so a test that set the
 // field once newRig had returned wrote it with no ordering against that read: a data race, which
-// the race detector reports in any run that lasts past the first tick.
+// the race detector reports when a tick's read and the test's write are both in one run.
 func withCacheDial(dial func(ctx context.Context, network, address string) (net.Conn, error)) rigOption {
 	return func(g *rig, _ *Options) { g.cacheDial = dial }
 }

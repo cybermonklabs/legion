@@ -372,8 +372,10 @@ func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 func TestProbeImagePassesTheRemainingAttemptBudgetToItsCommand(t *testing.T) {
 	t.Parallel()
 	g := newProbeRig(t, nil)
+	// The rig's own present (Options.Now reads it atomically): the runtime's now function is read
+	// by its informers' goroutines, so a test that replaced it after the rig started raced them.
 	now := time.Date(2026, 10, 28, 13, 30, 0, 0, time.UTC)
-	g.r.now = func() time.Time { return now }
+	g.now.Store(&now)
 	g.succeeds(okLine(3) + "\n")
 	probe := probeOptions(t)
 	probe.Budget = 300 * time.Second
