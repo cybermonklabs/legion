@@ -409,10 +409,11 @@ func wantIf(want bool, eventIDs ...string) []string {
 // answer - one whose bucket is not open, which reads no record and records no principal until an
 // attempt of its own opens the bucket, and a listener with no store at all, which reads as one -
 // are refused, and the refusal names why, the two records with no principal recorded by one
-// warning that names both causes. What only a later claim can read is errHandoverUnjudged, which
-// the claim route answers 503: a claimant whose own registration is not recorded with its
-// principal yet. The control is the same claim where both sessions registered on no credential,
-// as the claim's own does, which stands.
+// warning that lists no cause, since other writes leave a record so too (an interest change that
+// creates it, in TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning).
+// What only a later claim can read is errHandoverUnjudged, which the claim route answers 503: a
+// claimant whose own registration is not recorded with its principal yet. The control is the same
+// claim where both sessions registered on no credential, as the claim's own does, which stands.
 func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
@@ -453,7 +454,7 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 		}
 	}
 	unrecorded := func(sessionID string) string {
-		return "no principal is recorded for " + sessionID + ": a listener of an earlier build wrote its record last, or a registration as another principal cleared the record and has not written its own yet"
+		return "no registration through a listener of this build has recorded a principal for " + sessionID
 	}
 
 	t.Run("case: an open store holds no record of the replaced session", func(t *testing.T) {
@@ -859,7 +860,12 @@ func (rig *gateRig) registerTitled(t *testing.T, token, sessionID, title string)
 // without the warning; where each registration logs its own line, or the line after a minute does
 // not count the one held back; and where the claim is answered 503 or writes a handover record.
 // The control is the next registration through the store whose bucket is open, answered 200 with
-// no such warning and its principal recorded.
+// no such warning and its principal recorded. Last, a session that registered while the bucket was
+// not open, and so has no record, changes its interests once the bucket is open: that write is no
+// registration (recordFollowedTopics), and creates the record with no principal. A claim naming
+// that session stands, is answered 200 with the warning that no registration of this build
+// recorded its principal, and writes no handover record; the case fails where the warning names
+// another cause than the record has, or the claim hands anything over.
 func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning(t *testing.T) {
 	const line = "listener registered a session with no principal recorded"
 	rig := newGateRig(t)
@@ -946,6 +952,59 @@ func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmitted
 		after, found, err := open.Read(t.Context(), gateClaimant)
 		if err != nil || !found || after.Title != "registered with the bucket open" || after.Principal != "person:"+gatePerson || !after.PrincipalRecorded {
 			t.Errorf("%s's record after the registration = %+v, found %t, %v; want it written, naming person:%s", gateClaimant, after, found, err, gatePerson)
+		}
+	})
+	t.Run("case: a session whose record an interest change created after it registered with the bucket shut is refused", func(t *testing.T) {
+		const shut, role, topic = "ses_gate_registered_shut", "gate-shut-role", "notifications.team.gate-shut"
+		shutToken := rig.personToken(shut, gatePerson)
+		rig.deps.known = &session.KnownSessions{}
+		registration, err := json.Marshal(map[string]any{
+			"session_id":      shut,
+			"self_subscribed": true,
+			"title":           "registered with the bucket shut",
+			"topics":          []string{topic},
+			"delivery":        map[string]any{"consumer": true, "epoch": "epoch-" + shut},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := rig.postOn(t, shutToken, "/v1/interests/subscribe", string(registration))
+		var registered listenerwire.SubscribeResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &registered) != nil || !slices.Contains(registered.Warnings, knownBucketNotOpenWarning) {
+			t.Fatalf("%s's registration with the bucket shut answered %d %s; want 200 with the warning %q", shut, recorder.Code, recorder.Body.String(), knownBucketNotOpenWarning)
+		}
+		if record, found, err := open.Read(t.Context(), shut); err != nil || found {
+			t.Fatalf("%s's record after its registration with the bucket shut = %+v, found %t, %v; the case needs none", shut, record, found, err)
+		}
+
+		rig.deps.known = open
+		change, err := json.Marshal(map[string]any{"session_id": shut, "topics": []string{topic}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recorder := rig.postOn(t, shutToken, "/v1/interests/unsubscribe", string(change)); recorder.Code != http.StatusOK {
+			t.Fatalf("%s's interest change answered %d %s; want 200", shut, recorder.Code, recorder.Body.String())
+		}
+		record, found, err := open.Read(t.Context(), shut)
+		if err != nil || !found || record.Principal != "" || record.PrincipalRecorded {
+			t.Fatalf("%s's record after its interest change = %+v, found %t, %v; the case needs one the change created, naming no principal", shut, record, found, err)
+		}
+
+		claim, err := json.Marshal(map[string]any{"session_id": gateClaimant, "role": role, "previous_session_id": shut})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder = rig.postOn(t, token, "/v1/roles/set", string(claim))
+		var answer roleSetResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil {
+			t.Fatalf("%s claims %s naming %s: status %d %s; want 200", gateClaimant, role, shut, recorder.Code, recorder.Body.String())
+		}
+		want := "no message of " + shut + " is handed over to this session: no registration through a listener of this build has recorded a principal for " + shut
+		if !slices.Contains(answer.Warnings, want) {
+			t.Errorf("the claim's warnings are %q; want %q", answer.Warnings, want)
+		}
+		if n := rig.handoverRecords(t, role, shut, gateClaimant); n != 0 {
+			t.Errorf("role %s holds %d handover records from %s to %s; want none", role, n, shut, gateClaimant)
 		}
 	})
 }

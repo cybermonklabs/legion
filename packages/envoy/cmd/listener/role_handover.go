@@ -160,18 +160,20 @@ const handoverReadBound = roleHolderReadTimeout
 // A claim is refused where replaced's record does not say which principal replaced last
 // registered as (recordedPrincipal): a session the bucket holds no record of (principalAbsent:
 // none registered within the retention), one whose record names no principal a registration of
-// this build recorded (principalUnrecorded: a listener of an earlier build wrote it last, or a
-// registration as another principal cleared it and has not written its own yet), and a store
-// that cannot answer (principalUnavailable: its bucket is not open, a listener with no
-// known-session store at all among them). The refused claim is answered 200 with a warning, and
-// its client does not name replaced again, so replaced's messages stay on its own subject. On a
-// listener with a store, a bucket that is not open is no lasting state: the store attempts it
-// again on its own (session.KnownSessions says how often), and picks up a grant that lands
-// later with no restart, so a claim refused in the window before an attempt opens it loses a
-// handover a later claim would have made. What only a later claim can read is the error, wrapping
-// errHandoverUnjudged: a read the leader did not answer, and a claimant whose own registration is
-// not recorded with its principal - a registration whose record did not store, or one an earlier
-// build took - which its next registration writes.
+// this build recorded (principalUnrecorded, whatever wrote the record so: among those writes, a
+// listener of an earlier build's, a registration as another principal that cleared it and has
+// not written its own yet, and an interest change that created it after the session registered
+// through a listener whose bucket was not open), and a store that cannot answer
+// (principalUnavailable: its bucket is not open, a listener with no known-session store at all
+// among them). The refused claim is answered 200 with a warning, and its client does not name
+// replaced again, so replaced's messages stay on its own subject. On a listener with a store, a
+// bucket that is not open is no lasting state: the store attempts it again on its own
+// (session.KnownSessions says how often), and picks up a grant that lands later with no restart,
+// so a claim refused in the window before an attempt opens it loses a handover a later claim
+// would have made. What only a later claim can read is the error, wrapping errHandoverUnjudged: a
+// read the leader did not answer, and a claimant whose own registration is not recorded with its
+// principal - a registration whose record did not store, or one an earlier build took - which its
+// next registration writes.
 // Dispatch lets a session answer a delivery attempt of the session it replaced only where a
 // handover record names it and the two still register as one principal (sessionSuccessorsHandler),
 // so that reply rule is held to this one too.
@@ -186,7 +188,7 @@ func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownS
 	case principalAbsent:
 		return fmt.Sprintf("this listener holds no record of the principal %s last registered as", replaced), nil
 	case principalUnrecorded:
-		return fmt.Sprintf("no principal is recorded for %s: a listener of an earlier build wrote its record last, or a registration as another principal cleared the record and has not written its own yet", replaced), nil
+		return fmt.Sprintf("no registration through a listener of this build has recorded a principal for %s", replaced), nil
 	}
 	own, state, err := recordedPrincipal(ctx, known, claimant)
 	if err != nil {
@@ -385,8 +387,11 @@ const (
 	// retention.
 	principalAbsent
 	// principalUnrecorded: the session's record names no principal a registration of this build
-	// recorded (session.KnownSession.PrincipalRecorded): a listener of an earlier build wrote it
-	// last, or a registration as another principal had it cleared and has not written its own.
+	// recorded (session.KnownSession.PrincipalRecorded), whatever wrote the record so: among those
+	// writes, a listener of an earlier build's, a registration as another principal that had it
+	// cleared and has not written its own, and a write that is no registration
+	// (session.KnownSessions.RecordWithin) creating the record of a session whose registration
+	// found the bucket not open.
 	principalUnrecorded
 	// principalRecorded: a registration of this build recorded the principal, none included.
 	principalRecorded
