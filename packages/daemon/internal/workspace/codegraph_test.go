@@ -1328,9 +1328,10 @@ func (r *boundRow) answered(end string) {
 // TestNextCodegraphStep table-tests the pure decision warmCodegraphIndexOn runs on: a parsed
 // status decides outright (its `initialized:false` always means init, even when `.codegraph/`
 // exists; an initialized index needs nothing only while it is current, `"complete"` and built by
-// the CLI version that reports it, so one another version built, or one whose builtWithVersion is
-// null beside a set version, gets an index repair); dirExists is consulted only when status failed
-// or didn't parse; and a live lock always wins over an index repair, of either kind.
+// the CLI version that reports it or with no builtWithVersion, which a build that indexed no file
+// leaves, so a complete one another version built gets an index repair); dirExists is consulted
+// only when status failed or didn't parse; and a live lock always wins over an index repair, of
+// either kind.
 func TestNextCodegraphStep(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
@@ -1348,7 +1349,7 @@ func TestNextCodegraphStep(t *testing.T) {
 		{"status valid, complete, built by another version, no live lock: index", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepIndex},
 		{"status valid, complete, built by another version, live lock: none", true, true, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepNone},
 		{"status valid, complete, built by this version: none", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.6.4","reindexRecommended":false}}`, codegraphStepNone},
-		{"status valid, complete, builtWithVersion null, version set: index", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":null}}`, codegraphStepIndex},
+		{"status valid, complete, builtWithVersion null (a build that indexed no file), version set: none", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":null}}`, codegraphStepNone},
 		{"status failed, directory exists, no live lock: index", true, false, 1, ``, codegraphStepIndex},
 		{"status failed, directory exists, live lock: none", true, true, 1, ``, codegraphStepNone},
 		{"status failed, no directory: init", false, false, 1, ``, codegraphStepInit},

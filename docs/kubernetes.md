@@ -6439,7 +6439,7 @@ it waits for that release at least 3 s and at most what the pod's `terminationGr
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
-An index that an older CLI built on a kept volume is rebuilt once, by the first warm-up that finds its `index.builtWithVersion` is not the CLI's `version`, and by no later one.
+An index that another CLI version built on a kept volume is rebuilt once, by the first warm-up that finds a version in its `index.builtWithVersion` other than the CLI's own `version`, and by no later one; an index with no version there, which a build that indexed no file leaves, counts as current.
 The roles' CodeGraph queries (`impact`, `callers`, `affected`, `explore`) answer once `codegraph status --json` reports `index.state: "complete"`;
 before that, or when an answer is empty, a role reads the source itself, as its prompt says.
 The init containers never call `codegraph`.

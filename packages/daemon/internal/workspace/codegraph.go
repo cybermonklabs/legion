@@ -149,20 +149,22 @@ func WarmCodegraphIndex(ctx context.Context, start procgroup.Starter, dir string
 // warmCodegraphIndexOn builds a workspace's codegraph index before any worker needs it, each
 // codegraph run bounded by codegraphTimeout on c. Its one caller outside the tests is
 // WarmCodegraphIndex, which passes clock.Real; a test hands it a fake (boundRow). Each role's
-// `impact`, `callers`, `affected` and `explore` queries (the role prompts) need an index already built, not one
-// built on first use. Callers run it through WarmCodegraphIndexInBackground, outside any
-// provisioning serialization: indexing reads only the issue's own workspace directory. codegraph
-// is deliberately not one of the tools Runner requires — the daemon must still boot where it is
-// absent (the tmux runtime's host provisioning never installs it) — so this resolves it from PATH
-// on its own, directly with os/exec, and never fails provisioning: a missing CLI, a non-zero exit,
-// or a timeout is logged loudly to stderr. Warming simply does not happen when the CLI is missing
+// `impact`, `callers`, `affected` and `explore` queries (the role prompts) need an index already
+// built, not one built on first use. Callers run it through WarmCodegraphIndexInBackground,
+// outside any provisioning serialization: indexing reads only the issue's own workspace directory.
+// codegraph is deliberately not one of the tools Runner requires — the daemon must still boot
+// where it is absent (the tmux runtime's host provisioning never installs it) — so this resolves
+// it from PATH on its own, directly with os/exec, and never fails provisioning: a missing CLI, a
+// non-zero exit, or a timeout is logged loudly to stderr. Warming simply does not happen when the
+// CLI is missing
 // or fails; the worker reads the source instead, per its role prompt. An index that is initialized
 // but not current (codegraphStatus) is repaired with `codegraph index` rather than accepted as
 // built: one an earlier warm-up left partial (`index.state` not `"complete"`), or one another
-// CodeGraph CLI version built (`index.builtWithVersion` not the running CLI's `version`, as a kept
-// volume's 1.5.0 index reads to 1.6.4). `codegraph init` on an already-initialized directory only
-// prints "Already initialized" and exits 0, so it cannot do this repair itself. Neither repair
-// runs while a build holds `.codegraph/codegraph.lock`: nextCodegraphStep skips it entirely then.
+// CodeGraph CLI version built (`index.builtWithVersion` set to another version than the running
+// CLI's `version`, as a kept volume's 1.5.0 index reads to 1.6.4). `codegraph init` on an
+// already-initialized directory only prints "Already initialized" and exits 0, so it cannot do
+// this repair itself. Neither repair runs while a build holds `.codegraph/codegraph.lock`:
+// nextCodegraphStep skips it entirely then.
 // A second `codegraph index` started against a live build damages the shared SQLite database even
 // when CodeGraph's own lock refuses it the write (observed: the second process exits on "Could not
 // acquire file lock", and the live build still fails with "database disk image is malformed") — so
@@ -461,12 +463,12 @@ const (
 // behind in every `.codegraph/` a repository commits, so a fresh workspace of such a repository
 // starts with the directory present and no database, and `index` on that refuses ("CodeGraph not
 // initialized"). An initialized index that is current (`index.state` `"complete"`, built by the
-// running CLI's own version) needs nothing; one that is not — left partial, or built by another
-// CodeGraph CLI version — gets an `index` repair. dirExists — whether `<workspace>/.codegraph`
-// exists on disk — is consulted only as a fallback, when `status` failed to run or returned
-// something that is not even JSON (a corrupted database mid-build, an old CLI): there, an
-// existing directory still means `index` over `init`, since `init` on one only prints "Already
-// initialized" and exits 0, repairing nothing. lockLive — whether a build holds
+// running CLI's own version or with no version stamp) needs nothing; one that is not — left
+// partial, or built by another CodeGraph CLI version — gets an `index` repair. dirExists — whether
+// `<workspace>/.codegraph` exists on disk — is consulted only as a fallback, when `status` failed
+// to run or returned something that is not even JSON (a corrupted database mid-build, an old
+// CLI): there, an existing directory still means `index` over `init`, since `init` on one only
+// prints "Already initialized" and exits 0, repairing nothing. lockLive — whether a build holds
 // `.codegraph/codegraph.lock` (codegraphLockHeldByLiveProcess) — always wins over an index
 // repair, in either case: a build that is still running reports `index.state: "indexing"` and a
 // null `index.builtWithVersion`, indistinguishable from one left partial by a dead process, so the
@@ -485,8 +487,9 @@ func nextCodegraphStep(dirExists, lockLive bool, statusExitCode int, statusStdou
 		default:
 			// Left partial, or built by another CLI version. warmCodegraphIndexOn runs this
 			// `index` at most once per directory per process (indexed), and once it succeeds the
-			// index's builtWithVersion is the running CLI's version, so every later start reads it
-			// current and does nothing: a kept volume's index is rebuilt once, never at each start.
+			// index's builtWithVersion is the running CLI's version, or null when the build indexed
+			// no file, and codegraphStatus reads either as current, so every later start does
+			// nothing: a kept volume's index is rebuilt once, never at each start.
 			return codegraphStepIndex
 		}
 	}
@@ -501,7 +504,7 @@ func nextCodegraphStep(dirExists, lockLive bool, statusExitCode int, statusStdou
 
 // codegraphStatus reads `codegraph status --json`'s `initialized` field, and whether the index is
 // current: `index.state` is `"complete"` and `index.builtWithVersion` is the running CLI's own
-// top-level `version`. `codegraph status` exits 0 whether or not the project has ever been
+// top-level `version` or empty. `codegraph status` exits 0 whether or not the project has ever been
 // indexed, so only the parsed body tells the cases apart, and anything that fails to parse as that
 // shape is treated as not initialized. `index.state` is `"complete"` only once a build has
 // finished; a build still running, or one an earlier warm-up left partial, reports it `"indexing"`
@@ -512,9 +515,11 @@ func nextCodegraphStep(dirExists, lockLive bool, statusExitCode int, statusStdou
 // (measured 2026-11-26), so the state alone would never have a kept volume's blind index rebuilt.
 // CodeGraph's own `reindexRecommended` is no substitute: it read false on one such index and true
 // on another, and this warm-up does not read it. 1.6.4's status of an index it built itself
-// reports `"version":"1.6.4"` and `"builtWithVersion":"1.6.4"`. A missing
-// or null field decodes as "": a complete index whose status names neither version still reads as
-// current, and one whose builtWithVersion is null beside a set version does not.
+// reports `"version":"1.6.4"` and `"builtWithVersion":"1.6.4"`. A missing or null field decodes as
+// "". A complete index with no version stamp is current: both CLIs write the stamp only when a
+// build indexed at least one file (1.5.0 lib/dist/index.js:580, `result.success &&
+// result.filesIndexed > 0`), so a null stamp is a build that indexed no file, not an older build.
+// Only a set stamp that differs from the CLI's version is another version's index.
 func codegraphStatus(stdout string) (initialized, current bool) {
 	var parsed struct {
 		Initialized bool   `json:"initialized"`
@@ -527,7 +532,7 @@ func codegraphStatus(stdout string) (initialized, current bool) {
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		return false, false
 	}
-	return parsed.Initialized, parsed.Index.State == "complete" && parsed.Index.BuiltWithVersion == parsed.Version
+	return parsed.Initialized, parsed.Index.State == "complete" && (parsed.Index.BuiltWithVersion == "" || parsed.Index.BuiltWithVersion == parsed.Version)
 }
 
 // codegraphLockHeldByLiveProcess reports whether dir's .codegraph/codegraph.lock is held by a
