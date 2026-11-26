@@ -35,6 +35,11 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 	seedStepsAt(t, pool, root.Key, root.Generation, 3, map[string]string{"linter": "testing", "checker": "testing"}, "implementer", "linter", "checker")
 	checker := seedPhaseWorker(t, pool, root.Key, "checker", "")
 	linter := seedPhaseWorker(t, pool, root.Key, "linter", "")
+	// Each of the two steps started in this run: its role's row holds the task of an entry
+	// (record.PhaseRow.EntryTask), which is what makes a report of that run the report of a
+	// started step (ranUnreported), as enter writes it.
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: checker, Entry: 1, EntryTask: "check this change"})
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "linter", Claim: linter, Entry: 1, EntryTask: "lint this change"})
 	apply := applyFacts(t, pool, engine)
 	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
