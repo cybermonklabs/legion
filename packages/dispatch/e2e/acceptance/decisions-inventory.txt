@@ -430,7 +430,6 @@ docs/solutions/.index/596.json	no
 docs/solutions/.index/sjawhar-legion-598.json	no
 docs/solutions/architecture-patterns/a-bound-that-guards-a-shared-dependency-is-paid-once-per-dependency-not-once-per-call-pr2699.md	no
 docs/solutions/architecture-patterns/a-bound-that-predicts-a-loop-imports-the-loops-own-steps-from-a-stdlib-only-leaf-pr2705.md	no
-packages/daemon/internal/prompts/owner_plan_test.go	no
 sha256:6ada35a5edd165c52eea425b85177502fcd011143711ce1c460183ed199b4f12	no
 docs/solutions/architecture-patterns/a-due-only-read-puts-its-window-in-the-key-and-pays-separately-for-what-the-scan-also-did-pr2641.md	no
 docs/solutions/architecture-patterns/a-fence-convention-is-replaced-only-when-the-guarded-step-is-the-only-reachable-step-pr2592.md	no
@@ -1243,7 +1242,6 @@ sha256:e7f27fdacec763d8925231f3f4da2c9cc756ff61b604ad6a44fa0db99fafd10c	no
 docs/solutions/legion/a-red-naming-a-test-your-branch-does-not-contain-is-not-answered-by-running-it-pr2620.md	no
 docs/solutions/legion/a-reflection-census-over-a-shared-type-is-a-cross-branch-gate-pr2529.md	no
 docs/solutions/legion/a-refusal-at-a-process-boundary-is-censused-again-over-mains-delta-at-every-forward-merge-pr2387.md	no
-docs/solutions/legion/a-renumber-sweep-greps-the-issue-key-and-reads-each-hit-and-a-collision-note-names-the-release-the-tags-show-LEGION-663.md	no
 docs/solutions/legion/a-reruns-green-arrives-with-the-aggregator-and-a-send-back-burns-the-handoff-commit-it-accepted-pr2541b.md	no
 sha256:22fd3c84719f60562cd09b51cf65207bf732dc4c7b891ce3b6133620160ba06b	no
 docs/solutions/legion/a-retired-reviewer-cannot-see-a-workspace-only-commit-push-the-corrective-head-before-accepted.md	no
@@ -1270,7 +1268,6 @@ docs/solutions/legion/a-skills-only-change-cuts-a-patch-release-so-it-owes-that-
 sha256:5b75d389be8fb127c1a05f6c79028b1ca16dd9d6c6a6d139c589101b99b44e63	no
 docs/solutions/legion/a-stacked-bases-squash-merge-fingerprint-before-against-the-bases-last-sha-and-take-mains-version-in-the-files-you-never-touched-LEGION-630.md	no
 docs/solutions/legion/a-stacked-branch-whose-base-squash-merged-conflicts-with-its-own-content-merge-and-fingerprint-against-the-old-base-commit-not-jjs-fork-point-LEGION-629.md	no
-docs/solutions/legion/a-stacked-branchs-contract-number-is-the-bases-plus-one-and-moves-when-the-base-renumbers-at-its-own-retarget-LEGION-668.md	no
 docs/solutions/legion/a-stacked-branchs-retarget-is-two-forward-merges-the-bases-final-head-then-main-and-the-main-equals-base-audit-runs-over-the-whole-working-copy-LEGION-668.md	no
 docs/solutions/legion/a-step-the-base-adds-runs-against-your-head-tree-when-the-job-checks-out-the-head-sha-pr2688.md	no
 docs/solutions/legion/a-stopgap-that-lands-on-main-mid-plan-is-superseded-not-merged.md	no
@@ -1862,7 +1859,6 @@ packages/daemon/internal/prompts/go/planner.md	no
 packages/daemon/internal/prompts/go/reviewer.md	no
 packages/daemon/internal/prompts/go/tester.md	no
 packages/daemon/internal/prompts/go/worker-common.md	no
-packages/daemon/internal/prompts/handoff_rules_test.go	no
 packages/daemon/internal/prompts/part_rules_test.go	no
 packages/daemon/internal/prompts/prompts.go	no
 packages/daemon/internal/prompts/prompts_test.go	no
@@ -1883,6 +1879,7 @@ packages/daemon/internal/prompts/roles/planner.md	no
 packages/daemon/internal/prompts/roles/reviewer.md	no
 packages/daemon/internal/prompts/roles/tester.md	no
 packages/daemon/internal/prompts/roles_test.go	no
+packages/daemon/internal/repocache/fakegcs/testdata/README.md	no
 packages/dispatch/AGENTS.md	no
 packages/dispatch/README.md	no
 packages/envoy-client/README.md	no
@@ -1926,12 +1923,15 @@ skills/envoy/references/legion.md	no
 skills/envoy/references/roles.md	no
 skills/envoy/references/sources.md	no
 skills/legion-architect/SKILL.md	no
+skills/legion-architect/references/acceptance-steps.md	no
 skills/legion-architect/references/acceptance.md	no
 skills/legion-architect/references/decomposition.md	no
 skills/legion-architect/references/design-gate.md	no
+skills/legion-architect/references/operations.md	no
 skills/legion-architect/references/plan-changes.md	no
 skills/legion-architect/references/plan.md	no
 skills/legion-architect/references/surface-round.md	no
+skills/legion-architect/references/wake-routing-steps.md	no
 skills/legion-architect/references/wake-routing.md	no
 skills/legion-controller/SKILL.md	no
 skills/legion-controller/references/admission.md	no
@@ -1939,7 +1939,11 @@ skills/legion-controller/references/backlog-stewardship.md	no
 skills/legion-controller/references/consolidation.md	no
 skills/legion-controller/references/daily-report.md	no
 skills/legion-controller/references/escalation.md	no
+skills/legion-controller/references/finding-asks-steps.md	no
 skills/legion-controller/references/finding-asks.md	no
+skills/legion-controller/references/merge-holds.md	no
+skills/legion-controller/references/operations-steps.md	no
+skills/legion-controller/references/operations.md	no
 skills/legion-controller/references/park-asks.md	no
 skills/legion-controller/references/parked-decisions.md	no
 skills/legion-controller/references/session.md	no
@@ -1954,6 +1958,7 @@ skills/legion-retro/references/pr-body-content.md	no
 skills/legion-worker/SKILL.md	no
 skills/legion-worker/references/ci-checks.md	no
 skills/legion-worker/references/conflicts-and-rewrites.md	no
+skills/legion-worker/references/findings-steps.md	no
 skills/legion-worker/references/findings.md	no
 skills/legion-worker/references/gvisor.md	no
 skills/legion-worker/references/merge-gate.md	no
@@ -1961,6 +1966,8 @@ skills/legion-worker/references/plan-tests.md	no
 skills/legion-worker/references/pr-body.md	no
 skills/legion-worker/references/results.md	no
 skills/legion-worker/references/review-threads.md	no
+skills/legion-worker/references/stop-rules.md	no
+skills/legion-worker/references/tools-steps.md	no
 skills/legion-worker/references/tools.md	no
 skills/legion-worker/references/withheld-capability.md	no
 skills/outside-message/SKILL.md	no
