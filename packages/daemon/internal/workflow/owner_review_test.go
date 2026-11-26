@@ -44,7 +44,7 @@ func ownersReview(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 // nothing at the owner's step and tells nothing.
 //
 // The controls: today's reviewing case (every completion to settleRound) leaves the owner's fail
-// and pass at reviewing; settleRound without the owner's case takes the person's request for
+// and pass at reviewing; reviewRound without the owner's case takes the person's request for
 // changes back to step 1 while the owner's step runs.
 func TestAnOwnersReviewStepEndsByItsReport(t *testing.T) {
 	t.Run("the owner's fail returns the work to step 1", func(t *testing.T) {
@@ -89,8 +89,8 @@ func TestAnOwnersReviewStepEndsByItsReport(t *testing.T) {
 
 // At a review step the owner does, an approval on GitHub from an account with write access still
 // writes its decision on the reviewer's row, but no round waits on GitHub's merge state there
-// (classify.RoundWaitsOnMergeState): the step ends by the owner's own report, and settleRound
-// returns at once. So the review, a fact the gate owes no read for in reviewing
+// (classify.RoundWaitsOnMergeState): the step ends by the owner's own report, and reviewRound
+// answers no round there. So the review, a fact the gate owes no read for in reviewing
 // (classify.MergeStateReadOwed), asks for no read of GitHub's merge state, although the approval
 // stands on a head GitHub holds `blocked`. The control is the rule before this one, where the
 // round of that approval waited on GitHub and the review asked for a read that nothing would ever
