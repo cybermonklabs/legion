@@ -763,9 +763,11 @@ var storeOnlyAttribute = regexp.MustCompile(`\('attribute', '([a-z_ ]+)/([a-z_]+
 // directions: each node's one tie is to the supertag its migration names it under, and it carries
 // the name, the store name (its own name, since none is a base attribute), the kind and the
 // position the migration gives it, and each attribute a migration declares is a node of the store.
-// The declarations are read from every migration of the store (storeMigrationsDir), since a type
-// migration written after the backfill is listed nowhere: typeMigrations holds only the ones
-// before it. A node no migration declares fails, naming the node.
+// The declarations are read from every migration of the store (storeMigrationsDir), and not from
+// typeMigrations, which holds only the type migrations a second run proves, those numbered before
+// the backfill; store.TypeMigrations lists the later ones too, but a migration that declares such
+// a node and is missing from that list would then be read nowhere. A node no migration declares
+// fails, naming the node.
 // A row the scan matches whose supertag is a block type of file is passed over: that attribute is
 // the file's to declare (requireAttributeNodesMatchTheFile), so the scan does not depend on how a
 // migration writes the rows of a block type's attributes.

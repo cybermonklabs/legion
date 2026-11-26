@@ -22,17 +22,18 @@ import (
 )
 
 // The lines the boot's run of the backfill logs, as a reader of the process's output matches them:
-// the done line is the one lib-tree.sh's tree_backfill_end waits for.
+// the done line is the one lib-tree.sh's tree_backfill_end waits for. They are written out rather
+// than built from main.go's bootBackfillDoneLine and bootBackfillSkippedLine, so a change of either
+// line's text fails here before it breaks that wait.
 const (
 	bootBackfillDoneMatch    = `msg="dispatch: boot backfill done"`
 	bootBackfillSkippedMatch = `msg="dispatch: boot backfill skipped"`
 )
 
-// bootBackfillOutcome is what one call of runBootBackfill did: what it answered its caller, whether
-// it called the run, whether it called what follows a done line (R26's step at a boot), and every
-// line it logged.
+// bootBackfillOutcome is what one call of runBootBackfill did: whether it called the run, whether
+// it called what follows a done line (R26's step at a boot), and every line it logged.
+// runBootBackfill answers its caller nothing, so no outcome can stop the process.
 type bootBackfillOutcome struct {
-	answer   error
 	ran      bool
 	followed bool
 	lines    []string
@@ -55,7 +56,7 @@ func callBootBackfill(t *testing.T, record func(context.Context) error, ran erro
 	t.Helper()
 	var logged bytes.Buffer
 	outcome := bootBackfillOutcome{}
-	outcome.answer = runBootBackfill(context.Background(), slog.New(slog.NewTextHandler(&logged, nil)), record,
+	runBootBackfill(context.Background(), slog.New(slog.NewTextHandler(&logged, nil)), record,
 		func(context.Context) error {
 			outcome.ran = true
 			return ran
@@ -71,7 +72,7 @@ func callBootBackfill(t *testing.T, record func(context.Context) error, ran erro
 var projectMovedCount = regexp.MustCompile(` project_moved=(\d+)\b`)
 
 // The boot's run of the backfill logs what each outcome of the backfill was and answers its caller
-// nil every time, so the process serves on whatever the backfill answered. The record and the run
+// nothing, so the process serves on whatever the backfill answered. The record and the run
 // are the test's own, in place of the record of the horizon and the passes.
 //
 // The record succeeds in the first four calls. A run with no error logs the done line. A run whose
@@ -92,9 +93,6 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 	recorded := func(context.Context) error { return nil }
 	returned := func(outcome bootBackfillOutcome) {
 		t.Helper()
-		if outcome.answer != nil {
-			t.Errorf("the boot backfill returned %v to its caller, which would stop the process", outcome.answer)
-		}
 		if done := len(outcome.holding(bootBackfillDoneMatch)) == 1; outcome.followed != done {
 			t.Errorf("the boot backfill called what follows a done line %v, and logged a done line %v: the two go together", outcome.followed, done)
 		}
@@ -180,9 +178,6 @@ func TestTheBootSkipLogsAPreparedWriterAsPidZero(t *testing.T) {
 		t.Fatalf("the record's error at its bound, %v, wraps no context.DeadlineExceeded", bound)
 	}
 	skipped := callBootBackfill(t, func(context.Context) error { return bound }, nil)
-	if skipped.answer != nil {
-		t.Errorf("the boot backfill returned %v to its caller, which would stop the process", skipped.answer)
-	}
 	skip := skipped.holding(bootBackfillSkippedMatch)
 	if len(skip) != 1 {
 		t.Fatalf("the boot backfill logged no skip after its record of the horizon reached its bound over a prepared transaction")
@@ -220,12 +215,6 @@ func TestTheBootBackfillHoldsNoPodsReadiness(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select now()`).Scan(&started); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
-	stop := func(p *dispatchProcess) {
-		t.Helper()
-		p.Terminate(t)
-		p.WaitExit(t, "SIGTERM")
-	}
-
 	held := startDispatchProcessWith(t, databaseURL, dispatchOptions{SigningKey: bootBackfillSigningKey,
 		Env: map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"}})
 	held.waitHealthy(t)
@@ -238,23 +227,19 @@ func TestTheBootBackfillHoldsNoPodsReadiness(t *testing.T) {
 		t.Fatalf("read graph_backfill_horizon: %v", err)
 	}
 	if !recorded {
-		t.Fatalf("the boot recorded no backfill horizon of rule 2 before its passes:\n%s", held.Output.String())
+		t.Fatalf("the boot recorded no backfill horizon of rule %d before its passes:\n%s", refs.BlockIndexMarkingRule, held.Output.String())
 	}
 	if done := held.logLines(bootBackfillDoneMatch); len(done) > 0 {
 		t.Fatalf("the boot backfill ended while its passes were held: %s", done[0])
 	}
-	stop(held)
+	stopProcess(t, held)
 
 	unheld := startDispatchProcessWith(t, databaseURL, dispatchOptions{SigningKey: bootBackfillSigningKey,
 		Env: map[string]string{"DISPATCH_TEST_HOOKS": "1"}})
 	unheld.waitHealthy(t)
-	for deadline := time.Now().Add(300 * time.Second); !unheld.logged(bootBackfillDoneMatch); time.Sleep(2 * time.Second) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the boot backfill logged no done line within 300 s:\n%s", unheld.Output.String())
-		}
-	}
+	unheld.waitForLog(t, 300*time.Second, bootBackfillDoneMatch)
 	t.Logf("the process without the hold: %s", unheld.logLines(bootBackfillDoneMatch)[0])
-	stop(unheld)
+	stopProcess(t, unheld)
 
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {

@@ -2798,7 +2798,7 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 	recorded, ended := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(ended)
-		_ = runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
+		runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
 			close(recorded)
 			if boot.HoldBootBackfill {
 				<-ctx.Done()
@@ -2827,7 +2827,7 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 
 // runBootBackfill is the boot's run of the graph store's backfill: record, which records the run's
 // horizon of the event log (graphcensus.StartBackfill), then run, its passes
-// (graphcensus.BackfillRun.Passes). It logs what came of them and answers nil whatever that was, so
+// (graphcensus.BackfillRun.Passes). It logs what came of them and answers its caller nothing, so
 // the process serves on whatever the backfill answered:
 //   - a record that reached its bound (graphcensus.HorizonBoundError): the skip line, naming the
 //     oldest writer of the event log by its pid and its age (bootBackfillSkipped), and no run;
@@ -2840,15 +2840,15 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 //     what waits for the backfill's end waits for the next boot's run.
 //
 // afterDone, where it is not nil, runs right after each done line, on the same goroutine.
-func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) error {
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) {
 	if err := record(ctx); err != nil {
 		var bound *graphcensus.HorizonBoundError
 		if errors.As(err, &bound) {
 			logger.Warn(bootBackfillSkippedLine, bootBackfillSkipped(bound.Pid, bound.Age)...)
-			return nil
+			return
 		}
 		logger.Error("dispatch: boot backfill failed to record its horizon of the event log", "error", err)
-		return nil
+		return
 	}
 	err := run(ctx)
 	if err == nil {
@@ -2856,7 +2856,7 @@ func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(conte
 		if afterDone != nil {
 			afterDone(ctx)
 		}
-		return nil
+		return
 	}
 	if moved, only := graphcensus.OnlyProjectMoved(err); only {
 		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
@@ -2864,10 +2864,9 @@ func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(conte
 		if afterDone != nil {
 			afterDone(ctx)
 		}
-		return nil
+		return
 	}
 	logger.Error("dispatch: boot backfill failed", "error", err)
-	return nil
 }
 
 // bootBackfillSkipped is the skip line's attributes (runBootBackfill): the oldest writer of the

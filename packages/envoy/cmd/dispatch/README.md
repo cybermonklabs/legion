@@ -3806,6 +3806,16 @@ It prints `census: block_ids issues=<n> shared=<n>`, followed by one `census: sh
 The command exits 0 when it prints the report, even when `shared` is nonzero, and 2 on a usage, read or output error.
 It is separate from the migration and store censuses and takes none of the store census flags.
 
+### Converting a project's issues by hand
+
+`envoy-dispatch convert-issues --project <KEY> [--dry-run]` converts each issue of one project into its issue room (R6 of the issue-tree spec) by hand, as the server's issue-room step does on its own once every live process announces the room: the step's one function (`docs.Service.ConvertIssue`) over the project's issues by number, each in a transaction of its own.
+It runs only on a fleet of this binary's own commit (`docs.BuildGate`): it refuses while any live process serves another build, and unless the newest `server_build_announcements` row names the commit this binary was stamped with; an unstamped binary is refused.
+The gate is checked once before the first issue, so a run is refused while another build is live even where every issue it reaches would be passed over, and again inside each issue's transaction.
+A done issue, and one whose room stands already, is passed over; an issue one of whose documents still owes its block index is deferred, and the run goes on to the next.
+`--dry-run` converts each issue in its transaction and rolls it back: it applies no migration, refuses a database with a migration of this build still to apply, and prints the same lines.
+It prints the cost of a rollback first (`convert-issues: a rollback to a build before the issue room reads each converted document as it stood before its conversion, and loses every edit written into its issue's room since`), then one line for each issue - `<KEY> converted in <time>: items=<n>` (`<KEY> would be converted in <time>, rolled back: items=<n>` in a dry run), `<KEY> passed over in <time>: <reason>` or `<KEY> deferred in <time>: <reason>`, `items=` being the item count of the room's first update where the conversion measured it - and `<KEY> failed in <time>: <error>` for each issue whose transaction failed, then `convert-issues: project=<KEY> converted=<n> passed_over=<n> deferred=<n> failed=<n> total=<time> dry_run=<bool>`.
+It exits 1 on a refusal, a failed issue or any other error, 2 on a usage error or a `--project` the `projects` table holds no row of under that exact key, and 0 otherwise.
+
 ### The node and tuple store census
 
 `envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
@@ -6449,7 +6459,7 @@ Each item below names a path with its method and identity, then its purpose.
   an upload under an existing artifact's name, one stored longer included, is never refused for its length.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
-  A new version that is not a person's own and leaves out the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A new version that is not a person's own and changes a person's decision - leaves out, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   On an issue Legion runs, an upload of its spec or Verification document, a file under the name `verification.md` among them, from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
@@ -6465,7 +6475,7 @@ Each item below names a path with its method and identity, then its purpose.
   List non-primary project artifacts (or only unlinked documents with `?unlinked=true`), or create an unlinked project artifact, its kind read, and a new artifact's name held to 2692 bytes, as an issue upload's are.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
-  A new version that is not a person's own and leaves out the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A new version that is not a person's own and changes a person's decision - leaves out, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
@@ -6528,7 +6538,7 @@ Each item below names a path with its method and identity, then its purpose.
   `{id}` must be a UUID.
   An edit is `400 INVALID_ASK_BLOCK` when an ask it writes or changes breaks its content rule (`paragraph+ bullet_list?`) or holds what settlement cannot read;
   an ask it carries through unchanged is not its to refuse.
-  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A batch that is not a person's own whose result changes a person's decision - drops, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block it adds or changes that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   On an issue Legion runs, an edit of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   So is such a writer's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block (`refuseSpecWriterOfTreeEdit`): the route reads the artifact's blocks before and after the batch, inside the transaction's own write of the artifact, and refuses before any version, so nothing is stored.
@@ -6621,7 +6631,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/artifacts/{slug}/edits` (POST; cookie, trusted header, or bearer)
 
   Apply issue-document edit operations.
-  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A batch that is not a person's own whose result changes a person's decision - drops, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   On an issue Legion runs, an edit of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   So is such a writer's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as `/api/v1/artifacts/{id}/edits` answers it.
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
@@ -6652,7 +6662,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/artifacts/{slug}/edits` (POST; cookie, trusted header, or bearer)
 
   Apply project-document edit operations.
-  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A batch that is not a person's own whose result changes a person's decision - drops, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
 
@@ -6981,11 +6991,11 @@ Each item below names a status and code, then its meaning.
 
 - `409 ANSWERED_ASK_KEPT`
 
-  A document write that is not a person's own would take the block of an answered ask out of its document, or retype that block (`docs.ErrAnsweredAskKept`).
+  A write that is not a person's own would change a person's decision (`docs.ErrAnsweredAskKept`): the block of an answered ask, or a decision a person decided, taken out of its document (which is also the one way a text write moves it out of the document that holds it), retyped, or given other words.
   A person's own write is one at a browser, or one through a credential of theirs that holds the `person` scope;
   any other - an agent's session, a pod's service account, the deployment's shared token - is refused, and nothing of it is written.
-  The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it.
-  An edit (`POST /edits` and its slug variants) is held to it for the blocks its batch drops or retypes itself, and an upload of a new version for every answered ask whose block the version leaves out or retypes.
+  The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it; and each such decision by its block's address, quoting its words.
+  Every write path is held to it: an edit (`POST /edits` and its slug variants) for the blocks its batch changes itself, an upload of a new version for every such block the version leaves out or changes, the node state route, and a node move or delete through the node route.
   A write that also drops the block of an open ask is `400 INVALID_ASK_BLOCK` first.
 
 - `409 DOC_SCHEMA`

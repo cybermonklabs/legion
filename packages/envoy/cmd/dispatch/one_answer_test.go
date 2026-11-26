@@ -76,13 +76,6 @@ func announcedBaseCommit(t *testing.T, ctx context.Context, database *pgx.Conn) 
 	return commit
 }
 
-// stopProcess stops p in order (SIGTERM) and waits for it to exit.
-func stopProcess(t *testing.T, p *dispatchProcess) {
-	t.Helper()
-	p.Terminate(t)
-	p.WaitExit(t, "SIGTERM")
-}
-
 // readJSON reads path from p as the test's person and decodes it into into.
 func readJSON(t *testing.T, p *dispatchProcess, path string, into any) {
 	t.Helper()
@@ -150,7 +143,7 @@ func editAsBrowser(t *testing.T, p *dispatchProcess, artifactID, holding string,
 	t.Helper()
 	editor := openTab(t, p, artifactID, holding)
 	defer editor.Close()
-	fragment := editor.Doc.GetXmlFragment(editor.Fragment)
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var changeErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
