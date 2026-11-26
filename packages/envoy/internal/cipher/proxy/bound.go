@@ -909,7 +909,10 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // acts for held by Dispatch, the name the call was decided for going out of the grant, which is
 // how a name an operator withholds reaches a call that reads no request again, and the slot it
 // was decided for no longer released (slotReleased), the rule a new call of that slot is refused
-// by - a github-app installation gone since the release. The second read is the one every other
+// by - a github-app installation gone since the release. A call handled for another live grant of
+// the connection's enrollment (connInfo.handledBy) is held to both grants: the connection's own,
+// whose password every request on it is read by, and the one whose value it carries, whose names
+// and values the checks after the reads are about. The second read is the one every other
 // request makes for the values it is handled for (valuesFor): it answers from what this pod holds
 // unless the live policy version has moved or the name has been reread, which is a pointer read,
 // so it costs a carried call nothing on the common path and reads the grant again exactly when a

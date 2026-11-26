@@ -609,7 +609,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
-		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
+		`+grantAndEnrollmentLive("g", "e")+`,
 		e.kind, e.operator, e.subject, e.projects, c.service
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id

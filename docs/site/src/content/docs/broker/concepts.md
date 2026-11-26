@@ -1862,11 +1862,23 @@ a fixed phrase in place of the names, so a service that sent the value back ther
 on.
 
 The proxy reads the grant behind the password on every connection, and the name's kind and
-profile decide each request (`packages/envoy/internal/cipher/proxy`). A host that no kind of the
-grant's names binds is tunnelled unread, to a public address alone. A bound host is read with a
-leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the request must
-name that same host in its TLS name and in its `Host` header; then the kind's hosts and headers,
-and the kind's and the profile's methods and paths, decide whether the swap happens. That
+profile decide each request (`packages/envoy/internal/cipher/proxy`). A command can hold
+placeholders of several grants of its session at once: one `agent-secrets` run nested in another,
+or a Legion role's GitHub grant beside a grant that a run inside the role asked for. Its password
+names one of them. A host is bound when a kind of any live grant of the password's enrollment
+binds it. A host no such kind binds is tunnelled unread, to a public address alone. A bound host
+is read with a leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the
+request must name that same host in its TLS name and in its `Host` header; then the kind's hosts
+and headers, and the kind's and the profile's methods and paths, decide whether the swap happens.
+A request is handled for one name of one grant: the password's own grant when the request carries
+one of its placeholders, and otherwise the first other live grant of the enrollment, in grant ID
+order, that binds the host and whose placeholder the request carries. A placeholder of another
+grant of the session is therefore swapped on the same connection. A `github-app` or
+`github-installations` name holds one placeholder for each account its App is installed on, and
+the proxy swaps the token of the account the request's path names when the grant holds it:
+`/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
+`/{owner}/{repo}` on `github.com`. GraphQL, search and `/user` get the token of the account whose
+placeholder the request carries. A decrypted
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
