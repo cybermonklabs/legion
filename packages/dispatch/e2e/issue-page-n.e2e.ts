@@ -213,6 +213,7 @@ import {
   type ParentRowMapping,
   pageOffThePalette,
   REFLOW_STATES,
+  readScaleLoad,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
   seedWaitingWalk,
@@ -220,6 +221,7 @@ import {
   specAddress,
   stateName,
   undividedTexts,
+  unheldScaleBounds,
   uploadInDocuments,
   VIEWS_FOCUS,
   versionControl,
@@ -252,7 +254,9 @@ import {
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
+import { seedScale } from "./scale-seed";
 import { navigateInApp } from "./sends";
+import { settledValue } from "./settled";
 import {
   type Browser,
   type BrowserContext,
@@ -3009,6 +3013,54 @@ test("the first load stays inside its request budget", async ({ browser }) => {
   });
 });
 
+// c-scale-whole (R21, the plan's g14): the page keeps its load bound on copies of the largest
+// issues the census of every INFRA issue found (dispatch://INFRA-5574/artifact/load-measure-md),
+// which `e2e/scale-seed.ts` writes with R21's floors: INFRA-663's 9,252 comments, INFRA-3149's 69
+// documents of 45,738 blocks and INFRA-1098's mix at the 99th percentile. The reader never read
+// them, and the row reads them at 1440 px under chromium and at 390 px under iphone, each project
+// seeding copies of its own. Under each control of the view row (`PRESET_ORDER`, so a control that
+// lands after this part is read by the same row), one cold load of that control's address in a
+// context of its own, read by `readScaleLoad`: the load's requests, its JSON, its fit and its
+// lists, then each distinct read of it sent 35 times through the page's own session and timed to
+// its first byte. After the Conversation's load, outside its census, Details is opened and its
+// history and its lists are read (part M's). A bound `AWAITING_SCALE` names is left unread, and
+// the row fails where it finds that bound's owner on the page; every other bound is read, and a
+// bound neither read nor listed fails the row before it seeds.
+// SLOW(>=2s): three copies of the largest issues written and the block index waited for, 21 cold
+// loads of the page, the comments copy's outline of 9,252 comments among them, and each read of
+// those loads sent 35 times.
+test("the page keeps its load bound on the largest issues under each control of the row @phone", async ({
+  browser,
+}) => {
+  // Not measured in a browser yet. Estimated from its parts: about 3 min of seeding and 2 min of
+  // the block index's drain (`e2e/scale-seed.ts`), 21 cold loads at about 10 s each, the comments
+  // copy's outline among them, and some 250 reads sent 35 times at about 30 ms each: about 13 min
+  // in all. The bound is about three times that, for a slow leg, until the first e2e-rows Job
+  // measures the row and this line says what it took.
+  test.setTimeout(2_700_000);
+  const viewport = test.info().project.name === "iphone" ? IPHONE_13 : DESKTOP;
+  expect(
+    unheldScaleBounds(),
+    "R21's bounds that this row reads nowhere and AWAITING_SCALE does not name: the pull request that takes a bound off the list adds its reading"
+  ).toEqual([]);
+  const seeded = await seedScale();
+  // A read that two controls' loads make is timed once: its answer does not change with the
+  // control that asked.
+  const timed = new Set<string>();
+  for (const copy of seeded.copies) {
+    for (const preset of PRESET_ORDER) {
+      const context = await asReader(browser, seeded.reader);
+      try {
+        const page = await context.newPage();
+        await page.setViewportSize(viewport);
+        await readScaleLoad(page, copy, preset, seeded.reader, timed);
+      } finally {
+        await context.close();
+      }
+    }
+  }
+});
+
 // The reviewer's finding on the not-found page (deep-links.e2e.ts:1193 on main reads "Ask not
 // found"): the page's word for an ask is "question" (R34), and the article follows the noun.
 test("an address naming a question the issue does not hold says so in the page's own words", async ({
@@ -3300,7 +3352,8 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
 
   if (testInfo.project.name === "iphone") {
     await page.goto("/");
-    await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
+    // A phone's Inbox lists short rows; the question reads on its row's first line.
+    await expect(page.locator("[data-inbox-row]").first()).toContainText("Can this ship?");
     await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
 
     const openNavigation = page.getByRole("button", { name: "Open navigation" });
@@ -6378,9 +6431,11 @@ test("the title block draws its lower line from the first pixel scrolled", async
             message: `the page did not scroll to ${y} px at ${width} px`,
           })
           .toBe(y);
-        // The scroll's handler and the render it asked for are done within two frames.
-        await nextFrames(page);
-        const reading = await stickyReading(page);
+        // The band read once two reads a poll apart agree: the scroll's handler and the render it
+        // asked for are done by then.
+        const reading = await settledValue(`the band at ${y} px scrolled at ${width} px`, () =>
+          stickyReading(page)
+        );
         if (reading === null) throw new Error(`the page draws no header at ${width} px`);
         expect(reading.scrolled, `the page left ${y} px scrolled at ${width} px`).toBe(y);
         if (!stays) {

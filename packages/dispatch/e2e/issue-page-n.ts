@@ -5,9 +5,9 @@
  * helper is imported from the part that brought it.
  */
 
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
+import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
   DASHBOARD_WORDS,
@@ -28,6 +28,7 @@ import {
   editArtifact,
   getIssue,
   getIssueDecisions,
+  getMyState,
   listMyReplies,
   requestApproval,
   reviewArtifact,
@@ -39,6 +40,8 @@ import {
   contentsPane,
   gotoIssue,
   issuePage,
+  marginShell,
+  openDetails,
   outlineControl,
   outlineSheet,
   presetChooser,
@@ -46,10 +49,24 @@ import {
 } from "./issue-page";
 import { expectIssuePageDrawn, nodeRows, tree } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
+import {
+  historyEntries,
+  historyPanel,
+  historyShowMore,
+  historyShowMoreState,
+} from "./issue-page-m";
 import type { Box } from "./layout";
+import type { ScaleCopy, ScaleNodes } from "./scale-seed";
 import { navigateInApp } from "./sends";
-import { expandedState, settledState } from "./settled";
-import { type ApiRequests, expectLoadSettled } from "./traffic";
+import { expandedState, settledState, settledValue } from "./settled";
+import {
+  type ApiRequest,
+  type ApiRequests,
+  apiRoute,
+  expectLoadSettled,
+  isLiveSocket,
+  watchApiRequests,
+} from "./traffic";
 import { assertPageFits } from "./unclipped";
 
 /** The address that opens an issue's spec with its editor: the spec's own address,
@@ -2472,4 +2489,632 @@ export async function seedWaitingWalk(): Promise<WaitingWalkSeed> {
   );
   await awaitUnreadThreads(key, [comment.id, message.id]);
   return { items: 6, key };
+}
+
+// ---------------------------------------------------------------------------------------------
+// R21: the load bound on the largest issues (`c-scale-whole`, the plan's g14).
+// ---------------------------------------------------------------------------------------------
+
+/** R21's numbers, which no copy, control or width moves. */
+export const SCALE_LIMITS = {
+  /** The rows Dashboard's list draws before the control that draws its next five. */
+  dashboardPage: 5,
+  /** The rows a list of Details draws before the control that draws its next 20. */
+  detailsPage: 20,
+  /** The rows Documents' list draws before the control that draws its next 20. */
+  documentsPage: 20,
+  /** Milliseconds to the first byte of a read's answer, at the 90th percentile of its timed
+   *  sends. */
+  firstByteMs: 200,
+  /** The entries the history draws before the control that draws its next 20. */
+  historyPage: 20,
+  /** Bytes of JSON one cold load receives, summed from the decoded bodies of its answers: 2 MB. */
+  jsonBytes: 2_000_000,
+  /** Requests under `/api/` one cold load sends between navigation and network idle. */
+  requests: 40,
+  /** How many times the row sends each read of a load through the page's own session... */
+  sends: 35,
+  /** ...of which the first are warm-ups, left out of its times: 30 are timed. */
+  warmUps: 5,
+} as const;
+
+/**
+ * The bounds of R21 that a part's code holds, by the names `AWAITING_SCALE` gives them and a
+ * failure prints: Dashboard's list of five (dispatch://INFRA-5702); Documents' list of 20 (R2's);
+ * part M's (dispatch://INFRA-3948), the history's 20 entries and Details' lists of 20, which the
+ * row reads in Details opened after the Conversation's cold load, since Details draws closed on
+ * every load (`openDetails` in `e2e/issue-page.ts`); and part T's (dispatch://INFRA-4062): the
+ * comments read 200 at a time and, on each load whose tree holds every comment, its 2 MB, its 40
+ * requests and the 200 ms of its names reads (`GET /api/v1/reference-targets`), a node's first 50
+ * children and the children's section's 20 rows. Threads' 20 rows wait with `AWAITING_THREADS`
+ * (R11): the view row draws no Threads on this branch.
+ */
+export const SCALE_BOUNDS = [
+  "Dashboard's list",
+  "Documents' list",
+  "the history",
+  "Details' lists",
+  "the comments read",
+  "the 2 MB of a load whose tree holds every comment",
+  "the 40 requests of a load whose tree holds every comment",
+  "the 200 ms of the names reads of a load whose tree holds every comment",
+  "a node's first 50 children",
+  "the children's section's 20 rows",
+] as const;
+
+export type ScaleBound = (typeof SCALE_BOUNDS)[number];
+
+/** The bounds of `SCALE_BOUNDS` the row reads wherever `AWAITING_SCALE` does not name them. A
+ *  node's first 50 children and the children's section's 20 rows are not among them: the outline
+ *  of this branch draws every child of a node and no children's section, so the control their
+ *  reading finds is part T's own, and part T's pull request adds their reading here as it takes
+ *  their entries off `AWAITING_SCALE`. Until one of the two holds each bound, the row fails
+ *  (`unheldScaleBounds`). */
+export const SCALE_BOUNDS_READ: readonly ScaleBound[] = [
+  "Dashboard's list",
+  "Documents' list",
+  "the history",
+  "Details' lists",
+  "the comments read",
+  "the 2 MB of a load whose tree holds every comment",
+  "the 40 requests of a load whose tree holds every comment",
+  "the 200 ms of the names reads of a load whose tree holds every comment",
+];
+
+/** How the row finds that a bound's owner's code is under the tested head: a read that only the
+ *  owner's code makes, in the load of any of `controls`; a control that only the owner's code
+ *  draws, in the load of `preset`; or one that it draws in Details, which the row opens after the
+ *  Conversation's cold load (`readScaleLoad`). */
+export type OwnerSign =
+  | {
+      readonly controls: readonly Preset[];
+      readonly kind: "read";
+      readonly method: string;
+      /** The read's route as `apiRoute` (`e2e/traffic.ts`) writes it. */
+      readonly route: string;
+    }
+  | {
+      readonly control: (page: Page) => Locator;
+      readonly kind: "control";
+      readonly preset: Preset;
+    }
+  | {
+      readonly control: (page: Page) => Locator;
+      readonly kind: "details";
+    };
+
+/** One bound whose owner's code is not under the tested head (`AWAITING_SCALE`). */
+export interface AwaitedBound {
+  readonly bound: ScaleBound;
+  /** The part that brings the bound's code. */
+  readonly owner: string;
+  readonly sign: OwnerSign;
+}
+
+/** The controls of the view row that draw the outline. */
+const OUTLINE_CONTROLS: readonly Preset[] = [
+  "conversation",
+  "spec",
+  "verification",
+  "plan",
+  "decisions",
+];
+
+/** Part T's sign (R21): the tree read, which only part T's code makes, in the load of a control
+ *  that draws the outline. `main`'s outline reads the comments whole instead
+ *  (`useIssueTree.ts`' `issueCommentsQuery`). */
+const TREE_READ: OwnerSign = {
+  controls: OUTLINE_CONTROLS,
+  kind: "read",
+  method: "GET",
+  route: "/api/v1/issues/:id/tree",
+};
+
+/** Part T of dispatch://INFRA-1196, which brings the tree read. */
+const PART_T = "dispatch://INFRA-4062";
+
+/**
+ * Each bound of R21 whose owner's code is not under the tested head, on `main` or on a branch
+ * this part holds, with its owner and its sign (spec version 85's R21). Of the owners INV-7 names,
+ * part T's entries alone are here: part M's code and dispatch://INFRA-5702's are under this part's
+ * head, so the row reads Dashboard's list, whose sign is the control that draws its next five
+ * (`dashboardNextFive`), and the history and Details' lists, whose sign is a control of theirs
+ * that says how many are left. The row reads no bound listed here, and fails with
+ * `AWAITING_SCALE names a bound whose owner is under the head: <bound>` wherever it finds the
+ * bound's sign, so each bound is held from the merge that brings its owner, of `main` or of the
+ * owner's branch: part T's pull request empties this list.
+ */
+export const AWAITING_SCALE: readonly AwaitedBound[] = [
+  { bound: "the comments read", owner: PART_T, sign: TREE_READ },
+  { bound: "the 2 MB of a load whose tree holds every comment", owner: PART_T, sign: TREE_READ },
+  {
+    bound: "the 40 requests of a load whose tree holds every comment",
+    owner: PART_T,
+    sign: TREE_READ,
+  },
+  {
+    bound: "the 200 ms of the names reads of a load whose tree holds every comment",
+    owner: PART_T,
+    sign: TREE_READ,
+  },
+  { bound: "a node's first 50 children", owner: PART_T, sign: TREE_READ },
+  { bound: "the children's section's 20 rows", owner: PART_T, sign: TREE_READ },
+];
+
+/** Whether `AWAITING_SCALE` names `bound`. */
+function awaitsScale(bound: ScaleBound): boolean {
+  return AWAITING_SCALE.some((entry) => entry.bound === bound);
+}
+
+/** Each bound of R21 that the row does not read and `AWAITING_SCALE` does not name. */
+export function unheldScaleBounds(): ScaleBound[] {
+  return SCALE_BOUNDS.filter((bound) => !SCALE_BOUNDS_READ.includes(bound) && !awaitsScale(bound));
+}
+
+/** The control under Dashboard's list that draws its next five and says how many are left,
+ *  "Show the next five · 1 left" (`WaitingList.tsx`): what the row reads the list's count by, and
+ *  dispatch://INFRA-5702's sign. */
+export function dashboardNextFive(page: Page): Locator {
+  return dashboardView(page)
+    .getByRole("region", { exact: true, name: DASHBOARD_WORDS.parts.waiting })
+    .getByRole("button", { name: new RegExp(`^${DASHBOARD_WORDS.next_five}\\b`, "u") });
+}
+
+/** Prints one reading of R21's row and keeps it among the row's annotations, under `type`. */
+function report(type: string, line: string): void {
+  console.log(line);
+  test.info().annotations.push({ description: line, type });
+}
+
+/** One GET under `/api/` a cold load sent, as the row sends it again: its path and query, its
+ *  route, the headers the page sent it with, and the status the page's own answer took, which
+ *  stays undefined where the page's read got none. */
+interface ScaleRead {
+  readonly address: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly route: string;
+  status: number | undefined;
+}
+
+/** What one cold load sends and receives, from before its navigation: its requests under
+ *  `/api/` (`watchApiRequests`), each distinct GET among them as the row sends it again, and the
+ *  bytes of every JSON answer, read from the decoded bodies the browser received, with each answer
+ *  whose body could not be read. */
+function watchScaleLoad(page: Page) {
+  const api = watchApiRequests(page);
+  const reads = new Map<string, ScaleRead>();
+  const bodies: Promise<number | string>[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    const address = `${url.pathname}${url.search}`;
+    if (request.method() !== "GET" || !url.pathname.startsWith("/api/") || reads.has(address)) {
+      return;
+    }
+    const route = apiRoute(url.pathname);
+    reads.set(address, { address, headers: request.headers(), route, status: undefined });
+  });
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (isLiveSocket(url)) return;
+    const read = reads.get(`${url.pathname}${url.search}`);
+    if (read !== undefined && read.status === undefined && response.request().method() === "GET") {
+      read.status = response.status();
+    }
+    if (!(response.headers()["content-type"] ?? "").includes("json")) return;
+    bodies.push(
+      response.body().then(
+        (body) => body.length,
+        () => response.url()
+      )
+    );
+  });
+  return {
+    api,
+    json: async (): Promise<{ readonly bytes: number; readonly unread: readonly string[] }> => {
+      const answers = await Promise.all(bodies);
+      const sizes = answers.filter((answer) => typeof answer === "number");
+      return {
+        bytes: sizes.reduce((sum, size) => sum + size, 0),
+        unread: answers.filter((answer) => typeof answer === "string"),
+      };
+    },
+    reads: (): readonly ScaleRead[] => [...reads.values()],
+  };
+}
+
+/** Each route of `requests` that addresses, in its path, more than one node of one of `lists`: a
+ *  read sent once for each node, which R21 allows a load none of. A batched read names its nodes
+ *  in its query, in one request, and is no such read. */
+function readsPerNode(requests: readonly ApiRequest[], lists: readonly ScaleNodes[]): string[] {
+  const found: string[] = [];
+  for (const list of lists) {
+    const named = new Map<string, Set<string>>();
+    for (const request of requests) {
+      const route = `${request.method} ${request.route}`;
+      for (const segment of (request.path.split("?")[0] ?? "").split("/")) {
+        const id = decodeURIComponent(segment);
+        if (list.ids.has(id)) named.set(route, (named.get(route) ?? new Set<string>()).add(id));
+      }
+    }
+    for (const [route, ids] of named) {
+      if (ids.size > 1) found.push(`${route}, one for each of ${ids.size} ${list.noun}`);
+    }
+  }
+  return found;
+}
+
+/**
+ * Sends `read` `SCALE_LIMITS.sends` times, one after another, through the page's own session
+ * (`page.request`, with the context's cookies and the headers the page sent it with), and
+ * answers the times to the first byte of the answers after the warm-ups: each answer's
+ * `responseStart` less its `requestStart` (`APIResponse.timing()`, both in milliseconds from its
+ * `startTime`), which is the server's time to its first byte, not the download of the whole body.
+ * Every send must be answered as the page's own read was, and a timing that is missing (-1) or
+ * runs backwards fails rather than being dropped. Only reads are sent, so no send writes.
+ */
+async function firstByteTimes(page: Page, read: ScaleRead): Promise<number[]> {
+  const times: number[] = [];
+  let answered = read.status;
+  for (let send = 1; send <= SCALE_LIMITS.sends; send += 1) {
+    const response = await page.request.get(read.address, { headers: read.headers });
+    const status = response.status();
+    const { requestStart, responseStart } = response.timing();
+    await response.dispose();
+    answered ??= status;
+    if (status !== answered) {
+      throw new Error(
+        `GET ${read.address} was answered ${status} at send ${send}, where ${read.status === undefined ? "its first send" : "the page's own read"} was answered ${answered}`
+      );
+    }
+    if (send <= SCALE_LIMITS.warmUps) continue;
+    if (requestStart < 0 || responseStart < requestStart) {
+      throw new Error(
+        `GET ${read.address}'s send ${send} gives no time to its first byte: its request started at ${requestStart} ms and its answer at ${responseStart} ms`
+      );
+    }
+    times.push(responseStart - requestStart);
+  }
+  return times;
+}
+
+/** Fails, naming each bound of `AWAITING_SCALE` whose owner's sign `place` shows - the load of a
+ *  control, or Details opened after the Conversation's - with `AWAITING_SCALE names a bound whose
+ *  owner is under the head: <bound>`: the sign's read among `requests`, the load's, or its
+ *  control drawn, read once the page has settled on it. */
+async function failOnOwnerSigns(
+  page: Page,
+  place: Preset | "details",
+  requests: readonly ApiRequest[]
+): Promise<void> {
+  const shown: ScaleBound[] = [];
+  for (const { bound, sign } of AWAITING_SCALE) {
+    if (sign.kind === "read") {
+      const { method, route } = sign;
+      const sent = requests.some((request) => request.method === method && request.route === route);
+      if (sent && place !== "details" && sign.controls.includes(place)) shown.push(bound);
+    } else if (sign.kind === "details" ? place === "details" : sign.preset === place) {
+      const drawn = await settledValue(`${bound}'s sign`, () => sign.control(page).count());
+      if (drawn > 0) shown.push(bound);
+    }
+  }
+  if (shown.length > 0) {
+    throw new Error(
+      `AWAITING_SCALE names a bound whose owner is under the head: ${shown.join("; ")}`
+    );
+  }
+}
+
+/** Waits until the load of `preset` draws what the row reads: Dashboard with its list read
+ *  (`expectDashboardDrawn`); else the control on, and Documents' list with its rows, or the
+ *  outline under a control that draws it. */
+async function expectScaleControlDrawn(page: Page, preset: Preset, where: string): Promise<void> {
+  if (preset === "dashboard") {
+    await expectDashboardDrawn(page, where);
+    return;
+  }
+  await expectActiveControl(page, preset);
+  if (preset === "documents") {
+    await expect(documentsList(page), `${where} draws no Documents' list`).toBeVisible();
+    await expect(documentsRows(page).first(), `${where} draws no row in its list`).toBeVisible();
+  } else if (OUTLINE_CONTROLS.includes(preset)) {
+    await expectIssuePageDrawn(page);
+  }
+}
+
+/** Fails unless Dashboard's list draws at most its page of five, with the control that says how
+ *  many of the copy's things that wait are left. The count it draws, the seed's six, is what
+ *  puts the list past its page, and is asserted first. */
+async function expectDashboardPaged(
+  page: Page,
+  copy: ScaleCopy,
+  where: string,
+  leg: string
+): Promise<void> {
+  const waiting = dashboardView(page).getByRole("region", {
+    exact: true,
+    name: DASHBOARD_WORDS.parts.waiting,
+  });
+  const reading = await settledValue(`${where}: Dashboard's list`, async () => ({
+    count: (await waiting.getByTestId("dashboard-waiting-count").innerText()).trim(),
+    drawn: await waiting.locator('[data-testid^="dashboard-item-"]').count(),
+    more: await wordsOf(dashboardNextFive(page)),
+  }));
+  report(
+    "scale-list",
+    `SCALE list ${leg}: Dashboard's list counts ${reading.count}, draws ${reading.drawn}, under it ${JSON.stringify(reading.more)}`
+  );
+  expect(
+    reading.count,
+    `${where} counts ${reading.count} things that wait on the reader, not the ${copy.waiting} the seed wrote`
+  ).toBe(String(copy.waiting));
+  expect
+    .soft(
+      reading.drawn,
+      `${where}: Dashboard's list draws ${reading.drawn} of its ${copy.waiting} items, more than its page of ${SCALE_LIMITS.dashboardPage}`
+    )
+    .toBeLessThanOrEqual(SCALE_LIMITS.dashboardPage);
+  expect
+    .soft(
+      reading.more,
+      `${where}: Dashboard's list draws no control that says how many of its ${copy.waiting} items are left`
+    )
+    .toEqual([
+      `${DASHBOARD_WORDS.next_five} · ${copy.waiting - reading.drawn} ${DASHBOARD_WORDS.left}`,
+    ]);
+}
+
+/** Fails unless Documents' list draws at most its page of 20 rows, with the control that says how
+ *  many of the documents and files the issue read lists are left (`showMoreControl`). */
+async function expectDocumentsPaged(
+  page: Page,
+  copy: ScaleCopy,
+  where: string,
+  leg: string
+): Promise<void> {
+  const reading = await settledValue(`${where}: Documents' list`, async () => ({
+    drawn: await documentsRows(page).count(),
+    more: await wordsOf(showMoreControl(documentsList(page))),
+  }));
+  report(
+    "scale-list",
+    `SCALE list ${leg}: Documents' list draws ${reading.drawn} of ${copy.listed}, under it ${JSON.stringify(reading.more)}`
+  );
+  expect
+    .soft(
+      reading.drawn,
+      `${where}: Documents' list draws ${reading.drawn} rows of the ${copy.listed} documents and files, more than its page of ${SCALE_LIMITS.documentsPage}`
+    )
+    .toBeLessThanOrEqual(SCALE_LIMITS.documentsPage);
+  expect
+    .soft(
+      reading.more,
+      `${where}: Documents' list draws no control that says how many of its ${copy.listed} documents and files are left`
+    )
+    .toEqual([
+      `${CONTROL_LABELS.show_more} (${copy.listed - reading.drawn} ${CONTROL_LABELS.show_more_left})`,
+    ]);
+}
+
+/** What each control `controls` finds says, each with its runs of space made one: the words of a
+ *  list's Show more. */
+async function wordsOf(controls: Locator): Promise<string[]> {
+  return (await controls.allTextContents()).map((text) => text.replace(/\s+/gu, " ").trim());
+}
+
+/**
+ * Opens Details on the page of the Conversation's cold load, whose census `readScaleLoad` has
+ * taken, so nothing the open reads counts in that load, and reads each list of Details that holds
+ * more than its page on the copy (R21, part M's): the history, which Details draws under its
+ * properties 20 entries at a time, under a Show more that says how many of the entries read are
+ * left, with "+" while an older page of the log is unread (`IssueHistory.tsx`); its Files, every
+ * document and file of the issue, 20 at a time (`IssueMargin.tsx`); and Referenced by, where more
+ * than 20 things reference the issue, which its control reads once pressed. Details' other lists -
+ * its pull requests, links, components and subscribers, the issues that wait on this one and the
+ * reader's pins - hold none of the copy's records. A listed owner's sign that Details shows fails
+ * the row (`failOnOwnerSigns`).
+ */
+async function expectDetailsPaged(
+  page: Page,
+  copy: ScaleCopy,
+  where: string,
+  leg: string,
+  awaited: (bound: ScaleBound) => boolean
+): Promise<void> {
+  await openDetails(page);
+  await failOnOwnerSigns(page, "details", []);
+  const opened = `${where}, with Details opened after it`;
+  if (!awaited("the history")) {
+    await expect(historyPanel(page), `${opened}: Details draws no history`).toBeVisible();
+    // What the history's Show more says, read once the history has drawn one of its states.
+    const control = await historyShowMoreState(page);
+    const history = await settledValue(`${opened}: the history`, async () => ({
+      drawn: await historyEntries(page).count(),
+      more: await wordsOf(historyShowMore(page)),
+    }));
+    report(
+      "scale-list",
+      `SCALE list ${leg} Details: the history draws ${history.drawn} entries, under it ${JSON.stringify(history.more)}, its Show more ${control}`
+    );
+    expect
+      .soft(
+        history.drawn,
+        `${opened}: the history draws ${history.drawn} entries, more than its page of ${SCALE_LIMITS.historyPage}`
+      )
+      .toBeLessThanOrEqual(SCALE_LIMITS.historyPage);
+    expect
+      .soft(
+        control,
+        `${opened}: the history draws no control that says how many entries are left: ${JSON.stringify(history.more)}`
+      )
+      .toBe("counted");
+  }
+  if (awaited("Details' lists")) return;
+  const files = marginShell(page).getByTestId("issue-files");
+  await expect(files, `${opened}: Details draws no list of the issue's files`).toBeVisible();
+  const listed = await settledValue(`${opened}: Details' Files`, async () => ({
+    drawn: await files.getByRole("listitem").count(),
+    // The list's Show more stands under it, in the row that holds it.
+    more: await wordsOf(showMoreControl(files.locator(".."))),
+  }));
+  report(
+    "scale-list",
+    `SCALE list ${leg} Details: Files draws ${listed.drawn} of ${copy.listed}, under it ${JSON.stringify(listed.more)}`
+  );
+  expect
+    .soft(
+      listed.drawn,
+      `${opened}: Details' Files draws ${listed.drawn} rows of the ${copy.listed} documents and files, more than its page of ${SCALE_LIMITS.detailsPage}`
+    )
+    .toBeLessThanOrEqual(SCALE_LIMITS.detailsPage);
+  expect
+    .soft(
+      listed.more,
+      `${opened}: Details' Files draws no control that says how many of its ${copy.listed} documents and files are left`
+    )
+    .toEqual([
+      `${CONTROL_LABELS.show_more} (${copy.listed - listed.drawn} ${CONTROL_LABELS.show_more_left})`,
+    ]);
+  if (copy.referencedBy <= SCALE_LIMITS.detailsPage) {
+    report(
+      "scale-list",
+      `SCALE list ${leg} Details: Referenced by holds ${copy.referencedBy}, no more than its page`
+    );
+    return;
+  }
+  await marginShell(page)
+    .getByRole("button", { name: new RegExp(`^${PROPERTY_LABELS.referenced_by}`, "u") })
+    .click();
+  const references = marginShell(page).getByRole("region", {
+    exact: true,
+    name: PROPERTY_LABELS.referenced_by,
+  });
+  const rows = references.locator("[data-reference-rows]");
+  await expect(rows.first(), `${opened}: Referenced by draws no row`).toBeVisible();
+  const referenced = await settledValue(`${opened}: Referenced by`, async () => ({
+    drawn: await rows.count(),
+    more: await wordsOf(showMoreControl(references)),
+  }));
+  report(
+    "scale-list",
+    `SCALE list ${leg} Details: Referenced by draws ${referenced.drawn} of ${copy.referencedBy}, under it ${JSON.stringify(referenced.more)}`
+  );
+  expect
+    .soft(
+      referenced.drawn,
+      `${opened}: Referenced by draws ${referenced.drawn} rows, more than its page of ${SCALE_LIMITS.detailsPage}`
+    )
+    .toBeLessThanOrEqual(SCALE_LIMITS.detailsPage);
+  expect
+    .soft(
+      referenced.more,
+      `${opened}: Referenced by draws no control that says how many of what references the issue are left`
+    )
+    .toHaveLength(1);
+}
+
+/**
+ * One cold load of `preset`'s address on `copy`, in the new context `page` is the first page of,
+ * signed in as `reader`, who has read nothing of the copy, read as R21 reads it: at most 40
+ * requests under `/api/` between navigation and network idle (`expectLoadSettled`) and none per
+ * node (`readsPerNode`), at most 2 MB of JSON, `assertPageFits`, Dashboard's list and Documents'
+ * list each at most its page with the control that says how many are left, and then each distinct
+ * read of the load that no load before it made (`timed`) sent 35 times through the page's own
+ * session (`firstByteTimes`), each at most 200 ms to its first byte at the 90th percentile of the
+ * last 30. After the Conversation's load, and outside its census, it opens Details and reads the
+ * history and Details' lists (`expectDetailsPaged`). A bound `AWAITING_SCALE` names is not read,
+ * and is printed as awaited where it applies; the load fails at once where it shows a listed
+ * owner's sign (`failOnOwnerSigns`). A bound that fails is recorded (`expect.soft`), so one run
+ * names every bound a copy, a control and a width breaks, and the row fails at its end. A load
+ * reads every comment where it sends the issue's whole comments read, which is how `main`'s
+ * outline builds its tree.
+ */
+export async function readScaleLoad(
+  page: Page,
+  copy: ScaleCopy,
+  preset: Preset,
+  reader: string,
+  timed: Set<string>
+): Promise<void> {
+  const width = page.viewportSize()?.width ?? 0;
+  const leg = `${copy.census} ${preset} ${width} px`;
+  const where = `the cold load of ${PRESET_NAMES[preset]} on the copy of ${copy.census} (${copy.key}) at ${width} px`;
+  expect(
+    (await getMyState(reader))[copy.key]?.last_read_seq ?? 0,
+    `${reader} has read ${copy.key} before ${where}, so it is no load of a person who never read it`
+  ).toBe(0);
+
+  const load = watchScaleLoad(page);
+  await gotoIssue(page, presetPath(copy.key, preset));
+  await expectScaleControlDrawn(page, preset, where);
+  await expectLoadSettled(load.api);
+  // What the load sent between navigation and network idle; a poll the page sends later is no
+  // part of it.
+  const requests = [...load.api.requests];
+  const reads = load.reads();
+  const routes = load.api.byRoute().map(({ count, route }) => `${count} × ${route}`);
+  const json = await load.json();
+  const comments = `/api/v1/issues/${copy.key}/comments`;
+  const whole = requests.some((request) => request.method === "GET" && request.path === comments);
+  report(
+    "scale-load",
+    `SCALE load ${leg}: ${requests.length} requests under /api/, ${json.bytes} bytes of JSON (${json.unread.length} answers unread), ${whole ? "its tree holds every comment" : "no read of every comment"}; ${routes.join(", ")}`
+  );
+
+  await failOnOwnerSigns(page, preset, requests);
+  /** Whether `AWAITING_SCALE` names `bound`, which the load then leaves unread, saying so. */
+  const awaited = (bound: ScaleBound): boolean => {
+    if (!awaitsScale(bound)) return false;
+    report("scale-awaited", `SCALE awaited ${leg}: ${bound}`);
+    return true;
+  };
+
+  if (!(whole && awaited("the 40 requests of a load whose tree holds every comment"))) {
+    expect
+      .soft(
+        requests.length,
+        `${where} sent ${requests.length} requests under /api/ between navigation and network idle, more than ${SCALE_LIMITS.requests}: ${routes.join(", ")}`
+      )
+      .toBeLessThanOrEqual(SCALE_LIMITS.requests);
+  }
+  expect.soft(readsPerNode(requests, copy.nodes), `${where} sent a read per node`).toEqual([]);
+  if (!(whole && awaited("the 2 MB of a load whose tree holds every comment"))) {
+    expect
+      .soft(json.unread, `${where}: answers whose JSON was not read, so the load has no total`)
+      .toEqual([]);
+    expect
+      .soft(json.bytes, `${where} received ${json.bytes} bytes of JSON, more than 2 MB`)
+      .toBeLessThanOrEqual(SCALE_LIMITS.jsonBytes);
+  }
+
+  if (preset === "dashboard" && !awaited("Dashboard's list")) {
+    await expectDashboardPaged(page, copy, where, leg);
+  }
+  if (preset === "documents" && !awaited("Documents' list")) {
+    await expectDocumentsPaged(page, copy, where, leg);
+  }
+  await assertPageFits(page);
+
+  const names =
+    whole && awaited("the 200 ms of the names reads of a load whose tree holds every comment");
+  for (const read of reads) {
+    if (timed.has(read.address)) continue;
+    if (
+      (read.address === comments && awaitsScale("the comments read")) ||
+      (names && read.route === "/api/v1/reference-targets")
+    ) {
+      report("scale-awaited", `SCALE awaited ${leg}: the 200 ms of GET ${read.address}`);
+      continue;
+    }
+    timed.add(read.address);
+    const times = await firstByteTimes(page, read);
+    const sorted = [...times].sort((a, b) => a - b);
+    // The 90th percentile by nearest rank: the 27th of the 30 times.
+    const p90 = sorted[Math.ceil(sorted.length * 0.9) - 1] ?? Number.POSITIVE_INFINITY;
+    const spread = `${p90.toFixed(1)} ms at the 90th percentile of ${times.length}, ${sorted[0]?.toFixed(1)} to ${sorted.at(-1)?.toFixed(1)} ms`;
+    report("scale-read", `SCALE read ${leg}: GET ${read.address} ${spread}`);
+    expect
+      .soft(p90, `GET ${read.address}, a read of ${where}, answers its first byte in ${spread}`)
+      .toBeLessThanOrEqual(SCALE_LIMITS.firstByteMs);
+  }
+  if (preset === "conversation") await expectDetailsPaged(page, copy, where, leg, awaited);
 }
