@@ -133,7 +133,7 @@ cleanup() {
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database_created" ]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+    psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
@@ -147,7 +147,7 @@ trap 'exit 143' TERM
 
 # ---- inputs ------------------------------------------------------------------------------------------
 echo "== setup"
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
 for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
@@ -158,7 +158,8 @@ done
 # whose values the connection string cannot carry as well. Its answer is the connection string
 # the run keeps, and its refusal is the line this script fails with.
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
+database_url=''
+run_database_url_env database_url LEGION_TEST_PG_DSN "$database" "the run creates and drops a database there" || fail "$database_url"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -224,7 +225,7 @@ record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 
 (umask 077 &&
@@ -246,6 +247,12 @@ start_held listener envoy_port ENVOY_LISTEN_FD -- \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
   "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
+# Its DATABASE_URL is the connection string run_database_url_env rebuilt, which carries the DSN's
+# password, so xtrace is off while the start line is expanded and put back as it was after it: a
+# run under `bash -x` traces no part of it. The port is `{port}`, which held-port.py puts in, so
+# no expansion here needs one either.
+case $- in *x*) dispatch_start_traced=1 ;; *) dispatch_start_traced=0 ;; esac
+set +x
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
@@ -254,6 +261,7 @@ start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
   ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
   "$work/dispatch"
+((dispatch_start_traced == 0)) || set -x
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
 # The broken provider's port: bound and never listened on, by a process of the run's own, so every
