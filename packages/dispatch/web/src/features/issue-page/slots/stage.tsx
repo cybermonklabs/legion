@@ -6,6 +6,7 @@ import { focusOnDocument } from "../../shell/roving";
 import { ChildrenSection } from "../children-section";
 import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
+import { giveFirstFocus } from "../first-focus";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
@@ -271,10 +272,13 @@ export function ViewStage({
     // The frames that end `placed`, which go with the stage: one left to run after the view is
     // gone would focus what the take placed the focus on, off the page.
     const ending = new Set<number>();
-    // Puts the focus on `to`, and brings it on screen too once `bring`.
+    // Puts the focus on `to`, and brings it on screen too once `bring`. Otherwise it is the
+    // view's first focus, and `to` is left where it stands while it holds it (`giveFirstFocus`):
+    // a row that placed itself on screen as it took the focus scrolled the page after its first
+    // drawing, by as far as the issue's children stand above the view's rows (R3).
     const place = (to: HTMLElement): void => {
       if (bring) focusOn(to);
-      else to.focus({ preventScroll: true });
+      else giveFirstFocus(to);
     };
     // The Retry the take gave the focus to, while the focus rests there or nothing holds it: a
     // line the view draws above it later takes the focus to its own Retry (`firstLine`), so the

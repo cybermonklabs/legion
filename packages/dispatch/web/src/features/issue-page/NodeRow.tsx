@@ -43,6 +43,7 @@ import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
+import { holdsFirstFocus } from "./first-focus";
 import { chipName } from "./first-line";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
@@ -557,8 +558,10 @@ export function rowNameIds(base: string): {
  * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
  * nor as it grows. The outline's first row the page opens on is one: a row taller than the
  * screen would be put at its top under the band, and the page would open scrolled past its
- * header. Read when the row is placed rather than as a cause of placing it, so the row turning
- * back to placing itself moves nothing at that moment.
+ * header. Nor while the row holds the view's first focus, which the stage gives it where it
+ * stands (`first-focus.ts`), until the reader acts. Each is read when the row is placed rather
+ * than as a cause of placing it, so the row turning back to placing itself moves nothing at that
+ * moment.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
@@ -585,6 +588,7 @@ export function useRowOnScreen(
     const place = () => {
       if (!placing.current) return;
       if (pressed.current) return;
+      if (holdsFirstFocus(element)) return;
       bringOnScreen(element);
       belowWhatStays(element, below);
     };

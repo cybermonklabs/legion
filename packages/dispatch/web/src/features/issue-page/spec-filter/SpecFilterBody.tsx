@@ -48,6 +48,7 @@ import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
 import { useDrawnInSlices } from "../drawn-in-slices";
+import { holdsFirstFocus } from "../first-focus";
 import { useSetFocusedNode } from "../focused-node";
 import { type BriefCounts, ChecksNumber, IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -966,8 +967,9 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  * up to stood with its top 27 px down, under heads 31 px tall. Where the item stands under the
  * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`), again
  * whenever it grows - after the rule has placed it, since its observer is made first - and never
- * while a press inside it is held, as the rule holds its own placing. At 901 px and below the
- * heads are not drawn, and the rule alone places it.
+ * while a press inside it is held or while it holds the view's first focus (`first-focus.ts`),
+ * as the rule holds its own placing. At 901 px and below the heads are not drawn, and the rule
+ * alone places it.
  *
  * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press for
  * the rule's step and for this one.
@@ -991,7 +993,7 @@ function useOnScreenUnderHeads(
     const element = item.current;
     if (!focused || element === null) return;
     const place = () => {
-      if (placing.current && !pressed.current) clearOfHeads(element);
+      if (placing.current && !pressed.current && !holdsFirstFocus(element)) clearOfHeads(element);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;
