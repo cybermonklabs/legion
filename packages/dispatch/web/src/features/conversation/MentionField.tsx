@@ -24,7 +24,12 @@ import {
 } from "../../theme/classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
-import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";
+import {
+  applyInsertion,
+  isCompositionKey,
+  type RefPickerInsertion,
+  type RefPickerWords,
+} from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
 
@@ -81,6 +86,7 @@ export function MentionField({
   body,
   className,
   describedBy,
+  description,
   disabled = false,
   fieldClassName,
   fieldRef,
@@ -99,10 +105,12 @@ export function MentionField({
   onKeyDown,
   onPaste,
   onPickerOpenChange,
+  pickerWords,
   placeholder,
   project,
   readOnly = false,
   rows = 1,
+  targets,
   writing,
 }: {
   /** Whether this box is an ask's answer box, which writes `data-ask-answer` on the textarea:
@@ -117,6 +125,10 @@ export function MentionField({
   /** Ids of the host's own text about this box, read out with the field's own hint: the count
    *  of what may still be written, where the host draws one. */
   readonly describedBy?: readonly string[];
+  /** The words read out as the box's own description, in place of its row's hint
+   *  (`writing.hint`): a host that says in words of its own what the box's keys do - the issue
+   *  page's box, whose line under the box is off screen (`look`). */
+  readonly description?: string;
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
    *  letting them write over what is already on the wire. The picker is shut with it. */
   readonly disabled?: boolean;
@@ -171,6 +183,9 @@ export function MentionField({
   /** Told whenever the picker opens or closes: a host lifts itself over whatever it floats
    *  above while the list is showing. */
   readonly onPickerOpenChange?: (open: boolean) => void;
+  /** The words the picker draws in this box (`RefPickerWords`), where the host has its own: the
+   *  issue page's box. With none, the picker's own. */
+  readonly pickerWords?: RefPickerWords;
   /** What the empty box says it takes, where the host has words for it (an ask's answer box
    *  names what the picked option asks of the reader). */
   readonly placeholder?: string;
@@ -183,6 +198,14 @@ export function MentionField({
   readonly readOnly?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
+  /** How the list of who this box's write is delivered to names itself and each of them, where
+   *  the host has words of its own (the issue page's box): its accessible name, and each target
+   *  by its name rather than its address. With none, the list is "Mention targets" and each
+   *  target is its address. */
+  readonly targets?: {
+    readonly label: string;
+    readonly nameOf: (target: string) => string;
+  };
   /** This box's row of the writing list, for the write it is making now: the line under the box
    *  is the row's `hint`, so the words a person reads and the list cannot disagree. */
   readonly writing: DispatchWritingBoxRow;
@@ -212,6 +235,7 @@ export function MentionField({
     issueKey,
     project,
     text: body,
+    words: pickerWords,
   });
   /** Who this box's write is delivered to, read from the text the reader can see
    *  (`draftParties`): a box whose write delivers nothing names nobody, whatever it cites. */
@@ -384,38 +408,39 @@ export function MentionField({
       </label>
       {parties.length === 0 ? null : (
         <ul
-          aria-label="Mention targets"
+          aria-label={targets?.label ?? "Mention targets"}
           className={
             look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"
           }
         >
           {parties.map((target) => (
             <li className="rounded-full border px-2 py-1" key={target}>
-              <code>{target}</code>
+              {targets === undefined ? <code>{target}</code> : targets.nameOf(target)}
             </li>
           ))}
         </ul>
       )}
       {look === undefined ? (
-        <RefPickerList id={listboxId} onTake={takePick} picker={picker} />
+        <RefPickerList id={listboxId} onTake={takePick} picker={picker} words={pickerWords} />
       ) : open ? (
         // The host's line is one row of its own controls, so the open list takes a row of its own
         // at the line's end, which the host's line wraps to. A flex item is no narrower than its
         // content's min-content width (`min-width: auto`), so the wrapper takes `min-w-0`: a picker
         // row's long label, cut to one line, would otherwise widen the page past a phone's screen.
         <div className="order-last min-w-0 basis-full">
-          <RefPickerList id={listboxId} onTake={takePick} picker={picker} />
+          <RefPickerList id={listboxId} onTake={takePick} picker={picker} words={pickerWords} />
         </div>
       ) : null}
       {/* What this box does with a pick, in the writing list's own words, so the line under the
-          box and the list that drives the browser rows cannot drift apart. */}
+          box and the list that drives the browser rows cannot drift apart - or, where the host
+          says what the box's keys do in its own words, those (`description`). */}
       <p
         className={
           look === undefined ? (hintClassName ?? `text-xs ${textMutedOnSurface}`) : "sr-only"
         }
         id={hintId}
       >
-        {writing.hint}
+        {description ?? writing.hint}
       </p>
     </>
   );

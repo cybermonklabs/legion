@@ -298,11 +298,16 @@ export function movedSendNote(stopped: CarriedAddress): string {
 }
 
 /** A send the reader stopped whose draft they have since moved to another address, which says so
- *  (`movedSendNote`). It ends as a stopped write does, with Retry and Discard. */
+ *  (`movedSendNote`). It ends as a stopped write does, with Retry and Discard. It keeps the
+ *  address the stopped write went to (`stopped`), which a host that says the note in words of its
+ *  own names. */
 export class SendMovedError extends SendStoppedError {
+  readonly stopped: CarriedAddress;
+
   constructor(stopped: CarriedAddress) {
     super(movedSendNote(stopped));
     this.name = "SendMovedError";
+    this.stopped = stopped;
   }
 }
 

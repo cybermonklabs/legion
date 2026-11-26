@@ -1,5 +1,6 @@
 import { mentionName } from "@legion/contracts";
 
+import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { DisplayTree, SearchResultKind } from "../../api/types";
 import type { TextSource } from "./text-references";
 
@@ -206,11 +207,16 @@ export interface RefPickerGroup {
   readonly rows: readonly RefPickerRow[];
 }
 
-/** The rows grouped by kind, the groups in this door's order; a kind with no row has no group. */
-export function groupRows(rows: readonly RefPickerRow[], door: RefPickerDoor): RefPickerGroup[] {
+/** The rows grouped by kind, the groups in this door's order, each under its kind's heading of
+ *  `headings`; a kind with no row has no group. */
+export function groupRows(
+  rows: readonly RefPickerRow[],
+  door: RefPickerDoor,
+  headings: RefPickerWords["headings"] = REF_PICKER_HEADINGS
+): RefPickerGroup[] {
   return kindOrder(door).flatMap((kind) => {
     const ofKind = rows.filter((row) => row.kind === kind);
-    return ofKind.length === 0 ? [] : [{ heading: REF_PICKER_HEADINGS[kind], kind, rows: ofKind }];
+    return ofKind.length === 0 ? [] : [{ heading: headings[kind], kind, rows: ofKind }];
   });
 }
 
@@ -498,3 +504,40 @@ const SEARCHED_WORDS = REF_PICKER_SEARCHED_KINDS.map((kind) => SEARCHED_KIND_WOR
  * kind, so every box says the same.
  */
 export const REF_PICKER_INSTRUCTION = `Type two characters to search ${SEARCHED_WORDS.slice(0, -1).join(", ")} and ${SEARCHED_WORDS.at(-1)}.`;
+
+/** What a role's row says after its role where no running session holds it: a mention of it is
+ *  refused rather than kept for its next session, so it is not told. */
+const REF_PICKER_STOPPED_ROLE = "not running, not told";
+
+/**
+ * Every word the picker draws, by what draws it: the list's accessible name (`label`), the
+ * heading over each kind's rows, the instruction row, each kind of parts' control and the line
+ * under an opened row that holds none, the line of each listing state with no rows, the line of
+ * each state of the agent and role rows' own source, and what a role's row says of a role no
+ * running session holds (`stoppedRole`). A host that draws the picker in words of its own - the
+ * issue page's box, through its look (`OutlineLook.picker`) - hands the field a table of its own;
+ * every other host draws `REF_PICKER_DEFAULT_WORDS`.
+ */
+export interface RefPickerWords {
+  readonly label: string;
+  readonly headings: Readonly<Record<RefPickerKind, string>>;
+  readonly instruction: string;
+  readonly parts: Readonly<
+    Record<RefPickerParts["kind"], { readonly control: string; readonly none: string }>
+  >;
+  readonly states: Readonly<Record<Exclude<RefPickerState, "rows">, string>>;
+  readonly parties: Readonly<Record<Exclude<RefPickerParties, "listed">, string>>;
+  readonly stoppedRole: string;
+}
+
+/** The picker's own words, which every host but the issue page's box draws: the constants above,
+ *  and the refilling notice every view of the agent list says (`AGENT_LIST_REFILLING`). */
+export const REF_PICKER_DEFAULT_WORDS: RefPickerWords = {
+  headings: REF_PICKER_HEADINGS,
+  instruction: REF_PICKER_INSTRUCTION,
+  label: "References",
+  parties: { ...REF_PICKER_PARTY_WORDS, refilling: AGENT_LIST_REFILLING },
+  parts: REF_PICKER_PARTS_WORDS,
+  states: REF_PICKER_WORDS,
+  stoppedRole: REF_PICKER_STOPPED_ROLE,
+};
