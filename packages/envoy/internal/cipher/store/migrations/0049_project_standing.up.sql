@@ -11,11 +11,18 @@
 -- A sibling of person_standing rather than columns of it: that table keeps one answer per person,
 -- ordered by Dispatch's own as_of, and this one an answer per person and project, ordered by the
 -- broker's question time.
+--
+-- The rows are keyed by project first, since every read and every delete names one project
+-- (store.KeptProjectStanding, store.KeepProjectStanding). An answer that Dispatch holds no such
+-- project is kept for any key a caller names, so a write of one ends the oldest asked past
+-- store.MaxKeptMissingProjects of them, except one that still hides a person's earlier answer of
+-- its project, and project_standing_missing orders them by asked_at for that write.
 create table project_standing (
   person text not null check (person = btrim(person) and person !~ '[A-Z]'),
   project text not null check (project <> ''),
   visibility text check (visibility in ('public', 'private')),
   visible boolean not null,
   asked_at timestamptz not null,
-  primary key (person, project)
+  primary key (project, person)
 );
+create index project_standing_missing on project_standing (asked_at, project) where person = '' and visibility is null;

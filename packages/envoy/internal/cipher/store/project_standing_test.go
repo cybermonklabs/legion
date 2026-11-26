@@ -1,8 +1,11 @@
 package store_test
 
 import (
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -209,4 +212,109 @@ func TestProjectStandingPublicEndsAtAnAnswerThatItIsPrivate(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestANoSuchProjectAnswerDeletesEveryEarlierAnswerOfItsProject: an answer that Dispatch holds no
+// such project deletes every person's answer for that project asked before it, and leaves one
+// asked after it. ada and bob are on PRIV's list as of t1; PRIV is deleted, no project as of t2;
+// PRIV is made again, carol on its list as of t3, and its no-person answer, private, as of t4
+// replaces the no-project answer. ada's answer as of t1, about the PRIV deleted at t2, is kept
+// nothing: a read while Dispatch cannot be asked refuses her as one never asked rather than show
+// her the new PRIV's rows. carol keeps her own answer.
+//
+// The fault: KeepProjectStanding keeping the person answers a no-project answer is later than;
+// ada's and bob's rows are still there after it, and ada reads private and visible as of t1 after
+// the no-person answer, and the test fails naming both.
+func TestANoSuchProjectAnswerDeletesEveryEarlierAnswerOfItsProject(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := t.Context()
+	const ada, bob, carol = "ada@example.com", "bob@example.com", "carol@example.com"
+	t1 := time.Date(2026, 11, 22, 0, 0, 1, 0, time.UTC)
+	t2, t3, t4 := t1.Add(time.Second), t1.Add(2*time.Second), t1.Add(3*time.Second)
+	for _, step := range []struct {
+		person, visibility string
+		visible            bool
+		asked              time.Time
+	}{
+		{ada, "private", true, t1},
+		{bob, "private", true, t1},
+		{carol, "private", true, t3},
+		{bob, "", false, t2},
+	} {
+		if err := st.KeepProjectStanding(ctx, step.person, "PRIV", step.visibility, step.visible, step.asked); err != nil {
+			t.Fatalf("KeepProjectStanding(%q, PRIV, %q) as of %v: %v", step.person, step.visibility, step.asked, err)
+		}
+	}
+	var people []string
+	rows, err := st.Pool.Query(ctx, `select person from project_standing where project = 'PRIV' order by person`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if people, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(people, []string{"", carol}) {
+		t.Errorf("PRIV's rows after the no-project answer as of t2 are for %q; want the no-project answer (\"\") and carol's, asked after it", people)
+	}
+	if err := st.KeepProjectStanding(ctx, "", "PRIV", "private", false, t4); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := st.KeptProjectStanding(ctx, ada, "PRIV"); err != nil || found {
+		t.Fatalf("KeptProjectStanding(ada, PRIV) after PRIV was deleted and made again = %+v (found %t, %v); want nothing kept", got, found, err)
+	}
+	if got, found, err := st.KeptProjectStanding(ctx, carol, "PRIV"); err != nil || !found || !sameStanding(got, store.ProjectStanding{Visibility: "private", Visible: true, AskedAt: t3}) {
+		t.Fatalf("KeptProjectStanding(carol, PRIV) = %+v (found %t, %v); want her own answer, private and visible as of %v", got, found, err, t3)
+	}
+}
+
+// TestTheBrokerKeepsAtMostMaxKeptMissingProjectsNoSuchProjectAnswers: a project key is any word a
+// caller names, so an answer that Dispatch holds no such project is kept for at most
+// store.MaxKeptMissingProjects keys. A write past it ends the oldest asked, which a read while
+// Dispatch cannot be asked then refuses as never asked, and keeps every later one, its own
+// included. A no-project answer beside a person's answer of its project asked before it, which a
+// slower process wrote after it, is not ended: it is what hides that answer.
+//
+// Faults: KeepProjectStanding with no cap; K1 still reads no project. The cap with no exception;
+// ada reads her answer as of before HIDES was deleted.
+func TestTheBrokerKeepsAtMostMaxKeptMissingProjectsNoSuchProjectAnswers(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := t.Context()
+	const ada, carol = "ada@example.com", "carol@example.com"
+	t0 := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
+	// K1 to K<cap>, one a second from t0, each no project; HIDES no project as of t0, beside
+	// ada's answer that she may see it as of the second before.
+	if _, err := st.Pool.Exec(ctx, `insert into project_standing (person, project, visibility, visible, asked_at)
+		select '', 'K' || i, null, false, $1::timestamptz + make_interval(secs => i) from generate_series(1, $2::int) i
+		union all select '', 'HIDES', null, false, $1::timestamptz
+		union all select $3, 'HIDES', 'private', true, $1::timestamptz - interval '1 second'`,
+		t0, store.MaxKeptMissingProjects, ada); err != nil {
+		t.Fatal(err)
+	}
+	newest := t0.Add(time.Duration(store.MaxKeptMissingProjects+1) * time.Second)
+	if err := st.KeepProjectStanding(ctx, carol, "NEWEST", "", false, newest); err != nil {
+		t.Fatal(err)
+	}
+	var kept int
+	if err := st.Pool.QueryRow(ctx, `select count(*) from project_standing where person = '' and visibility is null`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != store.MaxKeptMissingProjects+1 {
+		t.Errorf("%d no-project answers kept; want %d, the cap and HIDES", kept, store.MaxKeptMissingProjects+1)
+	}
+	if got, found, err := st.KeptProjectStanding(ctx, carol, "K1"); err != nil || found {
+		t.Errorf("KeptProjectStanding(carol, K1), the oldest past the cap, = %+v (found %t, %v); want nothing kept", got, found, err)
+	}
+	for project, asked := range map[string]time.Time{"K2": t0.Add(2 * time.Second), "NEWEST": newest} {
+		if got, found, err := st.KeptProjectStanding(ctx, carol, project); err != nil || !found || !sameStanding(got, store.ProjectStanding{AskedAt: asked}) {
+			t.Errorf("KeptProjectStanding(carol, %s) = %+v (found %t, %v); want no project as of %v", project, got, found, err, asked)
+		}
+	}
+	if got, found, err := st.KeptProjectStanding(ctx, ada, "HIDES"); err != nil || !found || !sameStanding(got, store.ProjectStanding{AskedAt: t0}) {
+		t.Errorf("KeptProjectStanding(ada, HIDES) = %+v (found %t, %v); want no project as of %v, which hides her earlier answer", got, found, err, t0)
+	}
+}
+
+// sameStanding says whether got is want, the times compared as instants.
+func sameStanding(got, want store.ProjectStanding) bool {
+	return got.Visibility == want.Visibility && got.Visible == want.Visible && got.AskedAt.Equal(want.AskedAt)
 }
