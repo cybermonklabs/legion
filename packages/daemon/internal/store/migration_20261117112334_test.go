@@ -17,6 +17,7 @@ import (
 // names its own. What the release before wrote of the settlement - the checked head and its check
 // runs - reads back as it was written.
 func TestAPullRequestRecordedBefore20261117112334HasNoStatuses(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261114061900)

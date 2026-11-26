@@ -60,14 +60,17 @@ func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ..
 // nil receiver, so a route shapes its rows the one way whether or not the header was sent, and
 // neither reads the table nor writes to it when it was not.
 //
-// Only a stored text is registered. A cut - the snippet a search hit carries - is one line of a
-// longer stored text, which nothing stores a row for: it is read where it stands
-// (pmdoc.DisplaySnippetJSON), since registering it would ask the table for a text no writer
-// stores and store a row no reader takes.
+// Only a stored text is registered. A cut or a piece of one - the snippet a search hit carries,
+// an edge's excerpt, an Inbox row's subject, an ambiguous id's candidate first line, a string
+// inside a handoff's body - is a part of a longer stored text, which nothing stores a row for:
+// it is read where it stands, the snippet by pmdoc.DisplaySnippetJSON and the rest through a
+// reader that reads no row and stores none (builtDisplayTrees), since registering it here would
+// ask the table for a text no writer stores and store a row no reader takes.
 type displayTreeReader struct {
 	// server is the server whose table the trees are read from and stored to, and nil for a
 	// reader that reads every text for display itself: a write's own response, which answers the
-	// text it has just stored the tree of, and a live frame, which has no request behind it.
+	// text it has just stored the tree of, a live frame, which has no request behind it, and the
+	// cuts and pieces of a stored text a read answers (builtDisplayTrees).
 	server *server
 	ctx    context.Context
 	mode   pmdoc.DisplayMode
@@ -118,9 +121,11 @@ func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode,
 }
 
 // builtDisplayTrees is the reader of an answer whose texts are read where they stand: a write's
-// own response, which carries the text the request has just written and stored the tree of, and
-// a live frame, which is no request. It reads no row and stores none - the write beside it does
-// both - and is the same reader otherwise, so one shaping serves a read and a write alike.
+// own response, which carries the text the request has just written and stored the tree of, a
+// live frame, which is no request, and the cuts and pieces of a stored text a read answers (an
+// edge's excerpt, an Inbox row's subject, a candidate's first line, a handoff's fields), which no
+// writer stores. It reads no row and stores none - for a write, the write beside it does both -
+// and is the same reader otherwise, so one shaping serves a read and a write alike.
 func builtDisplayTrees(trees bool) *displayTreeReader {
 	if !trees {
 		return nil

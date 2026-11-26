@@ -3,20 +3,43 @@ import type { ReactNode } from "react";
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { EditedMark } from "../refs/PostBody";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark } from "../refs/PostMarks";
+import { PlainText } from "../refs/plain-text";
 import { deletedLineText, postDeletion } from "../refs/post-marks";
-import { questionLine } from "./question-line";
+import { ReferenceHostIs } from "../refs/reference-host";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 
 /**
  * What a thread row is about as plain text, for every name a row's controls carry - its
- * checkbox's, its Dismiss's, its title's hover text: the first line of the thread's subject, or,
- * for a root its author deleted, whose subject the delete cleared, the deleted line's words
- * (`deletedLineText`). One reading, so every name a row carries says the same thing.
+ * checkbox's, its Dismiss's: the one plain-text projection of the thread's subject, from the
+ * same reader that draws the row's own line and with the record that line names
+ * (`ThreadTitle`), or, for a root its author deleted, whose subject the delete cleared, the
+ * deleted line's words (`deletedLineText`). One reading, so every name a row carries says the
+ * same thing. A name holds no markup, so `children` takes the line as words: undefined until
+ * the projection has answered.
  */
-export function useThreadLine(thread: MyReplyRow): string {
+export function ThreadLine({
+  children,
+  thread,
+}: {
+  children: (line: string | undefined) => ReactNode;
+  thread: MyReplyRow;
+}): ReactNode {
   const text = useAgentText();
   const deleted = postDeletion(thread);
-  return deleted === null ? questionLine(thread.subject) : deletedLineText(deleted, text);
+  return deleted === null ? (
+    <PlainText
+      markdown={thread.subject}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
+      surface="inbox-thread-title"
+      tree={thread.subject_tree}
+    >
+      {children}
+    </PlainText>
+  ) : (
+    children(deletedLineText(deleted, text))
+  );
 }
 
 /**
@@ -28,6 +51,11 @@ export function useThreadLine(thread: MyReplyRow): string {
  * part of a short row that is neither the owner link nor a control, where the pointer selects
  * the row (`selectRow` in the browser suite).
  *
+ * The subject is the thread root's own markdown, so it is drawn by the one renderer
+ * (`MarkdownPreview`, clamped to one line): a heading, a bold word and a reference read here as
+ * they read in the thread itself. `fullTitle` gives a pointer reader the same line as plain
+ * text, from the same reader; a deleted root's hover text is the deleted line's words.
+ *
  * Both layouts draw it: the short row beside the reading column, where it is the link `o`
  * follows (`data-inbox-owner`), and the card below that width, where **Open** is that link and
  * the title is plain text. Each host sizes its own line, as the three-site owner line does
@@ -38,35 +66,51 @@ export function ThreadTitle({
   href,
   thread,
 }: {
-  /** The classes the host's line gives the title; the unread weight is added to them. */
+  /** The classes the host's line gives the title; the unread weight is added to them. The host
+   *  cuts the line (`truncate`), as it did when it drew the subject as words, so the preview is
+   *  drawn as the host's inline text (`inline`), and the ellipsis falls where it did. */
   className: string;
   /** Where the title links, for the host that draws it as a link; plain text without one. */
   href?: string;
   thread: MyReplyRow;
 }): ReactNode {
-  const title = useThreadLine(thread);
+  const agentText = useAgentText();
   const deleted = postDeletion(thread);
-  const words =
-    deleted === null ? (
-      title
-    ) : (
-      <span className="italic" data-post-deleted="">
-        {title}
-      </span>
-    );
+  const deletedWords = deleted === null ? undefined : deletedLineText(deleted, agentText);
   const text = `${className} ${
     thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
   }`;
+  const line =
+    deletedWords === undefined ? (
+      <MarkdownPreview
+        className="inline"
+        fullTitle
+        lines={1}
+        markdown={thread.subject}
+        source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
+        surface="inbox-thread-title"
+        tree={thread.subject_tree}
+      />
+    ) : (
+      <span className="italic" data-post-deleted="">
+        {deletedWords}
+      </span>
+    );
   return (
     <>
       {href === undefined ? (
-        <span className={text} title={title}>
-          {words}
+        <span className={text} title={deletedWords}>
+          {line}
         </span>
       ) : (
-        <a className={text} data-inbox-owner="" href={href} title={title}>
-          {words}
-        </a>
+        // The title is the link the row's `o` follows, so a reference in the subject reads as a
+        // link inside it and is none. The link keeps the row's own classes, the weight that
+        // says the thread is unread among them, as it did when it drew the words itself.
+        <ReferenceHostIs host="control">
+          <a className={text} data-inbox-owner="" href={href} title={deletedWords}>
+            {line}
+          </a>
+        </ReferenceHostIs>
       )}
       <EditedMark
         at={thread.edited_at}

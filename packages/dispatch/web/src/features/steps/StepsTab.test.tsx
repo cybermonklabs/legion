@@ -153,6 +153,7 @@ test("the Steps tab shows the variant of the issue above its tasks, and none whe
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ experiment: "planning", id: "implement-1", variant: "b" }),
           record({
@@ -178,7 +179,7 @@ test("the Steps tab shows the variant of the issue above its tasks, and none whe
 
   const plain = renderTab(async () => ({
     issue: "CORE-1",
-    tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+    tasks: [{ needs: null, steps: [record({ id: "implement-1" })], task: "default" }],
   }));
   try {
     await screen.findByRole("table");

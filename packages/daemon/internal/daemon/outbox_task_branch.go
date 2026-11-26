@@ -218,7 +218,9 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 // step repairs on branch: two facts, since the first step repairs each on another branch, and a
 // repair on branch of a need's conflict would show that need's work in the task's pull request,
 // which is based on onto. GitHub's 404 for a need's branch, to the read of the first need's head or
-// to a merge of a need, is a *needBranchMissing naming that need.
+// to a merge of a need, is a *needBranchMissing naming that need. Each create passes the ref name
+// through the deployment's private-name rules first (privateNameRules), as the issue branch's
+// create does (createBranch).
 func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, needs []record.PlanTask) (conflicts []string, unmerged bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
@@ -230,7 +232,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if len(needs) > 0 {
 		base = needs[0].BranchOf(issue.Key)
 	}
-	if err := ghbranch.Create(ctx, github, repo, onto, base); err != nil {
+	if err := ghbranch.Create(ctx, github, repo, onto, base, r.privateNameRules); err != nil {
 		if len(needs) > 0 && githubAnswered(err, http.StatusNotFound) {
 			return nil, false, &needBranchMissing{need: needs[0].Task, branch: base, err: err}
 		}
@@ -252,7 +254,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if onto == branch {
 		return conflicts, false, nil
 	}
-	if err := ghbranch.Create(ctx, github, repo, branch, onto); err != nil {
+	if err := ghbranch.Create(ctx, github, repo, branch, onto, r.privateNameRules); err != nil {
 		return nil, false, err
 	}
 	ids := make([]string, 0, len(needs))

@@ -9,14 +9,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
-// The two checks a plan passes before Legion takes it. Both run on every plan, and each gives a
-// reason for each cause it finds, up to the bound of its kind, so a plan with two causes gets two
-// reasons, and the owner reads every cause at once rather than one for each try. Each reason names
-// its task where it has one. One refusal names at most MostReasons causes of each kind and counts
-// the rest (reasons), and each reason quotes the plan within a bound of bytes: a task id of at
-// most steprecord.TaskIDMax (FromBlocks refuses one outside Dispatch's task form), a word of at
-// most MostQuotedBytes (quoted), a list of at most MostReasons ids (listed) and a chain of at most
-// MostReasons needs, of two ids each (chainOf).
+// The two checks a plan passes before Legion takes it. Both run on every plan (Refusals), and each
+// gives a reason for each cause it finds, up to the bound of its kind, so a plan with two causes
+// gets two reasons, and the owner reads every cause at once rather than one for each try. Each
+// reason names its task where it has one. One refusal names at most MostReasons causes of each
+// kind and counts the rest (reasons), and each reason quotes the plan within a bound of bytes: a
+// task id of at most steprecord.TaskIDMax (FromBlocks refuses one outside Dispatch's task form), a
+// word of at most MostQuotedBytes (quoted), a list of at most MostReasons ids (listed) and a chain
+// of at most MostReasons needs, of two ids each (chainOf).
+
+// Refusals is every reason Legion does not take p: Supported's, what this release does not carry
+// out yet, then Validate's, what no release can. Each check bounds its own kinds (reasons), and the
+// two share none, so joining their reasons bounds each kind of the refusal. Every caller that takes
+// or refuses a plan reads it here: register_plan, the configuration loader's check of a project's
+// default steps, and MovesBackPairs.
+func Refusals(p Plan, d Deployment) []Refusal {
+	return append(Supported(p), Validate(p, d)...)
+}
 
 // MostReasons is the most causes of one kind that one refusal of a plan names; one more reason
 // counts the rest of that kind (reasons). It bounds a list and a chain as well: a reason lists at
@@ -220,7 +229,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 		}
 		retroReasons(task, d, &found)
 	}
-	sets, _ := cycles(p.Tasks)
+	sets := cycles(p.Tasks)
 	for _, cycle := range sets {
 		found.add(needsItself, cycle[0], func() string {
 			return fmt.Sprintf("task %s needs itself: %s.", cycle[0], chainOf(cycle))
@@ -257,11 +266,12 @@ func chainOf(cycle []string) string {
 // packages/envoy/internal/dispatch/specgraph). So the check takes time linear in the tasks and
 // their needs, and a set gives one reason however many cycles run through it, where a search from
 // each task of a set would follow each of its needs once for each task, quadratic on a ring of
-// tasks, and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's first task,
-// and the cycles are in the order of those tasks' ids. A need is a task id (FromBlocks); one that
-// names no task of tasks closes no cycle. followed is how many needs cycleFrom follows over all
-// the sets, at most the needs of tasks, since a task joins at most one search.
-func cycles(tasks []Task) (found [][]string, followed int) {
+// tasks, and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's
+// first task, and the cycles are in the order of those tasks' ids. A need is a task id
+// (FromBlocks); one that names no task of tasks closes no cycle. A task joins at most one search,
+// so the searches follow each need at most once; TestTheCheckOfCyclesTakesTimeLinearInThePlan
+// holds the check to its thread's CPU time on a ring of 40,000 tasks.
+func cycles(tasks []Task) (found [][]string) {
 	at := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		at[task.ID] = i
@@ -295,8 +305,7 @@ func cycles(tasks []Task) (found [][]string, followed int) {
 		if members[c] == 1 && !itself[c] {
 			continue
 		}
-		path, more := cycleFrom(needs, component, parent, first[c])
-		followed += more
+		path := cycleFrom(needs, component, parent, first[c])
 		cycle := make([]string, len(path))
 		for i, task := range path {
 			cycle[i] = tasks[task].ID
@@ -304,7 +313,7 @@ func cycles(tasks []Task) (found [][]string, followed int) {
 		found = append(found, cycle)
 	}
 	slices.SortFunc(found, slices.Compare)
-	return found, followed
+	return found
 }
 
 // components numbers the strongly connected components of the graph in which task i needs each
@@ -379,14 +388,13 @@ func components(needs [][]int) (component []int, count int) {
 // task to the last before it again, each needing the next, found breadth first with each task's
 // needs in the order its block writes them. parent holds -1 for each task of the component;
 // cycleFrom marks the tasks it reaches there, and no later call reads those marks, since each
-// component is searched once. followed is how many needs it follows.
-func cycleFrom(needs [][]int, component, parent []int, task int) (path []int, followed int) {
+// component is searched once.
+func cycleFrom(needs [][]int, component, parent []int, task int) (path []int) {
 	parent[task] = task
 	queue := []int{task}
 	for head := 0; head < len(queue); head++ {
 		at := queue[head]
 		for _, needed := range needs[at] {
-			followed++
 			if needed == task {
 				path = []int{at}
 				for at != task {
@@ -394,7 +402,7 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int, fo
 					path = append(path, at)
 				}
 				slices.Reverse(path)
-				return path, followed
+				return path
 			}
 			if component[needed] == component[task] && parent[needed] < 0 {
 				parent[needed] = at

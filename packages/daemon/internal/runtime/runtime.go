@@ -15,8 +15,10 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -918,4 +920,67 @@ func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.
 		return acting, nil
 	}
 	return role, nil
+}
+
+// RoleIdentitiesVariable is the table of every role's git identity that the daemon writes into
+// each workflow role's process environment (spec.Env, which a tmux pane and a pod's role carry):
+// the value RoleIdentities spells, which the author step of `legion jj` reads
+// (ReadRoleIdentities) before a push, to set the author of a commit a push sends from the role
+// its first Legion-Role trailer names, where the step's rules let it. A controller's process has
+// none. An operator may not set it (PaneVariableRefusal, the pod's own list), and it is no
+// runtime-owned name, since ValidateSpawnSpec refuses a spec.Env name a runtime owns.
+const RoleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
+
+// roleIdentity is one role's identity in the table, as the JSON spells it.
+type roleIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// RoleIdentities is the value of RoleIdentitiesVariable for identities: one JSON object from each
+// role to {"name": …, "email": …}, the identity that sets that role's JJ_USER and JJ_EMAIL, keys
+// sorted. A table may hold a subset of the roles.
+func RoleIdentities(identities map[claim.Role]GitIdentity) string {
+	table := make(map[claim.Role]roleIdentity, len(identities))
+	for role, id := range identities {
+		table[role] = roleIdentity(id)
+	}
+	// A map of string keys to two strings always encodes, its keys in sorted order.
+	encoded, _ := json.Marshal(table)
+	return string(encoded)
+}
+
+// ReadRoleIdentities reads the table, value, as RoleIdentities writes it. It answers the table and
+// "", or why value cannot be used: empty, not one JSON object of identities (trailing data after
+// the object included), a name that is no role (claim.IsRole), or a name or an email that is empty
+// or holds a line break. An identity may hold fields it does not know, which it passes over: a
+// role's image may run a `legion` of another release than the daemon's, and a field a later daemon
+// adds must not turn its step off. The reason names no value, so the line it goes into stays one
+// line.
+func ReadRoleIdentities(value string) (map[claim.Role]GitIdentity, string) {
+	if value == "" {
+		return nil, "empty"
+	}
+	var read map[string]*roleIdentity
+	if err := json.Unmarshal([]byte(value), &read); err != nil || read == nil {
+		return nil, "not a JSON object of each role's name and email"
+	}
+	table := map[claim.Role]GitIdentity{}
+	for _, name := range slices.Sorted(maps.Keys(read)) {
+		role, identity := claim.Role(name), read[name]
+		switch {
+		case !claim.IsRole(role):
+			return nil, fmt.Sprintf("a table with %q, which is no role", name)
+		case identity == nil || identity.Name == "":
+			return nil, "a table with an empty name for " + name
+		case identity.Email == "":
+			return nil, "a table with an empty email for " + name
+		case strings.ContainsAny(identity.Name, "\r\n"):
+			return nil, "a table with a line break in the name of " + name
+		case strings.ContainsAny(identity.Email, "\r\n"):
+			return nil, "a table with a line break in the email of " + name
+		}
+		table[role] = GitIdentity(*identity)
+	}
+	return table, ""
 }

@@ -109,6 +109,7 @@ type warnings = testlog.Buffer
 // LEGION_TEST_DRAIN_MEASURE=1 the drain must also take under a minute from the first publish; the
 // time is logged either way.
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// requests bounds the row's own NATS requests (publishes, consumer info) by the row's deadline,
 	// the test binary's deadline less 30 s (testwait.Remaining), in place of the five seconds the

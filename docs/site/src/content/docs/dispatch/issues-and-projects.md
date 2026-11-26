@@ -345,20 +345,18 @@ agents using it stop working at once.
   document marks, with the requirements that task serves and the tasks it needs.
 - **Steps** lists each task of the issue: first the tasks of the issue's newest plan, in the plan's
   order, then each other task that ran, in the order each first ran. Where the records of the
-  issue's newest run name an experiment, the tab shows
-  `Experiment <experiment>: variant <variant>` once above its tables.
-  A task of the plan shows the tasks it needs, or **Needs not recorded** where the plan Dispatch
-  holds does not record them. It shows each step the plan gives it, with where that step stands:
-  **not started**, **running**, **passed**, **failed**, **stopped**, or Dispatch's own word for a
-  state this page does not know.
-  Under that, each task has one table of its runs: each run of a step with its role, type, agent,
-  model, attempt, start, end and result. A task none of whose steps has run says so in place of the
-  table, for example **No step of task b has run yet.** A step that ran twice, after a review sent
-  its task back, has a row for each run, and the second reads attempt 2; a run that failed or
-  stopped and sent its task back says which step it returned to. A run that has not ended reads
-  **running**, and a field Legion did not record reads `—`. Legion's daemon writes these records,
-  and the tab only reads them. An issue with no plan and no run reads **No step of this issue has
-  run in Legion.**
+  issue's newest run name an experiment, the tab shows `Experiment <experiment>: variant <variant>`
+  once above its tasks. A task of the plan shows the tasks it needs, or **Needs not recorded**
+  where the plan Dispatch holds does not record them. It shows each step the plan gives it, with
+  where that step stands: **not started**, **running**, **passed**, **failed**, **stopped**, or
+  Dispatch's own word for a state this page does not know. Under that, each task has one table of
+  its runs: each run of a step with its role, type, agent, model, attempt, start, end and result.
+  A task none of whose steps has run says so in place of the table, for example **No step of task
+  b has run yet.** A step that ran twice, after a review sent its task back, has a row for each
+  run, and the second reads attempt 2; a run that failed or stopped and sent its task back says
+  which step it returned to. A run that has not ended reads **running**, and a field Legion did
+  not record reads `—`. Legion's daemon writes these records, and the tab only reads them. An
+  issue with no plan and no run reads **No step of this issue has run in Legion.**
 - **Conversation** is the issue's conversations, one card each: every ask with its replies and
   its answer, every comment thread with its replies, every message thread with its replies. The
   conversation with the newest reply is at the top, so a thread rises when someone answers it,

@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`referenceSpans` ends a span that stands as a link''s or a picture''s address, right after `](`, at the first `)` in it that no `(` in it opened, the link''s own, as the server''s `text.ExtractAt` does. `[@Bob](dispatch://agent/abc)hello` reads `dispatch://agent/abc`, where it read `dispatch://agent/abc)hello`. Every other span is trimmed by `trimReference` as before.'
+time: 2026-11-25T12:00:00Z
+custom:
+    Issue: pr3125

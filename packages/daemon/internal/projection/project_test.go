@@ -1193,11 +1193,12 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // An issue's view carries a mergeWait object for exactly the review rounds that wait on GitHub's
 // answer about merging the head (classify.RoundWaitsOnMergeState over a pull request the record
 // holds open), and for no other: an approval standing on a head GitHub has answered nothing for
-// yet (LEGION-208) and one standing on a head GitHub will not merge from, whose architect and
-// reviewer have been told (LEGION-209, which carries the told marks the first does not). A round
-// whose issue is not reviewing (LEGION-210), one no approval decided (LEGION-211), one whose
-// head GitHub reports mergeable (LEGION-212) and one whose pull request the record no longer
-// holds open (LEGION-213) carry none.
+// yet (LEGION-208) and one standing on a head GitHub will not merge from and the round does not
+// end on, `behind`, whose architect and reviewer have been told (LEGION-209, which carries the
+// told marks the first does not). A round whose issue is not reviewing (LEGION-210), one no
+// approval decided (LEGION-211), one whose head GitHub reports mergeable (LEGION-212), one whose
+// pull request the record no longer holds open (LEGION-213) and one whose `blocked` answer ends the
+// round (LEGION-215, classify.MergeOutcomeOf) carry none.
 //
 // checkRuns counts the fence's runs stamped with the current head alone: LEGION-209 counts the
 // two reported on its own head and not the third, of a name reported on the head before it, and
@@ -1205,7 +1206,7 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // has reported nothing yet. stateReadAt is absent for LEGION-208, whose pull request no read has
 // ever answered for: the zero instant is no time a read happened at. It is absent for LEGION-214
 // for a reason of its own: that row was written before the migration that added the stamp, so
-// the record holds a merge state GitHub gave — `blocked` — beside a zero moment, which is the
+// the record holds a merge state GitHub gave — `behind` — beside a zero moment, which is the
 // row `api.MergeWaitView.StateReadAt` and the schema's `stateReadAt` both describe. Such a view
 // carries the state and no `stateReadAt` at all, so a reader is never handed a read at the zero
 // instant for a state that was truly read.
@@ -1222,27 +1223,33 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	approved := func() *record.ReviewDecision {
 		return &record.ReviewDecision{State: "approved", Body: "ship it", Head: "h2"}
 	}
-	blocked := func(key string, number int) *record.PullRequest {
+	behind := func(key string, number int) *record.PullRequest {
 		return &record.PullRequest{Issue: key, Repo: "acme/widgets", Number: number, HeadSHA: "h2",
-			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, StateReadAt: read, HeadUpdatedAt: updated,
+			State: record.PullRequestOpen, MergeState: record.MergeStateBehind, StateReadAt: read, HeadUpdatedAt: updated,
 			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 11, Head: "h2"}, {Name: "lint", ID: 12, Head: "h2"},
 				{Name: "e2e", ID: 13, Head: "h1"}}}
 	}
 	told := approved()
-	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBlocked
-	merged := blocked("LEGION-213", 47)
+	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBehind
+	merged := behind("LEGION-213", 47)
 	merged.State = record.PullRequestMerged
-	mergeable := blocked("LEGION-212", 46)
+	mergeable := behind("LEGION-212", 46)
 	mergeable.MergeState = record.MergeStateClean
+	// The head GitHub holds `blocked` and MERGEABLE, nothing of it running, once both of its own
+	// check runs have concluded, with no review asked for: the merger's merge answers that state,
+	// so the approval ends the round.
+	concluded := behind("LEGION-215", 49)
+	concluded.Mergeability, concluded.MergeState = record.MergeabilityMergeable, record.MergeStateBlocked
+	concluded.ReviewsRequested, concluded.HeadChecks, concluded.EvidenceReadAt = new(0), record.HeadChecksConcluded, concluded.StateReadAt
 	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
 	// recorded and the moment of the read is not, which no row written since can be.
-	premigration := blocked("LEGION-214", 48)
+	premigration := behind("LEGION-214", 48)
 	premigration.StateReadAt = time.Time{}
 	store := projectionStore{
 		issues: []record.Issue{
 			issue("LEGION-208", phase.Reviewing), issue("LEGION-209", phase.Reviewing), issue("LEGION-210", phase.Testing),
 			issue("LEGION-211", phase.Reviewing), issue("LEGION-212", phase.Reviewing), issue("LEGION-213", phase.Reviewing),
-			issue("LEGION-214", phase.Reviewing),
+			issue("LEGION-214", phase.Reviewing), issue("LEGION-215", phase.Reviewing),
 		},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-208": reviewer("LEGION-208", approved()),
@@ -1252,6 +1259,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-212": reviewer("LEGION-212", approved()),
 			"LEGION-213": reviewer("LEGION-213", approved()),
 			"LEGION-214": reviewer("LEGION-214", approved()),
+			"LEGION-215": reviewer("LEGION-215", approved()),
 		},
 		pullRequests: map[string]*record.PullRequest{
 			// The head a push has just moved to: GitHub has answered nothing for it, and the
@@ -1259,12 +1267,13 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-208": {Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, HeadSHA: "h2",
 				State: record.PullRequestOpen, MergeState: record.MergeStateUnread, HeadUpdatedAt: updated,
 				CheckRuns: []record.AttemptRun{{Name: "unit", ID: 9, Head: "h1"}}},
-			"LEGION-209": blocked("LEGION-209", 43),
-			"LEGION-210": blocked("LEGION-210", 44),
-			"LEGION-211": blocked("LEGION-211", 45),
+			"LEGION-209": behind("LEGION-209", 43),
+			"LEGION-210": behind("LEGION-210", 44),
+			"LEGION-211": behind("LEGION-211", 45),
 			"LEGION-212": mergeable,
 			"LEGION-213": merged,
 			"LEGION-214": premigration,
+			"LEGION-215": concluded,
 		},
 	}
 	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
@@ -1276,13 +1285,13 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no CI settlement has brought a run for",
 			wait, waiting)
 	}
-	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", StateReadAt: &read, HeadUpdatedAt: &updated,
-		CheckRuns: 2, ToldHead: "h2", ToldState: "blocked"}
+	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "behind", StateReadAt: &read, HeadUpdatedAt: &updated,
+		CheckRuns: 2, ToldHead: "h2", ToldState: "behind"}
 	if wait := got.Issues["LEGION-209"].MergeWait; !reflect.DeepEqual(wait, stuck) {
 		t.Fatalf("LEGION-209's mergeWait = %+v, want %+v: the stuck round carries the state read, when it was read, the head's own two check runs and the marks it was told by",
 			wait, stuck)
 	}
-	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", HeadUpdatedAt: &updated, CheckRuns: 2}
+	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "behind", HeadUpdatedAt: &updated, CheckRuns: 2}
 	if wait := got.Issues["LEGION-214"].MergeWait; !reflect.DeepEqual(wait, unstamped) {
 		t.Fatalf("LEGION-214's mergeWait = %+v, want %+v: a row written before the migration holds the state GitHub gave with no moment of the read, and the view carries that state without a stateReadAt",
 			wait, unstamped)
@@ -1292,6 +1301,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		{"LEGION-211", "no approval decided the round"},
 		{"LEGION-212", "GitHub reports the head one the issue may advance on"},
 		{"LEGION-213", "the record no longer holds the pull request open"},
+		{"LEGION-215", "GitHub answers blocked with both of the head's own check runs concluded, which ends the round"},
 	} {
 		if wait := got.Issues[tc.key].MergeWait; wait != nil {
 			t.Fatalf("%s's mergeWait = %+v, want none: %s", tc.key, wait, tc.why)

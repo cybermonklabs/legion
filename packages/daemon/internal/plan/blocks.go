@@ -55,8 +55,11 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 			continue
 		}
 		if !steprecord.TaskIDHolds(block.ID) {
-			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, %s, so Dispatch could record none of its steps",
-				quoted(block.ID), len(block.ID), steprecord.TaskIDRule)
+			// The error gives no length of its own: quoted's mark gives the length of what the URL
+			// rule left of a cut id, and the length of the id as written would give away the length
+			// of a credential it holds.
+			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps",
+				quoted(block.ID), steprecord.TaskIDRule)
 		}
 		task, err := taskOf(block)
 		if err != nil {

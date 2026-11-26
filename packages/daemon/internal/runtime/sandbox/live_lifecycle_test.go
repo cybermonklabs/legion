@@ -1854,6 +1854,7 @@ func (r *liveRig) checkIssueSuspendResume() error {
 // operator's own values are GKE's to pick per pod (confirmed live, 2026-10-17: a six-role root pod
 // carried `["2500m", "X"]`, not a fixed literal), so any non-empty value list is tolerated.
 func TestIsGKEExtendedDurationAffinity(t *testing.T) {
+	t.Parallel()
 	key := "cloud.google.com/extended-duration-pods"
 	required := func(exprs ...corev1.NodeSelectorRequirement) *corev1.Affinity {
 		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
@@ -1898,6 +1899,7 @@ func TestIsGKEExtendedDurationAffinity(t *testing.T) {
 // extendedDurationAffinity parameter must gate on the matcher's real verdict, not merely on
 // whether the pod carries any NodeAffinity at all.
 func TestGuaranteedPodAffinity(t *testing.T) {
+	t.Parallel()
 	extended := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{

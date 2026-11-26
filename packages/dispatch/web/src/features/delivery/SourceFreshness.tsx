@@ -58,6 +58,7 @@ export function SourceFreshness({
               aria-hidden="true"
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${row.red ? connectionDotFailed : connectionDotConnected}`}
             />
+            {/* The page's own line on how fresh a source is. */}
             <span className="truncate">{row.text}</span>
           </span>
         ))}

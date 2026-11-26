@@ -17,6 +17,7 @@ import (
 // refusal naming why, never an answer of no work, and no shim is asked. The answer the shim gives
 // is the runtime's, asked with the read's own budget.
 func TestWorkspaceWorkAsksTheClaimOfTheRunningPod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	stale := sandboxLocator(workerToken, "uid-pod-stale")

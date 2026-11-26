@@ -272,11 +272,11 @@ func (l *tasksLive) tasksAtOneTime() {
 // exampleTaskLines is what `dispatch steps` prints of each task of the example plan once its
 // issue is done: the task, its needs, and each planned step with its key, passed.
 var exampleTaskLines = []string{
-	"task a needs nothing: 1 implementer:i passed, 2 reviewer:r passed",
-	"task b needs nothing: 1 planner:p passed, 2 implementer:i passed, 3 reviewer:r passed",
-	"task c needs b: 1 implementer:i passed, 2 reviewer:r passed",
-	"task d needs a, c: 1 implementer:i passed, 2 reviewer:r passed",
-	"task e needs d: 1 implementer:i passed, 2 tester:t passed",
+	"task a needs []: 1 implementer:i passed, 2 reviewer:r passed",
+	"task b needs []: 1 planner:p passed, 2 implementer:i passed, 3 reviewer:r passed",
+	"task c needs [b]: 1 implementer:i passed, 2 reviewer:r passed",
+	"task d needs [a,c]: 1 implementer:i passed, 2 reviewer:r passed",
+	"task e needs [d]: 1 implementer:i passed, 2 tester:t passed",
 }
 
 // stepsRead is the check steps-read: `dispatch steps --issue <KEY>` as the person, on the issue of

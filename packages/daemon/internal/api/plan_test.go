@@ -779,44 +779,6 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	}
 }
 
-// register_plan joins its two checks as every caller of them does (the configuration loader's
-// check of the default steps, config/stage3.go): Supported's reasons, then Validate's, each check
-// bounding its own kinds. A plan with causes of both checks, past the bound in each, is answered
-// with exactly append(plan.Supported(p), plan.Validate(p, d)...) of the plan FromBlocks reads from
-// the same blocks, so a route that joins them in another order fails here. The two checks share no
-// kind of cause, so a join that collects both and bounds each kind gives this same list and passes:
-// that there is no second copy of the join is a property of the code, which review holds. The
-// control is the route with the two checks in the other order.
-func TestRegisterPlanJoinsItsChecksAsEveryCallerDoes(t *testing.T) {
-	steps := strings.TrimSuffix(strings.Repeat("tester:k ", 25), " ")
-	needs := make([]string, 25)
-	for i := range needs {
-		needs[i] = fmt.Sprintf("x%02d", i)
-	}
-	h, facts, statuses := planHarness(t)
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	statuses.givePlan(planDoc, 1, needing(taskBlock("a", steps), strings.Join(needs, " ")))
-	answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
-	var refusal PlanRefusal
-	decodeInto(t, answer, &refusal)
-
-	read, err := plan.FromBlocks("LEGION-208", planDoc, 1, []plan.Block{{ID: "a", Type: plan.TaskBlockType,
-		Attributes: map[string]string{"steps": steps, "needs": strings.Join(needs, " ")}}})
-	if err != nil {
-		t.Fatalf("FromBlocks: %v", err)
-	}
-	var want []PlanReason
-	for _, reason := range append(plan.Supported(read), plan.Validate(read, plan.Deployment{Roles: plan.BuiltinRoles()})...) {
-		want = append(want, PlanReason{Task: reason.Task, Reason: reason.Reason})
-	}
-	if answer.Code != http.StatusConflict || !reflect.DeepEqual(refusal.Reasons, want) {
-		t.Fatalf("register_plan answered %d with the reasons\n%+v\nwant 409 with Supported's, then Validate's\n%+v", answer.Code, refusal.Reasons, want)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("a refused registration recorded %#v, want nothing", got)
-	}
-}
-
 // plantedUser is the user name a planted URL carries as its userinfo, 300 bytes, written as the
 // redact package's tests write theirs: a user name with no password, which a secret scanner takes
 // for no credential, and which redact.URLCredentials removes as it removes a password or a token.

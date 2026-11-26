@@ -116,8 +116,8 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
 // reads the plan's blocks at the version given, each need as the task it names (planAt, through
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
-// carry out (plan.Supported) or no release can (plan.Validate), the first plan.MostReasons of each
-// kind named and the rest of it counted; each of those answers records nothing. A
+// carry out or no release can (plan.Refusals), the first plan.MostReasons of each kind named and
+// the rest of it counted; each of those answers records nothing. A
 // plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of a later
 // version are the workflow's, and is answered with the tasks the workflow's apply says the version
 // added (registeredPlan).
@@ -170,11 +170,9 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
 	// yet, then what no release can, each check naming at most plan.MostReasons causes of each kind.
-	// Validate judges the plan against the deployment the daemon's settings define
-	// (Options.Deployment), so a role of `roles` is a role a step names. The configuration loader
-	// joins the two checks the same way (config's checkDefaultSteps), and
-	// TestRegisterPlanJoinsItsChecksAsEveryCallerDoes holds this route to it.
-	refusals := append(plan.Supported(given), plan.Validate(given, s.deployment)...)
+	// Refusals judges the plan against the deployment the daemon's settings define
+	// (Options.Deployment), so a role of `roles` is a role a step names.
+	refusals := plan.Refusals(given, s.deployment)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

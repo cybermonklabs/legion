@@ -110,6 +110,7 @@ var mainsOutboxKinds = []string{
 // what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
 // out of either list, the Migrate below fails on the pending release row.
 func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -218,6 +219,7 @@ const thisBranchsClaimSessions = 20261116144907
 // The control (the pull request records the run): a loader that skips a migration numbered below
 // the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
 func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()

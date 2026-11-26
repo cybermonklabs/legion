@@ -31,6 +31,7 @@ const reconnectBoot = 15 * time.Second
 // restarted reports no child; one whose connection alone dropped reports the generation it still
 // runs, which the launch stops first (TestANewGenerationStopsTheEarlierOneFirst).
 func TestALaunchStartsItsRoleOnALauncherThatReconnectsDuringIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// running is the generation the reconnected launcher's first state reports running, 0 for
@@ -93,6 +94,7 @@ func TestALaunchStartsItsRoleOnALauncherThatReconnectsDuringIt(t *testing.T) {
 // between the session's choice and the Start's write would run (this daemon reads no saved work
 // there): armed, it drops the connection and waits until the launcher has said hello again.
 func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts(t *testing.T) {
+	t.Parallel()
 	var g *rig
 	var armed atomic.Bool
 	dropped, redialed := make(chan struct{}), make(chan struct{})
@@ -150,6 +152,7 @@ func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTry
 // its connection dropped does. The supervisor's next try, at the next generation, starts the role
 // on that launcher.
 func TestALaunchWhoseLauncherDropsAfterReadingItsStartFailsAndTheNextTryStarts(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = reconnectBoot }))
 	first := g.spawn(workerSpec(t))
 	// The launcher process restarts: the connection of the one that ran generation 1 ends, and the

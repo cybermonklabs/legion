@@ -158,7 +158,7 @@ func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.at, Generation: 1, Status: "in_progress", Rank: "U"})
 			seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 1, ApprovedVersion: new(1)})
 			token := seedPhaseWorker(t, pool, "LEGION-208", claim.RolePlanner, "")
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RolePlanner, Claim: token})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RolePlanner, Claim: token, Entry: 1, EntryTask: "plan this change"})
 
 			result, err := intake.ApplyFact(t.Context(), pool, "api", "planner-late", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
 				Role: claim.RolePlanner, Claim: token, Commit: "late", HandoffRecord: "plan", HandoffVersion: 2},

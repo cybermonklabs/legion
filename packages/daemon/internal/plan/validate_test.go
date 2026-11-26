@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -208,7 +209,7 @@ func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 		"implementer reviewer acceptance:owner tester", "implementer planner", "planner implementer reviewer", "implementer reviewer planner tester",
 		"planner implementer tester reviewer acceptance:owner"} {
 		p := oneTask("a", steps)
-		if r := append(Supported(p), Validate(p, builtin)...); len(r) != 0 {
+		if r := Refusals(p, builtin); len(r) != 0 {
 			t.Fatalf("%s refused: %+v", steps, r)
 		}
 	}
@@ -344,19 +345,20 @@ func naming(task string, items ...string) []shown {
 // counting is the reason that counts count more causes of a kind.
 func counting(count int) []shown { return []shown{{count: count}} }
 
-// One refusal of a plan names the first MostReasons causes of each kind in the order the checks
-// find them, and right after the last of them one more reason, of the whole plan, counts the rest
-// of that kind, so the number of its reasons does not grow with the plan and no kind pushes another
-// out. Each check that finds a cause for each item of the plan is held to it: a `needs` word that
-// names no task, one that is a reference into another issue, a role nobody defines, a step's key,
-// and a step that reads a pull request with no implementer before it. A kind with MostReasons
-// causes or fewer is named whole. Each kind has its own bound, so a cycle is named whatever else
-// the plan has, and the reasons named keep the order the checks find them in, the dropped ones
-// left out. Each case holds the task and the word or step each reason names, and each count, in
-// order; none holds a sentence. The fault is a refusal that names every cause, or one bound for
-// the whole refusal, under which the plan of a ring of 22 tasks names 20 of its words that name no
-// task and counts its cycle. The control is reasons.add with its bound taken out, under which each
-// case past the bound names every cause.
+// One refusal of a plan (Refusals: Supported's reasons, then Validate's, as every caller reads
+// them) names the first MostReasons causes of each kind in the order the checks find them, and
+// right after the last of them one more reason, of the whole plan, counts the rest of that kind,
+// so the number of its reasons does not grow with the plan and no kind pushes another out. Each
+// check that finds a cause for each item of the plan is held to it: a `needs` word that names no
+// task, one that is a reference into another issue, a role nobody defines, a step's key, and a
+// step that reads a pull request with no implementer before it. A kind with MostReasons causes or
+// fewer is named whole. Each kind has its own bound, so a cycle is named whatever else the plan
+// has, and the reasons named keep the order the checks find them in, the dropped ones left out.
+// Each case holds the task and the word or step each reason names, and each count, in order; none
+// holds a sentence. The fault is a refusal that names every cause, or one bound for the whole
+// refusal, under which the plan of a ring of 22 tasks names 20 of its words that name no task and
+// counts its cycle. The control is reasons.add with its bound taken out, under which each case
+// past the bound names every cause.
 func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	steps := func(words ...[]string) Plan { return oneTask("a", strings.Join(slices.Concat(words...), " ")) }
@@ -460,7 +462,7 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 				naming("a", "r00001", "r00002"), naming("b", "r00003"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := append(Supported(tc.plan), Validate(tc.plan, d)...)
+			got := Refusals(tc.plan, d)
 			if len(got) != len(tc.want) {
 				t.Fatalf("the refusal holds %d reasons, want %d: %.3000v", len(got), len(tc.want), got)
 			}
@@ -514,7 +516,8 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"a key of 301 bytes", Supported(oneTask("a", "implementer acceptance:"+role)), 0, "a", cut(role) + ".", 1},
 		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + ".", 1},
 		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3.", 1},
-		// A keyed tester is supported; its position before the implementer is the one refusal.
+		// A keyed tester is supported, so its place before the implementer is the one refusal.
+		// stepReasons names the whole word `tester:<key>` twice, so its size includes two quotes.
 		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 0, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -622,10 +625,13 @@ func credentialIn(text string) string {
 // implementer, each a reason of its task or of the whole plan, and one id on two blocks, a task id
 // outside the form and a step outside the grammar, each an error of the read, which the route
 // answers as a reason of the whole plan. Each case holds the reason's task, the quote of
-// redactedURL cut and marked, and no run of six bytes of plantedUser. The fault is a cut made
-// before the rule, which can end inside the userinfo, before its "@", where the rule then finds no
-// userinfo; the control is quoted cutting first, under which each quote keeps 120 bytes of
-// plantedUser.
+// redactedURL cut and marked, and no run of six bytes of plantedUser, and each error of the read
+// names no length of plantedURL, which would give away the length of its credential, where the
+// rule leaves neither a part nor the length of one (redact.URLCredentials). The fault is a cut
+// made before the rule, which can end inside the userinfo, before its "@", where the rule then
+// finds no userinfo; the control is quoted cutting first, under which each quote keeps 120 bytes
+// of plantedUser. The fault of the length is an error that prints the raw word's length beside
+// its quote.
 func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	implementer := Step{Role: "implementer"}
@@ -673,6 +679,9 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 			}
 			if part := credentialIn(err.Error()); part != "" {
 				t.Errorf("the error %.1000q holds %q of the URL's credential", err.Error(), part)
+			}
+			if raw := strconv.Itoa(len(plantedURL)); strings.Contains(err.Error(), raw) {
+				t.Errorf("the error %.1000q names %s, the length of the word with its credential", err.Error(), raw)
 			}
 		})
 	}

@@ -147,6 +147,11 @@ const StoreUnconfirmedCause = "The listener sent the message but could not confi
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = 100
+
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
 // batches are one number.
@@ -438,6 +443,14 @@ const (
 	StepInputCode      = "STEP_INPUT"
 	StepWriterCode     = "STEP_WRITER"
 	StepOtherIssueCode = "STEP_OTHER_ISSUE"
+)
+
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = "not started"
+	PlannedStepRunning    = "running"
 )
 
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -22,8 +23,20 @@ import (
 )
 
 // pullStandIn is GitHub's REST API for acme/widgets as the per-issue read sees it: pull request 86
-// answered with pull, and no review on it.
+// answered with pull, and no review on it. Its GraphQL endpoint answers the query a REST read of
+// a `blocked`, MERGEABLE head asks for that head's whole answer (readWholeAnswer) from the same
+// answer, as GitHub answers both about the one pull request (graphQLAnswerOf).
 func pullStandIn(t *testing.T, pull string) *httptest.Server {
+	t.Helper()
+	return pullStandInWith(t, pull, func(asked []int) string {
+		_, body := graphQLAnswerOf(t, pullAnswer{status: http.StatusOK, body: pull}, asked)
+		return body
+	})
+}
+
+// pullStandInWith is pullStandIn whose GraphQL endpoint answers with graphQL, given the numbers
+// the query asks for.
+func pullStandInWith(t *testing.T, pull string, graphQL func(asked []int) string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer outbox-token" {
@@ -32,9 +45,11 @@ func pullStandIn(t *testing.T, pull string) *httptest.Server {
 		}
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
-			w.Write([]byte(pull))
+			_, _ = w.Write([]byte(pull))
 		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`[]`))
+		case "/graphql":
+			_, _ = io.WriteString(w, graphQL(readBatchRequest(t, r)))
 		default:
 			http.NotFound(w, r)
 		}
@@ -53,10 +68,11 @@ func mergeableStandIn(t *testing.T, state string) *httptest.Server {
 // mergeStateStandIn answers pull request 86 on base main with state as GitHub's `mergeable_state`,
 // beside the `mergeable: true` GitHub computes with it: GitHub answers true for every state its
 // own rules leave rather than a conflict, a head it blocks on a required check included, which is
-// what makes the merge state the only answer that tells those apart.
+// what makes the merge state the only answer that tells those apart. It holds no review request
+// open, as GitHub's answer lists by two empty lists.
 func mergeStateStandIn(t *testing.T, state string) *httptest.Server {
 	t.Helper()
-	return pullStandIn(t, `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"`+state+`"}`)
+	return pullStandIn(t, `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"`+state+`","requested_reviewers":[],"requested_teams":[]}`)
 }
 
 // readRuntime is a workflow runtime over pool whose GitHub reads go to api, logging to log. Its

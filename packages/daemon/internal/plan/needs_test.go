@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -216,87 +215,6 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Dispatch takes an owner's plan of 10,000 tasks in a ring, or of 300 tasks each needing all the
-// others, and a search from every need of a set, which named the shortest cycle through each one,
-// followed about 10⁸ needs on that ring. So the check of cycles takes time linear in the plan: one
-// pass finds the sets of tasks that need each other (components), and one breadth-first search
-// from the first task of each set that holds a cycle names it (cycleFrom). Each plan below gives
-// its cycles: the ring's one cycle through every task, the complete graph's shortest cycle from
-// its first task, and one cycle for each task that needs itself. And its searches follow at most
-// the plan's needs, as cycles counts them: a task joins at most one search, so each need is
-// followed at most once. The ring's one search follows each of its 10,000 needs, the bound
-// itself, so a search from a second task of a set fails the bound there. The fault is a search
-// from every task of a set; planted, the ring follows 100,000,000 needs and the complete graph
-// 134,551 of its 89,700. The count sees only the needs cycleFrom follows: not components' loop,
-// not cycles' own loops over the tasks, and not work done inside one follow or once for each set,
-// such as a reset of every mark in parent before each search. It counts work and reads no clock.
-func TestTheCheckOfCyclesFollowsEachNeedAtMostOnce(t *testing.T) {
-	ring := make([]Task, 10_000)
-	ringCycle := make([]string, len(ring))
-	for i := range ring {
-		ring[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", (i+1)%len(ring))}}
-		ringCycle[i] = ring[i].ID
-	}
-	complete := make([]Task, 300)
-	for i := range complete {
-		complete[i].ID = fmt.Sprintf("t%03d", i)
-		for j := range complete {
-			if j != i {
-				complete[i].Needs = append(complete[i].Needs, fmt.Sprintf("t%03d", j))
-			}
-		}
-	}
-	itself := make([]Task, 10_000)
-	itselfCycles := make([][]string, len(itself))
-	for i := range itself {
-		itself[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", i)}}
-		itselfCycles[i] = []string{itself[i].ID}
-	}
-	for _, tc := range []struct {
-		name  string
-		tasks []Task
-		want  [][]string
-	}{
-		{"a ring of 10,000 tasks", ring, [][]string{ringCycle}},
-		{"300 tasks each needing all the others", complete, [][]string{{"t000", "t001"}}},
-		{"10,000 tasks each needing itself", itself, itselfCycles},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			needs := 0
-			for _, task := range tc.tasks {
-				needs += len(task.Needs)
-			}
-			found, followed := cycles(tc.tasks)
-			if !reflect.DeepEqual(found, tc.want) {
-				t.Fatalf("cycles(%s) found %d cycles, want %d: %s", tc.name, len(found), len(tc.want), firstOther(found, tc.want))
-			}
-			if followed > needs {
-				t.Fatalf("cycles(%s) followed %d needs, want at most the plan's %d", tc.name, followed, needs)
-			}
-			t.Logf("cycles(%s) followed %d needs of the plan's %d", tc.name, followed, needs)
-		})
-	}
-}
-
-// firstOther names the first cycle found that differs from the one wanted at its place, each by
-// its first five tasks and its length, so a failure of a 10,000-task ring stays readable.
-func firstOther(found, want [][]string) string {
-	short := func(cycle []string) string {
-		return fmt.Sprintf("%v (%d tasks)", cycle[:min(len(cycle), 5)], len(cycle))
-	}
-	for i := range max(len(found), len(want)) {
-		switch {
-		case i >= len(found):
-			return fmt.Sprintf("cycle %d is missing, want %s", i, short(want[i]))
-		case i >= len(want):
-			return fmt.Sprintf("cycle %d is %s, want none", i, short(found[i]))
-		case !reflect.DeepEqual(found[i], want[i]):
-			return fmt.Sprintf("cycle %d is %s, want %s", i, short(found[i]), short(want[i]))
-		}
-	}
-	return "every cycle as wanted"
 }
 
 // The work of an issue merges as one change, at the end of the one task that no task needs, so

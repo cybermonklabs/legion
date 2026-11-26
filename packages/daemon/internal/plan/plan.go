@@ -287,7 +287,7 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
-		if len(steps) > 0 && len(Supported(p)) == 0 && len(Validate(p, d)) == 0 {
+		if len(steps) > 0 && len(Refusals(p, d)) == 0 {
 			// The plan's one task is the one no task needs, so it merges, and its line ends with
 			// the retro and the merge; a task another task needs walks the same line without them.
 			line := Line(steps, true)

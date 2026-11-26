@@ -1,0 +1,5 @@
+kind: Changed
+body: '`dispatch_comment` delivers to agents and roles named in the body or the `mentions` array. Each distinct delivery target counts toward the same limit of ten. A target in either place with an invalid delivery form is refused with `400 MENTION_INPUT`. People and addresses in code do not count toward the limit or receive delivery.'
+time: 2026-11-20T12:55:00.000000000Z
+custom:
+    Issue: pr3125

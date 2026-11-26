@@ -20,9 +20,9 @@
 // run with its attempt, which no write stores (IssueSteps), and the plan of its newest run
 // (NewestPlan); the read of a project (ProjectPlans) answers each of its finished issues with its
 // plan, its ratings, its time, its count of failed steps, and the experiment and the variant the
-// step records of its newest run name, nil where they name none. A run's write that appends a tuple
-// signals its issue on RunsChannel at its commit, and IssueRunsRevision counts the tuples of an
-// issue's runs, which each such commit raises.
+// step records of its newest run name, nil where they name none. A run's write that appends a
+// tuple signals its issue on RunsChannel at its commit, and IssueRunsRevision counts the tuples of
+// an issue's runs, which each such commit raises.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
