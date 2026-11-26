@@ -2010,11 +2010,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
 			}
 			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
-			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
-			// finished writing the Start (written): an end of the deadline inside the write closes the
-			// connection, as a write the context cuts does, and the Stop that follows would find no
-			// launcher.
-			delayed.written()
+			// the fake clock's moment, plus the termination grace.
 			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
 			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
 				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
@@ -2084,14 +2080,6 @@ type scriptedStartLauncher struct {
 	session *launcherSession
 	starts  chan shimwire.LauncherStart
 	stops   chan shimwire.LauncherStop
-}
-
-// written returns once the runtime has finished writing the frame the scripted launcher last read
-// and stopped watching that write's context: requestSession holds the session's lock through both,
-// and the launcher reads the frame only while the write holds it.
-func (d *scriptedStartLauncher) written() {
-	d.session.mu.Lock()
-	defer d.session.mu.Unlock()
 }
 
 func (g *rig) scriptedStartLauncher(

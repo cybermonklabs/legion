@@ -64,40 +64,33 @@ func TestARequestWhoseContextEndsOnceItsFrameIsDeliveredKeepsTheConnection(t *te
 }
 
 // A request whose context is cancelled, with no deadline, while the launcher takes none of its frame
-// ends with that cancel: the write is cut at once (writeFrame moves its deadline to the present),
-// not held to apiTimeout, and the error is the context's end, which a caller telling its own bound
-// from another reads (requestSession).
+// ends with that cancel at once: writeFrame moves the write's deadline to the present, so the write
+// is cut there rather than held to apiTimeout, and the error is the context's end, which a caller
+// telling its own bound from another reads (requestSession). Without the move, the write runs to
+// apiTimeout and ends with the same error, 30 s late, so the test bounds the request's time well
+// below it.
 func TestARequestCancelledWhileItsFrameIsUntakenEndsWithTheCancel(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
-	spec := workerSpec(t)
-	first := g.spawn(spec)
-	// A launcher of the pod that reports its child and then reads nothing, in place of the rig's.
-	g.r.launchers.mu.Lock()
-	old := g.r.launchers.sessions[spec.Claim]
-	g.r.launchers.mu.Unlock()
-	if old != nil {
-		old.close()
-	}
-	server, client := net.Pipe()
-	t.Cleanup(func() { _ = client.Close() })
-	session := g.r.launchers.accept(spec.Claim, launcherIssue(spec.Claim), g.keptSince(spec.Claim), shimwire.LauncherHello{
-		LauncherID: "deaf-" + string(spec.Claim), PodUID: first.Sandbox.PodUID, ResumesBySession: g.resumesBySession,
-	})
+	launchers := testLaunchers()
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher"})
+	server, peer := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
-	go func() {
-		_ = shimwire.NewWriter(client).WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
-	}()
-	g.eventually("the runtime to hold the deaf launcher's first state", func() bool {
-		_, ready := g.r.launchers.state(spec.Claim, first.Sandbox.PodUID)
-		return ready
-	})
-	ctx, cancel := context.WithCancel(g.ctx)
+	// The launcher reports its state and then reads nothing.
+	if err := shimwire.NewWriter(peer).WriteFrame(shimwire.LauncherState{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	time.AfterFunc(50*time.Millisecond, cancel)
-	_, _, err := g.r.launchers.requestSession(ctx, session, shimwire.LauncherStart{ID: "start-1", Generation: 1}, "start-1")
+	began := time.Now()
+	_, _, err := launchers.requestSession(ctx, session, shimwire.LauncherStart{ID: "start-1", Generation: 1}, "start-1")
+	took := time.Since(began)
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("the request cancelled while the launcher took none of its frame = %v, want the cancel and the cut write's timeout", err)
+	}
+	if bound := apiTimeout / 3; took >= bound {
+		t.Fatalf("the request cancelled after 50ms ended after %s, want it cut at the cancel, well before %s (apiTimeout is %s)", took, bound, apiTimeout)
 	}
 }
 
