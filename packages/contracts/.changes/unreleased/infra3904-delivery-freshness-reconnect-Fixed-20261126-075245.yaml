@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A Dispatch delivery live hub rereads its freshness settings after its PostgreSQL listener reconnects, so a reconcile pass committed while that listener was disconnected updates the hub rather than leaving its connected pages stale until another notification arrives.'
+time: 2026-11-26T07:52:45.817794273Z
+custom:
+    Issue: INFRA-3904

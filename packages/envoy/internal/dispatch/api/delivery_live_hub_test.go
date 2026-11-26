@@ -1216,6 +1216,47 @@ func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, snapshot.Body, delta, "")
 }
 
+// TestAReconnectRereadsAReconcilePassItMissed: notifications sent while no listener stood are
+// lost by PostgreSQL, so a hub must reread delivery settings after it listens again.
+func TestAReconnectRereadsAReconcilePassItMissed(t *testing.T) {
+	t.Parallel()
+	var blind atomic.Bool
+	var dials listenerDials
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		dial := hub.dial
+		hub.dial = dials.wrap(func(ctx context.Context) (*pgx.Conn, error) {
+			if blind.Load() {
+				return nil, context.DeadlineExceeded
+			}
+			return dial(ctx)
+		})
+		hub.backoff = func(int) time.Duration { return 50 * time.Millisecond }
+	})
+	seedHubSettings(t, rig.database)
+	initial := rig.clock.Now()
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, initial); err != nil {
+		t.Fatalf("record the reconcile before the subscription: %v", err)
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	conn.snapshot(t, "t")
+	rig.waitFor(t, 0, "the listener's first connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+	rig.settle(t)
+	rig.requireNothingSent(t, conn, "the initial snapshot and reconcile")
+	start := rig.mark()
+
+	blind.Store(true)
+	terminateListener(t, rig.database, &dials)
+	passed := rig.clock.Now().Add(time.Minute).Truncate(time.Microsecond)
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, passed); err != nil {
+		t.Fatalf("record the reconcile while the listener is disconnected: %v", err)
+	}
+	blind.Store(false)
+	rig.waitFor(t, start, "the listener's reconnection", func(note deliveryHubNote) bool { return note.what == "connected" })
+	rig.waitFreshnessHeard(t, "the reconcile pass the listener missed", reconciledAt(passed))
+	rig.requireNothingSent(t, conn, "the reconcile pass whose verdict did not change")
+}
+
 // terminateListener ends the backend of every connection the hub's listener dialed (dials) that
 // is still connected, and returns once each has left pg_stat_activity. pg_terminate_backend
 // answers as soon as it has signalled the backend, which exits after: a NOTIFY committed in

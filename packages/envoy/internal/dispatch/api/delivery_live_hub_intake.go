@@ -58,6 +58,7 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 		case <-g.wakeChanges:
 			h.catchUp(g)
 		case <-g.connected:
+			h.refreshFreshness(g)
 			h.catchUp(g)
 			h.dirtyLegionViews(g)
 			h.note(deliveryHubNote{what: "connected"})
@@ -78,6 +79,27 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 			h.receive(g, relayed.Event)
 		}
 	}
+}
+
+// refreshFreshness rereads the delivery-settings freshness recorded while the listener was
+// disconnected. PostgreSQL does not replay notifications after a LISTEN reconnect, so the listener
+// connection is the point where the hub must recover the last event and reconciliation times.
+func (h *deliveryHub) refreshFreshness(g *hubGeneration) {
+	settings, err := delivery.GetSettings(g.readContext(), h.server.deps.Store.Pool)
+	if err != nil {
+		if g.ctx.Err() == nil {
+			slog.Warn("dispatch: delivery live hub could not reread freshness after its listener connected", "error", err)
+		}
+		return
+	}
+	now := h.clock.Now()
+	h.mu.Lock()
+	g.fresh.lastEventAt = settings.LastEventAt
+	g.fresh.lastReconcileAt = settings.LastReconcileAt
+	g.fresh.lastError = settings.LastError
+	h.judgeLocked(g, now)
+	h.mu.Unlock()
+	signal(g.wakeWork)
 }
 
 // hubEventFeed is a relay subscription seedEvents took for the intake, with the open P0 issues as
