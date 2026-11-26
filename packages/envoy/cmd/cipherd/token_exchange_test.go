@@ -331,7 +331,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			form:   exchangeForm(mintPodToken(t, cluster, clusterKey, otherAccount, exchangeAudience, "pod-uid-unlisted"), "example-unlisted"),
 			status: http.StatusBadRequest, code: "invalid_request",
 			says:   "no entry lists the service account " + otherAccount,
-			proves: "a sound, correctly-audienced pod token of an account BROKER_EXCHANGE_ACCOUNTS does not list is refused, naming the account",
+			proves: "a sound, correctly-audienced pod token of an account no exchange entry lists is refused, naming the account",
 		},
 		{
 			name:   "a token minted for another audience mints nothing",
@@ -796,6 +796,72 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount is the live proof of a job entry, on
+// the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_JOB_ACCOUNTS lists for
+// public,PRIVA with a session of its own presents its projected token with a DPoP proof of its own
+// key and no client credential, naming no session and no project, and is answered a token the
+// listed API account reads back as exactly the job's: its account as the service, the project
+// scope public, the one private project its entry lists, the session the entry fixes, this
+// test's own key, and no person and no OAuth scope. Nothing was registered for the pod, since the
+// entry fixes the session.
+func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
+	const (
+		jobAccount = "system:serviceaccount:example-ns:example-sweeper"
+		jobSession = "example-sweeper"
+		jobPodUID  = "pod-uid-sweeper"
+	)
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_JOB_ACCOUNTS="+jobAccount+"=public,PRIVA="+jobSession)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	var token string
+
+	t.Run("a job entry's pod token mints a token with no session and no project named", func(t *testing.T) {
+		status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, jobAccount, exchangeAudience, jobPodUID), ""))
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the job entry fixes the session, so the pod names none and is registered for nothing", jobAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the job's token, naming its account and no person", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		// Read back through the one declaration both ends of the route share, so the answer is
+		// compared whole: a person or a scope would each be a field the literal does not carry.
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: jobSession, Service: jobAccount, ProjectScope: oauthwire.ProjectScopePublic, Projects: []string{"PRIVA"}, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a job's token names its account as its service, the project scope public and the private projects its entry lists, and no person and no scope", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+	})
 }
 
 // TestTheBinaryExchangesAPersonlessAccountEntrysPodToken is the live proof of an account entry

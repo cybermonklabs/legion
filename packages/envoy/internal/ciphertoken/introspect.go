@@ -32,8 +32,10 @@ const maxIntrospectionBytes = 64 << 10
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
 	// ProjectScopeNamed means Projects is the one project the token is held to: the one an
-	// operator's entry gave it, or none for an account entry naming none, or the one a restricted
-	// member's machine login asked for.
+	// operator's entry gave it, or none for an account entry that names none, whether it names a
+	// person or acts as its account (a service, no person), or the one a restricted member's
+	// machine login asked for. A job's named token, which names a service and no person, names
+	// exactly one.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.
@@ -42,6 +44,10 @@ const (
 	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
 	// only under Options.ServesReadOnly.
 	ProjectScopeNone = oauthwire.ProjectScopeNone
+	// ProjectScopePublic means the token is a job's whose entry names public: it names a service
+	// and no person, it reaches every public project, and Projects is the 0 to
+	// oauthwire.MaxProjects private projects its entry lists (shapeOf).
+	ProjectScopePublic = oauthwire.ProjectScopePublic
 )
 
 // ScopeRead is the one OAuth scope every read-only token holds, in the answer's space-separated
@@ -53,7 +59,9 @@ const ScopeRead = oauthwire.ScopeRead
 // ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
 // answer's space-separated Scope: the broker's own wire name, carried here for the reason
 // ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
-// person, shapeOf reads a token that holds it as it reads one that does not.
+// person, shapeOf reads a token that names a person and holds it as it reads one that does not.
+// A named answer that names no person and holds any scope word, this one included, is no
+// session's credential (shapeOf).
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,

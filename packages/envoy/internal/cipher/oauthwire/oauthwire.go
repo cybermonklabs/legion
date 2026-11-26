@@ -195,25 +195,38 @@ type AirlockName struct {
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token held to one project. An operator's entry maps most of them: such
-	// a token acts for the entry's person, or as the account itself for an account entry naming no
-	// person, and its Projects holds the entry's one project, or none for an account entry naming
-	// none (the shared public-session account's, and every account entry naming no person). A
+	// ProjectScopeNamed is a token held to one project, or to none. An operator's entry maps most
+	// of them. An entry that names a person mints a token that acts for that person, and its
+	// Projects holds the entry's one project, or none for an account entry naming none (the shared
+	// public-session account's). An account entry naming no person mints a token that acts as the
+	// account itself, its service, and its Projects holds none. A job entry mints a token that
+	// names the entry's identity as its service and no person, and its Projects holds the entry's
+	// one project, never none. Neither token that names no person holds an OAuth scope. A
 	// restricted member's machine login is the one person's credential that makes one
 	// (exchange.Set.Machine): it acts for that member, and its Projects holds the one project its
-	// trade asked for. It never holds two. An entry's token records no Google account and no
-	// creation time, since the operator's configuration, not an account, names its person; a
+	// trade asked for. It never holds two projects. An entry's token records no Google account and
+	// no creation time, since the operator's configuration, not an account, names its person; a
 	// restricted member's records the account and the creation its trade recorded, as a person
 	// token's does.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
-	// MaxProjects projects the trade asked for, each one its person could see at the trade.
+	// MaxProjects projects the trade asked for, each one its person could see at the trade. A
+	// machine's token that names a service and no person carries it too, and names no project.
 	ProjectScopePerson = "person"
 	// ProjectScopeNone is a token that may write no project and names none: the token a read
 	// entry mints, which holds the scope ScopeRead and nothing else. A resource server of a
 	// build that predates it refuses it, since it accepts only the two words above, and one of
 	// this build accepts it only where it asks to (ciphertoken).
 	ProjectScopeNone = "none"
+	// ProjectScopePublic is a token a job entry naming `public` mints: it names the entry's
+	// identity as its service and no person, it reaches every public project, which no list
+	// names, and its Projects holds the private projects the entry lists, 0 to MaxProjects of
+	// them, whatever the trade named. The word itself is no project key and is never in
+	// Projects. It holds no OAuth scope, and no trade narrows it to reading: the exchange refuses
+	// that trade. A resource server of a build that predates it refuses it, since it does not
+	// know the word, and one of this build accepts it only beside a service, no person, no OAuth
+	// scope and no cut (ciphertoken).
+	ProjectScopePublic = "public"
 	// ProjectScopeReadNamed is a ProjectScopeNamed token narrowed to reading: its trade asked for
 	// ScopeRead, and it names the person and the projects the same trade would have named without
 	// it. It holds the OAuth scope ScopeRead alone. A resource server of a build that predates the
@@ -260,9 +273,11 @@ const AccountSubjectPrefix = "system:serviceaccount:"
 // subdomain. It is the one spelling of that grammar: the broker's configuration holds every
 // account its settings name to it (config), and the exchange every account entry and read entry
 // (exchange.NewSet), so it is also the service a ProjectScopeNamed token that names no person
-// carries: the one entry that mints that shape is an account entry naming no person, whose token
-// acts as the account (exchange.Set.Pod). A resource server reads a named token that names no
-// person and a service this does not match whole as no token the broker mints (ciphertoken).
+// and no project carries: the one entry that mints that shape is an account entry naming no
+// person, whose token acts as the account (exchange.Set.Pod). A resource server reads a named
+// token that names no person and no project and a service this does not match whole as no token
+// the broker mints (ciphertoken). A job's named token names no person and one project, and its
+// service is any identity a job entry lists, an account, a workflow or a Google account.
 var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // MaxProjects is the most projects one token names.
@@ -347,11 +362,13 @@ type Introspection struct {
 	Person string `json:"person,omitempty"`
 	// Service is the service a token that names no person was minted for: the fleet its machine
 	// belongs to, as BROKER_VM_SERVICES names it, the service a read entry names
-	// (BROKER_EXCHANGE_READ_ACCOUNTS), or the account of a BROKER_EXCHANGE_ACCOUNTS entry naming
-	// no person (system:serviceaccount:<namespace>:<name>), which that token acts as. A token
-	// names a person or a service and never both, so a reader that records who is answerable for
-	// a write reads Person, or this where Person is empty, and one that decides what a machine may
-	// reach reads this.
+	// (BROKER_EXCHANGE_READ_ACCOUNTS), the account of a BROKER_EXCHANGE_ACCOUNTS entry naming no
+	// person (system:serviceaccount:<namespace>:<name>), which that token acts as, or, for a job's
+	// token, the identity its job entry lists: a pod's Kubernetes service account
+	// (system:serviceaccount:<namespace>:<name>), a workflow (<repository>/<workflow path>@<ref>)
+	// or a Google account's address. A token names a person or a service and never both, so a
+	// reader that records who is answerable for a write reads Person, or this where Person is
+	// empty, and one that decides what a machine or a job may reach reads this.
 	Service string `json:"service,omitempty"`
 	// Machine is the machine a person signed in on acted through: the Google account of the
 	// actor token the exchange was made with, as BROKER_VM_SERVICES lists it. It is set only
@@ -406,17 +423,22 @@ type Introspection struct {
 	// 0, and absent, for a token naming no person and for one minted before the broker recorded
 	// it.
 	CredentialCreatedAt int64 `json:"credential_created_at,omitempty"`
-	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone, or one of them narrowed to reading (ProjectScopeReadNamed,
-	// ProjectScopeReadPerson, ProjectScopeReadNone), whose Projects mean what its base word's do.
-	// A machine login's own token, which no exchange decided for, carries neither this nor
-	// Projects.
+	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson,
+	// ProjectScopeNone or ProjectScopePublic, or one of the first three narrowed to reading
+	// (ProjectScopeReadNamed, ProjectScopeReadPerson, ProjectScopeReadNone), whose Projects mean
+	// what its base word's do. A job's token carries ProjectScopeNamed or ProjectScopePublic,
+	// beside its Service and no Person. A machine login's own token, which no exchange decided
+	// for, carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
-	// project, or none for an account entry naming none, or the one project a restricted member's
-	// machine login asked for; for a ProjectScopePerson token, the 0 to MaxProjects projects its
-	// trade asked for, each one its person could see then; for a ProjectScopeNone token, none.
-	// Sorted, each once; absent for none.
+	// project, or none for an account entry that names a person and no project or for one that
+	// names neither a person nor a project (<account>== of BROKER_EXCHANGE_ACCOUNTS), whose token
+	// acts as the account, always one for a job's token, and the one project a restricted
+	// member's machine login asked for; for a ProjectScopePerson token, the 0 to MaxProjects
+	// projects its trade asked for, each one its person could see then, and none for a token that
+	// names a service; for a ProjectScopePublic token, the 0 to MaxProjects private projects its
+	// job entry lists, the whole list whatever the trade named; for a ProjectScopeNone token,
+	// none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and

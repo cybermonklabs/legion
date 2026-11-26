@@ -121,8 +121,8 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 				t.Fatalf("a sub to %s was answered %s, want err subject_not_granted for sid %d", subject, frame.raw, sid)
 			}
 			return true
-		case <-time.After(2 * time.Second):
-			t.Errorf("a sub to %s was answered nothing within 2 s, want err subject_not_granted for sid %d", subject, sid)
+		case <-time.After(listenerWaitBound(t)):
+			t.Errorf("a sub to %s was answered nothing in time, want err subject_not_granted for sid %d", subject, sid)
 			return false
 		}
 	}
@@ -197,7 +197,7 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	client.none(500*time.Millisecond, "a message carrying the probe's header under a relay receipt")
 
 	_ = client.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-	waitFor(t, 5*time.Second, "the replica to drop the socket's subscription", func() bool {
+	waitFor(t, "the replica to drop the socket's subscription", func() bool {
 		return rig.client.Connection().NumSubscriptions() == held
 	})
 	if probeSessionConnection(t.Context(), prober, session, logger) {
@@ -387,14 +387,14 @@ func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
 				case <-client.pongs:
 				case frame := <-client.frames:
 					t.Fatalf("the socket of the session %q was opened, and its sub of %s was answered %s; want 400 before the upgrade", session, bus.DeliverSubject(session), frame.raw)
-				case <-time.After(5 * time.Second):
+				case <-time.After(listenerWaitBound(t)):
 					t.Fatalf("the socket of the session %q was opened and answered no ping; want 400 before the upgrade", session)
 				}
 				publishRelayFrame(t, rig.owner.url, victim, natsgo.Header{})
 				select {
 				case frame := <-client.frames:
 					t.Fatalf("the socket of the session %q was opened, and %s's frame reached it: %s", session, victim, frame.raw)
-				case <-time.After(2 * time.Second):
+				case <-time.After(listenerWaitBound(t)):
 					t.Fatalf("the socket of the session %q was opened; want 400 before the upgrade", session)
 				}
 			}
@@ -774,7 +774,7 @@ func TestARelaySocketsReplicaHoldsNoMoreThanItsBudget(t *testing.T) {
 			held, bytes := socket.held()
 			t.Fatalf("the socket of %s holds %d frames, %d bytes, and is open, though it alone was sent %d frames of 512 KiB past the replica's budget of %d", sessions[i], held, bytes, frames, budget)
 		}
-		_ = conns[i].SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second)))
+		_ = conns[i].SetReadDeadline(time.Now().Add(listenerWaitBound(t)))
 		_, _, err := conns[i].ReadMessage()
 		var closed *websocket.CloseError
 		if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
@@ -806,8 +806,8 @@ func TestARelaySocketPastTheListenersCapIsRefused503(t *testing.T) {
 	if err := first.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("close the first socket: %v", err)
 	}
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return rig.holds("ses_edge_cap_a") == 0 }) {
-		t.Fatal("the replica still holds the first socket 5s after its client closed it")
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.holds("ses_edge_cap_a") == 0 }) {
+		t.Fatal("the replica still holds the first socket the time this package gives a wait after its client closed it")
 	}
 	rig.openWith(t, third, token)
 }
@@ -931,7 +931,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 	awaitSessionConsumerStored(t, rig.owner.harness.client.Conn, session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
 	seen := map[string]bool{}
-	deadline := time.After(60 * time.Second)
+	deadline := time.After(listenerWaitBound(t))
 	for len(seen) < backlog {
 		select {
 		case frame := <-client.frames:
@@ -947,7 +947,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 		case err := <-client.closed:
 			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
 		case <-deadline:
-			t.Fatalf("the socket of a prompt client was sent %d of %d frames in 60s", len(seen), backlog)
+			t.Fatalf("the socket of a prompt client was sent %d of %d frames within the time this package gives a wait", len(seen), backlog)
 		}
 	}
 	client.stillOpen(time.Second, "after the backlog")
@@ -1018,8 +1018,8 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 	case <-client.pongs:
 	case err := <-client.closed:
 		t.Fatalf("a well-formed sub closed the socket: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("no pong within 5 s of a well-formed sub")
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatal("no pong within the time this package gives a wait, after a well-formed sub")
 	}
 }
 
@@ -1074,7 +1074,7 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 		if frame.Op != "msg" || frame.sid(t) != 1 || frame.Reply != sent.Reply {
 			t.Fatalf("the message published once the second sub was answered reached the socket as %s, want the msg %s under sid 1", frame.raw, sent.Reply)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the message %s published once the second sub was answered never reached the socket: the second sub was answered before the first's subscribe was held", sent.Reply)
 	}
 }
@@ -1094,8 +1094,8 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	client.ping()
 	select {
 	case <-client.pongs:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no pong within 5 s of the ping")
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatal("no pong within the time this package gives a wait, after the ping")
 	}
 	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
 	select {
@@ -1103,7 +1103,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 		if frame.Op != "msg" || frame.Reply != sent.Reply {
 			t.Fatalf("the socket sent %s, want the msg %s published the moment the pong arrived", frame.raw, sent.Reply)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the message %s published the moment the pong arrived never reached the socket: the pong came before the subscribe was held", sent.Reply)
 	}
 }

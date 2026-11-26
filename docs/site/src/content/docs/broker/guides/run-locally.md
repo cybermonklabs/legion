@@ -407,8 +407,9 @@ reread wrote none, since the secret's state did not change
 
 The broker's RFC 8693 token exchange is on, for one account entry,
 `system:serviceaccount:example-ns:example-worker`, writing the project `EXAMPLE` for
-`ada@example.com`, and for one read entry
-([Exchange a read entry's token](#exchange-a-read-entrys-token)).
+`ada@example.com`, for one read entry
+([Exchange a read entry's token](#exchange-a-read-entrys-token)), and for two job entries
+([Exchange a job's token](#exchange-a-jobs-token)).
 `$DEV_BROKER_DIR/exchange-token` holds the account entry's pod token for the exchange's own
 audience, `legion-broker-exchange`.
 
@@ -548,6 +549,67 @@ and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, a read a
 `GET /ws/live`. It prints one line for each request, with its status and its code, and exits 1
 when any answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
 `bun run dispatch:local` started again, which empties the instance.
+
+## Exchange a job's token
+
+The exchange lists two job entries too, each a job that writes for no person.
+`BROKER_EXCHANGE_JOB_ACCOUNTS=system:serviceaccount:example-ns:example-job=EXAMPLE=example-job-session`
+is a job pod: `$DEV_BROKER_DIR/job-token` holds that account's pod token for the exchange's
+audience, and the token request above, with that token and no `session`, mints a token that names
+the account as its service, no person, the session `example-job-session` and the project `EXAMPLE`
+alone.
+`BROKER_EXCHANGE_JOB_WORKFLOWS=example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=public=example-workflow-session`
+is a GitHub Actions workflow, whose run's token mints a token of the project scope `public` that
+names `example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main` as its service
+and the session `example-workflow-session`. Each entry fixes its session, so the script registers
+neither.
+
+`dev-oidc-issuer` stands in for GitHub as well. The script starts it with
+`--actions-token example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=$DEV_BROKER_DIR/actions-request-token`:
+it writes a random request token to that file and answers the run's token request at the URL the
+banner's `actions request URL:` line prints, `<issuer URL>/_actions/token/1?api-version=2.0`, to
+loopback callers alone. A `GET` of that URL with `&audience=<audience>` and
+`Authorization: bearer <request token>` is answered `{"value": "<token>"}`, a token in the claims
+GitHub writes of that run (`repository`, `workflow_ref`, `job_workflow_ref`, `ref`), with a new
+`jti` each time, since the broker takes each GitHub token once; with no `audience` the token is
+for `https://github.com/example-org`, as GitHub's is. Any other bearer is `401`, in GitHub's shape.
+The broker takes that issuer as `BROKER_EXCHANGE_GITHUB_ISSUER`, with
+`BROKER_EXCHANGE_GITHUB_AUDIENCE=legion-broker-github`, so a client run with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions`, `ACTIONS_ID_TOKEN_REQUEST_URL` the actions request
+URL, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` the file's content and
+`AGENT_SECRETS_MACHINE_AUDIENCE=legion-broker-github` trades as that workflow's run would on
+GitHub.
+
+`packages/dispatch/e2e/job-token-live.ts` drives both, with `dispatch api`, against a local
+Dispatch that reads this broker, started as the read-token section starts it. The script creates
+project `EXAMPLE` too, so start `bun run dispatch:local` again first if `read-token-live.ts` ran
+against it. Then, from `packages/dispatch`:
+
+```console
+$ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/job-token-live.ts
+seeded EXAMPLE
+ok   [job pod] GET /api/v1/whoami: exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE (want exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE)
+ok   [job pod] POST /api/v1/issues (EXAMPLE, body on standard input): exit 0 -, key EXAMPLE-1 (want exit 0 -, a key)
+ok   [job pod] GET /api/v1/issues/EXAMPLE-1/events: exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none (want exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none)
+ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 PROJECT_SCOPE (want the person entry's: exit 1 PROJECT_SCOPE)
+ok   [job workflow] POST /api/v1/issues/EXAMPLE-1/comments (body from a file): exit 0 - (want exit 0 -)
+ok   [job workflow] GET /api/v1/whoami: exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main, session example-workflow-session, project null (want exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main)
+ok   [person entry] GET /api/v1/whoami: exit 0 -, owner ada@example.com, service null, session example-worker-session, project EXAMPLE (want exit 0 -, owner ada@example.com)
+```
+
+The script creates project `EXAMPLE` as alice, then runs this checkout's `dispatch api`
+(`packages/envoy-client/bin/dispatch.ts`) once for each line, and once more for the example
+entry's issue in `OPS`, in an environment that keeps only `PATH`, `HOME` and `TMPDIR` and sets
+`DISPATCH_URL`, `AGENT_SECRETS_URL`, `PERSON_SIGNIN_TRADE=off` and the identity of the line. The job
+pod (`AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` with `job-token`) creates an issue in `EXAMPLE`
+from standard input, and Dispatch records it under the entry's session with the account as its
+service and no owner. The same issue in `OPS` gets the answer that the example entry's token, a
+person's named token for `EXAMPLE`, gets there, and the line wants exactly that answer:
+`403 PROJECT_SCOPE`, `exit 1 PROJECT_SCOPE`, until dispatch://INFRA-4799 changes that for both.
+The workflow's run (`github-actions`, with the actions request URL and token and no
+`DISPATCH_HOST` or session id) comments on that issue from a file. The example entry's token, the
+control, names its person as the owner. It exits 1 when any answer is not the one it wants.
+Project `EXAMPLE` then exists, so a second run needs `bun run dispatch:local` started again.
 
 ## Read the log and the metrics
 
