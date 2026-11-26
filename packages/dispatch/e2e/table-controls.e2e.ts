@@ -12665,3 +12665,94 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
     text
   ).toBe(true);
 });
+
+// INFRA-2160, round 22, by the architect's ruling of 2026-11-26T07:01Z: below `sm` the selection
+// bar stands under the header over the list's top rows with no room given for it. With
+// `BAR_LINE.compact` set to `"flex-wrap"` (`components/SelectionBar.tsx`), the project List's bar
+// with two rows marked wraps to 210 px tall at 390x664 (y 56 to 266) and covers the marked rows: a
+// press on a marked row's control lands on a `DIV` of the bar instead (INFRA-3135's builds Jobs
+// `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`). Keeping one sideways-scrolling line below
+// `sm` (and wrapping from `sm` up, where the bar stands at the foot) keeps the bar above the rows
+// so a press on a marked row's checkbox or key link lands on that control.
+// Its engines: Chromium, Firefox and WebKit (`@firefox @webkit`), as its round-27/28 neighbours at
+// 390x664 are tagged (`e2e/playwright.config.ts`).
+// SLOW(>=2s): twenty seeded issues on the project List at 390x664, two rows marked, controls probed
+// and one marked row unmarked by a click.
+test("at 390 the project List's selection bar with two rows marked leaves the marked rows' controls under the reader's press, not under the bar @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "BAR", name: "Bar cover" });
+  for (let index = 0; index < 20; index++) {
+    await createIssue({ project: "BAR", title: `Bar row ${index}` });
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  await openIssuesTab(page, "BAR", "List");
+  await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(12);
+  // Bring the table's box to just below the app's 56 px header so the first two rows sit in the
+  // upper band of the viewport where a wrapped bar under the header would cover them.
+  await box.evaluate((node) => {
+    window.scrollBy(0, node.getBoundingClientRect().top - 60);
+    node.scrollTop = 0;
+  });
+  await settledScrollTop(page);
+  await settledScrollTop(box);
+  await nextFrames(page);
+  // The rows read once the box has held still; they only name the first two rows marked below.
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("[data-issue-row]")]
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+      .map((row) => row.getAttribute("data-issue-row") ?? "")
+  );
+  const first = order[0] ?? "";
+  const second = order[1] ?? "";
+  expect(first).not.toBe("");
+  expect(second).not.toBe("");
+  for (const key of [first, second]) {
+    const mark = page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+    await mark.focus();
+    await page.keyboard.press("Space");
+    await expect(mark).toBeChecked();
+  }
+  await expect(bar).toContainText("2 selected");
+  await settledScrollTop(page);
+  await settledScrollTop(box);
+  await nextFrames(page);
+  // Probe each marked row's checkbox and key link (the first pinned control beside the checkbox)
+  // at the centre of its box: both must take the reader's press rather than the bar over them.
+  const covered: string[] = [];
+  for (const key of [first, second]) {
+    const row = page.locator(`[data-issue-row="${key}"]`);
+    const controls: readonly [string, Locator][] = [
+      ["checkbox", row.getByRole("checkbox", { exact: true, name: `Select ${key}` })],
+      ["key link", row.getByRole("link", { exact: true, name: key })],
+    ];
+    for (const [name, control] of controls) {
+      const problem = await control.evaluate((target) => {
+        const rect = target.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const at = `(${Math.round(x)}, ${Math.round(y)})`;
+        const hit = document.elementFromPoint(x, y);
+        if (hit === null) return `centre ${at} is outside the viewport`;
+        if (hit === target || target.contains(hit)) return null;
+        const tag = hit.tagName;
+        const holder = hit.closest("[aria-label], [role]");
+        const inHolder =
+          holder === null || holder === hit
+            ? ""
+            : ` inside ${holder.tagName} (${holder.getAttribute("aria-label") ?? holder.getAttribute("role") ?? ""})`;
+        return `centre ${at} hits ${tag}${inHolder}`;
+      });
+      if (problem !== null) covered.push(`${key} ${name}: ${problem}`);
+    }
+  }
+  expect(covered, covered.join("; ")).toEqual([]);
+  // A real press (no `force`) on one marked row's checkbox reaches the row and unmarks it.
+  const firstMark = page.getByRole("checkbox", { exact: true, name: `Select ${first}` });
+  await firstMark.click();
+  await expect(firstMark).not.toBeChecked();
+});
