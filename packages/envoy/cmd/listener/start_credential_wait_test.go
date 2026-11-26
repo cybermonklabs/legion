@@ -516,8 +516,8 @@ func edgeStartRun(t *testing.T, uri string) (config.Service, *edgeGrant) {
 // and /livez 204, and the server records waits of 1, 2, 4 and 8 s between the start's first five
 // tries. The server reloads an authorization that admits the nkey 20 s after the first try, past
 // the ten tries a start without the wait makes; the start then connects and finds the stream
-// (edgeStreamPresent), and /healthz answers as on main. Without the wait the start ends with the
-// refusal after those ten tries, about ten seconds, and /healthz answers 200 "starting" throughout.
+// (edgeStreamPresent), and /healthz answers 503 starting, as before any refusal. Without the wait
+// the start ends with the refusal after those ten tries, about ten seconds.
 func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	const (
 		reloadAt = 20 * time.Second
