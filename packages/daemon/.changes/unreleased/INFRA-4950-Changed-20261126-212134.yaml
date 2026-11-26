@@ -5,16 +5,14 @@ body: |-
     a task names its files and tests, the implementer before it changes a symbol, the tester before
     it judges the implementer's tests, the reviewer for each changed exported symbol and the merger
     where the base changed code the change uses (`impact`, `callers`, `affected` and `explore`).
-    `affected` always carries `"depth":1`, because its default depth returned 1,544 test files for
-    one Go file, and a Go path also carries `"filter":"**_test.go"`, because without a filter
-    `affected` counts no `_test.go` file as a test. A role asks `status` before its first query and
-    reads the source with grep when the tool is missing, an answer is empty, or an answer may be
-    stale or partial: `status` still reports up to date after an edit, and says the index is
-    truncated while a build runs. A role runs `init` only when two answers apart say the workspace is
-    not initialized, and runs no `index`, `sync` or `unlock`, whatever `status` or the tool's own
-    guidance advises, because a second build corrupts the index. A role on Claude Code is told the
-    `codegraph` command for each action. The reviewer's earlier `codegraph({ action: … })` call is
-    removed.
+    `affected` always carries `"depth":1`, because its default depth returned 3,101 test files for
+    one Go file. A role asks `status` before its first query and reads the source with grep when the
+    tool is missing, an answer is empty, or an answer may be stale or partial: `status` counts a file
+    edited since the build as a pending change, and says the index is truncated while a build runs.
+    A role runs `init` only when two answers apart say the workspace is not initialized, and runs no
+    `index`, `sync` or `unlock`, whatever `status` or the tool's own guidance advises, because a
+    second build corrupts the index. A role on Claude Code is told the `codegraph` command for each
+    action. The reviewer's earlier `codegraph({ action: … })` call is removed.
 time: 2026-11-26T21:21:34Z
 custom:
     Issue: INFRA-4950

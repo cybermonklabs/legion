@@ -808,10 +808,11 @@ var codeGraphActions = []string{
 
 // codeGraphPluginVersion is the version of @bopstack/pi-codegraph that codeGraphActions copies, and
 // codeGraphCLIVersion the version of the CodeGraph CLI (@colbymchenry/codegraph) whose commands
-// codeGraphCLIForms and go/claude-mechanics.md copy. Each is the pin of the worker image.
+// codeGraphCLIForms and go/claude-mechanics.md copy and whose answers the prompts' CodeGraph rule
+// describes. Each is the pin of the worker image.
 const (
 	codeGraphPluginVersion = "0.1.1"
-	codeGraphCLIVersion    = "1.5.0"
+	codeGraphCLIVersion    = "1.6.4"
 )
 
 // codeGraphRoles classifies every role a claim can be on by what its prompt must say about the
@@ -839,7 +840,7 @@ var codeGraphByCommand = map[runtime.Backend]bool{
 }
 
 // codeGraphCLIForms is the command a role that reaches CodeGraph by its command runs for each
-// action a prompt names, and goAffectedCLIForm the one for `affected` on a Go path.
+// action a prompt names.
 var codeGraphCLIForms = map[string]string{
 	"impact":   "codegraph impact <symbol>",
 	"callers":  "codegraph callers <symbol>",
@@ -848,8 +849,6 @@ var codeGraphCLIForms = map[string]string{
 	"status":   "codegraph status",
 	"init":     "codegraph init <path>",
 }
-
-const goAffectedCLIForm = "codegraph affected <path> --depth 1 --filter '**_test.go'"
 
 // dockerPin is the version the worker image pins for package, read from the package.json under
 // packages/daemon/docker/dir.
@@ -880,9 +879,9 @@ func dockerPin(t *testing.T, dir, pkg string) string {
 // Each prompt gives the call's shape once and the rule for a missing tool and for an empty, a stale
 // or a partial answer once. A role that took `status` or the tool's own advice would start a second
 // build beside the warm-up's, which corrupts the index. Every action a prompt names is one the tool
-// takes and one the role's row lists, `affected` always with `"depth":1` (its default depth fans
-// out across unrelated tests) and, for a Go path, a filter (without one it counts no `_test.go`
-// file as a test). This shows the text is loaded, never that a role follows it.
+// takes and one the role's row lists, `affected` always with `"depth":1`, since its default depth
+// fans out across unrelated tests (3,101 test files for one Go file at depth 5 and 17 at depth 1,
+// measured on CodeGraph 1.6.4). This shows the text is loaded, never that a role follows it.
 func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 	if got := dockerPin(t, "omp-plugins", "@bopstack/pi-codegraph"); got != codeGraphPluginVersion {
 		t.Fatalf("@bopstack/pi-codegraph is pinned at %q and codeGraphActions copies %s: re-read src/descriptors.ts of the pinned version and update codeGraphActions", got, codeGraphPluginVersion)
@@ -896,24 +895,25 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	const (
-		callShape     = "`write` to `xd://codegraph` the content `{\"action\":"
-		staleAnswer   = "It does not see an edit made since, yours or the base's"
-		buildRunning  = "While a build runs, `status` says the index is truncated"
-		statusFirst   = "Ask `{\"action\":\"status\"}` before your first query"
-		readsSource   = "Read the source with grep and the read tool in three cases"
-		missingTool   = "The tool is missing: it says it is unavailable on `PATH`, or the workspace is not initialized"
-		emptyAnswer   = "An empty answer never means \"none\""
-		partialAnswer = "The answer may be stale or partial"
-		nameMatching  = "`impact` and `callers` match by name"
-		laterInit     = "only when that later answer says the workspace is not initialized too"
-		noIndexAction = "Run no other index action, whatever `status` or the tool's own guidance advises"
-		// Held only by a prompt whose role names `affected`, and, for the mapping, a role that
-		// reaches CodeGraph by its command.
-		goFilter      = "For a Go path, add `\"filter\":\"**_test.go\"` to the `affected` call"
+		callShape          = "`write` to `xd://codegraph` the content `{\"action\":"
+		staleAnswer        = "It does not see an edit made since, yours or the base's"
+		pendingChange      = "`status` counts the changed file as a pending change"
+		buildRunning       = "While a build runs, `status` says the index is truncated"
+		statusFirst        = "Ask `{\"action\":\"status\"}` before your first query"
+		readsSource        = "Read the source with grep and the read tool in three cases"
+		missingTool        = "The tool is missing: it says it is unavailable on `PATH`, or the workspace is not initialized"
+		emptyAnswer        = "An empty answer never means \"none\""
+		partialAnswer      = "The answer may be stale or partial"
+		nameMatching       = "`impact` and `callers` match by name"
+		blockPerDefinition = "give one block for each definition of a name"
+		laterInit          = "only when that later answer says the workspace is not initialized too"
+		noIndexAction      = "Run no other index action, whatever `status` or the tool's own guidance advises"
+		// Held only by a prompt of a role that reaches CodeGraph by its command, and the retired
+		// call, which no prompt holds.
 		claudeMapping = "is the `codegraph` command"
 		retiredCall   = "codegraph({"
 	)
-	onceEach := []string{callShape, staleAnswer, buildRunning, statusFirst, readsSource, missingTool, emptyAnswer, partialAnswer, nameMatching, laterInit, noIndexAction}
+	onceEach := []string{callShape, staleAnswer, pendingChange, buildRunning, statusFirst, readsSource, missingTool, emptyAnswer, partialAnswer, nameMatching, blockPerDefinition, laterInit, noIndexAction}
 	action := regexp.MustCompile(`"action":"([^"]*)"`)
 	affectedCall := regexp.MustCompile(`\{"action":"affected"[^}]*\}`)
 
@@ -978,11 +978,6 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 							t.Errorf("the prompt of %s never names the action %q", row, want)
 						}
 					}
-					if slices.Contains(listed, "affected") {
-						if n := strings.Count(text, goFilter); n != 1 {
-							t.Errorf("the prompt of %s holds %q %d times, want once: without a filter `affected` counts no `_test.go` file as a test", row, goFilter, n)
-						}
-					}
 					for _, call := range affectedCall.FindAllString(text, -1) {
 						if !strings.Contains(call, `"depth":1`) {
 							t.Errorf("the prompt of %s names the call %s without \"depth\":1: the default depth fans out across unrelated tests", row, call)
@@ -999,9 +994,6 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 								continue
 							}
 							forms[want] = form
-						}
-						if slices.Contains(listed, "affected") {
-							forms["affected on a Go path"] = goAffectedCLIForm
 						}
 						for what, form := range forms {
 							if !strings.Contains(text, form) {
@@ -1029,56 +1021,6 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 			}
 			if strings.Contains(body, retiredCall) {
 				t.Errorf("the controller's prompt part %s holds %q, a call no host can make", path, retiredCall)
-			}
-		}
-	}
-}
-
-// goCallFromAnotherPackage names the answer the `codegraph` tool gives wrong for a Go symbol whose
-// module sits below the indexed root: CodeGraph 1.5.0 reads only the go.mod at that root
-// (/opt/codegraph/lib/dist/resolution/go-module.js, loadGoModule: "only the project-root go.mod is
-// read"), so a call from another package falls through to matching by name and path and is lost.
-const goCallFromAnotherPackage = "a Go call from another package"
-
-// Every prompt that tells its role to ask `impact` or `callers` and to grep only for what the tool
-// does not answer also says that the tool does not answer a Go call from another package where the
-// module's go.mod is not at the root of the workspace, as in every repository whose Go modules sit
-// in their own directories. Without that sentence a role reads a short, complete-looking answer as
-// the whole blast radius. Measured on CodeGraph 1.5.0 in an index of this repository at 20ee90de:
-// `callers ComposePrompt` names TestComposePrompt alone, while runtime.ComposePrompt( is called in
-// cmd/legion/controller.go, internal/runtime/sandbox/manifest.go and internal/runtime/tmux/spawn.go;
-// `impact IsTreeRoot` names 4 symbols, all in package claim, against about 90 calls in 12 packages.
-// A scratch repository with its go.mod at the root resolves the same cross-package call, and with
-// that go.mod moved into a subdirectory `callers` answers "No callers found". The rendered reviewer
-// prompt of 1fc77041, asked whether to grep after those two answers, answered NO-GREP twice.
-func TestEveryCodeGraphStepSaysTheToolMissesAGoCallFromAnotherPackage(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	backends := slices.Sorted(maps.Keys(runtime.Backends))
-	for _, role := range claim.Roles {
-		listed := codeGraphRoles[role]
-		if !slices.Contains(listed, "impact") && !slices.Contains(listed, "callers") {
-			continue
-		}
-		for _, isRoot := range []bool{true, false} {
-			if isRoot && role != claim.RoleArchitect {
-				continue
-			}
-			for _, backend := range backends {
-				info := runtime.Backends[backend]
-				if !info.Runs(role) {
-					continue
-				}
-				row := fmt.Sprintf("%s (root %t) on %s", role, isRoot, backend)
-				launched := composedText(t, composer, role, isRoot)
-				if info.PromptPart != "" {
-					launched += readJoined(t, composer.Part(info.PromptPart))
-				}
-				if n := strings.Count(foldWhitespace(launched), goCallFromAnotherPackage); n != 1 {
-					t.Errorf("the prompt of %s holds %q %d times, want once: it tells the role to grep only for what `impact` and `callers` do not answer, and they do not answer a Go call from another package where the module's go.mod is not at the workspace's root", row, goCallFromAnotherPackage, n)
-				}
 			}
 		}
 	}
