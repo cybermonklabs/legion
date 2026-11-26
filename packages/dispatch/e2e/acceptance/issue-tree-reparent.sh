@@ -181,11 +181,12 @@ rp_tag() {
 }
 
 # rp_since SECTION ADDRESS MARK: the tuples out of the node at ADDRESS appended after MARK, each
-# `<kind>:<far end>:<asserted>` in seq order, joined by commas, in answer.
+# `<kind>:<far end>:<asserted>` in seq order, joined by commas, in answer. A far end that is a block,
+# which a tuple names lens_block where it is a lens's finding (graphstore.AddressKind), is its id.
 rp_since() {
   tree_node_store "$2"
   with_vars "$1" "read the tuples of $2 since $3" \
-    "select coalesce(string_agg(kind || ':' || case when to_kind = 'block' then to_id else to_kind || '/' || to_id end || ':' || asserted::text, ',' order by seq), '')
+    "select coalesce(string_agg(kind || ':' || case when to_kind in ('block', 'lens_block') then to_id else to_kind || '/' || to_id end || ':' || asserted::text, ',' order by seq), '')
      from graph_tuples where from_kind = :'kind' and from_id = :'id' and seq > :'mark'::bigint" \
     kind="$tree_node_kind" id="$tree_node_id" mark="$3"
 }
@@ -211,7 +212,9 @@ rp_moved_tuples() {
 # rp_preceding SECTION ADDRESS PARENT: the ranked child of PARENT that the node at ADDRESS now
 # follows - the child just before it by rank, compared byte for byte, of any band - as a store
 # address (a block's node id, every other node `<kind>/<id>`), or `null` where it follows none or
-# holds no rank, in rp_before. It reads the store, as the move's answer must agree with it.
+# holds no rank, in rp_before. It reads the store, as the move's answer must agree with it. A
+# part_of to a lens's finding names it lens_block (graphstore.AddressKind), so a block PARENT is
+# read under either kind.
 rp_preceding() {
   tree_node_store "$3"
   with_vars "$1" "read the ranked child of $3 that $2 follows" \
@@ -223,7 +226,7 @@ rp_preceding() {
                   where x.from_kind = t.from_kind and x.from_id = t.from_id and x.kind = 'rank' and x.to_kind = 'value'
                   order by x.seq desc limit 1) as rank
          from graph_tuples t
-         where t.kind = 'part_of' and t.to_kind = :'kind' and t.to_id = :'id'
+         where t.kind = 'part_of' and (t.to_kind = :'kind' or (:'kind' = 'block' and t.to_kind = 'lens_block')) and t.to_id = :'id'
          order by t.from_kind, t.from_id, t.seq desc) s
        where s.asserted and s.rank is not null) o
      where o.child = :'node'), 'null')" \
@@ -823,9 +826,10 @@ rp_row "$section" "$p3"
 p3_row="$answer"
 rp_seq "$section"
 p3_mark="$rp_mark"
-rp_tree "$section" "$key" spec
+# P3 is prose of the room's own fragment, which no query takes: the tree read with no view lists it.
+rp_tree "$section" "$key"
 p3_tag="$(jq -r --arg n "$p3" '.nodes[] | select(.id == $n) | .placement_seq // empty' "$work/tree.json")"
-[[ -n "$p3_tag" ]] || fail "$section" "the tree read answers P3's placement_seq" "the spec view lists no $p3"
+[[ -n "$p3_tag" ]] || fail "$section" "the tree read answers P3's placement_seq" "the tree read lists no $p3"
 # rp_chain SECTION NODE PARENT AFTER WANT_AFTER: moves NODE under PARENT with AFTER (a JSON value) and
 # the If-Match of the last answer's placement_seq, $chain_tag, and wants 200 naming PARENT and
 # WANT_AFTER (`null` or a node); the answer's placement_seq becomes $chain_tag.
@@ -855,7 +859,7 @@ rp_stored "$section" "$p3" "issue/$key"
 rp_chain "$section" "$p3" "$p2" null null
 rp_stored "$section" "$p3" "$p2"
 pass "$section" "the indent, outdent and second indent of P3 chained each answer's placement_seq"
-rp_tree "$section" "$key" spec
+rp_tree "$section" "$key"
 first_under_p2="$(jq -r --arg p "$p2" '[.nodes[] | select(.parent.id == $p and .rank != null)][0].id // ""' "$work/tree.json")"
 [[ "$first_under_p2" == "$p3" ]] || fail "$section" "P3 is first among P2's ranked children" "the first is '$first_under_p2'"
 pass "$section" "P3 is first among P2's ranked children"
@@ -934,9 +938,10 @@ with_vars "$section" "read the ranks under $key" \
 rp_rank "$section" "$p4"
 [[ "$answer" == "$p4_rank" ]] || fail "$section" "the stored P4 keeps its rank" "it reads $answer, $p4_rank before"
 pass "$section" "P5 takes the rank $p5_rank of its own, and the stored P4 keeps $p4_rank"
-# An edit naming another requirement in the moved check's parent attribute places it there.
+# An edit naming another requirement in the moved check's parent attribute places it there. A
+# block[] attribute of an edit's retype is a JSON array of block references (pmdoc's schema).
 rp_edit "$section" "alice names R4 in C1's parent attribute" "$verification_doc" "$(jq -cn --arg s "dispatch://$key/spec#b-r1" --arg p "dispatch://$key/spec#b-r4" \
-  '[{op: "retype", block: "c1", type: "check", attributes: {serves: $s, parent: $p, surface: "api", run: "true", negative_control: "Undo it."}}]')"
+  '[{op: "retype", block: "c1", type: "check", attributes: {serves: [$s], parent: [$p], surface: "api", run: "true", negative_control: "Undo it."}}]')"
 rp_wait_indexed "$section"
 rp_parents "$section" "$c1"
 tree_node_value "$section" "$c1" placement
@@ -972,7 +977,7 @@ pass "$section" "no If-Match 428, a stale one 412, an empty body 400 MOVE_INPUT,
 # The removal of P2 from the text places the stored P3 by its text again.
 rp_edit "$section" "alice deletes P2 from the room's text" "$tree_doc" "$(jq -cn --arg b "${p2#*#}" '[{op: "delete", block: $b}]')"
 rp_wait_indexed "$section"
-rp_tree "$section" "$key" spec
+rp_tree "$section" "$key"
 p3_parent="$(jq -r --arg n "$p3" '.nodes[] | select(.id == $n) | .parent.id // ""' "$work/tree.json")"
 [[ -n "$p3_parent" ]] || fail "$section" "P3 stands in the tree read after P2's removal" "P3 is missing from the tree read after P2's deletion"
 tree_node_value "$section" "$p3" placement
@@ -1053,8 +1058,10 @@ tree_field "$section" "open an approval request on $key's spec query node" .ask.
 readonly request="$tree_value"
 rp_move "$section" person "$key" "$r4" "$k2"
 rp_wait_drained "$section"
+# The version a request names now is its approval's version (asks.approval, migration
+# 20261102110100_asks_approval_documents), which a later settled version moves.
 with_vars "$section" "read the request and the spec's newest version" \
-  "select coalesce((select artifact_version::text from asks where id = :'ask'::uuid), '') || '|' || (select max(number) from artifact_versions where artifact_id = :'doc'::uuid)" \
+  "select coalesce((select approval->>'version' from asks where id = :'ask'::uuid), '') || '|' || (select max(number) from artifact_versions where artifact_id = :'doc'::uuid)" \
   ask="$request" doc="$spec_doc"
 IFS='|' read -r named newest <<<"$answer"
 ((newest > before_move)) || fail "$section" "the drain writes a version of the spec query" "the spec query of $key stands at version $newest, $before_move before the move of $r4"
