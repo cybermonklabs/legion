@@ -894,12 +894,12 @@ function deletedPostLine(deleted: PostDeletion): string {
 }
 
 /**
- * The conversation's own turns: each comment and each message a person wrote, or that sits in a
- * thread a person wrote in, a node of this tree, a root turn under the issue and a reply under
+ * The conversation's own turns: each comment and each message that is no turn of a thread the
+ * panel's history holds, a node of this tree, a root turn under the issue and a reply under
  * the entry it answers (R1, R16). A thread head a page never read is no node, so a reply whose
  * parent is missing falls back to the issue, as every node whose parent is absent does
- * (`assemble`). A thread no person wrote in is no node at all: it is the history's, in the panel
- * (`agents-only.ts`, R15), until a person replies in it.
+ * (`assemble`). A thread the history holds is no node at all (`agents-only.ts`): one the Legion
+ * daemon began, whoever wrote in it, and one tied to no text that no person wrote in.
  *
  * One conversation is one order, so the turns are drawn by the time they were made and not by
  * their place in the read that carried them: the comments and the messages are two lists, each
