@@ -4,9 +4,12 @@ body: |-
   Anthropic Messages call (`POST <answers.providers.anthropic base_url>/v1/messages`, with the key
   and headers the loop's own Anthropic calls carry) on `answers.web_search.model` with Anthropic's
   web search server tool allowed one search. The model reads the reply's text and the address of
-  each source it names, cut at `gh_output_chars`; an error block, an error status or a body that
-  does not decode is an error result naming the cause. An answer makes at most 3 searches, an
-  earlier run's counted, and the fourth is refused before any request. Configure it with the new
+  each source it names, cut at `gh_output_chars`. A `max_uses_exceeded` error block, which the
+  Messages API answers for a second search the model attempted past that one, keeps the text and
+  sources of the search that completed beside it; any other error block, a `max_uses_exceeded`
+  block with no completed search, an error status or a body that does not decode is an error
+  result naming the cause. An answer makes at most 3 searches, an earlier run's counted, and the
+  fourth is refused before any request. Configure it with the new
   `answers.web_search` block, whose `model` (an `anthropic/<model>` that `answers.prices` prices)
   and `price_per_search` (USD per search, a plain number) are both required; without the block, or
   without an `anthropic` provider, the tool is not offered and the boot's `answers: tools` line and

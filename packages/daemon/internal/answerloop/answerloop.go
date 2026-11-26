@@ -454,12 +454,15 @@ func (l *Loop) work(ctx context.Context, session string) {
 // as any stopped agent's, and is given through Wakes, once each, everything else that reached it
 // and that is the agent's own: the loop's answer to it as an asker, in place of writing it into
 // the conversation; a person's decision on its ask that asks nothing besides, in place of
-// Decisions; and a message, comment or reply that asks nothing (Verdict.ForAgent). A decision
-// that also asks is held on its question (store.AnswerQuestion.Wake) and given once the answer
-// is appended and posted, so the woken agent finds the answer in its conversation. The daemon's
-// own notices and posts, the broker's messages and anything carrying the loop's own mark are none
-// of the agent's, and reach it neither way. A claim that is not released is passed its decision
-// as before.
+// Decisions; and every other hand-off that is no question and no decision (Verdict.ForAgent):
+// each Dispatch event that reached it, such as a message, comment or reply that asks nothing or
+// the resolution, answer or edit of an ask it follows, and a message of a source no agent
+// answers. A decision that also asks is held on its question (store.AnswerQuestion.Wake) and
+// given once the answer is appended and posted, so the woken agent finds the answer in its
+// conversation. The daemon's own notices and posts, the broker's messages, anything carrying the
+// loop's own mark, and a person's review of the agent's own approval request, which the design
+// gate relays to its architect (reviewForArchitect), are none of the agent's, and reach it
+// neither way. A claim that is not released is passed its decision as before.
 func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error {
 	conv, ok, err := l.conversationFor(ctx, h)
 	if err != nil {

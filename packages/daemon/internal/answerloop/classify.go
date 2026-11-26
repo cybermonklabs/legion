@@ -93,11 +93,13 @@ type Verdict struct {
 	Delivery *Origin
 	Decision *Decision
 	Because  string
-	// ForAgent is a hand-off that is no question and no decision but is the agent's own: a
-	// Dispatch message or comment, a reply among them, that asks it nothing, or a message of a
-	// source no agent answers. An agent whose claim the daemon released is given it through Wakes,
-	// as it would have read it running. The loop's own answers and publishes, the daemon's notices
-	// and posts, the broker's messages and every other Dispatch event are not, and wake nobody.
+	// ForAgent is a hand-off that is no question and no decision but is the agent's own: any
+	// Dispatch event that reached it and asks it nothing, such as a message, a comment or a reply,
+	// or the resolution, answer or edit of an ask it follows, or a message of a source no agent
+	// answers. An agent whose claim the daemon released is given it through Wakes, as it would have
+	// read it running. The loop's own answers and publishes, the daemon's notices and posts, the
+	// broker's messages and a person's review of the agent's own approval request
+	// (reviewForArchitect) are not, and wake nobody.
 	ForAgent bool
 }
 
@@ -131,9 +133,10 @@ func QuestionID(project, identity, token string) string {
 // anything carrying the loop's own marker (its dedupe key, the `<!-- legion-answer:` marker, a
 // Legion footer with an `answer` key), which an agent's message carrying it is delivered into
 // that agent's conversation for instead (Delivery). Of the hand-offs never answered, a Dispatch
-// message or comment and a message of a source no agent answers are the agent's own all the same
-// (Verdict.ForAgent), which an agent whose claim is released is given through Wakes. The ask's
-// author and the reply's thread are read from Dispatch.
+// event that is not the daemon's own post, not the loop's own answer and not a review of the
+// agent's approval request, and a message of a source no agent answers, are the agent's own all
+// the same (Verdict.ForAgent), which an agent whose claim is released is given through Wakes. The
+// ask's author and the reply's thread are read from Dispatch.
 func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	env := h.Envelope
 	switch {
@@ -169,9 +172,13 @@ func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversatio
 	}
 }
 
-// classifyDispatch is Classify of a Dispatch event. A message or a comment it takes for no
-// question and no decision is still the agent's own (Verdict.ForAgent), whatever it was not
-// answered for; the loop's own answer and the daemon's own post are not.
+// classifyDispatch is Classify of a Dispatch event. Every event it takes for no question and no
+// decision is still the agent's own (Verdict.ForAgent), whatever it was not answered for: Dispatch
+// routed it to the agent, which would have read it running, a resolution of an ask the agent
+// follows as much as a message. Its reasons say why the loop does not answer an event, not that
+// the event is another's. The loop's own answer and the daemon's own post are not the agent's,
+// nor is a person's review of the agent's own approval request, which the daemon's workflow
+// gives its architect (reviewForArchitect).
 func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	event, err := intake.DispatchOf(h.Envelope)
 	if err != nil {
@@ -184,10 +191,14 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 		return Verdict{Because: "the daemon's own post"}, nil
 	}
 	verdict, err := classifyDispatchEvent(ctx, h, conv, reader, event)
-	verdict.ForAgent = err == nil && verdict.Question == nil && verdict.Decision == nil &&
-		(event.Type == "message.created" || event.Type == "comment.created")
+	verdict.ForAgent = err == nil && verdict.Question == nil && verdict.Decision == nil && verdict.Because != reviewForArchitect
 	return verdict, err
 }
+
+// reviewForArchitect is why a person's review of the agent's own approval request is neither
+// answered nor the agent's: it arrives again as the document's review, which the daemon's design
+// gate relays to the agent's architect (workflow's dispatchAskClosed, record.RelaysAskAnswer).
+const reviewForArchitect = "a review of the agent's document, which reaches its architect as the document's review"
 
 // classifyDispatchEvent is classifyDispatch of an event that is neither the loop's own answer nor
 // the daemon's own post.
@@ -235,7 +246,7 @@ func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.Age
 		case !event.Actor.Person():
 			return Verdict{Because: "an answer no person gave"}, nil
 		case event.Payload.Kind == "approval":
-			return Verdict{Because: "a review of the agent's document, which reaches its architect as the document's review"}, nil
+			return Verdict{Because: reviewForArchitect}, nil
 		}
 		if decision, err = readDecision(event, conv); err != nil {
 			return Verdict{Because: err.Error()}, nil

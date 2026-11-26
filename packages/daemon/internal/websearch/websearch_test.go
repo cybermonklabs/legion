@@ -336,6 +336,56 @@ func TestEachFailedSearchIsAnErrorResultNamingItsCause(t *testing.T) {
 	}
 }
 
+// A reply whose one search ran and whose second search, attempted past max_uses 1, answered
+// max_uses_exceeded, the Messages API's error for that attempt, yields the first search's text and
+// sources as a search with no error does: charged that one search, recorded with exit 0. That
+// limit error is the only one kept beside a search that ran: the same reply with another error
+// code, and a max_uses_exceeded with no search that ran, are each an error result naming the code.
+func TestASearchThatRanIsKeptBesideTheLimitsErrorForASecond(t *testing.T) {
+	u := usage{Input: 10, Output: 5}
+	tokens := (10*5 + 5*25) / 1e6
+	mixed := func(code string) string {
+		return message(u,
+			serverToolUse("srvtoolu_1", "plum harvest"),
+			searchResults("srvtoolu_1", "https://example.org/plums", "https://example.com/harvest"),
+			serverToolUse("srvtoolu_2", "plum varieties"),
+			searchError("srvtoolu_2", code),
+			text("Plums ripen", "https://example.org/plums"),
+			text(" in August."))
+	}
+	f := newFixture(t, bounds, reply{body: mixed("max_uses_exceeded")})
+	result := f.answer.Run(context.Background(), call(1, 1, "when do plums ripen"))
+	want := "Plums ripen in August.\n\nSources:\nhttps://example.org/plums\nhttps://example.com/harvest"
+	if result.IsError || result.Output != want || result.Searches != 1 || math.Abs(result.CostUSD-(tokens+fee)) > 1e-12 {
+		t.Fatalf("the search answered %+v, want %q from one search costing $%.10f", result, want, tokens+fee)
+	}
+	if row, _ := f.calls.row(1); row.Result == nil || *row.Result != want || row.Exit == nil || *row.Exit != 0 {
+		t.Errorf("the record %+v, want the search's text and sources with exit 0", row)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		body     string
+		cause    string
+		searches int
+	}{
+		{"another error beside a search that ran", mixed("too_many_requests"), "the search answered the error too_many_requests", 1},
+		{"the limit's error with no search that ran", message(u, serverToolUse("srvtoolu_1", "plum"), searchError("srvtoolu_1", "max_uses_exceeded"), text("I could not search.")),
+			"the search answered the error max_uses_exceeded", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, bounds, reply{body: tc.body})
+			result := f.answer.Run(context.Background(), call(1, 1, "plum"))
+			if !result.IsError || result.Output != "the web search failed: "+tc.cause || result.Searches != tc.searches {
+				t.Fatalf("the search answered %+v, want an error result naming %q over %d searches", result, tc.cause, tc.searches)
+			}
+			if row, _ := f.calls.row(1); row.Exit == nil || *row.Exit != 1 {
+				t.Errorf("the record %+v, want exit 1", row)
+			}
+		})
+	}
+}
+
 // An answer makes at most MaxSearches searches, an earlier run's counted: the fourth is refused
 // as the tool's result, naming the bound, before any request is made, and recorded with its
 // refusal and no exit. So is an input that names no query.

@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -611,7 +613,8 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 }
 
 // awaitWake waits on wakes for the wake report of kind naming name (wakeNamed), skipping every
-// other report, and fails the test when none arrives within the bound.
+// other report but one a check of the running test forbade on wakes (forbidWake), on which it
+// fails, and fails the test when none arrives within the bound.
 func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
 	deadline := time.Now().Add(listenerWaitBound(t))
@@ -620,17 +623,23 @@ func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 		if err != nil {
 			t.Fatalf("no %s wake report named %s: %v", kind, name, err)
 		}
-		if wakeNamed(wakeReportIn(t, msg), kind, name) {
+		report := wakeReportIn(t, msg)
+		if wakeNamed(report, kind, name) {
 			return
 		}
+		requireNotForbidden(t, wakes, report)
 	}
 }
 
-// requireNoWake reads wakes until no report has arrived for half a second, and fails on one of
-// kind naming name. A report is published off the route's path, so the quiet is what tells a
-// report that will never come from one still on its way.
+// requireNoWake forbids a report of kind naming name on wakes for the rest of the test
+// (forbidWake), then reads wakes until no report has arrived for half a second, and fails on a
+// forbidden one. A report is published off the route's path, each on a goroutine of its own, so
+// the quiet alone does not tell a report that will never come from a late one: the forbiddance
+// makes every later read of wakes in the test, the awaitWake of a control's report among them,
+// fail on that report rather than skip it.
 func requireNoWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
+	forbidWake(t, wakes, kind, name)
 	for {
 		msg, err := wakes.NextMsg(500 * time.Millisecond)
 		if errors.Is(err, natsgo.ErrTimeout) {
@@ -639,8 +648,53 @@ func requireNoWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) 
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if wakeNamed(wakeReportIn(t, msg), kind, name) {
-			t.Fatalf("a %s wake report named %s, want none", kind, name)
+		requireNotForbidden(t, wakes, wakeReportIn(t, msg))
+	}
+}
+
+// wakeTarget is a wake report's kind and the name it carries in the field that kind names
+// (wakeNamed).
+type wakeTarget struct{ kind, name string }
+
+// forbiddenWakes is, for each wake subscription, the reports the running tests forbade on it.
+var forbiddenWakes = struct {
+	sync.Mutex
+	on map[*natsgo.Subscription][]wakeTarget
+}{on: map[*natsgo.Subscription][]wakeTarget{}}
+
+// forbidWake makes a report of kind naming name on wakes fail every later read of wakes by
+// awaitWake and requireNoWake until t ends: a subtest's forbiddance ends with the subtest, though
+// its rig's subscription outlives it.
+func forbidWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
+	t.Helper()
+	target := wakeTarget{kind, name}
+	forbiddenWakes.Lock()
+	defer forbiddenWakes.Unlock()
+	if slices.Contains(forbiddenWakes.on[wakes], target) {
+		return
+	}
+	forbiddenWakes.on[wakes] = append(forbiddenWakes.on[wakes], target)
+	t.Cleanup(func() {
+		forbiddenWakes.Lock()
+		defer forbiddenWakes.Unlock()
+		left := slices.DeleteFunc(forbiddenWakes.on[wakes], func(each wakeTarget) bool { return each == target })
+		if len(left) == 0 {
+			delete(forbiddenWakes.on, wakes)
+			return
+		}
+		forbiddenWakes.on[wakes] = left
+	})
+}
+
+// requireNotForbidden fails the test when report is one a check forbade on wakes (forbidWake).
+func requireNotForbidden(t *testing.T, wakes *natsgo.Subscription, report wakeReport) {
+	t.Helper()
+	forbiddenWakes.Lock()
+	forbidden := slices.Clone(forbiddenWakes.on[wakes])
+	forbiddenWakes.Unlock()
+	for _, each := range forbidden {
+		if wakeNamed(report, each.kind, each.name) {
+			t.Fatalf("a %s wake report named %s, want none", each.kind, each.name)
 		}
 	}
 }
@@ -705,6 +759,9 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if probeStopped.LastSeen != entry.UpdatedAt {
 		t.Fatalf("the probe-stopped answer's last_seen = %d, want the entry's %d: %s", probeStopped.LastSeen, entry.UpdatedAt, probeStopped.raw)
 	}
+	// A report is published off the route's path, so one naming the probe-stopped session could
+	// arrive among the controls' reports below: from here on it fails every read of wakes.
+	forbidWake(t, wakes, wakeKindAgent, unheld)
 
 	const cleanlyStopped = "ses_wake_clean_stop"
 	rig.register(t, cleanlyStopped, nil)
@@ -731,21 +788,9 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	}
 	awaitWake(t, wakes, wakeKindAgent, pastHorizon)
 
-	// Every wake report the three sends raised has arrived by now: each is published off the
-	// route's path in the order the sends raised them, and the last two have been read. A report
-	// naming the probe-stopped session would be among them.
-	for {
-		msg, err := wakes.NextMsg(500 * time.Millisecond)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read the wake reports: %v", err)
-		}
-		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, unheld) {
-			t.Fatalf("the send to the probe-stopped %s raised a wake report", unheld)
-		}
-	}
+	// The waits above fail on a report naming the probe-stopped session that came before the
+	// controls' reports; this read fails on one still on its way.
+	requireNoWake(t, wakes, wakeKindAgent, unheld)
 }
 
 // A send to a session that stopped cleanly answers from the caches it already holds and the bucket

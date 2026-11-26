@@ -366,6 +366,58 @@ func TestIdleReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *t
 	}
 }
 
+// A person's resolution of an ask the released agent follows but did not open, which Dispatch
+// sends to every follower and the listener hands off in place of the wake it raised before, is
+// given to the agent once through one wake, however often it is handed off: no model call, no
+// question recorded, nothing posted, passed on or decided, and the conversation as it was. A
+// person's review of the agent's own approval request gives it nothing: the design gate relays it
+// to the agent's architect as the document's review. For an agent that is not released, the
+// resolution gives nothing either.
+func TestIdleReleasedFollowerIsGivenAPersonsResolutionOfTheAskOnce(t *testing.T) {
+	const followed = "a0000000-0000-4000-8000-000000000002"
+	resolved := dispatchHandoff("ses_tester", bare("ask.resolved", person, new("LEGION-9"),
+		map[string]any{"id": followed, "issue_key": "LEGION-9", "kind": "question", "state": "resolved"}))
+	review := dispatchHandoff("ses_tester", answeredEvent(36, person, askID, "approval", []string{"Approve"}, new("Looks right.")))
+	review.Envelope.EventID, review.Envelope.DedupeKey = "dispatch-2", "dispatch-2"
+
+	r, path := releasedRig(t)
+	before := fileContent(t, path)
+	for _, h := range []intake.Handoff{resolved, review, resolved} {
+		r.receive(h)
+	}
+	r.drain()
+	if all := r.questions(); len(all) != 0 || r.answerCount() != 0 {
+		t.Fatalf("questions = %+v after %d model calls; want none recorded and no model call", all, r.answerCount())
+	}
+	if posts, sends := r.dispatch.posts(), r.listener.posts(); len(posts) != 0 || len(sends) != 0 || len(r.rec.passed) != 0 || len(r.rec.decisions) != 0 {
+		t.Fatalf("Dispatch posts %s, listener posts %s, passed %+v, decisions %+v; want none", describe(posts), describe(sends), r.rec.passed, r.rec.decisions)
+	}
+	if fileContent(t, path) != before {
+		t.Fatalf("the conversation changed:\n%s", fileContent(t, path)[len(before):])
+	}
+	if len(r.rec.wakes) != 1 {
+		t.Fatalf("wakes = %+v; want one, for the resolution", r.rec.wakes)
+	}
+	wake := r.rec.wakes[0]
+	if wake.Session != "ses_tester" || wake.Issue != "LEGION-9" {
+		t.Fatalf("wake = %+v; want it for ses_tester on LEGION-9", wake)
+	}
+	for _, want := range []string{"user:person@example.com sent you, in a Dispatch ask.resolved on LEGION-9, while you were stopped:", followed} {
+		if !strings.Contains(wake.Text, want) {
+			t.Errorf("the wake tells the agent %q; want it to hold %q", wake.Text, want)
+		}
+	}
+
+	notReleased := newRig(t)
+	notReleased.conversation("ses_tester", testerToken, 0)
+	notReleased.receive(resolved)
+	notReleased.drain()
+	if len(notReleased.rec.wakes) != 0 || len(notReleased.questions()) != 0 || notReleased.answerCount() != 0 {
+		t.Fatalf("for an agent that is not released: wakes %+v, questions %+v, %d model calls; want none",
+			notReleased.rec.wakes, notReleased.questions(), notReleased.answerCount())
+	}
+}
+
 // A message of a source no agent answers, a GitHub notification here, is given to a released
 // agent by its own source and topic: the wake does not tell it as an Envoy session's message.
 func TestIdleReleasedAgentIsToldAMessageOfAnotherSourceByItsSourceAndTopic(t *testing.T) {

@@ -30,14 +30,16 @@ body: |-
   The Envoy listener hands the message of a claim the daemon released (an idle release of its
   issue pod, or a project's pause) to the daemon as it hands any stopped agent's, with no wake.
   The loop answers such an agent's question from its conversation, and a question it answered
-  wakes nothing. Everything else it gives the agent through one outbox row (`agent_message`)
-  that wakes the claim and delivers the message once the woken session holds its role, held
-  during a pause and delivered after the resume: a person's decision on its ask, a message that
-  asks nothing, a reply of kind `none`, and every reply the controller would hear of, for which
-  the loop posts nothing, appends nothing and tells the controller nothing. Where the question's
-  calls already ran a `gh` or `dispatch` write, the row names each after the message, so the
-  agent does not repeat one. A decision that also asks is answered, appended and posted first,
-  and its row then says where the answer is.
+  wakes nothing. The loop gives the agent everything else that reaches it through one outbox row
+  (`agent_message`) that wakes the claim and delivers the message once the woken session holds
+  its role, held during a pause and delivered after the resume: a person's decision on its ask, a
+  message that asks nothing, a person's resolution of or answer to an ask the agent follows but
+  did not open, a reply of kind `none`, and every reply the controller would hear of, for which
+  the loop posts nothing, appends nothing and tells the controller nothing. A person's review of
+  the agent's own approval request wakes nothing, since the design gate relays it to the
+  architect as the document's review. Where the question's calls already ran a `gh` or `dispatch`
+  write, the row names each after the message, so the agent does not repeat one. A decision that
+  also asks is answered, appended and posted first, and its row then says where the answer is.
 
   The daemon reads the messages the listener hands it through the durable consumer
   `legion-go-<project>-answers`, and a message whose handling keeps failing is retried, given up

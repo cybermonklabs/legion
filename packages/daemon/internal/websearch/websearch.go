@@ -294,7 +294,9 @@ type contentBlock struct {
 // on, and a block after any other kind of block starts a paragraph. After it come the address of
 // each source the reply's result blocks and its text's citations name, each once, in the order the
 // reply names them. A result block holding an error makes the search an error result naming the
-// error's code. The searches are the result blocks holding a list of results, however many it
+// error's code, but for max_uses_exceeded beside a search that ran: the Messages API answers that
+// code for a second search the model attempted past max_uses 1, and the first search's text and
+// sources are kept. The searches are the result blocks holding a list of results, however many it
 // lists, and never the reply's usage counter; a block holding an error is a failed search, which
 // is not charged. The result is cut at gh_output_chars as a gh call's output is.
 func (a *Answer) read(reply messageReply) Result {
@@ -347,7 +349,7 @@ func (a *Answer) read(reply messageReply) Result {
 	var result Result
 	answer := strings.TrimSpace(text.String())
 	switch {
-	case len(errorCodes) > 0:
+	case len(errorCodes) > 0 && (searches == 0 || slices.ContainsFunc(errorCodes, func(code string) bool { return code != maxUsesExceeded })):
 		result = failed("the search answered the error " + strings.Join(errorCodes, ", "))
 	case answer == "" && len(sources) == 0:
 		result = failed("its reply holds no text and no source")
@@ -362,6 +364,10 @@ func (a *Answer) read(reply messageReply) Result {
 	result.Searches, result.CostUSD = searches, cost
 	return result
 }
+
+// maxUsesExceeded is the error code of a result block for a search the model attempted past the
+// server tool's max_uses, which the Messages API answers in place of that search's results.
+const maxUsesExceeded = "max_uses_exceeded"
 
 // refuse records and logs a call refused before any request was made, its argument arg, and
 // answers its refusal (ghtool.RecordRefusal).
