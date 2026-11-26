@@ -1863,14 +1863,25 @@ const READ_MARK_READS: Readonly<Record<string, true>> = {
   "/api/v1/me/state": true,
 };
 
+/** The reads the editor makes of the document it opens (`ProofDocument.tsx`: its live text and
+ *  its blocks), which a pick from the menu that opens an editor brings: R12's "the one read and
+ *  the one socket of part Y's first Enter". */
+const EDITOR_OPEN_READS: readonly string[] = ["text", "blocks"];
+
 /** `readRoutes` of the window a write of Graph editing is counted in, but for a read of the
  *  reader's own state that a read mark's `PUT /api/v1/me/…` before it in that window brings (the
- *  focus the row moves to the act starts those marks). Such a read with no mark before it, and
- *  every other read, stay counted. */
-function readRoutesOfWrite(traffic: ApiRequests, from: number): string[] {
+ *  focus the row moves to the act starts those marks), and, where the act's pick opens an editor
+ *  of the document `opened`, that editor's reads of it (`EDITOR_OPEN_READS`). Such a read with no
+ *  mark before it, a read of another document, and every other read, stay counted. */
+function readRoutesOfWrite(traffic: ApiRequests, from: number, opened?: string): string[] {
   const window = traffic.requests.slice(from);
   const marked = window.findIndex(
     (request) => request.method === "PUT" && request.route.startsWith("/api/v1/me/")
+  );
+  const editorReads = new Set(
+    opened === undefined
+      ? []
+      : EDITOR_OPEN_READS.map((read) => `/api/v1/artifacts/${encodeURIComponent(opened)}/${read}`)
   );
   return [
     ...new Set(
@@ -1879,7 +1890,8 @@ function readRoutesOfWrite(traffic: ApiRequests, from: number): string[] {
           (request, at) =>
             request.method === "GET" &&
             SHELL_TIMED_READS[request.route] !== true &&
-            !(marked !== -1 && at > marked && READ_MARK_READS[request.route] === true)
+            !(marked !== -1 && at > marked && READ_MARK_READS[request.route] === true) &&
+            !editorReads.has(new URL(request.path, "http://page.test").pathname)
         )
         .map((request) => request.route)
     ),
@@ -2016,8 +2028,9 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
       blockWrites(traffic, from, key).filter((write) => !write.startsWith("PATCH ")),
       "a new node sends an HTTP write of its block"
     ).toEqual([]);
+    // The pick opens the editor of the issue's tree artifact, whose own reads of it R12 names.
     expect(
-      readRoutesOfWrite(traffic, from).filter((route) => ownReads[route] !== true),
+      readRoutesOfWrite(traffic, from, seed.tree).filter((route) => ownReads[route] !== true),
       "a new node is followed by a read beside the outline's and the approval's"
     ).toEqual([]);
     from = traffic.requests.length;
@@ -2036,7 +2049,7 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
     expect(nodeWrites(sent.slice(count)), "a retype sends a write to the node routes").toEqual([]);
     expect(blockWrites(traffic, from, key), "a retype sends an HTTP write").toEqual([]);
     expect(
-      readRoutesOfWrite(traffic, from).filter((route) => ownReads[route] !== true),
+      readRoutesOfWrite(traffic, from, seed.tree).filter((route) => ownReads[route] !== true),
       "a retype is followed by a read beside the outline's and the approval's"
     ).toEqual([]);
   });
