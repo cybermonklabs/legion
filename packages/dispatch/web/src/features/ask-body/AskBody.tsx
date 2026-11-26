@@ -219,7 +219,10 @@ export interface AskBodyProps {
  * The ask body (dispatch://INFRA-5702/spec#b-r-ask-body): an ask's question, options and answer
  * parts, which every surface draws an ask with, and the settled record in their place once the
  * ask is settled. Its root carries `data-ask-body`; a record carries it inside the element its
- * test id names (`AskCompletionCard`).
+ * test id names (`AskCompletionCard`). The root that draws the ask to answer carries
+ * `data-ask-answering` too, and a record's root does not: a page's single keys stay off an
+ * ask's answering controls where no card stands around them, and keep working on a record's
+ * (`inbox/ask-card.ts`).
  *
  * An open ask is root R34's row, as the new issue page draws a question's (`NodeRow.tsx`): a
  * bullet in the question's colour, then the question's words, with the kind, who asked and when
@@ -836,7 +839,7 @@ export function AskBody({
   // as a block as wide as the box it gives the body, so the inline-size containment a container
   // takes - its own content no longer widens it - takes no width from the body.
   return (
-    <div className="@container/ask-body" data-ask-body="">
+    <div className="@container/ask-body" data-ask-answering="" data-ask-body="">
       <AskAnchorHeader
         ask={displayedAsk}
         inBlock={inBlock}

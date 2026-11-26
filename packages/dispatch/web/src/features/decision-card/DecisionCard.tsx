@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, DisplayTree } from "../../api/types";
+import { PAGE_LOOKS } from "../../components/RefusableButton";
 import { Dot, KindBullet } from "../../components/RowMarks";
 import type { PageWords } from "../../components/tooltips";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -14,7 +15,6 @@ import {
   linkText,
   pageFailedText,
   pageHairBorder,
-  pageInkFill,
   pageInkText,
   pageKindBullet,
   pageKindTag,
@@ -52,9 +52,11 @@ import {
  * as the page's own row draws a decision's margin (`NodeRow.tsx`); the level's reason the muted
  * grey; the quoted words the page's words inside its rule, as the page's own Change quotes them;
  * a refusal the failed red. Keep, Change and Cancel are the page's compact secondary and Send
- * change its primary, each refused as the page refuses (`components/RefusableButton.tsx`'s
- * `PAGE_LOOKS`), and the Change box is the page's field, which keeps `main`'s focus rule. Each
- * pair is one `theme/classes.ts` registers for the page.
+ * change its primary, each refused as the page refuses: they are `RefusableButton`'s own page
+ * looks (`components/RefusableButton.tsx`'s `PAGE_LOOKS`), the one source of both, so the card's
+ * buttons draw as every page button of those looks does. The Change box is the page's field,
+ * which keeps `main`'s focus rule. Each other pair is one `theme/classes.ts` registers for the
+ * page.
  */
 const TONES = {
   main: {
@@ -73,7 +75,7 @@ const TONES = {
   page: {
     failed: pageFailedText,
     field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
-    filled: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+    filled: PAGE_LOOKS.primary,
     hint: `text-xs ${pageQuietText}`,
     ink: pageInkText,
     level: pageQuietText,
@@ -81,7 +83,7 @@ const TONES = {
     meta: pageQuietText,
     quote: `${pageLineBorder} ${pageWordsText}`,
     reason: pageMutedText,
-    secondary: `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
+    secondary: PAGE_LOOKS["secondary-compact"],
   },
 } as const;
 

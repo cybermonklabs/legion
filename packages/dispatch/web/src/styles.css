@@ -1099,11 +1099,14 @@ html:has([data-issue-page]) {
 
 /* A link in a node's words is the words' own ink, underlined in the bullets' grey 3 px under the
    text (the prototype's `.body a`), never the app's link blue: the underline says it is a link,
-   and the page's colours are its palette's (part G's R4, ruling 5). A link in the words the new
-   page's Dashboard draws (`issue-page/slots/view-dashboard.tsx`'s `data-dashboard`) is the
-   words' own ink too (dispatch://INFRA-3940 R13); today's page marks no Dashboard so, and its
-   links keep the app's link blue. */
-[data-node-words] .dispatch-markdown,
+   and the page's colours are its palette's (part G's R4, ruling 5). */
+[data-node-words] .dispatch-markdown {
+  --tw-prose-links: currentColor;
+}
+
+/* A link in the words the new page's Dashboard draws (`issue-page/slots/view-dashboard.tsx`'s
+   `data-dashboard`) is the words' own ink too (dispatch://INFRA-3940 R13); today's page marks no
+   Dashboard so, and its links keep the app's link blue. */
 [data-dashboard] .dispatch-markdown {
   --tw-prose-links: currentColor;
 }

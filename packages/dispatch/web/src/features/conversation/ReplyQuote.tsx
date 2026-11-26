@@ -1,13 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
-import {
-  linkHoverText,
-  pageLineBorder,
-  pageMutedText,
-  secondaryButtonBorder,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
@@ -15,23 +9,21 @@ import type { PostDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
 import type { TextSource } from "../refs/text-references";
 import { type AgentNames, CachedAuthor } from "./CachedAuthor";
+import { PAGE_QUOTE } from "./reply-quote-page";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
-const quoteClasses = "flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs";
+const quoteClasses = `flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs ${secondaryButtonBorder} ${textMutedOnCanvas}`;
 
-/** The quote's rule and words, and its link's hover, by the palette its host hands (`palette`):
- *  `main`'s on every surface of today's pages, and on the new issue page the page's line rule
- *  and its muted words, as the page's own composer draws the post it answers
- *  (`pageComposer.target`), the link turning to the ink under the pointer. */
+/** The quote's rule and words, and its link's hover, by the palette its host hands (`palette`),
+ *  which the return for a cached author or the new page's palette draws: `main`'s are
+ *  `quoteClasses` and `linkHoverText`, as on every surface of today's pages, and the new issue
+ *  page's are its own (`PAGE_QUOTE`) on the quote's frame. */
 const TONES = {
-  main: {
-    link: linkHoverText,
-    quote: `${quoteClasses} ${secondaryButtonBorder} ${textMutedOnCanvas}`,
-  },
+  main: { link: linkHoverText, quote: quoteClasses },
   page: {
-    link: "hover:text-page-ink",
-    quote: `${quoteClasses} ${pageLineBorder} ${pageMutedText}`,
+    link: PAGE_QUOTE.link,
+    quote: `flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs ${PAGE_QUOTE.rule}`,
   },
 } as const;
 
@@ -110,7 +102,6 @@ export function ReplyQuote({
   const quotedText = passage ? block.text : excerpt;
   const quotedTree = passage ? block.text_tree : excerptTree;
   const unknownParent = passage ? "Replying to a passage" : "Replying to a message";
-  const tones = TONES[palette];
   // The dash opens the quoted body, so the body is never an element of its own text: a reader
   // (or a test) matching the parent's body finds the parent's turn, not its every quote.
   const quoted =
@@ -135,12 +126,20 @@ export function ReplyQuote({
         tree={quotedTree}
       />
     ) : null;
-  if (agentNames === "cache") {
+  // A quote that names its author from the cache, or draws in the new page's palette, is drawn
+  // here, so the return below stays `main`'s, which every surface of today's pages draws.
+  if (agentNames === "cache" || palette === "page") {
+    const tones = TONES[palette];
     return (
       <span className={`${tones.quote} gap-1 ${className}`}>
         {author === undefined ? null : (
           <span className="min-w-0 truncate">
-            Replying to <CachedAuthor actor={author} />
+            Replying to{" "}
+            {agentNames === "cache" ? (
+              <CachedAuthor actor={author} />
+            ) : (
+              <AgentName actor={author} inline />
+            )}
             {passage ? "'s passage" : ""}
             <EditedMark at={edited} deleted={deleted} />
             {quoted === null ? "" : " "}
@@ -159,7 +158,7 @@ export function ReplyQuote({
     );
   }
   return (
-    <span className={`${tones.quote} gap-1 ${className}`}>
+    <span className={`${quoteClasses} gap-1 ${className}`}>
       {author === undefined ? null : (
         <span className="min-w-0 truncate">
           Replying to <AgentName actor={author} inline />
@@ -174,7 +173,7 @@ export function ReplyQuote({
         // The quote is the one link here, so the parent's own references read as links inside
         // it and are none: the click belongs to the turn this quote opens.
         <ReferenceHostIs host="control">
-          <Link className={`min-w-0 flex-1 ${tones.link}`} to={to}>
+          <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
             {quoted}
           </Link>
         </ReferenceHostIs>
