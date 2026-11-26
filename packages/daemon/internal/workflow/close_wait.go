@@ -442,7 +442,7 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
 	if read == nil || read.Failure != "" || !read.ReadAt.After(view.facts.Entered) {
 		return nil
 	}
-	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || view.facts.OpenChange {
+	if len(view.facts.Defects) > 0 || view.facts.OpenChange {
 		return nil
 	}
 	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {
