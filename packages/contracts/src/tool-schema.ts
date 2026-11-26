@@ -95,7 +95,10 @@ function literalOfSet(api: ZodApi, values: readonly SchemaLiteral[]): ZodNode | 
   if (takesSet(whole)) return whole;
   const { literal, union } = api;
   if (literal === undefined || union === undefined) return undefined;
-  const options = union.call(api, values.map((value) => literal.call(api, value)));
+  const options = union.call(
+    api,
+    values.map((value) => literal.call(api, value))
+  );
   return takesSet(options) ? options : undefined;
 }
 
