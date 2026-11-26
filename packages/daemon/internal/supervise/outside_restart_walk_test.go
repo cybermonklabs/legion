@@ -42,9 +42,8 @@ const (
 // behind another claim's wake, maybe sets a fault for the next writes, and sends the end: in
 // about one seed of three a report read neither way, which died judges a death (diedFirst); in
 // about one of the rest in four the daemon's own replacement of the pod, which displaced judges
-// first (displacedFirst), its relaunch refused by the lifecycle recheck where the claim holds no
-// task sent and not confirmed; a second after either; and otherwise a Gone report read as an end
-// from outside the pod.
+// first (displacedFirst), its relaunch refused by the lifecycle recheck; a second after either;
+// and otherwise a Gone report read as an end from outside the pod.
 // Then come up to outsideSteps random steps, each one of a report read as outside, a report read
 // neither way, an Uncertain report (a claim write), a fault set for the next writes (a write
 // refused or of unknown outcome, or the relaunch refused by the lifecycle recheck), the faults
@@ -80,6 +79,8 @@ const (
 //     The claim reads a charged death only where died judged its process (deathUnjudged): an
 //     end endedFromOutside decided, displaced's first judgement of it included, reads as decided
 //     from outside the pod.
+//  6. No prompt failure is charged for a process reported gone, and the turn-start timer
+//     (TimerTurn) is never armed while the machine holds the process gone (Claim.ProcessGone).
 //
 // The negative controls are the table test's: judge routing on decidedFromOutside fails
 // invariant 1, a report read neither way over a record with no decision charged a death, on one
@@ -90,9 +91,10 @@ const (
 // endedFromOutside whatever the claim holds, as it did before judgedDeath, fails invariant 5's
 // second half, a report read as outside over a death died judged continued as an end from
 // outside the pod and logging that end's line, or invariant 3 first, where that report over a
-// decided death moves the end of the turn; and markFromOutside leaving a standing record of the
+// decided death moves the end of the turn; markFromOutside leaving a standing record of the
 // launch untyped fails invariant 5's last sentence, a report read as outside over displaced's
-// record deciding a charged death that died never judged.
+// record deciding a charged death that died never judged; and judge leaving TimerTurn armed on a
+// gone verdict fails invariant 6.
 func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 	for seed := uint64(1); seed <= outsideSeeds; seed++ {
 		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
@@ -192,12 +194,9 @@ func (w *outsideWalk) run() {
 	// A fault before the end, so the end's own take-back and decision can fail as a later
 	// report's can. A displaced end's relaunch is refused, so the claim stands over the ended
 	// process holding displaced's record of the end, and the reports after it reach judge rather
-	// than being dropped while that relaunch waits (launchWaits). Not where the claim holds its
-	// task sent and not confirmed: the prompt's wait for its turn runs out over the ended process
-	// while the refusal stands and charges a prompt failure, a charge of the send's own that no
-	// reading of the end makes and invariant 1 does not allow.
+	// than being dropped while that relaunch waits (launchWaits).
 	switch {
-	case w.displacedFirst && (nothing || inTurn):
+	case w.displacedFirst:
 		w.setFaultTo(faultRelaunchRefused)
 	case w.rng.IntN(2) == 0:
 		w.setFault()
@@ -379,6 +378,11 @@ func (w *outsideWalk) check() {
 	h := w.h
 	c, stored := h.claim(), h.store.load(h.token)
 	switch {
+	case c.Budgets.PromptFailures != 0 || stored.Budgets.PromptFailures != 0:
+		w.fail("the claim carries budgets %+v (%+v stored), want no prompt failure for a process reported gone",
+			c.Budgets, stored.Budgets)
+	case c.ProcessGone && h.armed(TimerTurn):
+		w.fail("TimerTurn is armed over a process reported gone, want it disarmed")
 	case !w.lost && !w.diedFirst && !w.displacedFirst && (c.Budgets != Budgets{} || stored.Budgets != Budgets{}):
 		w.fail("the claim carries budgets %+v (%+v stored), want nothing charged for an end from outside the pod that no restart lost the record of",
 			c.Budgets, stored.Budgets)

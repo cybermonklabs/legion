@@ -632,3 +632,95 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 		})
 	}
 }
+
+// A gone process cannot start a turn, so a gone verdict disarms the wait for an outstanding
+// prompt's turn (judge, TimerTurn), and a parked relaunch over a gone process whose turn the
+// lifecycle recheck refuses does not arm it again (watchAgain, Machine.processGone). Without that
+// disarm a claim holding a task sent and not confirmed whose relaunch the recheck refuses keeps
+// its process and the armed timer, and moving the clock past the RPC wait charges a prompt failure
+// for a process that no longer exists — for an end from outside the pod, a displacement and a
+// death alike (a death is already its own charge).
+//
+// The negative controls: judge leaving TimerTurn armed on a gone verdict fails the "refused at the
+// report" subtests (a prompt failure is charged once the wait runs out), and watchAgain arming
+// TimerTurn over a gone process fails the "refused at the parked relaunch's turn" subtests.
+func TestAGoneProcessWithARefusedRelaunchDisarmsTheTurnStartTimerForADeathAndAnEndFromOutside(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reading    runtime.PodEndReading
+		displaced  bool
+		wantDirect Budgets
+		wantParked Budgets
+	}{
+		{name: "an end from outside the pod", reading: runtime.PodEndNotOurs},
+		{name: "a death", wantDirect: Budgets{Deaths: 1}, wantParked: Budgets{LaunchFailures: 1, Deaths: 1}},
+		{name: "a displacement", displaced: true},
+	} {
+		t.Run(tc.name+"/refused at the report", func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
+			acked := h.wantPrompts(1)[0].DeliveryID
+			if !h.armed(TimerTurn) {
+				t.Fatal("the acknowledged prompt waits for its turn on nothing, want TimerTurn armed")
+			}
+			ended := h.locator()
+			store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			h.m.deps.Store = store
+			obs := runtime.Observation{Locator: ended, Kind: runtime.Gone, At: h.clock.Now(),
+				EndReading: tc.reading, Displaced: tc.displaced}
+			if err := h.handle(RuntimeObservation{Observation: obs}); err == nil {
+				t.Fatal("the relaunch was taken, want the lifecycle recheck's refusal of it")
+			}
+			if h.armed(TimerTurn) {
+				t.Error("the gone verdict left TimerTurn armed over the dead process, want it disarmed")
+			}
+			h.advance(2 * testRPC)
+			h.wantBudgets(tc.wantDirect)
+			if stored := h.store.load(h.token).Budgets; stored != tc.wantDirect {
+				t.Fatalf("stored budgets = %+v, want %+v: no prompt failure for a gone process", stored, tc.wantDirect)
+			}
+			if p := h.pending(); p.ID != acked {
+				t.Fatalf("pending = %+v, want %s kept: no turn timer should have fired", p, acked)
+			}
+			store.failing = false
+			h.must(RuntimeObservation{Observation: obs})
+			h.relaunched()
+			h.wantPrompts(2)
+			if got := h.budgets().PromptFailures; got != 0 {
+				t.Fatalf("prompt failures after relaunch = %d, want 0", got)
+			}
+		})
+		t.Run(tc.name+"/refused at the parked relaunch's turn", func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
+			acked := h.wantPrompts(1)[0].DeliveryID
+			if !h.armed(TimerTurn) {
+				t.Fatal("the acknowledged prompt waits for its turn on nothing, want TimerTurn armed")
+			}
+			queueAhead(h, 1)
+			ended := h.locator()
+			store := &unansweredCheckLaunchStore{memStore: h.store}
+			h.m.deps.Store = store
+			obs := runtime.Observation{Locator: ended, Kind: runtime.Gone, At: h.clock.Now(),
+				EndReading: tc.reading, Displaced: tc.displaced}
+			h.must(RuntimeObservation{Observation: obs})
+			h.wantWaitingWake(WakeLaunch)
+
+			store.failing = true
+			h.advanceToTurn(h.m)
+			if h.armed(TimerTurn) {
+				t.Error("watchAgain armed TimerTurn over a process already reported gone, want it left disarmed")
+			}
+			h.advance(2 * testRPC)
+			h.wantBudgets(tc.wantParked)
+			if stored := h.store.load(h.token).Budgets.PromptFailures; stored != 0 {
+				t.Fatalf("stored prompt failures = %d, want 0: no prompt failure for a gone process", stored)
+			}
+			if p := h.pending(); p.ID != acked {
+				t.Fatalf("pending = %+v, want %s kept: no turn timer should have fired", p, acked)
+			}
+		})
+	}
+}

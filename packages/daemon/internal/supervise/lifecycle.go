@@ -162,7 +162,9 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // (acked), or one held, whose frame the daemon wrote and whose reply did not come
 // (keepHeldPrompt). It is armed for the same RPC wait that prompt was given, so one the agent never
 // turned on still ends rather than waiting for ever: an acknowledged one is charged, and a held one
-// is sent again under its id, charged nothing (noTurn).
+// is sent again under its id, charged nothing (noTurn). A process the daemon already found gone
+// cannot start a turn (Machine.processGone), so the bound is not armed again over it: doing so
+// would charge a prompt failure for a process that no longer exists.
 //
 // A timer already armed keeps the moment it already holds: the park takes only the four timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and
@@ -189,7 +191,7 @@ func (m *Machine) watchAgain() {
 			m.armRegistration()
 		}
 	}
-	if p := m.claim.Pending; p != nil && m.outstandingPrompt(p.ID) && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
+	if p := m.claim.Pending; p != nil && !m.processGone && m.outstandingPrompt(p.ID) && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
 		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 }

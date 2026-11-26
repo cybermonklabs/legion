@@ -5045,6 +5045,13 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// leaves its end nothing else to read. The record of what that process's end cut off
 		// still reads the compaction, until the let-go (Machine.lostCompaction, recordEnd).
 		m.compactionLostProcess()
+		// A gone process cannot start a turn, so any wait for an outstanding prompt's turn ends
+		// here too (TimerTurn), before the verdict splits: a relaunch the lifecycle recheck
+		// refuses keeps the claim over its dead process (relaunchRefused), and leaving that
+		// timer armed would charge a prompt failure for a process that no longer exists — for
+		// an end from outside the pod, a displacement and a death alike (a death is already its
+		// own charge).
+		m.disarm(TimerTurn)
 		// The daemon's own replacement of a pod is no fault of the process (Displaced). An end
 		// something outside the pod made is read in one place, here, and goes to the one site
 		// that decides it (endedFromOutside), which continues the claim in its own session
