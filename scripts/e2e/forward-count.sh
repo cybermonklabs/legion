@@ -22,10 +22,12 @@
 # signed in, `jq`, and `tq` on PATH for the team's transcript store (its README's "Use" says how
 # to install `tq`). Dispatch is the one the reader's shell names: `DISPATCH_URL` and `DISPATCH_TOKEN` or
 # `DISPATCH_TOKEN_FILE`, else the `dispatch.serverUrl` and `dispatch.token` of the envoy.json
-# `ENVOY_CONFIG_FILE` names (else `$XDG_CONFIG_HOME/omp/envoy.json`). The run writes `gh auth
-# token` and the Dispatch bearer into files of its own `mktemp -d`, mode 0600, and deletes that
-# directory at its exit, whatever ends the run. It reads and starts nothing else: no write of any
-# kind reaches Dispatch or GitHub.
+# `ENVOY_CONFIG_FILE` names (else `$XDG_CONFIG_HOME/omp/envoy.json`). The run writes that bearer
+# into a file of its own `mktemp -d`, mode 0600, and deletes that directory at its exit, whatever
+# ends the run. It holds no GitHub credential at all: the count reads GitHub through `gh api`,
+# which routes each call to the role App of the repository the path names, because a session of
+# this fleet may not read a person's own `gh auth token`. It reads and starts nothing else: no
+# write of any kind reaches Dispatch or GitHub.
 #
 # It exits 0 when the run read what it was asked for, 1 when `collect` or `resolve` failed, and 2
 # with `UNKNOWN: <reason>` when it could read nothing to judge: no credential, no `tq`, no `bun`,
@@ -109,22 +111,25 @@ token_file="$private/dispatch-token"
 ) >"$token_file"
 [ -s "$token_file" ] || unknown "no Dispatch credential is named: set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE, or give $config a dispatch.token"
 
-github_token_file="$private/github-token"
-(
-  umask 077
-  gh auth token
-) >"$github_token_file" || unknown "gh auth token answered nothing: sign in with gh auth login"
-[ -s "$github_token_file" ] || unknown "gh auth token answered nothing: sign in with gh auth login"
+# GitHub is read through `gh api`, which the count runs itself when the run names no token file.
+# A reader's own `gh auth token` is refused in a session of this fleet ("no agent process may use
+# it"), and `gh` routes each call to the role App of the repository the path names, so this run
+# reads GitHub as the fleet reads it and holds no GitHub credential of its own.
+# The probe is a read, never `gh auth status`: a session of this fleet has no user login of its
+# own, and `gh auth status` reports that failed login while `gh api` still reads GitHub through
+# the role App.
+gh api rate_limit --jq '.resources.core.limit' >/dev/null 2>&1 ||
+  unknown "gh api answered nothing: run gh auth login, or run this where gh reads a role App"
 
 [ -n "$out" ] || out=$(mktemp -d "${TMPDIR:-/tmp}/forward-count-out.XXXXXXXX")
 mkdir -p "$out"
 
 program="$root/packages/pi-legion/scripts/forward-count/forward-count.ts"
 echo "== collect"
-echo "   $projects, $from to $to, reasons $reasons, transcripts tq, Dispatch $url, GitHub $github_api"
+echo "   $projects, $from to $to, reasons $reasons, transcripts tq, Dispatch $url, GitHub through gh api ($github_api)"
 bun "$program" collect \
   --dispatch-url "$url" --token-file "$token_file" \
-  --github-api-url "$github_api" --github-token-file "$github_token_file" \
+  --github-api-url "$github_api" \
   --projects "$projects" --from "$from" --to "$to" \
   --transcripts tq --reasons "$reasons" --out "$out"
 echo "ok collect ($out/returns.jsonl)"

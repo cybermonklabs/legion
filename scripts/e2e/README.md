@@ -6220,7 +6220,9 @@ Without `--readings` the run stops after `collect`, with `returns.jsonl` for the
 
 It runs where the reader runs `dispatch` by hand, with the reader's own credential: `bun`, `gh` signed in, `jq`, and `tq` on PATH for the transcript store.
 Dispatch is the one the reader's shell names (`DISPATCH_URL` and `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`), else the `dispatch.serverUrl` and `dispatch.token` of the envoy.json `ENVOY_CONFIG_FILE` names.
-The run writes `gh auth token` and the Dispatch bearer into files of its own `mktemp -d`, mode 0600, and deletes that directory at its exit.
+The run writes that bearer into a file of its own `mktemp -d`, mode 0600, and deletes that directory at its exit.
+It holds no GitHub credential at all: the count reads GitHub through `gh api`, which routes each call to the role App of the repository the path names, because a session of this fleet may not read a person's own `gh auth token` (the `gh` shim refuses it: "A call that acts as that login is the owner's own signature on GitHub; no agent process may use it").
+The hosted control keeps the other channel, a `--github-token-file` and HTTP requests to `--github-api-url`, because its GitHub is a stand-in of the run's own that no `gh` reaches.
 It reads and starts nothing else: no write of any kind reaches Dispatch or GitHub, which is why it is an `elsewhere` row of `.github/e2e-scripts.json`.
 
 | exit | printed | when |

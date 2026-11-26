@@ -3,9 +3,15 @@
 // dispatch://INFRA-5581), in two phases:
 //
 //   bun forward-count.ts collect --dispatch-url <url> --token-file <file> --github-api-url <url> \
-//     --github-token-file <file> --projects <K1,K2,…> --from <YYYY-MM-DD> --to <YYYY-MM-DD> \
+//     [--github-token-file <file>] --projects <K1,K2,…> --from <YYYY-MM-DD> --to <YYYY-MM-DD> \
 //     --transcripts tq|dir:<path>|none --reasons all|none --out <dir>
 //   bun forward-count.ts resolve --out <dir> --readings <readings.jsonl>
+//
+// `--github-token-file` is the one option a run may leave out, and the two it chooses between are
+// two channels onto the same GitHub. With it, the reads are HTTP requests to `--github-api-url`
+// carrying that bearer, which is what the hosted control gives its own stand-in. Without it, the
+// reads run `gh api`: a session of this fleet may not read a person's own `gh auth token`, and
+// `gh` routes each call to the role App of the repository its path names.
 //
 // A return is a step record of kind `retro` or `merge` whose result is `failed`, for each task.
 // `collect` reads Dispatch for the returns and their reasons, GitHub for the pull request's
@@ -685,12 +691,25 @@ class Dispatch {
   }
 }
 
-/** GitHub, read at the API the run names. */
+/**
+ * GitHub, read one of two ways. With a token (the hosted control, whose GitHub is a stand-in of
+ * the run's own) the reads are HTTP requests to `--github-api-url` carrying that bearer. With no
+ * token the reads run `gh api`, which is the one GitHub channel a session of this fleet may use:
+ * a reader's own `gh auth token` is refused there ("A call that acts as that login is the
+ * owner's own signature on GitHub; no agent process may use it"), and `gh` routes the call to the
+ * role App of the repository the path names. Either way the answer is GitHub's own, read by this
+ * program, which is what C7 asks of a timeline item.
+ */
 class GitHub {
   constructor(
     private readonly api: string,
     private readonly token: string
   ) {}
+
+  /** Whether the reads run `gh api`: the run named no token. */
+  private viaGh(): boolean {
+    return this.token === "";
+  }
 
   /** The hosts a transcript's request must name for its result to be an answer. */
   hosts(): string[] {
@@ -704,6 +723,15 @@ class GitHub {
   }
 
   async graphql(query: string, variables: Record<string, unknown>): Promise<unknown> {
+    if (this.viaGh()) {
+      const args = ["api", "graphql", "-f", `query=${query}`];
+      for (const [name, value] of Object.entries(variables)) {
+        args.push(typeof value === "number" ? "-F" : "-f", `${name}=${String(value)}`);
+      }
+      const body = ghApi(args) as { data?: unknown; errors?: unknown };
+      if (body.errors !== undefined) throw new ReadFailed(`gh api graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
+      return body.data;
+    }
     const answer = await fetch(`${this.api.replace(/\/+$/, "")}/graphql`, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
@@ -716,11 +744,24 @@ class GitHub {
   }
 
   async rest<T>(route: string): Promise<T> {
+    if (this.viaGh()) return ghApi(["api", route.replace(/^\/+/, "")]) as T;
     const answer = await fetch(`${this.api.replace(/\/+$/, "")}${route}`, {
       headers: { Authorization: `Bearer ${this.token}`, Accept: "application/vnd.github+json" },
     });
     if (!answer.ok) throw new ReadFailed(`GET ${route}: ${answer.status} ${(await answer.text()).slice(0, 200)}`);
     return (await answer.json()) as T;
+  }
+}
+
+/** One `gh api` call, answered as JSON. A refusal is a read that did not answer. */
+function ghApi(args: string[]): unknown {
+  const run = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (run.error !== undefined && run.error !== null) throw new ReadFailed(`gh ${args[0]}: ${run.error.message}`);
+  if (run.status !== 0) throw new ReadFailed(`gh ${args.slice(0, 2).join(" ")} exited ${run.status}: ${(run.stderr ?? "").trim().slice(0, 300)}`);
+  try {
+    return JSON.parse(run.stdout ?? "");
+  } catch (error) {
+    throw new ReadFailed(`gh ${args.slice(0, 2).join(" ")} answered no JSON: ${messageOf(error)}`);
   }
 }
 
