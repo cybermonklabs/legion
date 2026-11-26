@@ -81,11 +81,14 @@ var specWriterExempt = map[string]string{
 	"POST /api/v1/projects":                             evalsDocumentExemption,
 	"POST /api/v1/projects/{key}/evals":                 evalsDocumentExemption,
 	"POST /api/v1/projects/{key}/evals/{slug}/readings": evalsDocumentExemption,
+	"PUT /api/v1/projects/{key}/settings/delivery":      evalsDocumentExemption,
 }
 
-// evalsDocumentExemption is why specWriterExempt leaves unchecked the three routes that write a
+// evalsDocumentExemption is why specWriterExempt leaves unchecked the four routes that write a
 // document only through the eval registry (specWriterRegistryPkg): a project's create, which seeds
-// its evals-md, and the register and readings writes, which write an eval's section into it.
+// its evals-md, the register and readings writes, which write an eval's section into it, and a
+// project's delivery settings save (dispatch://INFRA-978, R3), which writes each target it holds as
+// a new version of that eval's row.
 const evalsDocumentExemption = "it writes only the project's evals-md (dispatch://INFRA-2916, R5), a document of the project " +
 	"that the eval registry creates and edits (evals' createDocument and editDocument), never an issue's spec or " +
 	"Verification document, the two documents the check judges the writer of (spec_writer.go)"

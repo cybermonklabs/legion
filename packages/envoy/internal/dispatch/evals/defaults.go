@@ -775,7 +775,7 @@ func movedDeployRepos(before, after []string, fresh map[string]bool) []string {
 
 // cutRowsQuery reads, of each key, eval and deploy repository $1, $2 and $3 name pairwise, the
 // repository of each cut that holds a row of the key's eval under the deploy repository, the
-// computation's rows of it (eval_days.repo: '' for its all-repositories rows, and a repository's
+// computation's rows of it (eval_days.repo: ” for its all-repositories rows, and a repository's
 // name for that repository's rows): for each, a walk of eval_days' primary key (project_key,
 // eval_id, writer, deploy_repo, series, repo, day) from one series and repository to the next, each
 // probe the first row after the pair before, so one probe for each series and repository of the

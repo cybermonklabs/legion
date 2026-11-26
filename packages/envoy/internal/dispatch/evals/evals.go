@@ -302,6 +302,7 @@ type WindowRow struct {
 	repo       string
 	deployRepo string
 }
+
 // The two ranges a DayWindowIn read answers rows for.
 const (
 	RangeWindow  = "window"

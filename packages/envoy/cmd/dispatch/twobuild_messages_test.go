@@ -519,6 +519,12 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
+	// The seed's own events (seedPullRequestSettings saves the delivery settings before either
+	// build starts) are published as the first build starts, so they sit below the stream's head
+	// and neither build's writes below made them. Every event is published before the head is
+	// read, so no event of the seed reaches the stream after it.
+	waitForEveryEventPublished(t, builds.database, 60*time.Second)
+	seeded := publishedEventIDs(t, builds)
 	head := streamHead(t, js)
 	baseline := readBusSettings(t, js)
 	t.Logf("bus settings with both builds running: %+v", baseline)
@@ -532,6 +538,9 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 		}
 		waitForEveryEventPublished(t, builds.database, 60*time.Second)
 		events := publishedEventIDs(t, builds)
+		for id := range seeded {
+			delete(events, id)
+		}
 		streamed := map[string]bool{}
 		for _, item := range readStreamFrom(t, js, head) {
 			if item.Source == "dispatch" {

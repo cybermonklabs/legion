@@ -208,6 +208,7 @@ func (d *DeployRepos) hasRepo(project, repo string) bool {
 	}
 	return slices.Contains(d.Of(project), repo)
 }
+
 // DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
 // the deploy repository answers (DeployRepos): those the refresher recorded with the stored rows
 // (eval_days_rules, recordRules) under a project, every repository a source reads and each

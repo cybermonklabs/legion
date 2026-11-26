@@ -155,6 +155,13 @@ var k14CountedTables = []string{"project_deploy_sources", "production_events", "
 // as a stream of new changes. resetConsumers then writes the keyword fill's cursor as caught up
 // with the loaded log (keywordFillCaughtUpQuery), at the base too, which runs the same fill.
 func Load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any)) (Counts, error) {
+	return load(ctx, database, spec, logf, true)
+}
+
+// load is Load, with writeReadings run only when readings is true: a unit test of the k14 projects'
+// load skips INFRA's 730-day logged-readings batches (14,600 sequential WriteReadings transactions
+// regardless of Scale) while running every other step of Load unchanged.
+func load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any), readings bool) (Counts, error) {
 	switch {
 	case spec.Scale <= 0 || spec.Scale > 1:
 		return nil, fmt.Errorf("the scale is above 0 and at most 1, not %g", spec.Scale)
@@ -212,7 +219,7 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		}
 		settled = append(settled, K14Projects...)
 	}
-	if !spec.Base {
+	if !spec.Base && readings {
 		if err := writeReadings(ctx, database, spec, history, logf); err != nil {
 			return nil, err
 		}

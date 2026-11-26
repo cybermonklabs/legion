@@ -1300,13 +1300,6 @@ export const otherPagesBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element: '[data-testid="issue-claim-lapsed"]',
   },
-  {
-    route: "settings",
-    width: 360,
-    kind: "clipped",
-    element: '[data-testid="main-content"]',
-    count: 2,
-  },
   { route: "settings", width: 1280, kind: "page-scroll", element: '[data-testid="main-content"]' },
   { route: "machine", width: 360, kind: "box-scroll", element: '[data-testid="window-strip"]' },
   { route: "machine", width: 900, kind: "box-scroll", element: '[data-testid="window-strip"]' },

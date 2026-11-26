@@ -243,7 +243,6 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "delivery pipeline": "the delivery pipeline's runs and jobs",
   "delivery run": "one deploy run with its jobs",
   "delivery timeline": "the delivery timeline's pull requests and runs",
-  "delivery-settings": "the delivery timeline's configuration",
   "doc-summary": "a document's name and owner for a link's card (census C.15)",
   "document-read": "the version of a document the reader last read",
   github: "GitHub's own answer for an unfurl",
@@ -267,6 +266,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "priorities summary": "the two counts of work under no priority and parked under one",
   project: "a project's documents by name, as `artifacts` lists an issue's",
   "project-default-assignees": "each project's default assignee",
+  "project-delivery-settings":
+    "a project's delivery settings: its switch, deploy and failure sources and targets, no post",
   projects: "the projects",
   "references questions": "which asks a source cites, by id (census C.15)",
   related: "issues related by their words, printed by owner label alone (census C.15)",

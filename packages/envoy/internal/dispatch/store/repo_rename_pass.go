@@ -615,17 +615,12 @@ func ownerCollisions(r repoRename, table, owner string, keys ...string) repoRena
 // cuts of a project that still holds stored figures of the old name or a respelling of the new one
 // as their deploy repository, which the refold of the cut deletes.
 //
-// It runs just before the line writes eval_days_defaults, and reads the default rows that write
-// moves for update, in the byte order of their keys, so it holds their locks before it writes a
-// mark: the place and the order the eval tables' lock order gives the defaults (evals/defaults.go),
-// which evals.publishDefaults keeps too, every default row in the byte order of its key and then
-// the marks, in one transaction. So a refresher of another process that publishes a move beside
-// the pass waits for the line, or the line for it, and the two never wait on each other in a cycle,
-// however many projects publish the old name. A later run finds no default left on the old name,
-// so it marks no cut through a default and leaves the mark of such a cut, and its refold, as the
-// run before it left them; it marks again only the cuts of a project that still holds stored
-// figures of the old name, which the refold of the old name's cut deletes. A project that
-// published the new name before the rename has no cut marked for its default.
+// It runs just after lockRenamedDefaults, which holds the moved defaults' locks before any mark is
+// written, and just before nameWrite writes eval_days_defaults. A later run finds no default left
+// on the old name, so it marks no cut through a default and leaves the mark of such a cut, and its
+// refold, as the run before it left them; it marks again only the cuts of a project that still
+// holds stored figures of the old name, which the refold of the old name's cut deletes. A project
+// that published the new name before the rename has no cut marked for its default.
 //
 // Its where is false: a mark holds no field the pass writes, and the mark of the old name's cut
 // names the old name until the refresher's refold clears it, so the count of the rows left reads no
@@ -635,10 +630,8 @@ func markRenamedCuts(r repoRename) repoRenameStep {
 	return repoRenameStep{
 		table: "eval_figure_cuts_stale",
 		where: "false",
-		sql: `with moved as (
-				select project_key from eval_days_defaults where ` + named + ` order by project_key collate "C" for update
-			), old as (
-				select project_key, ` + r.from() + ` as repo from moved
+		sql: `with old as (
+				select project_key, ` + r.from() + ` as repo from eval_days_defaults where ` + named + `
 				union select project_key, repo from eval_range_figures where ` + named + `
 				union select project_key, repo from eval_day_figures where ` + named + `
 			), deployed as (
@@ -663,6 +656,24 @@ func markRenamedCuts(r repoRename) repoRenameStep {
 	}
 }
 
+// lockRenamedDefaults locks the default rows nameWrite on eval_days_defaults moves for update, in
+// the byte order of their keys, before markRenamedCuts writes any mark: the place and the order
+// the eval tables' lock order gives the defaults (evals/defaults.go), which evals.publishDefaults
+// keeps too, every default row in the byte order of its key and then the marks, in one
+// transaction. So a refresher of another process that publishes a move beside the pass waits for
+// the line, or the line for it, and the two never wait on each other in a cycle, however many
+// projects publish the old name. Keeping the lock in its own step leaves markRenamedCuts with no
+// row lock beside its read of projects (api's TestNoForUpdateOnOwnerTables), while markRenamedCuts
+// still writes every mark in one sorted statement. Its where is false for the reason
+// markRenamedCuts' is.
+func lockRenamedDefaults(r repoRename) repoRenameStep {
+	return repoRenameStep{
+		table: "eval_days_defaults",
+		where: "false",
+		sql:   `select project_key from eval_days_defaults where ` + r.named("repo") + ` order by project_key collate "C" for update`,
+	}
+}
+
 // citedNamed is true where a delivery pull request cites an issue URL that names the old name.
 func citedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(attribution_cited_issues) e(url) where ` + r.urlNamed("e.url") + `)`
@@ -673,16 +684,29 @@ func excludedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(excluded_repos) e(repo) where ` + r.named("e.repo") + `)`
 }
 
-// excludedWrite rewrites each excluded repository of table that is the old name, in its place, and
-// drops none, so the search scope that lists them (delivery's searchProgressScope) stays the scope
-// the progress line writes into the stored progress.
-func excludedWrite(r repoRename, table string) repoRenameStep {
-	where := excludedNamed(r)
-	return repoRenameStep{table: table, where: where, write: "excluded_repos", sql: `
-		update ` + table + ` set excluded_repos = array(
+// excludedRewritten is the excluded repositories of a row with each that is the old name written
+// as the new name, in its place, and none dropped, so the search scope that lists them (delivery's
+// searchProgressScope) stays the scope the progress line writes into the stored progress.
+func excludedRewritten(r repoRename) string {
+	return `array(
 			select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
-			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
-		where ` + where}
+			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)`
+}
+
+// settingsExcludedWrite rewrites delivery_settings' excluded repositories (excludedRewritten). The
+// statement spells its table, so the writers census (api's item_writer_census_test.go) reads that
+// it writes no item row.
+func settingsExcludedWrite(r repoRename) repoRenameStep {
+	return repoRenameStep{table: "delivery_settings", where: excludedNamed(r), write: "excluded_repos", sql: `
+		update delivery_settings set excluded_repos = ` + excludedRewritten(r) + `
+		where ` + excludedNamed(r)}
+}
+
+// projectSettingsExcludedWrite is settingsExcludedWrite for project_delivery_settings.
+func projectSettingsExcludedWrite(r repoRename) repoRenameStep {
+	return repoRenameStep{table: "project_delivery_settings", where: excludedNamed(r), write: "excluded_repos", sql: `
+		update project_delivery_settings set excluded_repos = ` + excludedRewritten(r) + `
+		where ` + excludedNamed(r)}
 }
 
 // stepNamed is true where column, a step of delivery_reconcile_progress, is a run step or a
@@ -841,7 +865,7 @@ var repoRenameLines = []repoRenameLine{
 			// marks no cut: the pair's marks after it read the figures it left (markRenamedCuts),
 			// after the pair's defaults are locked, as the eval tables' lock order has them.
 			if !r.respell {
-				steps = append(steps, markRenamedCuts(r), nameWrite(r, "eval_days_defaults", "repo"))
+				steps = append(steps, lockRenamedDefaults(r), markRenamedCuts(r), nameWrite(r, "eval_days_defaults", "repo"))
 			}
 			return append(steps, collisions(r, "eval_days_rules"), nameWrite(r, "eval_days_rules", "repo"))
 		},
@@ -963,7 +987,7 @@ var repoRenameLines = []repoRenameLine{
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				nameWrite(r, "delivery_settings", "deploy_repo"),
-				excludedWrite(r, "delivery_settings"),
+				settingsExcludedWrite(r),
 			}
 		},
 	},
@@ -983,7 +1007,7 @@ var repoRenameLines = []repoRenameLine{
 	{
 		fields: "project_delivery_settings.excluded_repos",
 		steps: func(r repoRename) []repoRenameStep {
-			return []repoRenameStep{excludedWrite(r, "project_delivery_settings")}
+			return []repoRenameStep{projectSettingsExcludedWrite(r)}
 		},
 	},
 	{

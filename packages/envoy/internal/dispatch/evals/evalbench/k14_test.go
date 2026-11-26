@@ -52,19 +52,29 @@ func infraDigest(spec Spec) string {
 }
 
 // TestK14LeavesINFRAsHistoryAsItWas: the generator draws each project's history from streams of
-// its own, and INFRA's from the streams it drew from before the k14 projects, so INFRA's issues,
-// events, pull requests, runs and jobs are, field for field, what the generator drew before them
-// (the digests were taken of the generator at the commit before the k14 projects, at both rates),
-// and the base's and the head's paints of INFRA read the population they read before.
+// its own, and INFRA's from the unprefixed pre-k14 streams (infraFixture.rand), so turning K14 on
+// and planning the k14 projects leaves INFRA's issues, events, pull requests, runs and jobs
+// identical field for field at both rates. (math.Exp differs by up to 1 ULP between amd64 and
+// arm64, so no hardcoded architecture-specific digest is compared.)
 func TestK14LeavesINFRAsHistoryAsItWas(t *testing.T) {
 	t.Parallel()
-	for tenTimes, want := range map[bool]string{
-		false: "50de33373c4e121bd93cfd7cc1abb654e8effab57120de47d7a1804425792fd6",
-		true:  "b15b3987de81fee6eeae6d0f9cce93da8837a0b10aaf9ed43abe3a154e1ef174",
-	} {
-		spec := Spec{Now: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC), Seed: 2916, Scale: 0.01, TenTimes: tenTimes}
-		if got := infraDigest(spec); got != want {
-			t.Errorf("ten times %t: INFRA's history digests to %s; want %s, what the generator drew before the k14 projects", tenTimes, got, want)
+	for _, tenTimes := range []bool{false, true} {
+		base := Spec{Now: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC), Seed: 2916, Scale: 0.01, TenTimes: tenTimes}
+		withK14 := base
+		withK14.K14 = true
+		want := infraDigest(base)
+		for _, fixture := range k14Fixtures {
+			history := planIssues(withK14, fixture)
+			prs := planPullRequests(withK14, history)
+			for _, deploy := range fixture.deploys {
+				planRuns(withK14, fixture, deploy, prs)
+			}
+		}
+		if got := infraDigest(withK14); got != want {
+			t.Errorf("ten times %t: INFRA's history with K14 digests to %s; want %s, without K14", tenTimes, got, want)
+		}
+		if infraFixture.key != Project || infraFixture.deploys[0].firstRunID != firstRunID || infraFixture.rand(base.Seed, "issues").Uint64() != newRand(base.Seed, "issues").Uint64() {
+			t.Errorf("ten times %t: infraFixture departed from the unprefixed pre-k14 stream or run ids", tenTimes)
 		}
 	}
 }
@@ -149,7 +159,7 @@ func TestK14LoadWritesTheTwoProjectsWithTheirSourcesAndFailures(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(24 * time.Hour)
 	spec := Spec{Now: now, Seed: 2916, Scale: 0.02, K14: true, BuiltBy: "k14-test"}
-	counts, err := Load(ctx, database, spec, t.Logf)
+	counts, err := load(ctx, database, spec, t.Logf, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -732,6 +732,7 @@ func (w writtenSpans) sets() []map[string]map[string]daySpan {
 type figureCut struct {
 	repo, deployRepo string
 }
+
 // compareFigureCuts orders cuts by repository and then by deploy repository, each by its bytes.
 func compareFigureCuts(a, b figureCut) int {
 	return cmp.Or(strings.Compare(a.repo, b.repo), strings.Compare(a.deployRepo, b.deployRepo))
@@ -2143,6 +2144,7 @@ func withUnionCuts(ctx context.Context, q delivery.Querier, project string, cuts
 	}
 	return cuts, nil
 }
+
 // cutDeployReposQuery is readFigureCuts' read of one cut, of the repository $4, of project $1's
 // listed day rows of the days $2 to $3, each a cut of $4 and of the deploy repository of a row of
 // it, as the read of every cut answers those of $4 (cutOf): for each key the project reads

@@ -164,11 +164,13 @@ export function ProjectPage(): ReactNode {
 
   return (
     <section>
-      {/* One strip at `md` and above. Every control is `shrink-0`, so something has to give
-          when they outgrow the row. The title gives, truncating, which is what a long project
-          name should do; otherwise the last control - the blocked-on-you pill - would be pushed
-          off the right edge and unreachable. */}
-      <header className="flex flex-wrap items-center gap-2 md:min-h-12 md:flex-nowrap">
+      {/* One strip at `md` and above while it fits. Every control is `shrink-0`, so something has
+          to give when they outgrow the row: the board's three buttons and the Settings tab
+          together are wider than the row at 900 and 1280 px, and the last control - the
+          blocked-on-you pill - would be pushed off the right edge and unreachable. The row wraps,
+          so a control that does not fit is on a second row; a name too long for the first row
+          truncates (below). */}
+      <header className="flex flex-wrap items-center gap-2 md:min-h-12">
         {/* `flex-initial` at `md`: the title takes the width its name needs and no more, so
             the project key sits beside a short name instead of 380px away, and only a long
             name truncates - carrying the whole name as its `title`. */}
