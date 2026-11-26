@@ -1038,8 +1038,8 @@ The state names the same claims on every read, after a restart or not, each with
 legion state --config legion.yaml --json | jq '.strandedClaims'
 ```
 
-Act only on the claims this list names, and leave out any you suspended on purpose. A claim's token
-is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
+Act only on the claims this list names, and leave out any you suspended on purpose. A claim of an
+issue has the token `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
 - **`resume`** (a suspended architect): resume it. Once it is ready the daemon sends it a catch-up
   of what changed while it was away:
@@ -1566,8 +1566,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
-  implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): only a review that requests
+  task's counted rounds reached three (on the implementer's phases row where the issue has no plan
+  rows) ([what counts a round](/legion/legion/concepts/#review-signalling)): only a review that requests
   changes raises the count, and one made while the head conflicts with its base is a conflict
   round, which the cap leaves out and the message's second number names. The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
