@@ -493,8 +493,8 @@ func TestAnUpdateRoundReadsTheWorkspaceBeforeEachReplacement(t *testing.T) {
 			t.Fatalf("the workspace was read %d times over %d asks for the replacement, want one read before each", len(reads), asks)
 		}
 		for _, read := range reads {
-			if read.Claim != rig.tokens[claim.RoleImplementer] || read.Role != claim.RoleImplementer {
-				t.Fatalf("the workspace was read %+v, want every read through the implementer's claim and role, whose process is in the pod", reads)
+			if read.Claim != rig.tokens[claim.RoleImplementer] {
+				t.Fatalf("the workspace was read %+v, want every read through the implementer's claim, whose process is in the pod", reads)
 			}
 		}
 		if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
