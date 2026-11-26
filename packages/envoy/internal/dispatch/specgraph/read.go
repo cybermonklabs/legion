@@ -415,7 +415,7 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 	if stopped != nil {
 		stop, fault = stopped.line, stopped.fault
 	}
-	var nodes []any
+	var nodes []Node
 	var lines []int
 	for _, d := range read {
 		if d.data == nil {
@@ -430,7 +430,7 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 	}
 	if !slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode }) {
 		if u := firstUnprinted(data, nodes, lines); u.line > 0 {
-			problems = append(problems, readerProblem(Position{File: name, Line: u.line}, nodeID(u.node), notPrinted, u.detail()))
+			problems = append(problems, readerProblem(Position{File: name, Line: u.line}, u.id(), notPrinted, u.detail()))
 		}
 	}
 	documents, uncounted = splitFile(data, read, nodes, lines, stop, fault)
@@ -445,7 +445,7 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 // whose reading stopped, since the reader counts no document after the fault; and, as a check of
 // lineStarts, a document at a line that the file does not hold or at the line of the document
 // before it.
-func splitFile(data []byte, documents []document, nodes []any, lines []int, stop int, fault string) ([]Document, string) {
+func splitFile(data []byte, documents []document, nodes []Node, lines []int, stop int, fault string) ([]Document, string) {
 	text := string(data)
 	starts := lineStarts(data)
 	offset := func(line int) int { return starts[min(max(line, 1), len(starts))-1] }
@@ -549,8 +549,8 @@ func schemaRefusals(inst any) []schemaRefusal {
 // tree by schemaProblems and Validate.
 func schemaProblems(tree Tree) []Problem {
 	var problems []Problem
-	for _, n := range nodesOf(tree) {
-		file, _ := fileOf(n.node)
+	for _, n := range Nodes(tree) {
+		file, _ := n.file()
 		js, err := json.Marshal(file)
 		if err != nil {
 			continue
@@ -560,7 +560,7 @@ func schemaProblems(tree Tree) []Problem {
 			continue
 		}
 		for _, r := range schemaRefusals(inst) {
-			problems = append(problems, readerProblem(n.pos, n.id, r.problemKind(true, true), r.detail))
+			problems = append(problems, readerProblem(n.NodePos(), n.NodeID(), r.problemKind(true, true), r.detail))
 		}
 	}
 	return problems
@@ -572,7 +572,7 @@ func schemaProblems(tree Tree) []Problem {
 // refusal of a document that gives no node, of a key that the node takes no field for, of a value
 // of another type, or of a component kind that the node drops, loses or changes the node
 // (schemaDropped). A time limit that the check drops is timeLimitDropped.
-func readNode(name string, d document) (any, []Problem) {
+func readNode(name string, d document) (Node, []Problem) {
 	pos := Position{File: name, Line: d.line}
 	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(d.data))
 	if err != nil {
@@ -597,7 +597,7 @@ func readNode(name string, d document) (any, []Problem) {
 // false for a component whose kind the node does not hold, one that is not "component" or
 // "interface", and droppedLimit is a time limit that the check drops, one that is not a positive Go
 // duration ("" for none).
-func nodeOf(data []byte, typ string, pos Position) (node any, keptKind bool, droppedLimit string) {
+func nodeOf(data []byte, typ string, pos Position) (node Node, keptKind bool, droppedLimit string) {
 	switch typ {
 	case "requirement":
 		var f requirementFile
@@ -703,7 +703,7 @@ func jsonPointer(tokens []string) string {
 // document, and refused is the refusal.
 type unprinted struct {
 	line      int
-	node      any
+	node      Node
 	got, want string
 	refused   error
 }
@@ -786,7 +786,7 @@ var quoteMarks = strings.NewReplacer(`'`, "", `"`, "")
 // of the shorter text, the line is the one after it. A node that printNode refuses is at the line
 // of its document. With no node, the node is nil: a file whose documents give no node is not as
 // Print writes any node.
-func firstUnprinted(data []byte, nodes []any, lines []int) unprinted {
+func firstUnprinted(data []byte, nodes []Node, lines []int) unprinted {
 	var printed strings.Builder
 	for i, node := range nodes {
 		document, err := printNode(node)
@@ -818,19 +818,12 @@ func firstUnprinted(data []byte, nodes []any, lines []int) unprinted {
 	return u
 }
 
-// nodeID is the id of node, a Statement, Check, Component or Term; "" for nil.
-func nodeID(node any) string {
-	switch n := node.(type) {
-	case Statement:
-		return n.ID
-	case Check:
-		return n.ID
-	case Component:
-		return n.ID
-	case Term:
-		return n.ID
+// id is the id of the node of u, "" for none.
+func (u unprinted) id() string {
+	if u.node == nil {
+		return ""
 	}
-	return ""
+	return u.node.NodeID()
 }
 
 // FileSuffix is the ending of the name of a spec file.
@@ -892,15 +885,8 @@ func (l Layout) tree() Tree {
 	var tree Tree
 	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
 		for _, d := range l.Files[name] {
-			switch n := d.Node.(type) {
-			case Statement:
-				tree.Statements = append(tree.Statements, n)
-			case Check:
-				tree.Checks = append(tree.Checks, n)
-			case Component:
-				tree.Components = append(tree.Components, n)
-			case Term:
-				tree.Terms = append(tree.Terms, n)
+			if d.Node != nil {
+				d.Node.addTo(&tree)
 			}
 		}
 	}

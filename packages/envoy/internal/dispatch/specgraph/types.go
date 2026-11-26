@@ -104,6 +104,49 @@ type Tree struct {
 	Terms      []Term
 }
 
+// Node is one node of The Spec: a Statement, a Check, a Component or a Term, the four types that
+// implement it, since its unexported methods keep every other type out. It gives what a caller of
+// any package reads of a node of any kind, so that none switches on the four types for it.
+type Node interface {
+	// NodeID is the id of the node.
+	NodeID() string
+	// NodePos is the position of the node.
+	NodePos() Position
+	// KindName is the kind of the node as a person names it: statement, check, component,
+	// interface or term.
+	KindName() string
+	// WithPos is the node at pos, so that WithPos(Position{}) compares two nodes by their data.
+	WithPos(pos Position) Node
+	// Digest is the digest of the record of the node, which its results carry.
+	Digest() string
+	// Print writes the node as its YAML document, which Parse reads back as the node.
+	Print() (string, error)
+	// file is the file struct of the node, the data of its document, and the printer that checked
+	// its values (printNode).
+	file() (any, *nodePrinter)
+	// addTo adds the node to its list of t.
+	addTo(t *Tree)
+}
+
+// Nodes is each node of tree: its statements, checks, components, then terms, each list in the
+// tree's order.
+func Nodes(tree Tree) []Node {
+	all := make([]Node, 0, len(tree.Statements)+len(tree.Checks)+len(tree.Components)+len(tree.Terms))
+	for _, s := range tree.Statements {
+		all = append(all, s)
+	}
+	for _, c := range tree.Checks {
+		all = append(all, c)
+	}
+	for _, c := range tree.Components {
+		all = append(all, c)
+	}
+	for _, t := range tree.Terms {
+		all = append(all, t)
+	}
+	return all
+}
+
 // Problem is one fault of the files: where it is, the id of its node ("-" for a document with no
 // id or a fault of no document), its rule, a Detail that begins with the rule, and, for a problem
 // of Parse, its Effect on the tree that Parse gives.

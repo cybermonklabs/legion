@@ -98,8 +98,8 @@ type checkCase struct {
 	history *FixtureHistory
 }
 
-// specNode is a statement or a check of a checkCase.
-type specNode interface{ Print() (string, error) }
+// specNode is a node of a spec file of a checkCase.
+type specNode = Node
 
 // newCheckCase is the base of TestCheckState.
 func newCheckCase(t *testing.T) *checkCase {
@@ -207,7 +207,7 @@ func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 		if err != nil {
 			s.t.Fatal(err)
 		}
-		id := specNodeID(n)
+		id := n.NodeID()
 		node, held := s.Approved.Nodes[id]
 		if !held {
 			node = ApprovedNode{ID: id}
@@ -221,7 +221,7 @@ func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 // of it, approved at at.
 func (s *checkCase) approveEarlier(at time.Time, earlier specNode) {
 	s.t.Helper()
-	id := specNodeID(earlier)
+	id := earlier.NodeID()
 	later := s.Approved.Nodes[id].Versions
 	delete(s.Approved.Nodes, id)
 	s.approve(at, earlier)
@@ -244,7 +244,7 @@ func (s *checkCase) reapprove(at time.Time, n specNode) {
 // hold it in the place of the old one.
 func (s *checkCase) replace(n specNode) {
 	s.t.Helper()
-	id := specNodeID(n)
+	id := n.NodeID()
 	at := s.Approved.Nodes[id].Versions[0].At
 	delete(s.Approved.Nodes, id)
 	s.approve(at, n)
@@ -276,7 +276,7 @@ func (s *checkCase) refuse(change func(c *Check)) {
 func (s *checkCase) swap(n specNode) {
 	for name, nodes := range s.files {
 		for i, old := range nodes {
-			if specNodeID(old) == specNodeID(n) {
+			if old.NodeID() == n.NodeID() {
 				s.files[name] = slices.Clone(nodes)
 				s.files[name][i] = n
 			}
@@ -345,17 +345,6 @@ func (s *checkCase) runsAgainAt(commit string) {
 			s.Results = append(s.Results, r)
 		}
 	}
-}
-
-// specNodeID is the id of a statement or a check.
-func specNodeID(n specNode) string {
-	switch n := n.(type) {
-	case Statement:
-		return n.ID
-	case Check:
-		return n.ID
-	}
-	panic("specNodeID of a node that is no statement and no check")
 }
 
 // withTimeLimit is c with a time limit.

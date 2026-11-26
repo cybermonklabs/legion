@@ -183,7 +183,7 @@ func TestTheReaderRefusesANullAtEachPlaceOfADocument(t *testing.T) {
 			if !reflect.DeepEqual(problems, want) {
 				t.Errorf("Parse(%q):\n got %+v\nwant %+v", text, problems, want)
 			}
-			if got := len(nodesOf(tree)); got != 0 {
+			if got := len(Nodes(tree)); got != 0 {
 				t.Errorf("Parse(%q) gives %d nodes, want none", text, got)
 			}
 			checked++
@@ -240,10 +240,10 @@ func TestTheReaderRefusesAnEmptyValueAtEachPlaceOfADocument(t *testing.T) {
 				t.Errorf("Parse(%q) gives %+v, want a problem at %s", text, problems, at)
 			}
 			if !slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode }) {
-				nodes := nodesOf(tree)
+				nodes := Nodes(tree)
 				if len(nodes) != 1 {
 					t.Errorf("Parse(%q) gives %d nodes and no problem that loses one", text, len(nodes))
-				} else if again, err := nodes[0].node.Print(); err != nil || again != text {
+				} else if again, err := nodes[0].Print(); err != nil || again != text {
 					t.Errorf("Parse(%q) keeps each node, and the node prints %q (%v): the empty value at %s reads as another text", text, again, err, at)
 				}
 			}
@@ -300,7 +300,7 @@ func TestTheFilesRefuseANameOfNoLetterAndNoDigitAtEachPlaceOfADocument(t *testin
 					}
 				}
 				if len(problems) == 0 {
-					t.Errorf("%s of %s as %q: the files take %q", place.pointer, nodeID(n), name, text)
+					t.Errorf("%s of %s as %q: the files take %q", place.pointer, n.NodeID(), name, text)
 				}
 				checked++
 			}
@@ -328,10 +328,10 @@ func TestAnApprovedDocumentNamesEachNodeByAnID(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, problems := versionText(nodeID(n), ApprovedVersion{Version: 1, At: at, Document: printed}); len(problems) != 0 {
+		if _, problems := versionText(n.NodeID(), ApprovedVersion{Version: 1, At: at, Document: printed}); len(problems) != 0 {
 			t.Fatalf("the control %q: %+v", printed, problems)
 		}
-		file, _ := fileOf(n)
+		file, _ := n.file()
 		def := ""
 		for name, typ := range nodeFileTypes {
 			if typ == reflect.TypeOf(file) {
@@ -349,7 +349,7 @@ func TestAnApprovedDocumentNamesEachNodeByAnID(t *testing.T) {
 			names := member == "id" || property["$ref"] == "#/$defs/id" || property["$ref"] == "#/$defs/ids"
 			for _, value := range []string{" ", "\u200b", "Not-An-Id"} {
 				text := string(writeDocuments(t, []*yaml.Node{nameAt(docs[0], place, value)}))
-				id := nodeID(n)
+				id := n.NodeID()
 				if member == "id" {
 					id = value
 				}
@@ -360,11 +360,11 @@ func TestAnApprovedDocumentNamesEachNodeByAnID(t *testing.T) {
 				notPrinted := len(problems) == 1 && problems[0].Rule == "not-printed"
 				switch noID := slices.ContainsFunc(problems, func(p Problem) bool { return p.Detail == want }); {
 				case names && !(noID && len(problems) == 1 || notPrinted):
-					t.Errorf("%s of %s as %q: versionText gives %+v, want the one problem %q", place.pointer, nodeID(n), value, problems, want)
+					t.Errorf("%s of %s as %q: versionText gives %+v, want the one problem %q", place.pointer, n.NodeID(), value, problems, want)
 				case names:
 					refused++
 				case noID:
-					t.Errorf("%s of %s names no node, and versionText refuses %q at it as no id", place.pointer, nodeID(n), value)
+					t.Errorf("%s of %s names no node, and versionText refuses %q at it as no id", place.pointer, n.NodeID(), value)
 				case len(problems) == 0:
 					read++
 				}
@@ -498,7 +498,7 @@ func TestAMemberLeftOutOfADocumentIsReadByItsMark(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		file, _ := fileOf(n)
+		file, _ := n.file()
 		typ := reflect.TypeOf(file)
 		def := ""
 		for name, ft := range nodeFileTypes {
@@ -519,20 +519,20 @@ func TestAMemberLeftOutOfADocumentIsReadByItsMark(t *testing.T) {
 			switch mark := markAt(t, typ, place.pointer); {
 			case mark.kind == "nonzero":
 				if len(problems) == 0 {
-					t.Errorf("%s of %s, marked nonzero, left out reads with no problem: %q", place.pointer, nodeID(n), text)
+					t.Errorf("%s of %s, marked nonzero, left out reads with no problem: %q", place.pointer, n.NodeID(), text)
 				}
 			case len(problems) != 0:
 				if !conditional[key] || len(problems) != 1 || problems[0].Detail != "schema: node: missing property '"+key+"'" {
-					t.Errorf("%s of %s, marked zero, left out gives %+v, want no problem, or the schema's missing property of a condition", place.pointer, nodeID(n), problems)
+					t.Errorf("%s of %s, marked zero, left out gives %+v, want no problem, or the schema's missing property of a condition", place.pointer, n.NodeID(), problems)
 				}
 			default:
-				nodes := nodesOf(tree)
+				nodes := Nodes(tree)
 				if len(nodes) != 1 {
 					t.Fatalf("%q gives %d nodes", text, len(nodes))
 				}
-				again, err := nodes[0].node.Print()
+				again, err := nodes[0].Print()
 				if err != nil || again != text {
-					t.Errorf("%s of %s, marked zero, left out reads as a node that prints %q (%v), not %q", place.pointer, nodeID(n), again, err, text)
+					t.Errorf("%s of %s, marked zero, left out reads as a node that prints %q (%v), not %q", place.pointer, n.NodeID(), again, err, text)
 				}
 				readAsZero++
 			}

@@ -32,7 +32,7 @@ var (
 // the home's series, T, S and P are ErrTooLarge, ErrNoStatement and ErrNoParent.
 type placeRow struct {
 	name         string
-	layout       func(t *testing.T, replaced bool) (l Layout, node any, home string)
+	layout       func(t *testing.T, replaced bool) (l Layout, node Node, home string)
 	newWant      [3]string // fits at home; does not fit, block fits alone; block alone over the bound
 	replacedWant [3]string
 }
@@ -42,7 +42,7 @@ func TestPlace(t *testing.T) {
 	other := func(t *testing.T) Layout {
 		return Layout{Files: map[string][]Document{"other.yaml": {placeDocument(t, Term{ID: "other", Name: "other", Definition: "Another term."})}}}
 	}
-	files := func(t *testing.T, home string, nodes ...any) Layout {
+	files := func(t *testing.T, home string, nodes ...Node) Layout {
 		var documents []Document
 		for _, n := range nodes {
 			documents = append(documents, placeDocument(t, n))
@@ -56,7 +56,7 @@ func TestPlace(t *testing.T) {
 	rows := []placeRow{
 		{
 			name: "check, the directory holds its statement",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				l := files(t, "acme-keeps-each-order.yaml", placeTop, placeCheck)
 				if replaced {
 					return l, more(placeCheck), "acme-keeps-each-order.yaml"
@@ -67,7 +67,7 @@ func TestPlace(t *testing.T) {
 		},
 		{
 			name: "check, the directory does not hold its statement",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				if replaced {
 					return files(t, "orders.yaml", placeCheck), more(placeCheck), "orders.yaml"
 				}
@@ -77,7 +77,7 @@ func TestPlace(t *testing.T) {
 		},
 		{
 			name: "statement, the directory holds its parent",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				if replaced {
 					return files(t, "acme-keeps-each-order.yaml", placeTop, placeCheck, placeChild, childCheck), more(placeChild), "acme-keeps-each-order.yaml"
 				}
@@ -87,7 +87,7 @@ func TestPlace(t *testing.T) {
 		},
 		{
 			name: "statement, the directory does not hold its parent",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				if replaced {
 					return files(t, "orders.yaml", placeChild, childCheck), more(placeChild), "orders.yaml"
 				}
@@ -97,7 +97,7 @@ func TestPlace(t *testing.T) {
 		},
 		{
 			name: "statement with no parent",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				if replaced {
 					return files(t, "acme-keeps-each-order.yaml", placeTop, placeCheck), more(placeTop), "acme-keeps-each-order.yaml"
 				}
@@ -107,7 +107,7 @@ func TestPlace(t *testing.T) {
 		},
 		{
 			name: "component or interface",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				if replaced {
 					return files(t, "components.yaml", placeComponent), more(placeComponent), "components.yaml"
 				}
@@ -117,7 +117,7 @@ func TestPlace(t *testing.T) {
 		},
 		{
 			name: "term",
-			layout: func(t *testing.T, replaced bool) (Layout, any, string) {
+			layout: func(t *testing.T, replaced bool) (Layout, Node, string) {
 				if replaced {
 					return files(t, "terms.yaml", placeTerm), more(placeTerm), "terms.yaml"
 				}
@@ -186,7 +186,7 @@ func TestPlace(t *testing.T) {
 
 // expectPlace places node into l and holds the answer to want: W, the home; M, the file after the
 // home in its series, each of the two within the bound; T, S or P, the refusal and l unchanged.
-func expectPlace(t *testing.T, l Layout, node any, home, want string) {
+func expectPlace(t *testing.T, l Layout, node Node, home, want string) {
 	t.Helper()
 	before := cloneLayout(l)
 	file, err := l.Place(node, placeLimit)
@@ -215,7 +215,7 @@ func expectPlace(t *testing.T, l Layout, node any, home, want string) {
 }
 
 // placeDocument is the document of node, as Print writes it.
-func placeDocument(t *testing.T, node any) Document {
+func placeDocument(t *testing.T, node Node) Document {
 	t.Helper()
 	text, err := printNode(node)
 	if err != nil {
@@ -225,7 +225,7 @@ func placeDocument(t *testing.T, node any) Document {
 }
 
 // more is node with one more word in its text.
-func more(node any) any {
+func more(node Node) Node {
 	switch n := node.(type) {
 	case Statement:
 		n.Text += " now"
@@ -244,7 +244,7 @@ func more(node any) any {
 }
 
 // huge is node with a text of more than placeLimit bytes, so its block is over the bound alone.
-func huge(node any) any {
+func huge(node Node) Node {
 	text := strings.Repeat("order ", placeLimit/5)
 	switch n := node.(type) {
 	case Statement:
@@ -265,10 +265,10 @@ func huge(node any) any {
 
 // writeDelta is how many bytes the write of node adds to its home in l: its document, less the
 // document that it replaces.
-func writeDelta(t *testing.T, l Layout, node any) int64 {
+func writeDelta(t *testing.T, l Layout, node Node) int64 {
 	t.Helper()
 	delta := int64(len(placeDocument(t, node).Text))
-	for _, p := range l.placesOf(func(n any) bool { return nodeID(n) == nodeID(node) }) {
+	for _, p := range l.placesOf(func(n Node) bool { return n.NodeID() == node.NodeID() }) {
 		delta -= int64(len(l.Files[p.file][p.index].Text))
 	}
 	return delta
@@ -304,7 +304,7 @@ func holdsEachNodeOnce(t *testing.T, l Layout) {
 	seen := map[string]string{}
 	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
 		for _, d := range l.Files[name] {
-			id := nodeID(d.Node)
+			id := idOf(d.Node)
 			if at, twice := seen[id]; twice {
 				t.Errorf("node %q is in %s and in %s", id, at, name)
 			}
@@ -326,8 +326,16 @@ func cloneLayout(l Layout) Layout {
 func sameLayout(t *testing.T, l, before Layout) {
 	t.Helper()
 	if !maps.EqualFunc(l.Files, before.Files, func(a, b []Document) bool {
-		return slices.EqualFunc(a, b, func(x, y Document) bool { return x.Text == y.Text && nodeID(x.Node) == nodeID(y.Node) })
+		return slices.EqualFunc(a, b, func(x, y Document) bool { return x.Text == y.Text && idOf(x.Node) == idOf(y.Node) })
 	}) {
 		t.Errorf("the layout changed on a refusal:\n got %v\nwant %v", l.Bytes(), before.Bytes())
 	}
+}
+
+// idOf is the id of n, "" for a document that gives no node.
+func idOf(n Node) string {
+	if n == nil {
+		return ""
+	}
+	return n.NodeID()
 }

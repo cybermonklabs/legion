@@ -29,6 +29,38 @@ func (c Component) Print() (string, error) { return printNode(c) }
 // Print writes the term as its YAML document, which Parse reads back as the term.
 func (t Term) Print() (string, error) { return printNode(t) }
 
+func (s Statement) NodeID() string { return s.ID }
+func (c Check) NodeID() string     { return c.ID }
+func (c Component) NodeID() string { return c.ID }
+func (t Term) NodeID() string      { return t.ID }
+
+func (s Statement) NodePos() Position { return s.Pos }
+func (c Check) NodePos() Position     { return c.Pos }
+func (c Component) NodePos() Position { return c.Pos }
+func (t Term) NodePos() Position      { return t.Pos }
+
+func (Statement) KindName() string { return "statement" }
+func (Check) KindName() string     { return "check" }
+func (Term) KindName() string      { return "term" }
+
+// KindName is "interface" for a component marked as an interface, and else "component".
+func (c Component) KindName() string {
+	if c.Interface {
+		return "interface"
+	}
+	return "component"
+}
+
+func (s Statement) WithPos(pos Position) Node { s.Pos = pos; return s }
+func (c Check) WithPos(pos Position) Node     { c.Pos = pos; return c }
+func (c Component) WithPos(pos Position) Node { c.Pos = pos; return c }
+func (t Term) WithPos(pos Position) Node      { t.Pos = pos; return t }
+
+func (s Statement) addTo(t *Tree) { t.Statements = append(t.Statements, s) }
+func (c Check) addTo(t *Tree)     { t.Checks = append(t.Checks, c) }
+func (c Component) addTo(t *Tree) { t.Components = append(t.Components, c) }
+func (term Term) addTo(t *Tree)   { t.Terms = append(t.Terms, term) }
+
 // The file structs are the data of one YAML document of a spec file, one struct for each type of
 // node, with the keys of the schema (schema/spec-node.schema.json) in the order the document holds
 // them: type and id first, the texts last. A text is a list of its lines. An absent value is an
@@ -81,70 +113,63 @@ type (
 	}
 )
 
-// printNode is the document of n, a Statement, Check, Component or Term: "---\n", then the file
-// struct of n written by a yaml.v3 Encoder with SetIndent(2). Lists are sorted. A text is split at
-// "\n" into its lines; "" is no key. Two kinds of scalar are written double-quoted (quotedScalar):
-// one that holds U+2028 or U+2029, as \L or \P, since yaml.v3 reads those two as line ends (YAML
-// 1.1) and writes them as a line break in a single-quoted scalar, which a YAML 1.2 reader, such as
-// the TypeScript yaml library, reads as the character and the indentation after it; and one that a
-// YAML 1.1 or a YAML 1.2 resolver reads, as a plain scalar, as another type than a string
-// (nonStringPlain), which yaml.v3 writes plain when its own resolver reads it as a string. The
-// error wraps ErrUnprintable and names the node and the field: an empty id, a string that is not
-// UTF-8 or that holds NUL or CR, a line of a one-line field that holds LF, a text with an empty
-// line, a test part that names nothing, or a negative time limit.
-func printNode(n any) (string, error) {
-	file, p := fileOf(n)
-	if p == nil {
-		return "", fmt.Errorf("%w: %T is no node", ErrUnprintable, n)
-	}
+// printNode is the document of n: "---\n", then the file struct of n written by a yaml.v3 Encoder
+// with SetIndent(2). Lists are sorted. A text is split at "\n" into its lines; "" is no key. Two
+// kinds of scalar are written double-quoted (quotedScalar): one that holds U+2028 or U+2029, as
+// \L or \P, since yaml.v3 reads those two as line ends (YAML 1.1) and writes them as a line break
+// in a single-quoted scalar, which a YAML 1.2 reader, such as the TypeScript yaml library, reads as
+// the character and the indentation after it; and one that a YAML 1.1 or a YAML 1.2 resolver reads,
+// as a plain scalar, as another type than a string (nonStringPlain), which yaml.v3 writes plain
+// when its own resolver reads it as a string. The error wraps ErrUnprintable and names the node and
+// the field: an empty id, a string that is not UTF-8 or that holds NUL or CR, a line of a one-line
+// field that holds LF, a text with an empty line, a test part that names nothing, or a negative
+// time limit.
+func printNode(n Node) (string, error) {
+	file, p := n.file()
 	return p.document(file)
 }
 
-// fileOf is the file struct of n, the data of its document, and the printer that checked its
-// values; nil for a value that is no node.
-func fileOf(n any) (any, *nodePrinter) {
-	switch n := n.(type) {
-	case Statement:
-		p := newNodePrinter("requirement", n.ID)
-		return requirementFile{
-			Type: "requirement", ID: n.ID, Kind: p.line("kind", string(n.Kind)), Parent: p.line("parent", n.Parent),
-			Serves: p.ids("serves", n.Serves), About: p.ids("about", n.About), Text: p.lines("text", n.Text),
-		}, p
-	case Check:
-		p := newNodePrinter("check", n.ID)
-		f := checkFile{
-			Type: "check", ID: n.ID, Serves: p.line("serves", n.Serves), Subject: p.line("subject", string(n.Subject)),
-			Procedure: p.line("procedure", string(n.Procedure)), Claim: p.line("claim", n.Claim),
-			ProcedureText: p.lines("procedure_text", n.ProcedureText), FailingExample: p.lines("failing_example", n.FailingExample),
-		}
-		if n.Test != nil {
-			if *n.Test == (Test{}) {
-				p.refuse("test", "a test part names a runner, a selector or a job")
-			}
-			f.Test = &testFile{Runner: p.line("runner", n.Test.Runner), Selector: p.line("selector", n.Test.Selector), Job: p.line("job", n.Test.Job)}
-		}
-		switch {
-		case n.TimeLimit > 0:
-			f.TimeLimit = n.TimeLimit.String()
-		case n.TimeLimit < 0:
-			p.refuse("time_limit", "a time limit is a positive duration")
-		}
-		return f, p
-	case Component:
-		p := newNodePrinter("component", n.ID)
-		kind := "component"
-		if n.Interface {
-			kind = "interface"
-		}
-		return componentFile{
-			Type: "component", ID: n.ID, Name: p.line("name", n.Name), Kind: kind, Parent: p.line("parent", n.Parent),
-			Joins: p.ids("joins", n.Joins), Purpose: p.lines("purpose", n.Purpose),
-		}, p
-	case Term:
-		p := newNodePrinter("term", n.ID)
-		return termFile{Type: "term", ID: n.ID, Name: p.line("name", n.Name), Definition: p.lines("definition", n.Definition)}, p
+func (s Statement) file() (any, *nodePrinter) {
+	p := newNodePrinter("requirement", s.ID)
+	return requirementFile{
+		Type: "requirement", ID: s.ID, Kind: p.line("kind", string(s.Kind)), Parent: p.line("parent", s.Parent),
+		Serves: p.ids("serves", s.Serves), About: p.ids("about", s.About), Text: p.lines("text", s.Text),
+	}, p
+}
+
+func (c Check) file() (any, *nodePrinter) {
+	p := newNodePrinter("check", c.ID)
+	f := checkFile{
+		Type: "check", ID: c.ID, Serves: p.line("serves", c.Serves), Subject: p.line("subject", string(c.Subject)),
+		Procedure: p.line("procedure", string(c.Procedure)), Claim: p.line("claim", c.Claim),
+		ProcedureText: p.lines("procedure_text", c.ProcedureText), FailingExample: p.lines("failing_example", c.FailingExample),
 	}
-	return nil, nil
+	if c.Test != nil {
+		if *c.Test == (Test{}) {
+			p.refuse("test", "a test part names a runner, a selector or a job")
+		}
+		f.Test = &testFile{Runner: p.line("runner", c.Test.Runner), Selector: p.line("selector", c.Test.Selector), Job: p.line("job", c.Test.Job)}
+	}
+	switch {
+	case c.TimeLimit > 0:
+		f.TimeLimit = c.TimeLimit.String()
+	case c.TimeLimit < 0:
+		p.refuse("time_limit", "a time limit is a positive duration")
+	}
+	return f, p
+}
+
+func (c Component) file() (any, *nodePrinter) {
+	p := newNodePrinter("component", c.ID)
+	return componentFile{
+		Type: "component", ID: c.ID, Name: p.line("name", c.Name), Kind: c.KindName(), Parent: p.line("parent", c.Parent),
+		Joins: p.ids("joins", c.Joins), Purpose: p.lines("purpose", c.Purpose),
+	}, p
+}
+
+func (t Term) file() (any, *nodePrinter) {
+	p := newNodePrinter("term", t.ID)
+	return termFile{Type: "term", ID: t.ID, Name: p.line("name", t.Name), Definition: p.lines("definition", t.Definition)}, p
 }
 
 // nodePrinter checks the values of one node as printNode writes them, and keeps the first refusal.

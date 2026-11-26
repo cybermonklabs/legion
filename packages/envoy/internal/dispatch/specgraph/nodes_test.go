@@ -18,8 +18,8 @@ import (
 
 // allKinds is the five nodes of testdata/nodes/all-kinds.yaml, in the order of the file, as Go
 // values with no position: a statement, a check, a component, an interface and a term.
-func allKinds() []any {
-	return []any{
+func allKinds() []Node {
+	return []Node{
 		Statement{
 			ID:     "a-stored-message-survives-a-restart",
 			Text:   "Envoy delivers each stored message to its session after the listener starts again.",
@@ -175,7 +175,7 @@ func TestPrintThenReadKeepsEveryText(t *testing.T) {
 	t.Parallel()
 	for _, text := range hardTexts {
 		oneLine := strings.ReplaceAll(text, "\n", " ")
-		for _, node := range []any{
+		for _, node := range []Node{
 			Statement{ID: "a-statement", Text: text, Kind: KindStructure, Parent: "the-parent", Serves: []string{"two", "one"}, About: []string{"envoy"}},
 			Check{
 				ID: "a-check", Serves: "a-statement", Claim: oneLine, ProcedureText: text, FailingExample: text,
@@ -355,33 +355,17 @@ func TestDigestIgnoresTheFileAndTheOrder(t *testing.T) {
 }
 
 // onlyTreeNode is the one node tree holds, with no position.
-func onlyTreeNode(t *testing.T, tree Tree) any {
+func onlyTreeNode(t *testing.T, tree Tree) Node {
 	t.Helper()
-	var nodes []any
-	for _, s := range tree.Statements {
-		s.Pos = Position{}
-		nodes = append(nodes, s)
-	}
-	for _, c := range tree.Checks {
-		c.Pos = Position{}
-		nodes = append(nodes, c)
-	}
-	for _, c := range tree.Components {
-		c.Pos = Position{}
-		nodes = append(nodes, c)
-	}
-	for _, term := range tree.Terms {
-		term.Pos = Position{}
-		nodes = append(nodes, term)
-	}
+	nodes := Nodes(tree)
 	if len(nodes) != 1 {
 		t.Fatalf("tree %+v holds %d nodes, want one", tree, len(nodes))
 	}
-	return nodes[0]
+	return nodes[0].WithPos(Position{})
 }
 
 // sortedLists is node with each of its lists sorted, as the reader gives a printed node back.
-func sortedLists(node any) any {
+func sortedLists(node Node) Node {
 	sorted := func(list []string) []string { return slices.Sorted(slices.Values(list)) }
 	switch n := node.(type) {
 	case Statement:
@@ -394,9 +378,9 @@ func sortedLists(node any) any {
 	return node
 }
 
-// nodeDigest is the digest of node, a Statement, Check, Component or Term.
-func nodeDigest(node any) string {
-	return node.(interface{ Digest() string }).Digest()
+// nodeDigest is the digest of node.
+func nodeDigest(node Node) string {
+	return node.Digest()
 }
 
 // typedPlain is each pattern by which a YAML reader reads a plain scalar as another type than a
@@ -450,5 +434,41 @@ func TestPrintWritesNoPlainScalarThatAYAML11ReaderTypes(t *testing.T) {
 			}
 		}
 		walk(&root)
+	}
+}
+
+// Nodes is each node of a tree, its statements, checks, components and terms, each list in its
+// order, as a Node: its id, its position, its kind as a person names it, the same node at another
+// position, and its document, which Parse reads back as the node. So a caller of any package reads
+// a node of any kind with no switch on its type.
+func TestNodesGivesEachNodeOfTheTreeAsANode(t *testing.T) {
+	t.Parallel()
+	at := func(line int) Position { return Position{File: "spec.yaml", Line: line} }
+	tree := Tree{
+		Statements: []Statement{{ID: "a-statement", Text: "Envoy keeps it.", Kind: KindBehavior, Pos: at(1)}},
+		Checks: []Check{{ID: "a-check", Serves: "a-statement", Subject: SubjectCode, Procedure: ProcedureAgent, Claim: "It keeps it.",
+			ProcedureText: "An agent reads it.", FailingExample: "A listener that loses it.", Pos: at(7)}},
+		Components: []Component{{ID: "a-part", Name: "a part", Purpose: "It holds a part.", Pos: at(20)},
+			{ID: "a-joint", Name: "a joint", Purpose: "It joins parts.", Interface: true, Joins: []string{"a-part", "b-part"}, Pos: at(26)}},
+		Terms: []Term{{ID: "a-term", Name: "a term", Definition: "A term is a word.", Pos: at(34)}},
+	}
+	var got []string
+	for _, n := range Nodes(tree) {
+		got = append(got, fmt.Sprintf("%s %s %d", n.KindName(), n.NodeID(), n.NodePos().Line))
+		if bare := n.WithPos(Position{}); bare.NodePos() != (Position{}) || bare.NodeID() != n.NodeID() {
+			t.Errorf("%s at no position is %+v", n.NodeID(), bare)
+		}
+		document, err := n.Print()
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, problems := Parse(map[string][]byte{"spec.yaml": []byte(document)})
+		if len(problems) != 0 || len(Nodes(read)) != 1 || !reflect.DeepEqual(Nodes(read)[0].WithPos(n.NodePos()), n) {
+			t.Errorf("%s prints %q, which Parse reads as %+v with %+v", n.NodeID(), document, Nodes(read), problems)
+		}
+	}
+	want := []string{"statement a-statement 1", "check a-check 7", "component a-part 20", "interface a-joint 26", "term a-term 34"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Nodes gives %q, want %q", got, want)
 	}
 }

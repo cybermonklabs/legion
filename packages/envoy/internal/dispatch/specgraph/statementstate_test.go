@@ -613,7 +613,7 @@ func (s *checkCase) runOutcome(id string, outcome Outcome) {
 // drop takes the nodes with the ids out of the files; the approved spec keeps them.
 func (s *checkCase) drop(ids ...string) {
 	for name, nodes := range s.files {
-		s.files[name] = slices.DeleteFunc(slices.Clone(nodes), func(n specNode) bool { return slices.Contains(ids, specNodeID(n)) })
+		s.files[name] = slices.DeleteFunc(slices.Clone(nodes), func(n specNode) bool { return slices.Contains(ids, n.NodeID()) })
 	}
 }
 

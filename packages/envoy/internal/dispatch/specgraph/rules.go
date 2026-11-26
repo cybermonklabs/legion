@@ -204,7 +204,7 @@ func (v *validator) ids() {
 		all = append(all, held{c.ID, "check", c.Pos})
 	}
 	for _, c := range v.tree.Components {
-		all = append(all, held{c.ID, kindOf(c), c.Pos})
+		all = append(all, held{c.ID, c.KindName(), c.Pos})
 	}
 	for _, term := range v.tree.Terms {
 		all = append(all, held{term.ID, "term", term.Pos})

@@ -351,7 +351,7 @@ func TestReadRefuses(t *testing.T) {
 			if !reflect.DeepEqual(problems, want) {
 				t.Errorf("Parse(%q):\n got %+v\nwant %+v", row.text, problems, want)
 			}
-			if got := len(nodesOf(tree)); got != row.nodes {
+			if got := len(Nodes(tree)); got != row.nodes {
 				t.Errorf("Parse(%q): the tree holds %d nodes, want %d: %+v", row.text, got, row.nodes, tree)
 			}
 		})
@@ -574,13 +574,13 @@ func TestFirstUnprintedNamesTheLineAndTheNode(t *testing.T) {
 	for _, row := range []struct {
 		name  string
 		data  string
-		nodes []any
+		nodes []Node
 		lines []int
 		line  int
-		node  any
+		node  Node
 	}{
 		{"documents that give no node", "---\ntype: term\n", nil, nil, 1, nil},
-		{"a node that printNode refuses, in the second document", "", []any{term, unprintable}, []int{1, 7}, 7, unprintable},
+		{"a node that printNode refuses, in the second document", "", []Node{term, unprintable}, []int{1, 7}, 7, unprintable},
 	} {
 		u := firstUnprinted([]byte(row.data), row.nodes, row.lines)
 		if u.line != row.line || !reflect.DeepEqual(u.node, row.node) {
@@ -762,14 +762,14 @@ func readFiles(t *testing.T, dir string) map[string][]byte {
 // digests is the digest of every node of tree, by its kind and id.
 func digests(tree Tree) map[string]string {
 	all := map[string]string{}
-	for _, n := range nodesOf(tree) {
-		all[kindName(n.node)+" "+n.id] = n.node.Digest()
+	for _, n := range Nodes(tree) {
+		all[n.KindName()+" "+n.NodeID()] = n.Digest()
 	}
 	return all
 }
 
 // specFile is the spec file of nodes: the document that Print writes for each, in order.
-func specFile(t *testing.T, nodes ...any) []byte {
+func specFile(t *testing.T, nodes ...Node) []byte {
 	t.Helper()
 	var b strings.Builder
 	for _, node := range nodes {

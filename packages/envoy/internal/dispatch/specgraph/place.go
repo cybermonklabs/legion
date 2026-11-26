@@ -20,11 +20,11 @@ type Layout struct {
 	Uncounted map[string]string
 }
 
-// Document is one YAML document of a file: its node (a Statement, Check, Component or Term; nil for
-// a document that gives none) and its text, as Print writes it for a node that Place wrote and as
-// the file holds it for a document that ReadLayout read.
+// Document is one YAML document of a file: its node (nil for a document that gives none) and its
+// text, as Print writes it for a node that Place wrote and as the file holds it for a document
+// that ReadLayout read.
 type Document struct {
-	Node any
+	Node Node
 	Text string
 }
 
@@ -97,16 +97,16 @@ func (l Layout) Bytes() map[string][]byte {
 // not hold holds any block within limit. A block larger than limit by itself fits in no file
 // (ErrTooLarge). So each file stays within limit: the home was within it before the write, and the
 // block that leaves holds the new document.
-func (l *Layout) Place(node any, limit int64) (string, error) {
-	id := nodeID(node)
+func (l *Layout) Place(node Node, limit int64) (string, error) {
+	id := node.NodeID()
 	text, err := printNode(node)
 	if err != nil {
 		return "", err
 	}
 	refuse := func(kind error) *PlaceError {
-		return &PlaceError{Err: kind, Node: id, Kind: kindName(node), Limit: limit}
+		return &PlaceError{Err: kind, Node: id, Kind: node.KindName(), Limit: limit}
 	}
-	held := l.placesOf(func(n any) bool { return nodeID(n) == id })
+	held := l.placesOf(func(n Node) bool { return n.NodeID() == id })
 	if len(held) > 1 {
 		e := refuse(ErrHeldTwice)
 		for _, p := range held[:2] {
@@ -164,7 +164,7 @@ type place struct {
 }
 
 // placesOf is each place of l whose node matches, in file then index order.
-func (l Layout) placesOf(match func(node any) bool) []place {
+func (l Layout) placesOf(match func(node Node) bool) []place {
 	var places []place
 	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
 		for i, d := range l.Files[name] {
@@ -187,9 +187,9 @@ func (l Layout) line(p place) int {
 
 // home is the file and the index where a node that l does not hold goes, or the refusal of a check
 // or a statement whose statement or parent l does not hold.
-func (l Layout) home(node any) (string, int, error) {
+func (l Layout) home(node Node) (string, int, error) {
 	statement := func(id string) []place {
-		return l.placesOf(func(n any) bool { s, ok := n.(Statement); return ok && s.ID == id })
+		return l.placesOf(func(n Node) bool { s, ok := n.(Statement); return ok && s.ID == id })
 	}
 	switch n := node.(type) {
 	case Check:
@@ -241,7 +241,7 @@ func blockOf(documents []Document, at int) (int, int) {
 	default:
 		return at, at + 1
 	}
-	statement := nodeID(documents[start].Node)
+	statement := documents[start].Node.NodeID()
 	end := start + 1
 	for end < len(documents) && serves(end, statement) {
 		end++
@@ -280,21 +280,4 @@ func size(documents []Document) int64 {
 		n += int64(len(d.Text))
 	}
 	return n
-}
-
-// kindName is the kind of node as a person names it: statement, check, component, interface or
-// term.
-func kindName(node any) string {
-	switch n := node.(type) {
-	case Statement:
-		return "statement"
-	case Check:
-		return "check"
-	case Component:
-		if n.Interface {
-			return "interface"
-		}
-		return "component"
-	}
-	return "term"
 }

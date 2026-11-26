@@ -131,12 +131,12 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			for _, node := range nodesOf(current) {
-				printed, err := node.node.Print()
+			for _, node := range Nodes(current) {
+				printed, err := node.Print()
 				if err != nil {
 					t.Fatal(err)
 				}
-				write(node.id, printed)
+				write(node.NodeID(), printed)
 			}
 			got := Compare(parseDir(t, dir), approved)
 			if len(got.Problems) != 0 {
@@ -533,7 +533,7 @@ func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			n.ID = nodesOf(mustParse(t, block))[0].id
+			n.ID = Nodes(mustParse(t, block))[0].NodeID()
 			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Document: block})
 		}
 		return n
@@ -622,8 +622,8 @@ func mustParse(t *testing.T, text string) Tree {
 // idsOf is the set of the ids of the nodes of tree.
 func idsOf(tree Tree) map[string]bool {
 	ids := map[string]bool{}
-	for _, n := range nodesOf(tree) {
-		ids[n.id] = true
+	for _, n := range Nodes(tree) {
+		ids[n.NodeID()] = true
 	}
 	return ids
 }
@@ -724,7 +724,7 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
-	if got := ids(nodesOf(current), func(n anyNode) string { return n.id }); !reflect.DeepEqual(got, []string{
+	if got := ids(Nodes(current), Node.NodeID); !reflect.DeepEqual(got, []string{
 		"acme-keeps-each-order", "an-order-survives-a-restart", "orders-reach-billing-only-through-the-interface",
 		"a-restart-keeps-each-order", "no-order-skips-the-interface",
 		"billing", "orders", "orders-to-billing", "shipping", "order",

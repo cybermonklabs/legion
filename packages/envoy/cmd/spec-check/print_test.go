@@ -732,12 +732,12 @@ func plantFault(r *rand.Rand, content []byte) ([]byte, bool) {
 
 // placeAnswer places node into l and names its answer: "<kind> new|replaced W|M|T", or S or P;
 // ok is false for a refusal, after which print places no more nodes.
-func placeAnswer(l *specgraph.Layout, node any, limit int64) (string, bool) {
-	id := nodeID(node)
+func placeAnswer(l *specgraph.Layout, node specgraph.Node, limit int64) (string, bool) {
+	id := node.NodeID()
 	home, replaced := "", false
 	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
 		for _, d := range l.Files[name] {
-			if d.Node != nil && nodeID(d.Node) == id {
+			if d.Node != nil && d.Node.NodeID() == id {
 				home, replaced = name, true
 			}
 		}
@@ -799,7 +799,7 @@ func placeAnswer(l *specgraph.Layout, node any, limit int64) (string, bool) {
 
 // holdsTheInvariant fails the test when the files of dir break the invariant of print after a run
 // that wrote the nodes of run into the files before.
-func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, before map[string][]byte, run []any) {
+func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, before map[string][]byte, run []specgraph.Node) {
 	t.Helper()
 	files := readDir(t, dir)
 	for name := range files {
@@ -818,7 +818,7 @@ func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, befor
 	// The nodes as yaml.v3 reads them: each node of the files before the run, with each node of
 	// the run in place of its id's.
 	want := yamlNodes(t, before)
-	for id, data := range yamlNodes(t, map[string][]byte{"run.yaml": printed(t, printable(run)...)}) {
+	for id, data := range yamlNodes(t, map[string][]byte{"run.yaml": printed(t, run...)}) {
 		want[id] = data
 	}
 	got := yamlNodes(t, files)
@@ -835,31 +835,20 @@ func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, befor
 	// The nodes of each file in their order, from the line of each.
 	type held struct {
 		line int
-		node any
+		node specgraph.Node
 	}
 	byFile := map[string][]held{}
 	count := map[string]int{}
-	add := func(pos specgraph.Position, node any) {
+	for _, node := range specgraph.Nodes(tree) {
+		pos := node.NodePos()
 		byFile[pos.File] = append(byFile[pos.File], held{pos.Line, node})
-		count[nodeID(node)]++
-	}
-	for _, s := range tree.Statements {
-		add(s.Pos, s)
-	}
-	for _, c := range tree.Checks {
-		add(c.Pos, c)
-	}
-	for _, c := range tree.Components {
-		add(c.Pos, c)
-	}
-	for _, term := range tree.Terms {
-		add(term.Pos, term)
+		count[node.NodeID()]++
 	}
 	for name, nodes := range byFile {
 		slices.SortFunc(nodes, func(a, b held) int { return a.line - b.line })
 		for i, h := range nodes {
 			c, ok := h.node.(specgraph.Check)
-			if !ok || !slices.ContainsFunc(run, func(n any) bool { return nodeID(n) == c.ID }) {
+			if !ok || !slices.ContainsFunc(run, func(n specgraph.Node) bool { return n.NodeID() == c.ID }) {
 				continue
 			}
 			j := i - 1
@@ -886,7 +875,7 @@ func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, befor
 // parents, an interface, terms, and the versions of each node.
 type printSet struct {
 	ids      []string
-	versions map[string][]any
+	versions map[string][]specgraph.Node
 	text     func(r *rand.Rand) string
 	// spec is the approved spec of versions, written again only after a change, since each run
 	// reads it and each version prints once.
@@ -899,7 +888,7 @@ var printWords = strings.Fields("a an the order message claim session listener s
 	"customer service billing page shows sends gets only through part holds every that it of to")
 
 func newPrintSet(r *rand.Rand) *printSet {
-	g := &printSet{versions: map[string][]any{}, spec: specgraph.Approved{Nodes: map[string]specgraph.ApprovedNode{}}}
+	g := &printSet{versions: map[string][]specgraph.Node{}, spec: specgraph.Approved{Nodes: map[string]specgraph.ApprovedNode{}}}
 	g.text = func(r *rand.Rand) string {
 		lines, width := 1+r.IntN(30), 20+r.IntN(100)
 		if r.IntN(100) < 2 {
@@ -917,10 +906,10 @@ func newPrintSet(r *rand.Rand) *printSet {
 		}
 		return strings.Join(out, "\n")
 	}
-	add := func(node any) {
-		id := nodeID(node)
+	add := func(node specgraph.Node) {
+		id := node.NodeID()
 		g.ids = append(g.ids, id)
-		g.versions[id] = []any{node}
+		g.versions[id] = []specgraph.Node{node}
 		g.approve(id, node)
 	}
 	var plain []string
@@ -996,8 +985,8 @@ func (g *printSet) change(r *rand.Rand) {
 
 // approve adds node, the next version of id, to the approved spec of g, its document as Print
 // writes it.
-func (g *printSet) approve(id string, node any) {
-	document, err := node.(interface{ Print() (string, error) }).Print()
+func (g *printSet) approve(id string, node specgraph.Node) {
+	document, err := node.Print()
 	if err != nil {
 		panic(err)
 	}
@@ -1056,7 +1045,7 @@ func splitDocuments(text string) []string {
 }
 
 // printed is the spec file of nodes: the document that Print writes for each, in order.
-func printed(t *testing.T, nodes ...interface{ Print() (string, error) }) []byte {
+func printed(t *testing.T, nodes ...specgraph.Node) []byte {
 	t.Helper()
 	var b strings.Builder
 	for _, node := range nodes {
@@ -1067,15 +1056,6 @@ func printed(t *testing.T, nodes ...interface{ Print() (string, error) }) []byte
 		b.WriteString(document)
 	}
 	return []byte(b.String())
-}
-
-// printable is each node of nodes, a Statement, Check, Component or Term, as printed takes it.
-func printable(nodes []any) []interface{ Print() (string, error) } {
-	all := make([]interface{ Print() (string, error) }, len(nodes))
-	for i, node := range nodes {
-		all[i] = node.(interface{ Print() (string, error) })
-	}
-	return all
 }
 
 // yamlNodes is the data of each document of files, in name order, as yaml.v3 reads it and as JSON

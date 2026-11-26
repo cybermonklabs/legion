@@ -93,14 +93,15 @@ func Compare(files Tree, a Approved) Comparison {
 		texts[id] = map[string]int{}
 		for _, v := range n.Versions {
 			if text, problems := versionText(id, v); len(problems) == 0 {
-				digest := nodesOf(text)[0].node.Digest()
+				digest := Nodes(text)[0].Digest()
 				texts[id][digest] = max(texts[id][digest], v.Version)
 			}
 		}
 	}
-	for _, f := range nodesOf(files) {
-		approved, held := a.Nodes[f.id]
-		version, approvedText := texts[f.id][f.node.Digest()]
+	for _, f := range Nodes(files) {
+		id := f.NodeID()
+		approved, held := a.Nodes[id]
+		version, approvedText := texts[id][f.Digest()]
 		detail := ""
 		switch {
 		case !held:
@@ -111,14 +112,14 @@ func Compare(files Tree, a Approved) Comparison {
 			detail = approvalKinds[unapprovedText]
 		case approved.Removed:
 			// The files still hold a text of a removed node; it holds no current text.
-			if !slices.Contains(c.Removed, f.id) {
-				c.Removed = append(c.Removed, f.id)
+			if !slices.Contains(c.Removed, id) {
+				c.Removed = append(c.Removed, id)
 			}
-		case !c.Holds[f.id].Present:
-			c.Holds[f.id] = Holding{Present: true, Version: version, Current: version == approved.Versions[len(approved.Versions)-1].Version}
+		case !c.Holds[id].Present:
+			c.Holds[id] = Holding{Present: true, Version: version, Current: version == approved.Versions[len(approved.Versions)-1].Version}
 		}
 		if detail != "" {
-			c.Problems = append(c.Problems, idProblem(f.pos, f.id, detail))
+			c.Problems = append(c.Problems, idProblem(f.NodePos(), id, detail))
 		}
 	}
 	SortProblems(c.Problems)

@@ -174,7 +174,7 @@ func (f approvedFile) approved() (Approved, error) {
 // so a statement of a loop would read as under no statement, and the statement above it as met
 // without it.
 func approvedFault(nodes []ApprovedNode, read []approvedFileNode) error {
-	texts := make([][]anyNode, len(nodes))
+	texts := make([][]Node, len(nodes))
 	kinds := make(map[string]string, len(nodes))
 	for i, n := range nodes {
 		if _, twice := kinds[n.ID]; twice {
@@ -184,7 +184,7 @@ func approvedFault(nodes []ApprovedNode, read []approvedFileNode) error {
 		if texts[i], err = n.texts(); err != nil {
 			return err
 		}
-		kinds[n.ID] = kindOf(texts[i][len(texts[i])-1].node)
+		kinds[n.ID] = texts[i][len(texts[i])-1].KindName()
 	}
 	for _, n := range read {
 		if err := n.unsetFault(); err != nil {
@@ -194,11 +194,11 @@ func approvedFault(nodes []ApprovedNode, read []approvedFileNode) error {
 	var current []Statement
 	for i, n := range nodes {
 		for j, text := range texts[i] {
-			if detail := relationFault(text.node, kinds, j == len(texts[i])-1 && !n.Removed); detail != "" {
-				return fmt.Errorf("specgraph: approved node %s version %d: %s (line %d of its document)", quoted(n.ID), n.Versions[j].Version, detail, text.pos.Line)
+			if detail := relationFault(text, kinds, j == len(texts[i])-1 && !n.Removed); detail != "" {
+				return fmt.Errorf("specgraph: approved node %s version %d: %s (line %d of its document)", quoted(n.ID), n.Versions[j].Version, detail, text.NodePos().Line)
 			}
 		}
-		if s, isStatement := texts[i][len(texts[i])-1].node.(Statement); isStatement && !n.Removed {
+		if s, isStatement := texts[i][len(texts[i])-1].(Statement); isStatement && !n.Removed {
 			current = append(current, s)
 		}
 	}
@@ -208,16 +208,17 @@ func approvedFault(nodes []ApprovedNode, read []approvedFileNode) error {
 	return nil
 }
 
-// texts of n: no id, no version, version numbers that do not go up from 1, a version with no time
-// or with one older than the one before it, and a document that versionText refuses.
-func (n ApprovedNode) texts() ([]anyNode, error) {
+// texts is the node of each version of n, oldest first, or the first fault of n: no id, no version,
+// version numbers that do not go up from 1, a version with no time or with one older than the one
+// before it, and a document that versionText refuses.
+func (n ApprovedNode) texts() ([]Node, error) {
 	switch {
 	case n.ID == "":
 		return nil, errors.New("specgraph: approved spec: a node has no id")
 	case len(n.Versions) == 0:
 		return nil, fmt.Errorf("specgraph: approved node %s: it has no version", quoted(n.ID))
 	}
-	texts := make([]anyNode, len(n.Versions))
+	texts := make([]Node, len(n.Versions))
 	for i, v := range n.Versions {
 		fault := ""
 		switch {
@@ -231,7 +232,7 @@ func (n ApprovedNode) texts() ([]anyNode, error) {
 			if text, problems := versionText(n.ID, v); len(problems) != 0 {
 				fault = fmt.Sprintf("%s (line %d of its document)", problems[0].Detail, problems[0].Pos.Line)
 			} else {
-				texts[i] = nodesOf(text)[0]
+				texts[i] = Nodes(text)[0]
 			}
 		}
 		if fault != "" {
@@ -261,38 +262,29 @@ func (a Approved) Current() (Tree, []Problem) {
 	var tree Tree
 	var problems []Problem
 	kinds := make(map[string]string, len(a.Nodes)) // of each node, kept or removed, by its newest text
-	var kept []anyNode
+	var kept []Node
 	for id, n := range a.Nodes {
 		if len(n.Versions) == 0 {
 			continue
 		}
 		text, refused := versionText(id, n.Versions[len(n.Versions)-1])
 		if len(refused) == 0 {
-			kinds[id] = kindOf(nodesOf(text)[0].node)
+			kinds[id] = Nodes(text)[0].KindName()
 		}
 		switch {
 		case n.Removed:
 		case len(refused) != 0:
 			problems = append(problems, refused...)
 		default:
-			kept = append(kept, nodesOf(text)[0])
+			kept = append(kept, Nodes(text)[0])
 		}
 	}
 	for _, k := range kept {
-		if detail := relationFault(k.node, kinds, true); detail != "" {
-			problems = append(problems, idProblem(k.pos, k.id, detail))
+		if detail := relationFault(k, kinds, true); detail != "" {
+			problems = append(problems, idProblem(k.NodePos(), k.NodeID(), detail))
 			continue
 		}
-		switch n := k.node.(type) {
-		case Statement:
-			tree.Statements = append(tree.Statements, n)
-		case Check:
-			tree.Checks = append(tree.Checks, n)
-		case Component:
-			tree.Components = append(tree.Components, n)
-		case Term:
-			tree.Terms = append(tree.Terms, n)
-		}
+		k.addTo(&tree)
 	}
 	slices.SortFunc(tree.Statements, func(x, y Statement) int { return cmp.Compare(x.ID, y.ID) })
 	slices.SortFunc(tree.Checks, func(x, y Check) int { return cmp.Compare(x.ID, y.ID) })
@@ -334,18 +326,18 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	refuse := func(kind approvalKind, args ...any) (Tree, []Problem) {
 		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, fmt.Sprintf(approvalKinds[kind], args...))}
 	}
-	nodes := nodesOf(tree)
+	nodes := Nodes(tree)
 	switch {
 	case len(nodes) != 1:
 		return refuse(approvedNodeCount, len(nodes))
-	case nodes[0].id != id:
-		return refuse(approvedOtherNode, quoted(nodes[0].id), quoted(id))
+	case nodes[0].NodeID() != id:
+		return refuse(approvedOtherNode, quoted(nodes[0].NodeID()), quoted(id))
 	}
-	if member, value, found := notAnID(nodes[0].node); found {
+	if member, value, found := notAnID(nodes[0]); found {
 		return refuse(approvedNotAnID, member, quoted(value))
 	}
 	if printedFormUnchecked {
-		if printed, err := nodes[0].node.Print(); err != nil || printed != v.Document {
+		if printed, err := nodes[0].Print(); err != nil || printed != v.Document {
 			return refuse(approvedNotPrinted)
 		}
 	}
@@ -364,7 +356,7 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 // of a list is set.
 // The problem is bad-approved-document: <member> "<value>" is no id, with the value as quoted
 // prints it, and ReadApproved refuses the version with it (approvedFault).
-func notAnID(node any) (member, value string, found bool) {
+func notAnID(node Node) (member, value string, found bool) {
 	type place struct {
 		member, value string
 		entry         bool
@@ -398,7 +390,7 @@ func notAnID(node any) (member, value string, found bool) {
 // relationFault is the refusal of the first relation of node, the one node of an approved document,
 // that names no node of the approved spec, or, where current, a node of a kind that the relation
 // may not name (relationRule), or "". kinds is the kind of each node of the approved spec, kept or
-// removed (kindOf). current is whether node is the current text of a node that the approved spec
+// removed (Node.KindName). current is whether node is the current text of a node that the approved spec
 // keeps, the text that Current, the derivation and Validate read. The derivation reads a relation
 // only to a node of its kind, so another would read as no relation: a statement at the top of the
 // tree in place of under its parent, or a supporter that supports nothing, which can make a
@@ -413,7 +405,7 @@ func notAnID(node any) (member, value string, found bool) {
 // each node is an id (versionText). A node that the approved spec removed is one that it holds, so
 // a relation to it is taken: the derivation reads the current tree, which leaves the removed node
 // out.
-func relationFault(node any, kinds map[string]string, current bool) string {
+func relationFault(node Node, kinds map[string]string, current bool) string {
 	for _, r := range relationsOf(node) {
 		kind, held := kinds[r.id]
 		switch {
@@ -443,7 +435,7 @@ type relation struct {
 // node. A parent left out is one that the node does not set, as a statement or a component at the
 // top of the tree has none (R1: "Each statement has one parent, except at the top level"), and
 // Parse drops an empty entry of a list.
-func relationsOf(node any) []relation {
+func relationsOf(node Node) []relation {
 	var relations []relation
 	add := func(rule relationRule, ids ...string) {
 		for _, id := range ids {
@@ -468,23 +460,6 @@ func relationsOf(node any) []relation {
 	return relations
 }
 
-// kindOf is the kind of node, one node of a tree, as Validate names it: statement, check,
-// component, interface or term.
-func kindOf(node any) string {
-	switch n := node.(type) {
-	case Statement:
-		return "statement"
-	case Check:
-		return "check"
-	case Component:
-		if n.Interface {
-			return "interface"
-		}
-		return "component"
-	}
-	return "term"
-}
-
 // withArticle is kind with its article, such as "a check" or "an interface".
 func withArticle(kind string) string {
 	if strings.ContainsRune("aeiou", rune(kind[0])) {
@@ -501,35 +476,6 @@ func idProblem(pos Position, id, detail string) Problem {
 	}
 	rule, _, _ := strings.Cut(detail, ":")
 	return Problem{Pos: pos, Node: id, Rule: rule, Detail: detail}
-}
-
-// anyNode is one node of a tree, of any of the four kinds: its id, its position, and the node.
-type anyNode struct {
-	id   string
-	pos  Position
-	node interface {
-		Print() (string, error)
-		Digest() string
-	}
-}
-
-// nodesOf is every node of tree: its statements, checks, components, then terms, each in the
-// tree's order.
-func nodesOf(tree Tree) []anyNode {
-	all := make([]anyNode, 0, len(tree.Statements)+len(tree.Checks)+len(tree.Components)+len(tree.Terms))
-	for _, s := range tree.Statements {
-		all = append(all, anyNode{s.ID, s.Pos, s})
-	}
-	for _, c := range tree.Checks {
-		all = append(all, anyNode{c.ID, c.Pos, c})
-	}
-	for _, c := range tree.Components {
-		all = append(all, anyNode{c.ID, c.Pos, c})
-	}
-	for _, t := range tree.Terms {
-		all = append(all, anyNode{t.ID, t.Pos, t})
-	}
-	return all
 }
 
 // SortProblems sorts problems by file, line, node, rule and detail: the order of every list of

@@ -130,18 +130,19 @@ func refusedProblems(problems []specgraph.Problem) []specgraph.Problem {
 // notCurrentLines is one line for each node of current, the current approved spec, that the files
 // do not hold at its current text, of each kind (R2: the change that lands a statement writes it
 // and its checks into the files): "<kind> <id>: not in the files", or "<kind> <id>: the files hold
-// approved version 1, and version 2 is current", in the order of kinded, each id cut. held is the
-// number of statements that the files hold at their current text.
+// approved version 1, and version 2 is current", in the order of specgraph.Nodes, each id cut. held
+// is the number of statements that the files hold at their current text.
 func notCurrentLines(current specgraph.Tree, c specgraph.Comparison, a specgraph.Approved) (lines []string, held int) {
-	for _, n := range kinded(current) {
-		h := c.Holds[n.id]
+	for _, n := range specgraph.Nodes(current) {
+		id, kind := n.NodeID(), n.KindName()
+		h := c.Holds[id]
 		switch {
 		case !h.Present:
-			lines = append(lines, n.kind+" "+specgraph.Cut(n.id)+": not in the files")
+			lines = append(lines, kind+" "+specgraph.Cut(id)+": not in the files")
 		case !h.Current:
-			versions := a.Nodes[n.id].Versions
-			lines = append(lines, fmt.Sprintf("%s %s: the files hold approved version %d, and version %d is current", n.kind, specgraph.Cut(n.id), h.Version, versions[len(versions)-1].Version))
-		case n.kind == "statement":
+			versions := a.Nodes[id].Versions
+			lines = append(lines, fmt.Sprintf("%s %s: the files hold approved version %d, and version %d is current", kind, specgraph.Cut(id), h.Version, versions[len(versions)-1].Version))
+		case kind == "statement":
 			held++
 		}
 	}
@@ -155,40 +156,13 @@ func notCurrentLines(current specgraph.Tree, c specgraph.Comparison, a specgraph
 func removedLines(tree specgraph.Tree, removed []string) []string {
 	var lines []string
 	named := map[string]bool{} // an id the files hold two times is one line
-	for _, n := range kinded(tree) {
-		if slices.Contains(removed, n.id) && !named[n.id] {
-			named[n.id] = true
-			lines = append(lines, n.kind+" "+specgraph.Cut(n.id)+": the files hold it, and the approved spec removed it")
+	for _, n := range specgraph.Nodes(tree) {
+		if id := n.NodeID(); slices.Contains(removed, id) && !named[id] {
+			named[id] = true
+			lines = append(lines, n.KindName()+" "+specgraph.Cut(id)+": the files hold it, and the approved spec removed it")
 		}
 	}
 	return lines
-}
-
-// kindedNode is the id of one node of a tree and the word for its kind: statement, check,
-// component, interface or term.
-type kindedNode struct{ kind, id string }
-
-// kinded is each node of tree with its kind: statements, then checks, components and interfaces,
-// then terms, each in the tree's order.
-func kinded(tree specgraph.Tree) []kindedNode {
-	nodes := make([]kindedNode, 0, len(tree.Statements)+len(tree.Checks)+len(tree.Components)+len(tree.Terms))
-	for _, s := range tree.Statements {
-		nodes = append(nodes, kindedNode{"statement", s.ID})
-	}
-	for _, c := range tree.Checks {
-		nodes = append(nodes, kindedNode{"check", c.ID})
-	}
-	for _, c := range tree.Components {
-		kind := "component"
-		if c.Interface {
-			kind = "interface"
-		}
-		nodes = append(nodes, kindedNode{kind, c.ID})
-	}
-	for _, t := range tree.Terms {
-		nodes = append(nodes, kindedNode{"term", t.ID})
-	}
-	return nodes
 }
 
 // readApproved reads the approved spec at path with specgraph.ReadApproved, and answers the path

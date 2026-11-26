@@ -206,20 +206,11 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 		return after, nil, refusals
 	}
 	at := map[string]specgraph.Position{}
-	for _, s := range j.tree.Statements {
-		at[s.ID] = s.Pos
-	}
-	for _, c := range j.tree.Checks {
-		at[c.ID] = c.Pos
-	}
-	for _, c := range j.tree.Components {
-		at[c.ID] = c.Pos
-	}
-	for _, t := range j.tree.Terms {
-		at[t.ID] = t.Pos
+	for _, n := range specgraph.Nodes(j.tree) {
+		at[n.NodeID()] = n.NodePos()
 	}
 	for _, node := range run {
-		id := nodeID(node)
+		id := node.NodeID()
 		wrote = append(wrote, fmt.Sprintf("wrote %s to %s:%d", specgraph.Cut(id), filepath.Join(dir, at[id].File), at[id].Line))
 	}
 	return after, wrote, nil
@@ -231,20 +222,20 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 // form. It is "" when the run names that node, or p is about no node. Each id of the way out is
 // whole, since the writer types it: a line cuts a long value of the input, but not a value that
 // the line tells the reader to type.
-func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) string {
-	if p.Node == "" || p.Node == "-" || slices.ContainsFunc(run, func(n any) bool { return nodeID(n) == p.Node }) {
+func wayOut(dir string, p specgraph.Problem, run []specgraph.Node, tree specgraph.Tree) string {
+	if p.Node == "" || p.Node == "-" || slices.ContainsFunc(run, func(n specgraph.Node) bool { return n.NodeID() == p.Node }) {
 		return ""
 	}
-	var held []any
-	for _, n := range treeNodes(tree) {
-		if nodePos(n).File == p.Pos.File {
+	var held []specgraph.Node
+	for _, n := range specgraph.Nodes(tree) {
+		if n.NodePos().File == p.Pos.File {
 			held = append(held, n)
 		}
 	}
-	slices.SortFunc(held, func(a, b any) int { return cmp.Compare(nodePos(a).Line, nodePos(b).Line) })
+	slices.SortFunc(held, func(a, b specgraph.Node) int { return cmp.Compare(a.NodePos().Line, b.NodePos().Line) })
 	ids := make([]string, 0, len(held))
 	for _, n := range held {
-		ids = append(ids, "--id "+nodeID(n))
+		ids = append(ids, "--id "+n.NodeID())
 	}
 	file := filepath.Join(dir, p.Pos.File)
 	return fmt.Sprintf("; print changes only the nodes that the run names, and this run does not name %s, so to write %s in that form, name each node of it: %s",
@@ -253,8 +244,8 @@ func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) str
 
 // heldNodes is each node of each document of l, by the reader of yaml.v3: the nodes that the files
 // hold before a run of print.
-func heldNodes(l specgraph.Layout) []any {
-	var nodes []any
+func heldNodes(l specgraph.Layout) []specgraph.Node {
+	var nodes []specgraph.Node
 	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
 		for _, d := range l.Files[name] {
 			if d.Node != nil {
@@ -270,19 +261,19 @@ func heldNodes(l specgraph.Layout) []any {
 // of run in place of the nodes of its id: a node of the run that after does not hold as the run
 // writes it, a node that the files held and the run does not name that after does not hold as it
 // was, and a node that neither held. Nodes are the same when they are the same but for their Pos.
-func keepsEachNode(dir string, before, run []any, after specgraph.Tree) []string {
-	want := map[string][]any{}
+func keepsEachNode(dir string, before, run []specgraph.Node, after specgraph.Tree) []string {
+	want := map[string][]specgraph.Node{}
 	for _, node := range before {
-		want[nodeID(node)] = append(want[nodeID(node)], node)
+		want[node.NodeID()] = append(want[node.NodeID()], node)
 	}
 	written := map[string]bool{}
 	for _, node := range run {
-		want[nodeID(node)] = []any{node}
-		written[nodeID(node)] = true
+		want[node.NodeID()] = []specgraph.Node{node}
+		written[node.NodeID()] = true
 	}
-	got := map[string][]any{}
-	for _, node := range treeNodes(after) {
-		got[nodeID(node)] = append(got[nodeID(node)], node)
+	got := map[string][]specgraph.Node{}
+	for _, node := range specgraph.Nodes(after) {
+		got[node.NodeID()] = append(got[node.NodeID()], node)
 	}
 	ids := map[string]bool{}
 	for id := range want {
@@ -291,7 +282,9 @@ func keepsEachNode(dir string, before, run []any, after specgraph.Tree) []string
 	for id := range got {
 		ids[id] = true
 	}
-	same := func(a, b any) bool { return reflect.DeepEqual(withoutPos(a), withoutPos(b)) }
+	same := func(a, b specgraph.Node) bool {
+		return reflect.DeepEqual(a.WithPos(specgraph.Position{}), b.WithPos(specgraph.Position{}))
+	}
 	var lines []string
 	for _, id := range slices.Sorted(maps.Keys(ids)) {
 		if slices.EqualFunc(want[id], got[id], same) {
@@ -301,66 +294,14 @@ func keepsEachNode(dir string, before, run []any, after specgraph.Tree) []string
 		case written[id]:
 			lines = append(lines, fmt.Sprintf("print would not leave node %q as its approved document", specgraph.Cut(id)))
 		case len(want[id]) > 0:
-			pos := nodePos(want[id][0])
+			pos := want[id][0].NodePos()
 			lines = append(lines, fmt.Sprintf("print would lose or change node %q of %s:%d, which the run does not name", specgraph.Cut(id), filepath.Join(dir, pos.File), pos.Line))
 		default:
-			pos := nodePos(got[id][0])
+			pos := got[id][0].NodePos()
 			lines = append(lines, fmt.Sprintf("print would leave node %q at %s:%d, which neither the files nor the run held", specgraph.Cut(id), filepath.Join(dir, pos.File), pos.Line))
 		}
 	}
 	return lines
-}
-
-// treeNodes is each node of tree: its statements, checks, components and terms.
-func treeNodes(tree specgraph.Tree) []any {
-	nodes := make([]any, 0, len(tree.Statements)+len(tree.Checks)+len(tree.Components)+len(tree.Terms))
-	for _, n := range tree.Statements {
-		nodes = append(nodes, n)
-	}
-	for _, n := range tree.Checks {
-		nodes = append(nodes, n)
-	}
-	for _, n := range tree.Components {
-		nodes = append(nodes, n)
-	}
-	for _, n := range tree.Terms {
-		nodes = append(nodes, n)
-	}
-	return nodes
-}
-
-// nodePos is the position of node, a Statement, Check, Component or Term.
-func nodePos(node any) specgraph.Position {
-	switch n := node.(type) {
-	case specgraph.Statement:
-		return n.Pos
-	case specgraph.Check:
-		return n.Pos
-	case specgraph.Component:
-		return n.Pos
-	case specgraph.Term:
-		return n.Pos
-	}
-	return specgraph.Position{}
-}
-
-// withoutPos is node with no position, so two nodes compare by their data alone.
-func withoutPos(node any) any {
-	switch n := node.(type) {
-	case specgraph.Statement:
-		n.Pos = specgraph.Position{}
-		return n
-	case specgraph.Check:
-		n.Pos = specgraph.Position{}
-		return n
-	case specgraph.Component:
-		n.Pos = specgraph.Position{}
-		return n
-	case specgraph.Term:
-		n.Pos = specgraph.Position{}
-		return n
-	}
-	return node
 }
 
 // placeRefusal is the line that refuses a run of print for the refusal err of Place.
@@ -387,11 +328,11 @@ func placeRefusal(dir string, err error) string {
 // the statements, by their depth in the tree of statements, then by id, each followed by its checks
 // of the run, by id, also when the run does not hold the statement. So each parent comes before
 // its children and each statement before its checks.
-func printRun(current specgraph.Tree, named []string) []any {
+func printRun(current specgraph.Tree, named []string) []specgraph.Node {
 	type entry struct {
 		group, depth int
 		key, sub     string
-		node         any
+		node         specgraph.Node
 	}
 	depth := func(id string, parent func(string) (string, bool)) int {
 		n := 0
@@ -438,24 +379,9 @@ func printRun(current specgraph.Tree, named []string) []any {
 	slices.SortFunc(run, func(a, b entry) int {
 		return cmp.Or(cmp.Compare(a.group, b.group), cmp.Compare(a.depth, b.depth), cmp.Compare(a.key, b.key), cmp.Compare(a.sub, b.sub))
 	})
-	nodes := make([]any, len(run))
+	nodes := make([]specgraph.Node, len(run))
 	for i, e := range run {
 		nodes[i] = e.node
 	}
 	return nodes
-}
-
-// nodeID is the id of a node of a run.
-func nodeID(node any) string {
-	switch n := node.(type) {
-	case specgraph.Statement:
-		return n.ID
-	case specgraph.Check:
-		return n.ID
-	case specgraph.Component:
-		return n.ID
-	case specgraph.Term:
-		return n.ID
-	}
-	return ""
 }
