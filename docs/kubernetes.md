@@ -9094,7 +9094,7 @@ The release does five things, in this order:
    So run `legion project release` again: since the earlier start was refused, the daemon sets the mark again and records and runs a new release, as at a first run.
    Once that release has finished, its record is the project's newest, and a pause is taken again; the earlier record stays unfinished until the next boot ends it.
    From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
-   The operator's spawn, retry, resume and deliver, a fresh session and a compaction, and the controller's `retry`, `resume_agent` and `replace_pod` (`POST /legion/v1/agents/retry`, `agents/resume` and `issues/pod-update`) are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`); the controller's `stop` and `suspend` start nothing and still run.
+   The operator's spawn, retry, resume and deliver, a fresh session and a compaction, and the controller's `retry`, `resume_agent` and `replace_pod` (`POST /legion/v1/agents/retry`, `agents/resume` and `issues/pod-update`) are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`), except at the agent door, whose read of an operator's hold (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`) answers an agent that hold is over `409 SUSPENDED_BY_OPERATOR` first, at every action but the compaction, which the door lets past that hold; the controller's `stop` and `suspend` start nothing and still run.
    A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.
    A project that is paused as well gets the same refusal, not the pause's `PROJECT_PAUSED`, because each of those routes asks the release's refusal first ([Pausing a project](#pausing-a-project)).
    A task, notice, message, backstop or start that comes due waits in the database until after the next boot.
@@ -9218,9 +9218,9 @@ A claim whose current session records a name it does not hold, which only a daem
 The release's ask is no task, and no daemon sends it again.
 Each new pod builds its workspace from the issue's pushed branch.
 A delivery that waited reaches its claim after the start.
-Six deliveries for such a claim wait for the start, each until the start's session holds the claim's role again (`awaitsBootStart`, `packages/daemon/internal/daemon/wake.go`): a notice, a role message, a phase-ended message, a hook prompt, a merge-queue removal message and a merge-forward message.
+Seven deliveries for such a claim wait for the start, each until the start's session holds the claim's role again (`awaitsBootStart`, `packages/daemon/internal/daemon/wake.go`): a notice, a role message, a phase-ended message, a hook prompt, a merge-queue removal message, a merge-holds change message and a merge-forward message.
 A role message published while nobody holds the role would end undelivered, and the kept copy of a phase-ended message or a hook prompt could lapse before the session is back, so none of the three is published before then.
-One for a claim that failed, retired or was suspended again by an operator or the daemon is handled as any delivery for a role nobody holds.
+One for a claim that failed, retired or was suspended again by an operator, the controller or the daemon is handled as any delivery for a role nobody holds.
 Nothing wakes a claim the release stopped before that start.
 While the wake pacing holds the start, every one of those deliveries looks again at its turn or five minutes later, whichever comes first.
 The wake the Envoy listener reports for a message to the claim's session or role starts nothing, since that wake acts only on a claim an idle release suspended.
@@ -9233,7 +9233,7 @@ A restart on another cluster's configuration finds none of those pods, so the mo
 
 A pod is left when a claim of it was suspended by an operator or by the project's controller, before the release or during it, when its ask could not be written by the bound, was written only at the bound or reached no session of its roles by the bound, when its claims were not stored suspended in time (`worker_stop_timeout_seconds` after the later of the stop and the bound), when a recorded replacement of it could not be settled before its delete (step 4), or when its delete failed.
 The release then holds each claim that ran there as an operator's suspension, so no boot starts it, and the pod keeps its disk and the work on it.
-It also takes each claim of the pod out of any pod update round, the claim an operator suspended before the release included, so a round opened before the release does not replace the pod once its claims are resumed.
+It also takes each claim of the pod out of any pod update round, the claim an operator or the controller suspended before the release included, so a round opened before the release does not replace the pod once its claims are resumed.
 The release waits up to twice `worker_stop_timeout_seconds` for each such hold to be stored before it finishes.
 Each such claim's line ends `operator (the next boot does not start it)`.
 When the hold was not stored in that time, the line names how the claim's own record stands instead and whether the next boot starts it, and adds why the hold was not stored, in brackets.
@@ -9246,7 +9246,7 @@ Move nothing while such a pod stands, and recover it in this order:
    The boot ends the release and starts each claim it stopped again in that cluster, and the left pod's claims stay held.
    If the daemon already runs on another cluster's configuration, release the project there first, so that the restart leaves no pod behind in that cluster.
 
-2. For each claim of that pod an operator suspended, run `legion claims resume --operator-token-file <file> --claim <token>`, which starts its role again in that pod, on its disk, so it can push, or `legion claims stop --operator-token-file <file> --claim <token>`, which gives its unpushed work up.
+2. For each claim of that pod an operator or the project's controller suspended (`legion claims list` prints it `suspended` or `suspended:controller`), run `legion claims resume --operator-token-file <file> --claim <token>`, which starts its role again in that pod, on its disk, so it can push, or `legion claims stop --operator-token-file <file> --claim <token>`, which gives its unpushed work up.
 
 3. Run the release again.
    It asks the pod's roles and deletes the pod, and it exits 0 once no pod is left.

@@ -19,11 +19,17 @@
 -- daemon's next boot starts it again (workflow's booted), whatever role it is. The check is one
 -- list, and 20261115060739_claim_suspended_by_controller wrote it last, with 'controller', the
 -- project's controller's own suspension (#4065), so it is dropped and written again with every
--- value that one took and the new value. Its version stands above 20261115060739's, so on any
--- database this list is the last word: Migrate applies every unrecorded migration in version
--- order, and a database main migrated has recorded 20261115060739 and applies this one after it.
--- No row holds the new value yet, so there is nothing to backfill, and every row the check
--- validates holds one of the values the old check took, 'controller' among them.
+-- value that one took and the new value. Its version stands above 20261115060739's, so on a
+-- fresh database, and on one a released daemon migrated, this list is the last word: Migrate
+-- applies every unrecorded migration in version order, and a database main migrated has recorded
+-- 20261115060739 and applies this one after it. A database that recorded this version with its
+-- earlier list, written before 20261115060739 existed, is the exception: a build of this branch
+-- from before its merge of main migrated it (a worker pod's shared test Postgres is one), and
+-- Migrate applies 20261115060739 after this one there, which writes the check without
+-- 'project_release'. No released build carries that earlier list, so such a database is a test
+-- database, and it is recreated rather than migrated. No row holds the new value yet, so there is
+-- nothing to backfill, and every row the check validates holds one of the values the old check
+-- took, 'controller' among them.
 create table project_releases (
   id bigint generated always as identity primary key,
   project text not null,

@@ -2094,10 +2094,16 @@ const legionSuspendedBy = z.enum([
 
 /** Who a suspension is held for as the controller's agent actions answer it
  * (`LegionAgentActionResponse`): every source of `legionSuspendedBy` but `project_release`, the
- * six the agent-actions entry records (`suspendSources` of its file). No agent action answers an
- * agent the project release stopped: while the release holds, the daemon refuses the controller's
- * `retry` and `resume_agent` (`PROJECT_RELEASED`), the controller's `suspend` takes such an agent
- * over (its suspension outranks the release's) and its `stop` retires it. */
+ * six the agent-actions entry records (`suspendSources` of its file). No agent action's answer
+ * names `project_release`, though the actions reach an agent the project release stopped: the
+ * controller's `stop` retires it and its `suspend` takes it over (its suspension outranks the
+ * release's), answering it `retired` or suspended by `controller`; while the release holds, the
+ * daemon refuses the controller's `retry` and `resume_agent` (`PROJECT_RELEASED`); and after the
+ * daemon's boot, until the boot's start of it runs, `resume_agent` resumes it, answering
+ * `launching`. One race is left, in which an answer does name it: a `retry` or `resume_agent` the
+ * daemon let past that refusal just before a release began can read its answer from the claim
+ * (`answerAgentAction`) after the release's suspension landed, and this enum refuses that answer,
+ * so the plugin's parse of it fails (`daemon-client.ts`). */
 const legionAgentSuspendedBy = z.enum([
   "unknown",
   "operator",

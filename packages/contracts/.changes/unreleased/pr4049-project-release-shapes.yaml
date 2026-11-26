@@ -11,9 +11,14 @@ body: |-
   enumerated fields are rows of `fixtures/daemon-api/contracts/20261125162422_project-release.json`. A
   stopped claim's `ended` takes each suspension source, the controller's `controller` among them. A
   claim's `suspendedBy` on the operator routes gains `project_release`, a claim the project release
-  stopped, which the daemon's next boot starts again; the agent actions' `suspendedBy` and
-  `suspensionHeldBy` do not take it, since no agent action answers a claim the release stopped. The
-  release's refusal while the project is paused or a pod a pause stopped
-  is still held is `PROJECT_PAUSED` with `heldPods` (fixture `project-release-paused.json`), and a
-  pause while a project release runs is refused `PROJECT_RELEASING` (fixture
-  `project-pause-releasing.json`).
+  stopped, which the daemon's next boot starts again. The agent actions' `suspendedBy` and
+  `suspensionHeldBy` do not take it, since no agent action's answer names it: the controller's
+  `stop` and `suspend` of such a claim answer it `retired` or suspended by `controller`, its
+  `retry` and `resume_agent` are refused `PROJECT_RELEASED` while the release holds, and after the
+  daemon's boot, until the boot's start of the claim runs, `resume_agent` resumes it and answers
+  `launching`. One race is left: a `retry` or `resume_agent` the daemon let through just before a
+  release began can read its answer after the release's suspension landed, and that answer names
+  `project_release`, which the plugin's parse refuses. The release's refusal while the project is
+  paused or a pod a pause stopped is still held is `PROJECT_PAUSED` with `heldPods` (fixture
+  `project-release-paused.json`), and a pause while a project release runs is refused
+  `PROJECT_RELEASING` (fixture `project-pause-releasing.json`).

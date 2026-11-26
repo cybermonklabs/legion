@@ -281,7 +281,8 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource) (status int, notRestarted string, started, ok bool) {
 	// A fresh session stops the claim and starts it again, which the project release holds at
-	// both doors, before anything of the claim is read or asked.
+	// both doors, before anything of the claim is read or asked, except at the agent door, whose
+	// read of an operator's hold (agentDoor) answers SUSPENDED_BY_OPERATOR first.
 	if s.releaseRefused(w, r, "fresh-session") {
 		return 0, "", false, false
 	}

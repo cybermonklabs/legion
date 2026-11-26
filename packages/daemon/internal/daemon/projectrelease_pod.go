@@ -725,7 +725,7 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 // held and of others that records an update round is taken out of it, as the round's end takes it
 // (supervise.PodUpdateEnded): the release leaves no round open on any claim (R6), and a round left
 // on a claim of a pod the release left could replace that pod, and the disk the release left it
-// to keep, once an operator's resume lifts the last hold (podupdate.go's heldByOperator). The
+// to keep, once an operator's resume lifts the last hold (podupdate.go's heldClaims). The
 // round goes after the suspension, so the task the round held back is handed to no role the
 // release is stopping. A claim of others that records no round has nothing done to it. Each
 // claim's requests run on a goroutine of its own, under a store mark of its own, and hold returns

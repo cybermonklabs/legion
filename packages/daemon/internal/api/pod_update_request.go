@@ -129,13 +129,16 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 // (PodUpdateRequest). It takes the controller's grant alone, as issues/status does: an
 // architect's or a phase worker's grant is refused `403 CONTROLLER_REQUIRED`. An issue of another
 // project is refused `404 NO_CLAIM` before the daemon is asked anything, since this daemon runs no
-// claim of it. While the project is paused it is refused `409 PROJECT_PAUSED`, with the pause
-// that stands, before the daemon is asked anything (refusedForPause): a round would ask each role
-// of the pod for a turn, which a paused project starts for no role but the controller, and could
-// then replace the pod the pause keeps for its stopped roles. Every other answer is the daemon's
-// (Options.RequestPodUpdate): 200 with the round, opened by this request or already open, which a
-// claim of the issue records in the store by then, or a PodUpdateRefused, with a Retry-After
-// header where the refusal names a wait.
+// claim of it. While the daemon's project release holds every start it is refused
+// `409 PROJECT_RELEASED` (releaseRefused), before the pause's refusal: a round asks each role of
+// the pod for a turn and ends in a new pod, which the release holds at every door until the
+// daemon's next boot. While the project is paused it is refused `409 PROJECT_PAUSED`, with the
+// pause that stands, before the daemon is asked anything (refusedForPause): a round would ask
+// each role of the pod for a turn, which a paused project starts for no role but the controller,
+// and could then replace the pod the pause keeps for its stopped roles. Every other answer is the
+// daemon's (Options.RequestPodUpdate): 200 with the round, opened by this request or already open,
+// which a claim of the issue records in the store by then, or a PodUpdateRefused, with a
+// Retry-After header where the refusal names a wait.
 //
 // The round's ask, its bound and its end are the sweep's, as for a round a drift opened: the ask
 // reaches each role at the first sweep that reads the round recorded on its claim, and a round
@@ -166,8 +169,6 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 			req.Issue, s.dispatchProject))
 		return
 	}
-	// A round asks each role of the pod for a turn and ends in a new pod, which the project
-	// release holds at every door until the daemon's next boot.
 	if s.stopped(w, r, "the pod update of "+req.Issue) || s.releaseRefused(w, r, "the pod update of "+req.Issue) {
 		return
 	}

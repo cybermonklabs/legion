@@ -829,10 +829,11 @@ const projectReleased = "PROJECT_RELEASED"
 // operator's spawn, retry, resume and deliver, either door's fresh session and compaction, and the
 // controller's agent retry and resume and its pod update (dispatch://INFRA-3583 R7, which holds
 // every start of a role until the next boot). Each such route asks it before it asks the claim
-// anything, so the refused request changes nothing. Each route that both refusals guard — the
-// spawn, retry, resume, deliver, fresh session, compaction and pod update — asks this one before
-// the project pause's (refusedWhilePaused, refusedForPause), so while a release holds and the
-// project is paused too, a request gets PROJECT_RELEASED.
+// anything, so the refused request changes nothing, except at the agent door, whose read of an
+// operator's hold (agentDoor) answers SUSPENDED_BY_OPERATOR first. Each route that both refusals
+// guard — the spawn, retry, resume, deliver, fresh session, compaction and pod update — asks this
+// one before the project pause's (refusedWhilePaused, refusedForPause), so while a release holds
+// and the project is paused too, a request gets PROJECT_RELEASED.
 func (s *server) releaseRefused(w http.ResponseWriter, r *http.Request, request string) bool {
 	if s.releaseHolds == nil || !s.releaseHolds() {
 		return false

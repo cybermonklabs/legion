@@ -1139,7 +1139,12 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // (controller), and its 20261115121838 as main recorded it. dispatch://INFRA-3583's
 // 20261115073241, the project release's record and suspension source, is in it because main has
 // not recorded it either; it writes claims_suspended_by_check again after 20261115060739, with
-// controller and project_release both, so on any database it is the last word on that check.
+// controller and project_release both, so on a fresh database and on one a released daemon
+// migrated it is the last word on that check. A database that recorded 20261115073241 with its
+// earlier list, before 20261115060739 existed (a build of this branch from before its merge of
+// main migrated it, as a worker pod's shared test Postgres), applies 20261115060739 after it,
+// which writes the check without project_release: no released build carries that earlier list,
+// so such a database is a test database, and it is recreated rather than migrated.
 // 20261126110259 is the last migration that writes outbox_kind_check: it stands above main's
 // 20261122154643, 20261119203047 and 20261119003157, which write it too, and main's
 // 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,

@@ -590,7 +590,7 @@ func heldPodInUpdateRound(t *testing.T) (rig *idleWakeRig, held idleRigIssue, im
 // leaves keeps none of its claims in an update round, the claim an operator suspended before the
 // release included, which is no claim the release stops. That pod is the one a pod update round
 // waits on past its bound, since the operator's suspension holds it (podupdate.go's
-// heldByOperator), and a round left on its claims would replace it once the operator resumes them.
+// heldClaims), and a round left on its claims would replace it once the operator resumes them.
 // Each claim of the pod stays held by an operator, so no boot starts it.
 func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
 	t.Parallel()

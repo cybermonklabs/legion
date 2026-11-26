@@ -12,7 +12,7 @@ const projectReleaseVersion = 20261115073241
 
 // The project release's migration adds its record (project_releases) and the source its stops
 // write (claims.suspended_by `project_release`), on a database holding the rows a deployment has
-// today: a claim of every source the check took before, the controller's own (main's
+// today: a claim of every source the check took before, the controller's own (#4065's
 // 20261115060739) among them, an idle release in flight with its rows, and a queued delivery.
 // Before it, a claim suspended by the project release is refused and the record has no table,
 // which is the negative control read first. After it, every row it found stands as it was, the new
@@ -23,32 +23,32 @@ func TestTheProjectReleaseMigrationAppliesOverTodaysRows(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, projectReleaseVersion-1)
+	// tokenOf is the token the daemon gives the claim of role on issue.
+	tokenOf := func(issue, role string) string { return "legion-legion-" + strings.ToLower(issue) + "-" + role }
 	// claimOf seeds the claim of role on issue, a member of LEGION-208's tree, in state and suspended
-	// by by, under the token the daemon gives it.
+	// by by, under that token.
 	claimOf := func(issue, role, state, by string) error {
 		_, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 			launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
 			values ($1, 'legion', 'LEGION-208', $2, $3, 1, $4, '', $5, 0, 0, 0, 0, $6)`,
-			"legion-legion-"+strings.ToLower(issue)+"-"+role, issue, role, "ses-"+role, state, by)
+			tokenOf(issue, role), issue, role, "ses-"+role, state, by)
 		return err
 	}
-	today := []struct{ role, state, by string }{
-		{"architect", "working", ""},
-		{"planner", "suspended", "unknown"},
-		{"implementer", "suspended", "operator"},
-		{"tester", "suspended", "daemon"},
-		{"reviewer", "suspended", "exit"},
-		{"merger", "suspended", "released"},
+	today := []struct{ issue, role, state, by string }{
+		{"LEGION-208", "architect", "working", ""},
+		{"LEGION-208", "planner", "suspended", "unknown"},
+		{"LEGION-208", "implementer", "suspended", "operator"},
+		{"LEGION-208", "tester", "suspended", "daemon"},
+		{"LEGION-208", "reviewer", "suspended", "exit"},
+		{"LEGION-208", "merger", "suspended", "released"},
+		// The controller's own suspension, which #4065's 20261115060739 took before this
+		// migration: a list here that left it out would refuse this row and the upgrade with it.
+		{"LEGION-210", "architect", "suspended", "controller"},
 	}
 	for _, c := range today {
-		if err := claimOf("LEGION-208", c.role, c.state, c.by); err != nil {
-			t.Fatalf("seed the %s suspended by %q as today's daemon writes it: %v", c.role, c.by, err)
+		if err := claimOf(c.issue, c.role, c.state, c.by); err != nil {
+			t.Fatalf("seed %s's %s suspended by %q as today's daemon writes it: %v", c.issue, c.role, c.by, err)
 		}
-	}
-	// The controller's own suspension, which main's 20261115060739 took before this migration: a
-	// list here that left it out would refuse this row and the upgrade with it.
-	if err := claimOf("LEGION-210", "architect", "suspended", "controller"); err != nil {
-		t.Fatalf("seed an architect the controller suspended, as main's daemon writes it: %v", err)
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ('issue_bundle', 'LEGION-208', '{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"merger"}', 0, now(), ''),
@@ -79,19 +79,12 @@ func TestTheProjectReleaseMigrationAppliesOverTodaysRows(t *testing.T) {
 	for _, c := range today {
 		var state, by string
 		if err := store.Pool().QueryRow(ctx, `select state, suspended_by from claims where token = $1`,
-			"legion-legion-legion-208-"+c.role).Scan(&state, &by); err != nil {
-			t.Fatalf("read the %s the migration found: %v", c.role, err)
+			tokenOf(c.issue, c.role)).Scan(&state, &by); err != nil {
+			t.Fatalf("read %s's %s the migration found: %v", c.issue, c.role, err)
 		}
 		if state != c.state || by != c.by {
-			t.Fatalf("after the migration the %s reads %s by %q, want %s by %q as it stood", c.role, state, by, c.state, c.by)
+			t.Fatalf("after the migration %s's %s reads %s by %q, want %s by %q as it stood", c.issue, c.role, state, by, c.state, c.by)
 		}
-	}
-	var controllers string
-	if err := store.Pool().QueryRow(ctx, `select suspended_by from claims where token = 'legion-legion-legion-210-architect'`).Scan(&controllers); err != nil {
-		t.Fatalf("read the architect the controller suspended: %v", err)
-	}
-	if controllers != "controller" {
-		t.Fatalf("after the migration the architect the controller suspended reads %q, want controller as it stood", controllers)
 	}
 	var rows, marks int
 	if err := store.Pool().QueryRow(ctx, `select (select count(*) from outbox), (select count(*) from issue_releases)`).Scan(&rows, &marks); err != nil {

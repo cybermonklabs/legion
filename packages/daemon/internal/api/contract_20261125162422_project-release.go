@@ -48,18 +48,25 @@ import (
 // `….asked.*.role`, `projectRelease.result.claims.*.role` and `….ended`. Each value arrives
 // with its key in this entry, so its band holds back all six fields without a separate value
 // strip. A claim's `suspendedBy` on the operator routes takes `project_release`, a claim the
-// release stopped, which the daemon's next boot starts again; the agent actions' answer of the
-// agent-actions entry (#4065) never does, since the release refuses the controller's resume and
-// retry and the controller's suspension outranks the release's, so its domain stays that entry's.
-// A stopped claim's `ended` takes each suspension source, `controller` among them. The release's
-// ask to a role rides the role's own topic as an update round's ask does, under the round
-// `release:<id>`, and `POST /legion/v1/claims/ready-for-update` hands an answer naming the running
-// release's round to the release, which records it on its own record and none of the claim's
-// round columns. While a release holds every start, the operator's spawn, retry, resume and
-// deliver, either door's fresh session and compaction, and the controller's `POST
-// /legion/v1/agents/retry`, `agents/resume` and `issues/pod-update` (the agent-actions entry's)
-// answer 409 with the code `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence, the
-// Failure body alone; the controller's `agents/stop` and `agents/suspend` start nothing and run.
+// release stopped, which the daemon's next boot starts again. No answer of the agent actions of
+// the agent-actions entry (#4065) names it, so their domain stays that entry's, though the actions
+// reach such a claim: the controller's stop retires it and its suspension, which outranks the
+// release's, takes it over, answered `retired` or suspended by `controller`; while the release
+// holds, its retry and resume are refused (releaseRefused); and after the boot, until the boot's
+// start of the claim runs, its resume resumes it, answered `launching`. One race is left, in which
+// an answer does name it: a retry or resume that passed releaseRefused just before a release began
+// can read its answer (answerAgentAction's View()) after the release's suspension landed, which
+// the plugin's parse refuses (`daemon-client.ts`). A stopped claim's `ended` takes each suspension
+// source, `controller` among them. The release's ask to a role rides the role's own topic as an
+// update round's ask does, under the round `release:<id>`, and `POST
+// /legion/v1/claims/ready-for-update` hands an answer naming the running release's round to the
+// release, which records it on its own record and none of the claim's round columns. While a
+// release holds every start, the operator's spawn, retry, resume and deliver, either door's fresh
+// session and compaction, and the controller's `POST /legion/v1/agents/retry`, `agents/resume` and
+// `issues/pod-update` (the agent-actions entry's) answer 409 with the code `PROJECT_RELEASED` and
+// the sentence api.ProjectReleaseHeldSentence, the Failure body alone, except at the agent door,
+// whose read of an operator's hold (agentDoor) answers SUSPENDED_BY_OPERATOR first; the
+// controller's `agents/stop` and `agents/suspend` start nothing and run.
 // The release and 178's project pause refuse each other: while the project is paused, or a pod a
 // pause stopped is still held after the resume, `POST /legion/v1/operator/project/release` to a
 // daemon process that has run no release, a
