@@ -465,19 +465,19 @@ function renderBody(
   });
   const answered = answeredAgo === undefined ? undefined : { updatedAt: Date.now() - answeredAgo };
   let served: Served = { changes, made: made ?? [] };
+  // The tree read and its decisions view answer the same nodes here: the decisions, and each
+  // Change under its decision, which the view carries as a comment on the text of a node it
+  // returns, as the server's view does.
   const readTree = () => treeAnswer([...served.made, ...served.changes]);
-  const readView = () => treeAnswer(served.made);
   treeReads ??= spyOn(api, "getIssueTree");
   // The reads the page's tree is built from, under the keys it reads them by, and the
   // decisions view the page holds. A read given as null is left out of the cache, as before it
   // answers: the page's own read of it then asks the server, which the case answers - for the
   // tree read and its views through `treeReads`, which the case sets before the body is drawn.
   if (made !== null) {
-    treeReads.mockImplementation(async (_key, query) =>
-      query?.view === "decisions" ? readView() : readTree()
-    );
+    treeReads.mockImplementation(async () => readTree());
     client.setQueryData(conversationTreeKey(KEY), readTree(), answered);
-    client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
+    client.setQueryData(viewKey(KEY, "decisions"), readTree(), answered);
   }
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
   client.setQueryData(["comments", KEY], comments, answered);
@@ -2094,18 +2094,18 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
 // another person's Keep (decision 502), or in the foot, which unfolds for it.
 test("a decision that leaves the review list by no act of the reader keeps the focus", async () => {
   const whole = wholeIssue();
-  // The address names the decision, and a Change on it arrives in the tree read.
+  // The address names the decision, and a Change on it arrives in the tree read and in the
+  // decisions view, which carries each comment on the text of a node it returns.
   const changed = renderBody(whole, { reveal: D("second") });
   await waitFor(() => expect(focusedRow(changed)).toBe(D("second")));
-  await act(async () =>
-    changed.client.setQueryData(
-      conversationTreeKey(KEY),
-      treeAnswer([
-        ...whole.made,
-        changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
-      ])
-    )
-  );
+  const withChange = treeAnswer([
+    ...whole.made,
+    changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
+  ]);
+  await act(async () => {
+    changed.client.setQueryData(conversationTreeKey(KEY), withChange);
+    changed.client.setQueryData(viewKey(KEY, "decisions"), withChange);
+  });
   await waitFor(() => expect(rowsOfPart(changed, "review")).toEqual([D("first")]));
   expect(rowsOfPart(changed, "yours")[0]).toBe(D("second"));
   expect(rowOf(changed, D("second")).getAttribute("data-node-state")).toBe("change_requested");
@@ -3642,15 +3642,16 @@ test("a Change's body is drawn through the renderer, its marks gone", async () =
   const whole = wholeIssue();
   const view = renderBody(whole);
   try {
-    await act(async () =>
-      view.client.setQueryData(
-        conversationTreeKey(KEY),
-        treeAnswer([
-          ...whole.made,
-          changeComment("change-second", "second", "2026-11-16T09:00:00Z", body),
-        ])
-      )
-    );
+    const withChange = treeAnswer([
+      ...whole.made,
+      changeComment("change-second", "second", "2026-11-16T09:00:00Z", body),
+    ]);
+    // The Change arrives in the tree read and in the decisions view, which carries each comment
+    // on the text of a node it returns.
+    await act(async () => {
+      view.client.setQueryData(conversationTreeKey(KEY), withChange);
+      view.client.setQueryData(viewKey(KEY, "decisions"), withChange);
+    });
     await waitFor(() =>
       expect(rowOf(view, D("second")).querySelector("[data-change-words]")?.textContent).toBe(
         "Name the read, and keep x as written."

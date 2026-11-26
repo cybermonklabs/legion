@@ -28,7 +28,7 @@ import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
-import { contentsEntries } from "../contents-entries";
+import { producingMessages } from "../contents-entries";
 import { rowActionSelector } from "../DecisionActions";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import {
@@ -1261,16 +1261,20 @@ test("the Verification view draws only the results the words keep of an overtake
 });
 
 /** The Spec view of `root` as its slot draws it (`slots/view-spec.tsx`): under the words the
- *  page's address carries (`?q=`), so a case that moves the address draws the view again. */
+ *  page's address carries (`?q=`), so a case that moves the address draws the view again, with
+ *  what the page publishes for the tree's chips (`published`), every read it lands by settled
+ *  and no names line. */
 function SpecAtAddress({
   context,
   issue,
+  published,
   request,
   reveal,
   root,
 }: {
   context: ReadonlySet<string>;
   issue: IssueDetails;
+  published: PublishedReferences;
   request?: OutlineRequest;
   reveal?: string;
   root: TreeNode;
@@ -1280,11 +1284,15 @@ function SpecAtAddress({
   const view = useMemo(() => presetView(root, "spec", query, new Set()).root, [query, root]);
   return createElement(SpecFilterBody, {
     context,
+    counts: undefined,
     emptyLine: query === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match,
     holdsEscape: false,
     issue,
+    namesLine: NO_FAILED_READS,
     onEditing: () => {},
+    published,
     reader: "alice",
+    readsSettled: true,
     ...(request === undefined ? {} : { request }),
     ...(reveal === undefined ? {} : { reveal }),
     root,
@@ -1342,8 +1350,9 @@ function drawSpec(
   ];
   // The page's `navigate`, once the address is drawn.
   let moveTo: (to: string) => void = () => {};
-  // The view over `over`, under the providers the page draws it under.
-  const page = (over: TreeNode): ReactNode =>
+  // The view over `over`, under the providers the page draws it under, with what the page
+  // publishes for its chips published to the names store and handed to the body.
+  const page = (over: TreeNode, published = publishedTree(over)): ReactNode =>
     createElement(
       QueryClientProvider,
       { client },
@@ -1371,9 +1380,11 @@ function drawSpec(
                   FocusedNodeProvider,
                   null,
                   createElement(IssueScope),
+                  createElement(Publisher, { published }),
                   createElement(SpecAtAddress, {
                     context: new Set<string>(),
                     issue,
+                    published,
                     ...(request === undefined ? {} : { request }),
                     ...(reveal === undefined ? {} : { reveal }),
                     root: over,
@@ -1453,9 +1464,20 @@ test("an overtaken open question is a Contents entry with no branch counts", () 
       { client },
       createElement(ContentsList, {
         focusBranch: false,
-        nameOf: () => undefined,
+        // A page that has published no name, as `IssueContents.test.ts`'s `NO_NAMES`.
+        lineNames: {
+          ambiguous: new Set<string>(),
+          author: () => "",
+          deleted: new Map(),
+          edited: new Set<string>(),
+          issue: KEY,
+          issues: [],
+          lines: new Map(),
+          names: new Map(),
+        },
         onFocusBranch: () => {},
         onGo: () => {},
+        producing: producingMessages(root),
         root,
       })
     )
@@ -1465,7 +1487,6 @@ test("an overtaken open question is a Contents entry with no branch counts", () 
       entry.getAttribute("data-contents-entry")
     );
     expect(entries).toEqual(["ask-1", "ask-2", "ask-3", "ask-4"]);
-    expect(contentsEntries(root, undefined)).toBe(entries.length);
     expect(
       view.container.querySelector('[data-contents-entry="ask-2"] [data-contents-mark]')
     ).toBeNull();
@@ -1495,7 +1516,7 @@ test("a Contents entry's failing mark leaves out a failed check no count reads",
     "verification-md#b-c1": { life: "overtaken" },
     "verification-md#b-c2": { life: "proposed" },
   });
-  expect(contentsOf(root, undefined).map((entry) => entry.marks)).toEqual([
+  expect(contentsOf(root, undefined, producingMessages(root)).map((entry) => entry.marks)).toEqual([
     { children: 0, failing: 1, for_review: 0, statements: 3 },
   ]);
 });
@@ -1514,7 +1535,7 @@ test("a Contents entry's failing mark leaves out a proposed statement whose chec
   const root = stamped(node(KEY, "issue", [node("ask-1", "ask", ["1", "2"].map(served))]), {
     "spec#b-r1": { life: "proposed" },
   });
-  expect(contentsOf(root, undefined).map((entry) => entry.marks)).toEqual([
+  expect(contentsOf(root, undefined, producingMessages(root)).map((entry) => entry.marks)).toEqual([
     { children: 0, failing: 1, for_review: 0, statements: 2 },
   ]);
 });
@@ -2587,6 +2608,43 @@ test("a view's row under an overtaken question drawn from a block and its ask is
   expect(live.row === undefined ? true : outOfCounts(live.row)).toBe(false);
 });
 
+// No count reads a statement at or under an overtaken node (R3). A question written as an
+// `:::ask` block is overtaken by its ask's node, which stands in no statement's walk, so the
+// coverage read leaves the row of a statement under that question unproven and not closed
+// (`coverageRows`), though the page closes that statement with its question. The Verification
+// summary's covered count leaves that row out: the statement is neither covered nor one of the
+// statements "N of M covered" is out of.
+test("the Verification summary leaves a statement under an overtaken question out of its covered count", () => {
+  const passed = checkThat("c-one", true);
+  const serving = checkThat("c-two", true);
+  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
+  const asked = statementNode("r2", "A later question took this one's place.", [
+    checkNode(serving),
+  ]);
+  // The question's row, drawn from block `q1` of the spec, which takes the state of its ask's
+  // node, so the page closes it and the statement under it with that node.
+  const question = node("spec#b-q1", "ask", [asked], {
+    readId: blockReadId("spec", "q1"),
+    source: { id: BLOCK_ASK, issue: KEY, kind: "ask" },
+  });
+  const root = stamped(node(KEY, "issue", [first, question]), {
+    [BLOCK_ASK]: { life: "overtaken" },
+  });
+  expect(coverageRows(root).map((row) => [row.ref, row.checks, row.coverage])).toEqual([
+    [first.reference, 1, "unproven"],
+    [asked.reference, 1, "unproven"],
+  ]);
+
+  const view = drawVerification(root, [passed, serving]);
+  try {
+    expect(textOf(view.container, "[data-verification-covered]")).toBe(
+      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The marks drawn under `element`, by their tokens, in the order they are drawn. */
 function marksIn(element: Element | null | undefined): (string | undefined)[] {
   return [...(element?.querySelectorAll<HTMLElement>("[data-node-mark]") ?? [])].map(
@@ -2714,7 +2772,7 @@ test("Decisions draws an overtaken review row without counting it in the to-revi
       createElement(IssuePresets, {
         active: "decisions",
         issueKey: KEY,
-        signals: { ...filterSignals(root, ""), conversation: { count: 0 }, graph: undefined },
+        signals: filterSignals(root, ""),
       })
     )
   );
@@ -3002,9 +3060,10 @@ interface PlanPlace {
 }
 
 /** The Plan view over `root`, the view's tasks, drawn as its slot draws it
- *  (`PlanFilterBody.test.tsx`'s `renderBody`), with no document read, so the plan's own order is
- *  the order the view hands the tasks over in, under the names store with `published` published
- *  to it and handed to the body, and no names line. */
+ *  (`PlanFilterBody.test.tsx`'s `renderBody`), with no task given a place in the read's order
+ *  (`TreeNode.position`), so the plan's order is the order the view hands the tasks over in,
+ *  under the names store with `published` published to it and handed to the body, and no names
+ *  line. */
 function planBody(
   root: TreeNode,
   client: QueryClient,
@@ -3047,7 +3106,6 @@ function planBody(
                 namesLine: NO_FAILED_READS,
                 onEditing: () => {},
                 plan,
-                planBlocks: undefined,
                 published,
                 reads: { state: "answered" },
                 reveal,

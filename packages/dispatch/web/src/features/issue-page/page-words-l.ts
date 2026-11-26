@@ -235,7 +235,8 @@ export const COMPOSER_ANSWER_WORDS = freeze({
     ISSUE_CLOSED: "This issue is closed and takes no question, so your words are kept.",
     KEY_REUSED:
       "Dispatch had already taken other words under this send's key, so this was not sent and your words are kept.",
-    POST_DELETED: "What this reply answers was deleted and takes no reply, so your words are kept.",
+    POST_DELETED:
+      "What you wrote this for has been deleted, so it cannot go there and your words are kept.",
     other: "Dispatch refused this message or did not answer, and your words are kept.",
   },
   send_refusals: COMPOSER_WORDS.refusals,
@@ -393,6 +394,16 @@ export default {
         "Enter sends and Shift+Enter starts a new line; @ links an agent, a role or a person, # an issue, and [[ anything else",
       composer_keys_edit:
         "Enter saves and Shift+Enter starts a new line; @ links an agent, a role or a person, # an issue, and [[ anything else",
+      /** What the state mark before an agent that the box's target line or a row of its picker
+       *  names is named by, as a screen reader reads it (`AgentName`'s `stateWords`): a running
+       *  session, what stands between its state and how long ago a running or unresponsive
+       *  session was seen, and what an unresponsive one's state means, after both. The mark
+       *  names the other states in the claim's words of them, `not_running` and `unchecked`,
+       *  and `unresponsive`. */
+      agent_running: "running",
+      agent_seen: ", seen ",
+      agent_unresponsive_note:
+        ", but not ended: it keeps its roles and claims, and messages to it are stored",
       /** The control beside a refusal that drops the draft it handed back, and the presses of a
        *  draft drawn beside the box's line: its own reply or statement's draft drops or takes it,
        *  and an edit that waits beside a newer comment does. The words of every composer. */

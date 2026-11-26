@@ -87,6 +87,7 @@ import {
 } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { endedStopped, stoppedNote } from "../writes/useKeyedWrite";
+import { KEY_HOURS } from "../writes/write-words";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
 import {
   type AskOptionDraft,
@@ -151,8 +152,9 @@ import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
 import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
 
-/** Where every composer but the issue page's box says a reply to a deleted post goes instead,
- *  after `COMPOSER_WORDS.deletedReply`. */
+/** Where a composer says a reply to a deleted post goes instead, after
+ *  `COMPOSER_WORDS.deletedReply`; the issue page's box says both in one sentence of its host's
+ *  (`OutlineAnswers.deletedReply`). */
 const DELETED_REPLY_WAY = "Press Cancel reply to send it as a message that answers none.";
 
 /** Which of a notice's words fit `named`, the sessions it names: those of one, or of many. */
@@ -203,12 +205,11 @@ function draftRefusal(
  *  the margin could not write that mark again - else the words of a refusal written for the
  *  reader (the server's missing anchor, a send they stopped, a text past a bound Dispatch holds
  *  it to, a text holding a decision block), else the page's wording around what went wrong
- *  (`refused`, the host's or the composer's own). */
+ *  (`COMPOSER_WORDS.refused`). */
 function refusalMessage(
   refusal: Error,
   anchor: ComposerAnchor | undefined,
-  anchorRefusal: AnchorRefusal | undefined,
-  refused: ComposerWords["refused"]
+  anchorRefusal: AnchorRefusal | undefined
 ): string {
   const anchorMissing = isAnchorMissing(refusal);
   if (anchorMissing && anchorRefusal !== undefined && anchorRefusal.markId === anchor?.mark_id) {
@@ -219,7 +220,7 @@ function refusalMessage(
     isCapExceeded(refusal) ||
     isDecisionBlockInBody(refusal)
     ? refusal.message
-    : `${refused.before}${apiErrorMessage(refusal, refused.unanswered)}`;
+    : `${COMPOSER_WORDS.refused.before}${apiErrorMessage(refusal, COMPOSER_WORDS.refused.unanswered)}`;
 }
 
 /** The refusals of a send that the issue page's box says in a sentence of its own, by Dispatch's
@@ -265,10 +266,12 @@ type OneOrMany = { readonly many: string; readonly one: string };
  * - `refused`: a send Dispatch refused, by its code, and `other` for any other code, a failure to
  *   reach Dispatch and a send it did not answer in time, each saying the words are kept;
  * - `stopped`: a send that ended without Dispatch's verdict - the reader stopped it
- *   (`unconfirmed`), a reload ended it (`interrupted`), its key is spent (`expired`), or the
- *   reader carried it to another address (`moved`, around where it went, in `addressWords`);
+ *   (`unconfirmed`), a reload ended it (`interrupted`), each around how many hours Dispatch keeps
+ *   a write's key (`KEY_HOURS`), its key is spent (`expired`), or the reader carried it to another
+ *   address (`moved`, around where it went, in `addressWords`);
  * - `upload`: a file uploading into the draft that the reader stopped, as `stopped` says a send,
- *   one Dispatch refused by its code, and `other` for any other end;
+ *   its `unconfirmed` around those hours too, one Dispatch refused by its code, and `other` for
+ *   any other end;
  * - `elsewhere`: Send's refusal of a refused draft written for another address than the box
  *   shows: an address (around `addressWords`), a reply whose post is gone, by its kind and what
  *   became of it, or a reply whose post stands;
@@ -306,14 +309,17 @@ export interface OutlineAnswers {
   readonly refused: Readonly<Record<OutlineRefusalCode | "other", string>>;
   readonly stopped: {
     readonly expired: string;
-    readonly interrupted: string;
+    readonly interrupted: { readonly after: string; readonly before: string };
     readonly moved: { readonly after: string; readonly before: string };
-    readonly unconfirmed: string;
+    readonly unconfirmed: { readonly after: string; readonly before: string };
   };
   readonly upload: {
     readonly other: string;
     readonly refused: Readonly<Record<OutlineUploadRefusalCode, string>>;
-    readonly stopped: { readonly expired: string; readonly unconfirmed: string };
+    readonly stopped: {
+      readonly expired: string;
+      readonly unconfirmed: { readonly after: string; readonly before: string };
+    };
   };
 }
 
@@ -334,15 +340,23 @@ function isOutlineRefusalCode(code: string | undefined): code is OutlineRefusalC
 
 /** What the issue page's box says of `refusal` in its host's words (`OutlineAnswers`): a send
  *  that ended without Dispatch's verdict by how it ended, a refusal by its code, and one sentence
- *  for every other end - never Dispatch's own words. */
+ *  for every other end - never Dispatch's own words. A sentence that names how many hours
+ *  Dispatch keeps a write's key is joined around them (`KEY_HOURS`), as `moved` is around where
+ *  the send went. */
 function outlineRefusalMessage(refusal: Error, answers: OutlineAnswers): string {
   if (refusal instanceof SendMovedError) {
     const { after, before } = answers.stopped.moved;
     return `${before}${addressWords(refusal.stopped, "to")}${after}`;
   }
   if (refusal instanceof SendExpiredError) return answers.stopped.expired;
-  if (refusal instanceof SendInterruptedError) return answers.stopped.interrupted;
-  if (refusal instanceof SendStoppedError) return answers.stopped.unconfirmed;
+  if (refusal instanceof SendInterruptedError) {
+    const { after, before } = answers.stopped.interrupted;
+    return `${before}${KEY_HOURS}${after}`;
+  }
+  if (refusal instanceof SendStoppedError) {
+    const { after, before } = answers.stopped.unconfirmed;
+    return `${before}${KEY_HOURS}${after}`;
+  }
   if (refusal instanceof ApiError && isOutlineRefusalCode(refusal.code)) {
     return answers.refused[refusal.code];
   }
@@ -351,14 +365,17 @@ function outlineRefusalMessage(refusal: Error, answers: OutlineAnswers): string 
 
 /** What the issue page's box says of a file uploading into its draft that ended without landing,
  *  in its host's words (`OutlineAnswers.upload`): one the reader stopped, by whether a Retry
- *  still goes under its key; one Dispatch refused by a code the box has words for; and one
- *  sentence for every other end - never Dispatch's own words. */
+ *  still goes under its key, the hours Dispatch keeps a key joined into the sentence that names
+ *  them; one Dispatch refused by a code the box has words for; and one sentence for every other
+ *  end - never Dispatch's own words. */
 function outlineUploadMessage(
   upload: Pick<DraftUpload<number>, "error" | "method">,
   words: OutlineAnswers["upload"]
 ): string {
   if (endedStopped(upload)) {
-    return retriesUnderItsKey(upload.error) ? words.stopped.unconfirmed : words.stopped.expired;
+    if (!retriesUnderItsKey(upload.error)) return words.stopped.expired;
+    const { after, before } = words.stopped.unconfirmed;
+    return `${before}${KEY_HOURS}${after}`;
   }
   const { error } = upload;
   if (
@@ -368,6 +385,20 @@ function outlineUploadMessage(
     return words.refused[error.code];
   }
   return words.other;
+}
+
+/** What the issue page's box says after the titles of `sessions`, which advertise no delivery
+ *  mode, in its host's words (`OutlineAnswers.delivery.deaf`): one sentence for why they take
+ *  none - their lists hold nothing (`unlisted`), hold no mode this page knows (`unknown`), or
+ *  some of each (`mixed`) - in place of the composer's warning and the sentence for each cause
+ *  after it (`noDeliveryReasons`), which tells the causes apart by the same rule. */
+function outlineDeafMessage(
+  sessions: readonly { readonly capabilities: readonly string[] }[],
+  words: OutlineAnswers["delivery"]["deaf"]
+): string {
+  const listing = sessions.filter((session) => session.capabilities.length > 0);
+  if (listing.length === 0) return words.unlisted[oneOrMany(sessions)];
+  return listing.length === sessions.length ? words.unknown[oneOrMany(sessions)] : words.mixed;
 }
 
 /** Why Send refuses a refusal held for another address than the issue page's box shows, in its
@@ -424,8 +455,8 @@ export interface OutlineKind {
  * as chips before Send, and above the line the entry its target names, with the control that
  * ends the target. The host words every part of it, since the composer imports nothing of the
  * page's: its controls, what the composer itself says in answer to the reader's act - a
- * refusal, a delivery warning, a send past its deadline (`words`, or each in one sentence,
- * `answers`) - what the parts it draws say (`answers`, `picker`), and the names the box is read
+ * refusal, a delivery warning, a send past its deadline, each in one sentence (`answers`) - what
+ * the parts it draws say (`answers`, `picker`), and the names the box is read
  * by (`names`). A part a host gives no words for says its own, as on every surface that draws
  * it. It is drawn in the page's colours. Why Send refuses the draft is drawn only once the
  * reader presses Send, or Enter on a draft that cannot go, on a line of its own. Its
@@ -446,16 +477,11 @@ export interface OutlineLook {
    *  (`AwayDraft.statement`). The line's `end` ends it, as it ends a reply. */
   readonly anchor?: StatementAnchor;
   /** The box's own answers to the reader's act, each one sentence (`OutlineAnswers`), in place of
-   *  `words`, of what the parts the composer draws say, and of Dispatch's own words of a refusal.
-   *  With none, those. */
+   *  the composer's own words (`COMPOSER_WORDS`), of what the parts the composer draws say, and
+   *  of Dispatch's own words of a refusal. With none, those. */
   readonly answers?: OutlineAnswers;
   /** The word of the control at the right of the target line, which ends the target (`end`). */
   readonly cancelReply: string;
-  /** What Send's refusal of a reply to a post deleted since says after the composer's own words
-   *  that the post was deleted: the host's own sentence for where the line sends the draft
-   *  instead, in place of the one every other composer says of its Cancel reply. A host whose
-   *  `answers` say it in one sentence with the rest gives none. */
-  readonly deletedReplyWay?: string;
   /** The word of the control beside a refusal that drops the draft the refusal handed back. */
   readonly discardDraft: string;
   /** What the target line's control and Escape do: the host ends the line's target - a reply, a
@@ -520,9 +546,6 @@ export interface OutlineLook {
   /** The entry the target names - the row a reply answers, the statement a comment is on, the
    *  comment an edit changes - drawn above the line while there is one. */
   readonly target?: ReactNode;
-  /** What the composer says in answer to the reader's act, in the host's words, in place of its
-   *  own (`COMPOSER_WORDS`), where the host gives no `answers`. With neither, its own. */
-  readonly words?: ComposerWords;
 }
 
 /** A press on a control of the issue page's box leaves the focus where it is, as a row's own
@@ -868,16 +891,14 @@ export function MentionComposer({
   const compact = inline || edit !== undefined;
   /** Drawn as the issue page's box at the foot of its outline (`OutlineLook`). */
   const outlined = outline !== undefined;
-  /** What the composer says in answer to the reader's act: the host's words in the issue page's
-   *  look, its own everywhere else. */
-  const words = outline?.words ?? COMPOSER_WORDS;
   /** The issue page's box's own answers, each one sentence, where its host gives them: they say
-   *  what `words` and the parts the composer draws would, and what Dispatch's refusal would. */
+   *  what the composer's own words (`COMPOSER_WORDS`) and the parts it draws would, and what
+   *  Dispatch's refusal would. */
   const answers = outline?.answers;
-  /** The words the composer and its parts say, as far as `words` says them: the box's own
-   *  `answers` where its host gives them. */
-  const refusalWords = answers?.refusals ?? words.refusals;
-  const deliveryWords = answers?.delivery ?? words.delivery;
+  /** Why Send refuses, and what a send to the mentioned sessions would do: the box's own
+   *  `answers` where its host gives them, the composer's own words everywhere else. */
+  const refusalWords = answers?.refusals ?? COMPOSER_WORDS.refusals;
+  const deliveryWords = answers?.delivery ?? COMPOSER_WORDS.delivery;
   /** The whole draft, gone - the body, a suggestion's replacement and an ask's options - on a
    *  successful send and on Discard alike, in every host, leaving what a fresh
    *  mount shows: a host whose `onClose` only moves focus (`AgentsPage`'s rows) keeps the composer
@@ -1327,16 +1348,15 @@ export function MentionComposer({
   // draft, and a refusal it holds, to the composer's own address, where it goes as a message that
   // answers none. An edit waiting beside a newer body is the reader's to take back or drop before
   // anything is saved, and so is a draft a margin compose kept for other words, before anything
-  // is sent. The issue page's line says, in its host's words, why Send refuses (`words`) and where
-  // it sends the draft instead (`OutlineLook.deletedReplyWay`), or both in one sentence of its
-  // `answers`.
+  // is sent. The issue page's line says both why Send refuses and where it sends the draft
+  // instead in one sentence of its host's `answers`, where its host gives them.
   const deletedReply =
     replyTo === null || postDeletion(replyParent) === null
       ? undefined
       : answers !== undefined
         ? answers.deletedReply[replyTo.parentKind]
-        : words.deletedReply[replyTo.parentKind] +
-          (standing ? "" : ` ${outline?.deletedReplyWay ?? DELETED_REPLY_WAY}`);
+        : COMPOSER_WORDS.deletedReply[replyTo.parentKind] +
+          (standing ? "" : ` ${DELETED_REPLY_WAY}`);
   // Where a refusal held for another address than the one shown was written for (`elsewhere`),
   // in the box's own sentence where its host gives one: the held send is that refusal.
   const elsewhereReason =
@@ -1358,15 +1378,21 @@ export function MentionComposer({
   const outlineReason = outlined ? (deletedReply ?? elsewhereReason) : undefined;
   // Every other reason Send refuses on the issue page's line is drawn only once the reader acts:
   // a press of Send, or Enter on a draft that cannot go, puts it on the line's own reason line
-  // (`pressedReasonId`), which Send names, empty until then. The line empties as soon as Send's
-  // reason changes or goes - the reader writes, picks another kind, or the draft can go - and the
-  // next press of a refused Send says it again.
-  const [pressedReason, setPressedReason] = useState<string | undefined>(undefined);
-  if (pressedReason !== undefined && pressedReason !== submitReason) setPressedReason(undefined);
+  // (`pressedReasonId`), which Send names, empty until then. The press is kept with the address
+  // it was made at - the post a reply answers, the statement a comment is on, the comment an edit
+  // changes - and the line empties as soon as Send's reason changes or goes - the reader writes,
+  // picks another kind, or the draft can go - or the line moves to another address, where the
+  // reader pressed nothing; the next press of a refused Send says it again.
+  const pressedAt = JSON.stringify([replyTo?.id, statement?.artifact, statement?.quote, edit?.id]);
+  const [pressed, setPressed] = useState<{ readonly at: string; readonly said: string }>();
+  if (pressed !== undefined && (pressed.said !== submitReason || pressed.at !== pressedAt)) {
+    setPressed(undefined);
+  }
+  const pressedReason = pressed?.said;
   const pressedReasonId = useId();
   const refusedPress = () => {
     if (outlined && submitReason !== undefined && submitReason !== outlineReason) {
-      setPressedReason(submitReason);
+      setPressed({ at: pressedAt, said: submitReason });
     }
   };
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
@@ -1578,15 +1604,7 @@ export function MentionComposer({
   const instead = unsupportedWords.instead;
   // What sessions that advertise no delivery mode do with a send, and why they take none: the
   // composer's own warning and then a sentence for each cause (`noDeliveryReasons`), or, on the
-  // issue page's box, the one sentence its host gives for the cause - a list that holds nothing,
-  // one that holds no mode this page knows, or some of each (`OutlineAnswers.delivery.deaf`).
-  const listingDeaf = unsupportedOptions.filter((option) => option.capabilities.length > 0);
-  const deafCause =
-    listingDeaf.length === 0
-      ? "unlisted"
-      : listingDeaf.length === unsupportedOptions.length
-        ? "unknown"
-        : "mixed";
+  // issue page's box, the one sentence its host gives for the cause (`outlineDeafMessage`).
   const deliveryNotices = (
     <>
       {plainNotice.length > 0 ? (
@@ -1603,13 +1621,11 @@ export function MentionComposer({
           {titlesOf(unsupportedOptions)}
           {answers === undefined ? (
             <>
-              {words.delivery.deaf[oneOrMany(unsupportedOptions)]}
+              {COMPOSER_WORDS.delivery.deaf[oneOrMany(unsupportedOptions)]}
               {noDeliveryReasons(unsupportedOptions)}
             </>
-          ) : deafCause === "mixed" ? (
-            answers.delivery.deaf.mixed
           ) : (
-            answers.delivery.deaf[deafCause][oneOrMany(unsupportedOptions)]
+            outlineDeafMessage(unsupportedOptions, answers.delivery.deaf)
           )}
         </p>
       ) : unsupported ? (
@@ -1657,8 +1673,11 @@ export function MentionComposer({
             <OutlineRefusal
               message={
                 answers === undefined
-                  ? (stoppedNote(upload, words.stoppedUpload.what, words.stoppedUpload.made) ??
-                    uploadErrorMessage(upload.error))
+                  ? (stoppedNote(
+                      upload,
+                      COMPOSER_WORDS.stoppedUpload.what,
+                      COMPOSER_WORDS.stoppedUpload.made
+                    ) ?? uploadErrorMessage(upload.error))
                   : outlineUploadMessage(upload, answers.upload)
               }
               onRetry={upload.retry}
@@ -1729,7 +1748,7 @@ export function MentionComposer({
               message={
                 statementTwice ??
                 (answers === undefined
-                  ? refusalMessage(refusal, anchor, anchorRefusal, words.refused)
+                  ? refusalMessage(refusal, anchor, anchorRefusal)
                   : outlineRefusalMessage(refusal, answers))
               }
               onRetry={retry}
@@ -1738,7 +1757,7 @@ export function MentionComposer({
             />
           ) : (
             <QueryError
-              message={refusalMessage(refusal, anchor, anchorRefusal, words.refused)}
+              message={refusalMessage(refusal, anchor, anchorRefusal)}
               onRetry={retry}
               retrying={sending}
             />
@@ -1789,15 +1808,16 @@ export function MentionComposer({
     onKeyDownCapture: stopHeldComposerInput,
   };
   // The issue page's line reads each party its write is delivered to by its name, where its host
-  // names the list (`OutlineNames.targets`): the name the picker offers it by (`options`) - a
-  // session's title, a role's own name - and for one the registry does not list now, a session's
-  // name as the page draws it or the role's name.
+  // names the list (`OutlineNames.targets`): a role by its own name, and a session by its name as
+  // the page draws it (`sessionShown`) - the title the picker's options hold it under
+  // (`sessionTitle`), and for one the registry does not list now, the page's word for an agent
+  // nothing names - never by its short address, which names nobody.
   const targetName = (target: string): string => {
-    const option = options.find((candidate) => candidate.target === target);
-    if (option !== undefined) return option.title;
     const party = partyOfAddress(target);
-    if (party?.kind === "agent-session") return text.sessionText(party.session, undefined);
-    return party?.kind === "role" ? party.role : target;
+    if (party?.kind === "role") return party.role;
+    if (party?.kind !== "agent-session") return target;
+    const option = options.find((candidate) => candidate.target === target);
+    return text.sessionShown(party.session, option?.sessionTitle);
   };
   // The issue page's line at the foot of its outline (`OutlineLook`): the entry its target names
   // and the control that ends the target above it, then the line itself - the field, the kinds it
@@ -2169,7 +2189,7 @@ export function MentionComposer({
     heldLate === undefined ? null : (
       <div className="flex flex-wrap items-center gap-3">
         <p className={`text-sm ${quietTone}`} role="status">
-          {answers?.late ?? words.late}
+          {answers?.late ?? COMPOSER_WORDS.late}
         </p>
         <StopTrying onStop={outgoing.stop} stopping={heldLate.stopping} />
       </div>

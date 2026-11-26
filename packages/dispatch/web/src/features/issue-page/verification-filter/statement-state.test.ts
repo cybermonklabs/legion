@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 
 import type { Artifact, CheckBlock, IssueCoverage, IssueDetails } from "../../../api/types";
-import { specRef } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
@@ -1122,21 +1121,17 @@ test("the reading keeps every row, proposed and overtaken ones included", () => 
 /** One row of the coverage read, a statement of the issue's spec. */
 type CoverageRow = NonNullable<IssueCoverage["requirements"]>[number];
 
-/** The coverage read's row for the statement `blockId` of the spec, which `checks` checks serve,
- *  as the server answers it for a live statement no result proves, with whatever the case
- *  changes about it. */
-function coverageRow(
-  blockId: string,
-  checks: number,
-  extra: Partial<CoverageRow> = {}
-): CoverageRow {
+/** The coverage read's row for the statement `blockId` of the spec, which one check serves, as
+ *  the server answers it for a live statement no result proves, paired with the statement's node
+ *  by the address `statementNode` gives that node, with whatever the case changes about it. */
+function coverageRow(blockId: string, extra: Partial<CoverageRow> = {}): CoverageRow {
   return {
     block_id: blockId,
-    checks,
-    coverage: checks === 0 ? "gap" : "unproven",
+    checks: 1,
+    coverage: "unproven",
     gaps: [],
     plan_tasks: 0,
-    ref: specRef(blockId),
+    ref: `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-${blockId}`,
     text: `Statement ${blockId}.`,
     ...extra,
   };
@@ -1146,11 +1141,12 @@ function coverageRow(
 // walk, is overtaken by a state of its own (`coverage_tuples.go`). A question written as an
 // `:::ask` block is overtaken by its ask's node, which stands in no statement's walk, so the row
 // of a statement under that question comes unproven and not closed, though the page closes that
-// statement with its question, which puts it out of the counts. The covered count leaves it out:
-// it is neither covered nor one of the statements that count is out of.
+// statement with its question, which puts it out of the counts. The covered count leaves it out
+// at any depth of the view: it is neither covered nor one of the statements that count is out of.
+// Here the question stands under a live statement, and the question and its statement are
+// `closed` as the page's `closeOvertaken` closes an overtaken node and each node under it.
 test("the covered count leaves out a statement under an overtaken question whose coverage row is not closed", () => {
   const passed = passing("c-one");
-  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
   const asked = {
     ...statementNode("r2", "A later question took this one's place."),
     closed: true as const,
@@ -1161,10 +1157,11 @@ test("the covered count leaves out a statement under an overtaken question whose
     type: "ask",
     ...OVERTAKEN,
   });
-  const view = verificationView([first, question]);
+  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed), question]);
+  const view = verificationView([first]);
   const coverage = {
     ...coverageRead([]),
-    requirements: [coverageRow("r1", 1), coverageRow("r2", 1)],
+    requirements: [coverageRow("r1"), coverageRow("r2")],
   };
 
   expect(issueCovered(coverage)).toEqual({ covered: 2, kind: "count", total: 2 });
@@ -1186,10 +1183,10 @@ test("the covered count leaves out a row the coverage read marks proposed or clo
   ]);
 
   for (const marked of [
-    coverageRow("r2", 1, { coverage: "proposed", state: "proposed" }),
-    coverageRow("r3", 1, { coverage: "closed" }),
+    coverageRow("r2", { coverage: "proposed", state: "proposed" }),
+    coverageRow("r3", { coverage: "closed" }),
   ]) {
-    const coverage = { ...coverageRead([]), requirements: [coverageRow("r1", 1), marked] };
+    const coverage = { ...coverageRead([]), requirements: [coverageRow("r1"), marked] };
     expect(issueCovered(coverage)).toEqual({ covered: 2, kind: "count", total: 2 });
     expect(issueCovered(countedCoverage(coverage, view))).toEqual({
       covered: 1,

@@ -27,7 +27,12 @@ import type { ViewSlotProps } from "./stage";
 import { usePublishViewReadings } from "./view-readings";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
-export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
+export function ViewVerificationSlot({
+  acts,
+  issue,
+  onAddressDrawn,
+  route,
+}: ViewSlotProps): ReactNode {
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
@@ -51,6 +56,11 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // address that names a node the view holds no row for still draws it, as the outline resolves
   // it (`useAddressTarget`).
   const { named } = useAddressTarget(root, address);
+  // The id of the node the address names, which `named` holds: the body puts the focus on its row
+  // once every read the tree is built from has settled (`readsSettled`), for the reason
+  // `SpecFilterBody` gives, and makes that row its tab stop.
+  // It is the last node of the hook's `reveal`, read from `named`: the slot takes only `named`.
+  const revealed = [...named].at(0);
   const view = useMemo(
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
@@ -94,6 +104,9 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
       {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
+          // The reader's acts since the address was followed, which the stage watches and the
+          // body's landing reads: a reader who acted keeps the page as they left it.
+          {...(acts === undefined ? {} : { addressActs: acts })}
           {...(tells ? { addressed } : {})}
           artifacts={artifacts}
           checks={checks}
@@ -104,6 +117,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           onEditing={onEditing}
           published={published}
           reads={reads}
+          readsSettled={readsSettled}
+          {...(revealed === undefined ? {} : { reveal: revealed })}
           view={view.root}
           whole={whole}
         />

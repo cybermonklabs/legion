@@ -48,10 +48,11 @@ import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentStage } from "./document-stage";
+import { chipName } from "./first-line";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { isProposed, presetNodePath } from "./issue-address";
-import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
+import { isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
 import { LensChain } from "./lenses/LensChain";
 import { LensLines } from "./lenses/LensLines";
 import { LensMenu } from "./lenses/LensMenu";
@@ -83,7 +84,7 @@ import {
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
 import { RowText, useOutOfTabOrder } from "./RowText";
-import { titleReading } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
 import { indentOf } from "./tree-fold";
 
 /**

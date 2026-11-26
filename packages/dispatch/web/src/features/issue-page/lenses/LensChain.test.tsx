@@ -966,37 +966,6 @@ function drawnRow(
   return drawn;
 }
 
-// A lens's verdict that links its author's words to a risk the tree read holds,
-// `[the failover risk](dispatch://risk/<uuid>)`, draws those words as a link that opens the
-// risk's row (`?node=`), as the lens's row draws its words from the tree read
-// (`buildIssueTree`).
-test("a lens row draws its verdict's author's link to a risk as a link to the risk's row", async () => {
-  const lens = "c3000000-0000-4000-8000-000000000003";
-  const risk = "d4000000-0000-4000-8000-000000000004";
-  const drawn = drawnRow(
-    [
-      treeNode(lens, "lens", KEY, {
-        attributes: { verdict: `See [the failover risk](dispatch://risk/${risk}) first.` },
-      }),
-      treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
-    ],
-    [lens]
-  );
-  const view = renderOnIssue(<LensRow drawn={drawn} />);
-  try {
-    await waitFor(() => {
-      const links = [...view.container.querySelectorAll("a")].filter(
-        (anchor) => anchor.textContent === "the failover risk"
-      );
-      expect(links.map((link) => link.getAttribute("href"))).toEqual([
-        `/issues/${KEY}?node=${risk}`,
-      ]);
-    });
-  } finally {
-    view.unmount();
-  }
-});
-
 /** The ids of the risk row the early-warning cases draw: a lens on the issue, a risk under it,
  *  and a constraint of the issue the risk's early warning cites. */
 const WARNING_ROW = {
@@ -1284,28 +1253,6 @@ async function drawnRowParagraph(
   }
 }
 
-// A risk's heading carries a one-line reading that keeps code alone, so `__init__` in backticks
-// is drawn in a `code` element rather than parsed again in the page into bold "init".
-test("a risk row draws a code span in its heading as code and parses no underscores", async () => {
-  const { lens, risk } = WARNING_ROW;
-  const { paragraph, unmount } = await drawnRowParagraph(
-    [
-      treeNode(lens, "lens", KEY),
-      treeNode(risk, "risk", lens, { attributes: { heading: "`__init__` runs twice" } }),
-    ],
-    [lens, risk]
-  );
-  try {
-    expect(paragraph.textContent).toBe("__init__ runs twice");
-    expect([...paragraph.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
-      "__init__",
-    ]);
-    expect(paragraph.querySelector("strong, em")).toBeNull();
-  } finally {
-    unmount();
-  }
-});
-
 // A constraint's standard carries a one-line reading that keeps code alone, so `<T>` in backticks
 // is drawn as text in a `code` element rather than parsed again in the page into an HTML node.
 test("a constraint row draws angle brackets in code as text in code with no HTML node", async () => {
@@ -1357,36 +1304,6 @@ test("a lens row keeps another dispatch:// address in code as written in a citin
           link.getAttribute("href"),
         ])
       ).toEqual([["Failover takes minutes", `/issues/${KEY}?node=${risk}`]]);
-    });
-  } finally {
-    unmount();
-  }
-});
-
-// A lens's verdict whose author's link to a risk the tree read holds has words that hold a code
-// span, ``[the `HTTP` rule](dispatch://risk/<uuid>)``, draws those words as one link that opens
-// the risk's row (`?node=`), not one link for each run of them: a run that carries a name's link
-// keeps that link alone, so the words in code lose their code mark.
-test("a lens row draws its verdict's author's link of words with a code span as one link", async () => {
-  const { lens, risk } = WARNING_ROW;
-  const { paragraph, unmount } = await drawnRowParagraph(
-    [
-      treeNode(lens, "lens", KEY, {
-        attributes: { verdict: `Read [the \`HTTP\` rule](dispatch://risk/${risk}) first.` },
-      }),
-      treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
-    ],
-    [lens]
-  );
-  try {
-    await waitFor(() => {
-      expect(paragraph.textContent).toBe("Read the HTTP rule first.");
-      expect(
-        [...paragraph.querySelectorAll("a")].map((link) => [
-          link.textContent,
-          link.getAttribute("href"),
-        ])
-      ).toEqual([["the HTTP rule", `/issues/${KEY}?node=${risk}`]]);
     });
   } finally {
     unmount();
@@ -1540,6 +1457,11 @@ const STORED_SHAPES: readonly (readonly [string, string, StoredDrawn])[] = [
     `[the \`HTTP\` **rule**](${CITED})`,
     { anchors: [["the HTTP rule", CITED_ROW]], code: [], text: "the HTTP rule" },
   ],
+  [
+    "an author's link with a code span amid words to a node the read holds",
+    `Read [the \`HTTP\` rule](${CITED}) first.`,
+    { anchors: [["the HTTP rule", CITED_ROW]], code: [], text: "Read the HTTP rule first." },
+  ],
 ];
 
 /** What `words`, the element a row drew stored words in, reads as: its text, each anchor's words
@@ -1564,9 +1486,10 @@ function wordsDrawn(words: Element | null) {
 // mark dropped to its words, and a raw tag read as no word, as the shared reading reads HTML
 // (`stored-reading.ts`), so no HTML reaches the row. A bare address of a node the read holds is
 // one link to the node's row (`?node=`) by the node's name, and an author's link to one is one
-// link by the author's words, however they are marked; an address in code stays as written and
-// links nothing; and a link to a node the read does not hold, or to anywhere else, reads as its
-// words with no link. A fact line draws its words as plain text, so it draws no code element.
+// link by the author's words alone, however they are marked; an address in code stays as
+// written and links nothing; and a link to a node the read does not hold, or to anywhere else,
+// reads as its words with no link. A fact line draws its words as plain text, so it draws no
+// code element.
 describe("a row draws each shape of its stored words", () => {
   test.each(
     STORED_KINDS.flatMap(([kind, drawnIn]) =>

@@ -1,4 +1,4 @@
-import { dispatchWritingBox, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -23,7 +23,7 @@ import {
 } from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
-import { AgentName } from "../refs/AgentName";
+import { AgentName, type AgentStateWords } from "../refs/AgentName";
 import type { RefPickerWords } from "../refs/ref-picker";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
@@ -96,21 +96,6 @@ function placeholderOf(target: keyof typeof PLACEHOLDERS, phone: boolean): strin
   return phone ? narrow : wide;
 }
 
-/** How many hours Dispatch keeps a write's key, which the box's sentences of what a Retry does
- *  name (`COMPOSER_ANSWER_WORDS.stopped`). */
-const KEY_HOURS = String(IDEMPOTENCY_KEY_TTL_MS / 3_600_000);
-
-/** One of the box's sentences that names how many hours Dispatch keeps a write's key, whole. */
-function withKeyHours({
-  after,
-  before,
-}: {
-  readonly after: string;
-  readonly before: string;
-}): string {
-  return `${before}${KEY_HOURS}${after}`;
-}
-
 /** What the box says in answer to the reader's act, each one sentence of the page's own list
  *  (`COMPOSER_ANSWER_WORDS`), in place of the composer's own and of Dispatch's (decision 527). */
 const ANSWERS: OutlineAnswers = {
@@ -123,29 +108,35 @@ const ANSWERS: OutlineAnswers = {
   late: COMPOSER_ANSWER_WORDS.late,
   refusals: COMPOSER_ANSWER_WORDS.send_refusals,
   refused: COMPOSER_ANSWER_WORDS.refused,
-  stopped: {
-    expired: COMPOSER_ANSWER_WORDS.stopped.expired,
-    interrupted: withKeyHours(COMPOSER_ANSWER_WORDS.stopped.interrupted),
-    moved: COMPOSER_ANSWER_WORDS.stopped.moved,
-    unconfirmed: withKeyHours(COMPOSER_ANSWER_WORDS.stopped.unconfirmed),
+  stopped: COMPOSER_ANSWER_WORDS.stopped,
+  upload: COMPOSER_ANSWER_WORDS.upload,
+};
+
+/** What the state mark before an agent the target line names says (`AgentStateWords`), and the
+ *  one before the agent a row of the box's picker names (`PICKER`), in the page's words: a
+ *  running session's state, how long ago it was seen and what an unresponsive one's state means
+ *  (`agent_running`, `agent_seen`, `agent_unresponsive_note`), and the other states in the words
+ *  the claim says them in, which the registry judges alike. */
+const TARGET_STATE_WORDS: AgentStateWords = {
+  labels: {
+    "not-running": CONTROL_LABELS.not_running,
+    running: CONTROL_LABELS.agent_running,
+    unknown: CONTROL_LABELS.unchecked,
+    unresponsive: CONTROL_LABELS.unresponsive,
   },
-  upload: {
-    other: COMPOSER_ANSWER_WORDS.upload.other,
-    refused: COMPOSER_ANSWER_WORDS.upload.refused,
-    stopped: {
-      expired: COMPOSER_ANSWER_WORDS.upload.stopped.expired,
-      unconfirmed: withKeyHours(COMPOSER_ANSWER_WORDS.upload.stopped.unconfirmed),
-    },
-  },
+  seen: CONTROL_LABELS.agent_seen,
+  unresponsive: CONTROL_LABELS.agent_unresponsive_note,
 };
 
 /** The words the reference picker in the box draws, in the page's kind words: its names
- *  (`BOX_PICKER_NAMES`), its lines (`BOX_PICKER_LINES`), and the page's own words of a list of
- *  references still loading and one that could not be read. */
+ *  (`BOX_PICKER_NAMES`), its lines (`BOX_PICKER_LINES`), the page's own words of a list of
+ *  references still loading and one that could not be read, and the state mark before the agent
+ *  a party's row names, as the target line names it (`TARGET_STATE_WORDS`). */
 const PICKER: RefPickerWords = {
   headings: BOX_PICKER_NAMES.headings,
   instruction: BOX_PICKER_LINES.instruction,
   label: BOX_PICKER_NAMES.label,
+  marks: TARGET_STATE_WORDS,
   parties: BOX_PICKER_LINES.agents,
   parts: {
     blocks: { control: BOX_PICKER_NAMES.parts.blocks, none: BOX_PICKER_LINES.parts_none.blocks },
@@ -811,9 +802,10 @@ function CriterionForm({
  * What a target line says of its target (R3, R5, R11): what the line does to it - "Replying to:"
  * or "Editing:" - the target's author, where the line knows one, named as the page names an
  * author (`AgentName`'s `author`), so a person who acted through a session reads as their row
- * names them, and the page's word for its kind, with a middle dot between the two. It draws none
- * of the target's words: the entry stands whole in its own row, and an edited comment's words
- * stand whole in the field.
+ * names them, an agent's state mark named in the page's words (`TARGET_STATE_WORDS`), and the
+ * page's word for its kind, with a middle dot between the two. It draws none of the target's
+ * words: the entry stands whole in its own row, and an edited comment's words stand whole in the
+ * field.
  * The criterion line names the node a criterion goes under the same way, after "Criterion under:".
  */
 function TargetNamed({
@@ -831,7 +823,7 @@ function TargetNamed({
       {author === undefined ? null : (
         <>
           <b className="font-semibold text-page-ink">
-            <AgentName actor={author} author inline />
+            <AgentName actor={author} author inline stateWords={TARGET_STATE_WORDS} />
           </b>{" "}
           <span aria-hidden="true">{CONTROL_LABELS.target_separator}</span>{" "}
         </>

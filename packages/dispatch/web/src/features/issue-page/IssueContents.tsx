@@ -20,19 +20,15 @@ import {
   pageQuietText,
   pageWaitingBg,
 } from "../../theme/classes";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { isContentsEntry } from "./contents-entries";
+import { drawnLine, firstLineOf } from "./first-line";
 import { useFocusedNode } from "./focused-node";
 import { MenuMark } from "./IssuePresets";
-import {
-  drawnLine,
-  firstLineOf,
-  isCheck,
-  isStatement,
-  lineWordsRaw,
-  type TreeNode,
-} from "./issue-tree";
+import { isCheck, isStatement, lineWordsRaw, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { type LineNames, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { useOutlineRequest } from "./outline-request";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -55,14 +51,12 @@ export interface ContentsEntry {
 }
 
 /**
- * The entries of the list, read off the tree the outline draws: each node the Contents rule
- * makes an entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that
- * begins a thread - each under the nearest such entry above it in the tree, in the tree's own
- * order, so the list holds as many entries as the view row's Conversation count says
- * (`contentsEntries`). The issue itself is no entry: the header is the issue, as the outline
- * draws no row of it. A node drawn under a second parent is listed once, at its own place, and
- * counted once: a transcluded copy and the branch under it are the same nodes as at the edited
- * place, so they are neither listed nor counted again.
+ * The entries of the list, read off the tree the outline draws by `isContentsEntry`: asks,
+ * comment threads the reader began, and message threads the reader began with a non-message
+ * node placed in them. Each sits under the nearest entry above it, in the tree's order. The
+ * issue itself is no entry: the header is the issue, as the outline draws no row of it. A
+ * transcluded copy and the branch under it are neither listed nor counted again: the list
+ * reads those nodes at their own place.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, and at or under no overtaken node, so a node counts once, on the entry whose branch it
@@ -71,9 +65,14 @@ export interface ContentsEntry {
  * a count reads (`outOfCounts`). A statement and a check are what the filter row counts as one
  * (`isStatement`, `isCheck`): a `requirement` or `check` block of any other document is counted
  * as neither. What sits under the issue and under no entry is counted on none, since the issue
- * has no entry; the filter row's signals count it.
+ * has no entry; the filter row's signals count it. `producing` is the messages that produced a
+ * node in the whole tree (`producingMessages`), which `root` may be a words filter's cut of.
  */
-export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
+export function contentsOf(
+  root: TreeNode,
+  viewer: string | undefined,
+  producing: ReadonlySet<string>
+): ContentsEntry[] {
   const tally = (): Record<ContentsMark, number> => ({
     children: 0,
     failing: 0,
@@ -110,7 +109,7 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
       if (child.transcluded) continue;
       // The list keeps each entry that Conversation counts, even at or under an overtaken
       // node, because the entry rule reads what kind of node it is, not what its branch holds.
-      if (isContentsEntry(node, child, viewer)) {
+      if (isContentsEntry(node, child, viewer, producing)) {
         const children: ContentsEntry[] = [];
         const own = tally();
         walk(child, children, own);
@@ -165,35 +164,42 @@ const MARK_TEXT_REM = 0.75;
  * The Contents list (R14, the prototype's `#left`): its heading with the Focus branch toggle,
  * and one row per entry, each its node's first line by R1's rule, cut from its first block's
  * words with each bare address as written (`lineWordsRaw`) at a word to the row's width, with
- * each reference in it named once the line is cut (`referenceStandIns`): by the page's name for
- * it, and by its short form only where the page knows none; a node with no words is named by its
+ * each reference in it named once the line is cut (`referenceStandIns`), as the node's row in the
+ * outline names it, from the names the page published: an issue by its key and its title, and a
+ * reference the page has no name for as its author wrote it; a node with no words is named by its
  * kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in the Contents
  * pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It is one tab
  * stop, as the outline is: the arrow keys move inside it, the right and left arrows unfold and
  * fold an entry, and Enter or a press goes to that node in the outline. The entry the reader is
- * in - the one holding the node the focus is on, or last was on - is marked by a rule and a
- * ground of its own.
+ * in - the one holding the node the focus is on, or last was on, else the entry the list last
+ * took the outline to - is marked by a rule and a ground of its own, and is the branch Focus
+ * branch draws.
  */
 export function ContentsList({
   focusBranch,
-  nameOf,
+  lineNames,
   onFocusBranch,
   onGo,
+  producing,
   root,
 }: {
   /** Whether the outline draws one branch at a time, the current one. */
   focusBranch: boolean;
-  /** How a reference an entry's words cite is named (`useReferenceNames`). */
-  nameOf: (reference: string) => string | undefined;
+  /** What a reference an entry's words cite is named by (`useIssueNames`). */
+  lineNames: LineNames;
   /** Turns Focus branch on or off, around the entry the reader is in. */
   onFocusBranch: (current: string | undefined) => void;
   /** Goes to the node in the outline. */
   onGo: (id: string) => void;
+  /** The messages that produced a node in the whole tree (`producingMessages`). */
+  producing: ReadonlySet<string>;
   /** The tree the outline draws. */
   root: TreeNode;
 }): ReactNode {
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const entries = useMemo(() => contentsOf(root, viewer), [root, viewer]);
+  // The reader, read as the tree reads it (`useIssueTree`, `EVENT_FRESH`): staleness is per
+  // observer, so under the app's 30 s `staleTime` the list drawn later would ask for it again.
+  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const entries = useMemo(() => contentsOf(root, viewer, producing), [producing, root, viewer]);
   const entryIds = useMemo(() => {
     const ids = new Set<string>();
     const walk = (list: readonly ContentsEntry[]) => {
@@ -207,7 +213,14 @@ export function ContentsList({
   }, [entries]);
   // The entry the reader is in: the nearest entry at or above the node the focus is on. The
   // focus leaving the outline - for this list, say - leaves the entry the reader was last in.
+  // A list drawn again has seen no focus of its own: the Outline sheet draws a new one each time
+  // it opens, after the focus left the outline for the Outline control. Where the focus is in no
+  // entry and was in none the list saw, the reader is in the entry the list last took the outline
+  // to, which the page keeps across the sheet's openings (`useOutlineRequest`). The last two hold
+  // only while they are entries the list draws, so Focus branch draws no branch the words filter
+  // left out, or one that is gone.
   const focused = useFocusedNode()?.id;
+  const requested = useOutlineRequest()?.id;
   const [lastIn, setLastIn] = useState<string | undefined>(undefined);
   const inEntry = useMemo(
     () => nearestAtOrAbove(root, focused, (id) => entryIds.has(id)),
@@ -216,7 +229,10 @@ export function ContentsList({
   useEffect(() => {
     if (inEntry !== undefined) setLastIn(inEntry);
   }, [inEntry]);
-  const current = inEntry ?? (lastIn !== undefined && entryIds.has(lastIn) ? lastIn : undefined);
+  const current =
+    inEntry ??
+    (lastIn !== undefined && entryIds.has(lastIn) ? lastIn : undefined) ??
+    (requested !== undefined && entryIds.has(requested) ? requested : undefined);
 
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => {
@@ -251,8 +267,8 @@ export function ContentsList({
         const { node } = entry;
         const isCurrent = node.id === current;
         // The line is cut with each reference it cites unnamed and measured with each named, so
-        // no cut falls inside a name (`referenceStandIns`).
-        const references = referenceStandIns(nameOf);
+        // no cut falls inside a word of a name (`referenceStandIns`).
+        const references = referenceStandIns(lineNames);
         const held = references.standIn(lineWordsRaw(node));
         const unnamed = held.trim() === "";
         const words = unnamed ? NODE_TYPE_NAMES[node.type] : held;
@@ -294,7 +310,7 @@ export function ContentsList({
         const drawnWords = references.named(drawnLine(line));
         return { drawnWords, indent, isCurrent, line, marks, unnamed };
       }),
-    [box, current, nameOf, plus, rows]
+    [box, current, lineNames, plus, rows]
   );
   // The list's one tab stop, always on a drawn row, so Tab never skips the list: the row the
   // reader last moved to, else the nearest drawn entry at or above the entry they are in - a

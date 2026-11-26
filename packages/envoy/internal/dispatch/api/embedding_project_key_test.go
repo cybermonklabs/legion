@@ -228,7 +228,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, nil, dyingLeases, embeddingProjectKeyFillLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})

@@ -1,18 +1,29 @@
 import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
+import { Schema } from "@milkdown/kit/prose/model";
+import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorView } from "@milkdown/kit/prose/view";
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo, useState } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { type ReactNode, useMemo } from "react";
+import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
 
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
 import { displayTree } from "../../../__tests__/display-trees";
+import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
+import { installResizeObserver } from "../../../__tests__/scroll-box";
 import { api } from "../../../api/client";
-import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
 import type {
   Actor,
   CheckBlock,
+  DecisionLink,
   IssueAskRow,
   IssueCheckResults,
   IssueCoverage,
@@ -27,9 +38,8 @@ import {
   ReferenceNamesProvider,
   usePublishReferenceNames,
 } from "../../refs/reference-names";
-import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { appKeymap, useKeymapScope } from "../../shell/keymap";
+import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
 import {
   artifact,
@@ -43,11 +53,15 @@ import {
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { DocumentStage, DocumentStages } from "../document-stage";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
+import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
+import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeAsk, type TreeNode } from "../issue-tree";
 import * as roomTarget from "../model-rows/room-target";
+import { type CaretAt, caretInBlock } from "../node-caret";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
+import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "../page-structure";
 import {
@@ -61,9 +75,8 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { publishedNames, publishedTree } from "../projection-fixture";
-import { EditorBox } from "../StagedDocument";
-import { ProvidersSlot } from "../slots/providers";
-import { StageSlot, ViewStage } from "../slots/stage";
+import { ViewStage } from "../slots/stage";
+import { drawStage } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import {
@@ -81,6 +94,7 @@ import {
   viewKey,
   viewQuery,
 } from "../tree-read/tree-read";
+import { issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
 import type { OnEditing } from "../useNodeEditing";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
@@ -116,9 +130,9 @@ function IssueScope(): ReactNode {
   return null;
 }
 
-/** What the page's one batched read brought, published as the page publishes it
- *  (`useIssueTree.ts`), which a reference in a node's drawn words is named from (`RowText`) and
- *  a chip of the tree is named by (`useReferenceNames`). */
+/** What the page publishes of its one batched read (`useIssueTree.ts`, `publishedNames`), which a
+ *  reference in a node's drawn words is named from (`RowText`) and a chip of the tree is named
+ *  by, published to the store as the page publishes it. */
 function Named({
   children,
   published,
@@ -164,51 +178,6 @@ function LocationProbe(): ReactNode {
 /** Where the page's router stands, as `LocationProbe` writes it. */
 function locationOf(view: RenderResult): string {
   return view.container.querySelector("[data-location]")?.getAttribute("data-location") ?? "";
-}
-
-/** The page's side of editing a row in place (`IssuePresetPanels.tsx`'s `useOutlineEditing`): a
- *  spy for the body's `onEditing`, which notes each document a row asks for, and hands the call
- *  on (`held`) to `EditorStand`, so the document asked for is drawn on its stage as a plain
- *  element standing in for its editor. */
-interface EditingPage {
-  readonly asked: Mock<OnEditing>;
-  readonly held: { set?: OnEditing };
-}
-
-function editingPage(): EditingPage {
-  const held: EditingPage["held"] = {};
-  return {
-    asked: mock<OnEditing>((artifactId, onEditor) => held.set?.(artifactId, onEditor)),
-    held,
-  };
-}
-
-/** What a body is given as its `onEditing` where a case reads none: it asks the page for
- *  nothing. */
-const NO_EDITING: OnEditing = () => {};
-
-/** Each document the page was asked for, in order, of the calls `page` noted: the asks that end
- *  an editing (`undefined`) left out. */
-function askedDocuments(page: EditingPage): string[] {
-  return page.asked.mock.calls.flatMap(([artifactId]) =>
-    artifactId === undefined ? [] : [artifactId]
-  );
-}
-
-/** The page's one editor of the document a row is being edited in, as `IssuePresetPanels` draws
- *  it for the row to take onto its stage: a plain editable element (`data-editor-stand`) in the
- *  box the page draws an editor in, on the stage of the document `held.set` was last given, and
- *  nothing while none is. */
-function EditorStand({ held }: { held: EditingPage["held"] }): ReactNode {
-  const [edited, setEdited] = useState<string | undefined>(undefined);
-  held.set = (artifactId) => setEdited(artifactId);
-  return edited === undefined ? null : (
-    <DocumentStage artifactId={edited}>
-      <EditorBox>
-        <div contentEditable data-editor-stand="" suppressContentEditableWarning />
-      </EditorBox>
-    </DocumentStage>
-  );
 }
 
 /** The reads the page's tree fills (`useIssueTree.ts`), each by an observer that fetches as the
@@ -278,10 +247,7 @@ beforeAll(async () => {
  *  requests stands above the body, so `request` is taken as the page takes it; `redraw(false)`
  *  takes the body off the page and `redraw(true)` draws a new one under the same provider and
  *  reads, as the view turned off and on again does, and `redraw(true, issue)` draws the body and
- *  the reads over `issue` from then on, as the page does once the issue read answers anew.
- *  `editing` is the page's side of editing a row in place, where a case reads it: the body is
- *  given its `asked` as its `onEditing`, and an editor's stand-in is drawn beside the body, under
- *  the page's stages (`DocumentStages`). */
+ *  the reads over `issue` from then on, as the page does once the issue read answers anew. */
 function drawBody(
   tree: TreeNode,
   made: readonly TreeAnswerNode[] = [],
@@ -291,10 +257,12 @@ function drawBody(
     blocks = "answered",
     checks = [],
     context = new Set<string>(),
+    counts,
     coverage = "answered",
-    editing,
+    editor,
     named = [],
     names,
+    onEditing = () => {},
     reader = READER,
     request,
     results = "answered",
@@ -310,10 +278,12 @@ function drawBody(
     blocks?: ReadState;
     checks?: readonly CheckBlock[];
     context?: Set<string>;
+    counts?: BriefCounts;
     coverage?: ReadState;
-    editing?: EditingPage;
+    editor?: ReactNode;
     named?: readonly string[];
     names?: ReadonlyMap<string, string>;
+    onEditing?: OnEditing;
     reader?: string;
     request?: OutlineRequest;
     results?: ReadState;
@@ -410,28 +380,10 @@ function drawBody(
       treeStanding[asked] = state;
     },
   };
-  // The body over `over`, under the Spec view read the page holds (`HeldView`).
-  const bodyOf = (over: IssueDetails): ReactNode => (
-    <HeldView root={tree}>
-      {(root) => (
-        <SpecFilterBody
-          context={context}
-          emptyLine={EMPTY_STATE_LINES.spec}
-          holdsEscape={false}
-          issue={over}
-          onEditing={editing?.asked ?? NO_EDITING}
-          reader={reader}
-          {...(request === undefined ? {} : { request })}
-          {...(reveal === undefined ? {} : { reveal })}
-          root={root}
-          view={presetView(tree, "spec", "", new Set(named)).root}
-        />
-      )}
-    </HeldView>
-  );
-  // What the page publishes: the names a case adds for what only a read of the target would name,
-  // and every chip the tree holds, named by its reading, which stands over a case's name for the
-  // same target.
+  // What the page publishes, which the store holds and the body hands its rows
+  // (`PublishedReferenceNames`), one value, as the page's tree makes one: the names a case adds
+  // for what only a read of the target would name, and every chip the tree holds, named by its
+  // reading, which stands over a case's name for the same target.
   const chipsPublished = publishedTree(tree);
   const published: PublishedReferences =
     names === undefined
@@ -441,6 +393,30 @@ function drawBody(
           asked: new Set([...chipsPublished.asked, ...names.keys()]),
           readings: new Map([...publishedNames(names).readings, ...chipsPublished.readings]),
         };
+  // The body over `over`, under the Spec view read the page holds (`HeldView`).
+  const bodyOf = (over: IssueDetails): ReactNode => (
+    <HeldView root={tree}>
+      {(root) => (
+        <SpecFilterBody
+          context={context}
+          counts={counts}
+          emptyLine={EMPTY_STATE_LINES.spec}
+          holdsEscape={false}
+          issue={over}
+          namesLine={NO_FAILED_READS}
+          onEditing={onEditing}
+          published={published}
+          reader={reader}
+          // The case holds each read as it says, so an address lands as soon as its row is drawn.
+          readsSettled
+          {...(request === undefined ? {} : { request })}
+          {...(reveal === undefined ? {} : { reveal })}
+          root={root}
+          view={presetView(tree, "spec", "", new Set(named)).root}
+        />
+      )}
+    </HeldView>
+  );
   let shown: IssueDetails = issue;
   let body = bodyOf(shown);
   const page = (drawn: boolean): ReactNode => (
@@ -452,13 +428,13 @@ function drawBody(
               <MarginProvider>
                 <OutlineRequestProvider>
                   <FocusedNodeProvider>
+                    <IssueScope />
+                    <FocusedProbe />
+                    <LocationProbe />
+                    <TreeReads issue={shown} />
                     <DocumentStages>
-                      <IssueScope />
-                      <FocusedProbe />
-                      <LocationProbe />
-                      <TreeReads issue={shown} />
                       {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
-                      {editing === undefined ? null : <EditorStand held={editing.held} />}
+                      {editor}
                     </DocumentStages>
                   </FocusedNodeProvider>
                 </OutlineRequestProvider>
@@ -599,8 +575,9 @@ test("a person's decision stands once beside its statements, in their own words"
   }
 });
 
-// R5, the tester's F7: one line on each statement's own row, with no focus and no hover: the
-// words the decision came from, as a link to that decision, who decided and when.
+// R5, the tester's F7: one line on each statement's own row, with no focus and no hover: after
+// "because:", the question the person answered by its first sentence, then the words the
+// decision came from, as a link to that decision, who decided and when.
 test("each statement carries one line naming the decision that shaped it, with a link to it", () => {
   const ask = answeredAsk("ask-1", { text: "Put the decisions beside the statements. Please." });
   const { read, view } = drawBody(
@@ -619,8 +596,9 @@ test("each statement carries one line naming the decision that shaped it, with a
     const lines = textsOf(view, "[data-spec-because]");
     expect(lines).toHaveLength(2);
     for (const line of lines) {
-      expect(line).toContain(SPEC_WORDS.because);
-      expect(line).toContain("“Put the decisions beside the statements.”");
+      expect(line).toContain(
+        `${SPEC_WORDS.because} Does the built page work for you? “Put the decisions beside the statements.”`
+      );
       expect(line).toContain(READER);
       expect(line).toContain("14 Nov");
     }
@@ -1127,8 +1105,9 @@ test("a decision with no author draws none, and says Author unknown with the foc
 
 // R5 and the tester's F20: an agent's words that cite
 // a statement and quote a typed block draw the statement by its name, never its address, and
-// none of the block's source lines: whole in the cell through `RowText`, and as one line of plain
-// words on the because line.
+// none of the block's source lines: whole in the cell through `RowText`, its link out of the tab
+// order as every control inside a row is (R9), and as one line of plain words on the because
+// line.
 test("an agent's decision draws its words with each reference named, in its cell and on its because line", async () => {
   const cited = statementRef("r4");
   const name = "Every statement is drawn whole";
@@ -1148,8 +1127,8 @@ test("an agent's decision draws its words with each reference named, in its cell
     issueTree([
       statement("r4", { text: `**R4.** ${name}.` }),
       // The tree names the statement a decision shaped by a chip on the decision, from the
-      // batched read (`tree-drafts.ts`), which is the name the page gives it
-      // (`referenceStandIns`).
+      // batched read (`tree-drafts.ts`), whose name the page publishes, which a plain line names
+      // it by (`referenceStandIns`).
       decisionNode("d1", {
         chips: [{ answered: true, gone: false, reading: { words: name }, ref: cited }],
         text: words,
@@ -1166,13 +1145,21 @@ test("an agent's decision draws its words with each reference named, in its cell
         },
       }),
     ],
-    { names: new Map([[cited, `:::requirement{#r4}\n${name}\n:::`]]) }
+    { names: new Map([[cited, name]]) }
   );
   try {
     await waitFor(() =>
       expect(
         view.container.querySelector("[data-spec-cell] a[data-row-reference]")?.textContent
       ).toBe(name)
+    );
+    await waitFor(() =>
+      expect(
+        view.container
+          .querySelector("[data-spec-cell] a[data-row-reference]")
+          ?.getAttribute("tabindex"),
+        "the cell's link is in the tab order"
+      ).toBe("-1")
     );
     for (const selector of ["[data-spec-cell]", "[data-spec-because]"]) {
       const drawn = view.container.querySelector(selector)?.textContent ?? "";
@@ -1190,26 +1177,143 @@ test("an agent's decision draws its words with each reference named, in its cell
   }
 });
 
-// R5: where the answered question is the statement's own parent, its parent line and its
-// decision line are one line, so the question is drawn once.
-test("the question a statement hangs under is drawn once, as the group's heading", () => {
-  const { read, view } = drawBody(
-    issueTree([
-      answeredAsk("ask-1", { text: "Keep the memo in the pane. It reads better there." }, [
-        statement("r1"),
-      ]),
-    ])
-  );
+// R5: the cell gives the question an answer answers by its first sentence whole, ending at its
+// first sentence end as the answer's quote does and with no limit of characters, also where the
+// group's heading is that question. The heading draws the question's first line, which R1 cuts
+// at 100 characters inside a longer sentence; the cell, and the line under the statement before
+// the quote, draw the whole sentence and nothing of the next.
+test("a cell whose group is headed by its question draws the question's first sentence whole", () => {
+  const first =
+    "Should the Spec view draw every statement of the spec whole, with each of its words, rather than cut it at six lines?";
+  expect(first.length).toBeGreaterThan(100);
+  const ask = {
+    ...answeredAsk("ask-1", { text: "Keep the memo in the pane. It reads better there." }, [
+      statement("r1"),
+    ]),
+    text: `${first} Then a second sentence follows it.`,
+  };
+  const { read, view } = drawBody(issueTree([ask]));
   try {
-    const heading = view.container.querySelector("[data-spec-group-heading]")?.textContent ?? "";
-    expect(heading).toContain("question");
-    expect(heading).toContain("Does the built page work for you?");
-    const source = view.container.querySelector("[data-spec-source]")?.textContent ?? "";
-    expect(source).not.toContain("Does the built page work for you?");
+    const heading =
+      view.container.querySelector("[data-spec-group-heading] > p:last-child")?.textContent ?? "";
+    expect(heading.endsWith("…"), "the heading is not the question's first line, cut by R1").toBe(
+      true
+    );
+    expect(first.startsWith(heading.slice(0, -1))).toBe(true);
+    const cell = view.container.querySelector("[data-spec-cell]");
+    expect(cell?.getAttribute("data-decision-id")).toBe("ask-1");
+    expect(
+      textsOf(view, "[data-spec-cell] [data-spec-question]"),
+      "the cell under its question's heading does not draw that question's first sentence whole"
+    ).toEqual([first]);
+    expect(
+      textsOf(view, "[data-spec-because] [data-spec-question]"),
+      "the because line does not draw the question's first sentence whole"
+    ).toEqual([first]);
+    const because = textsOf(view, "[data-spec-because]")[0] ?? "";
+    expect(because.startsWith(`${SPEC_WORDS.because} ${first} “Keep the memo in the pane.”`)).toBe(
+      true
+    );
+    for (const drawn of [cell?.querySelector("[data-spec-source]")?.textContent ?? "", because]) {
+      expect(drawn, "a whole first sentence is drawn with an ellipsis").not.toContain("…");
+      expect(drawn, "the question's second sentence is drawn").not.toContain("Then a second");
+    }
     expect(textsOf(view, "[data-spec-quote]")).toEqual(["“Keep the memo in the pane.”"]);
   } finally {
     view.unmount();
     read.mockRestore();
+  }
+});
+
+/** `ref`'s tie as `shaped` makes it, made at `created`, whose far end - the statement - last
+ *  changed at `changed`. */
+function tieChangedAt(ref: string, created: string, changed: string | null): DecisionLink {
+  const tie = shaped(ref);
+  return { ...tie, created_at: created, to: { ...tie.to, changed_at: changed } };
+}
+
+// R5: where a statement's words changed after the tie that names its decision, its because line
+// says "Changed since": the tie's far end's `changed_at` is later than the tie's `created_at`,
+// both as the decision's links in the Spec view read answer them, read as the times they name. A
+// statement the decision named after its last change says nothing of it, and so does r3, whose
+// two times would order the other way read as text: its far end changed 0.12 s past the second,
+// before the tie made 0.123456 s past it, though "…00.12Z" sorts after "…00.123456Z".
+test("a statement changed after its tie says Changed since", () => {
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), statement("r3"), decisionNode("d1")]),
+    [
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [
+            tieChangedAt(statementRef("r1"), "2026-11-14T10:00:00Z", "2026-11-15T08:00:00Z"),
+            tieChangedAt(statementRef("r2"), "2026-11-14T10:00:00Z", "2026-11-14T09:00:00Z"),
+            tieChangedAt(
+              statementRef("r3"),
+              "2026-11-14T10:00:00.123456Z",
+              "2026-11-14T10:00:00.12Z"
+            ),
+          ],
+        },
+      }),
+    ]
+  );
+  const lineOf = (block: string): string =>
+    rowOf(view, `spec#b-${block}`).querySelector("[data-spec-because]")?.textContent ?? "";
+  try {
+    expect(lineOf("r1")).toContain(`${SPEC_WORDS.because} “The decision d1.”`);
+    expect(
+      lineOf("r1").endsWith(` · ${SPEC_WORDS.changed_since}`),
+      "the statement changed after its tie does not say Changed since after who and when"
+    ).toBe(true);
+    for (const block of ["r2", "r3"]) {
+      expect(lineOf(block)).toContain(`${SPEC_WORDS.because} “The decision d1.”`);
+      expect(lineOf(block), `${block}, unchanged since its tie, says Changed since`).not.toContain(
+        SPEC_WORDS.changed_since
+      );
+    }
+    expect(textsOf(view, "[data-spec-changed-since]")).toEqual([SPEC_WORDS.changed_since]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5: an agent's decision's words are drawn whole in its cell, with no limit of lines, with the
+// focus on the cell or without it. The words are laid out 9,600 px tall, past the six lines at
+// which the outline cuts an agent's words behind "more · N words" (`useClamp`); the cell draws
+// every line of them and no such control.
+test("an agent's decision draws its words whole in its cell at any length, with the focus or without it", async () => {
+  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const text = `Draw every statement whole. ${words}`;
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), decisionNode("d1", { text })]),
+    [decision("d1", { text, decision: { kind: "agent", links: [shaped(statementRef("r1"))] } })]
+  );
+  const cell = view.container.querySelector<HTMLElement>("[data-spec-cell][data-decision-id]");
+  const expectWhole = async (when: string): Promise<void> => {
+    // The page measures only the words of rows near the viewport, so a cut would be read once
+    // they are measured.
+    await measureNearWords(near);
+    const drawn = cell?.querySelector<HTMLElement>("[data-spec-quote] [data-node-words]");
+    expect(drawn?.textContent, `the cell's words are not drawn ${when}`).toBe(text);
+    expect(drawn?.style.maxHeight, `the cell's words are cut ${when}`).toBe("");
+    expect(cell?.querySelector("[data-node-more]"), `the cell draws "more" ${when}`).toBeNull();
+  };
+  try {
+    if (cell === null) throw new Error("the body draws no cell for the agent's decision");
+    await expectWhole("with no focus");
+    act(() => cell.focus());
+    await expectWhole("with the focus on the cell");
+    act(() => rowOf(view, "spec#b-r2").focus());
+    await expectWhole("once the focus left the cell");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    near.restore();
+    restore();
   }
 });
 
@@ -1279,6 +1383,42 @@ test("the arrows move between the statements, and a key with nowhere to go repor
   }
 });
 
+test("a key holds the focused item only when the page answered it", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    const first = rowOf(view, "spec#b-r1");
+    const second = rowOf(view, "spec#b-r2");
+    act(() => first.focus());
+    // The hold watches the page for rows drawn above the item. The row's own placing
+    // watches only the row, so it cannot produce this observation.
+    for (const key of ["{PageDown}", " ", "{PageUp}"]) {
+      await user.keyboard(key);
+      expect(document.activeElement).toBe(first);
+      expect(sizes.observed(), `${key} started a hold`).not.toContain(document.body);
+    }
+
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(second);
+    expect(sizes.observed(), "ArrowDown did not start a hold").toContain(document.body);
+    await user.keyboard(" ");
+    expect(sizes.observed(), "Space kept the hold from ArrowDown").not.toContain(document.body);
+
+    // End on the last row moves no focus, yet the keymap answers it and prevents its default,
+    // so it still holds the row on screen while earlier rows load above it.
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(second);
+    expect(sizes.observed(), "End on the last row did not start a hold").toContain(document.body);
+    await user.keyboard("{PageDown}");
+    expect(sizes.observed(), "PageDown kept the hold from End").not.toContain(document.body);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    sizes.restore();
+  }
+});
+
 // R19: an address that names a statement (`/spec#b-<block>`) puts the focus on it.
 test("an address naming a statement puts the focus on it", async () => {
   const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]), [], {
@@ -1292,95 +1432,42 @@ test("an address naming a statement puts the focus on it", async () => {
   }
 });
 
-/** The page's stage at the address the router holds, as the page's root draws it
- *  (`IssueOutlinePage.tsx`): the route read from the address, under the page's providers, with
- *  the real views and each slot as its part filled it (`VIEW_SLOTS`, `SLOT_FILLED`). */
-function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
-  const { pathname, search } = useLocation();
-  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
-  return (
-    <ProvidersSlot issue={issue} route={route}>
-      <IssueScope />
-      <StageSlot issue={issue} route={route} />
-    </ProvidersSlot>
-  );
-}
-
 /** The tree read for the stage's cases: the issue's two threads, each comment a node of it, as
- *  the outline's own cases answer it (`IssueTree.test.tsx`'s `treeReadOf`). */
-function threadsTree(): TreeAnswer {
+ *  the outline's own cases answer it (`IssueTree.test.tsx`'s `treeReadOf`), and a `requirement`
+ *  block of the spec for each of `statements`, the statements the tree read holds. */
+function threadsTree(statements: readonly string[] = []): TreeAnswer {
   return treeAnswer([
     treeNode(KEY, "issue", null),
+    ...statements.map((id, position) =>
+      treeNode(id, "requirement", KEY, {
+        document: { artifact_id: "artifact-spec", position, slug: "spec" },
+        text: `The page draws ${id}.`,
+      })
+    ),
     ...TWO_THREADS.map((comment) => commentNode(comment)),
   ]);
 }
 
-/** Answers the tree read with `threadsTree`, and the Spec view's read of it never, so the view is
- *  drawn off the whole tree, as before the page holds its view read (`presets.ts`). */
-function answerThreadsTree() {
-  return spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(threadsTree()));
+/** Answers the tree read with `threadsTree` of `statements`, and the Spec view's read of it
+ *  never, so the view is drawn off the whole tree, as before the page holds its view read
+ *  (`presets.ts`). */
+function answerThreadsTree(statements: readonly string[] = []) {
+  return spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(threadsTree(statements)));
 }
 
-// The Spec view's slot is filled (`SLOT_FILLED`), so an address that names an item beside the
-// view's own - `/spec?comment=<id>`, as `documentItemPath` writes the address of an item of the
-// spec - is the view's to draw: the stage draws the Spec view and no outline, and the view lands
-// on the item in its own tree, with the focus on the item's row. The stage is the page's own,
-// with its real views and its slots as filled, so a slot left unfilled draws the outline here.
-test("with the Spec view's slot filled, a spec item's address lands on the item in the Spec view's tree and draws no outline", async () => {
-  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  // Every read the page's tree is built from, answered: the issue holds two threads of comments
-  // and nothing else, as the outline's own cases seed them (`IssueTree.test.tsx`'s
-  // `seedBodyReads`).
-  client.setQueryData(["whoami"], { kind: "user", login: READER });
+/** `client` holding every read the page's tree is built from, answered: the issue holds two
+ *  threads of comments and nothing else, as the outline's own cases seed them
+ *  (`IssueTree.test.tsx`'s `seedBodyReads`), and the tree read holds them as nodes
+ *  (`threadsTree`). Who is reading is each case's own. */
+function holdTreeReads(client: QueryClient): void {
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
   client.setQueryData(viewKey(KEY, "spec"), treeAnswer([]));
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  client.setQueryData(["comments", KEY], TWO_THREADS);
-  client.setQueryData(["issue-messages", KEY], []);
+  client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
+  client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
-  const trees = answerThreadsTree();
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec?comment=reply-b`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  try {
-    const { container } = view;
-    await waitFor(() => {
-      const row = container.querySelector<HTMLElement>(
-        `[data-spec-tree] ${nodeRowSelectorOf("reply-b")}`
-      );
-      expect(row, "the Spec view's tree drew no row for the item the address names").not.toBeNull();
-      expect(
-        row?.contains(document.activeElement),
-        `the item's address left the focus on ${document.activeElement?.tagName}, not its row`
-      ).toBe(true);
-    });
-    expect(
-      container.querySelector("[data-spec-body]"),
-      "the stage drew no Spec view"
-    ).not.toBeNull();
-    expect(
-      container.querySelector("[data-issue-body]"),
-      "the stage drew the outline in the Spec view's place"
-    ).toBeNull();
-  } finally {
-    view.unmount();
-    names.mockRestore();
-    trees.mockRestore();
-  }
-});
+}
 
 // The names read is the page's tree's, read last, once no read the tree is built from is still
 // out, and the Spec view draws from it too: the name of every reference the issue's three
@@ -1399,27 +1486,13 @@ test("a failed names read says so in its own line, after the view's own, and its
   // so the view draws a line of its own before the names': the statements', for the one read the
   // spec's blocks and the decisions both come from (`useTreeRead`, decision 450).
   client.setQueryData(["whoami"], { kind: "user", login: READER });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
-  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
-  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  client.setQueryData(["comments", KEY], TWO_THREADS);
-  client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
+  holdTreeReads(client);
+  client.removeQueries({ queryKey: viewKey(KEY, "spec") });
   const trees = spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
     query.view === undefined ? Promise.resolve(threadsTree()) : Promise.reject(new Error("offline"))
   );
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
-  const view = render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = drawStage("", { client, issue, preset: "spec" });
   try {
     const line = await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     const lines = '[data-spec-body] [data-failed-read] [role="alert"]';
@@ -1475,17 +1548,7 @@ test("with Conversation's read out, the statements line's Retry sends the refuse
   });
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   void client.prefetchQuery(outlineQuery(KEY, "conversation"));
-  const view = render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = drawStage("", { client, issue, preset: "spec" });
   try {
     const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     expect(
@@ -1502,6 +1565,221 @@ test("with Conversation's read out, the statements line's Retry sends the refuse
     await waitFor(() =>
       expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable)
     );
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
+// The Spec view's slot reads who is reading as the tree reads it, kept fresh by events and never
+// read again by its age (`EVENT_FRESH`). Under the app's 30 s `staleTime` (`main.tsx`) the view
+// opened more than 30 s after whoami answered asked for it again, a request of the view's own.
+test("the Spec view opened more than 30 s after whoami answered asks for it nothing", async () => {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  holdTreeReads(client);
+  const trees = answerThreadsTree();
+  client.setQueryData(
+    whoAmIQuery().queryKey,
+    { event_head: "0", kind: "user", login: READER },
+    { updatedAt: Date.now() - 31_000 }
+  );
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: READER,
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = drawStage("", { client, issue, preset: "spec" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-body]"),
+        "the stage drew no Spec view"
+      ).not.toBeNull()
+    );
+    expect(whoAmI, "the Spec view asked for whoami again").not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    whoAmI.mockRestore();
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
+// The address's statement takes the tab stop only where the reader has not acted since they
+// followed the address, in whatever render the view first draws it. The coverage and the tree
+// read, which the statements come from and the settling waits on as well, are held, so the view
+// draws no statement and the stage finds no row to give the focus, which stays on the page's
+// body. The reader turns the wheel there. The reads then answer together, and the statements are
+// first drawn in the render the reads settle in: the landing yields to the wheel, and the stage
+// gives the focus it finds on nothing to the tab-stop row, the first statement, and not the
+// address's, which a spec taller than the screen draws below it.
+test("a Spec address whose statements are drawn only once the reads settle keeps the stop off the address's statement where the reader acted first", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  holdTreeReads(client);
+  client.removeQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
+  client.removeQueries({ queryKey: outlineQuery(KEY, "conversation").queryKey });
+  const answered = Promise.withResolvers<void>();
+  const coverage = spyOn(api, "getIssueCoverage").mockImplementation(async () => {
+    await answered.promise;
+    return coverageRead(["r1", "r2"]);
+  });
+  const whole = wholeTreeOnly(threadsTree(["r1", "r2"]));
+  const trees = spyOn(api, "getIssueTree").mockImplementation(async (key, query) => {
+    await answered.promise;
+    return whole(key, query);
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = drawStage("#b-r2", { client, issue: issueDetails(), preset: "spec" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-tree]"),
+        "the stage drew no Spec view"
+      ).toBeInTheDocument()
+    );
+    expect(
+      view.container.querySelector("[data-spec-body] [data-node-row]"),
+      "the view drew a statement before the reads answered"
+    ).toBeNull();
+    await act(async () => window.dispatchEvent(new Event("wheel")));
+    await act(async () => answered.resolve());
+    const first = await waitFor(() => {
+      const row = rowOf(view, "spec#b-r1");
+      expect(
+        row,
+        `the statements drawn after a turn of the wheel left the focus on ${document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return row;
+    });
+    // The frame a landing would have asked for as the reads settled.
+    await act(() => nextFrame());
+    const addressed = rowOf(view, "spec#b-r2");
+    expect(
+      first,
+      `the reads settling moved the focus to ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(
+      [first.tabIndex, addressed.tabIndex],
+      "the address's statement took the tab stop after the reader acted"
+    ).toEqual([0, -1]);
+  } finally {
+    view.unmount();
+    coverage.mockRestore();
+    trees.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The stage's controller of the reader's acts is a following's own only from that following's
+// first commit, so the render that draws a view at a new address still reads the last
+// following's, which the press that followed the new address ended. The outline is drawn with
+// every read answered, and the reader presses, as on a link to a statement, which opens the Spec
+// view at the statement's address: the view draws its statements in its first render, from the
+// reads the page holds, and the address's statement takes the tab stop and the focus, since the
+// reader has not acted since they followed that address.
+test("the Spec view opened at a statement after a press on the outline gives that statement the stop and the focus", async () => {
+  const issue = issueDetails();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  holdTreeReads(client);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1", "r2"]));
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree(["r1", "r2"]));
+  const trees = answerThreadsTree(["r1", "r2"]);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const held: { navigate?: NavigateFunction } = {};
+  const view = drawStage("", { client, held, issue, preset: "conversation" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-issue-body] [data-node-row]"),
+        "the stage drew no outline"
+      ).toBeInTheDocument()
+    );
+    await act(async () => window.dispatchEvent(new Event("pointerdown")));
+    await act(async () => held.navigate?.(`${presetPath(KEY, "spec")}#b-r2`));
+    const addressed = await waitFor(() => {
+      const row = rowOf(view, "spec#b-r2");
+      expect(
+        row,
+        `the Spec view opened at the statement's address left the focus on ${document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return row;
+    });
+    // The frame the landing asked for as the view was drawn.
+    await act(() => nextFrame());
+    expect(
+      addressed,
+      `the landing moved the focus to ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(
+      [rowOf(view, "spec#b-r1").tabIndex, addressed.tabIndex],
+      "the address's statement took no tab stop"
+    ).toEqual([-1, 0]);
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
+// The Spec view draws the names read's line as the tree says it, speaking or not
+// (`NamesFailure.speaks`): a line that stands again for a refusal it already said is drawn
+// without speaking. A reply cites another issue, so the names read of the tree's set names it;
+// that read is refused. The reply goes with the tree read's next answer, the names read of the
+// smaller set answers, and the line leaves. The reply comes back: the names read is back on the
+// first set, which holds no answer and the refusal the line counted, and runs again, so the line
+// stands again, with no live role.
+test("a names line that stands again in the Spec view for a refusal it counted is drawn without speaking", async () => {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  holdTreeReads(client);
+  const cited = TWO_THREADS.map((comment) =>
+    comment.id === "reply-b" ? { ...comment, body: "Read dispatch://CORE-8 first." } : comment
+  );
+  const threads = (comments: typeof cited) =>
+    treeAnswer([treeNode(KEY, "issue", null), ...comments.map((one) => commentNode(one))]);
+  client.setQueryData(issueCommentsQuery(KEY).queryKey, cited);
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(cited));
+  const trees = answerThreadsTree();
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(new Error("offline"));
+  const view = drawStage("", { client, issue, preset: "spec" });
+  try {
+    await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
+    const fewer = cited.filter((comment) => comment.id !== "reply-b");
+    await act(async () => {
+      client.setQueryData(issueCommentsQuery(KEY).queryKey, fewer);
+      client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(fewer));
+    });
+    await waitFor(() =>
+      expect(
+        view.queryByText(STATE_LINES.names_unreadable),
+        "the names' line stayed once the names of the smaller set answered"
+      ).toBeNull()
+    );
+    names.mockReturnValueOnce(new Promise<never>(() => {}) as never);
+    await act(async () => {
+      client.setQueryData(issueCommentsQuery(KEY).queryKey, cited);
+      client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(cited));
+    });
+    const words = await waitFor(() => view.getByText(STATE_LINES.names_unreadable));
+    expect(words, "the names' line said again a refusal it had counted").not.toHaveAttribute(
+      "role"
+    );
+    expect(view.queryByRole("alert"), "a line standing again spoke").toBeNull();
   } finally {
     view.unmount();
     names.mockRestore();
@@ -1604,18 +1882,107 @@ test("each statement carries how it stands, by a shape with its own name", () =>
 });
 
 // Ruling 1 and ruling 6: a statement's own words carry its number where the spec wrote one, and
-// are drawn as the outline draws an agent's words - whole here, where no layout cuts them, and
-// without the marks the author typed to format them, which the row's reading paints as
-// formatting.
+// are drawn as its author wrote them, whole: the shared renderer draws the stored markdown, so
+// the marks the author typed around the number are drawn as the bold they say and are no
+// characters of the words.
 test("a statement's words are drawn as its author wrote them", () => {
-  const words =
-    "**R1.** Every node's words are on the page without opening it; an agent's long words " +
+  const rest =
+    " Every node's words are on the page without opening it; an agent's long words " +
     "show their first six lines and the rest one key away, and his words are never cut.";
-  const { read, view } = drawBody(issueTree([statement("r1", { text: words })]));
+  const { read, view } = drawBody(issueTree([statement("r1", { text: `**R1.**${rest}` })]));
   try {
     expect(
       view.container.querySelector("[data-spec-statement] [data-node-words]")?.textContent
-    ).toBe(words.replaceAll("**", ""));
+    ).toBe(`R1.${rest}`);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R6: a statement's words are whole, with no limit of lines, with the focus or without it, and
+// the chips it carries stay after its last word, as a row of the outline draws its trail. The
+// words are laid out 9,600 px tall, past the six lines at which the outline cuts an agent's
+// words behind "more · N words" with a fade (`useClamp`); the row draws every line, no such
+// control and no fade, and its trail stays the last child of its words' box.
+test("a statement's words are drawn whole at any length, with no more control, with the focus or without it", async () => {
+  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1"),
+      statement("r2", { gaps: ["shaped_disagreement"], text: `**R2.** ${words}` }),
+    ])
+  );
+  const expectWhole = async (when: string): Promise<void> => {
+    // The page measures only the words of rows near the viewport, so a cut would be read once
+    // they are measured.
+    await measureNearWords(near);
+    const row = rowOf(view, "spec#b-r2");
+    const box = row.querySelector<HTMLElement>("[data-node-words]");
+    expect(box?.textContent, `the statement's words are not drawn ${when}`).toContain("word60");
+    expect(box?.style.maxHeight, `the statement's words are cut ${when}`).toBe("");
+    expect(box?.className, `the statement's words are clipped ${when}`).not.toContain("clip");
+    expect(box?.querySelector(':scope > span[aria-hidden="true"]'), `a fade ${when}`).toBeNull();
+    expect(row.querySelector("[data-node-more]"), `the statement draws "more" ${when}`).toBeNull();
+    expect(
+      box?.lastElementChild?.hasAttribute("data-node-trail"),
+      `the statement's chips do not follow its last word ${when}`
+    ).toBe(true);
+  };
+  try {
+    await expectWhole("with no focus");
+    act(() => rowOf(view, "spec#b-r2").focus());
+    await expectWhole("with the focus on it");
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await expectWhole("once the focus left it");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    near.restore();
+    restore();
+  }
+});
+
+// R6: at the right end of a statement's first line, before its mark, stands the count of the
+// checks that serve it - the coverage read's `checks`, which the tree carries on the node - as a
+// number and its word, outside the statement's words. It is a link to the Verification view with
+// the focus on that statement's row, out of the tab order, and `f` reaches it as it reaches every
+// link of a row. A statement no check serves draws no count.
+test("a statement's count of checks links to the Verification view at its row, and is drawn only where a check serves it", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { counts: { checks: 3, planTasks: 0 } }),
+      statement("r2", { counts: { checks: 1, planTasks: 0 } }),
+      statement("r3", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+    ])
+  );
+  const countOf = (block: string): HTMLElement | null =>
+    rowOf(view, `spec#b-${block}`).querySelector<HTMLElement>("[data-spec-checks]");
+  try {
+    const three = countOf("r1");
+    if (three === null) throw new Error("a statement three checks serve draws no count");
+    expect(three.textContent).toBe(`3 ${VERIFICATION_WORDS.check_many}`);
+    expect(countOf("r2")?.textContent).toBe(`1 ${VERIFICATION_WORDS.check_one}`);
+    expect(countOf("r3"), "a statement no check serves draws a count").toBeNull();
+    expect(three.getAttribute("href")).toBe(`/issues/${KEY}/verification#b-r1`);
+    expect(countOf("r2")?.getAttribute("href")).toBe(`/issues/${KEY}/verification#b-r2`);
+    expect(three.getAttribute("tabindex"), "the count is in the tab order").toBe("-1");
+    const row = rowOf(view, "spec#b-r1");
+    expect(row.querySelector("[data-node-words] [data-spec-checks]")).toBeNull();
+    const mark = row.querySelector(":scope > svg[data-glyph]");
+    if (mark === null) throw new Error("the statement draws no mark");
+    expect(
+      three.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the count does not stand before the mark"
+    ).not.toBe(0);
+    act(() => row.focus());
+    await user.keyboard("f");
+    expect(document.activeElement, "f does not reach the count").toBe(three);
+    await user.click(three);
+    expect(locationOf(view)).toBe(`/issues/${KEY}/verification#b-r1`);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -1675,170 +2042,33 @@ test("a row the address named that is no statement is drawn by its kind, with no
   }
 });
 
-// R1: a criterion of the view is a row of the statements' list, where the view's order puts it:
-// its bullet in the statements' colour, a line over its words naming its kind as its tag and
-// who wrote it, its words, and no mark, "No check" least of all, since no check serves what a
-// person wants to be able to do. A statement written under it draws it as its group's heading.
-test("a criterion is a row of the statements' list, with its tag, its words and its author, and no mark", () => {
-  const words = "A person reads the whole spec on a phone.";
+test("a row the address keeps is drawn whole with the focus elsewhere", async () => {
+  const text = `${"These words take a line of their own. ".repeat(60)}[Guide](/settings)`;
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
   const { read, view } = drawBody(
     issueTree([
-      statement("r1", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
-      node({
-        children: [
-          node({
-            at: "2026-11-15T10:00:00Z",
-            author: { id: READER, kind: "user" },
-            children: [statement("r2")],
-            id: "criterion-1",
-            text: words,
-            type: "criterion",
-          }),
-        ],
-        id: "comment-1",
-        text: "Can I read the spec on my phone?",
-        type: "comment",
-      }),
-    ])
+      statement("r1"),
+      node({ id: "comment-1", text, tree: displayTree(text), type: "comment" }),
+    ]),
+    [],
+    { named: ["comment-1"] }
   );
   try {
-    expect(
-      [...view.container.querySelectorAll("[data-spec-statement]")].map((row) =>
-        row.getAttribute("data-node-id")
-      )
-    ).toEqual(["spec#b-r1", "criterion-1", "spec#b-r2"]);
-    expect(view.container.querySelector("[data-spec-other]")).toBeNull();
-    const row = rowOf(view, "criterion-1");
-    const bulletOf = (one: HTMLElement) => one.querySelector(":scope > span > i")?.className;
-    expect(row.getAttribute("data-node-type")).toBe("criterion");
-    expect(row.querySelector("[data-node-tag]")?.textContent).toBe(NODE_TYPE_NAMES.criterion);
-    expect(row.querySelector("[data-spec-author]")?.textContent).toBe(READER);
-    expect(row.querySelector("[data-node-words]")?.textContent).toBe(words);
-    expect(bulletOf(row)).toBe(bulletOf(rowOf(view, "spec#b-r1")));
-    // The statement beside it carries its mark, here that no check serves it; the criterion
-    // carries none.
-    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("no_check");
-    expect(row.hasAttribute("data-spec-mark")).toBe(false);
-    expect(row.querySelector(":scope > svg[data-glyph]")).toBeNull();
-    const group = rowOf(view, "spec#b-r2").closest<HTMLElement>("[data-spec-group]");
-    expect(group?.getAttribute("data-parent-id")).toBe("criterion-1");
-    expect(group?.querySelector("[data-spec-group-heading]")?.textContent).toContain(words);
-  } finally {
-    view.unmount();
-    read.mockRestore();
-  }
-});
-
-// R9: Enter on a statement's row, and a pointer's press on a criterion's words, put the caret in
-// that node's text, each in its document's room: on this converted issue the statement in the
-// spec, and the criterion, written into the issue, in the issue's tree artifact. The page is asked
-// for that document's editor, and the row draws it on its stage in place of its words while it is
-// the row edited. The row is kept as the outline keeps its edited row: a press outside the view
-// lets go of nothing, and Escape in the editor, which the key table names there, leaves the caret
-// for the row. A statement of the issue above, which the child's Spec draws as context, is that
-// issue's: Enter on it says it is edited on its own issue, and neither Enter nor a press on its
-// words asks for an editor; the press gives its row the focus. The room's facts stand in for the
-// tree read's (`useRoomFacts`), which the body does not read here.
-test("Enter on a statement and a press on a criterion edit each in its document's room, and a parent's statement is edited on its own issue", async () => {
-  const user = userEvent.setup();
-  const rooms = spyOn(roomTarget, "useRoomFacts").mockReturnValue({
-    converted: true,
-    issueKey: KEY,
-    tree: "artifact-tree",
-    viewOf: null,
-  });
-  const page = editingPage();
-  const own = statement("r1");
-  const criterion = node({
-    id: `${KEY}/tree#k1`,
-    text: "A person reads the whole spec on a phone.",
-    type: "criterion",
-  });
-  // The tree read names a node of another issue by its block id, and its address is that issue's.
-  const above = statement("r9", { id: "r9", reference: "dispatch://CORE-2/spec#b-r9" });
-  const { read, view } = drawBody(issueTree([own, criterion, above]), [], {
-    context: new Set([above.id]),
-    editing: page,
-  });
-  // A control out of the view, which a press lands on.
-  const outside = document.createElement("button");
-  document.body.append(outside);
-  try {
-    const statementRow = rowOf(view, own.id);
-    const criterionRow = rowOf(view, criterion.id);
-    const aboveRow = rowOf(view, above.id);
-    expect([statementRow, criterionRow, aboveRow].map((row) => row.dataset.rowKey)).toEqual([
-      own.id,
-      criterion.id,
-      above.id,
-    ]);
-    expect(aboveRow.hasAttribute("data-node-context")).toBe(true);
-    /** The key of the row each editor stands in, as the page's stages hold them. */
-    const stood = () =>
-      [...view.container.querySelectorAll("[data-editor-stand]")].map((stand) =>
-        stand.closest("[data-row-key]")?.getAttribute("data-row-key")
-      );
-    expect(stood()).toEqual([]);
-    const statementWords = statementRow.querySelector("[data-node-words]")?.textContent;
-    expect(statementWords).toContain("The page draws r1.");
-
+    const row = rowOf(view, "comment-1");
+    const statementRow = rowOf(view, "spec#b-r1");
+    act(() => row.focus());
     act(() => statementRow.focus());
-    await user.keyboard("{Enter}");
-    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
-    expect(stood()).toEqual([own.id]);
-    // The editor stands where the statement's words stood.
-    expect(statementRow.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
-    expect(statementRow.querySelector("[data-node-words]")?.textContent).not.toContain(
-      "The page draws r1."
-    );
-    // A press outside the view, once it has ended, leaves the statement the row edited, with its
-    // focused look and its facts in Details.
-    await user.click(outside);
-    // The task after the press, in which the page lets go of what a press left (`trackPress`).
-    const ended = Promise.withResolvers<void>();
-    window.setTimeout(ended.resolve, 0);
-    await act(() => ended.promise);
-    expect(stood(), "the press outside the view ended the editing").toEqual([own.id]);
-    expect(statementRow.className, "the press outside the view let go of the row").toContain(
-      pageFocusedRow
-    );
-    expect(focusedNodeIn(view).id).toBe(own.id);
-
-    await user.click(criterionRow.querySelector("[data-node-words]") as Element);
-    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-tree"]);
-    expect(stood()).toEqual([criterion.id]);
-    // The statement's words are back, and the criterion's are the editor's place.
-    expect(statementRow.querySelector("[data-node-words]")?.textContent).toBe(statementWords);
-    expect(criterionRow.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
-    // With the caret in the criterion's editor the key table offers Escape, which leaves the caret
-    // for the row and gives the row back its words.
-    const editor = criterionRow.querySelector<HTMLElement>("[data-editor-stand]");
-    act(() => editor?.focus());
-    expect(document.activeElement).toBe(editor);
-    expect(
-      appKeymap.describe().find(({ id }) => id === "tree-leave-caret")?.enabled,
-      "the key table offers no Escape in the criterion's editor"
-    ).toBe(true);
-    await user.keyboard("{Escape}");
-    expect(document.activeElement).toBe(criterionRow);
-    expect(stood()).toEqual([]);
-    expect(criterionRow.querySelector("[data-node-words]")?.textContent).toBe(criterion.text);
-
-    act(() => aboveRow.focus());
-    await user.keyboard("{Enter}");
-    expect(aboveRow.querySelector("[data-row-report]")?.textContent).toBe(KEY_REPORTS.issue_above);
-    await user.click(aboveRow.querySelector("[data-node-words]") as Element);
-    expect(document.activeElement).toBe(aboveRow);
-    expect(askedDocuments(page), "the parent's statement asked for an editor").toEqual([
-      "artifact-spec",
-      "artifact-tree",
-    ]);
-    expect(stood()).toEqual([]);
+    await measureNearWords(near);
+    expect(statementRow).toHaveFocus();
+    expect(row.querySelector("[data-node-more]")).toBeNull();
+    expect(row.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe("");
+    expect(within(row).getByRole("link", { name: "Guide" })).toHaveAttribute("tabindex", "-1");
   } finally {
     view.unmount();
-    outside.remove();
     read.mockRestore();
-    rooms.mockRestore();
+    near.restore();
+    restore();
   }
 });
 
@@ -1884,12 +2114,10 @@ test("the body draws one tree, named as the outline is, of the statements and th
 });
 
 // R10, R17: a gap the mark does not already say is drawn with the statement's words, in the
-// few words the page knows it by: while the words are whole it stands in the trail after their
-// last word, a direct child of the words' box, and
-// nowhere else in the row. The one for a statement no check serves is the mark at the right of
-// the row, and is not said twice: that statement draws no trail at all.
-test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", async () => {
-  const near = installIntersectionObserver();
+// few words the page knows it by: it stands in the trail after their last word, a direct child
+// of the words' box, and nowhere else in the row. The one for a statement no check serves is the
+// mark at the right of the row, and is not said twice: that statement draws no trail at all.
+test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", () => {
   const { read, view } = drawBody(
     issueTree([
       statement("r1", { gaps: ["shaped_disagreement"] }),
@@ -1897,9 +2125,6 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
     ])
   );
   try {
-    // The page measures only the words of rows near the viewport, so a cut is read once they
-    // are measured.
-    await measureNearWords(near);
     const rows = [...view.container.querySelectorAll("[data-spec-statement]")];
     expect(
       rows[0]?.querySelector("[data-node-words]")?.lastElementChild?.hasAttribute("data-node-trail")
@@ -1919,7 +2144,6 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
   } finally {
     view.unmount();
     read.mockRestore();
-    near.restore();
   }
 });
 
@@ -2357,8 +2581,9 @@ test("Retry over a failed read of the Verification document's blocks reads them 
 });
 
 /** Lays every element out `height` px tall until the answer is called, as
- *  `NodeRow.drawn.test.tsx` does: no DOM of a unit test lays anything out, and a statement's cut
- *  reads its words' own boxes (`measureClamp`). */
+ *  `NodeRow.drawn.test.tsx` does: no DOM of a unit test lays anything out, and a row's cut reads
+ *  its words' own boxes (`measureClamp`), so a case that shows a statement or a cell drawn whole
+ *  lays its words out taller than a cut at six lines would leave them. */
 function layOut(height: number): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
@@ -2376,21 +2601,17 @@ function layOut(height: number): () => void {
 }
 
 // Review 5928280634 on pull request 4234 (thread 4592007127): a press focuses what it lands on as
-// it goes down, and a statement taking the focus for a link inside it drew its words whole under
-// the pointer - the cut and "more" gone - while the statement that had the focus lost its look,
-// so the link moved off the pointer and the press followed nothing. The focus a press gives a
-// statement is taken once the press is over, as the outline takes a row's (`IssueTree.tsx`'s
-// `focusRow`). happy-dom lays nothing out, so this reads the order: nothing the body draws changes
-// while the press is held, and then the pressed statement takes the focus.
-test("a press on a link inside a cut statement leaves every statement as drawn until it ends, and then the statement takes the focus", async () => {
+// it goes down, so a statement that took the focus for a link inside it at once would draw itself
+// focused under the pointer while the statement that had the focus lost its look, and the press
+// could end on something else and follow nothing. The focus a press gives a statement is taken
+// once the press is over, as the outline takes a row's (`IssueTree.tsx`'s `focusRow`). happy-dom
+// lays nothing out, so this reads the order: nothing the body draws changes while the press is
+// held, and then the pressed statement takes the focus.
+test("a press on a link inside a statement leaves every statement as drawn until it ends, and then the statement takes the focus", async () => {
   const user = userEvent.setup();
-  const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
-  const long = `**R2.** Read [the guide](https://example.com/guide) first. ${words}`;
-  // 64 words over 400 lines of 24 px: six lines are drawn and the rest held back.
-  const restore = layOut(9600);
-  const near = installIntersectionObserver();
+  const linked = "**R2.** Read [the guide](https://example.com/guide) first.";
   const { read, view } = drawBody(
-    issueTree([statement("r1"), statement("r2", { text: long, tree: displayTree(long) })])
+    issueTree([statement("r1"), statement("r2", { text: linked, tree: displayTree(linked) })])
   );
   const looksFocused = (id: string) => rowOf(view, id).className.includes(pageFocusedRow);
   try {
@@ -2399,13 +2620,9 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
     const pressed = rowOf(view, "spec#b-r2");
     const link = await waitFor(() => {
       const found = pressed.querySelector<HTMLElement>("[data-node-words] a");
-      if (found === null) throw new Error("the cut statement draws no link in its words");
+      if (found === null) throw new Error("the statement draws no link in its words");
       return found;
     });
-    // The page measures only the words of rows near the viewport, so the cut is read once they
-    // are measured.
-    await measureNearWords(near);
-    await waitFor(() => expect(pressed.querySelector("[data-node-more]")).not.toBeNull());
     // What is read is who holds the focus, not where the link leads.
     link.addEventListener("click", (event) => event.preventDefault());
 
@@ -2415,10 +2632,6 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
       false
     );
     expect(
-      pressed.querySelector("[data-node-more]"),
-      "the held press drew the cut statement's words whole"
-    ).not.toBeNull();
-    expect(
       looksFocused("spec#b-r1"),
       "the held press took the focused look from the statement that had it"
     ).toBe(true);
@@ -2426,15 +2639,545 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
 
     await user.pointer({ keys: "[/MouseLeft]" });
     await waitFor(() => expect(looksFocused("spec#b-r2")).toBe(true));
-    expect(pressed.querySelector("[data-node-more]")).toBeNull();
     expect(looksFocused("spec#b-r1")).toBe(false);
     expect(focusedNodeIn(view)).toEqual({ id: "spec#b-r2", type: "requirement" });
   } finally {
     view.unmount();
     read.mockRestore();
-    near.restore();
-    restore();
-    near.restore();
+  }
+});
+
+/** A marker for the editor on the real document stage, without opening a document room. */
+function specEditor(): ReactNode {
+  return (
+    <DocumentStage artifactId="artifact-spec">
+      <div data-test-spec-editor="" tabIndex={-1} />
+    </DocumentStage>
+  );
+}
+
+test("Enter on a statement puts the caret in its words through the outline's editing", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { gaps: ["shaped_disagreement"] }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = row.querySelector("[data-node-words]");
+    const original = "The page draws r1.";
+    expect(words?.textContent).toContain(original);
+    expect(words?.querySelector("[data-node-trail]")).not.toBeNull();
+    expect(row).toHaveAttribute("data-editable");
+    act(() => row.focus());
+    await user.keyboard("{Enter}");
+
+    expect(locationOf(view)).toBe("/");
+    expect(onEditing).toHaveBeenCalledWith("artifact-spec", expect.any(Function));
+    const editor = words?.querySelector<HTMLElement>("[data-test-spec-editor]");
+    expect(editor).toBeInTheDocument();
+    expect(words?.textContent).not.toContain(original);
+    expect(words?.querySelector("[data-node-trail]")).toBeNull();
+    expect(row.querySelector("[data-node-trail]")).toBeInTheDocument();
+    expect(rowOf(view, "spec#b-r2").textContent).toContain("The page draws r2.");
+
+    act(() => editor?.focus());
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(row);
+    expect(editor).not.toBeInTheDocument();
+    expect(words?.textContent).toContain(original);
+    expect(onEditing.mock.calls.at(-1)?.[0]).toBeUndefined();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("a press on a statement's words puts the caret in them, and a press on a link in them follows the link", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const destination = "/settings";
+  const linked = `Read [the settings page](${destination}) first.`;
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: linked, tree: displayTree(linked) }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const link = await within(row).findByRole("link", { name: "the settings page" });
+    const words = link.closest<HTMLElement>("[data-node-words]");
+    if (words === null) throw new Error("the link is not in the statement's words");
+    act(() => row.focus());
+    onEditing.mockClear();
+    await user.click(link);
+    expect(locationOf(view)).toBe(destination);
+    expect(onEditing).not.toHaveBeenCalled();
+    expect(link).toBeInTheDocument();
+
+    // A press on a row that already holds focus must work without a new focus event.
+    act(() => row.focus());
+    await user.pointer({ keys: "[MouseLeft>]", target: words });
+    expect(onEditing).not.toHaveBeenCalled();
+    expect(link).toBeInTheDocument();
+    await user.pointer({ keys: "[/MouseLeft]" });
+    await waitFor(() =>
+      expect(onEditing).toHaveBeenCalledWith("artifact-spec", expect.any(Function))
+    );
+    expect(words.querySelector("[data-test-spec-editor]")).toBeInTheDocument();
+    expect(link).not.toBeInTheDocument();
+    expect(locationOf(view)).toBe(destination);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("a press on a statement's words passes its point to the outline's editing", async () => {
+  const user = userEvent.setup();
+  // The hold goes on a ProseMirror view; a plain editable on the stage stands in for its drawing.
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1">
+          <header contentEditable={false}>Requirement</header>
+          <p>The page draws r1.</p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: "The page draws r1." })]),
+    [],
+    {
+      editor,
+      onEditing,
+    }
+  );
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = within(row).getByText("The page draws r1.");
+    const point = mock(() => ({ offsetNode: words.firstChild, offset: 6 }));
+    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+    const caretIsAt = (offset: number) =>
+      waitFor(() => {
+        const text = row.querySelector('[data-block-id="r1"] p')?.firstChild;
+        expect(text).toBeDefined();
+        expect(window.getSelection()?.anchorNode).toBe(text);
+        expect(window.getSelection()?.anchorOffset).toBe(offset);
+      });
+    await user.pointer({ keys: "[MouseLeft]", target: words, coords: { x: 72, y: 153 } });
+    await caretIsAt(6);
+    expect(point).toHaveBeenCalledWith(72, 153);
+
+    await user.keyboard("{Escape}");
+    expect(row).toHaveFocus();
+    point.mockClear();
+    await user.keyboard("{Enter}");
+    await caretIsAt(0);
+    expect(point).not.toHaveBeenCalled();
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+    view.unmount();
+    editorView.destroy();
+    read.mockRestore();
+  }
+});
+
+// A press that drags across a statement's words selects them, as on any words of the page, and
+// the click that ends it on the same words opens no editor in their place: the selection stays,
+// for the reader to copy.
+test("a drag that selects a statement's words keeps the selection and opens no editor", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: "The page draws r1." }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = within(row).getByText("The page draws r1.");
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8, target: words },
+      { keys: "[/MouseLeft]", target: words },
+    ]);
+    expect(window.getSelection()?.toString(), "the drag selected no words").toBe("The page");
+    // The task an editor the press opened would open in.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(onEditing, "the drag opened the editor").not.toHaveBeenCalledWith(
+      "artifact-spec",
+      expect.any(Function)
+    );
+    expect(row.querySelector("[data-test-spec-editor]")).toBeNull();
+    expect(window.getSelection()?.toString(), "the drag's selection was lost").toBe("The page");
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R8: a press is counted in the editor's text. The view draws a reference to an issue by the
+// issue's key and title, while the editor holds the reference as it is written, hidden under a
+// title of its own that takes no caret (`@legion/proof-editor`'s `reference-decorations.ts`), so a
+// press after the reference counts it as written. A plain editable on the stage stands in for
+// the editor's drawing of the statement: its title out of the editable text, the reference as
+// written hidden in it. Counted as drawn, the press on "first" would put the caret 8 characters
+// into the words after the reference rather than 3.
+test("a press after a reference counts the reference as the editor holds it", async () => {
+  const cited = "dispatch://CORE-2";
+  const after = " first, then the rest.";
+  const text = `Read ${cited}${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const link = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(link?.textContent).toBe("CORE-2 The other issue");
+      expect(link?.nextSibling?.textContent).toBe(after);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>CORE-2 The other issue</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other issue"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+/**
+ * Presses statement r1's drawn text `pressed`, `into` characters into it, and waits for the caret
+ * to stand `at` characters into `lands`, the last text of the statement's paragraph in its
+ * editor; both default to the press's own, for words the two draw alike after the kind a case
+ * reads. The statement's words are `text`, drawn from `tree`, the reading the server sends,
+ * where one is given, and as stored where none is, with `names` as the page's batched read named
+ * its references. A plain editable on the stage stands in for the editor's drawing of the
+ * statement: `held` is its paragraph, each kind drawn as the editor draws it. `drawn` reads the
+ * statement's drawn words before the press.
+ */
+async function pressAfterKind({
+  at,
+  drawn,
+  held,
+  into,
+  lands,
+  names,
+  pressed,
+  text,
+  tree,
+}: {
+  at?: number;
+  drawn: (words: HTMLElement) => void;
+  held: ReactNode;
+  into: number;
+  lands?: string;
+  names?: ReadonlyMap<string, string>;
+  pressed: string;
+  text: string;
+  tree?: TreeNode["tree"];
+}): Promise<void> {
+  const user = userEvent.setup();
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1">
+          <p>{held}</p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(issueTree([statement("r1", { text, tree })]), [], {
+    editor,
+    names,
+    onEditing,
+  });
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = await waitFor(() => {
+      const found = row.querySelector<HTMLElement>("[data-node-words]");
+      if (found === null) throw new Error("the statement draws no words");
+      drawn(found);
+      return found;
+    });
+    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node !== null && node.textContent !== pressed) node = walker.nextNode();
+    if (node === null || node.parentElement === null) {
+      throw new Error(`the statement draws no text "${pressed}"`);
+    }
+    const point = mock(() => ({ offsetNode: node, offset: into }));
+    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+    await user.pointer({ keys: "[MouseLeft]", target: node.parentElement });
+    await waitFor(() => {
+      const last = row.querySelector('[data-block-id="r1"] p')?.lastChild;
+      expect(last?.textContent).toBe(lands ?? pressed);
+      expect(window.getSelection()?.anchorNode).toBe(last);
+      expect(window.getSelection()?.anchorOffset).toBe(at ?? into);
+    });
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+    view.unmount();
+    editorView.destroy();
+    read.mockRestore();
+  }
+}
+
+/** Statement r1's words for `pressAfterKind`: a placeholder in inline HTML, `<name>`, and the
+ *  words after it, drawn from the server's reading and held by the editor as an atom. */
+function withInlineHtml() {
+  const after = " first, then the rest.";
+  const text = `Kept by <name>${after}`;
+  return {
+    drawn: (words: HTMLElement) => {
+      expect(words.querySelector('[data-type="html"]')?.textContent).toBe("<name>");
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        {after}
+      </>
+    ),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  };
+}
+
+// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
+// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
+// drawn, the press on "first," would put the caret 6 characters on, in "then": the word before
+// it is `<name>` in the view and "by" in the editor, so the word pressed is found nowhere to set
+// the count right.
+test("a press after inline html lands in the word pressed", async () => {
+  await pressAfterKind({ ...withInlineHtml(), into: 3 });
+});
+
+// The atom holds no text, so the end of the text before it and the start of the text after it
+// have one count. A press at the start of the text after it - on the left half of its first
+// character - puts the caret there, after the atom, and not before it.
+test("a press at the start of the text after inline html lands after it", async () => {
+  await pressAfterKind({ ...withInlineHtml(), into: 0 });
+});
+
+// A mention of a block is drawn as a chip by the block's words, while the editor holds the
+// mention as it is written, hidden under a title of its own that takes no caret, so a press after
+// it counts it as written, as a reference to an issue counts.
+test("a press after a mention lands in the word pressed", async () => {
+  const cited = `dispatch://${KEY}/spec#b-r2`;
+  const after = " first, then the rest.";
+  const text = `Read ${cited}${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const chip = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(chip).toHaveAttribute("data-row-chip");
+      expect(chip?.textContent).not.toBe(cited);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>The other statement</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other statement"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A picture of an artifact is drawn by its caption's link until its picture loads, while the
+// editor holds it as an atom the caret cannot enter, its own fallback link inside it, so a press
+// after it counts it as nothing. The summary that names its picture never answers here.
+test("a press after an image lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `See ![shot.png](dispatch://${KEY}/artifact/shot-png)${after}`;
+  const summary = spyOn(api, "getIssueSummary").mockReturnValue(new Promise(() => {}));
+  try {
+    await pressAfterKind({
+      drawn: (words) => {
+        expect(words.querySelector("[data-dispatch-picture]")?.textContent).toBe("shot.png");
+      },
+      held: (
+        <>
+          {"See "}
+          <span contentEditable={false} data-dispatch-doc-picture="">
+            <a href="/">{`${KEY}/artifact/shot-png`}</a>
+          </span>
+          {after}
+        </>
+      ),
+      into: 3,
+      pressed: after,
+      text,
+      tree: displayTree(text),
+    });
+  } finally {
+    summary.mockRestore();
+  }
+});
+
+/** Statement r1's words for `pressAfterKind` with a hard break between two lines, drawn from the
+ *  server's reading and held by the editor as a line break. */
+function withHardBreak() {
+  const after = "Line two, then the rest.";
+  const text = `Line one.\\\n${after}`;
+  return {
+    drawn: (words: HTMLElement) => {
+      expect(words.querySelector("br")).not.toBeNull();
+    },
+    held: (
+      <>
+        {"Line one."}
+        <br />
+        {after}
+      </>
+    ),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  };
+}
+
+// A hard break is a line break in both, which holds no text, so a press after it counts nothing
+// for it.
+test("a press after a hard break lands in the word pressed", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 6 });
+});
+
+// The break holds no text, so the end of the line before it and the start of the line after it
+// have one count. A press at the start of the line after it - on the left half of its first
+// character - puts the caret there, after the break, and not at the end of the line before.
+test("a press at the start of the text after a hard break lands after the break", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 0 });
+});
+
+// A footnote's reference is drawn as its label, while the editor holds it as an atom the caret
+// cannot enter, so a press after it counts it as nothing.
+test("a press after a footnote reference lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `Read the note[^1]${after}\n\n[^1]: The note.`;
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector('[data-type="footnote_reference"]')?.textContent).toBe("1");
+    },
+    held: (
+      <>
+        {"Read the note"}
+        <sup contentEditable={false} data-type="footnote_reference">
+          1
+        </sup>
+        {after}
+      </>
+    ),
+    into: 3,
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A statement whose reading draws a token as plain characters, with no mark of what the editor
+// holds there, is an inline kind the count leaves uncounted: the editor holds `[atom]` as an atom
+// the caret cannot enter, so the count of the press runs on by its 6 characters, to the end of
+// "the". The word pressed is found with the words beside it where the editor holds them, and the
+// caret goes as far into it.
+test("an uncounted inline kind still puts the caret in the pressed word", async () => {
+  const after = " and then the rest.";
+  const text = `Kept by [atom]${after}`;
+  await pressAfterKind({
+    at: 7,
+    drawn: (words) => {
+      expect(
+        words.querySelector(
+          '[data-row-written], [data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]'
+        )
+      ).toBeNull();
+      expect(words.textContent).toContain(text);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false}>{"[atom]"}</span>
+        {after}
+      </>
+    ),
+    into: 21,
+    lands: after,
+    pressed: text,
+    text,
+    tree: {
+      content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
+  });
+});
+
+// An atom that ends a statement's block holds no text, so the editor's text ends before it. A
+// press past the atom (`pressInWords`'s `next`) puts the caret after it, in its paragraph, where
+// the block ends, and a press inside it puts the caret before it, at the end of the text before
+// it. A plain editable stands in for the editor: each atom drawn `contenteditable="false"`, then
+// the separator and the break ProseMirror draws after an atom that ends a paragraph. The picture
+// has loaded, so it holds no text.
+test("a press past an atom that ends a statement's block puts the caret after it, and one inside it before it", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const at: CaretAt = { x: 1, y: 2, offset: "Read the note".length, word: ["the ", "note", "", 4] };
+  try {
+    for (const atom of [
+      '<span contenteditable="false" data-type="html">&lt;name&gt;</span>',
+      '<sup contenteditable="false" data-type="footnote_reference">1</sup>',
+      '<span contenteditable="false" data-dispatch-doc-picture=""><img alt="shot.png"></span>',
+    ]) {
+      host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>Read the note${atom}<img class="ProseMirror-separator" alt=""><br class="ProseMirror-trailingBreak"></p></section></div>`;
+      const paragraph = host.querySelector("p");
+      expect(caretInBlock(host, "r1", { ...at, next: true }), atom).toBe(true);
+      expect(window.getSelection()?.anchorNode, atom).toBe(paragraph);
+      expect(window.getSelection()?.anchorOffset, atom).toBe(2);
+      expect(caretInBlock(host, "r1", at), atom).toBe(true);
+      expect(window.getSelection()?.anchorNode, atom).toBe(paragraph?.firstChild);
+      expect(window.getSelection()?.anchorOffset, atom).toBe("Read the note".length);
+    }
+  } finally {
+    host.remove();
   }
 });
 
@@ -2542,6 +3285,283 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
     read.mockRestore();
     scrolls.mockRestore();
     boxes.mockRestore();
+  }
+});
+
+/** The page a hold case reads, which happy-dom does not lay out: its size observers, which the
+ *  case calls by hand (`resize`); its boxes - the column heads from 0 to 31 px, each element the
+ *  case's own `boxOf` gives a box, and every other at 200 px; and `window.scrollBy`, which calls
+ *  the case's optional `scroll` and records each call (`scrolledBy`). `restore` gives each back. */
+function layOutPage(
+  boxOf: (element: HTMLElement) => DOMRect | undefined,
+  scroll?: (delta: number) => void
+) {
+  const sizes = installResizeObserver();
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
+    return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
+  });
+  const scrolls = spyOn(window, "scrollBy").mockImplementation(
+    (options?: number | ScrollToOptions) => {
+      if (typeof options === "object") scroll?.(options.top ?? 0);
+    }
+  );
+  return {
+    resize: sizes.resize,
+    restore: () => {
+      scrolls.mockRestore();
+      boxes.mockRestore();
+      sizes.restore();
+    },
+    // `scrollBy`'s first overload takes a number; the body calls the one that takes options.
+    scrolledBy: (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]),
+  };
+}
+
+test("a drag over an unfocused statement's words gives it the focus and moves no page", async () => {
+  const user = userEvent.setup();
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, -200, 600, 3 * window.innerHeight)
+      : undefined
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2", { text: "The page draws r2." })])
+  );
+  try {
+    const first = rowOf(view, "spec#b-r1");
+    const tall = rowOf(view, "spec#b-r2");
+    const words = within(tall).getByText("The page draws r2.");
+    act(() => first.focus());
+    expect(tall).not.toHaveFocus();
+
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8, target: words },
+      { keys: "[/MouseLeft]", target: words },
+    ]);
+    await waitFor(() => expect(tall.className).toContain(pageFocusedRow));
+    expect(tall).toHaveFocus();
+    expect(window.getSelection()?.toString()).toBe("The page");
+    page.resize(tall);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the press placed the tall statement").toEqual([]);
+
+    await user.keyboard("{ArrowUp}");
+    expect(first).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(tall).toHaveFocus();
+    expect(page.scrolledBy(), "the later key did not place the tall statement").toContainEqual({
+      top: -200 - 31 - 8,
+    });
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// A key or a press holds the item it leaves the focus in where it stands while the page grows
+// (`holdWhereItStands`), and does not bring it on screen again by the page's rule, which puts an
+// item taller than the screen at its top. A decision cell is as tall as its whole run of
+// statements, and only its words stay at the top of the screen: deep in a run taller than the
+// screen, a hold that brought the cell on screen would take the page to the top of the run at a
+// press on those words, and the statement the reader was reading would leave the screen.
+// happy-dom lays nothing out, so the boxes are given - the heads from 0 to 31 px, the cell from
+// two screens above the window to two below it, its words at 75 px, and every statement on
+// screen - and the page's size observers are called by hand, as the browser calls them as they
+// start and as the page grows.
+test("a press on a decision cell's words deep in a run taller than the screen moves no page", async () => {
+  const user = userEvent.setup();
+  const page = layOutPage((element) => {
+    if (element.hasAttribute("data-spec-cell")) {
+      return new DOMRect(0, -2 * window.innerHeight, 280, 4 * window.innerHeight);
+    }
+    if (element.hasAttribute("data-spec-cell-words")) return new DOMRect(0, 75, 280, 120);
+    return undefined;
+  });
+  const run = ["r1", "r2", "r3"];
+  const { read, view } = drawBody(
+    issueTree([...run.map((block) => statement(block)), decisionNode("d1")]),
+    [
+      decision("d1", {
+        decision: { kind: "agent", links: run.map((block) => shaped(statementRef(block))) },
+      }),
+    ]
+  );
+  try {
+    act(() => rowOf(view, "spec#b-r2").focus());
+    const cell = view.container.querySelector<HTMLElement>("[data-spec-cell]");
+    const words = cell?.querySelector<HTMLElement>("[data-spec-quote]");
+    if (cell == null || words == null) throw new Error("the body draws no decision's words");
+    await user.click(words);
+    await waitFor(() => expect(document.activeElement).toBe(cell));
+    // The observers' first call, in the frame after they start, and the page growing.
+    page.resize(document.body);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the press moved the page").toEqual([]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// The same hold, of a statement taller than the screen that the reader has read on into: `f`
+// moves the focus to a link of its words on screen, and Escape back to the statement, and the page
+// stays where the reader had it. A hold that brought the statement on screen would take the page
+// to its top at each key. The statement is given a box on screen as the focus comes to it, which
+// the page's rule leaves where it is, and then one from a screen above the window to two below it.
+test("a key that moves the focus to a statement taller than the screen moves no page", async () => {
+  const user = userEvent.setup();
+  let readOn = false;
+  const page = layOutPage((element) =>
+    readOn && element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, -window.innerHeight, 600, 3 * window.innerHeight)
+      : undefined
+  );
+  const linked = "**R2.** Read [the guide](https://example.com/guide) first.";
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2", { text: linked, tree: displayTree(linked) })])
+  );
+  try {
+    const tall = rowOf(view, "spec#b-r2");
+    const link = await waitFor(() => {
+      const found = tall.querySelector<HTMLElement>("[data-node-words] a");
+      if (found === null) throw new Error("the statement draws no link in its words");
+      return found;
+    });
+    act(() => tall.focus());
+    readOn = true;
+    await user.keyboard("f");
+    expect(document.activeElement, "f did not reach the link in the statement's words").toBe(link);
+    page.resize(document.body);
+    page.resize(document.body);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "Escape did not give the statement back").toBe(tall);
+    page.resize(document.body);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "a key moved the page").toEqual([]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// Rows drawn above the statement a key moved the focus to push it down the page, and the hold
+// scrolls the page by as far, so the statement stands where it stood (`holdWhereItStands`).
+// happy-dom lays nothing out, so the boxes are given: the heads from 0 to 31 px, each statement on
+// screen, and the statement held 120 px further down once the page has grown.
+test("a page that grows above a held statement keeps the statement where it stands", async () => {
+  const user = userEvent.setup();
+  let top = 200;
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, top, 600, 48)
+      : undefined
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(rowOf(view, "spec#b-r2"));
+    top += 120;
+    page.resize(document.body);
+    expect(
+      page.scrolledBy(),
+      "the hold left the statement where the page's growth pushed it"
+    ).toEqual([{ top: 120 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+test("a hold keeps the row where the reader left it when the page scrolls it of its own accord", async () => {
+  const user = userEvent.setup();
+  let contentTop = 200;
+  let scroll = 0;
+  let limit = 95;
+  const page = layOutPage(
+    (element) =>
+      element.dataset.nodeId === "spec#b-r2"
+        ? new DOMRect(0, contentTop - scroll, 600, 48)
+        : undefined,
+    (delta) => {
+      scroll = Math.min(scroll + delta, limit);
+    }
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await user.keyboard("{ArrowDown}");
+    expect(rowOf(view, "spec#b-r2")).toHaveFocus();
+    page.resize(document.body);
+
+    // The page scrolls without a reader act, then draws more content above the row.
+    scroll = 50;
+    act(() => window.dispatchEvent(new Event("scroll")));
+    contentTop += 120;
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the page's scroll changed the target of the hold").toEqual([
+      { top: 70 },
+    ]);
+    expect(contentTop - scroll).toBe(225);
+
+    // The first correction hit the end of the page. More content below the row gives it room.
+    limit = 200;
+    page.resize(document.body);
+    expect(contentTop - scroll).toBe(200);
+    expect(page.scrolledBy()).toEqual([{ top: 70 }, { top: 25 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// The focus task after a press places a statement below the heads. The hold uses the top after
+// that placing, and a later resize corrects only the movement from there.
+test("a placing after the press counts as where the held statement stands", async () => {
+  const user = userEvent.setup();
+  let top = 15;
+  const page = layOutPage(
+    (element) =>
+      element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+        ? new DOMRect(0, top, 600, 48)
+        : undefined,
+    (delta) => {
+      top -= delta;
+    }
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    const pressed = rowOf(view, "spec#b-r2");
+    // The statement's bullet, outside its words, so the press holds the statement rather than
+    // opening its editor.
+    const bullet = pressed.querySelector<HTMLElement>(":scope > span");
+    if (bullet === null) throw new Error("the statement draws no bullet");
+    await user.click(bullet);
+    await waitFor(() => expect(pressed.className).toContain(pageFocusedRow));
+    expect(top).toBe(39);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the hold scrolled the page back over the placing").toEqual([
+      { top: -24 },
+    ]);
+    top += 40;
+    page.resize(document.body);
+    expect(
+      page.scrolledBy(),
+      "the hold left the placed statement where the page's growth pushed it"
+    ).toEqual([{ top: -24 }, { top: 40 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
   }
 });
 
@@ -2980,9 +4000,8 @@ test("q and w still say where they could not go while the results read is out or
 });
 
 // R11: the Spec view draws no row for an open question unless an address names one, so `q`
-// with an open question to go to goes to it in the conversation, at the address the outline draws
-// it at, which puts the focus on it there; it says there is no next question only where the issue
-// holds none.
+// with an open question to go to goes to it in the conversation, where the outline puts the
+// focus on it. It says there is no next question only where the issue holds none.
 test("q goes to the next open question in the conversation, where the view draws no row for it", async () => {
   const user = userEvent.setup();
   const question = openAsk("ask-2");
@@ -3086,9 +4105,8 @@ test("a statement carries its mark while the asks read is out", () => {
 });
 
 // R5 and R35: a refused read of the spec's blocks says the statements could not be read, in the
-// line the view already says it in, and the issue's sentences say nothing, rather than that the
-// spec has no summary, which the view cannot know.
-test("a refused read of the spec's blocks says the statements could not be read, and the sentences say nothing", async () => {
+// line the view already says it in, rather than that the spec holds none.
+test("a refused read of the spec's blocks says the statements could not be read", async () => {
   // Below 1024 px, where the view draws the sentences as its first group: from 1024 px up the
   // Contents pane holds them, and the view draws no group to say anything in (R13).
   const restoreMatchMedia = stubViewport(PHONE_WIDTH);
@@ -3096,7 +4114,6 @@ test("a refused read of the spec's blocks says the statements could not be read,
   try {
     await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     expect(view.container.querySelector('[data-testid="issue-three-things"]')).not.toBeNull();
-    expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.spec_summary);
     expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
   } finally {
     view.unmount();
@@ -3131,6 +4148,52 @@ test("the Spec view draws the three sentences as its first group below 1024 px, 
       read.mockRestore();
       restoreMatchMedia();
     }
+  }
+});
+
+// R1: the first group draws the two rows under the three sentences from the counts the body is
+// given, above the first statement, and each row's press turns its filter on. The body counts
+// nothing itself: what stands under each label is what the slot handed it. Below 1024 px, where
+// the view draws that group: from 1024 px up the Contents pane holds it (R13).
+test("the first group draws the two rows from the counts it is given, and a press turns a filter on", async () => {
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
+  const user = userEvent.setup();
+  const counts: BriefCounts = {
+    checks: {
+      count: 3,
+      states: [
+        { count: 1, state: "failed" },
+        { count: 2, state: "passed" },
+      ],
+    },
+    plan: { count: 5, unit: "steps" },
+  };
+  const { read, view } = drawBody(issueTree([statement("r1")]), [], { counts });
+  const rowOfFilter = (filter: "plan" | "verification"): HTMLElement => {
+    const row = view.container.querySelector<HTMLElement>(`[data-brief-row="${filter}"]`);
+    if (row === null) throw new Error(`the first group draws no row for ${filter}`);
+    return row;
+  };
+  try {
+    const plan = rowOfFilter("plan");
+    const verification = rowOfFilter("verification");
+    expect(plan.textContent).toContain("5 steps");
+    expect(verification.textContent).toContain("3 checks");
+    const first = rowOf(view, "spec#b-r1");
+    for (const row of [plan, verification]) {
+      expect(
+        row.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `the ${row.getAttribute("data-brief-row")} row does not stand above the first statement`
+      ).not.toBe(0);
+    }
+    await user.click(plan);
+    expect(locationOf(view)).toBe(presetPath(KEY, "plan"));
+    await user.click(verification);
+    expect(locationOf(view)).toBe(presetPath(KEY, "verification"));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    restoreMatchMedia();
   }
 });
 
@@ -3206,7 +4269,7 @@ test("the body drawn again after its reads' answers have aged past 30 s sends no
 test("an option label that cites a statement is drawn by the statement's name, never its address", () => {
   const label = `Keep ${statementRef("r2")} as written`;
   const named = "Keep R2. Every address as written";
-  // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
+  // The page names the statement by the name it published for it (`useIssueNames`).
   const made = decisionNode("d1", {
     chips: [
       {
@@ -3232,7 +4295,9 @@ test("an option label that cites a statement is drawn by the statement's name, n
           links: [shaped(statementRef("r1"))],
         },
       }),
-    ]
+    ],
+    // The page publishes the chip's name, which the names store hands the view.
+    { names: new Map([[statementRef("r2"), "R2. Every address"]]) }
   );
   try {
     expect(textsOf(view, "[data-spec-quote]")).toEqual([`“${named}”`]);
@@ -3445,5 +4510,125 @@ test("the body drawn again over a refused read asks for it no more times", async
   } finally {
     view.unmount();
     read.mockRestore();
+  }
+});
+
+// Part Y (R1): a criterion of the view is drawn as a row of the statements' list, in the
+// statements' bullet colour, with its tag, its author and its day, and no mark; its statements
+// stand in the group it heads.
+test("a criterion is a row of the statements' list, with its tag, its words and its author, and no mark", () => {
+  const words = "A person reads the whole spec on a phone.";
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+      node({
+        children: [
+          node({
+            at: "2026-11-15T10:00:00Z",
+            author: { id: READER, kind: "user" },
+            children: [statement("r2")],
+            id: "criterion-1",
+            text: words,
+            type: "criterion",
+          }),
+        ],
+        id: "comment-1",
+        text: "Can I read the spec on my phone?",
+        type: "comment",
+      }),
+    ])
+  );
+  try {
+    expect(
+      [...view.container.querySelectorAll("[data-spec-statement]")].map((row) =>
+        row.getAttribute("data-node-id")
+      )
+    ).toEqual(["spec#b-r1", "criterion-1", "spec#b-r2"]);
+    expect(view.container.querySelector("[data-spec-other]")).toBeNull();
+    const row = rowOf(view, "criterion-1");
+    const bulletOf = (one: HTMLElement) => one.querySelector(":scope > span > i")?.className;
+    expect(row.getAttribute("data-node-type")).toBe("criterion");
+    expect(row.querySelector("[data-node-tag]")?.textContent).toBe(NODE_TYPE_NAMES.criterion);
+    expect(row.querySelector("[data-spec-author]")?.textContent).toBe(READER);
+    expect(row.querySelector("[data-node-words]")?.textContent).toBe(words);
+    expect(bulletOf(row)).toBe(bulletOf(rowOf(view, "spec#b-r1")));
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("no_check");
+    expect(row.hasAttribute("data-spec-mark")).toBe(false);
+    expect(row.querySelector(":scope > svg[data-glyph]")).toBeNull();
+    const group = rowOf(view, "spec#b-r2").closest<HTMLElement>("[data-spec-group]");
+    expect(group?.getAttribute("data-parent-id")).toBe("criterion-1");
+    expect(group?.querySelector("[data-spec-group-heading]")?.textContent).toContain(words);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// Part Y (R5, R9): on a converted issue, Enter on a statement and a press on a criterion's words
+// each edit in their room's artifact; a parent's statement drawn as context is edited on its own
+// issue and takes no caret.
+test("Enter on a statement and a press on a criterion edit each in its document's room, and a parent's statement is edited on its own issue", async () => {
+  const user = userEvent.setup();
+  const rooms = spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+    converted: true,
+    issueKey: KEY,
+    tree: "artifact-tree",
+    viewOf: null,
+  });
+  const onEditing = mock<OnEditing>(() => {});
+  const own = statement("r1");
+  const criterion = node({
+    id: `${KEY}/tree#k1`,
+    text: "A person reads the whole spec on a phone.",
+    type: "criterion",
+  });
+  const above = statement("r9", { id: "r9", reference: "dispatch://CORE-2/spec#b-r9" });
+  const editors = (
+    <>
+      <DocumentStage artifactId="artifact-spec">
+        <div data-test-room-editor="artifact-spec" tabIndex={-1} />
+      </DocumentStage>
+      <DocumentStage artifactId="artifact-tree">
+        <div data-test-room-editor="artifact-tree" tabIndex={-1} />
+      </DocumentStage>
+    </>
+  );
+  const { read, view } = drawBody(issueTree([own, criterion, above]), [], {
+    context: new Set([above.id]),
+    editor: editors,
+    onEditing,
+  });
+  try {
+    const statementRow = rowOf(view, own.id);
+    const criterionRow = rowOf(view, criterion.id);
+    const aboveRow = rowOf(view, above.id);
+    expect(criterionRow).toHaveAttribute("data-editable");
+    expect(aboveRow).not.toHaveAttribute("data-editable");
+
+    act(() => statementRow.focus());
+    await user.keyboard("{Enter}");
+    expect(onEditing).toHaveBeenCalledWith("artifact-spec", expect.any(Function));
+    expect(
+      statementRow.querySelector('[data-test-room-editor="artifact-spec"]')
+    ).toBeInTheDocument();
+
+    const criterionWords = criterionRow.querySelector<HTMLElement>("[data-node-words]");
+    if (criterionWords === null) throw new Error("criterion draws no words");
+    await user.click(criterionWords);
+    await waitFor(() =>
+      expect(
+        criterionRow.querySelector('[data-test-room-editor="artifact-tree"]')
+      ).toBeInTheDocument()
+    );
+    expect(onEditing).toHaveBeenCalledWith("artifact-tree", expect.any(Function));
+
+    act(() => aboveRow.focus());
+    await user.keyboard("{Enter}");
+    expect(aboveRow.querySelector("[data-row-report]")?.textContent).toBe(KEY_REPORTS.issue_above);
+    expect(aboveRow.querySelector("[data-test-room-editor]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    rooms.mockRestore();
   }
 });

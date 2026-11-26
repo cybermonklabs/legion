@@ -400,7 +400,9 @@ test("the menu lists the catalogue in order", async () => {
   const view = renderAt(<Rows nodes={[statement]} />);
   try {
     // Every eligible row draws the Lens act before any row takes the focus; focusing the row adds
-    // no text, and the catalogue is still not read until the menu opens.
+    // no text, and the catalogue is still not read until the menu opens. The row's words paint
+    // after its first render, so its text is read once they stand.
+    await waitFor(() => expect(rowOf(view).textContent).toContain(statement.text));
     const beforeFocus = rowOf(view).textContent;
     const unfocused = lensAct(view, STATEMENT_ID);
     expect(unfocused, "an unfocused row draws no Lens act").not.toBeNull();

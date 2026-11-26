@@ -48,9 +48,6 @@ import {
  * provide none, and `LensMenu` then draws no act.
  */
 export interface LensAct {
-  /** Lets go of every invocation on the node at `on` that has its answer, and so of its
-   *  refusal (`forgetInvocations`). */
-  readonly forget: (on: string) => void;
   /** What has been invoked on each node of the issue, by the node's address
    *  (`useLensInvocations`). */
   readonly invocations: ReadonlyMap<string, NodeInvocations>;
@@ -79,19 +76,17 @@ export function useLensAct(): LensAct | undefined {
   // unmount while the write is out.
   const standing = useStandingAddress();
   const invocations = useLensInvocations(issueKey);
-  const queryClient = useQueryClient();
   return useMemo(
     () =>
       issueKey === undefined || outline === undefined
         ? undefined
         : {
-            forget: (on: string) => forgetInvocations(queryClient, issueKey, on),
             invocations,
             issueKey,
             outline,
             standing,
           },
-    [invocations, issueKey, outline, queryClient, standing]
+    [invocations, issueKey, outline, standing]
   );
 }
 
@@ -171,8 +166,8 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey">): bool
  * unmounting: while the write is still out, opening its menu again says the pick is out and
  * takes no other, and a refusal stands on the row until the menu opens again.
  *
- * The act stands on every such row and a focus move draws every row again, so a row reads
- * nothing of the query client itself: its node's invocations come with the act, read once for
+ * The act stands on every such row and a focus move draws every row again, so a row reads no
+ * mutation state and no query of its own: its node's invocations come with the act, read once for
  * all the rows (`useLensAct`), and the pick's write and the catalogue's read are the open menu's
  * (`KindsMenu`), drawn only while it is open. The write and its landing outlive the menu.
  */
@@ -203,6 +198,7 @@ function ActAndMenu({
   on: string;
   tabStops: boolean;
 }): ReactNode {
+  const queryClient = useQueryClient();
   const invocations = act.invocations.get(on);
   const refusal = refusalOf(invocations?.refusal);
   const [open, setOpen] = useState(false);
@@ -257,7 +253,7 @@ function ActAndMenu({
   }, [open]);
 
   const openMenu = () => {
-    act.forget(on);
+    forgetInvocations(queryClient, act.issueKey, on);
     setOpen(true);
   };
 

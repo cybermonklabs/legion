@@ -492,15 +492,13 @@ function filterView(
  * view's rows there.
  *
  * Plan draws as rows, beside the issue's own tasks, the plan tasks of every issue under it,
- * which its read answers as context, each marked with its issue (`viewRow`): after the issue's
- * own, each issue under it in the tree's order, the order the read first answers a node of it,
- * and each issue's tasks in the order its document writes them (`document.position`), which is
- * the written order the plan's walk starts from (`plan-filter/plan-order.ts`). Each of its rows
- * carries what the read answers of the task beside the node: its size and the issue it is
- * another issue's task of (`planFactsOf`). Verification draws as rows, beside the issue's own
- * checks, each check of an issue under it that serves a statement it draws, and that check's
- * results, which its read answers as context too (`borrowedRows`). No other view takes a node of
- * another issue as a row.
+ * which its read answers as context, each marked with its issue (`viewRow`), in the order the read
+ * hands them over. Each of its rows carries what the read answers of the task beside the node: its
+ * place in the order the read answers, its size, and the issue it is another issue's task of
+ * (`planFactsOf`), and the Plan view draws its tasks in that order (`plan-filter/plan-order.ts`).
+ * Verification draws as rows, beside the issue's own checks, each check of an issue under it that
+ * serves a statement it draws, and that check's results, which its read answers as context too
+ * (`borrowedRows`). No other view takes a node of another issue as a row.
  */
 function heldFilterView(
   root: TreeNode,
@@ -622,21 +620,6 @@ function heldFilterView(
     const own = viewRow(node, filter, root.id) || borrowed.has(node);
     return treeOf.has(node) && (own ? kinds : contextKinds).includes(node.supertag);
   });
-  if (filter === "plan") {
-    const issues = new Map<string, number>();
-    for (const node of nodes) {
-      if (node.issue !== undefined && !issues.has(node.issue)) issues.set(node.issue, issues.size);
-    }
-    const place = (node: TreeAnswerNode): readonly [number, number] =>
-      isForeign(node, root.id)
-        ? [issues.get(node.issue) ?? 0, node.document?.position ?? Number.POSITIVE_INFINITY]
-        : [-1, 0];
-    rows.sort((one, other) => {
-      const [issue, at] = place(one);
-      const [otherIssue, otherAt] = place(other);
-      return issue - otherIssue || at - otherAt;
-    });
-  }
   const rowIds = new Set(rows.map((node) => treeOf.get(node)?.id));
   // Where each row stands: under its parent where that is a row, and under Verification a check
   // under each statement its `serves` tuples name too.
@@ -863,17 +846,23 @@ function borrowedRows(
 
 /**
  * What the Plan view's read answers of a task beside its node, which the task's row carries: its
- * size, the whole number of minutes the read answers as `plan.size` from the task's `size`
- * attribute, where it holds one; and the issue it belongs to, where that is an issue under `key`,
- * the issue the page is of. A size that is no whole number of minutes is no size. This is the
- * one place the page reads `plan.size`; `tree-read/tree-nodes.ts`' `draftServing` reads only
+ * place in the order the read answers (`plan.position`), where the read gives it one; its size,
+ * the whole number of minutes the read answers as `plan.size` from the task's `size` attribute,
+ * where it holds one; and the issue it belongs to, where that is an issue under `key`, the issue
+ * the page is of. A size that is no whole number of minutes is no size. This is the one place the
+ * page reads `plan.position` and `plan.size`; `tree-read/tree-nodes.ts`' `draftServing` reads only
  * whether the read answered a `plan`.
  */
-function planFactsOf(node: TreeAnswerNode, key: string): Pick<TreeNode, "issue" | "size"> {
+function planFactsOf(
+  node: TreeAnswerNode,
+  key: string
+): Pick<TreeNode, "issue" | "position" | "size"> {
+  const position = node.plan?.position;
   const written = node.plan?.size;
   const size = typeof written === "string" && written !== "" ? Number(written) : Number.NaN;
   return {
     ...(isForeign(node, key) ? { issue: node.issue } : {}),
+    ...(typeof position === "number" ? { position } : {}),
     ...(Number.isInteger(size) && size >= 0 ? { size } : {}),
   };
 }
@@ -950,6 +939,25 @@ function lineOfParent(node: TreeNode): ParentLine {
   };
 }
 
+/** `view` with each row it draws under a criterion carrying that criterion as its parent's line
+ *  (`parentLineOf`), as a view gives that line to a row whose parent it draws as no row
+ *  (`lineOfParent`): the Spec list draws no row under another, so a statement written under a
+ *  criterion stands in the group the criterion heads (`spec-filter/spec-decided-by.ts`). `view`
+ *  itself where every such row carries that line already. */
+export function withCriterionLines(view: TreeNode): TreeNode {
+  let changed = false;
+  const children = view.children.map((child) => {
+    const drawn = withCriterionLines(child);
+    const lined =
+      view.type === "criterion" && drawn.parentLine?.id !== view.id
+        ? { ...drawn, parentLine: parentLineOf(view) }
+        : drawn;
+    if (lined !== child) changed = true;
+    return lined;
+  });
+  return changed ? { ...view, children } : view;
+}
+
 /** How a chip names `node`, a node of a tree whose chip the names read gave no words, or the
  *  parent a row's line names (`ParentLine`, which carries the same words): by the reading of its
  *  words, its read's own else its stored text's (`storedReading`), with the page's word for its
@@ -963,11 +971,10 @@ export function nodeReading(node: Pick<TreeNode, "text" | "tree" | "type">): Ref
     : { fallback: word, tree };
 }
 
-/** What one control of the filter row draws after its name (R2): its count, then, where the
- *  picture draws one, the noun the count is in or what of it waits on the reader. */
+/** What a filter control draws after its name (R2): its count, with a unit or a flag where
+ *  applicable. Conversation and Graph draw no signal. */
 export interface PresetSignal {
-  /** How many nodes of the view's main kind it matched (R2), closed ones too, or for Conversation
-   *  how many entries the Contents list holds, as the prototype's signal counts them. */
+  /** How many nodes of the filter's main kind it matched (R2), closed ones too. */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. The decisions' flag

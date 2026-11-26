@@ -1,24 +1,38 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
-import { type ReactNode, useMemo } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { type ReactNode, useLayoutEffect, useMemo, useState } from "react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTarget } from "../../api/types";
+import { pageStateText } from "../../theme/classes";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { IssueThreeThings } from "./IssueThreeThings";
+import { briefCounts, IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
+import { presetPath } from "./issue-address";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
-import { useIssueNames } from "./one-line";
-import { CONTROL_LABELS, EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { type LineNames, useIssueNames } from "./one-line";
+import * as outlineReads from "./outline-reads";
+import {
+  type CheckState,
+  CONTROL_LABELS,
+  EMPTY_STATE_LINES,
+  FILTER_SIGNAL_WORDS,
+  GLYPH_TOKENS,
+  NODE_STATE_WORDS,
+  type NodeType,
+  VERIFICATION_WORDS,
+} from "./page-words";
+import { filterSignals } from "./presets";
 import { Publisher, publishedTree } from "./projection-fixture";
 import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
@@ -79,40 +93,89 @@ function summaryNode(text: string): TreeNode {
   });
 }
 
-/** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
- *  the summary is a node of (`slots/contents.tsx`), for an issue whose spec's blocks are held
- *  unless `specHeld` says not. */
-function Head({
-  look,
-  root,
-  specHeld = true,
-  summary,
-}: {
-  look: "contents" | "spec";
-  root: TreeNode;
-  specHeld?: boolean;
-  summary: TreeNode | undefined;
-}): ReactNode {
-  const issue = useMemo(() => issueDetails(), []);
-  const { nameOf } = useIssueNames(issue, root);
-  return <IssueThreeThings look={look} nameOf={nameOf} specHeld={specHeld} summary={summary} />;
+/** The `n`th task of the issue's plan, holding `text`. */
+function planTask(n: number, text = `Step ${n}`): TreeNode {
+  return treeNode(`plan#b-t${n}`, "plan_task", { text });
 }
 
-/** The sentences the head draws, in order, and the label before each. `reading` is whether the
- *  reads that carry the summary are still out; `root` is the tree the summary is a node of,
- *  which is the issue holding it alone unless a case says more. */
+/** The `n`th check of the issue's Verification document, standing in `state`. A `check` block of
+ *  any other document carries no state and is no check (`isCheck`). */
+function checkNode(n: number, state: CheckState, text = `Check ${n}`): TreeNode {
+  return treeNode(`verification#b-c${n}`, "check", { state, text });
+}
+
+/** What the slot names the summary's references by (`useIssueNames`), handed to `onNames` as it
+ *  is read and each time it changes. */
+function SlotNames({ onNames }: { onNames: (lineNames: LineNames) => void }): ReactNode {
+  const lineNames = useIssueNames(KEY);
+  useLayoutEffect(() => onNames(lineNames), [lineNames, onNames]);
+  return null;
+}
+
+/** The head as a slot draws it: what the summary cites named by the names the page published
+ *  (`slots/contents.tsx`, `useIssueNames`), and the two rows counted over `root`, the whole tree
+ *  the summary is a node of, under the words `query` as the slot counts them, once the reads the
+ *  tree is built from hold (`held`). The names are read beside the head, under a query client of
+ *  their own that holds nothing - the page's rule for an author reads the agent registry's cache
+ *  (`useAgentText`) - and the head is drawn with no `QueryClientProvider` around it, so a request
+ *  of its own would throw (R20). */
+function Head({
+  held = true,
+  look,
+  query = "",
+  root,
+  summary,
+}: {
+  held?: boolean;
+  look: "contents" | "spec";
+  query?: string;
+  root: TreeNode;
+  summary: TreeNode | undefined;
+}): ReactNode {
+  const [client] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  );
+  const [lineNames, setLineNames] = useState<LineNames | undefined>(undefined);
+  const counts = useMemo(
+    () => briefCounts({ namesHeld: held, readsHeld: held, root }, query),
+    [held, query, root]
+  );
+  return (
+    <>
+      <QueryClientProvider client={client}>
+        <SlotNames onNames={setLineNames} />
+      </QueryClientProvider>
+      {lineNames === undefined ? null : (
+        <IssueThreeThings
+          counts={counts}
+          issueKey={KEY}
+          lineNames={lineNames}
+          look={look}
+          summary={summary}
+        />
+      )}
+    </>
+  );
+}
+
+/** The sentences the head draws, in order, and the label before each. `held` is whether the
+ *  reads the tree is built from hold, which the rows' counts wait on; `root` is the tree the
+ *  summary is a node of, which is the issue holding it alone unless a case says more. */
 function bullets(
   summary: TreeNode | undefined,
-  reading = false,
-  look: "contents" | "spec" = "contents",
-  root: TreeNode = treeNode(KEY, "issue", { children: summary === undefined ? [] : [summary] })
+  {
+    held = true,
+    look = "contents",
+    root = treeNode(KEY, "issue", { children: summary === undefined ? [] : [summary] }),
+  }: { held?: boolean; look?: "contents" | "spec"; root?: TreeNode } = {}
 ): { labels: string[]; lines: string[]; unmount: () => void } {
-  const published = publishedTree(root);
+  // The page publishes its chips' names to the names store, which the sentences name a cited
+  // reference by (`useIssueNames`).
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <ReferenceNamesProvider>
-        <Publisher published={published} />
-        <Head look={look} root={root} specHeld={!reading} summary={summary} />
+        <Publisher published={publishedTree(root)} />
+        <Head held={held} look={look} root={root} summary={summary} />
       </ReferenceNamesProvider>
     </MemoryRouter>
   );
@@ -124,15 +187,43 @@ function bullets(
   };
 }
 
+/** The two rows under the sentences of `head`, in the order they are drawn. */
+function rowsOf(head: HTMLElement): HTMLElement[] {
+  return [...head.querySelectorAll<HTMLElement>("[data-brief-row]")];
+}
+
+/** The row for `filter` in the drawn head. */
+function rowFor(filter: "plan" | "verification"): HTMLElement {
+  const row = rowsOf(screen.getByTestId("issue-three-things")).find(
+    (one) => one.getAttribute("data-brief-row") === filter
+  );
+  if (row === undefined) throw new Error(`the head draws no row for ${filter}`);
+  return row;
+}
+
+/** What the row for `filter` draws under its label, which is nothing while its counts wait. */
+function countsOf(filter: "plan" | "verification"): string {
+  return rowFor(filter).querySelector("[data-brief-counts]")?.textContent ?? "";
+}
+
+/** Where the router stands, which a row's press moves. */
+function Where(): ReactNode {
+  return <output data-testid="where">{useLocation().pathname}</output>;
+}
+
+/** The address the router stands at, as `Where` writes it. */
+function where(): string {
+  return screen.getByTestId("where").textContent ?? "";
+}
+
 // Each sentence stands after its label, in the order the summary holds them, in the Contents
-// slot (the pane and the Outline sheet) and the Spec view's first group alike; and the two rows
-// the spec named under them are drawn nowhere.
-test("each sentence stands after its label, and the two rows are not drawn", () => {
+// slot (the pane and the Outline sheet) and the Spec view's first group alike, and under them
+// stand the two rows: each a button that is no link.
+test("each sentence stands after its label, with the two rows under them", () => {
   for (const look of ["contents", "spec"] as const) {
     const { labels, lines, unmount } = bullets(
       summaryNode("One body. Every property shows. The reasoning is one press away."),
-      false,
-      look
+      { look }
     );
     try {
       expect(labels).toEqual(["What it is:", "Why it matters:", "Done when:"]);
@@ -142,8 +233,23 @@ test("each sentence stands after its label, and the two rows are not drawn", () 
         "The reasoning is one press away.",
       ]);
       const head = screen.getByTestId("issue-three-things");
-      expect(head.textContent).not.toContain("How it gets done");
-      expect(head.textContent).not.toContain("What you will be shown");
+      const rows = rowsOf(head);
+      expect(rows.map((row) => row.getAttribute("data-brief-row"))).toEqual([
+        "plan",
+        "verification",
+      ]);
+      expect(rows.map((row) => row.querySelector("[data-page-chrome]")?.textContent)).toEqual([
+        CONTROL_LABELS.in_short_how,
+        CONTROL_LABELS.in_short_shown,
+      ]);
+      const list = head.querySelector("ul");
+      expect(list, `${look}: the sentences are not a list`).not.toBeNull();
+      for (const row of rows) {
+        expect(
+          (list?.compareDocumentPosition(row) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
+          `${look}: a row does not stand under the sentences`
+        ).not.toBe(0);
+      }
       expect(head.querySelector("a")).toBeNull();
     } finally {
       unmount();
@@ -171,7 +277,7 @@ test("a summary of four sentences draws the first three of them", () => {
 
 // An author who wrote two sentences gets two: no third bullet, and nothing drawn in its place.
 test("a summary of two sentences draws two bullets and says nothing about the third", () => {
-  const { lines, unmount } = bullets(
+  const { labels, lines, unmount } = bullets(
     summaryNode("The page is one outline. It opens folded to the work in front of the reader.")
   );
   try {
@@ -179,29 +285,24 @@ test("a summary of two sentences draws two bullets and says nothing about the th
       "The page is one outline.",
       "It opens folded to the work in front of the reader.",
     ]);
-    expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
-      EMPTY_STATE_LINES.spec_summary
-    );
+    expect(labels).toEqual(["What it is:", "Why it matters:"]);
   } finally {
     unmount();
   }
 });
 
 // The head reads the summary's reading and never the node's text, which is the stored excerpt,
-// so a summary node whose reading the tree read has not sent yet draws nothing of
-// that text - and, being a summary all the same, never says that the spec has none.
-test("a summary node whose reading has not come says nothing", () => {
+// so a summary node whose reading the tree read has not sent yet draws nothing of that text.
+test("a summary node whose reading has not come draws no sentence", () => {
   const { lines, unmount } = bullets({
     ...summaryNode("The page is one outline. It fits a phone."),
     tree: undefined,
   });
   try {
     expect(lines).toEqual([]);
-    const head = screen.getByTestId("issue-three-things").textContent;
-    expect(head).not.toContain("The page is one outline.");
-    for (const line of Object.values(EMPTY_STATE_LINES)) {
-      expect(head).not.toContain(line);
-    }
+    expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
+      "The page is one outline."
+    );
   } finally {
     unmount();
   }
@@ -224,10 +325,6 @@ test("a summary with no sentence end draws its first line as one sentence", () =
     const { lines, unmount } = bullets(summaryNode(text));
     try {
       expect(lines).toEqual([line]);
-      const head = screen.getByTestId("issue-three-things").textContent;
-      for (const empty of Object.values(EMPTY_STATE_LINES)) {
-        expect(head).not.toContain(empty);
-      }
     } finally {
       unmount();
     }
@@ -257,52 +354,236 @@ test("a summary that says one sentence twice draws both, each under a key of its
   }
 });
 
-// A spec that carries no summary node at all still draws its row in that same place, saying so.
-test("a spec with no summary draws the page's own line and no bullet", () => {
+// A spec that carries no summary node draws the two rows alone: the heading and the rows, with no
+// sentence and no line about a summary.
+test("a spec with no summary draws the two rows alone", () => {
   const { lines, unmount } = bullets(undefined);
   try {
     expect(lines).toEqual([]);
-    expect(screen.getByTestId("issue-three-things").textContent).toContain(
-      EMPTY_STATE_LINES.spec_summary
+    const head = screen.getByTestId("issue-three-things");
+    expect(head.querySelector("ul")).toBeNull();
+    expect(head.textContent).toBe(
+      [
+        CONTROL_LABELS.in_short,
+        CONTROL_LABELS.in_short_how,
+        EMPTY_STATE_LINES.plan,
+        CONTROL_LABELS.in_short_shown,
+        EMPTY_STATE_LINES.verification,
+      ].join("")
     );
   } finally {
     unmount();
   }
 });
 
-// R5 and R8: an issue with no spec has no summary to say is missing, so the head says nothing of
-// one, where a spec with no summary says it has none.
-test("an issue with no spec says nothing of a summary", () => {
+// The page's first load draws the tree before the spec's blocks and their words arrive, so the
+// summary node is missing, or there with no reading yet. The head says nothing about the summary
+// then, and its rows draw their labels alone until every read the tree is built from holds its
+// answer: a count taken sooner would read 0 for what the page has not read.
+test("while the reads that carry the summary are out, the head draws its heading and labels alone", () => {
+  const work = treeNode(KEY, "issue", {
+    children: [planTask(1), checkNode(1, "passed")],
+  });
+  for (const summary of [
+    undefined,
+    { ...summaryNode("The page is one outline."), tree: undefined },
+  ]) {
+    const { lines, unmount } = bullets(summary, { held: false, root: work });
+    try {
+      expect(lines).toEqual([]);
+      const head = screen.getByTestId("issue-three-things");
+      expect(head.querySelector("ul")).toBeNull();
+      expect(head.textContent).toBe(
+        `${CONTROL_LABELS.in_short}${CONTROL_LABELS.in_short_how}${CONTROL_LABELS.in_short_shown}`
+      );
+      for (const row of rowsOf(head)) {
+        expect(
+          row.getAttribute("aria-describedby"),
+          "a row with no counts is described"
+        ).toBeNull();
+      }
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// R1: a press on a row turns its filter on, as the view row's control for it does: the address
+// moves to the Plan filter's, then to the Verification filter's. Each row is named by its label
+// alone, so the name a voice user says is the word they read, with its counts drawn beside it.
+test("a row's press turns its filter on", async () => {
+  const user = userEvent.setup();
+  const root = treeNode(KEY, "issue", { children: [planTask(1), checkNode(1, "passed")] });
   const view = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head look="contents" root={treeNode(KEY, "issue")} specHeld={false} summary={undefined} />
+    <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+      <Head look="contents" root={root} summary={undefined} />
+      <Where />
     </MemoryRouter>
   );
   try {
-    expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
-      EMPTY_STATE_LINES.spec_summary
-    );
+    expect(where()).toBe(`/issues/${KEY}`);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.in_short_how }));
+    expect(where()).toBe(presetPath(KEY, "plan"));
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.in_short_shown }));
+    expect(where()).toBe(presetPath(KEY, "verification"));
   } finally {
     view.unmount();
   }
 });
 
-// The page's first load draws the tree before the spec's blocks and their words arrive, so the
-// summary node is missing, or there with no reading yet. That is no spec without a summary, and
-// the head says nothing about one until the reads that carry it have answered.
-test("while the reads that carry the summary are out, the head says nothing about it", () => {
-  for (const summary of [
-    undefined,
-    { ...summaryNode("The page is one outline."), tree: undefined },
+// Each row is one tab stop, so the keyboard reaches both in two presses of Tab and Enter turns the
+// focused row's filter on.
+test("each row is one tab stop, and Enter on it turns its filter on", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+      <Head look="contents" root={treeNode(KEY, "issue")} summary={undefined} />
+      <Where />
+    </MemoryRouter>
+  );
+  try {
+    await user.tab();
+    expect(document.activeElement).toBe(rowFor("plan"));
+    await user.tab();
+    expect(document.activeElement).toBe(rowFor("verification"));
+    await user.keyboard("{Enter}");
+    expect(where()).toBe(presetPath(KEY, "verification"));
+  } finally {
+    view.unmount();
+  }
+});
+
+// R1: each check counts once, in the state the Verification view draws it in, and the counts of
+// the states add up to the number of checks, which is the Verification control's own count. A
+// check two statements serve is drawn under both and is one check; a `check` block of another
+// document is no check. A state that holds no check is not drawn, and each state that does is
+// drawn as its shape, its count and its word, in the order the page declares the states, the
+// passed and the failed ones in the colours the Verification view gives them.
+test("the checks are counted once each, by state, adding up to the number of checks", () => {
+  const served = checkNode(1, "passed");
+  const root = treeNode(KEY, "issue", {
+    children: [
+      treeNode("spec#b-r1", "requirement", { children: [served] }),
+      treeNode("spec#b-r2", "requirement", { children: [{ ...served, transcluded: true }] }),
+      checkNode(2, "passed"),
+      checkNode(3, "failed"),
+      checkNode(4, "no-result"),
+      treeNode("plan#b-c9", "check"),
+    ],
+  });
+  const view = render(
+    <MemoryRouter>
+      <Head look="contents" root={root} summary={undefined} />
+    </MemoryRouter>
+  );
+  try {
+    const row = rowFor("verification");
+    const total = row.querySelector("[data-brief-total]")?.textContent;
+    expect(total).toBe(`4 ${VERIFICATION_WORDS.check_many}`);
+    expect(filterSignals(root, "").verification.count, "the control counts other checks").toBe(4);
+    const drawn = [...row.querySelectorAll<HTMLElement>("[data-brief-state]")];
+    expect(
+      drawn.map((part) => ({
+        count: part.querySelector("[data-author-text]")?.textContent,
+        shape: part.querySelector("svg")?.getAttribute("data-glyph"),
+        state: part.getAttribute("data-brief-state"),
+        tone: [pageStateText.failed, pageStateText.passed, pageStateText.quiet].find((one) =>
+          part.querySelector("svg")?.classList.contains(one)
+        ),
+        word: part.querySelector("[data-page-chrome]")?.textContent,
+      }))
+    ).toEqual([
+      {
+        count: "1",
+        shape: GLYPH_TOKENS.states.check.failed,
+        state: "failed",
+        tone: pageStateText.failed,
+        word: NODE_STATE_WORDS.check.failed,
+      },
+      {
+        count: "1",
+        shape: GLYPH_TOKENS.states.check["no-result"],
+        state: "no-result",
+        tone: pageStateText.quiet,
+        word: NODE_STATE_WORDS.check["no-result"],
+      },
+      {
+        count: "2",
+        shape: GLYPH_TOKENS.states.check.passed,
+        state: "passed",
+        tone: pageStateText.passed,
+        word: NODE_STATE_WORDS.check.passed,
+      },
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R1: where the plan holds no task or the issue no check, the row draws the page's line for it in
+// place of a count, each row on its own account, and a count of one check reads in the singular.
+test("a plan with no task and an issue with no check draw the page's line, and one check reads in the singular", () => {
+  for (const { children, plan, verification } of [
+    {
+      children: [],
+      plan: EMPTY_STATE_LINES.plan,
+      verification: EMPTY_STATE_LINES.verification,
+    },
+    {
+      children: [planTask(1), planTask(2)],
+      plan: `2 ${FILTER_SIGNAL_WORDS.steps}`,
+      verification: EMPTY_STATE_LINES.verification,
+    },
+    {
+      children: [checkNode(1, "passed")],
+      plan: EMPTY_STATE_LINES.plan,
+      verification: `1 ${VERIFICATION_WORDS.check_one}1 ${NODE_STATE_WORDS.check.passed}`,
+    },
   ]) {
-    const { lines, unmount } = bullets(summary, true);
+    const { unmount } = bullets(undefined, { root: treeNode(KEY, "issue", { children }) });
     try {
-      expect(lines).toEqual([]);
-      expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
-        EMPTY_STATE_LINES.spec_summary
-      );
+      expect(countsOf("plan")).toBe(plan);
+      expect(countsOf("verification")).toBe(verification);
     } finally {
       unmount();
+    }
+  }
+});
+
+// R1: the rows count under the words filter the view row counts under. A task or a check that
+// holds none of the words is left out. Where the words leave none the count is 0, as the
+// control's is: the plan and the issue hold some, so neither is the page's line for one that holds
+// none.
+test("the rows count what holds the words typed, and words that leave none count 0", () => {
+  const root = treeNode(KEY, "issue", {
+    children: [
+      planTask(1, "alpha step"),
+      planTask(2, "beta step"),
+      planTask(3, "alpha again"),
+      checkNode(1, "passed", "alpha check"),
+      checkNode(2, "failed", "beta check"),
+    ],
+  });
+  for (const [query, steps, checks] of [
+    ["alpha", 2, `1 ${VERIFICATION_WORDS.check_one}1 ${NODE_STATE_WORDS.check.passed}`],
+    ["zzz", 0, `0 ${VERIFICATION_WORDS.check_many}`],
+  ] as const) {
+    const view = render(
+      <MemoryRouter>
+        <Head look="contents" query={query} root={root} summary={undefined} />
+      </MemoryRouter>
+    );
+    try {
+      expect(
+        filterSignals(root, query).plan.count,
+        `the control counts other steps for ${query}`
+      ).toBe(steps);
+      expect(countsOf("plan"), `${query}: the plan row`).toBe(
+        `${steps} ${FILTER_SIGNAL_WORDS.steps}`
+      );
+      expect(countsOf("verification"), `${query}: the checks row`).toBe(checks);
+    } finally {
+      view.unmount();
     }
   }
 });
@@ -438,7 +719,7 @@ test("a summary sentence that cites a block draws the block's name, not its addr
       }),
     ],
   });
-  const { lines, unmount } = bullets(summary, false, "contents", root);
+  const { lines, unmount } = bullets(summary, { root });
   try {
     expect(lines).toEqual([
       "The page is one outline.",
@@ -453,9 +734,9 @@ test("a summary sentence that cites a block draws the block's name, not its addr
 });
 
 // R1: each sentence whole as its author wrote it, after its own label. A cited statement is
-// named by its own first words (`useReferenceNames`), which in a spec that numbers its
-// statements open with a label ("R1."), so a sentence end read after the naming splits the
-// author's first sentence at the name and moves "Why it matters:" onto its second half.
+// named by its own first words (`useIssueNames`), which in a spec that numbers its statements
+// open with a label ("R1."), so a sentence end read after the naming splits the author's first
+// sentence at the name and moves "Why it matters:" onto its second half.
 test("a summary sentence that cites a labelled statement stays one sentence under its own label", () => {
   const cited = `dispatch://${KEY}/spec#b-r1`;
   const summary = summaryNode(
@@ -477,7 +758,7 @@ test("a summary sentence that cites a labelled statement stays one sentence unde
       }),
     ],
   });
-  const { labels, lines, unmount } = bullets(summary, false, "contents", root);
+  const { labels, lines, unmount } = bullets(summary, { root });
   try {
     expect(lines).toEqual([
       "The page draws R1. Every node is whole first.",
@@ -512,7 +793,7 @@ test("a summary with no sentence end that cites a labelled statement draws it as
       }),
     ],
   });
-  const { labels, lines, unmount } = bullets(summary, false, "contents", root);
+  const { labels, lines, unmount } = bullets(summary, { root });
   try {
     expect(lines).toEqual(["The page draws R1. Every node is whole first on every phone"]);
     expect(labels).toEqual(["What it is:"]);
@@ -655,9 +936,56 @@ function fullyReadIssue(): TreeNode {
   });
 }
 
-// R1 and R8: the Contents pane's three sentences are the spec's summary, so they wait on the
-// spec's blocks alone. A plan whose blocks read was refused holds nothing they are drawn from,
-// and changes nothing in them.
+/** A client holding every read the Contents slot's tree is built from, answered with nothing but
+ *  the spec's summary, which the tree read holds: no document's blocks are a read of their own.
+ *  A case leaves out the one it holds back. */
+function seededClient(): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY, "thread"], []);
+  client.setQueryData(["comments", KEY], []);
+  client.setQueryData(["issue-messages", KEY], []);
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeAnswer([
+      block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
+    ])
+  );
+  return client;
+}
+
+/** The Contents slot of `issue` over `client`'s reads, as the page draws it at `address`. */
+function drawContents(client: QueryClient, issue: IssueDetails, address = "/"): RenderResult {
+  const route = { key: KEY, kind: "issue" } as const;
+  return render(
+    <MemoryRouter initialEntries={[address]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <ContentsSlot issue={issue} route={route} />
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** The text of each of the two rows the Contents slot drew, in the order it drew them. */
+function rowTexts(view: RenderResult): (string | null)[] {
+  return [...view.container.querySelectorAll("[data-brief-row]")].map((row) => row.textContent);
+}
+
+// R1 and R8: the Contents pane's three sentences are the spec's summary, which the tree read
+// holds with every block. A plan's blocks are no read of their own, so a blocks read of any
+// document refused changes nothing in them, and the tree holds the plan whole: the rows under
+// them count it, a plan with no task and an issue with no check each by the page's line for it.
 test("the Contents pane draws the three sentences though the plan's blocks could not be read", async () => {
   const plan: Artifact = {
     ...decisionsDocument,
@@ -670,43 +998,14 @@ test("the Contents pane draws the three sentences though the plan's blocks could
     artifacts: [specDocument, decisionsDocument, plan],
     plan_artifact_id: plan.id,
   };
-  const route = { key: KEY, kind: "issue" } as const;
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY, "thread"], []);
-  client.setQueryData(["comments", KEY], []);
-  client.setQueryData(["issue-messages", KEY], []);
-  // The tree read holds the spec's summary, and the plan's blocks are no read of their own: a
-  // blocks read of any document is refused.
-  client.setQueryData(
-    outlineQuery(KEY, "conversation").queryKey,
-    treeAnswer([
-      block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
-    ])
-  );
+  const client = seededClient();
+  // A blocks read of any document is refused.
   const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
     targets: [summaryTarget()],
   } as never);
   try {
-    const view = render(
-      <MemoryRouter>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <ProvidersSlot issue={issue} route={route}>
-                <ContentsSlot issue={issue} route={route} />
-              </ProvidersSlot>
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
-      </MemoryRouter>
-    );
+    const view = drawContents(client, issue);
     try {
       await waitFor(() =>
         expect(
@@ -717,11 +1016,159 @@ test("the Contents pane draws the three sentences though the plan's blocks could
           ].map((sentence) => sentence.textContent)
         ).toEqual(["What this is.", "Why it matters.", "What is different when done."])
       );
+      expect(rowTexts(view)).toEqual([
+        `${CONTROL_LABELS.in_short_how}${EMPTY_STATE_LINES.plan}`,
+        `${CONTROL_LABELS.in_short_shown}${EMPTY_STATE_LINES.verification}`,
+      ]);
     } finally {
       view.unmount();
     }
   } finally {
     blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// R1: the rows wait for the tree as the view row's counts do. While a read the tree is built from
+// is out they draw their labels alone, since a count taken then would read 0 for what the page
+// has not read, and once it answers they draw what the tree holds.
+test("the Contents pane's rows draw their labels alone while a read of the tree is out, and count once it answers", async () => {
+  const client = seededClient();
+  // The comments are the one read of the tree still out.
+  const outKey = ["comments", KEY];
+  client.removeQueries({ queryKey: outKey });
+  const commentsAnswer = Promise.withResolvers<never[]>();
+  const comments = spyOn(api, "listComments").mockReturnValue(commentsAnswer.promise as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [summaryTarget()],
+  } as never);
+  try {
+    const view = drawContents(client, issueDetails());
+    try {
+      await waitFor(() => expect(client.isFetching({ queryKey: outKey })).toBe(1));
+      expect(rowTexts(view)).toEqual([CONTROL_LABELS.in_short_how, CONTROL_LABELS.in_short_shown]);
+      await act(async () => commentsAnswer.resolve([]));
+      await waitFor(() =>
+        expect(rowTexts(view)).toEqual([
+          `${CONTROL_LABELS.in_short_how}${EMPTY_STATE_LINES.plan}`,
+          `${CONTROL_LABELS.in_short_shown}${EMPTY_STATE_LINES.verification}`,
+        ])
+      );
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    comments.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// R1: under a words filter (`?q=`) the rows wait for the names too, which give a plan task its
+// words. With no words typed the counts do not depend on them and are drawn at once; under the
+// filter they stand back until the names answer, then count what holds the words, which is
+// nothing here: a count of 0.
+test("under a words filter the Contents pane's rows wait for the names, and count once they answer", async () => {
+  const client = seededClient();
+  const named = Promise.withResolvers<unknown>();
+  const names = spyOn(api, "getReferenceTargets").mockReturnValue(named.promise as never);
+  const blocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([] as never);
+  try {
+    const plain = drawContents(client, issueDetails());
+    try {
+      expect(rowTexts(plain)).toEqual([
+        `${CONTROL_LABELS.in_short_how}${EMPTY_STATE_LINES.plan}`,
+        `${CONTROL_LABELS.in_short_shown}${EMPTY_STATE_LINES.verification}`,
+      ]);
+    } finally {
+      plain.unmount();
+    }
+    const filtered = drawContents(client, issueDetails(), "/?q=alpha");
+    try {
+      expect(rowTexts(filtered)).toEqual([
+        CONTROL_LABELS.in_short_how,
+        CONTROL_LABELS.in_short_shown,
+      ]);
+      await act(async () => named.resolve({ targets: [summaryTarget()] }));
+      await waitFor(() =>
+        expect(rowTexts(filtered)).toEqual([
+          `${CONTROL_LABELS.in_short_how}0 ${FILTER_SIGNAL_WORDS.steps}`,
+          `${CONTROL_LABELS.in_short_shown}0 ${VERIFICATION_WORDS.check_many}`,
+        ])
+      );
+    } finally {
+      filtered.unmount();
+    }
+  } finally {
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The outline's reads as their module defines them, read before a case's spy stands in for the
+// module's export, which every import of it reads from then on.
+const useOutlineReadsItself = outlineReads.useOutlineReads;
+
+// R2: a words filter changes what the Contents slot lists, never what a thread produced. The
+// slot draws the list from the filter's view of the tree, and reads which messages produced a
+// node over the whole tree: under `?q=quokka` the view keeps the reader's message, whose words
+// hold the word, and drops the statement under it, which holds none, and the list still holds
+// the message. No read the tree is built from places a statement under a message, so the
+// outline's reads answer here with a tree that holds one.
+test("the Contents slot under a words filter keeps a message the reader wrote that produced a node", () => {
+  const statement = treeNode("spec#b-r1", "requirement", { text: "The page draws the list." });
+  const message = treeNode("message-mine", "message", {
+    author: { id: "alice", kind: "user" },
+    children: [statement],
+    held: 1,
+    text: "Please add a quokka statement.",
+  });
+  const root = treeNode(KEY, "issue", { children: [message], held: 2 });
+  const reads = spyOn(outlineReads, "useOutlineReads").mockImplementation((issue) => ({
+    ...useOutlineReadsItself(issue),
+    root,
+  }));
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const view = drawContents(seededClient(), issueDetails(), "/?q=quokka");
+    try {
+      expect(
+        [...view.container.querySelectorAll("[data-contents-entry]")].map((entry) =>
+          entry.getAttribute("data-contents-entry")
+        ),
+        "the Contents list under the words filter does not hold the reader's message"
+      ).toEqual([message.id]);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    reads.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// R1: an issue with no spec has no summary, and draws the two rows all the same.
+test("an issue with no spec still draws the two rows", async () => {
+  const noSpec: IssueDetails = {
+    ...issueDetails(),
+    artifacts: [],
+    decisions_artifact_id: "",
+    primary_artifact_id: "",
+  };
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const view = drawContents(seededClient(), noSpec);
+    try {
+      await waitFor(() =>
+        expect(rowTexts(view)).toEqual([
+          `${CONTROL_LABELS.in_short_how}${EMPTY_STATE_LINES.plan}`,
+          `${CONTROL_LABELS.in_short_shown}${EMPTY_STATE_LINES.verification}`,
+        ])
+      );
+      expect(view.container.querySelector("li")).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  } finally {
     names.mockRestore();
   }
 });

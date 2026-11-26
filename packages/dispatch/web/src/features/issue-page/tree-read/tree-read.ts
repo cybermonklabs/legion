@@ -592,8 +592,8 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
 
 /** The answer of the outline read the page holds (`OutlineChoice`) of issue `key`, watched and
  *  never sent, since `useTreeRead` sends it: for a surface that holds the issue's key and not its
- *  read, as a decision's Keep and Change do (`DecisionActions.tsx`), which find their decision in
- *  the read the rows are drawn from. */
+ *  read, as a decision's Keep and Change do (`DecisionActions.tsx`), which look for their
+ *  decision in it first in every view but Decisions, whose rows are drawn from its view read. */
 export function useOutlineAnswer(key: string): TreeAnswer | undefined {
   return useQuery({ ...observedOutline(key, useOutlineChoice()), enabled: false }).data;
 }

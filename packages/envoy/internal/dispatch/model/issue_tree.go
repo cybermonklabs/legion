@@ -6,7 +6,7 @@ import (
 )
 
 // IssueTreeRead is GET /api/v1/issues/{key}/tree: the nodes of one issue's tree as one reader may
-// see them, in the tree's own order, and every tuple whose two ends the answer holds.
+// see them, in the tree's own order (below), and every tuple whose two ends the answer holds.
 //
 // Issue is the issue read and View the view it answered, "" for the read with no view. Version is
 // the version of the view's query node the answer was read at (`&v=`), null for the head.
@@ -14,10 +14,15 @@ import (
 // page reads them without finding the issue's node first.
 //
 // Nodes is the answer's nodes: in the read with no view, the skeleton of the issue's tree walked
-// from its own node (each before its children, ranked siblings by rank and then the rest by when
-// each was made), then its second part, then the context nodes; in a view, the nodes of its query
-// and its fixed context; with `kind`, the nodes of the kinds it names out of the skeleton, with
-// their ancestors as context. The skeleton is every node of the tree but the blocks of the issue's
+// from its own node, then its second part, then the context nodes; in a view, the nodes of its
+// query and its fixed context; with `kind`, the nodes of the kinds it names out of the skeleton,
+// with their ancestors as context. The walk takes each node before its children, and orders a
+// node's children so: a conversation item's own blocks first, in their position order; then its
+// conversation nodes - asks, comments, messages, lenses and risks - by when each was made, so the
+// discussion reads in the order it was written; then its children that hold a rank, by rank; then
+// the rest, such as a block new in a deferred version that holds no rank yet, by when each was
+// made; each tie by the lower id. Under the issue's node its memo callout stands first, before the
+// conversation. The skeleton is every node of the tree but the blocks of the issue's
 // documents other than its spec, its Verification document, its plan and its tree's own fragment,
 // and but the comments off its comment page. Every answer also carries each comment on the text of
 // a node it returns, with every comment of that comment's thread: a comment no person wrote in, and

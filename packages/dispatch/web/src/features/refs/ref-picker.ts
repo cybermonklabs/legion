@@ -2,6 +2,7 @@ import { mentionName } from "@legion/contracts";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { DisplayTree, SearchResultKind } from "../../api/types";
+import type { AgentStateWords } from "./AgentName";
 import type { TextSource } from "./text-references";
 
 /**
@@ -528,6 +529,9 @@ export interface RefPickerWords {
   readonly states: Readonly<Record<Exclude<RefPickerState, "rows">, string>>;
   readonly parties: Readonly<Record<Exclude<RefPickerParties, "listed">, string>>;
   readonly stoppedRole: string;
+  /** What the state mark before the agent a party's row names says (`AgentName`'s
+   *  `stateWords`); with none - `REF_PICKER_DEFAULT_WORDS` gives none - `AgentName`'s own. */
+  readonly marks?: AgentStateWords;
 }
 
 /** The picker's own words, which every host but the issue page's box draws: the constants above,
