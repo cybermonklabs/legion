@@ -244,17 +244,19 @@ const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
  * merging a commit: 200. Otherwise workflow's `leftItsPhase` records a left phase's completion
  * only while the role's phases row holds no completion of it and some role works the issue's
  * phase, so a finished role's is answered `409 HANDOFF_NOT_CURRENT_PHASE`, and so is every one
- * while no role works the issue's phase (admitted, awaiting_person, held, and integrating, which
- * the Go daemon has no phase for). Three answers come first: the completion route answers any
- * completion of a done issue from a session working no look `409 CHECK_LOOK_NOT_SERVED` (the
- * `legion` tool never asks this module there), one of an issue it does not record (`unrecorded`)
- * `404 ISSUE_NOT_FOUND`, and the engine answers every architect's `409 ACCEPTANCE_IS_SIGN_OFF`,
- * since the architect accepts with sign_off. A row that sends nothing makes no request.
+ * while no role works the issue's phase (admitted, awaiting_person, awaiting_children, held, and
+ * integrating, which the Go daemon has no phase for). Three answers come first: the completion
+ * route answers any completion of a done issue from a session working no look
+ * `409 CHECK_LOOK_NOT_SERVED` (the `legion` tool never asks this module there), one of an issue it
+ * does not record (`unrecorded`) `404 ISSUE_NOT_FOUND`, and the engine answers every architect's
+ * `409 ACCEPTANCE_IS_SIGN_OFF`, since the architect accepts with sign_off. A row that sends
+ * nothing makes no request.
  */
 const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, CompletionRow>>>> = {
   planner: {
     admitted: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     awaiting_person: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_children: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     planning: row({ record: "plan" }, "nothing", "200"),
     implementing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -270,6 +272,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
   implementer: {
     admitted: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     awaiting_person: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_children: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     planning: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     implementing: row({ thrown: PUSH_IT }, "@- and origin", "no request"),
     testing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -285,6 +288,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
   tester: {
     admitted: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     awaiting_person: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_children: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     planning: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     implementing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "test" }, "nothing", "200"),
@@ -300,6 +304,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
   reviewer: {
     admitted: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     awaiting_person: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_children: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     planning: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     implementing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -315,6 +320,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
   merger: {
     admitted: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     awaiting_person: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_children: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     planning: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     implementing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -330,6 +336,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
   architect: {
     admitted: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     awaiting_person: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    awaiting_children: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     planning: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     implementing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     testing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),

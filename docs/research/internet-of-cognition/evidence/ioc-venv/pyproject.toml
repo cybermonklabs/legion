@@ -1,0 +1,23 @@
+# The compile input of evidence/ioc-venv.lock: the five packages the replay installs into
+# IOC_VENV, by name and version, with torch read from the PyTorch CPU index alone and every
+# other package from PyPI. uv pip compile reads [tool.uv.sources] and [[tool.uv.index]] only
+# from a pyproject.toml, so this file carries the name. The lock's header holds the command,
+# run from the root of this repository.
+#
+# It holds the same five requirements as evidence/ioc-venv.in, and the build checks the two
+# equal: env.sh installs IOC_VENV from the lock and its ioc_env_python_pinned then holds each
+# of the five packages to its line of ioc-venv.in, so a drift between this file and that one
+# fails ioc_env_python_pinned, and env.sh builds nothing.
+[project]
+name = "ioc-venv"
+version = "0"
+requires-python = ">=3.12"
+dependencies = ["sentence-transformers==6.3.0", "torch==2.15.0+cpu", "rdflib==7.6.0", "pyshacl==0.40.2", "pypdf==5.1.0"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

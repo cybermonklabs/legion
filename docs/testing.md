@@ -56,7 +56,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
   A client a test leaves behind keeps dialing its server's address (a bus client reconnects forever), and the kernel or Docker gives a freed port to the next listener that asks, in the same test binary or in another one `go test` runs beside it; on `127.0.0.1` that listener's test takes the stranger's connections for its own.
-  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
+  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, a leaf node listener a test's configuration opens (in `packages/envoy` the configuration names a `testport.LoopbackIP` address itself, since the start sets only the client and monitoring hosts), and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
   So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods, the route tests' servers and rogues among them: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
   Of those, the route check's staged hub (`clusteredhub_routecheck_fixture_live_test.go`) keeps each server's route port, and each peer's, on the `127.0.0.x` address the rows name it by, `127.0.0.1` being the pods' IP: the check takes a route connection from a pod IP as the hub's own, and a route from `127.0.0.1` reads as from `127.0.0.1` on any loopback (the Linux kernel's sources every loopback connection from `127.0.0.1` whatever `127/8` address it dials; gVisor's sources it from the address dialed). Their client and monitoring ports are at addresses of their own, and a test checks that a client at `127.0.0.1` reaches none of them (`requireNoStrayReaches`).
   A stray client can still dial such a route port: a reservation stops a second bind, not a dial. The check reads nothing of it: it skips a route connection from a pod IP, and counts a pod IP's refused route login only when the mesh is split (`infra/routes/log.go`, `routeConnections`). The route check's first row has a stray log in at each server's route port and requires the check to stay clean.
@@ -68,6 +68,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `infra/host/heldportwrapper`'s test address accepts no connection, so a stranger changes nothing it checks.
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
   A container start tried again after a taken port refused it builds its container's options anew, a configuration file's reader among them: testcontainers reads a file's reader to its end as it creates the container, before Docker refuses the publish, so a retry handed the first attempt's reader copies an empty file in, and a server started from it enforces none of the users its configuration names.
+
+- A test that counts the client connections an in-process test NATS server took, open and closed, or reads when each opened and closed, takes `packages/envoy/internal/testnats`'s `Server.Connections`.
+  One read of `/connz?state=all` can leave out a connection that has just closed, or list it twice: nats-server takes a closing connection out of its open list in the close, and saves its closed record from a goroutine of its own. `Connections` reads until the listing names each connection the server counted (`total_connections`) once, and `connections_test.go` holds it to that.
+  It lists client connections alone, not leaf nodes, routes or gateways; it reads an in-process `*testnats.Server`, not a container; on a server that has dropped closed records past `max_closed_clients` it fails where `testwait.Until` ends, 30 s before the test binary's deadline; and it waits for no connection that has not been made yet, so a test that counts an operation's connections waits for that operation first.
+  A reader of open connections alone keeps its own body, since a closed record's lateness does not reach it: `cmd/dispatch`'s `natsSubscribers`, which looks for live subscribers, and `packages/daemon/internal/testnats`'s `Connections`, which lists the open clients its drain and leak check read.
 
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
@@ -921,6 +926,14 @@ The daemon's own production clients are named too: `natsauth.Connect` takes the 
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
 
+A JetStream `no_wait` pull asks the consumer's current pending count; it is not a read of the
+stream's store. nats-server stores a published message and sends its publish acknowledgement before
+its signal goroutine raises the matching consumer's pending count. A test that publishes messages
+and must then pull them makes a waiting pull for its batch and waits with the test's own deadline
+(`testwait.Context(t)`), not a `no_wait` pull or a fixed read timeout: a loaded machine may delay
+the signal after the acknowledgement without losing the stored messages. A test whose claim is the
+`404 No Messages` answer of an empty consumer still uses `no_wait`.
+
 ## A test that deletes a KV watcher's consumer
 
 A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
@@ -1071,6 +1084,15 @@ pods, a write blocked for a third of a second completed the moment the page sent
 `TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
+
+A test that needs a close or a ping (gorilla/websocket's `WriteControl`) to wait for the
+connection's write lock holds the writer the same way, before the close or the ping comes. gorilla
+holds that lock for each write to the connection, not for a whole message, so a writer that TCP
+backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
+it holds none, and a close that comes then takes the free lock and is written at once. The relay
+socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
 
 ## A fake HTTP server whose client gives up on requests
 
