@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -36,14 +37,15 @@ func TestAMergeHoldsChangeReachesTheArchitectInAcceptingAndTheMergerInMerging(t 
 		putOutboxIssue(t, pool, records, issue)
 	}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	merger := releasedMergerOf(t, sup, "LEGION-209")
+	trees := outboxTreeStore(t, pool, "LEGION-208", "LEGION-209")
+	merger := releasedMergerOf(t, sup, trees, "LEGION-209")
 	publisher := &holderPublisher{}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	// The drain's clock is set once the facts are applied: each row is due at the engine's now when
 	// its fact wrote it.
 	var clock time.Time
 	runner := &outbox{
-		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, "LEGION-208", "LEGION-209"),
+		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: trees,
 		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), notices: publisher, handlers: []intake.Handler{engine},
 		now: func() time.Time { return clock }, log: quietLogger(),
 	}
@@ -112,10 +114,11 @@ func TestAMergeHoldsChangeOfAnIssueThatLeftMergingEndsUndelivered(t *testing.T) 
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-209", Title: "Sent back", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	merger := releasedMergerOf(t, sup, "LEGION-209")
+	trees := outboxTreeStore(t, pool, "LEGION-209")
+	merger := releasedMergerOf(t, sup, trees, "LEGION-209")
 	publisher := &holderPublisher{}
 	runner := &outbox{
-		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, "LEGION-209"),
+		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: trees,
 		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), notices: publisher,
 		now: time.Now, log: quietLogger(),
 	}
@@ -136,8 +139,12 @@ func TestAMergeHoldsChangeOfAnIssueThatLeftMergingEndsUndelivered(t *testing.T) 
 }
 
 // releasedMergerOf creates the merger's claim on issue as an idle release left it: suspended with
-// the source `released`, its session intact, and nothing but a wake to bring its pod back.
-func releasedMergerOf(t *testing.T, sup *supervisor, issue string) *supervise.Machine {
+// the source `released`, its session intact, and nothing but a wake to bring its pod back. The
+// claim's row goes into trees too, the store the runner reads, as a daemon's supervisor writes the
+// row of every claim it holds (supervisor.Create, store.Store.AdmitClaim): a delivery wake takes
+// nothing for a claim the record holds no row of (store.Store.TakeDeliveryWake), and the rig's
+// supervisor writes its claims to a store of its own (outboxClaimStore).
+func releasedMergerOf(t *testing.T, sup *supervisor, trees *store.Store, issue string) *supervise.Machine {
 	t.Helper()
 	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, issue, claim.RoleMerger),
 		Project: "legion", Tree: issue, Issue: issue, Role: claim.RoleMerger, Generation: 1, ServingGeneration: 1,
@@ -148,6 +155,9 @@ func releasedMergerOf(t *testing.T, sup *supervisor, issue string) *supervise.Ma
 	}
 	if held := machine.Claim(); !held.Released() {
 		t.Fatalf("the merger of %s is %s by %s, want it released", issue, held.State, held.SuspendedBy)
+	}
+	if err := trees.PutClaim(context.Background(), machine.Claim()); err != nil {
+		t.Fatalf("record the released merger's claim on %s: %v", issue, err)
 	}
 	return machine
 }
