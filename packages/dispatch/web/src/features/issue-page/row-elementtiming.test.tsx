@@ -1066,7 +1066,6 @@ async function planRows(): Promise<void> {
                     namesLine={NO_FAILED_READS}
                     onEditing={() => {}}
                     plan={tasks}
-                    planBlocks={undefined}
                     published={published}
                     reads={{ state: "answered" }}
                     reveal={undefined}
