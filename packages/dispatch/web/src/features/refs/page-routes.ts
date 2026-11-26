@@ -380,6 +380,15 @@ export function buildProjectPath(route: ProjectRoute): string {
   return search === "" ? document : `${document}?${search}`;
 }
 
+/** The row an Inbox address's `?item=` names, trimmed, or `undefined` where it names none: the
+ *  `item` `parseInboxSearch` (`routes.ts`) reads. It is here and not with the rest of that parse,
+ *  because the shell reads it in the entry to size the Inbox page (`useInboxFillsViewport`), and
+ *  the rest of the parse is not in the entry. */
+export function inboxItemOf(params: URLSearchParams): string | undefined {
+  const item = params.get("item")?.trim() ?? "";
+  return item === "" ? undefined : item;
+}
+
 export function buildInboxPath(route: InboxRoute = {}): string {
   const query = new URLSearchParams();
   if (route.agent !== undefined) {

@@ -18,38 +18,58 @@ import (
 
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
-// task it carries, a stop), an architect's notice, the words a hook fired on a move back puts in
-// front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
-// (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
+// task it carries, a stop), an architect's notice, the message that tells a parent's worker the
+// admission pass stopped that its phase ended (record.PhaseEnded), the words a hook fired on a move
+// back puts in front of a role (record.HookPrompt), the ask an update round puts to a role of the
+// pod (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer or,
 // in merging, the merger, and the word to the worker of the phase the issue stays in
-// (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their
-// answers are what write a message, so each holds the pod as its message does: the read that
-// comes before a merge-queue removal's message (record.MergeQueueRead), and the second read of a
-// head a first read found conflicting, whose confirmation writes a merge forward's messages
+// (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their answers
+// are what write a message, so each holds the pod as its message does: the read that comes before
+// a merge-queue removal's message (record.MergeQueueRead), and the second read of a head a first
+// read found conflicting, whose confirmation writes a merge forward's messages
 // (record.ConflictConfirm). The issue's board writes — its Dispatch status, its messages on the
 // Dispatch issue — reach no session and hold no pod. The same set is what the release's boundary
 // is read over (IssueRelease), so the rule that holds a pod and the rule that cancels its release
 // never disagree about which row speaks to a role. Every kind of the role-message lane belongs
-// here: one left out lets the daemon release the
-// issue's pod out from under the row that was just written for one of its roles, and that role
-// never reads it. An update ask holds the pod only while its row is pending, which is one attempt
-// where the publish goes through or finds no holder.
-var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
-	"conflict_confirm", "merge_forward"}
+// here: one left out lets the daemon release the issue's pod out from under the row that was just
+// written for one of its roles, and that role never reads it. An update ask holds the pod only
+// while its row is pending, which is one attempt where the publish goes through or finds no
+// holder.
+var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read",
+	"merge_queue_removal", "conflict_confirm", "merge_forward"}
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
 // (readIdleView, IssueReleaseStop), and, where it is a start, at the teardown (IssueRelease): a
-// row of one of those kinds, but a start queued for news of the approved design alone
-// (record.SuperviseRequest.News, which its payload writes as `"news": true`). Such a start
-// reaches only a claim already given its phase's entry, and the claim an idle release suspended
-// is one: the start resumes it as any start does, so a release under the start loses nothing, and
-// the role comes back with its news. And such a start can wait a long time. A merger's waits for
-// its tree's design gate for the whole time the gate stays closed (the daemon's
-// mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
-// (supervise's queue). A pod held for it would stand idle for all that time.
-const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')`
+// row of one of those kinds, but two kinds of start that can wait a long time and that a release
+// under them loses nothing of. Each reaches its role only when it runs, and the claim an idle
+// release suspended comes back when it does: the start resumes it as any start does.
+//
+//   - A start queued for news of the approved design alone (record.SuperviseRequest.News, which
+//     its payload writes as `"news": true`). Such a start reaches only a claim already given its
+//     phase's entry, and the claim an idle release suspended is one, so the role comes back with
+//     its news. A merger's waits for its tree's design gate for the whole time the gate stays
+//     closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task its claim
+//     has not finished (supervise's queue).
+//   - A worker start that waits for its issue's admission slot while no slot of the issue stands
+//     (slotWaitingStart). Its issue gave its slot back or had its work come back, and it waits in
+//     the admission line for as long as its blocker stays open or the line is ahead of it. Once
+//     the slot stands the start is due, and it holds the pod as any start does.
+//
+// A pod held for either would stand idle for all that time.
+const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
+	and not (` + slotWaitingStart + `)`
+
+// slotWaitingStart is the predicate, over an outbox row the statement names `outbox`, of a worker
+// start marked as waiting for its issue's admission slot (record.SuperviseRequest.NeedsSlot, which
+// its payload writes as `"needsSlot": true`) while no slot of that issue stands. It is record's
+// outboxInOrder rule for such a row, which holds it back until the slot comes, written out here as
+// the store writes every statement of its own; TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot
+// holds the two together. The idle rule leaves such a start out (idleWaitingRow); what it means
+// for a backstop is PodRecords.WaitsForItsSlot's to say.
+const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
+	and not exists (select 1 from slots where slots.issue = outbox.issue)`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed

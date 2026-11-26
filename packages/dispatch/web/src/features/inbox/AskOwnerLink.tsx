@@ -14,7 +14,11 @@ import { threadOwner } from "./list-row";
 /** The issue or project document an ask belongs to, as one truncating link: the issue's key and
  *  title, or the document's project and name. Its hover card is always the owner's. With `askId`
  *  the link opens that ask inside its owner (an Inbox row, whose own card is the ask); without it,
- *  the owner itself (an answers row, whose Open already goes to the ask). */
+ *  the owner itself (an answers row, whose Open already goes to the ask). The issue's key is
+ *  never cut; the title, or the document's whole name, is what ends in an ellipsis. Neither
+ *  carries a native title: the link opens the owner's hover card (`referenceTriggerProps`),
+ *  which shows the whole key and title or project and name, and a title would draw a second
+ *  tooltip over that card. */
 export function AskOwnerLink({
   askId,
   className = "",
@@ -101,7 +105,12 @@ export function ThreadOwnerLine({
 }): ReactNode {
   const row = inboxThreadRow(thread);
   if (row.kind === "agent") {
-    return <span className={className}>{row.session.name}</span>;
+    // The host's classes may cut the name short, so its whole text rides in the title.
+    return (
+      <span className={className} title={row.session.name}>
+        {row.session.name}
+      </span>
+    );
   }
   const owner = threadOwner(thread);
   return owner === null ? null : <AskOwnerLink className="grow" owner={owner} />;

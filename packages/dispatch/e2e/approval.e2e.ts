@@ -27,7 +27,7 @@ import {
 } from "./api";
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
-import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
+import { askControls, inboxRow } from "./inbox-pane";
 import { pressOnceTheShellListens } from "./keyboard";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -39,18 +39,14 @@ function drawer(page: Page) {
 }
 
 /**
- * An approval request's own card, as the Inbox draws one at this width.
+ * An approval request's own card, as the Inbox draws one.
  *
- * Below `READING_PANE_WIDTH` that is the card in the question's row on the Inbox page. From
- * there the page shows an approval as the document under review in its reading column
- * (INFRA-575), which carries no card, and the drawer is the Inbox that still keeps one
- * (`pane={false}`): it opens over whatever page is showing, so this navigates to one.
+ * The Inbox page shows an approval as the document under review, in its reading column from
+ * `READING_PANE_WIDTH` (INFRA-575) and in place of the list below it (INFRA-5200), neither of
+ * which carries a card; the drawer is the Inbox that still keeps one (`pane={false}`) at every
+ * width: it opens over whatever page is showing, so this navigates to one.
  */
 async function approvalCard(page: Page, askId: string): Promise<Locator> {
-  if (!hasReadingPane(page)) {
-    await page.goto("/");
-    return page.getByTestId(`ask-${askId}`);
-  }
   await page.goto("/agents");
   await pressOnceTheShellListens(page, "i");
   await expect(drawer(page)).toBeVisible();
@@ -704,10 +700,10 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // The question's own card is where the Inbox shows the question itself: the row's card
-    // below 1280 px, and the drawer's from there up, since the Inbox page's reading column
-    // shows an approval as the document under review rather than a card (INFRA-575) and its
-    // short row gives the question one line on purpose.
+    // The question's own card is where the Inbox shows the question itself: the drawer's, since
+    // the Inbox page's reading column and its reading view show an approval as the document
+    // under review rather than a card (INFRA-575, INFRA-5200) and its short row gives the
+    // question one line on purpose.
     const card = await approvalCard(page, requested.ask.id);
     await expect(card).toBeVisible();
     const question = card.locator("p", { hasText: ending });
@@ -717,7 +713,7 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
     // this bound is thousands of lines, past any height a person's window has, so the height
     // is the one the card itself reports rather than a number written here.
     const viewport = page.viewportSize();
-    if (viewport !== null && hasReadingPane(page)) {
+    if (viewport !== null) {
       const needed = await question.evaluate((element) => {
         let height = element.scrollHeight;
         for (let node: Element | null = element; node !== null; node = node.parentElement) {
@@ -918,19 +914,14 @@ test("an approval request for an unassigned issue's non-primary document remains
     // through the issue itself (the margin below).
     await page.goto("/");
     await expect(inboxRow(page, nonPrimary.ask.id)).toBeVisible();
-    // Actionable means the Inbox offers the review where this width draws it: the reading
-    // column's head over the document under review from 1280 px (INFRA-575), and the
-    // question's own card, which names itself an approval, below that.
+    // Actionable means the Inbox offers the review where it reads the request: the head over
+    // the document under review, in the reading column from 1280 px (INFRA-575) and in place of
+    // the list below it (INFRA-5200).
     const controls = await askControls(page, nonPrimary.ask.id);
-    if (hasReadingPane(page)) {
-      await expect(controls.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
-      await expect(
-        controls.getByRole("button", { exact: true, name: "Request changes" })
-      ).toBeVisible();
-    } else {
-      await expect(controls).toContainText("Approval requested");
-      await expect(controls.getByRole("radio")).toHaveCount(2);
-    }
+    await expect(controls.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(
+      controls.getByRole("button", { exact: true, name: "Request changes" })
+    ).toBeVisible();
     const inboxShot = testInfo.outputPath("approval-non-primary-inbox-1280.png");
     await page.screenshot({ path: inboxShot, fullPage: true });
     await testInfo.attach("non-primary approval in the project default's Inbox", {
@@ -1076,15 +1067,10 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     // A project-level document's approval request links its own document the same way. A
     // document has no assignee, so its question reaches the default assignee of its project -
     // alice, who made GATE - and her own list is where the Inbox lists it. The link is the
-    // card's named version below 1280 px, and from there the short row's own owner link, the
-    // reading column having drawn the document itself in place of a card (INFRA-575); both
-    // carry the same address.
+    // short row's own owner link at every width, the reading pane drawing the document itself in
+    // place of a card (INFRA-575, INFRA-5200).
     await page.goto("/");
-    const inboxLink = hasReadingPane(page)
-      ? inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]")
-      : page
-          .getByTestId(`ask-${docApproval.ask.id}`)
-          .getByRole("link", { name: "runbook.md, version 1" });
+    const inboxLink = inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]");
     await expect(inboxLink).toHaveAttribute("href", docPath);
 
     await page.goto(`/projects/GATE/documents/${doc.artifact.slug}`);

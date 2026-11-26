@@ -1,6 +1,6 @@
 /** One thread order everywhere (INFRA-450), in the surfaces the Inbox draws itself: the reading
- *  pane, its card below the pane's width, and an ask's own thread, each with the fold and the
- *  reply box the chosen order places.
+ *  pane, the reading view below the pane's width, the drawer's card, and an ask's own thread, each
+ *  with the fold and the reply box the chosen order places.
  *
  *  Every row reads what the page draws over one fixed answer, the order being the reader's own
  *  choice kept in their browser, so each runs against a recording rather than against a harness
@@ -12,6 +12,7 @@ import { expect } from "@playwright/test";
 import { listMyReplies } from "./api";
 import { inboxPane } from "./inbox-pane";
 import { holdReadMarks, replyRowId } from "./inbox-threads";
+import { pressOnceTheShellListens } from "./keyboard";
 import { stubbed } from "./stub/stub-test";
 import {
   collapsedParts,
@@ -62,7 +63,7 @@ const unreadCommentTest = stubbed(async () => {
   return seeded;
 });
 
-test("the Inbox's pane and its card read a thread in the chosen order, and keep it over a reload @pr", async ({
+test("the Inbox's pane, its reading view and the drawer's card read a thread in the chosen order, and keep it over a reload @pr", async ({
   page,
   scene,
 }) => {
@@ -115,10 +116,20 @@ test("the Inbox's pane and its card read a thread in the chosen order, and keep 
     await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
   ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
 
-  // Below the pane's width the row is its own card, and it reads the same way.
+  // Below the pane's width the row opens in place of the list, in the same pane, and the drawer's
+  // row is its own card; both read the same way.
   await page.setViewportSize({ height: 900, width: 1024 });
   await page.goto("/");
-  const card = page.locator(`[data-inbox-row="${id}"] [data-inbox-thread-body]`);
+  body = await openInPane(page, id);
+  await expect(page.getByTestId("inbox-reading-view")).toBeVisible();
+  expect(
+    await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
+  ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
+  await page.goto("/agents");
+  await pressOnceTheShellListens(page, "i");
+  const card = page
+    .getByRole("dialog", { name: "Inbox" })
+    .locator(`[data-inbox-row="${id}"] [data-inbox-thread-body]`);
   await expect(card).toBeVisible();
   expect(
     await verticalOrder(collapsedParts(card, 4, card.getByRole("textbox", { name: "Reply" })))

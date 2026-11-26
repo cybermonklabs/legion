@@ -222,27 +222,31 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
   week: true,
 };
 
+/** Whether `element` takes typed text: an editor, a `<textarea>`, or an `<input>` of a
+ *  text-entry type (`TEXT_INPUT_TYPES`). A `<select>` takes none of its own, and neither does a
+ *  checkbox, a radio or a button. */
+export function takesTypedText(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  if (element.isContentEditable) return true;
+  if (element instanceof HTMLInputElement) return TEXT_INPUT_TYPES[element.type] === true;
+  return element.tagName === "TEXTAREA";
+}
+
 /** Whether `target` takes typed text, so a key there is the field's own: a binding fires there
  *  only when it says so (`inEditable`). */
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-  if (target.isContentEditable) {
-    return true;
-  }
   // An `<input>` takes typed text only in the text-entry types; a checkbox, radio or button
   // takes none, so a page's single-key shortcuts keep working while one has focus. That is a
   // permission with an obligation attached: the registry stops guarding those controls, so a
   // page whose key writes something must say for itself where the reader may press it
   // (`IssuePage`'s `outsideInputsAndAskCards`, the Inbox's `outsideAskCard`).
-  if (target instanceof HTMLInputElement) {
-    return TEXT_INPUT_TYPES[target.type] === true;
-  }
-  const tag = target.tagName;
+  //
   // A `<select>` stays editable: its own keys type-ahead and step through the options, and the
   // Inbox's `h` hands it focus on purpose.
-  return tag === "TEXTAREA" || tag === "SELECT";
+  return takesTypedText(target) || target.tagName === "SELECT";
 }
 
 export interface KeymapOptions {

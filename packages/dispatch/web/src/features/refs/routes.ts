@@ -28,6 +28,7 @@ import {
   type InboxFilterField,
   type InboxRoute,
   type IssueRoute,
+  inboxItemOf,
   isPlainIssueRoute,
   issueKeyPattern,
   type ProjectDocumentRoute,
@@ -825,8 +826,8 @@ export function parseInboxSearch(search: string): InboxRoute {
   if (agent !== null && agent !== "") {
     route.agent = agent;
   }
-  const item = params.get("item")?.trim() ?? "";
-  if (item !== "") {
+  const item = inboxItemOf(params);
+  if (item !== undefined) {
     route.item = item;
   }
   if (params.get("section") === "needs-you") {

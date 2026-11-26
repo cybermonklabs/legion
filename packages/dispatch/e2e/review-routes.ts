@@ -138,8 +138,8 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // waits `DOCUMENT_SETTLE_MS` before it reads its document, so a page read on the heading
     // alone caught the head without that control in one run of the drift probe and with it in
     // the next. The column shows from the wide layout's width and nowhere narrower
-    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`), so the phone row, whose
-    // Inbox is the list of cards alone, has nothing there to wait for.
+    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`): below it the Inbox lists
+    // short rows and opens none by itself, so the phone row has nothing there to wait for.
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
       const wideEnoughForPane = wideLayout(page);

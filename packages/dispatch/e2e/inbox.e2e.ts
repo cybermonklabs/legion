@@ -21,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { peekTrigger } from "./inbox-drawer";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -30,12 +31,13 @@ import {
   openFilterFields,
   pickAssignee,
 } from "./inbox-filter";
-import { askCard, askControls, inboxRow } from "./inbox-pane";
+import { askCard, askControls, backToList, inboxList, inboxPane, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { landingWithout } from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
+import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 const session = {
@@ -1748,11 +1750,12 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
   }
 });
 
-// A refused snooze or assignment is the row's widest content, and the server writes the reason:
-// `snoozed_until must be in the future` is the handler's own, and a future one may be longer.
-// Left to set its own width it pushed the row - and the whole document - past a phone viewport,
-// so the reader scrolled sideways to reach Retry. The control group is bounded to the row and
-// the alert wraps inside it; this covers both the handler's refusal and a long one.
+// A refused snooze or assignment is the widest content of the head that holds the control, and
+// the server writes the reason: `snoozed_until must be in the future` is the handler's own, and a
+// future one may be longer. Left to set its own width it pushed the head - and the whole
+// document - past a phone viewport, so the reader scrolled sideways to reach Retry. The control
+// group is bounded to the head and the alert wraps inside it; this covers both the handler's
+// refusal and a long one.
 for (const refusal of [
   { label: "the handler's own reason", reason: "snoozed_until must be in the future" },
   {
@@ -1781,37 +1784,53 @@ for (const refusal of [
         })
       );
       await page.goto("/");
-      // The box that holds this question's Snooze, and so its refusal: the row itself, or the
-      // reading column's head, which carries the controls for the row it is showing.
-      const controls = await askControls(page, ask.id);
-      await expect(controls).toBeVisible();
-      await controls.getByLabel(`Snooze ${issue.key}`).selectOption("tomorrow");
+      // The two boxes that hold this question's Snooze, and so its refusal: the head of the pane
+      // its row opens on the Inbox page, beside the list from 1280 px and in place of it below,
+      // and the drawer card's Actions group, bounded to the card (`max-w-full`), at every width.
+      const legs: { box: () => Promise<Locator>; name: string }[] = [
+        { box: () => askControls(page, ask.id), name: "the Inbox page's view" },
+        {
+          box: async () => {
+            await page.goto(`/issues/${issue.key}`);
+            await peekTrigger(page).click();
+            return page
+              .getByRole("dialog", { name: "Inbox" })
+              .locator(`[data-inbox-row="${ask.id}"]`);
+          },
+          name: "the drawer's card",
+        },
+      ];
+      for (const leg of legs) {
+        const controls = await leg.box();
+        await expect(controls, leg.name).toBeVisible();
+        await controls.getByLabel(`Snooze ${issue.key}`).selectOption("tomorrow");
 
-      const retry = controls.getByRole("button", { name: "Retry" });
-      await expect(retry).toBeVisible();
-      await expect(retry).toBeInViewport();
-      // The document never grows past the viewport: no sideways scroll to reach the refusal.
-      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-        viewport
-      );
-      // The refusal never draws over the issue key. Where it lands is that box's own business:
-      // beside the key when it is wide enough (desktop, since a no-margin route gives the
-      // Inbox the whole width) and on the line below when it is not (a phone). Asserting
-      // "below" pinned one of those two layouts and went red on the other.
-      const key = await controls.locator("[data-inbox-owner]").first().boundingBox();
-      // The refusal itself, not its Retry: the alert is the wide thing, and measuring the
-      // narrow control inside it checked something the assertion does not claim.
-      const alert = await controls.getByRole("alert").boundingBox();
-      expect(key).not.toBeNull();
-      expect(alert).not.toBeNull();
-      const overlaps =
-        key !== null &&
-        alert !== null &&
-        alert.x < key.x + key.width &&
-        alert.x + alert.width > key.x &&
-        alert.y < key.y + key.height &&
-        alert.y + alert.height > key.y;
-      expect(overlaps).toBe(false);
+        const retry = controls.getByRole("button", { name: "Retry" });
+        await expect(retry, leg.name).toBeVisible();
+        await expect(retry, leg.name).toBeInViewport();
+        // The document never grows past the viewport: no sideways scroll to reach the refusal.
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth),
+          leg.name
+        ).toBeLessThanOrEqual(viewport);
+        // The refusal never draws over the issue key. Where it lands is that box's own business:
+        // beside the key when it is wide enough and on the line below when it is not. Asserting
+        // "below" pinned one of those two layouts and went red on the other.
+        const key = await controls.locator("[data-inbox-owner]").first().boundingBox();
+        // The refusal itself, not its Retry: the alert is the wide thing, and measuring the
+        // narrow control inside it checked something the assertion does not claim.
+        const alert = await controls.getByRole("alert").boundingBox();
+        expect(key, leg.name).not.toBeNull();
+        expect(alert, leg.name).not.toBeNull();
+        const overlaps =
+          key !== null &&
+          alert !== null &&
+          alert.x < key.x + key.width &&
+          alert.x + alert.width > key.x &&
+          alert.y < key.y + key.height &&
+          alert.y + alert.height > key.y;
+        expect(overlaps, leg.name).toBe(false);
+      }
     } finally {
       await alice.close();
     }
@@ -1836,13 +1855,14 @@ test("an ask card's time stays with its author, never opening a line of its own 
     },
     as: "agent" as const,
   };
-  await createAsk(issue.key, { question: "Where does the time sit?" }, author);
+  const ask = await createAsk(issue.key, { question: "Where does the time sit?" }, author);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto("/");
-    const card = page.locator("[data-testid^='ask-']").first();
+    // The card of the row the reader opens, read in place of the list on a phone.
+    const card = await askCard(page, ask.id);
     await expect(card).toBeVisible();
     const middle = async (locator: Locator) => {
       const box = await locator.boundingBox();
@@ -1854,6 +1874,128 @@ test("an ask card's time stays with its author, never opening a line of its own 
     await expect(time).toBeVisible();
     // Who and when are one group: the separator that joins them never starts a line.
     expect(await middle(time)).toBe(await middle(chip));
+  } finally {
+    await alice.close();
+  }
+});
+
+// Below 1280 px the Inbox page lists short rows and reads the row a reader opens in place of the
+// list (INFRA-5200). The controls the card used to carry in its row are the reading view's: its
+// head's priority and Snooze, and the card's own Answer, Ask back, Decline to answer and Reaches.
+// These rows press each of them there, on a phone, and read the write back from the server.
+
+// SLOW(>=2s): two questions seeded, then a priority and an answer written through the reading
+// view and each read back from the server.
+test("on a phone the reading view a row opens sets its issue's priority, opens who the question reaches and answers it, then Inbox returns to the list @phone @phone-only", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const first = await createIssue({ project: "CORE", title: "Lease handover" });
+  await patchIssue(first.key, { priority: 2 });
+  const ask = await createAsk(
+    first.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the lease handover?" },
+    session
+  );
+  const second = await createIssue({ project: "CORE", title: "Replay budget" });
+  const next = await createAsk(second.key, { question: "How far back does a replay go?" }, session);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
+    // The list holds short rows: no question's card is drawn in it.
+    await expect(inboxList(page).locator("[data-testid^='ask-']")).toHaveCount(0);
+    await assertPageFits(page);
+
+    const controls = await askControls(page, ask.id);
+    await assertPageFits(page);
+    const patch = page.waitForRequest(
+      (request) =>
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname === `/api/v1/issues/${first.key}`
+    );
+    await controls.getByLabel(`Priority of ${first.key}`).selectOption("0");
+    expect((await patch).postDataJSON()).toEqual({ priority: 0 });
+    await expect.poll(() => getIssue(first.key)).toMatchObject({ priority: 0 });
+
+    const card = inboxPane(page).getByTestId(`ask-${ask.id}`);
+    const reaches = card
+      .getByRole("region", { name: "Recipients" })
+      .getByRole("button", { name: /^Reaches/ });
+    await reaches.click();
+    await expect(reaches).toHaveAttribute("aria-expanded", "true");
+
+    await card.getByRole("radio", { name: "Ship" }).click();
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+    await expect.poll(async () => (await getAsk(ask.id)).ask.state).toBe("answered");
+    // As the column does, the view reads the next row once the answer lands, and the Inbox
+    // control returns to the list at that row.
+    await expect(page.locator(`[data-inbox-reading-row="${next.id}"]`)).toBeVisible();
+    await backToList(page);
+    await expect(inboxRow(page, next.id)).toBeFocused();
+    await expect(inboxRow(page, ask.id)).toHaveCount(0);
+    await assertPageFits(page);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): three questions seeded, then an Ask back, a snooze and a decline written through the
+// reading view and each read back from the server.
+test("on a phone a question is asked back, another snoozed and a third declined from the reading view each row opens @phone @phone-only", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const options = [{ label: "Ship" }, { label: "Hold" }];
+  const asked = await createIssue({ project: "CORE", title: "Ask back" });
+  const askBack = await createAsk(asked.key, { options, question: "Ship the audit?" }, session);
+  const deferred = await createIssue({ project: "CORE", title: "Snooze" });
+  const snoozed = await createAsk(deferred.key, { options, question: "Ship the mirror?" }, session);
+  const declinedIssue = await createIssue({ project: "CORE", title: "Decline" });
+  const declined = await createAsk(
+    declinedIssue.key,
+    { options, question: "Ship the ledger?" },
+    session
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
+
+    const backCard = await askCard(page, askBack.id);
+    await backCard.getByLabel("Your answer").fill("Ship what, exactly?");
+    await backCard.getByRole("button", { name: "Ask back" }).click();
+    await expect.poll(() => getAsk(askBack.id)).toMatchObject({ ask: { waiting_on: "agent" } });
+    await assertPageFits(page);
+
+    const put = page.waitForRequest(
+      (request) =>
+        request.method() === "PUT" &&
+        new URL(request.url()).pathname === `/api/v1/me/asks/${snoozed.id}/snooze`
+    );
+    await (await askControls(page, snoozed.id))
+      .getByLabel(`Snooze ${deferred.key}`)
+      .selectOption("tomorrow");
+    expect(Date.parse((await put).postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
+
+    const declineCard = await askCard(page, declined.id);
+    await declineCard.getByRole("button", { exact: true, name: "Decline to answer" }).click();
+    const dialog = page.getByRole("dialog", { name: "Decline to answer" });
+    await dialog.getByRole("button", { exact: true, name: "Decline to answer" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect
+      .poll(async () => (await getAsk(declined.id)).ask.resolution)
+      .toMatchObject({ kind: "declined" });
+    await backToList(page);
+    await expect(inboxRow(page, declined.id)).toHaveCount(0);
+    // The snoozed row is in Later, a band folded at rest, so its heading is what shows.
+    await expect(inboxRow(page, snoozed.id)).toHaveCount(0);
+    await expect(inboxList(page).getByRole("button", { name: "Later (1)" })).toBeVisible();
+    await assertPageFits(page);
   } finally {
     await alice.close();
   }
