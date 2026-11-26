@@ -20,6 +20,16 @@ export interface SentText {
   readonly landed: WriteAnswer;
 }
 
+/** The newest of `sent` whose write is still out or landed, else undefined: one whose landing is
+ *  not known (`NOT_KNOWN`) is no write still out, and is passed over. */
+export function newestKnown(sent: readonly SentText[]): SentText | undefined {
+  let newest: SentText | undefined;
+  for (const one of sent) {
+    if (one.landed !== NOT_KNOWN) newest = one;
+  }
+  return newest;
+}
+
 /** Where a field of a priority stands against the server's text. */
 export interface FieldStand {
   /** The text the field compares the reader's with: the last text it wrote, or the last text of
@@ -87,8 +97,7 @@ export function arrival(server: string, held: string, stand: FieldStand): Arriva
   const own = stand.sent.findIndex((one) => one.text === server);
   if (own !== -1) {
     const sent = stand.sent.slice(own + 1);
-    const last = sent.filter((one) => one.landed !== NOT_KNOWN).at(-1);
-    const base = last?.text ?? (held === stand.base ? stand.base : server);
+    const base = newestKnown(sent)?.text ?? (held === stand.base ? stand.base : server);
     return { base, kept, made: held === base ? base : stand.made, sent, take: false };
   }
   if (server === held) return { base: server, kept, made: server, sent: [], take: false };

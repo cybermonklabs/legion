@@ -30,8 +30,8 @@ import {
 import {
   answered,
   arrival,
-  NOT_KNOWN,
   NOTHING_KEPT,
+  newestKnown,
   type SentText,
   usedOn,
   type WriteAnswer,
@@ -140,6 +140,23 @@ function heldText(draft: string, base: string, required: boolean): string {
 export function fitToText(node: HTMLElement): void {
   node.style.height = "auto";
   node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
+}
+
+/** Makes `node` as tall as its text again (`fitToText`) at each new width it takes, from the width
+ *  it has now, and answers what ends that: a new width wraps the text on more lines or fewer. Only
+ *  a new width does: the height set here changes the box's size too, which the observer hears, and
+ *  the same text wraps the same at the same width. Where there is no `ResizeObserver` nothing is
+ *  watched, and the box keeps the height its text last gave it. */
+export function refitOnNewWidth(node: HTMLElement): (() => void) | undefined {
+  if (typeof ResizeObserver === "undefined") return undefined;
+  let width = node.clientWidth;
+  const sizes = new ResizeObserver(() => {
+    if (node.clientWidth === width) return;
+    width = node.clientWidth;
+    fitToText(node);
+  });
+  sizes.observe(node);
+  return () => sizes.disconnect();
 }
 
 /** The type an issue's title is drawn in, in its header (`IssueHeader.tsx`): a field drawn as a
@@ -378,23 +395,13 @@ export function InPlaceField({
     fitToText(node);
   }, [closed, draft, opened]);
   // A width the open box changes to - the window resized while the reader writes - wraps the
-  // title on more lines or fewer, so the box is made as tall as its text again. Only a new width
-  // does: the height set here changes the box's size too, which the observer hears, and the same
-  // text wraps the same at the same width. The observer starts from the width the box has as the
-  // effect above sets its height, in the same commit, so no change of width falls between the
-  // two. Where there is no `ResizeObserver` the box keeps the height its text last gave it.
+  // title on more lines or fewer, so the box is made as tall as its text again
+  // (`refitOnNewWidth`). The observer starts from the width the box has as the effect above sets
+  // its height, in the same commit, so no change of width falls between the two.
   useLayoutEffect(() => {
     const node = box.current;
     if (closed !== "heading" || !opened || node === null) return;
-    if (typeof ResizeObserver === "undefined") return;
-    let width = node.clientWidth;
-    const sizes = new ResizeObserver(() => {
-      if (node.clientWidth === width) return;
-      width = node.clientWidth;
-      fitToText(node);
-    });
-    sizes.observe(node);
-    return () => sizes.disconnect();
+    return refitOnNewWidth(node);
   }, [closed, opened]);
 
   // One of the reader's kept texts, put back in the field and written at once, even where the
@@ -409,8 +416,9 @@ export function InPlaceField({
     stopTimer(timer);
     setKept(NOTHING_KEPT);
     setDraft(text);
-    // A write whose landing is not known is no write still out, and does not count as the newest.
-    const newest = sent.current.filter((one) => one.landed !== NOT_KNOWN).at(-1);
+    // A write whose landing is not known is no write still out, and does not count as the newest
+    // (`newestKnown`).
+    const newest = newestKnown(sent.current);
     if (newest?.text === text && newest.landed === false) return;
     const on = usedOn(text, kept, (one) => madeOn.get(one) ?? keptMadeOn?.(one)) ?? made.current;
     write(text, on);

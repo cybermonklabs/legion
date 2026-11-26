@@ -59,7 +59,7 @@ export interface SelectionBarProps {
    *  once the page draws it, the list's own stop holding the focus until then; and the bar lands
    *  an element the page names here the same way (`landNearest`). Null moves nothing here: the
    *  page has put the focus where it goes itself, or the hand-off owes a landing on a target not
-   *  drawn yet (`MarkedList`'s `drawRow`). */
+   *  drawn yet (`useLastMarkedPlace`'s Drawing). */
   readonly returnFocus?: () => HTMLElement | null;
   /** How much room the bar's own box takes (`ControlSize`): its padding. The actions in it are
    *  the page's, and each carries the page's size itself. */
@@ -201,7 +201,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         if (event.type !== "wheel" && pressIsArmedOwn(event.target)) return;
         if (event instanceof globalThis.KeyboardEvent && LONE_MODIFIERS[event.key] === true) return;
         const stood = parked.current;
-        if (entry.kind === "drawing") entry.abandon?.();
+        if (entry.kind === "own") entry.abandon();
         settle();
         if (stood === null) return;
         // Read once the act has been answered: a key the page's keymap answers moves the focus
@@ -224,12 +224,13 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     },
     [settle]
   );
-  /** Owes a landing on a target not drawn yet (`Drawing`) - `to`, which this hand-off lands once
-   *  the page draws it, or the row a windowed table is drawing and lands on itself, with `abandon`,
-   *  which takes that landing back - and holds the focus on the list's own stop meanwhile. */
+  /** Owes a landing on a target not drawn yet (`Drawing`) - the target the page named, which this
+   *  hand-off lands once the page draws it (`drawing`), or the row a windowed table is drawing and
+   *  lands on itself, with `abandon`, which takes that landing back (`own`) - and holds the focus
+   *  on the list's own stop meanwhile. */
   const waitDrawn = useCallback(
-    (live: MarkedList, next: Omit<Extract<OwedFor, { kind: "drawing" }>, "kind">): void => {
-      owe({ ...next, kind: "drawing" });
+    (live: MarkedList, next: Exclude<OwedFor, { readonly kind: "place" }>): void => {
+      owe(next);
       holdOnStop(live);
     },
     [owe]
@@ -239,7 +240,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const drawLast = useCallback(
     (live: MarkedList, id: string): boolean => {
       if (live.drawRow === undefined) return false;
-      waitDrawn(live, { abandon: live.drawRow(id) });
+      waitDrawn(live, { abandon: live.drawRow(id), kind: "own" });
       return true;
     },
     [waitDrawn]
@@ -252,7 +253,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       if (to !== undefined) {
         const target = to();
         if (target !== null) landNearest(target, head);
-        else waitDrawn(live, { to });
+        else waitDrawn(live, { kind: "drawing", to });
         return;
       }
       const order = live.order();
@@ -277,7 +278,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
    *  owed, and the first answer settles it. A windowed table's own landing is the table's. */
   const landAfterFootPass = useCallback(() => {
     const place = owed.current;
-    if (place === null || (place.kind === "drawing" && place.to === undefined)) return;
+    if (place === null || place.kind === "own") return;
     afterFootPass(() => {
       if (owed.current !== place) return;
       settle();
@@ -293,10 +294,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     if (place === null) return;
     const live = latest.current;
     if (place.kind === "drawing") {
-      if (place.to !== undefined) {
-        if (place.to() !== null) landAfterFootPass();
-        return;
-      }
+      if (place.to() !== null) landAfterFootPass();
+      return;
+    }
+    if (place.kind === "own") {
       const stop = live.list();
       const focused = document.activeElement;
       if (stop?.contains(focused) === true && focused !== stop) settle();
@@ -320,7 +321,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       // foot's pass as every landing does, and nothing is parked meanwhile. A place not drawn yet
       // goes straight to Drawing.
       if (to !== undefined && to() === null) {
-        waitDrawn(list, { to });
+        waitDrawn(list, { kind: "drawing", to });
         return true;
       }
       if (
@@ -344,12 +345,13 @@ export type LandingTarget = () => HTMLElement | null;
 
 /** What a landing of the hand-off owes (`useLastMarkedPlace`): its own landing on the place the row
  *  the reader marked last chooses, or on the target the page named (`to`); or, while that place is
- *  not drawn yet (`Drawing`), the landing on the named target once the page draws it, or a windowed
- *  table's own landing on the row it is drawing (`MarkedList`'s `drawRow`), with what takes that
- *  landing back. */
+ *  not drawn yet (`Drawing`), the landing on the named target once the page draws it (`drawing`),
+ *  or a windowed table's own landing on the row it is drawing (`MarkedList`'s `drawRow`), with what
+ *  takes that landing back (`own`). */
 type OwedFor =
   | { readonly kind: "place"; readonly last: string | null; readonly to: LandingTarget | undefined }
-  | { readonly abandon?: () => void; readonly kind: "drawing"; readonly to?: LandingTarget };
+  | { readonly kind: "drawing"; readonly to: LandingTarget }
+  | { readonly abandon: () => void; readonly kind: "own" };
 
 /** An owed landing, with what ends its watch on the reader's acts. */
 type Owed = OwedFor & { readonly unwatch: () => void };

@@ -23,7 +23,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { fitToText } from "../priorities/InPlaceField";
+import { fitToText, refitOnNewWidth } from "../priorities/InPlaceField";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";
@@ -305,22 +305,11 @@ export function MentionField({
   }, [body, inline]);
   // A width the box changes to - the window resized, or a composer's field that takes the whole
   // line as it takes the focus below 761 px - wraps the text on more lines or fewer, so the box is
-  // made as tall as its text again, as a priority's heading box is (`InPlaceField`). Only a new
-  // width does: the height set here changes the box's size too, which the observer hears, and the
-  // same text wraps the same at the same width. Where there is no `ResizeObserver` the box keeps
-  // the height its text last gave it.
+  // made as tall as its text again, as a priority's heading box is (`refitOnNewWidth`).
   useLayoutEffect(() => {
     const node = element.current;
     if (!inline || node === null) return;
-    if (typeof ResizeObserver === "undefined") return;
-    let width = node.clientWidth;
-    const sizes = new ResizeObserver(() => {
-      if (node.clientWidth === width) return;
-      width = node.clientWidth;
-      fitToText(node);
-    });
-    sizes.observe(node);
-    return () => sizes.disconnect();
+    return refitOnNewWidth(node);
   }, [inline]);
 
   return (

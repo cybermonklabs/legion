@@ -565,8 +565,8 @@ export function usePriorityWrites(
         own.chains.set(key, settledText(chain, press.press, landed ? past : undefined));
         // The next press of its text names it where a read counted past it shows its text
         // (`writeText`). One the chain no longer held went behind another person's text.
-        const ended = chain.find((write) => write.press === press.press);
-        if (unseen && ended !== undefined) {
+        const ended = unseen ? chain.find((write) => write.press === press.press) : undefined;
+        if (ended !== undefined) {
           const writes = own.unseen.get(key)?.writes ?? NO_WRITES;
           own.unseen.set(key, { past, writes: [...writes, ended] });
         }
