@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // read.go is everything this reading takes out of the database, and the shape it keeps it in.
@@ -82,34 +84,59 @@ type population struct {
 	asks []askTurn
 }
 
-// readPopulation reads the scope's issues and everything the rules below measure them with.
+// txBeginner is a Querier that can open a read-only repeatable-read transaction (a pool or a
+// connection) so every read in readPopulation reads one snapshot. A caller that already passes a
+// pgx.Tx does not implement BeginTx and runs every read inside its own transaction.
+type txBeginner interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
+// readPopulation reads the scope's issues and everything the rules below measure them with, as of
+// window.To, in one repeatable-read snapshot when db can begin a transaction.
 func readPopulation(ctx context.Context, db Querier, scope Scope, window Window) (*population, error) {
+	q := db
+	var tx pgx.Tx
+	if beginner, ok := db.(txBeginner); ok {
+		var err error
+		tx, err = beginner.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return nil, fmt.Errorf("begin repeatable-read snapshot of %s: %w", scope.Project, err)
+		}
+		defer tx.Rollback(ctx)
+		q = tx
+	}
 	held := &population{scope: scope, window: window, issues: map[string]*issue{}}
-	if err := held.readIssues(ctx, db); err != nil {
+	if err := held.readIssues(ctx, q); err != nil {
 		return nil, err
 	}
-	if err := held.readEvents(ctx, db); err != nil {
+	if err := held.readEvents(ctx, q); err != nil {
 		return nil, err
 	}
-	if err := held.readHandoffs(ctx, db); err != nil {
+	if err := held.readHandoffs(ctx, q); err != nil {
 		return nil, err
 	}
-	if err := held.readObservations(ctx, db); err != nil {
+	if err := held.readObservations(ctx, q); err != nil {
 		return nil, err
+	}
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit repeatable-read snapshot of %s: %w", scope.Project, err)
+		}
 	}
 	return held, nil
 }
 
-// readIssues reads every issue of the project: its parent link, when it was created and when it
-// closed. The whole project and not a window of it, because R1 covers every issue the project has
-// Legion phase work for, open or closed.
+// readIssues reads every issue of the project created by window.To: its parent link, when it was
+// created, and when it closed if it had closed by window.To (an issue closed after window.To stands
+// open as of window.To).
 func (p *population) readIssues(ctx context.Context, db Querier) error {
 	rows, err := db.Query(ctx, `
-		select key, coalesce(parent_key, ''), created_at, closed_at
+		select key, coalesce(parent_key, ''), created_at,
+			case when closed_at is not null and closed_at <= $2 then closed_at else null end
 		from issues
-		where project_key = $1
+		where project_key = $1 and created_at <= $2
 		order by key
-	`, p.scope.Project)
+	`, p.scope.Project, p.window.To)
 	if err != nil {
 		return fmt.Errorf("read the issues of %s: %w", p.scope.Project, err)
 	}
@@ -150,9 +177,9 @@ func (p *population) readEvents(ctx context.Context, db Querier) error {
 			coalesce(e.payload->>'id', '')
 		from events e
 		join issues i on i.key = e.issue_key
-		where i.project_key = $1
+		where i.project_key = $1 and e.created_at <= $2
 		order by e.created_at, e.id
-	`, p.scope.Project)
+	`, p.scope.Project, p.window.To)
 	if err != nil {
 		return fmt.Errorf("read the events of %s: %w", p.scope.Project, err)
 	}
@@ -186,8 +213,10 @@ func (p *population) readEvents(ctx context.Context, db Querier) error {
 	return nil
 }
 
-// readTitles is the title each of the sessions goes by: the newest title that session stamped on
-// anything it wrote, whatever issue it wrote it on. A session that stamped none has none.
+// readTitles is the title each of the sessions went by as of window.To: the newest title that
+// session stamped on anything it wrote by window.To, whatever issue it wrote it on. When two
+// titled events share a created_at, the lower id (first inserted) wins, matching session_titles'
+// trigger and backfill (store/session_titles_fill.go). A session that stamped none has none.
 func (p *population) readTitles(ctx context.Context, db Querier, sessions map[string]bool) (map[string]string, error) {
 	named := make([]string, 0, len(sessions))
 	for session := range sessions {
@@ -202,9 +231,10 @@ func (p *population) readTitles(ctx context.Context, db Querier, sessions map[st
 		select distinct on (actor->>'id') actor->>'id', actor->'origin'->>'session_title'
 		from events
 		where actor->>'kind' = 'session' and actor->>'id' = any($1)
+			and created_at <= $2
 			and nullif(actor->'origin'->>'session_title', '') is not null
-		order by actor->>'id', created_at desc
-	`, named)
+		order by actor->>'id', created_at desc, id
+	`, named, p.window.To)
 	if err != nil {
 		return nil, fmt.Errorf("read the session titles of %s: %w", p.scope.Project, err)
 	}
@@ -313,9 +343,9 @@ func (p *population) readHandoffs(ctx context.Context, db Querier) error {
 		select h.issue_key, h.phase, h.created_at
 		from handoffs h
 		join issues i on i.key = h.issue_key
-		where i.project_key = $1
+		where i.project_key = $1 and h.created_at <= $2
 		order by h.created_at, h.id
-	`, p.scope.Project)
+	`, p.scope.Project, p.window.To)
 	if err != nil {
 		return fmt.Errorf("read the handoffs of %s: %w", p.scope.Project, err)
 	}
@@ -352,9 +382,9 @@ func (p *population) readObservations(ctx context.Context, db Querier) error {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, value::text, observed_at
 		from legion_observations
-		where project = $1 and issue_key <> ''
+		where project = $1 and issue_key <> '' and observed_at <= $2
 		order by observed_at, id
-	`, p.scope.Project)
+	`, p.scope.Project, p.window.To)
 	if err != nil {
 		return fmt.Errorf("read the observations of %s: %w", p.scope.Project, err)
 	}

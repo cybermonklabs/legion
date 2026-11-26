@@ -130,8 +130,9 @@ type Filed struct {
 	Ancestors []string
 }
 
-// Population is every fact one computation of the facts reads, from the project's beginning
-// (From, the zero time for both reads) to To, the moment an open issue's hours run to.
+// Population is every fact one computation of the facts reads, from the project's beginning to
+// To, the moment an open issue's hours run to. From is the zero time for ReadProject and
+// ReadIssues, and is set only by test fixtures that narrow windowOf.
 type Population struct {
 	Project string
 	From    time.Time
@@ -177,7 +178,7 @@ type Population struct {
 // it is the read a build makes once per project, and its walks may ask about any issue.
 func ReadProject(ctx context.Context, pool *store.Pool, project string, now time.Time) (*Population, error) {
 	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
-		return p.readFiled(ctx, pool, project, time.Time{}, now)
+		return p.readFiled(ctx, pool, project, now)
 	}, func(p *Population) []string {
 		return p.Keys
 	}, func(ctx context.Context, _ *Population, _ []string) (map[string]struct{}, error) {
@@ -319,7 +320,7 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 // readFiled reads every `issue.created` event before `to` a session wrote, whatever project
 // the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
 // classes — and keeps the ones a Legion session of this project filed.
-func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {
+func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, to time.Time) error {
 	return p.readFilings(ctx, pool, project, `
 		select coalesce(events.issue_key, ''), events.created_at,
 			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
@@ -327,9 +328,9 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 		from events
 		where events.type = 'issue.created'
 			and events.actor->>'kind' = 'session'
-			and events.created_at >= $1 and events.created_at < $2
+			and events.created_at < $1
 		order by events.created_at, events.id
-	`, from, to)
+	`, to)
 }
 
 // readFiledIssues reads the `issue.created` event a session wrote of each named issue, whatever

@@ -41,9 +41,9 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 			t.Errorf("%s holds %g h by phase, want its bar hours %g: %v", key, sum, want, row.PhaseHours)
 		}
 	}
-	if got := facts["INFRA-1"]; got.PhaseHours[breakdownPerson] != 1 || got.PhaseHours[breakdownChildren] != 0 {
+	if got := facts["INFRA-1"]; got.PhaseHours[breakdownPerson] != 1 || got.PhaseHours["waiting_on_children"] != 0 {
 		t.Errorf("the root waited %g h on a person and holds %g h of waiting on children among its parts, want 1 and none: %v",
-			got.PhaseHours[breakdownPerson], got.PhaseHours[breakdownChildren], got.PhaseHours)
+			got.PhaseHours[breakdownPerson], got.PhaseHours["waiting_on_children"], got.PhaseHours)
 	}
 	if got := facts["INFRA-1"]; got.WorkHours != 10 || got.ReviewRounds != 1 || !got.Root || got.Tree != "INFRA-1" {
 		t.Errorf("the root's facts are %+v, want 10 h of work, one review round and its own tree", got)

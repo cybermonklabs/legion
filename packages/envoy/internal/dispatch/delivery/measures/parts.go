@@ -12,10 +12,14 @@ import "time"
 //
 // A fold reads the parts of its own series and passes over the rest, so it can be handed every
 // part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never
-// the mean of the days' shares; a quantile reads Quantile over every sample of the days in
-// ascending order (MergedSamples), which is the quantile of every value of those days, never the
-// mean of the days' quantiles. A set that holds no part of a fold's series reads no value (nil),
-// never 0; a part built for a day with no rows is a zero part, and reads as zero counts.
+// the mean of the days' shares; a quantile reads SortedSamples.Quantile over every sample of the
+// days in ascending order (MergedSamples), which is the quantile of every value of those days,
+// never the mean of the days' quantiles. For pointer-returning folds (FoldDeployFrequency,
+// FoldDeployRunSuccess, FoldReworkShare), a set that holds no part of the fold's series reads nil,
+// never 0, while a part built for a day with no rows is a zero part and reads as zero counts (and
+// nil shares). Value-returning cell folds (FoldLeadTime, FoldTiming, FoldTimeToRestore) return a
+// zero-count struct with nil quantile and rate pointers when no sample or result is present, and
+// FoldChangeFailureRate returns zero counts and zero rates in this slice (no failure source).
 
 // DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
 // project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold

@@ -17,6 +17,11 @@ import (
 // holds the name predicate, and answers only the named jobs of each run. Unfiltered, this read
 // cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13), most of it the
 // pull-request runs' dozens of jobs no caller of it reads.
+//
+// explaintest.AnalyzedPlan runs the statement with sequential scans off, over a handful of rows, so
+// this is an eligibility test: it shows that the name predicate is an index condition the primary
+// key takes, and that the statement answers the named jobs alone. That the planner takes the
+// index when it may scan is TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale's.
 func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -83,6 +88,8 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 // index's own, read from pg_index. Each run's jobs the two answer (namedAndFailedJobs) are its
 // named jobs and its failed ones, in ListRunJobs' order, and FailedJobs, RootFailingJob,
 // Production.Job and the deploys answer from them what they answer from every job the run holds.
+// Like the test above, it plans with sequential scans off over a handful of rows, so it shows what
+// the statements offer the planner, and the plan it takes with them allowed is the scale test's.
 func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -238,5 +245,86 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	}
 	if answered != failures {
 		t.Errorf("listRunJobsFailedForRuns with no name answers %d jobs, want the %d that failed", answered, failures)
+	}
+}
+
+// TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale plans the run-jobs reads with nothing
+// switched off, as the planner plans them for any reader, under each plan-cache mode (the plan made
+// for the arguments' own values and the generic plan a cached statement settles on), over 20,000
+// deploy runs with 100,000 jobs, about one in thirty of them failed, analyzed. Neither read scans
+// delivery_run_jobs whole or reads another relation. The named read reads it through the primary
+// key alone, each of whose three columns is in the index condition, the job's name among them; the
+// failed read through delivery_run_jobs_failed or the primary key, and no other index.
+func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	// The triggers that log each change take a lock and write a row for each of the hundred
+	// thousand rows, which this test's database, its own, does not need logged.
+	for _, trigger := range []struct{ table, name string }{
+		{"delivery_runs", "delivery_runs_changed"},
+		{"delivery_run_jobs", "delivery_run_jobs_changed"},
+	} {
+		if _, err := pool.Exec(ctx, "alter table "+trigger.table+" disable trigger "+trigger.name); err != nil {
+			t.Fatalf("stop logging %s's changes: %v", trigger.table, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, url, head_branch, event)
+		select 'acme/widgets', n, 'deploy', lpad(n::text, 40, '0'), at - interval '5 minutes', at, at,
+			'https://github.com/acme/widgets/actions/runs/' || n, 'main', 'push'
+		from generate_series(1, 20000) n, lateral (select now() - interval '365 days' + n * interval '25 minutes' as at) moment
+	`); err != nil {
+		t.Fatalf("seed the deploy runs: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
+		select r.repo, r.run_id, job.name, r.started_at, r.started_at + interval '10 minutes',
+			case when (r.run_id * 7 + job.slot) % 33 = 0 then 'failure' else 'success' end
+		from delivery_runs r,
+			(values (0, 'build'), (1, 'lint'), (2, 'test / unit'), (3, 'production / production-apply'), (4, 'notify-release')) job(slot, name)
+	`); err != nil {
+		t.Fatalf("seed the runs' jobs: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `analyze delivery_runs, delivery_run_jobs`); err != nil {
+		t.Fatalf("analyze the seeded runs: %v", err)
+	}
+	runs := []int64{19998, 19999, 20000}
+	for _, read := range []struct {
+		name    string
+		sql     string
+		names   []string
+		indexes []string
+		keys    []string // the index condition's keys, where the read's name must be among them
+	}{
+		{"named", runJobsNamedForRunsQuery, []string{"production / production-apply", "notify-release"},
+			[]string{"delivery_run_jobs_pkey"}, []string{"repo =", "run_id = ANY", "name = ANY"}},
+		{"failed", runJobsFailedForRunsQuery, []string{"production / production-apply"},
+			[]string{"delivery_run_jobs_failed", "delivery_run_jobs_pkey"}, nil},
+	} {
+		statement := explaintest.Statement{SQL: read.sql, Args: []any{"acme/widgets", runs, read.names}}
+		for _, mode := range explaintest.PlanCacheModes {
+			plan := json.RawMessage(explaintest.ExplainBuffered(t, ctx, pool, statement, mode, "json"))
+			outline := explaintest.Outline(t, plan)
+			if explaintest.SeqScansRelation(t, plan, "delivery_run_jobs") {
+				t.Fatalf("under %s the %s read scans delivery_run_jobs whole:\n%s", mode, read.name, outline)
+			}
+			if scanned := scannedRelations(t, plan); !slices.Equal(scanned, []string{"delivery_run_jobs"}) {
+				t.Fatalf("under %s the %s read reads %v, want delivery_run_jobs alone:\n%s", mode, read.name, scanned, outline)
+			}
+			scans := explaintest.IndexScans(t, plan)
+			if len(scans) == 0 {
+				t.Fatalf("under %s the %s read reads no index:\n%s", mode, read.name, outline)
+			}
+			for _, scan := range scans {
+				if !slices.Contains(read.indexes, scan.Index) {
+					t.Fatalf("under %s the %s read reads through %s, want one of %v:\n%s", mode, read.name, scan.Index, read.indexes, outline)
+				}
+				for _, key := range read.keys {
+					if !strings.Contains(scan.Cond, key) {
+						t.Fatalf("under %s the %s read's index condition %q holds no %q, which must key %s:\n%s", mode, read.name, scan.Cond, key, scan.Index, outline)
+					}
+				}
+			}
+			t.Logf("under %s the %s read reads %v", mode, read.name, scans)
+		}
 	}
 }

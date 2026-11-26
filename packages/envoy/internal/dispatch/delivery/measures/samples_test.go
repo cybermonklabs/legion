@@ -139,7 +139,7 @@ func plainQuantile(sorted []float64, p float64) float64 {
 	if lo+1 >= len(sorted) {
 		return sorted[len(sorted)-1]
 	}
-	return sorted[lo] + float64((sorted[lo+1]-sorted[lo])*(i-float64(lo)))
+	return interpolateQuantile(sorted[lo], sorted[lo+1], i-float64(lo))
 }
 
 // sameBits reports whether got and want are one float, bit for bit.
@@ -290,5 +290,51 @@ func TestASelectionAllocatesOnce(t *testing.T) {
 	}
 	if allocations := testing.AllocsPerRun(100, func() { kth(lists, 20) }); allocations > 1 {
 		t.Errorf("a selection of two ranks across %d lists allocates %v times, want once", len(lists), allocations)
+	}
+}
+
+// TestQuantileDoesNotOverflowFiniteExtremesOrEqualInfinities: interpolating across finite samples
+// whose difference overflows float64, across equal infinities, or at an exact rank beside an
+// infinity never produces a spurious NaN or ±Inf, through Quantile and through SortedSamples.Quantile
+// over lists and over the merged list; and the figure between two finite extremes stays between
+// them.
+func TestQuantileDoesNotOverflowFiniteExtremesOrEqualInfinities(t *testing.T) {
+	cases := []struct {
+		name  string
+		lists [][]float64
+		p     float64
+		want  float64
+	}{
+		{"max finite extremes p=0.5", [][]float64{{-math.MaxFloat64}, {math.MaxFloat64}}, 0.5, 0},
+		{"large opposite extremes p=0.5", [][]float64{{-1e308}, {1e308}}, 0.5, 0},
+		{"equal +Inf", [][]float64{{math.Inf(1)}, {math.Inf(1)}}, 0.5, math.Inf(1)},
+		{"equal -Inf", [][]float64{{math.Inf(-1)}, {math.Inf(-1)}}, 0.5, math.Inf(-1)},
+		{"-Inf to finite at p=0", [][]float64{{math.Inf(-1)}, {10}}, 0, math.Inf(-1)},
+		{"-Inf to finite at p=0.5", [][]float64{{math.Inf(-1)}, {10}}, 0.5, math.Inf(-1)},
+		{"finite to +Inf at p=0", [][]float64{{10}, {math.Inf(1)}}, 0, 10},
+		{"finite to +Inf at p=0.5", [][]float64{{10}, {math.Inf(1)}}, 0.5, math.Inf(1)},
+	}
+	for _, tc := range cases {
+		merged := mergedOf(tc.lists)
+		got := []float64{
+			Quantile(merged, tc.p),
+			SortedSamples{lists: tc.lists, n: len(merged)}.Quantile(tc.p),
+			SortedSamples{merged: merged, n: len(merged)}.Quantile(tc.p),
+		}
+		for read, value := range got {
+			if math.IsNaN(value) || value != tc.want {
+				t.Errorf("%s: read %d of Quantile(%v) = %v, want %v", tc.name, read, tc.p, value, tc.want)
+			}
+		}
+	}
+	extremes := [][]float64{{-math.MaxFloat64}, {math.MaxFloat64}}
+	merged := mergedOf(extremes)
+	for _, p := range []float64{0.1, 0.25, 0.5, 0.75, 0.9} {
+		if got := Quantile(merged, p); math.IsNaN(got) || math.IsInf(got, 0) || got < -math.MaxFloat64 || got > math.MaxFloat64 {
+			t.Errorf("Quantile(%v) of the two finite extremes = %v, want a finite figure between them", p, got)
+		}
+	}
+	if !math.IsNaN(Quantile([]float64{math.Inf(-1), math.Inf(1)}, 0.5)) {
+		t.Error("Quantile(0.5) of -Inf and +Inf is not NaN: two opposite infinities have no midpoint")
 	}
 }

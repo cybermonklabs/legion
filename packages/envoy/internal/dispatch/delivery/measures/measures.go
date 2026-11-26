@@ -370,9 +370,17 @@ type JudgedFlag struct {
 	Fix    *PR
 }
 
-// Day is the UTC day a flag counts on: the day its broken PR deployed, so every flag of one deploy
-// counts on one day and the deploy counts once however many flags name it, or, while it has not
-// deployed, the day it merged.
+// Day is the UTC day a flag counts on: the day its broken PR deployed (the deploy's completion), so
+// every flag of one deploy counts on one day and the deploy counts once however many flags name
+// it, or, while it has not deployed, the day it merged.
+//
+// It is the day of the numerator only. ChangeFailureRateDay divides by deploys counted on the day
+// they started and by pull requests counted on the day they merged (deliveryDays), so a deploy
+// that starts before UTC midnight and completes after it counts in a numerator a day after its
+// denominator, and one day's share can pass 1 where the fold of the days that hold both cannot. No
+// failure source exists in this slice (Compute is given no flag), so no part reads this day yet;
+// the failure source that lands settles which day each of the three series counts a flag on, which
+// one Day cannot do for deploys and pull requests at once.
 func (f JudgedFlag) Day() time.Time {
 	if f.Broken.DeployedAt != nil {
 		return Midnight(*f.Broken.DeployedAt)

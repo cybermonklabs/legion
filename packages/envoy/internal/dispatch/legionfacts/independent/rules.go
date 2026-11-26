@@ -64,12 +64,11 @@ const (
 // parkedStatuses are the statuses an issue sits parked in, whose time the work time leaves out.
 var parkedStatuses = []string{"backlog", "icebox"}
 
-// The parts an issue's hours are shared out over, beside the phases: the hours an ask held, and
-// the hours a root waited while its children worked, which are counted on no part of the root.
+// The parts an issue's hours are shared out over beside the phase table: the hours an ask held,
+// and the hours no named part took.
 const (
-	partPerson   = "awaiting_person"
-	partChildren = "waiting_on_children"
-	partOther    = "other"
+	partPerson = "awaiting_person"
+	partOther  = "other"
 )
 
 // parts is "hours by phase": one part per column of the board, each holding the daemon's phases

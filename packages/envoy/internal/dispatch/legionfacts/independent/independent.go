@@ -20,6 +20,7 @@ package independent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,12 +42,12 @@ type Scope struct {
 func (s Scope) String() string { return s.Project }
 
 // Window is the stretch of time one reading measures over: To is the moment of the computation,
-// which is where an open issue's work time runs to, and From is where the reading starts.
+// which bounds every read (issues, closes, events, titles, handoffs and observations stand as of
+// To) and is where an open issue's work time runs to.
 //
-// R1 covers every issue the project has Legion phase work for, open or closed, so From narrows
-// no issue out of the answer: it is the start of the history the reading takes in, and a reading
-// of the whole project is From the zero moment. It is reported because the two sides of a
-// comparison must be read to have measured the same stretch.
+// R1 covers every issue the project has Legion phase work for from the beginning of the project's
+// history up to To, so From must be the zero moment; Read refuses a non-zero From rather than
+// ignoring it and reporting a window it did not read.
 type Window struct {
 	From time.Time
 	To   time.Time
@@ -101,8 +102,14 @@ type Reading struct {
 }
 
 // Read answers the facts of every issue the scope has Legion phase work for, open or closed, as
-// of the window's end.
+// of the window's end, read in one repeatable-read snapshot when db can begin a transaction.
 func Read(ctx context.Context, db Querier, scope Scope, window Window) (Reading, error) {
+	if !window.From.IsZero() {
+		return Reading{}, fmt.Errorf("independent.Read covers the whole history up to To; non-zero Window.From %s is unsupported", window.From.UTC().Format(time.RFC3339))
+	}
+	if window.To.IsZero() {
+		return Reading{}, fmt.Errorf("independent.Read requires a non-zero Window.To")
+	}
 	held, err := readPopulation(ctx, db, scope, window)
 	if err != nil {
 		return Reading{}, err

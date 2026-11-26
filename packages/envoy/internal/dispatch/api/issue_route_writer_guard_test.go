@@ -265,6 +265,8 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
+	{"internal/dispatch/delivery/deliverytest/deliverytest.go", "the delivery test fixture: it seeds synthetic issues, with their statuses, into a test database for the tests that import it. It is no _test.go file only because Go cannot share test-only code across packages; no non-test file imports it and no request reaches it"},
+	{"internal/dispatch/legion/legiontest/legiontest.go", "the Legion test fixture: it seeds synthetic issues, with their statuses and parents, into a test database for the tests that import it. It is no _test.go file only because Go cannot share test-only code across packages; no non-test file imports it and no request reaches it"},
 }
 
 // statusLabelsOrParentWriter answers the index in statusLabelsOrParentWriters of the writer that
@@ -648,6 +650,21 @@ func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
 	} {
 		if _, allowed := statusLabelsOrParentWriter(path); allowed != want {
 			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t", path, allowed, want)
+		}
+	}
+	for _, check := range []struct {
+		path string
+		want bool
+	}{
+		{"internal/dispatch/delivery/deliverytest/deliverytest.go", true},
+		{"internal/dispatch/legion/legiontest/legiontest.go", true},
+		{"internal/dispatch/delivery/deliverytest/other.go", false},
+		{"internal/dispatch/legion/legiontest/other.go", false},
+		{"internal/dispatch/delivery/deliverytest/", false},
+		{"internal/dispatch/legion/legiontest/legiontest_test.go", false},
+	} {
+		if _, allowed := statusLabelsOrParentWriter(check.path); allowed != check.want {
+			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t: a fixture seeder is named by its exact file", check.path, allowed, check.want)
 		}
 	}
 }

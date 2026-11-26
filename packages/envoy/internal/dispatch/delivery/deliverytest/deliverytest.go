@@ -143,14 +143,14 @@ const smokeTimeout = 30 * time.Minute
 // it covers, and the seed of every random draw. A zero field takes its default: DefaultProject,
 // DefaultNow, DefaultDays; a zero Seed is a seed like any other.
 //
-// OneProject, off by default, names an issue of the project on every pull request: a new issue
-// wherever the history would name one of the second project, and one of the issues Write adds
-// after its draws (oneProjectIssues) wherever it would name none. Every pull request then counts
-// for the project, and so does every PR-checks run and every deploy that ships one: the eval
-// registry's day rows of the project then hold every row the deployment-wide delivery routes count
-// but the deploys that ship none, which count for no project (evals' attribution). It takes the
-// same random draws, so the history is the default one with those issues moved to the project and
-// added to it (and the project's issues numbered to match).
+// OneProject, off by default, names an issue of the project on every pull request (issue_key,
+// Title and Attribution.TitleKeys): a new issue wherever the history would name one of the second
+// project, and a new plain issue (plainIssue) wherever it would name none. Because Write sets
+// default_repo only on Project (to DeployRepo) and leaves the other two repositories unowned,
+// callers that want issue_key alone to attribute every repository's pull requests to Project
+// clear the stored attribution inputs themselves. OneProject takes the same random draws, so the
+// history is the default one with those issues moved to the project and added to it (and the
+// project's issues numbered to match).
 //
 // IssueOffset, zero by default, is how many of the project's issue numbers another history took
 // already: the project's issues are numbered from IssueOffset+1, so this history can be written
@@ -187,8 +187,8 @@ type Fixture struct {
 	// Spec is the spec Write was given, with every default filled in.
 	Spec Spec
 	// Project is the project whose issues most pull requests name, and whose default repository
-	// is the deploy repository; SecondProject is the project of the few pull requests that name
-	// an issue elsewhere, which count for it.
+	// is the deploy repository; SecondProject is the project (with no default repository of its
+	// own) whose issues a few pull requests name on their rows.
 	Project, SecondProject string
 	// DeployRepo is the repository the settings name; Repos is the three repositories, the
 	// deploy repository first.

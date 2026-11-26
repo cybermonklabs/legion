@@ -29,11 +29,11 @@ import (
 // A sample series holds one value per finished issue of the day: its work time, its hours on a
 // bar (zero on a bar no hour of it fell on), its idle hours in a role, its slot wait, its review
 // rounds, its hours after its first review, or a finished root's work time. Its fold merges the
-// parts' sample lists and reads measures.Quantile over the merge, never the mean of the days'
-// quantiles. A count is a sum, and a share is the summed numerator over the summed denominator.
-// Every number a fold answers is rounded to four decimals (round). A set that holds no part of a
-// fold's series reads no value (nil), never 0; a part built for a cut no issue of the day is in
-// is a zero part, and reads as zero counts and no quantile.
+// parts' sample lists and reads measures.SortedSamples.Quantile over the merge, never the mean of
+// the days' quantiles. A count is a sum, and a share is the summed numerator over the summed
+// denominator. Every number a fold answers is rounded to four decimals (round). A set that holds
+// no part of a fold's series reads no value (nil), never 0; a part built for a cut no issue of the
+// day is in is a zero part, and reads as zero counts and no quantile.
 
 // The series of the six Legion evals before their cut (CutSeries). legion-phase-time's series
 // are its seven bars' roles (architect, planner, implementer, tester, reviewer, merger and
@@ -64,7 +64,9 @@ const (
 // RootFigures are legion-splitting's series that count the finished roots alone whatever the cut
 // (metric 4): SplittingDay builds them in the all and the roots cut, the same in both, and never
 // in the children cut, which holds no root. The eval still has that cut of each, as every Legion
-// series has its three, and it reads no data.
+// series has its three, and it reads no data. The eval registry's catalogue and its tests (#3976)
+// read this list, so it stays exported; TestSplittingDayBuildsEachRootFigureInTheAllAndRootsCuts
+// holds SplittingDay to it.
 var RootFigures = []string{SeriesRoots, SeriesHoursWithChildren, SeriesHoursWithoutChildren}
 
 // The named counts a Legion part carries beside its value: a phase-time bar's five segments, each
@@ -298,9 +300,10 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 }
 
 // SampleFold is one sample series folded: how many values its parts hold, their sum, and their
-// median and 90th percentile (measures.Quantile over the merge of every part's samples). Median
-// and P90 are nil when the parts hold no value. The statistics a series of it answers are `n`,
-// `sum` (an hours series' `hours`), `median` and `p90`.
+// median and 90th percentile (measures.SortedSamples.Quantile over the merge of every part's
+// samples). Median and P90 are nil when the parts hold no value. Each fold below states which
+// statistics its series exposes (`n`, `median`, `p90`, and where the measure reports a total,
+// `hours` from Sum).
 type SampleFold struct {
 	N      int
 	Sum    float64

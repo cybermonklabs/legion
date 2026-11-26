@@ -1305,6 +1305,25 @@ func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time
 		order by merged_at, (repo || '#' || number) collate "C"
 		limit $3
 	`, from, to, maxPullRequestsPerWindow)
+	return scanPullRequests(rows, err)
+}
+
+// listRepoPullRequestsInWindow lists every population pull request of repo merged in [from, to),
+// in ListPullRequestsInWindow's order, up to maxPullRequestsPerWindow: deploysOf's read of
+// Deploys.Earlier, which Containment restricts to the deploy repository so pull requests of other
+// repositories neither enter Earlier nor consume its row limit before a repository's first deploy.
+func listRepoPullRequestsInWindow(ctx context.Context, q Querier, repo string, from, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := q.Query(ctx, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where repo = $1 and merged_at >= $2 and merged_at < $3
+		order by merged_at, (repo || '#' || number) collate "C"
+		limit $4
+	`, repo, from, to, maxPullRequestsPerWindow)
+	return scanPullRequests(rows, err)
+}
+
+func scanPullRequests(rows pgx.Rows, err error) ([]DeliveryPullRequest, error) {
 	if err != nil {
 		return nil, err
 	}

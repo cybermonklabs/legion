@@ -56,15 +56,17 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		t.Fatalf("read the project independently: %v", err)
 	}
 
-	// The two sides are read for the same scope and the same window, or the comparison below
-	// compares two different questions.
-	if scope.String() != computedScope {
-		t.Fatalf("the reading covered the scope %s and the computation the scope %s",
-			scope, computedScope)
+	// The two sides actually report the same scope and the same window, or the comparison below
+	// compares two different questions. Compare reading's own reported Scope/Window (and Report)
+	// rather than the local inputs passed to Read.
+	report := reading.Report()
+	if reading.Scope.String() != computedScope || report.Scope != computedScope {
+		t.Fatalf("the reading reported scope %s (report %q) and the computation scope %s",
+			reading.Scope, report.Scope, computedScope)
 	}
-	if window.String() != computedWindow.String() {
-		t.Fatalf("the reading used the window %s and the computation the window %s",
-			window, computedWindow)
+	if reading.Window.String() != computedWindow.String() || report.WindowFrom != "" || report.WindowTo != computedWindow.To.UTC().Format(time.RFC3339) {
+		t.Fatalf("the reading reported window %s (report %q..%q) and the computation window %s",
+			reading.Window, report.WindowFrom, report.WindowTo, computedWindow)
 	}
 
 	compared, zeroHours, awaitingChildren, differences := 0, 0, 0, 0
@@ -109,9 +111,95 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		t.Errorf("%d facts differ between the reading and the computation", differences)
 	}
 	t.Logf("the independent reading covered scope %s over window %s; the computation covered scope %s over window %s",
-		scope, window, computedScope, computedWindow)
+		reading.Scope, reading.Window, computedScope, computedWindow)
 	t.Logf("%d issues compared, %d of them with hours that are all zero, %d roots with awaiting_children hours, %d differences",
 		compared, zeroHours, awaitingChildren, differences)
+}
+
+// TestIndependentReadAsOfSnapshotAndTitleTieBreak: Read stands every read it makes as of
+// Window.To, in one snapshot. An issue created after To is absent; an issue closed after To is open
+// and its work time runs to To; a retitle after To does not take a session's title away; a handoff
+// after To makes no issue one that Legion worked. Where two titled events of a session share a
+// moment the first inserted (the lower id) names it, as session_titles' trigger and fill name it.
+// A non-zero Window.From and a zero Window.To are refused, not ignored.
+func TestIndependentReadAsOfSnapshotAndTitleTieBreak(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := t.Context()
+	to := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	exec := func(what, sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+
+	exec("seed project", `insert into projects (key, name, default_assignee) values ('SNAP', 'Snapshot', 'alice')`)
+	// SNAP-1 opened before To and closed after it. SNAP-2 was created after To. SNAP-3 was
+	// created before To and handed on only after it.
+	exec("seed issues", `
+		insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at) values
+			('SNAP-1', 'SNAP', 1, 'Open at to', 'done', '00000001', '{"kind":"system","id":"test"}', $1, $2),
+			('SNAP-2', 'SNAP', 2, 'Created after to', 'in_progress', '00000002', '{"kind":"system","id":"test"}', $3, null),
+			('SNAP-3', 'SNAP', 3, 'Handed on after to', 'todo', '00000003', '{"kind":"system","id":"test"}', $4, null)
+	`, to.Add(-4*time.Hour), to.Add(2*time.Hour), to.Add(time.Hour), to.Add(-2*time.Hour))
+	// Two titled events of ses-tie at one moment: the first inserted must name the session, and
+	// a retitle after To must not.
+	exec("seed the first title of the moment", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('SNAP-1', 1, 'comment.created', '{"kind":"session","id":"ses-tie","origin":{"session_title":"Legion implementer · SNAP-1"}}', '{}', false, $1)
+	`, to.Add(-3*time.Hour))
+	exec("seed the second title of the moment", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('SNAP-1', 2, 'comment.created', '{"kind":"session","id":"ses-tie","origin":{"session_title":"Not a Legion title"}}', '{}', false, $1)
+	`, to.Add(-3*time.Hour))
+	exec("seed the retitle after to", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('SNAP-1', 3, 'comment.created', '{"kind":"session","id":"ses-tie","origin":{"session_title":"Renamed after to"}}', '{}', false, $1)
+	`, to.Add(time.Hour))
+	exec("seed the event of the issue created after to", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('SNAP-2', 1, 'comment.created', '{"kind":"session","id":"ses-snap2","origin":{"session_title":"Legion implementer · SNAP-2"}}', '{}', false, $1)
+	`, to.Add(time.Hour))
+	exec("seed the handoff after to", `
+		insert into handoffs (issue_key, phase, version, body, author, created_at)
+		values ('SNAP-3', 'implement', 1, '{}', '{"kind":"session","id":"ses-snap3"}', $1)
+	`, to.Add(time.Hour))
+
+	scope := independent.Scope{Project: "SNAP"}
+	if _, err := independent.Read(ctx, database.Pool, scope, independent.Window{From: to.Add(-time.Hour), To: to}); err == nil {
+		t.Fatal("independent.Read accepted a non-zero Window.From; want an error")
+	}
+	if _, err := independent.Read(ctx, database.Pool, scope, independent.Window{}); err == nil {
+		t.Fatal("independent.Read accepted a zero Window.To; want an error")
+	}
+
+	reading, err := independent.Read(ctx, database.Pool, scope, independent.Window{To: to})
+	if err != nil {
+		t.Fatalf("independent.Read as of %s: %v", to.Format(time.RFC3339), err)
+	}
+	for _, key := range []string{"SNAP-2", "SNAP-3"} {
+		if _, seen := reading.Issues[key]; seen {
+			t.Errorf("%s has facts as of %s though no Legion work of it had been recorded by then", key, to.Format(time.RFC3339))
+		}
+	}
+	got, ok := reading.Issues["SNAP-1"]
+	if !ok {
+		t.Fatalf("SNAP-1 has no facts as of %s: the title of the moment's first event, or the retitle after it, was misread", to.Format(time.RFC3339))
+	}
+	if got.WorkHours != 3 || got.PhaseHours["implementing"] != 3 {
+		t.Errorf("SNAP-1 as of %s = %+v, want 3 h of work, all of it implementing: it was open then, and its first worker event was 3 h before",
+			to.Format(time.RFC3339), got)
+	}
+
+	later, err := independent.Read(ctx, database.Pool, scope, independent.Window{To: to.Add(3 * time.Hour)})
+	if err != nil {
+		t.Fatalf("independent.Read after to: %v", err)
+	}
+	for _, key := range []string{"SNAP-2", "SNAP-3"} {
+		if _, seen := later.Issues[key]; !seen {
+			t.Errorf("%s has no facts as of %s, after its Legion work was recorded", key, to.Add(3*time.Hour).Format(time.RFC3339))
+		}
+	}
 }
 
 // compareFacts reads each of one issue's five facts against the other side's, and answers how
