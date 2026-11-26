@@ -302,7 +302,7 @@ func giversOf(version record.PlanVersion) string {
 	return namedGivers(version.Givers())
 }
 
-// namedGivers names givers by their claims, as a sentence lists them (listed).
+// namedGivers names givers by their claims, as a sentence lists them (listedWords).
 func namedGivers(givers []claim.Token) string {
 	names := make([]string, len(givers))
 	for i, giver := range givers {
@@ -311,8 +311,8 @@ func namedGivers(givers []claim.Token) string {
 	return listedWords(names)
 }
 
-// listed joins words as a sentence lists them: one alone, two joined by "and", more by commas and
-// a last "and".
+// listedWords joins words as a sentence lists them: one alone, two joined by "and", more by commas
+// and a last "and".
 func listedWords(words []string) string {
 	if len(words) < 2 {
 		return strings.Join(words, "")
