@@ -474,8 +474,8 @@ type LineEntry struct {
 // the pass's own that its live read leaves out, and the worker starts the project already owes.
 // They are gathered once per admission pass (ReadLineFacts) and handed to every judgement that
 // pass makes, because each of them is read under the one fact lock (intake.ApplyFact) on every
-// fact of every consumer: a read per tree, per gate or per slot would cost the daemon a round
-// trip for each of them on each fact.
+// pass (the pass rule on admit's Admission.Apply): a read per tree, per gate or per slot would
+// cost the daemon a round trip for each of them on each pass.
 type LineFacts struct {
 	// Lifecycles is the lifecycle of each tree root of the records, by root key. A tree with no
 	// row has no entry, which reads as a tree nothing has opened.

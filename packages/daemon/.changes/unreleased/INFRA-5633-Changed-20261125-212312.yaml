@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+    A Kubernetes deployment's issue pod now reserves 2 CPU and 8Gi by default, each requested in
+    full, over the same 80Gi disk limit and 6Gi disk request. The default fills each `cpu` or
+    `memory` limit that `runtime.kubernetes.resources.issue` leaves unset: a file that sets only
+    `memory: 32Gi` gets 2 CPU, and a file that sets only `cpu: 4` gets 8Gi. A running issue pod of
+    a deployment that sets neither `cpu` nor `memory`, or only one of them, records the earlier
+    reservation in its `legion.dev/pod-shape` annotation. Once this release runs, the daemon reads
+    that pod as drifted and opens an update round over it, as fast as `pod_update_max_open_rounds`
+    and `pod_update_rounds_per_minute` allow. The round asks the issue's roles to push their work.
+    The daemon replaces the pod once every role it asks has answered, no turn runs and each role's
+    report since its last turn names no running background work, or at the round's bound. Work
+    that a role did not push goes with the pod's disk, unless that disk is a kept volume. A file
+    that sets an issue pod's `memory_request` above 8Gi or its `cpu_request` above 2 with no limit
+    beside it is now refused (`… memory_request 9Gi exceeds memory 8Gi`,
+    `… cpu_request 2500m exceeds cpu 2`). To load such a file, set the limit beside the request.
+    A deployment that needs the earlier size sets `issue: {cpu: 3, memory: 19Gi}`.
+time: 2026-11-25T21:23:12Z
+custom:
+    Issue: INFRA-5633

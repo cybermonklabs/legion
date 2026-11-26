@@ -2046,16 +2046,14 @@ func TestTheFirstPassWaitsForTheRunningBootsReconcile(t *testing.T) {
 	}
 }
 
-// freshSessionWindow is a window from 10:00 to 13:00 recorded under legion-v20.42.5, in a
+// closedGateMergingWindow is a window from 10:00 to 13:00 recorded under legion-v20.42.5, in a
 // deployment that gates the spec, its inputs reaching back to the daemon's boot at 05:00. ACME-1, a
 // root promoted at 05:05 whose spec a person approves at 05:15, implements from 05:50 to the
 // window's end. ACME-2, filed todo under it at 05:30, starts at 06:00 and works 30 minutes in each
 // phase to retro at 08:30. At 09:50 ACME-1's architect writes version 2 of the spec, which closes
 // the gate to the window's end. ACME-2 moves to merging at 10:30, where its merger's start waits
-// for the gate. At 11:00 the operator retries the merger with a fresh session: its claim is
-// launched afresh, and the phase is released by the operator's retry with no hold standing. The
-// merger works from 11:01 to 11:02 and sends ACME-2 back to implementing at 11:03.
-func freshSessionWindow(t *testing.T) Window {
+// for the gate. rest writes what the record holds of ACME-2 after that move.
+func closedGateMergingWindow(t *testing.T, rest func(b *windowBuilder)) Window {
 	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
 	b.window.Parts[0].Rule = "legion-v20.42.5"
 	b.reaches(5 * time.Hour)
@@ -2075,14 +2073,72 @@ func freshSessionWindow(t *testing.T) Window {
 	b.gateClosed(clock(9, 50), "ACME-1", intake.DispatchArtifactVersion, 2)
 	b.turnEnds(clock(10, 30), "ACME-2", claim.RoleImplementer)
 	b.moved(clock(10, 30), "ACME-2", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
-	b.launched(clock(11, 0), "ACME-2", claim.RoleMerger, false)
-	b.info(clock(11, 0), "workflow: a held phase is released", "issue", "ACME-2", "phase", string(phase.Merging), "reason", operatorRetryReason)
-	b.turnStarts(clock(11, 1), "ACME-2", claim.RoleMerger)
-	b.turnEnds(clock(11, 2), "ACME-2", claim.RoleMerger)
-	b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerBackward)
-	b.slotTaken(clock(11, 3), "ACME-2")
-	b.turnStarts(clock(11, 3), "ACME-2", claim.RoleImplementer)
+	rest(b)
 	return b.build()
+}
+
+// freshSessionWindow is closedGateMergingWindow where, at 11:00, the operator retries the merger
+// with a fresh session: its claim is launched afresh, and the phase is released by the operator's
+// retry with no hold standing. The merger works from 11:01 to 11:02 and sends ACME-2 back to
+// implementing at 11:03.
+func freshSessionWindow(t *testing.T) Window {
+	return freshSessionWindowLaunchedAt(t, clock(11, 0))
+}
+
+// freshSessionWindowLaunchedAt is freshSessionWindow with the merger's launch at launched. The
+// recorded daemon writes the launch of such a retry just before its release line, never at the
+// same moment: api's (*server).freshSession posts the resume of the suspended claim, whose launch
+// ((*Machine).launchTries) logs `supervise: launched` at once, and only then restarts the phase,
+// whose commit ((*Engine).retryPhase) logs `workflow: a held phase is released`.
+func freshSessionWindowLaunchedAt(t *testing.T, launched time.Time) Window {
+	return closedGateMergingWindow(t, func(b *windowBuilder) {
+		b.launched(launched, "ACME-2", claim.RoleMerger, false)
+		b.info(clock(11, 0), "workflow: a held phase is released", "issue", "ACME-2", "phase", string(phase.Merging), "reason", operatorRetryReason)
+		b.turnStarts(clock(11, 1), "ACME-2", claim.RoleMerger)
+		b.turnEnds(clock(11, 2), "ACME-2", claim.RoleMerger)
+		b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerBackward)
+		b.slotTaken(clock(11, 3), "ACME-2")
+		b.turnStarts(clock(11, 3), "ACME-2", claim.RoleImplementer)
+	})
+}
+
+// conflictOutOfMergingWindow is closedGateMergingWindow where a conflict moves ACME-2 from merging
+// back to implementing at 11:03, with no retry and no turn of its merger in the visit. With
+// launched, its merger's claim is launched at 10:45 all the same.
+func conflictOutOfMergingWindow(t *testing.T, launched bool) Window {
+	return closedGateMergingWindow(t, func(b *windowBuilder) {
+		if launched {
+			b.launched(clock(10, 45), "ACME-2", claim.RoleMerger, false)
+		}
+		b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerConflict)
+		b.slotTaken(clock(11, 3), "ACME-2")
+		b.turnStarts(clock(11, 3), "ACME-2", claim.RoleImplementer)
+	})
+}
+
+// recordedAndMainBranches exercises both recorded and generated conflicts.
+func recordedAndMainBranches(t *testing.T) []Branch {
+	t.Helper()
+	return []Branch{MainBranch, drawnConflictBranch}
+}
+
+// checkACME2LeavesMergingAt replays window under legion-v20.42.5 on each branch of
+// recordedAndMainBranches and fails where ACME-2's moves out of merging in the replay, or a move
+// the replay refused, differ from want.
+func checkACME2LeavesMergingAt(t *testing.T, window Window, want []time.Time) {
+	t.Helper()
+	for _, branch := range recordedAndMainBranches(t) {
+		result, log := replayWindowOn(t, window, "legion-v20.42.5", branch, 1)
+		back := linesAt(log, func(line replayLine) bool {
+			return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Merging)
+		})
+		if !slices.EqualFunc(back, want, time.Time.Equal) {
+			t.Errorf("on %s ACME-2 left merging at %s, want at %s", branch.Name, describeTimes(back), describeTimes(want))
+		}
+		if refused := result.Divergence.Refused; len(refused) > 0 {
+			t.Errorf("on %s the replay refused %+v", branch.Name, refused)
+		}
+	}
 }
 
 // The operator's retry of a phase's worker with a fresh session, which launches its claim outside
@@ -2105,6 +2161,172 @@ func TestAnOperatorsFreshSessionRunsTheWorkerOutsideTheFence(t *testing.T) {
 	}
 	if refused := result.Divergence.Refused; len(refused) > 0 {
 		t.Errorf("the replay refused %+v", refused)
+	}
+}
+
+// The record writes the launch of an operator's fresh-session retry just before the release line
+// that retry makes, 0.28 to 0.37 s before it (api's (*server).freshSession launches the claim,
+// then restarts the phase), so the trace reads that retry by the order of the two lines and not
+// by their moments. The test puts the merger's launch 338 ms before the release line: the trace
+// holds one retry of ACME-2's merging worker, and the replay enters it, so ACME-2 leaves merging
+// at 11:03 on main and on the record's conflicts. It fails where the trace reads a retry only of a
+// launch at the release line's own moment: it holds none, and ACME-2 stands in merging to the
+// window's end.
+func TestAFreshSessionRetryIsTheLaunchThatComesBeforeItsReleaseLine(t *testing.T) {
+	t.Parallel()
+	window := freshSessionWindowLaunchedAt(t, clock(11, 0).Add(-338*time.Millisecond))
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	want := []FreshRetry{{At: clock(11, 0), Phase: phase.Merging, Role: claim.RoleMerger}}
+	if got := trace.Issues["ACME-2"].FreshRetries; !slices.EqualFunc(got, want, func(a, b FreshRetry) bool {
+		return a.At.Equal(b.At) && a.Phase == b.Phase && a.Role == b.Role
+	}) {
+		t.Errorf("the trace holds the fresh retries %+v of ACME-2, want %+v", got, want)
+	}
+	checkACME2LeavesMergingAt(t, window, []time.Time{clock(11, 3)})
+}
+
+// A launch of the merger that is not the one the retry made is no fresh-session retry. The launch
+// of ACME-2's merger at 10:00, before the visit to merging began at 10:30, is an earlier visit's.
+// A launch after the release line, at 11:00 and 338 ms, is a later launch, the line before it being
+// that of a retry whose launch the record shows nowhere. The trace holds no fresh retry for either.
+func TestALaunchBeforeTheVisitOrAfterTheReleaseLineIsNoFreshSessionRetry(t *testing.T) {
+	t.Parallel()
+	for name, launched := range map[string]time.Time{
+		"before the visit":       clock(10, 0),
+		"after the release line": clock(11, 0).Add(338 * time.Millisecond),
+	} {
+		trace, err := BuildTrace(freshSessionWindowLaunchedAt(t, launched))
+		if err != nil {
+			t.Fatalf("%s: build the trace: %v", name, err)
+		}
+		if got := trace.Issues["ACME-2"].FreshRetries; len(got) > 0 {
+			t.Errorf("with the launch %s the trace holds the fresh retries %+v of ACME-2, want none", name, got)
+		}
+	}
+}
+
+// The operator's plain retry of a worker that ran and was stopped writes the release line before
+// the claim's launch, and the worker's own launch and turn came earlier in the visit. The launch
+// the line follows is an earlier start that a turn of the worker followed, not the retry's, so the
+// trace holds no fresh retry (TestAnOperatorsRetryOfAWorkerInNoHoldReleasesNothing's ACME-1).
+func TestAReleaseLineAfterTheWorkersTurnsIsNoFreshSessionRetry(t *testing.T) {
+	t.Parallel()
+	window := closedGateMergingWindow(t, func(b *windowBuilder) {
+		b.launched(clock(10, 31), "ACME-2", claim.RoleMerger, false)
+		b.turnStarts(clock(10, 32), "ACME-2", claim.RoleMerger)
+		b.turnEnds(clock(10, 40), "ACME-2", claim.RoleMerger)
+		b.info(clock(11, 0), "workflow: a held phase is released", "issue", "ACME-2", "phase", string(phase.Merging), "reason", operatorRetryReason)
+		b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerBackward)
+		b.slotTaken(clock(11, 3), "ACME-2")
+		b.turnStarts(clock(11, 3), "ACME-2", claim.RoleImplementer)
+	})
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	if got := trace.Issues["ACME-2"].FreshRetries; len(got) > 0 {
+		t.Errorf("the trace holds the fresh retries %+v of ACME-2, want none: the launch before the release line began a turn", got)
+	}
+}
+
+// A merging visit in which the record shows no launch and no turn of the merger, and which a
+// conflict ends, opens its work on the move into merging as accepting's work opens, so its recorded
+// end does not wait for a merger's start that the record never made, which the closed design gate
+// holds. The window moves ACME-2 from merging to implementing by conflict at 11:03 while ACME-1's
+// gate stays closed: the trace reads the segment as 10:30 to 11:03, ending in a conflict, and the
+// replay leaves merging at 11:03 on main and on the record's conflicts. It fails where the work
+// waits for the merger's start: ACME-2 stands in merging to the window's end.
+func TestAConflictOutOfMergingWithNoMergerAtWorkOpensOnTheMoveIntoMerging(t *testing.T) {
+	t.Parallel()
+	window := conflictOutOfMergingWindow(t, false)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	visits := trace.Issues["ACME-2"].Visits
+	i := slices.IndexFunc(visits, func(v Visit) bool { return v.Phase == phase.Merging })
+	if i < 0 {
+		t.Fatalf("the trace holds no visit of ACME-2 to merging: %s", describeReading(visits))
+	}
+	if v := visits[i]; v.Segment == nil || !v.Segment.Start.Equal(clock(10, 30)) || !v.Segment.End.Equal(clock(11, 3)) ||
+		v.Out == nil || v.Out.Trigger != workflow.TriggerConflict {
+		t.Errorf("the trace reads ACME-2's visit to merging as %+v, want a segment from 10:30 to 11:03 ending in a conflict", v)
+	}
+	checkACME2LeavesMergingAt(t, window, []time.Time{clock(11, 3)})
+}
+
+// A merging visit that holds a launch of the merger keeps opening on the merger's start, which the
+// closed design gate holds in the record's own daemon and in the replay (the outbox's
+// mergerWaitsForTheDesignGate): the window of the test above with ACME-2's merger launched at
+// 10:45. ACME-2 stands in merging to the window's end on main and on the record's conflicts.
+func TestAMergingVisitWithAMergerLaunchWaitsForTheMergersStartWhileTheGateIsClosed(t *testing.T) {
+	t.Parallel()
+	checkACME2LeavesMergingAt(t, conflictOutOfMergingWindow(t, true), nil)
+}
+
+// firstPieceOfVisit is the first piece of work the script holds for the visit of key that begins at
+// enter in the trace of window, with the visit.
+func firstPieceOfVisit(t *testing.T, window Window, key string, enter time.Time) (*Visit, *piece) {
+	t.Helper()
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	iss := trace.Issues[key]
+	i := slices.IndexFunc(iss.Visits, func(v Visit) bool { return v.Enter.Equal(enter) })
+	if i < 0 {
+		t.Fatalf("the trace holds no visit of %s from %s: %s", key, stamp(enter), describeReading(iss.Visits))
+	}
+	visit := &iss.Visits[i]
+	reach, kept := issuePieces(trace, iss)
+	for _, p := range slices.Concat(reach, kept) {
+		if p.visit == visit {
+			return visit, p
+		}
+	}
+	t.Fatalf("the script holds no piece of work for %s's visit from %s", key, stamp(enter))
+	return nil, nil
+}
+
+// A visit is workerless (Visit.Workerless) only where the record shows nothing of its role at work
+// in it and its work starts at the move into its phase; its first piece then opens on that move
+// (opensOnPhase). Of ACME-2's visits in closedGateMergingWindow's variants: its visit to merging
+// from 10:30 with no launch, no turn and no hold of the merger is workerless; the same visit with a
+// failure of the merger's claim and no launch and no turn of it is not, and its first piece waits
+// for the merger's start (opensOnStart); and ACME-2's visit to implementing from 11:03, whose work
+// starts with the slot it takes at 11:30 and shows no implementer, is not either, and its piece
+// waits for the implementer's start. It fails where a visit that shows a hold, or whose work starts
+// after the move, is read as workerless.
+func TestAVisitIsWorkerlessOnlyWhereNothingOfItsRoleShowsAndItsWorkStartsAtTheMove(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name       string
+		window     Window
+		enter      time.Time
+		workerless bool
+		start      time.Time
+		opens      pieceOpen
+	}{
+		{"nothing of the merger shows", conflictOutOfMergingWindow(t, false), clock(10, 30), true, clock(10, 30), opensOnPhase},
+		{"a hold of the merger shows", closedGateMergingWindow(t, func(b *windowBuilder) {
+			b.claimFailed(clock(10, 45), "ACME-2", claim.RoleMerger)
+			b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerConflict)
+			b.slotTaken(clock(11, 3), "ACME-2")
+			b.turnStarts(clock(11, 3), "ACME-2", claim.RoleImplementer)
+		}), clock(10, 30), false, clock(10, 30), opensOnStart},
+		{"the work starts after the move", closedGateMergingWindow(t, func(b *windowBuilder) {
+			b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerBackward)
+			b.slotTaken(clock(11, 30), "ACME-2")
+		}), clock(11, 3), false, clock(11, 30), opensOnStart},
+	} {
+		visit, p := firstPieceOfVisit(t, c.window, "ACME-2", c.enter)
+		if visit.Workerless != c.workerless || p.opens != c.opens || !p.start.Equal(c.start) {
+			t.Errorf("with %s the trace reads the visit from %s as workerless %t, its first piece opens by %d from %s, want workerless %t, opening by %d from %s",
+				c.name, stamp(c.enter), visit.Workerless, p.opens, stamp(p.start), c.workerless, c.opens, stamp(c.start))
+		}
 	}
 }
 
@@ -2298,7 +2520,7 @@ func TestABootsConflictInALaterPhaseEntersAtTheStretchsEnd(t *testing.T) {
 	for seed := int64(1); seed <= 3; seed++ {
 		var draws []conflictDraw
 		out := t.TempDir()
-		if _, err := Run(context.Background(), RunConfig{Window: bootAcceptingWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch,
+		if _, err := Run(context.Background(), RunConfig{Window: bootAcceptingWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch,
 			Seed: seed, Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) {
 				if draw.at.issue == "ACME-1" {
 					draws = append(draws, draw)
@@ -2349,7 +2571,7 @@ func TestARunCountsTheLoopsItPassesOverAndAdds(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			out := t.TempDir()
-			result, err := Run(context.Background(), RunConfig{Window: c.window, Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1,
+			result, err := Run(context.Background(), RunConfig{Window: c.window, Rule: replayedRule(t, c.rule), Branch: drawnConflictBranch, Seed: 1,
 				Slowdown: 1, PGDSN: replayDSN(t), Out: out})
 			if err != nil {
 				t.Fatalf("replay the window under %s: %v", c.rule, err)
@@ -2393,7 +2615,7 @@ func runOutWindow(t *testing.T) Window {
 
 // A window with a run-out replays past its end, to the run-out's, so the work the record shows after
 // --to runs where the replay moves it, and its every measure reads the window alone (the architect's
-// D12). The test replays runOutWindow under main: ACME-2's stretch draws no conflict at 12:00 and
+// D12). It replays runOutWindow under main on the drawn branch: ACME-2 draws clean at 12:00 and
 // goes on past its recorded loop into its review recorded inside the run-out, so its reviewer works
 // on across 13:00 and rejects it at 14:15, a move the replay's log shows. Its slot-hours of the
 // window are each in a turn, and no scorecard, the replay's two nor the record's, counts a move, a
@@ -2402,7 +2624,7 @@ func runOutWindow(t *testing.T) Window {
 func TestARunOutReplaysPastTheWindowAndMeasuresInsideIt(t *testing.T) {
 	t.Parallel()
 	window := runOutWindow(t)
-	result, log := knobRun(t, window, mainRule(t), "main")
+	result, log := knobRun(t, window, mainRule(t), drawnConflictBranch.Name)
 	rejected := linesAt(log, func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Reviewing) &&
 			line.Trigger == workflow.TriggerReviewRejected

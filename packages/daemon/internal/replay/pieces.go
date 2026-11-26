@@ -48,8 +48,13 @@ func (d *driver) openSeeded() {
 }
 
 // openOnPhase opens the next piece of key's work that the move into to opens rather than a start
-// row (opensOnPhase): accepting's, whose role is the architect that owns the issue.
+// row (opensOnPhase): accepting's, whose role is the architect that owns the issue, and a
+// workerless visit's. The move into merging of an issue whose conflict waits for merging opens
+// none: the merger's merge forward runs first, and the piece opens when it lands (mergedForward).
 func (d *driver) openOnPhase(key string, to phase.Phase) {
+	if _, waits := d.waiting[key]; waits && to == phase.Merging {
+		return
+	}
 	for _, p := range d.script.pieces[key] {
 		if p.state != pieceWaiting {
 			continue
@@ -106,6 +111,7 @@ func (d *driver) runningPiece(key string, role claim.Role) *piece {
 // before it. Its acts at its very start are queued at once.
 func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 	p.state, p.at, p.turns = pieceRunning, at, map[claim.Role]bool{}
+	d.noteGitPieceStart(p, at)
 	if seeded {
 		d.sizePiece(p, at, p.m, true)
 		return
@@ -128,6 +134,7 @@ func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 // start of the visit it retries at the piece's recorded offset in that visit.
 func (d *driver) openPieceFrom(p *piece, from time.Time) {
 	p.state, p.at, p.turns = pieceRunning, from, map[claim.Role]bool{}
+	d.noteGitPieceStart(p, from)
 	for _, a := range p.acts {
 		if a.offset <= 0 {
 			d.queueAct(p, a, from)
@@ -263,6 +270,7 @@ func (d *driver) resumePiece(p *piece) error {
 	}
 	now := d.clock.Instant()
 	shift := now.Sub(p.pausedAt)
+	p.pausedFor += shift
 	p.state = pieceRunning
 	held := p.pending
 	p.pending = nil
@@ -443,6 +451,9 @@ func (d *driver) enterMove(p *piece) error {
 		return nil
 	}
 	if d.keepsOpenLoop(p) {
+		if d.cfg.Branch.asksGit() {
+			d.readGit(p, p.move().At, false)
+		}
 		return d.keepConflict(p)
 	}
 	if d.cfg.Branch.recordedConflicts() {
@@ -540,6 +551,7 @@ func (d *driver) enterRecorded(p *piece) error {
 				MergeSHA: fmt.Sprintf("replay-merge-%s-%d", p.issue, pr.Number), HeadSHA: pr.HeadSHA}); err != nil {
 				return err
 			}
+			d.landGitMerge(p.issue)
 			return d.merged(p.issue, move, to, refuse)
 		case workflow.TriggerBackward:
 			if move.Drop != "" {

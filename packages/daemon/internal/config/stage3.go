@@ -191,7 +191,6 @@ const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_
 
 var (
 	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
-	roleNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.

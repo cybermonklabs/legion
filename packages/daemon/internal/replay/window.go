@@ -243,13 +243,17 @@ type Part struct {
 // events, whose lines name no event. PR is then 0, but in such an older window, where it is the
 // pull request the first line of the commit's message names by GitHub's squash suffix ` (#<n>)`,
 // 0 for none. The draw reads PR to leave a stretch's own merge out of the stretch's count
-// (Stretch).
+// (Stretch). Committed is the commit's committer's time, which collect-merges writes on each line
+// beside At, so a merge event that comes after its commit's committer's time, as a merge queue's
+// does, shows both; a line of a window collected before collect-merges wrote it names none, and
+// reads with the zero time. The replay reads At alone, never Committed.
 type Merge struct {
-	SHA    string    `json:"sha"`
-	At     time.Time `json:"at"`
-	Branch string    `json:"branch"`
-	PR     int       `json:"pr,omitempty"`
-	Event  bool      `json:"event,omitempty"`
+	SHA       string    `json:"sha"`
+	At        time.Time `json:"at"`
+	Committed time.Time `json:"committed,omitzero"`
+	Branch    string    `json:"branch"`
+	PR        int       `json:"pr,omitempty"`
+	Event     bool      `json:"event,omitempty"`
 }
 
 // Duration is a time.Duration written in a window as Go's duration text ("90m", "1h30m0s"), so a

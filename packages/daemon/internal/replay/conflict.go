@@ -101,6 +101,7 @@ func startsStretch(from, to phase.Phase) bool {
 // them up to each name no pull request, and the moment of each pull request's merge.
 type baseMerges struct {
 	repos map[string]*repoMerges
+	git   map[string]*gitRepository
 }
 
 // repoMerges is one repository's commits on its base branch: at is their moments in order, unnamed
@@ -114,7 +115,7 @@ type repoMerges struct {
 
 // newBaseMerges indexes w's merges on the base branch t reads for each repository.
 func newBaseMerges(w Window, t Trace) baseMerges {
-	m := baseMerges{repos: make(map[string]*repoMerges, len(w.Merges))}
+	m := baseMerges{repos: make(map[string]*repoMerges, len(w.Merges)), git: newGitRepositories(w, t)}
 	for repo, commits := range w.Merges {
 		base := cmp.Or(t.Branches[repo], defaultBranch)
 		var onBase []Merge
@@ -247,19 +248,64 @@ func windowConflicts(t Trace, merges baseMerges) ConflictModel {
 		reads = append(reads, bootRead(boot))
 	}
 	slices.SortFunc(reads, time.Time.Compare)
+	var noProfile, noTouch, noTouchConflict, pathsUnknown int
+	legacy := map[string]bool{}
+	for _, iss := range t.Issues {
+		if iss.Project == t.Project && iss.Repo != "" && merges.git[strings.ToLower(iss.Repo)] == nil {
+			legacy[iss.Repo] = true
+		}
+	}
+	var profiled []Stretch
 	for i := range inside {
 		s := &inside[i]
+		iss := t.Issues[s.Issue]
 		if s.Phase == phase.Merging {
 			s.Part = partAt(t.Parts, s.End)
 		}
 		if b := sort.Search(len(reads), func(b int) bool { return reads[b].After(s.Start) }); b < len(reads) && !reads[b].After(s.End) {
-			iss := t.Issues[s.Issue]
 			s.Boot = true
 			s.Merges, s.OwnMergeUnknown = merges.between(iss.Repo, ownPullRequest(iss), s.Start, reads[b])
 		}
+		r := merges.git[strings.ToLower(iss.Repo)]
+		if r == nil {
+			continue
+		}
+		count, profile, unknown := r.recordedM(recordedPR(iss), s.End)
+		switch {
+		case !profile:
+			noProfile++
+		case count == 0:
+			noTouch++
+			if s.Conflict {
+				noTouchConflict++
+			}
+		default:
+			if unknown {
+				pathsUnknown++
+			}
+			p := *s
+			p.Merges, p.OwnMergeUnknown = count, false
+			profiled = append(profiled, p)
+		}
 	}
-	m := FitConflicts(inside)
-	m.From, m.To, m.Parts = t.From, t.To, t.Parts
+	fit := func(stretches []Stretch) ConflictModel {
+		m := FitConflicts(stretches)
+		m.From, m.To, m.Parts = t.From, t.To, t.Parts
+		return m
+	}
+	if len(merges.git) == 0 {
+		m := fit(inside)
+		m.NoGitRepositories = slices.Sorted(maps.Keys(legacy))
+		return m
+	}
+	m := fit(profiled)
+	m.GitRepositories = slices.Sorted(maps.Keys(merges.git))
+	m.NoProfileStretches, m.NoTouchStretches, m.NoTouchConflicts, m.PathsUnknown = noProfile, noTouch, noTouchConflict, pathsUnknown
+	if len(legacy) > 0 {
+		fallback := fit(inside)
+		fallback.NoGitRepositories = slices.Sorted(maps.Keys(legacy))
+		m.Legacy = &fallback
+	}
 	return m
 }
 
@@ -431,14 +477,20 @@ type ConflictModel struct {
 	MergingParts map[int]PartFit `json:"mergingParts,omitempty"`
 	// Level is the level of the coefficients' intervals.
 	Level float64 `json:"level"`
-	// TermZero says the merges term is set to zero (the branch's Merges zero), the base and the
-	// phase, part and boot terms kept.
-	TermZero bool `json:"termZero"`
 	// OwnMergeUnknown is how many of the stretches the model was fitted on, and DrawnOwnMergeUnknown
 	// how many of the stretches a replay drew by it, counted a commit in M that may be the issue's
 	// own merge (Stretch.OwnMergeUnknown): the issue's own pull request or the commit's unknown.
-	OwnMergeUnknown      int `json:"ownMergeUnknown"`
-	DrawnOwnMergeUnknown int `json:"drawnOwnMergeUnknown"`
+	OwnMergeUnknown      int            `json:"ownMergeUnknown"`
+	DrawnOwnMergeUnknown int            `json:"drawnOwnMergeUnknown"`
+	NoGitRepositories    []string       `json:"noGitRepositories,omitempty"`
+	NoProfileStretches   int            `json:"noProfileStretches"`
+	NoTouchStretches     int            `json:"noTouchStretches"`
+	NoTouchConflicts     int            `json:"noTouchConflicts"`
+	NoProfileDraws       int            `json:"noProfileDraws"`
+	GitRepositories      []string       `json:"gitRepositories,omitempty"`
+	Legacy               *ConflictModel `json:"legacy,omitempty"`
+	PathsUnknown         int            `json:"pathsUnknown"`
+	DrawnPathsUnknown    int            `json:"drawnPathsUnknown"`
 }
 
 // fitted says whether the model's coefficients were fitted: some stretch conflicted and some did
@@ -474,39 +526,49 @@ func (m ConflictModel) chanceAt(in phase.Phase, merges int, at time.Time, boot b
 	if boot && fit.BootTerm != nil {
 		eta += fit.BootTerm.Estimate
 	}
-	if !m.TermZero {
-		eta += m.Term.Estimate * math.Log2(1+float64(merges))
-	}
+	eta += m.Term.Estimate * math.Log2(1+float64(merges))
 	return logistic(eta)
-}
-
-// WithoutTerm is m with its merges term set to zero (Branch.Merges zero, assumption 3): every
-// stretch draws at the chance its phase gives, however many merges its base took.
-func (m ConflictModel) WithoutTerm() ConflictModel {
-	m.TermZero = true
-	return m
 }
 
 // String is the model as a run prints it: the span and the stretches and conflicts it was fitted
 // on, each coefficient with its interval and the stretches of each phase and part (terms), and the
 // stretches whose M may hold their own merge.
+func (m ConflictModel) canDrawConflict() bool {
+	return m.Conflicts > 0 || m.Legacy != nil && m.Legacy.Conflicts > 0
+}
+
 func (m ConflictModel) String() string {
+	text := m.fitText()
+	if m.Legacy != nil {
+		text += ". Legacy fit: " + m.Legacy.fitText()
+	}
+	return text
+}
+
+func (m ConflictModel) fitText() string {
 	span := fmt.Sprintf("began and ended inside the window from %s to %s", stamp(m.From), stamp(m.To))
 	unknown := fmt.Sprintf("; %d of the window's stretches and %d of the replay's counted a merge that may be their own", m.OwnMergeUnknown,
 		m.DrawnOwnMergeUnknown)
+	if len(m.NoGitRepositories) > 0 {
+		unknown += "; no git input, counting every merge inside the stretch in " + strings.Join(m.NoGitRepositories, ", ")
+	}
+	if len(m.GitRepositories) > 0 {
+		unknown += "; touching merges in " + strings.Join(m.GitRepositories, ", ")
+		unknown += fmt.Sprintf("; %d fitted stretches and %d draws held a commit without a path list", m.PathsUnknown, m.DrawnPathsUnknown)
+	}
+	if m.NoProfileStretches+m.NoTouchStretches+m.NoProfileDraws > 0 {
+		unknown += fmt.Sprintf("; fit excludes %d stretches without a profile and %d without touching merges (%d recorded conflicts); %d draws without a profile",
+			m.NoProfileStretches, m.NoTouchStretches, m.NoTouchConflicts, m.NoProfileDraws)
+	}
 	switch {
 	case m.Stretches == 0:
 		return fmt.Sprintf("no stretch %s, so no conflict is drawn", span) + unknown
 	case m.Conflicts == 0:
 		return fmt.Sprintf("none of the %d stretches that %s conflicted, so every stretch draws a chance of 0", m.Stretches, span) + unknown
 	case !m.fitted():
-		return fmt.Sprintf("all of the %d stretches that %s conflicted, so every stretch draws a chance of 1", m.Stretches, span) + unknown
+		return fmt.Sprintf("all of the %d stretches that %s conflicted, so each eligible stretch draws a chance of 1", m.Stretches, span) + unknown
 	}
-	text := fmt.Sprintf("fitted on the %d stretches that %s, %d of them conflicts: %s", m.Stretches, span, m.Conflicts, m.terms())
-	if m.TermZero {
-		text += "; the branch sets the merges term to 0 and keeps the phase, part and boot terms"
-	}
-	return text + unknown
+	return fmt.Sprintf("fitted on the %d stretches that %s, %d of them conflicts: %s", m.Stretches, span, m.Conflicts, m.terms()) + unknown
 }
 
 // terms is the fitted coefficients as a run and the comparison print them, each with its interval
@@ -975,6 +1037,21 @@ func recordedLoops(s script) []conflictLoop {
 // the stretch not entered. A conflict at a stretch the record ended otherwise is counted (addsLoop).
 func (d *driver) drawConflict(p *piece) (bool, error) {
 	stretch := d.liveStretchOf(p.issue)
+	if d.cfg.Branch.asksGit() {
+		switch d.readGit(p, p.move().At, false).kind {
+		case gitClean:
+			stretch.won = ""
+			return false, nil
+		case gitConflict:
+			stretch.won = ""
+			d.nextDraw(p) // key for the loop's work; the verdict did not draw
+			acted, err := d.conflictFor(p, p.move().conflict(), false, loopAnswered)
+			if acted {
+				d.addsLoop(p)
+			}
+			return acted, err
+		}
+	}
 	won := stretch.won == p.phase
 	stretch.won = ""
 	if !won {
@@ -985,7 +1062,7 @@ func (d *driver) drawConflict(p *piece) (bool, error) {
 			return false, nil
 		}
 	}
-	conflicted, err := d.conflictFor(p, false, false)
+	conflicted, err := d.conflictFor(p, false, false, loopDrawn)
 	if conflicted {
 		d.addsLoop(p)
 	}
@@ -1105,6 +1182,8 @@ const conflictDrawnLine = "replay: a stretch's conflict drawn"
 // it. won is the fitted phase of a conflict a boot's read drew while the issue stood in another
 // phase of the stretch: the conflict enters at the stretch's end in that phase, with no draw of its
 // own, and the stretch's end in another phase or its break first drops it.
+// A kept open-loop conflict enters at its end whatever the stretch drew before: an earlier
+// clean draw does not stop the later recorded move, which is not a second draw.
 type liveStretch struct {
 	id   int
 	drew bool
@@ -1176,18 +1255,41 @@ func (d *driver) nextDraw(p *piece) stretchDraw {
 // for a stretch that ends in merging, and the boot term of that phase for a boot's draw. A draw
 // reads no boot after at. A stretch whose M may hold its own merge is counted
 // (ConflictModel.DrawnOwnMergeUnknown). It answers the draw, which its caller keeps (recordDraw).
-func (d *driver) drawAt(p *piece, start, at time.Time, boot bool) conflictDraw {
+func (d *driver) drawAt(p *piece, start, at time.Time, boot bool, running ...*piece) conflictDraw {
 	repo, own := "", 0
 	if iss, known := d.trace.Issues[p.issue]; known {
 		repo, own = iss.Repo, ownPullRequest(iss)
 	}
-	merges, unknown := d.merges.between(repo, own, start, at)
+	merges, unknown := 0, false
+	r := d.merges.git[strings.ToLower(repo)]
+	if r != nil {
+		reading, rec := p, p.end
+		if boot && len(running) != 0 {
+			reading = running[0]
+			rec = reading.recordedAt(at, d.cfg.Slowdown)
+		} else if move := p.move(); move != nil {
+			rec = move.At
+		}
+		merges = d.profileM(reading, r, repo, recordedPR(d.trace.Issues[p.issue]), start, at, rec)
+	} else {
+		merges, unknown = d.merges.between(repo, own, start, at)
+	}
+	model := &d.conflicts
+	if r == nil && model.Legacy != nil {
+		model = model.Legacy
+	}
 	if unknown {
-		d.conflicts.DrawnOwnMergeUnknown++
+		model.DrawnOwnMergeUnknown++
 	}
 	place := d.nextDraw(p)
 	d.seedDraw(place, conflictStream)
-	u, chance := d.draws.Float64(), d.conflicts.chanceAt(p.phase, merges, at, boot)
+	u := d.draws.Float64()
+	var chance float64
+	if r == nil {
+		chance = model.chanceAt(p.phase, merges, at, boot)
+	} else {
+		chance = model.profileChance(p.phase, merges, at, boot)
+	}
 	return conflictDraw{at: place, start: start, drawn: at, merges: merges, boot: boot, u: u, chance: chance, conflicted: u < chance}
 }
 
@@ -1217,20 +1319,45 @@ func (d *driver) bootConflicts() error {
 				continue
 			}
 			q := d.stretchEndOf(p)
-			if q == nil || d.keepsOpenLoop(q) || d.drewStretch(key) {
+			git := d.cfg.Branch.asksGit()
+			if p.ends == endMergeForward || q != nil && d.keepsOpenLoop(q) || !git && (q == nil || d.drewStretch(key)) {
 				continue
 			}
-			start := d.stretchStart(q)
-			if !start.Before(now) || q == p && !p.at.Add(p.length).After(now) {
+			start := d.stretchStart(p)
+			if !start.Before(now) || !p.end.IsZero() && !p.at.Add(p.length+p.pausedFor).After(now) {
 				continue
 			}
-			if draw := d.recordDraw(d.liveStretchOf(key), d.drawAt(q, start, now, true), p.phase); draw.outcome == drawnConflict {
-				if err := d.bootConflict(p, q); err != nil {
-					return err
+			if git {
+				switch d.readGit(p, p.recordedAt(now, d.cfg.Slowdown), true).kind {
+				case gitClean:
+					break
+				case gitConflict:
+					d.liveStretchOf(key).won = ""
+					d.nextDraw(p)
+					if err := d.bootConflict(p, q, loopAnswered); err != nil {
+						return err
+					}
+				default:
+					if q != nil && !d.drewStretch(key) {
+						if err := d.drawAtBoot(p, q, start, now); err != nil {
+							return err
+						}
+					}
 				}
+				break
+			}
+			if err := d.drawAtBoot(p, q, start, now); err != nil {
+				return err
 			}
 			break
 		}
+	}
+	return nil
+}
+
+func (d *driver) drawAtBoot(p, q *piece, start, now time.Time) error {
+	if draw := d.recordDraw(d.liveStretchOf(p.issue), d.drawAt(q, start, now, true, p), p.phase); draw.outcome == drawnConflict {
+		return d.bootConflict(p, q, loopDrawn)
 	}
 	return nil
 }
@@ -1270,12 +1397,12 @@ func (d *driver) stretchEndOf(p *piece) *piece {
 // reaches q; where it keeps the phase, the rest of p's work goes on after the merge forward, or
 // with the conflict waiting for merging; and where it does not act on the conflict, p goes on. A
 // conflict at a stretch the record ended otherwise is counted (addsLoop).
-func (d *driver) bootConflict(p, q *piece) error {
-	conflicted, err := d.conflictFor(p, false, true)
+func (d *driver) bootConflict(p, q *piece, source string) error {
+	conflicted, err := d.conflictFor(p, false, true, source)
 	if err != nil {
 		return err
 	}
-	if conflicted {
+	if conflicted && q != nil {
 		d.addsLoop(q)
 	}
 	return nil
@@ -1372,8 +1499,12 @@ func (d *driver) keepConflict(p *piece) error {
 // while p still runs (bootConflict): where the issue moves back, the rest of p is cut (cutPiece);
 // where a role merges the base forward, p pauses and goes on once the merge forward lands
 // (openMergeForward); and where the conflict waits for merging, p goes on, its stretch drawn.
-func (d *driver) conflictFor(p *piece, kept, cut bool) (bool, error) {
+func (d *driver) conflictFor(p *piece, kept, cut bool, attribution ...string) (bool, error) {
 	key := p.issue
+	source := ""
+	if len(attribution) != 0 {
+		source = attribution[0]
+	}
 	delete(d.waiting, key)
 	pr, err := d.ensurePullRequest(key)
 	if err != nil || pr == nil {
@@ -1417,6 +1548,7 @@ func (d *driver) conflictFor(p *piece, kept, cut bool) (bool, error) {
 		if !kept {
 			d.drawLoop(p)
 		}
+		d.beginGitLoop(key, p.phase, false, kept, source)
 		return true, nil
 	case after.MergeForward != nil && after.MergeForward.Head == pr.HeadSHA && after.MergeForward.Landed == "":
 		asked := after.MergeForward.Asked()
@@ -1430,17 +1562,17 @@ func (d *driver) conflictFor(p *piece, kept, cut bool) (bool, error) {
 				return false, err
 			}
 		}
-		d.openMergeForward(p, kept, asked, cut)
+		d.openMergeForward(p, kept, asked, cut, source)
 		return true, nil
 	case record.StandsIn(*issue, phase.Accepting, phase.Retro) && classify.ConflictRound(*after) && d.rule.ConflictWaitsForMerging():
 		d.used[3] = true
 		d.counters.ConflictsToMerger++
 		d.used[assumeConflictToMerger] = true
 		if cut {
-			d.waiting[p.issue] = waitingConflict{drew: p, round: d.mergeForwardRound(p, kept)}
+			d.waiting[p.issue] = waitingConflict{drew: p, round: d.mergeForwardRound(p, kept), kept: kept, source: source}
 			return true, nil
 		}
-		return true, d.waitForMerging(p, kept)
+		return true, d.waitForMerging(p, kept, source)
 	}
 	trigger, to := workflow.TriggerConflict, p.phase
 	switch d.rule.Conflict {
@@ -1582,9 +1714,10 @@ func (d *driver) mergeForwardPiece(drew *piece, visit *Visit, at phase.Phase, ro
 // long as the conflict's round (mergeForwardRound). It follows p in the issue's work, and opens
 // now. With cut, p stands paused by a boot's conflict (bootConflict), and the segment's end
 // resumes it (piece.resumes).
-func (d *driver) openMergeForward(p *piece, kept bool, role claim.Role, cut bool) {
+func (d *driver) openMergeForward(p *piece, kept bool, role claim.Role, cut bool, source string) {
 	forward := d.mergeForwardPiece(p, p.visit, p.phase, role, d.mergeForwardRound(p, kept))
 	forward.resumes = cut
+	forward.gitLoop = d.beginGitLoop(p.issue, p.phase, true, kept, source)
 	d.replacePieces(p.issue, p.index+1, p.index+1, []*piece{forward})
 	d.openPiece(forward, d.clock.Instant(), false)
 }
@@ -1597,8 +1730,10 @@ func (d *driver) openMergeForward(p *piece, kept bool, role claim.Role, cut bool
 // implementing round the merger's merge forward lasts as, drawn when the conflict came
 // (mergeForwardRound).
 type waitingConflict struct {
-	drew  *piece
-	round *piece
+	drew   *piece
+	round  *piece
+	kept   bool
+	source string
 }
 
 // waitForMerging plays a conflict made at the end of p's stretch in accepting or retro, which the
@@ -1608,8 +1743,8 @@ type waitingConflict struct {
 // conflict waits for the issue's move into merging (mergerMergesForward), unless a move back to a
 // phase before accepting ends the stretch first (waitMoves); the round of the merger's merge
 // forward is drawn now, when the conflict comes, as an immediate merge forward's is.
-func (d *driver) waitForMerging(p *piece, kept bool) error {
-	d.waiting[p.issue] = waitingConflict{drew: p, round: d.mergeForwardRound(p, kept)}
+func (d *driver) waitForMerging(p *piece, kept bool, source string) error {
+	d.waiting[p.issue] = waitingConflict{drew: p, round: d.mergeForwardRound(p, kept), kept: kept, source: source}
 	if p.move().Source.Way == MoveDraw {
 		return d.stretchEnds(p)
 	}
@@ -1639,9 +1774,11 @@ func (d *driver) waitMoves(key string, to phase.Phase) error {
 // mergerMergesForward plays the merger's merge forward of key's conflict that waited for merging
 // (waitingConflict), where the engine has just asked the merger for it on the issue's move into
 // merging (workflow's mergeForwardOnEntry): a merge-forward segment of the merger's in merging, as
-// long as the conflict's round, put before the issue's next work in merging, so the merger's start
-// the move wrote opens it (startPiece). It stands in no recorded visit. Its end lands the merge
-// forward, and that next work opens then (mergedForward).
+// long as the conflict's round, put before the issue's next work in merging (waitsToOpen), which
+// waits for it. The merger's start the move wrote opens the merge forward (startPiece), and that
+// work opens when it lands (mergedForward), whether it waits for the merger's start or, as a
+// workerless visit's does, for the move into merging, which openOnPhase leaves be while the
+// conflict waits. The merge forward stands in no recorded visit.
 func (d *driver) mergerMergesForward(key string) {
 	waiting, waits := d.waiting[key]
 	if !waits {
@@ -1650,11 +1787,13 @@ func (d *driver) mergerMergesForward(key string) {
 	delete(d.waiting, key)
 	d.used[23] = true
 	pieces := d.script.pieces[key]
-	at := slices.IndexFunc(pieces, func(q *piece) bool { return q.waitsForStart(claim.RoleMerger, phase.Merging) })
+	at := slices.IndexFunc(pieces, func(q *piece) bool { return q.waitsToOpen(claim.RoleMerger, phase.Merging) })
 	if at < 0 {
 		at = len(pieces)
 	}
-	d.replacePieces(key, at, at, []*piece{d.mergeForwardPiece(waiting.drew, nil, phase.Merging, claim.RoleMerger, waiting.round)})
+	forward := d.mergeForwardPiece(waiting.drew, nil, phase.Merging, claim.RoleMerger, waiting.round)
+	forward.gitLoop = d.beginGitLoop(key, phase.Merging, true, waiting.kept, waiting.source)
+	d.replacePieces(key, at, at, []*piece{forward})
 }
 
 // mergedForward ends a merge-forward segment: the merge of the base by the role asked lands on the
@@ -1666,8 +1805,9 @@ func (d *driver) mergerMergesForward(key string) {
 // conflict loop where the record ended it in a conflict (stretchEnds), and otherwise by its recorded
 // move. The merger's merge forward of a conflict that waited for merging (mergerMergesForward), in
 // another phase than the conflict's, comes after that stretch already went on: the issue's next
-// work in merging, which the merger's start opened this segment in its place, opens now, in the
-// same live stretch, and is not drawn a second time either.
+// work in merging, which the merger's start or, for a workerless visit, the move into merging
+// would have opened, opens now in this segment's place, in the same live stretch, and is not drawn
+// a second time either.
 func (d *driver) mergedForward(forward *piece) error {
 	pr, err := d.pullRequestOf(forward.issue)
 	if err != nil {
@@ -1679,6 +1819,10 @@ func (d *driver) mergedForward(forward *piece) error {
 			return err
 		}
 	}
+	d.endGitLoop(forward.gitLoop)
+	if d.git.forwardAt != nil {
+		d.git.forwardAt[forward.issue] = d.clock.Instant()
+	}
 	drew := forward.drew
 	if forward.resumes {
 		return d.resumePiece(drew)
@@ -1687,7 +1831,7 @@ func (d *driver) mergedForward(forward *piece) error {
 		pieces := d.script.pieces[forward.issue]
 		if i := forward.index + 1; i < len(pieces) {
 			next := pieces[i]
-			if next.waitsForStart(forward.role, forward.phase) {
+			if next.waitsToOpen(forward.role, forward.phase) {
 				d.openPiece(next, d.clock.Instant(), false)
 			}
 		}
@@ -1715,7 +1859,7 @@ func (d *driver) mergedForward(forward *piece) error {
 func (d *driver) drawLoop(p *piece) {
 	pieces := d.script.pieces[p.issue]
 	own, back := []*piece(nil), p.index+1
-	recordedConflict := p.move().Source.Way == MoveDraw
+	recordedConflict := p.move() != nil && p.move().Source.Way == MoveDraw
 	if recordedConflict {
 		own, back = loopAfter(pieces, p)
 	}
@@ -1838,8 +1982,8 @@ func (d *driver) replacePieces(key string, from, to int, work []*piece) {
 	d.script.pieces[key] = replaced
 }
 
-// waitsForStart says whether q is the next work a start of role's worker in ph opens: a piece of
-// role's in ph that waits for that start (opensOnStart).
-func (q *piece) waitsForStart(role claim.Role, ph phase.Phase) bool {
-	return q.state == pieceWaiting && q.role == role && q.phase == ph && q.opens == opensOnStart
+// waitsToOpen says whether q is the next work of role's worker in ph: a piece of role's in ph that
+// waits for the start of its worker or for the move into ph (opensOnStart, opensOnPhase).
+func (q *piece) waitsToOpen(role claim.Role, ph phase.Phase) bool {
+	return q.state == pieceWaiting && q.role == role && q.phase == ph && (q.opens == opensOnStart || q.opens == opensOnPhase)
 }

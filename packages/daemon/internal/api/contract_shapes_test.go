@@ -1612,7 +1612,9 @@ const censusAnswer AnswerID = "census-answer"
 // from its arrival up, one noBody for an answer at every contract, or every route of the frozen
 // rows and the entries' rows at this daemon's own contract, would fail these builds and could
 // pass only by editing a frozen row. Each case first holds the composition to the change, so a
-// fixture the composition reads as no change proves nothing.
+// fixture the composition reads as no change proves nothing. Each pair comes after this build's
+// own entries (ownThenPairFixtures), since the census reads this daemon's request types as they
+// are, so the pair's records are the last two the build composes.
 func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
@@ -1626,10 +1628,11 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 		return contract.Records[at], true
 	}
 	t.Run("an entry takes out a value an earlier one added and retires a route", func(t *testing.T) {
-		installContractRegistry(t, testRegistry(t, stampOf(censusAddTestContract, censusRemoveTestContract),
+		dir := ownThenPairFixtures(t,
 			contractEntry{id: censusAddTestContract, slug: "census-value-add"},
-			contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}}))
-		composed := buildRecords(t, pairEntryFixtures)
+			contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}})
+		built := buildRecords(t, dir)
+		composed := built[len(built)-2:]
 		for i, holds := range []bool{true, false} {
 			record, _ := recordOf(t, composed[i], AnswerIssueRecord)
 			if got := slices.Contains(record.Domains["phase"], "censusRevert"); got != holds {
@@ -1640,7 +1643,7 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 				t.Fatalf("the record of contract %d holds %s: %t, want %t", composed[i].Contract, censusRetiredRoute, routed, holds)
 			}
 		}
-		for _, problem := range slices.Concat(recordSetProblems(t, pairEntryFixtures), recordedRequestProblems(t, pairEntryFixtures)) {
+		for _, problem := range slices.Concat(recordSetProblems(t, dir), recordedRequestProblems(t, dir)) {
 			t.Error(problem)
 		}
 		if _, wanted := pluginRequests()[censusRetiredRoute]; wanted {
@@ -1648,10 +1651,11 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 		}
 	})
 	t.Run("an entry removes an answer an earlier one added and changes an answer's noBody back", func(t *testing.T) {
-		installContractRegistry(t, testRegistry(t, stampOf(censusAnswerAddTestContract, censusAnswerRemoveTestContract),
+		dir := ownThenPairFixtures(t,
 			contractEntry{id: censusAnswerAddTestContract, slug: "census-answer-add"},
-			contractEntry{id: censusAnswerRemoveTestContract, slug: "census-answer-remove"}))
-		composed := buildRecords(t, pairEntryFixtures)
+			contractEntry{id: censusAnswerRemoveTestContract, slug: "census-answer-remove"})
+		built := buildRecords(t, dir)
+		composed := built[len(built)-2:]
 		for i, holds := range []bool{true, false} {
 			if _, got := recordOf(t, composed[i], censusAnswer); got != holds {
 				t.Fatalf("the records of contract %d hold the %s answer: %t, want %t", composed[i].Contract, censusAnswer, got, holds)
@@ -1660,10 +1664,38 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 				t.Fatalf("the %s answer's record at contract %d has noBody %t, want %t", AnswerNoContent, composed[i].Contract, record.NoBody, !holds)
 			}
 		}
-		for _, problem := range slices.Concat(recordSetProblems(t, pairEntryFixtures), recordedRequestProblems(t, pairEntryFixtures)) {
+		for _, problem := range slices.Concat(recordSetProblems(t, dir), recordedRequestProblems(t, dir)) {
 			t.Error(problem)
 		}
 	})
+}
+
+// ownThenPairFixtures installs a registry of this build's own entries, in this build's order, then
+// first and revert, and returns a directory that holds the fixtures of all of them: the package's
+// (packageEntryFixtures) and the pair's (pairEntryFixtures). The census reads this daemon's
+// request types and answers as they are, and they carry every change this build's entries make. A
+// registry of the pair alone would leave out a field an entry of this tree adds, and the census
+// would name it as a field the record of this daemon's own contract does not hold. os.CopyFS
+// refuses a file name the two directories share (fs.ErrExist), so no fixture overwrites another.
+func ownThenPairFixtures(t *testing.T, first, revert contractEntry) string {
+	t.Helper()
+	own := NumberedEntries()
+	ids := make([]int, 0, len(own)+2)
+	for _, entry := range own {
+		ids = append(ids, entry.ID)
+	}
+	ids = append(ids, first.id, revert.id)
+	installContractRegistry(t, testRegistry(t, stampOf(ids...), slices.Concat(registeredEntries, []contractEntry{first, revert})...))
+	dir := t.TempDir()
+	for _, from := range []string{packageEntryFixtures, pairEntryFixtures} {
+		if _, err := os.Stat(from); os.IsNotExist(err) {
+			continue
+		}
+		if err := os.CopyFS(dir, os.DirFS(from)); err != nil {
+			t.Fatalf("copy the entry fixtures of %s: %v", from, err)
+		}
+	}
+	return dir
 }
 
 // recordSetProblems is every problem of the record set of this build, its entry fixtures read from

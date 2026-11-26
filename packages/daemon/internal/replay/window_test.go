@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,5 +64,52 @@ func TestAWindowNamesItsMissingAncestorsOnlyWhereItHasThem(t *testing.T) {
 		if names := bytes.Contains(raw, []byte(`"missingAncestors"`)); !slices.Equal(read.MissingAncestors, missing) || names != (missing != nil) {
 			t.Errorf("a window written with missing ancestors %v reads with %v (window.json names the member: %t)", missing, read.MissingAncestors, names)
 		}
+	}
+}
+
+// Merge.Committed is tagged omitzero, so every merges file in testdata/windows — both the older
+// windows without committed and the windows that hold it — reads through ReadWindow and writes back
+// through Window.Write byte for byte, with the same sha256 in window.json.
+func TestReadWindowAndWriteKeepEveryMergesFileByteForByte(t *testing.T) {
+	t.Parallel()
+	checked := 0
+	for _, name := range allFixtureWindowNames(t) {
+		dir := filepath.Join(fixtureWindowsDir, name)
+		w, err := ReadWindow(dir)
+		if err != nil {
+			t.Fatalf("ReadWindow(%s): %v", name, err)
+		}
+		if len(w.Merges) == 0 {
+			continue
+		}
+		out := filepath.Join(t.TempDir(), name)
+		if err := w.Write(out); err != nil {
+			t.Fatalf("Write(%s): %v", name, err)
+		}
+		wrote, err := ReadWindow(out)
+		if err != nil {
+			t.Fatalf("ReadWindow of written %s: %v", name, err)
+		}
+		for file, sum := range w.Files {
+			if !strings.HasPrefix(file, mergesDir+"/") {
+				continue
+			}
+			checked++
+			before, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(file)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(filepath.Join(out, filepath.FromSlash(file)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) || wrote.Files[file] != sum {
+				t.Errorf("window %s %s changed on round trip (sha %s → %s):\nbefore:\n%s\nafter:\n%s",
+					name, file, sum, wrote.Files[file], before, after)
+			}
+		}
+	}
+	if checked < 2 {
+		t.Fatalf("checked %d merges files, want both older windows and the new ones", checked)
 	}
 }

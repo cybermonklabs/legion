@@ -8,16 +8,24 @@ body: |-
     daemon's log lines and from Dispatch, and its `--after` adds a run-out past the window's end, so
     a replay runs the work recorded after the end while it measures the window alone.
     `collect-merges` adds each base branch's first-parent history from GitHub. It uses the merge
-    event's time when GitHub names the exact commit and base branch. It marks committer-time
-    estimates separately. Both collectors send only GET requests. `neutralize` renames the
-    private names of a window for test data. `run` replays a window, and `scorecard` reads the
-    same measures from the record of a window.
+    event's time when GitHub names the exact commit and base branch, marks committer-time
+    estimates separately, and writes each commit's committer's time beside it as `committed`.
+    `collect-git` adds, for each pull request of the window, its heads, the paths each head changes
+    and git's own verdict of merging each head with each later commit of its base that changes one
+    of those paths, and names each input it could not get with its reason. The three GitHub
+    collectors send only GET requests, wait out GitHub's rate limit, leave the daemon and the other
+    roles a reserve of the quota they share (`--github-reserve`, 3,000 requests by default) and send
+    at most `--github-rate` requests a second (0.6 by default). `neutralize` renames the private
+    names of a window for test data. `run` replays a window, and `scorecard` reads the same
+    measures from the record of a window.
     `run` writes a line of its own to the run's log for each conflict draw, `replay: a stretch's
     conflict drawn`, with the issue, its stretch, the running and the fitted phase, the chance, the
     number drawn and the outcome; no daemon writes that line, and no measure reads it.
-    `validate` checks a replay against the record (`--main-only` runs the main branch alone, with
-    its seeds), `forecast` checks it against a recorded change of the rule, and `compare` compares
-    the rules on two windows, gives the reason for each rule, and writes each issue's first slot
+    The main branch keeps recorded conflicts. The git branch uses stored verdicts and draws
+    unanswered reads. The drawn branch draws from the generator fitted on touching merges.
+    `validate` checks all three conflict branches and reports Git read counts and conflict hours.
+    `--main-only` runs just the main branch at slowdown 1. `forecast` checks the tool against
+    a recorded change of rule. `compare` compares rules on two windows and writes each issue's first slot
     and done time under each rule beside the record. `rules` prints the twenty rules that a
     replay can run, each with its commit: the daemon's own, the rules of three recorded windows
     (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
@@ -51,10 +59,14 @@ body: |-
     out or takes back a slot. The line gives the slots in use, the cap, each slot given out or taken
     back with its issue and reason, and each issue of the line that the pass went past, with its
     reason. It also writes one `admission: slots reading` line at each controller tick, with that
-    tick's slots reading, and one `workflow: a phase is held` line at each move of a phase into held
-    and at each escalation of a hold, with the issue, its tree, the phase, the role and the reason.
-    The daemon's slot rule does not change. Its admission pass can read signals from a snapshot that
-    its caller supplies, and the daemon supplies none, so it admits as before.
+    tick's slots reading, one `workflow: a phase is held` line at each move of a phase into held
+    and at each escalation of a hold, with the issue, its tree, the phase, the role and the reason,
+    and one `workflow: GitHub's merge state of a pull request was read` line at each read of a
+    pull request's merge state that the record takes, a clean read included, with the pull request,
+    the head GitHub answered for, the base and the base commit GitHub names.
+    The daemon's slot rule does not change. Its admission pass can read signals through the pass's
+    own transaction from a reader that its caller supplies, and the daemon supplies none, so it
+    admits as before.
 
     The migration `20261121103000_slots_reading_times` adds the tables `issue_holds` and
     `slot_waits` and the column `claims.stopped_at`. Before a rollback below this release, stop

@@ -72,12 +72,13 @@ func stubbed(t *testing.T, n int, at string, pr int, parents ...int) stubCommit 
 
 // merge is c as collect-merges writes it, on main: where GitHub records c's pull request merged as
 // c into main (pull), at that merge's time, with the pull request, as GitHub's merge event;
-// otherwise at its committer's time, with no pull request.
+// otherwise at its committer's time, with no pull request; and either way with its committer's
+// time as Committed.
 func (c stubCommit) merge() Merge {
 	if c.pr != 0 && cmp.Or(c.mergedAs, c.sha) == c.sha && cmp.Or(c.into, "main") == "main" {
-		return Merge{SHA: c.sha, At: cmp.Or(c.mergedAt, c.at), Branch: "main", PR: c.pr, Event: true}
+		return Merge{SHA: c.sha, At: cmp.Or(c.mergedAt, c.at), Committed: c.at, Branch: "main", PR: c.pr, Event: true}
 	}
-	return Merge{SHA: c.sha, At: c.at, Branch: "main"}
+	return Merge{SHA: c.sha, At: c.at, Committed: c.at, Branch: "main"}
 }
 
 // committed is c as a window collected before collect-merges read merge events holds it: on main,
@@ -432,9 +433,12 @@ func TestCollectMergesListsFromADayBeforeTheSpanWithNoUntil(t *testing.T) {
 // ACME-4's, from 01:50 to 02:30, whose own is #603, holds the commit whose subject names #603 and
 // does not take it for its own merge, M = 1, its own merge unknown. At the commits' committer's
 // times, with the pull requests their subjects' squash suffixes name, as a window collected before
-// merge events holds them, they would be 0, 1, 1 and 0. It fails where collect-merges keeps a
-// commit by its committer's time, takes a merge event from a pull request that did not merge that
-// commit into main, or keeps a pull request GitHub's record does not bear out.
+// merge events holds them, they would be 0, 1, 1 and 0. Each commit kept also keeps its committer's
+// time as committed, beside at, so #601's line reads "at":"2026-11-20T00:00:00Z" and
+// "committed":"2026-11-19T23:40:00Z" in RFC 3339; the stretches' counts read at alone. It fails
+// where collect-merges keeps a commit by its committer's time, takes a merge event from a pull
+// request that did not merge that commit into main, keeps a pull request GitHub's record does not
+// bear out, or writes a line without its committer's time.
 func TestCollectMergesKeepsEachMergeAtGitHubsMergeEvent(t *testing.T) {
 	t.Parallel()
 	root := stubbed(t, 0x600, "2026-11-19T12:00:00Z", 600, 0x5ff)
@@ -457,13 +461,21 @@ func TestCollectMergesKeepsEachMergeAtGitHubsMergeEvent(t *testing.T) {
 	history := []stubCommit{tip, late, released, joinedBare, joined, copied, queued, early, root}
 	run := collectWalk(t, history...)
 	run.wantWritten(t, []Merge{
-		{SHA: early.sha, At: early.mergedAt, Branch: "main", PR: 601, Event: true},
-		{SHA: queued.sha, At: queued.mergedAt, Branch: "main", PR: 602, Event: true},
-		{SHA: copied.sha, At: copied.at, Branch: "main"},
-		{SHA: joined.sha, At: joined.mergedAt, Branch: "main", PR: 607, Event: true},
-		{SHA: joinedBare.sha, At: joinedBare.mergedAt, Branch: "main", PR: 608, Event: true},
-		{SHA: released.sha, At: released.at, Branch: "main"},
+		{SHA: early.sha, At: early.mergedAt, Committed: early.at, Branch: "main", PR: 601, Event: true},
+		{SHA: queued.sha, At: queued.mergedAt, Committed: queued.at, Branch: "main", PR: 602, Event: true},
+		{SHA: copied.sha, At: copied.at, Committed: copied.at, Branch: "main"},
+		{SHA: joined.sha, At: joined.mergedAt, Committed: joined.at, Branch: "main", PR: 607, Event: true},
+		{SHA: joinedBare.sha, At: joinedBare.mergedAt, Committed: joinedBare.at, Branch: "main", PR: 608, Event: true},
+		{SHA: released.sha, At: released.at, Committed: released.at, Branch: "main"},
 	})
+	raw, err := os.ReadFile(filepath.Join(run.window, "merges", "acme__widgets.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"at":"2026-11-20T00:00:00Z","committed":"2026-11-19T23:40:00Z"`; !strings.Contains(string(raw), want) ||
+		strings.Count(string(raw), `"committed":`) != 6 {
+		t.Errorf("collect-merges wrote the lines\n%s\nwant each with its committer's time, #601's holding %s", raw, want)
+	}
 	read, err := ReadWindow(run.window)
 	if err != nil {
 		t.Fatalf("ReadWindow of the window collect-merges wrote into: %v", err)

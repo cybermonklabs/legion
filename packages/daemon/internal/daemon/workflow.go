@@ -1852,7 +1852,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
+// (privateNameRules). All are set before the records' wake can reach the outbox
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
@@ -1866,6 +1867,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.readQueueTimeline = w.readQueueTimeline
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
 	w.outboxWake.Store(w.outbox)
@@ -2545,8 +2547,8 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 // entrySweepInterval is how often the daemon converges the phase entries with no fact of its
 // project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
 // its record already names, so a minute is short enough that no worker waits long for it, and
-// each run is one admission read of the project's issues, slots and line facts, which the same
-// pass already makes on every fact.
+// each run is one admission read of the project's issues, slots and line facts, which every pass
+// already makes (the pass rule on admit's Admission.Apply).
 const entrySweepInterval = time.Minute
 
 // entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
@@ -2563,10 +2565,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
 // or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
 // row names is sent that entry's work, and the controller is woken for a stalled root architect,
-// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
-// project raises none. Each run's event id is its own — the word, the project, this boot and the
-// run's time — since processed_events is shared by every project's daemon. A failed apply is
-// logged, and the next run tries again, as applyControllerTick does.
+// even where nothing else happens in the project: an admission pass runs on the facts the pass
+// rule names (admit's Admission.Apply), and a quiet project raises none. Each run's event id is
+// its own — the word, the project, this boot and the run's time — since processed_events is
+// shared by every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
 //
 // The same tick queues the reconcile of each tree's news of its approved design that
 // record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for

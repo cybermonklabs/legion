@@ -273,13 +273,11 @@ func BreakEven(factors []float64, rule, main map[float64]Costs) BreakEvenResult 
 }
 
 // runPlan is what each part of a validation or a comparison runs: its branches, the factors of
-// the break-even search it runs the main branch at beyond them, the diagnostic branches a
-// validation runs beside them (DiagnosticBranches), and the seeds of a branch with a draw.
+// the break-even search it runs the main branch at beyond them, and the seeds of a branch with a draw.
 type runPlan struct {
-	branches    []BranchAt
-	breakEven   []float64
-	diagnostics []BranchAt
-	perDraw     int
+	branches  []BranchAt
+	breakEven []float64
+	perDraw   int
 }
 
 // fullPlan is a comparison's plan: every branch of Branches, the main branch at each factor of
@@ -469,8 +467,7 @@ type ValidateConfig struct {
 // validatePlan is the branches and seeds cfg's validation runs: a test's own plan where it set one
 // (ValidateConfig.plan); with MainOnly or CapBacktest, the main branch at f 1 alone (MainBranchAt)
 // with the seeds of a branch with a draw; and every branch the tool offers, each with its seeds
-// (fullPlan), otherwise. Each but the cap backtest's runs R5's branches of the recorded conflicts
-// beside them (DiagnosticBranches), which no comparison runs.
+// (fullPlan), otherwise.
 func validatePlan(cfg ValidateConfig) runPlan {
 	if cfg.plan != nil {
 		return *cfg.plan
@@ -482,7 +479,6 @@ func validatePlan(cfg ValidateConfig) runPlan {
 	if !cfg.MainOnly {
 		plan = fullPlan()
 	}
-	plan.diagnostics = DiagnosticBranches()
 	return plan
 }
 
@@ -493,13 +489,11 @@ func CapBacktestDir(out string, limit int) string {
 	return filepath.Join(out, fmt.Sprintf("cap-%d", limit))
 }
 
-// RunValidate runs cfg.Window under cfg.Rule on every branch with its seeds, or on the main branch
-// alone with its seeds under cfg.MainOnly or cfg.CapBacktest (validatePlan), and on R5's branches of
-// the recorded conflicts beside them but in the cap backtest, into cfg.Out, up to cfg.Parallel runs
-// at once, and answers its validation (spec R5), read back from the runs. The cap backtest runs its
-// branches again at the flat cap cfg.Cap into CapBacktestDir and gives the validation its
-// CapBacktest. A rule other than the one the window's parts say its daemon ran is refused, as is a
-// cap of the validation's own outside the cap backtest and a cap backtest at no cap above zero.
+// RunValidate replays cfg.Window under cfg.Rule on every branch or on main alone, as
+// validatePlan specifies. It writes up to cfg.Parallel concurrent runs into cfg.Out and
+// reads their R5 validation. The cap backtest also replays main at cfg.Cap in CapBacktestDir.
+// A rule other than the window's recorded rule is refused. A cap override requires a cap
+// backtest and must be above zero.
 func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	name, err := windowName(cfg.Window)
 	if err != nil {
@@ -522,7 +516,7 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	plan := validatePlan(cfg)
 	options := runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw, keepLogs: cfg.KeepLogs, progress: cfg.Progress,
 		build: cfg.BuildCommit}
-	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches, diagnostics: plan.diagnostics}}}
+	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches}}}
 	if err := runWindows(ctx, []windowSpec{spec}, options); err != nil {
 		return Validation{}, err
 	}
@@ -1057,7 +1051,7 @@ func (c comparison) writeHead(p *printer, forecast ForecastResult) {
 		}
 		draws := "none of its stretches ended in a conflict, so only a drawn scenario of an issue that never started draws"
 		if w.Conflicted > 0 {
-			draws = fmt.Sprintf("%d of its %d stretches ended in a conflict, so every branch draws conflicts", w.Conflicted, w.Stretches)
+			draws = fmt.Sprintf("%d of its %d fitted stretches ended in a conflict, so the git and drawn branches use drawing seeds", w.Conflicted, w.Stretches)
 		}
 		p.line("- The seeds of %s: %d for a branch with a draw and 1 for a branch with none; %s.", w.Name, most, draws)
 	}
@@ -1285,8 +1279,8 @@ func (c comparison) writeConflicts(p *printer) {
 		case w.Conflicted == 0:
 			p.line("%s does not measure how a rule changes conflicts: none of its %d stretches ended in a conflict, so no replay of it draws one.", w.Name, w.Stretches)
 		default:
-			p.line("%s measures how a rule changes conflicts: %d of its %d stretches ended in a conflict, and each replay draws its conflicts from the rate fitted on them (assumption 3).",
-				w.Name, w.Conflicted, w.Stretches)
+			p.line("%s fits the generator on %d stretches, %d of which ended in a conflict. Main keeps the recorded conflicts. The git branch draws for unanswered reads, and the drawn branch uses the generator throughout.",
+				w.Name, w.Stretches, w.Conflicted)
 			if w.Conflicts.fitted() {
 				p.line("The rate fitted on %s: %s.", w.Name, w.Conflicts.terms())
 			}

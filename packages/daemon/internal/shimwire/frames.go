@@ -835,9 +835,9 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
-// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
-// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// provider?, model?, httpStatus?, retryable, code?}`, the "Failure detail for a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
 // whose last assistant message ended with stopReason "error" — a provider request its own retries
 // could not get through, where Retryable says it may still succeed later — and for one it failed
 // outright before any turn.

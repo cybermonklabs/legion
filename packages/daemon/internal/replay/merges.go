@@ -93,7 +93,8 @@ type MergesConfig struct {
 // as merged as that commit (merge_commit_sha) into cfg.Branch (base.ref), and keeps that pull
 // request (Merge.PR) with Merge.Event set, so the conflict draw can leave a stretch's own merge
 // out of its count. A commit GitHub records no such merge of keeps its committer's time, an
-// estimate and no merge event, with no pull request, whatever its subject names. Those reads
+// estimate and no merge event, with no pull request, whatever its subject names. Each commit
+// written keeps its committer's time as Merge.Committed too, beside the time it landed. Those reads
 // follow the listing and the read of a lacking parent, and read nothing of a commit the walk did
 // not reach. It sends GET alone: a read GitHub refuses for now (a 5xx, no answer) is tried again
 // with a growing wait, and one GitHub's rate limit refuses is tried again after the wait GitHub
@@ -420,14 +421,15 @@ func (r githubReader) committed(ctx context.Context, commit *url.URL) (time.Time
 // schema allows, is read whole (GET <repository>/pulls/<n>) to match it. Where none matches, or
 // more than one does, GitHub gives the commit no merge event of its own, and it keeps its
 // committer's time, an estimate, with no Event and no pull request: a suffix GitHub's record does
-// not bear out names no stretch's own merge. An answer that is no list of pull requests, or no
-// pull request, is refused.
+// not bear out names no stretch's own merge. Either way the commit keeps its committer's time as
+// Committed too, the At ParseMerges read. An answer that is no list of pull requests, or no pull
+// request, is refused.
 func (r githubReader) mergeEvent(ctx context.Context, repository *url.URL, branch string, merge Merge) (Merge, error) {
 	matches := func(pull githubrest.PullRequest) bool {
 		return pull.MergeCommitSHA == merge.SHA && pull.Base.Ref == branch && pull.MergedAt != nil
 	}
 	landed := func(pull githubrest.PullRequest) Merge {
-		return Merge{SHA: merge.SHA, At: *pull.MergedAt, Branch: merge.Branch, PR: pull.Number, Event: true}
+		return Merge{SHA: merge.SHA, At: *pull.MergedAt, Committed: merge.At, Branch: merge.Branch, PR: pull.Number, Event: true}
 	}
 	if merge.PR != 0 {
 		pull, err := r.pullRequest(ctx, repository, merge.PR)
@@ -468,7 +470,7 @@ func (r githubReader) mergeEvent(ctx context.Context, repository *url.URL, branc
 		}
 	}
 	if len(matched) != 1 {
-		return Merge{SHA: merge.SHA, At: merge.At, Branch: merge.Branch}, nil
+		return Merge{SHA: merge.SHA, At: merge.At, Committed: merge.At, Branch: merge.Branch}, nil
 	}
 	return landed(matched[0]), nil
 }

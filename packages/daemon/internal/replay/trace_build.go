@@ -210,13 +210,16 @@ type IssueTrace struct {
 }
 
 // Launch is one launch of a claim of an issue: its moment, the claim's role, whether it resumed the
-// claim's session, and whether it ended a hold of that role's claim the record shows no release of
-// (traceBuilder.holdWentOn).
+// claim's session, whether it ended a hold of that role's claim the record shows no release of
+// (traceBuilder.holdWentOn), and how many turns of the issue's workers the record holds before it:
+// the turns IssueTrace.Turns[Turns:] began after it, by the order of the log, which no moment tells
+// where a launch and a turn come at one instant (traceBuilder.freshRetried).
 type Launch struct {
 	At        time.Time
 	Role      claim.Role
 	Resumed   bool
 	EndedHold bool
+	Turns     int
 }
 
 // FreshRetry is the operator's retry of the worker of an issue's phase with a fresh session where
@@ -301,6 +304,13 @@ type Visit struct {
 	WorkerStart time.Time
 	// Segment is the visit's work segment, nil where no worker started.
 	Segment *WorkSegment
+	// Workerless is a visit to a phase that a worker works, the architect excepted, whose work
+	// starts at the phase change and in which the record shows nothing of the phase's role at
+	// work: no launch of its claim, no turn of it and no hold of it (IssueTrace.workerShownIn). No
+	// start of the role opened its work in the record, so a replay opens its piece on the move into
+	// the phase (openingOf), and its recorded end, a conflict among them, does not wait for a start
+	// that the replay may hold, as it holds a merger's while its tree's design gate stands closed.
+	Workerless bool
 	// Merge is the merge of the issue's pull request inside a visit to merging whose close waited
 	// for the issues beneath it (MergedCloseWaits, the first line of the visit's): the move the
 	// merge would have made, from merging to done by pull_request_merged at the line's time, which
@@ -1303,9 +1313,9 @@ func (b *traceBuilder) onLine(line LogLine) {
 			// The operator's retry of a phase's worker writes this line whether or not the issue
 			// stands held (workflow/engine.go at e6edc575: (*Engine).restartPhase hands the phase
 			// its worker works to (*Engine).retryPhase, which writes the line with no regard to a
-			// hold), so with no hold held it is that retry, and releases nothing; with a fresh launch
-			// of the phase's worker at the same moment, it is the retry with a fresh session
-			// (freshRetried).
+			// hold), so with no hold held it is that retry, and releases nothing; with the launch
+			// of the phase's worker that the retry made written before it, it is the retry with a
+			// fresh session (freshRetried).
 			b.freshRetried(iss, at, l.Phase)
 		default:
 			b.unplaced(UnplacedHold, l.Issue, at, "%s at %s releases a hold the trace does not hold", l.Msg, stamp(at))
@@ -1393,7 +1403,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case Launched:
 		if iss, ok := b.t.Issues[l.Claim.Issue]; ok && l.Claim.Issue != "" {
 			ended := b.holdWentOn(iss, at, l.Claim.Role)
-			iss.Launches = append(iss.Launches, Launch{At: at, Role: l.Claim.Role, Resumed: l.Resumed, EndedHold: ended})
+			iss.Launches = append(iss.Launches, Launch{At: at, Role: l.Claim.Role, Resumed: l.Resumed, EndedHold: ended, Turns: len(iss.Turns)})
 		}
 	case ProcessStart, BootStage:
 	}
@@ -1693,19 +1703,41 @@ func (b *traceBuilder) holdWentOn(iss *IssueTrace, at time.Time, role claim.Role
 }
 
 // freshRetried reads the operator's retry of the worker of iss's phase in at at (the release line
-// of operatorRetryReason with no hold standing) as the retry with a fresh session where a launch
-// of that worker's claim afresh came at the same moment and ended no hold (Launch): `legion claims
-// retry --fresh-session` of a suspended claim, which at 958173da launched the claim (api's
-// freshSession, supervise.RequestResume) and then restarted the phase (intake.RestartPhase), whose
-// release line comes at the launch's moment (IssueTrace.FreshRetries).
+// of operatorRetryReason with no hold standing) as the retry with a fresh session where the launch
+// of that worker's claim afresh that the retry made stands before the release line in the record
+// (IssueTrace.FreshRetries): `legion claims retry --fresh-session` of a suspended claim.
+//
+// The daemon writes the two lines in that order and a fraction of a second apart, never at one
+// moment (api/freshsession.go at 958173da and since): api's (*server).freshSession posts the
+// claim's resume, whose launch ((*Machine).launchTries) logs `supervise: launched` at once, and
+// only then restarts the phase (intake.RestartPhase), whose commit ((*Engine).retryPhase) logs
+// `workflow: a held phase is released`. So the launch is matched to the line by their order in the
+// log, which the trace reads in order, and not by their moments: the last launch of the role's
+// claim before this line, in the visit the retry restarts. It is the retry's where it launched
+// afresh and ended no hold, and no turn of the role began after it (Launch.Turns): a plain retry
+// of a stopped worker writes its release line before its launch, so the launch before the line is
+// the worker's own start, which its turns followed.
 func (b *traceBuilder) freshRetried(iss *IssueTrace, at time.Time, in phase.Phase) {
-	role := phaseRole(foldPhase(in))
-	if role == "" || !slices.ContainsFunc(iss.Launches, func(launch Launch) bool {
-		return launch.At.Equal(at) && launch.Role == role && !launch.Resumed && !launch.EndedHold
-	}) {
+	retried := foldPhase(in)
+	role := phaseRole(retried)
+	visit := iss.openVisit()
+	if role == "" || visit == nil || visit.Phase != retried {
 		return
 	}
-	iss.FreshRetries = append(iss.FreshRetries, FreshRetry{At: at, Phase: foldPhase(in), Role: role})
+	for _, launch := range slices.Backward(iss.Launches) {
+		if launch.At.Before(visit.Enter) {
+			return
+		}
+		if launch.Role != role {
+			continue
+		}
+		if !launch.Resumed && !launch.EndedHold && !slices.ContainsFunc(iss.Turns[launch.Turns:], func(turn Turn) bool {
+			return turn.Claim.Role == role
+		}) {
+			iss.FreshRetries = append(iss.FreshRetries, FreshRetry{At: at, Phase: retried, Role: role})
+		}
+		return
+	}
 }
 
 // left reads an issue's leaving the workflow: the visit it stands in ends, and so do its hold and
@@ -2560,6 +2592,7 @@ func (b *traceBuilder) segments(iss *IssueTrace) {
 		if visit.WorkerStart.IsZero() {
 			continue
 		}
+		visit.Workerless = workerPhase(visit.Phase) && visit.WorkerStart.Equal(visit.Enter) && !iss.workerShownIn(visit)
 		segment := &WorkSegment{Start: visit.WorkerStart, EndedBy: SegmentOpen}
 		switch {
 		case visit.Merge != nil && !visit.Merge.At.Before(visit.WorkerStart):
@@ -2587,6 +2620,19 @@ func (b *traceBuilder) segments(iss *IssueTrace) {
 		}
 		visit.Segment = segment
 	}
+}
+
+// workerShownIn says whether the record shows the worker of visit's phase at work in visit: a launch
+// of its role's claim, a turn of it, or a hold of it begun in the visit, which a claim that failed
+// to launch leaves where it writes no launch line.
+func (iss *IssueTrace) workerShownIn(visit *Visit) bool {
+	role := phaseRole(visit.Phase)
+	inside := func(at time.Time) bool {
+		return !at.Before(visit.Enter) && (visit.Exit.IsZero() || at.Before(visit.Exit))
+	}
+	return slices.ContainsFunc(iss.Launches, func(launch Launch) bool { return launch.Role == role && inside(launch.At) }) ||
+		slices.ContainsFunc(iss.Turns, func(turn Turn) bool { return turn.Claim.Role == role && inside(turn.Start) }) ||
+		slices.ContainsFunc(iss.Waits, func(wait Wait) bool { return wait.Kind == WaitHeld && wait.Role == role && inside(wait.Start) })
 }
 
 // lastTurnEnd is the latest end of a turn of iss that began in [from, to) and ended by to, zero for

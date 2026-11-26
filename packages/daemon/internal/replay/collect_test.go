@@ -694,8 +694,8 @@ func collectCaptured(t *testing.T) collectRun {
 // missing ancestors too, which window.json names; and the merges are the captured page's five
 // first-parent commits, read over two pages with the commit below it, which the walk passes and
 // does not keep, each at the merge event GitHub records for the pull request it names
-// (collectPulls), with that pull request: collect-merges reads the listing's two pages first, and
-// pull requests alone after them.
+// (collectPulls), with that pull request and with the commit's committer's time as committed:
+// collect-merges reads the listing's two pages first, and pull requests alone after them.
 // The signals' records are each one's lines in the reach: the provider's minutes, the launcher's
 // lines of both its forms as the window's rows, each line once, in time order, the Cloud Logging
 // read named on its own though its name is no JSON file's, and the pods' memory as each pod's two
@@ -927,9 +927,14 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 		t.Errorf("collect-queue read %d pages, want 3: %v", len(run.timelines), run.timelines)
 	}
 
+	committedAt := map[string]time.Time{} // each captured commit's committer's time, which collect-merges keeps as Committed
+	for _, commit := range capturedMergeReadings(t)["commits.json"] {
+		committedAt[commit.SHA] = commit.At
+	}
 	var wantMerges []Merge
 	for _, pull := range collectPulls[1:] { // #4559, below the page, merged before the span
-		wantMerges = append(wantMerges, Merge{SHA: pull.sha, At: capturedTime(t, pull.mergedAt), Branch: capturedBranch, PR: pull.number, Event: true})
+		wantMerges = append(wantMerges, Merge{SHA: pull.sha, At: capturedTime(t, pull.mergedAt), Committed: committedAt[pull.sha], Branch: capturedBranch,
+			PR: pull.number, Event: true})
 	}
 	if len(read.Merges) != 1 || !sameReading(read.Merges["acme/widgets"], wantMerges) || !sameReading(run.merges, wantMerges) {
 		t.Errorf("the window's merges are %+v (collect-merges answered %+v), want acme/widgets's %+v", read.Merges, run.merges, wantMerges)

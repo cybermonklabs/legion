@@ -196,9 +196,11 @@ type RunResult struct {
 	Assumptions []int
 	// Conflicts is the conflict model the run drew each stretch's conflict by (spec R2): fitted on
 	// the recorded stretches inside the window (windowConflicts) with each coefficient's interval,
-	// its merges term set to zero where the branch's Merges is zero, and how many stretches, of the
-	// window's and of the replay's, counted a merge in M that may be their own.
-	Conflicts ConflictModel
+	// and how many stretches, in the window and the replay, counted a merge in M that may be their own.
+	Conflicts    ConflictModel
+	GitReads     map[string]GitReadCounts
+	GitLoopHours map[string]GitLoopHours
+	GitReadTable map[string]GitReadTable
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
 	snapshot Timeline
@@ -297,8 +299,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		starts = firstStartRanks(trace)
 	}
 	conflicts := in.conflicts
-	if cfg.Branch.Merges == mergesZero {
-		conflicts = conflicts.WithoutTerm()
+	if conflicts.Legacy != nil {
+		fallback := *conflicts.Legacy
+		conflicts.Legacy = &fallback
 	}
 	token, err := claim.ProjectToken(w.Project)
 	if err != nil {
@@ -346,6 +349,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		map[stretchDraw]int{}, map[string]stretchDraw{}
 	d.noWork, d.drawSource = map[string]bool{}, rand.NewPCG(0, 0)
 	d.draws, d.numbers = rand.New(d.drawSource), newPullRequestNumbers(trace)
+	d.setupGit()
 	runErr := d.run()
 	flushErr := written.Flush()
 	if err := errors.Join(runErr, flushErr); err != nil {
@@ -366,6 +370,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	}
 	result.Unplaced, result.Assumptions = d.unplaced, d.assumptionsUsed(len(Assumptions))
 	result.Conflicts = d.conflicts
+	result.GitReads, result.GitLoopHours, result.GitReadTable = d.git.reads, d.gitLoopHours(), d.git.tables
 	if cfg.TraceSegments {
 		result.Segments = d.segments
 	}
@@ -558,29 +563,32 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 // divergence counters, the gap of each measure between its snapshot and line timelines, and the
 // conflict model it drew by. It holds numbers and names alone, never an assumption's text.
 type runRecord struct {
-	Rule            string        `json:"rule"`
-	RuleCommit      string        `json:"ruleCommit"`
-	BuildCommit     string        `json:"buildCommit"`
-	Branch          Branch        `json:"branch"`
-	Seed            int64         `json:"seed"`
-	Slowdown        float64       `json:"slowdown"`
-	Cap             int           `json:"cap,omitempty"`
-	Scenario        string        `json:"scenario"`
-	Assumptions     []int         `json:"assumptions"`
-	After           Duration      `json:"after"`
-	Database        string        `json:"database"`
-	KeptDatabase    bool          `json:"keptDatabase"`
-	Facts           int           `json:"facts"`
-	Passes          int           `json:"passes"`
-	MeanPassMillis  float64       `json:"meanPassMillis"`
-	StartedAt       time.Time     `json:"startedAt"`
-	WallSeconds     float64       `json:"wallSeconds"`
-	PeakMemoryBytes uint64        `json:"peakMemoryBytes"`
-	Unplaced        int           `json:"unplaced"`
-	Segments        int           `json:"segments"`
-	Divergence      Divergence    `json:"divergence"`
-	Gaps            []MeasureGap  `json:"gaps"`
-	Conflicts       ConflictModel `json:"conflicts"`
+	Rule            string                   `json:"rule"`
+	RuleCommit      string                   `json:"ruleCommit"`
+	BuildCommit     string                   `json:"buildCommit"`
+	Branch          Branch                   `json:"branch"`
+	Seed            int64                    `json:"seed"`
+	Slowdown        float64                  `json:"slowdown"`
+	Cap             int                      `json:"cap,omitempty"`
+	Scenario        string                   `json:"scenario"`
+	Assumptions     []int                    `json:"assumptions"`
+	After           Duration                 `json:"after"`
+	Database        string                   `json:"database"`
+	KeptDatabase    bool                     `json:"keptDatabase"`
+	Facts           int                      `json:"facts"`
+	Passes          int                      `json:"passes"`
+	MeanPassMillis  float64                  `json:"meanPassMillis"`
+	StartedAt       time.Time                `json:"startedAt"`
+	WallSeconds     float64                  `json:"wallSeconds"`
+	PeakMemoryBytes uint64                   `json:"peakMemoryBytes"`
+	Unplaced        int                      `json:"unplaced"`
+	Segments        int                      `json:"segments"`
+	Divergence      Divergence               `json:"divergence"`
+	Gaps            []MeasureGap             `json:"gaps"`
+	Conflicts       ConflictModel            `json:"conflicts"`
+	GitReads        map[string]GitReadCounts `json:"gitReads,omitempty"`
+	GitLoopHours    map[string]GitLoopHours  `json:"gitLoopHours,omitempty"`
+	GitReadTable    map[string]GitReadTable  `json:"gitReadTable,omitempty"`
 }
 
 // writeOutputs writes the run's scorecard.json (its snapshot timeline's), scorecard-line.json (its
@@ -596,7 +604,8 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Cap: d.cfg.Cap, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, After: d.window.After,
 		Database: result.Database, KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
 		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
-		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts}
+		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts,
+		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

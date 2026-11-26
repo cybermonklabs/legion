@@ -67,17 +67,45 @@ var k1Facts = []string{
 	"root-idle-while-children-run",
 }
 
+// k1GitFacts is each fact check k1 names of the branch that asks git and of the conflict generator
+// (spec R2), each the name of the fixture window that holds it: on the branch that asks git, a read
+// that the store answers with a conflict and a read that the store answers clean
+// (git-store-verdicts), and one read of each kind that git cannot answer, which the generator
+// answers (git-unanswered-reads); a merge into a base whose committer's time and GitHub merge event
+// differ (merge-event-time); on the branch that draws every conflict, a stretch that goes on past
+// a skipped conflict loop (drawn-skipped-loop), a stretch under way at a daemon boot in an earlier
+// phase than the one it ends in (drawn-boot-earlier-phase), and a stretch whose base takes a merge
+// that changes a path of its profile beside one whose base takes only merges that change none
+// (drawn-touching-merges); and work that the record never ran, drawn from a recorded issue that
+// holds a conflict, on the main branch and on the branch that draws (drawn-work-conflict). They
+// stand apart from k1Facts, which is also the older corpus the record, seed and trace cross-checks
+// replay (fixtureWindowNames): these windows hold git inputs and run on other branches than main.
+var k1GitFacts = []string{
+	"git-store-verdicts",
+	"git-unanswered-reads",
+	"merge-event-time",
+	"drawn-skipped-loop",
+	"drawn-boot-earlier-phase",
+	"drawn-touching-merges",
+	"drawn-work-conflict",
+}
+
 // fixtureExpect is a fixture window's expect.json: the Scorecard a replay must give under each
 // rule it names, on the branch it names (the main branch where it names none); the text the
 // refusal of each run it names refused must hold; for the window of an issue that never starts,
-// the same for each never-started scenario in place of the rules; and, for a window that holds
-// every trigger, each issue's sequence of moves a replay under the window's recorded rule must
-// make.
+// the same for each never-started scenario in place of the rules; for a window whose fact is how
+// two branches differ, the same for each branch it names in place of the rules; and, for a window
+// that holds every trigger, each issue's sequence of moves a replay under the window's recorded
+// rule must make.
 type fixtureExpect struct {
 	Branch    string                          `json:"branch,omitempty"`
 	Rules     map[string]Scorecard            `json:"rules,omitempty"`
 	Scenarios map[string]map[string]Scorecard `json:"scenarios,omitempty"`
-	Moves     map[string][]fixtureMove        `json:"moves,omitempty"`
+	// Branches is, by the name of a branch (BranchNamed), the Scorecard a replay on that branch must
+	// give under each rule: the runs of a window on more than one branch (drawn-work-conflict), each
+	// named <branch>/<rule>.
+	Branches map[string]map[string]Scorecard `json:"branches,omitempty"`
+	Moves    map[string][]fixtureMove        `json:"moves,omitempty"`
 	// Checks supplements the scorecard with fields from run.json and structured log lines.
 	// Keys are rule names. In a log line only the named attributes have to match.
 	Checks map[string]fixtureChecks `json:"checks,omitempty"`
@@ -125,7 +153,8 @@ var refusingNoMove = map[string]string{"conflict-from-fitted-rate": "legion-v20.
 // each measure of R4 is read the way the windows' README.md defines it (spec R1, R2, R4; check k1).
 // The test reads the directory of fixture windows, so a window added there is run with no change
 // here, and runs every window — not a sample — under every rule its expect.json names (every
-// never-started scenario, for never-starts), through Run on a database of its own on
+// never-started scenario, for never-starts, and every branch, for a window that names branches),
+// through Run on a database of its own on
 // LEGION_TEST_PG_DSN's server. It fails naming the window, the rule and each measure whose value
 // differs from the one worked out by hand, floats compared to within fixtureTolerance; for a run
 // expect.json names refused, a replay Run makes rather than refuses, or refuses with an error that
@@ -249,13 +278,14 @@ func checkFixtureOutput(t *testing.T, out string, want fixtureChecks) {
 }
 
 // Check k1 names its facts, and each needs a window that holds it (the plan's t2g), so the list
-// of facts is held here as data and the test fails for a fact with no fixture window: no
+// of facts is held here as data (k1Facts, and k1GitFacts for the branch that asks git and the
+// conflict generator) and the test fails for a fact with no fixture window: no
 // directory, or one missing its window.json, README.md or expect.json, one ReadWindow refuses (an
 // input whose sha256 is not the one window.json records among the reasons), or one whose
-// expect.json names no replay to run.
+// expect.json names no replay to run, or a branch BranchNamed refuses.
 func TestTheFixtureWindowsCoverK1(t *testing.T) {
 	t.Parallel()
-	for _, fact := range k1Facts {
+	for _, fact := range slices.Concat(k1Facts, k1GitFacts) {
 		dir := filepath.Join(fixtureWindowsDir, fact)
 		missing := false
 		for _, file := range []string{windowFile, "README.md", fixtureExpectFile} {
@@ -343,9 +373,10 @@ func readFixtureExpect(dir string) (fixtureExpect, error) {
 }
 
 // runs is every replay e asks for, in order: each rule of Rules on e's branch, each rule of
-// Refused on e's branch, and each rule of each never-started scenario of Scenarios on the main
-// branch with that scenario. It refuses a rule Refused names with no text, or with a Scorecard in
-// Rules or Checks beside it, since a refused run gives neither.
+// Refused on e's branch, each rule of each never-started scenario of Scenarios on the main
+// branch with that scenario, and each rule of each branch of Branches on that branch. It refuses a
+// rule Refused names with no text, or with a Scorecard in Rules or Checks beside it, since a
+// refused run gives neither, and a branch BranchNamed refuses.
 func (e fixtureExpect) runs() ([]fixtureRun, error) {
 	var runs []fixtureRun
 	branch, err := BranchNamed(cmp.Or(e.Branch, MainBranch.Name))
@@ -375,6 +406,15 @@ func (e fixtureExpect) runs() ([]fixtureRun, error) {
 		}
 		for _, rule := range slices.Sorted(maps.Keys(e.Scenarios[scenario])) {
 			runs = append(runs, fixtureRun{name: scenario + "/" + rule, rule: rule, branch: branch, want: e.Scenarios[scenario][rule]})
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(e.Branches)) {
+		branch, err := BranchNamed(name)
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range slices.Sorted(maps.Keys(e.Branches[name])) {
+			runs = append(runs, fixtureRun{name: name + "/" + rule, rule: rule, branch: branch, want: e.Branches[name][rule]})
 		}
 	}
 	if len(runs) == 0 {

@@ -1,0 +1,18 @@
+{"kind":"commit","sha":"221c4651e78683e0c7791b38615453882927ae48","paths":["shelf/stock.go"]}
+{"kind":"commit","sha":"699828ff8f267cbf28e0601faa84cb4e1251731c","paths":["aisle/sort.go"]}
+{"kind":"commit","sha":"02c3804f6048985fc7ba1e2e5ee9c62070e4e82a","paths":["lists/order.go"]}
+{"kind":"commit","sha":"6dfc3c97fc1dc73409d2cabb902d941e1ca5cd12","paths":["pricing/tags.go"]}
+{"kind":"commit","sha":"0da81a35cbf32973dec3c358727cc85ca9204bde","paths":["pricing/tags.go"]}
+{"kind":"commit","sha":"3b93c89fbebce9c7aba0a361368f06e5d81c3e8b","paths":["tills/close.go"]}
+{"kind":"pull","pr":11,"merge":"","base":"main","baseChanges":[],"heads":2}
+{"kind":"head","pr":11,"sha":"cd7d78f8ea35bea3eeba5135c2d6df5160e9ac1e","at":"2001-03-05T09:15:00Z","from":"commit","tip":"3b93c89fbebce9c7aba0a361368f06e5d81c3e8b","mergeBase":"436fc470025b62bd22a4829adf2b29dbff0b1c15","paths":["shelf/stock.go"],"verdicts":[{"base":"221c4651e78683e0c7791b38615453882927ae48","conflict":true,"paths":["shelf/stock.go"]}]}
+{"kind":"head","pr":11,"sha":"3737035037f4bf067da885f26971bc99f2f7d119","at":"2001-03-05T09:30:00Z","from":"commit","tip":"3b93c89fbebce9c7aba0a361368f06e5d81c3e8b","mergeBase":"221c4651e78683e0c7791b38615453882927ae48","paths":["shelf/stock.go"],"verdicts":[]}
+{"kind":"pull","pr":12,"merge":"5da8541cbbbd423649c726bc5e17a215ad882171","base":"main","baseChanges":[],"heads":2}
+{"kind":"head","pr":12,"sha":"5aaafba97baa62c41fbf6c1336c1c9cde74f2c4c","at":"2001-03-05T09:55:00Z","from":"commit","tip":"699828ff8f267cbf28e0601faa84cb4e1251731c","mergeBase":"436fc470025b62bd22a4829adf2b29dbff0b1c15","paths":["aisle/sort.go","lists/order.go"],"verdicts":[{"base":"699828ff8f267cbf28e0601faa84cb4e1251731c","conflict":true,"paths":["aisle/sort.go"]}]}
+{"kind":"head","pr":12,"sha":"700c16b7db787bba86c5a517bfe3038550875544","at":"2001-03-05T10:10:00Z","from":"commit","tip":"699828ff8f267cbf28e0601faa84cb4e1251731c","mergeBase":"699828ff8f267cbf28e0601faa84cb4e1251731c","paths":["aisle/sort.go"],"verdicts":[]}
+{"kind":"pull","pr":13,"merge":"0da81a35cbf32973dec3c358727cc85ca9204bde","base":"main","baseChanges":[],"heads":2}
+{"kind":"head","pr":13,"sha":"4c4ae4ef82562db7c7d20770c2b9ca61b500e5bd","at":"2001-03-05T10:35:00Z","from":"commit","tip":"6dfc3c97fc1dc73409d2cabb902d941e1ca5cd12","mergeBase":"699828ff8f267cbf28e0601faa84cb4e1251731c","paths":["pricing/tags.go"],"verdicts":[{"base":"6dfc3c97fc1dc73409d2cabb902d941e1ca5cd12","conflict":true,"paths":["pricing/tags.go"]}]}
+{"kind":"head","pr":13,"sha":"92981adb28777def1f63c89a5682c01cdeb4cd69","at":"2001-03-05T10:50:00Z","from":"commit","tip":"6dfc3c97fc1dc73409d2cabb902d941e1ca5cd12","mergeBase":"6dfc3c97fc1dc73409d2cabb902d941e1ca5cd12","paths":["pricing/tags.go"],"verdicts":[]}
+{"kind":"pull","pr":14,"merge":"","base":"main","baseChanges":[],"heads":1}
+{"kind":"head","pr":14,"sha":"d95989374b3a528cfdc15b7dbe7da47a92283451","at":"2001-03-05T11:15:00Z","from":"commit","tip":"3b93c89fbebce9c7aba0a361368f06e5d81c3e8b","mergeBase":"6dfc3c97fc1dc73409d2cabb902d941e1ca5cd12","paths":["pricing/tags.go","tills/close.go"],"verdicts":[{"base":"0da81a35cbf32973dec3c358727cc85ca9204bde","conflict":true,"paths":["pricing/tags.go"]},{"base":"3b93c89fbebce9c7aba0a361368f06e5d81c3e8b","conflict":true,"paths":["pricing/tags.go","tills/close.go"]}]}
+{"kind":"missing","pr":0,"head":"","base":"5da8541cbbbd423649c726bc5e17a215ad882171","reason":"timeout","detail":"git diff-tree of the commit and its first parent: the guard killed git after 1m0s"}
