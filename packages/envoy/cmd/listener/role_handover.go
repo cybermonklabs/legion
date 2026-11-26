@@ -163,14 +163,14 @@ const handoverReadBound = roleHolderReadTimeout
 // this build recorded (principalUnrecorded: a listener of an earlier build wrote it last), and a
 // store that cannot answer (principalUnavailable: its bucket is not open, a listener with no
 // known-session store at all among them). The refused claim is answered 200 with a warning, and
-// its client does not name replaced again, so replaced's messages stay on its own subject. A
-// store that cannot answer is no lasting state: the store attempts its bucket again on its own,
-// at most 5 minutes apart, and picks up a grant that lands later with no restart, so a claim
-// refused in the window before an attempt opens it loses a handover a later claim would have
-// made. What only a later claim can read is the error, wrapping errHandoverUnjudged: a read the
-// leader did not answer, and a claimant whose own registration is not recorded with its
-// principal - a registration whose record did not store, or one an earlier build took - which
-// its next registration writes.
+// its client does not name replaced again, so replaced's messages stay on its own subject. On a
+// listener with a store, a bucket that is not open is no lasting state: the store attempts it
+// again on its own, at most 5 minutes apart, and picks up a grant that lands later with no
+// restart, so a claim refused in the window before an attempt opens it loses a handover a later
+// claim would have made. What only a later claim can read is the error, wrapping
+// errHandoverUnjudged: a read the leader did not answer, and a claimant whose own registration is
+// not recorded with its principal - a registration whose record did not store, or one an earlier
+// build took - which its next registration writes.
 // Dispatch lets a session answer a delivery attempt of the session it replaced only where a
 // handover record names it and the two still register as one principal (sessionSuccessorsHandler),
 // so that reply rule is held to this one too.
