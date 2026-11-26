@@ -7074,9 +7074,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "week",
       left: ["Next week"],
       picked: laterAfter(2),
-      // The bar goes with the row it deferred, and its focus goes to the mark of the row that
-      // moves up into that row's place.
-      focusAfterPick: inboxRow(page, snoozed.after).getByRole("checkbox").first(),
+      // The bar goes with the row it deferred, and R8 hands the focus to the row of the item
+      // after it, the row that moves up into its place.
+      focusAfterPick: inboxRow(page, snoozed.after),
     },
     {
       // The reader's own questions; with the reading column the question is selected first, so
@@ -7300,9 +7300,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // (`MultiSelect`), and Enter picks the option the word left - the trigger shows it with the focus
 // back on it, or where the pick takes the trigger away the panel hands the focus on. A Snooze's
 // pick shows in the Inbox's Later band, which holds one more row once the write lands. The
-// selection bar's Snooze hands the focus to the mark of the row now at the deferred row's place,
-// and a row's Snooze, with the reading column drawn, to the column's own stop; at 390, where it is
-// not, no hand-off of the Inbox's own lands the focus a row's Snooze took, and the row reads none.
+// selection bar's Snooze hands the reader on to the row of the item after the one it deferred
+// (R8), the row now at the deferred row's place, which takes the focus itself; a row's Snooze,
+// with the reading column drawn, hands it to the column's own stop; at 390, where it is not, no
+// hand-off of the Inbox's own lands the focus a row's Snooze took, and the row reads none.
 // A list that holds no text box is named and the row goes on, so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
@@ -8142,7 +8143,7 @@ test("clear brush window pressed with the Window control scrolled out of sight s
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): 38 Inbox rows seeded, and at two widths one thread and then two dismissed deep in
+// SLOW(>=2s): 39 Inbox rows seeded, and at two widths one thread and then two dismissed deep in
 // the list.
 // INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p5-h2 and -p5-b2 at
 // da0804df and a1c78223): the Inbox lists 38 asks and comment threads. The reader scrolls a thread
@@ -8163,7 +8164,20 @@ test("clear brush window pressed with the Window control scrolled out of sight s
 // where the row marked last stood. A focused control taken away, for which Firefox and WebKit
 // fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
 // focus row (e2e/playwright.config.ts).
-test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls by no more than the line that closes above the list @firefox @webkit", async ({
+// INFRA-2160's R8, merged over this row: the item after the last of the rows a bulk action is
+// on is selected and its row has the keyboard focus, not a control in it. That row is the one now
+// at the marked row's place, and where it stands partly out of the reader's sight there, the
+// hand-off brings it whole into sight at its nearest edge, the one scroll a landing may make
+// (INFRA-3135's ruling of 2026-11-21 12:3xZ) beside the line that closes above the list. Measured
+// at 390x664 in the full lane's Jobs at 3a7a98a9 (infra-2160-fullproof-shard-2 and -4), with the
+// bar's own focus scrolling to that row while the threads still stood: the row stood at the
+// window's top, 266 px above the place, for one thread, and 1045 px above the window for two, in
+// Chromium, Firefox and WebKit. The nearest edge is the window's own, and no scroll padding:
+// #3729's 05c3e917 (its tester's red row 5994f791, a landing cut by the window's bottom at 390 px)
+// lands the bar's hand-off by the window's and each box's visible edges (`landNearest`), not by
+// the root's `scroll-padding-bottom` below 1280 px. Measured at bca3e9a0 (builds Job
+// infra-2160-bdb-bca3-xvhqv): the row stood 80 px, that padding, lower than a padded edge.
+test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place, and scrolls by no more than the line that closes above the list and what shows that row whole @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -8172,10 +8186,13 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
     const issue = await createIssue({ project: "CORE", title });
     await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
   };
-  // Written oldest first and listed newest first, so the six threads stand between the late asks
-  // above them and the early asks below them: rows 20 to 25 of 38.
+  // Written oldest first and listed newest first, so the seven threads stand between the late
+  // asks above them and the early asks below them: rows 20 to 26 of 39. The four cases take six
+  // of them, so each case's landing is a thread's card, which a 664 px window shows whole at
+  // 390 px: an ask's card there, with its answer box and that box's hint, stands taller than the
+  // window (682 px at 85f13ed5), and no scroll shows it whole.
   for (let index = 0; index < 12; index++) await seedQuestion(`Early ask ${index}`);
-  for (let index = 0; index < 6; index++) {
+  for (let index = 0; index < 7; index++) {
     const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
     await seedCommentThread(issue.key, `Thread ${index}: when does it run?`, "At 03:00.");
   }
@@ -8185,7 +8202,8 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
   const bar = page.getByRole("toolbar", { name: "Selected rows" });
   const inboxRowOf = (id: string) => page.locator(`[data-inbox-row="${id}"]`);
   /** Where the window and the list's box stand, and what holds the focus: its name, the row it
-   *  is in, its top, and whether its box is inside the window and inside the list's box. */
+   *  is in, whether it is that row itself, its top, and whether its box is inside the window and
+   *  inside the list's box. */
   const landing = () =>
     page.evaluate(() => {
       const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
@@ -8193,7 +8211,15 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       const scrollY = Math.round(window.scrollY);
       const focused = document.activeElement;
       if (!(focused instanceof HTMLElement) || focused === document.body) {
-        return { inSight: false, name: "the body", row: null, scrollTop, scrollY, top: null };
+        return {
+          inSight: false,
+          isRow: false,
+          name: "the body",
+          row: null,
+          scrollTop,
+          scrollY,
+          top: null,
+        };
       }
       const own = focused.getBoundingClientRect();
       const clip = frame?.getBoundingClientRect();
@@ -8209,6 +8235,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
           own.bottom <= bottom + 1 &&
           own.left >= -1 &&
           own.right <= window.innerWidth + 1,
+        isRow: focused.matches("[data-inbox-row]"),
         name:
           focused.getAttribute("aria-label") ||
           label ||
@@ -8220,8 +8247,10 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         top: Math.round(own.top),
       };
     });
-  /** Where the list's box stands in the page and where a row stands on screen: the row `id`
-   *  names, else the row that holds the focus. */
+  /** Where the list's box stands in the page and whether it is the box that scrolls the rows,
+   *  the part of the window the reader sees through it - the visible edges the landing shows a
+   *  row whole between (`landNearest`), with no scroll padding - and where a row stands on screen
+   *  and how tall it is: the row `id` names, else the row that holds the focus. */
   const rowAndList = (id: string | null) =>
     page.evaluate((rowId) => {
       const frame = document.querySelector('[data-testid="inbox-list"]');
@@ -8229,9 +8258,21 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         rowId === null
           ? document.activeElement?.closest("[data-inbox-row]")
           : document.querySelector(`[data-inbox-row="${CSS.escape(rowId)}"]`);
+      const box = frame?.getBoundingClientRect();
+      const { overflowY } = frame === null ? { overflowY: "visible" } : getComputedStyle(frame);
+      const listScrolls =
+        frame !== null &&
+        (overflowY === "auto" || overflowY === "scroll") &&
+        frame.scrollHeight > frame.clientHeight;
+      const [from, to] =
+        listScrolls && box !== undefined ? [box.top, box.bottom] : [0, window.innerHeight];
       return {
-        listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
+        listScrolls,
+        listTop: (box?.top ?? 0) + window.scrollY,
+        rowHeight: row?.getBoundingClientRect().height ?? 0,
         rowTop: row?.getBoundingClientRect().top ?? null,
+        viewBottom: Math.min(to, box?.bottom ?? window.innerHeight, window.innerHeight),
+        viewTop: Math.max(from, box?.top ?? 0, 0),
       };
     }, id);
   const wrong: string[] = [];
@@ -8311,38 +8352,59 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         wrong.push(
           `${where}: the focus is on ${now.name}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
         );
-      } else if (now.row !== after) {
+      } else if (now.row !== after || !now.isRow) {
         wrong.push(
-          `${where}: the focus is on ${now.name}, not on "${afterName}", the row now at the marked row's place (${numbers})`
+          `${where}: the focus is on ${now.name}, not on the row of "${afterName}", the row now at the marked row's place (${numbers})`
         );
       }
-      // The landing's row stands where the row marked last stood on screen, and the window moved
-      // by the height that closed above the list in the press's commit and no more: below `sm`,
-      // Mark all read's line, which goes with the last unread threads. One read of the list's box
-      // and the landing's row: every hand-off of the press has run, and nothing else moves them.
+      // The landing's row stands where the row marked last stood on screen, else, where it stands
+      // partly out of sight there, at the nearest edge that shows it whole (`nearestEdgeTop`).
+      // The box that scrolls the rows moved by that scroll, and the window by the height that
+      // closed above the list in the press's commit besides, and no more: below `sm`, Mark all
+      // read's line, which goes with the last unread threads. One read of the list's box and the
+      // landing's row: every hand-off of the press has run, and nothing else moves them.
       const placed = await rowAndList(null);
       const closed = stood.listTop - placed.listTop;
-      if (
-        placed.rowTop === null ||
-        stood.rowTop === null ||
-        Math.abs(placed.rowTop - stood.rowTop) > 1
-      ) {
+      const atPlace =
+        stood.rowTop === null
+          ? null
+          : nearestEdgeTop(stood.rowTop, placed.rowHeight, placed.viewTop, placed.viewBottom);
+      if (placed.rowTop === null || atPlace === null || Math.abs(placed.rowTop - atPlace) > 1) {
         wrong.push(
-          `${where}: the row of ${now.name} stands at ${placed.rowTop} px, not where the row marked last stood, at ${stood.rowTop} px (${numbers})`
+          `${where}: the row of ${now.name} stands at ${placed.rowTop} px, not where the row marked last stood, at ${stood.rowTop} px, nor at the nearest edge that shows it whole there, ${atPlace} px (${numbers})`
         );
       }
+      const shown = stood.rowTop === null || atPlace === null ? 0 : stood.rowTop - atPlace;
+      const [windowBy, listBy] = placed.listScrolls ? [-closed, shown] : [shown - closed, 0];
       if (
-        Math.abs(before.scrollY - now.scrollY - closed) > 1 ||
-        now.scrollTop !== before.scrollTop
+        Math.abs(now.scrollY - before.scrollY - windowBy) > 1 ||
+        Math.abs(now.scrollTop - before.scrollTop - listBy) > (listBy === 0 ? 0 : 1)
       ) {
         wrong.push(
-          `${where}: the press scrolled by more than the ${Math.round(closed)} px that closed above the list, with the focus on ${now.name}: ${numbers}`
+          `${where}: the press scrolled by more than the ${Math.round(closed)} px that closed above the list and the ${Math.round(shown)} px that show ${now.name} whole: ${numbers}`
         );
       }
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+/** Where a box `height` tall whose top stands at `top` stands once it is scrolled to its nearest
+ *  edge in the part of the window the reader sees from `viewTop` to `viewBottom`, as
+ *  `scrollIntoView({ block: "nearest" })` puts it with no scroll padding: where it stands while it
+ *  is wholly in that part or overhangs both its ends; else, with one end out, at the top of that
+ *  part where the top is out and it fits, or where the foot is out and it does not, and at its
+ *  foot otherwise. INFRA-2160's R8 hand-off scrolls the row it focuses so, by the window's and
+ *  each box's visible edges (`landNearest`), the one scroll a landing may make (INFRA-3135's
+ *  ruling of 2026-11-21 12:3xZ). */
+function nearestEdgeTop(top: number, height: number, viewTop: number, viewBottom: number): number {
+  const bottom = top + height;
+  const fits = height <= viewBottom - viewTop;
+  if ((top >= viewTop && bottom <= viewBottom) || (top < viewTop && bottom > viewBottom)) {
+    return top;
+  }
+  return top < viewTop === fits ? viewTop : viewBottom - height;
+}
 
 // SLOW(>=2s): an epic of 44 issues seeded, and at two widths two of them taken out of it from the
 // List's selection bar.
