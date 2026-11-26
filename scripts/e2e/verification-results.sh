@@ -57,8 +57,9 @@
 # older-rows runs first, on a database that the build of the release before wrote, before this
 # checkout's build has started on it at all (older_rows_upgrade). The release before's build
 # migrates the emptied database and stores older-rows' 300 merged pull requests itself, from their
-# events and from one pass of its own reconcile, under the delivery settings it needs to take any
-# event; then this checkout's build starts on that database and older-rows' phases run on it. The
+# events and from one pass of its own reconcile, under delivery settings, which its timeline rows
+# need and which its intake, in a release before main's #5525, needs to take any event; then this
+# checkout's build starts on that database and older-rows' phases run on it. The
 # run then empties the database again and starts a NATS of its own, so the cases and every phase
 # after them start from nothing, with no delivery settings, as they did before older-rows came
 # first. key-reading-changes' 5,000 pull requests are stored by the server under test too: its

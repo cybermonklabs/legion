@@ -90,8 +90,9 @@
 // all the same, and every head of the cases before the phases reaches Dispatch that way. Its
 // durable's first bind starts at the stream's next message, so the setup waits for the bind before
 // any case publishes. stores-agree and limit-of-one write the settings their passes need.
-// older-rows writes them through the release before's build, whose intake takes no event without
-// them, on a database the shell empties before the cases.
+// older-rows writes them through the release before's build, whose timeline rows need them, and
+// whose intake, in a release before main's #5525, takes no event without them, on a database the
+// shell empties before the cases.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -292,7 +293,8 @@ const betaRepo = "beta/tools";
 const betaDeployRepo = "beta/deploy";
 const betaInstallation = 258;
 /** The deploy repository of older-rows' delivery settings, on the installation of the seven
- *  checks: the release before's intake takes no event without settings. */
+ *  checks: the release before's timeline rows need settings, and its intake, before main's #5525,
+ *  takes no event without them. */
 const olderRowsDeployRepo = "acme/attribution-deploy";
 /** The repositories whose reads of pull requests a case of the seven checks counts. */
 const attributionRepos = [attributionRepo, attributionSecondRepo, attributionOldName];
@@ -2906,8 +2908,8 @@ function sqlKeys(keys: readonly string[]): string {
 // older_rows_upgrade, which runs it before any other case). 300 merged pull requests #7001 to
 // #7300 (index i = n - 7000, j = i % 6), each on the branch legion/N(j) with the body
 // `Follows D(j). Closes L(j).` (#7051 to #7060: `Follows D(j).`), as GitHub answers them from the
-// start (olderRowsPull). The release before's build stores them itself, under the delivery
-// settings that its intake needs to take any event:
+// start (olderRowsPull). The release before's build stores them itself, under delivery settings,
+// which its timeline rows need, and which its intake, before main's #5525, needs to take any event:
 //   - with the issues L(j) alone made and acme/old-name the project's default repository
 //     (setDefaultRepository, by the route its build serves), the merged events of #7221 to #7240
 //     under that name; then, with acme/attribution-live the project's default repository, the
@@ -3013,17 +3015,6 @@ async function awaitTrue(probe: () => Promise<boolean>, ms: number): Promise<boo
   }
 }
 
-/** How many lines of the server's log bind the intake's durable of pull request events. */
-function eventsBoundLines(): number {
-  return readFileSync(dispatchLog, "utf8")
-    .split("\n")
-    .filter(
-      (line) =>
-        line.includes('msg="dispatch delivery: NATS consumer bound"') &&
-        line.includes("name=delivery-events")
-    ).length;
-}
-
 /** The keys that the next `count` issues of the project ATT take after `keys`, whose newest is the
  *  newest key it gave. */
 function keysAfter(keys: readonly string[], count: number): string[] {
@@ -3089,10 +3080,12 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
       },
     }
   );
-  const bound = eventsBoundLines();
   await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(olderRowsDeployRepo));
-  if (!(await awaitTrue(async () => eventsBoundLines() > bound, 60_000))) {
-    return "the release before's intake bound no durable of pull request events within 60 s of its delivery settings";
+  // A release before main's #5525 binds the intake's durable of pull request events only once
+  // delivery settings are saved, and one with it binds that durable as it starts, whatever the
+  // settings: either way the events go out once the durable is push-bound.
+  if (!(await awaitTrue(async () => (await eventsDurable())?.push_bound === true, 60_000))) {
+    return `the release before's intake had bound no durable of pull request events 60 s after its delivery settings: ${durableText(await eventsDurable())}`;
   }
   note(
     `the delivery settings name ${olderRowsDeployRepo}; the release before's intake bound its durable`
@@ -4497,9 +4490,9 @@ async function bindSince(
   }
 }
 
-/** The intake's durable, delivery-events, as the server reports it, or undefined where the stream
- *  holds no such consumer. */
-async function tipDurable(): Promise<ConsumerInfo | undefined> {
+/** The intake's durable of pull request events, delivery-events, as the server reports it, or
+ *  undefined where the stream holds no such consumer. */
+async function eventsDurable(): Promise<ConsumerInfo | undefined> {
   const manager = await nats.jetstreamManager();
   try {
     return await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
@@ -4520,7 +4513,7 @@ function durableText(info: ConsumerInfo | undefined): string {
 async function tipDurableSettled(step: string): Promise<ConsumerInfo> {
   const deadline = Date.now() + intakeBindWaitMs;
   for (;;) {
-    const info = await tipDurable();
+    const info = await eventsDurable();
     if (info !== undefined && info.num_pending === 0 && info.num_ack_pending === 0) return info;
     if (Date.now() >= deadline) {
       setupFailed(step, `after ${intakeBindWaitMs} ms the durable is: ${durableText(info)}`);
@@ -4732,7 +4725,7 @@ async function firstStartTipHalf(half: string): Promise<never> {
 async function tipBacklog(): Promise<void> {
   const manager = await nats.jetstreamManager();
   const stream = await manager.streams.info("ENVOY_NOTIFICATIONS");
-  const before = await tipDurable();
+  const before = await eventsDurable();
   if (before !== undefined) {
     throw new Error(`the intake's durable exists before the first start: ${durableText(before)}`);
   }
@@ -4869,7 +4862,7 @@ async function tipFirstStart(
  *  which the second start must bind right after, whether #22's texts hold its commit messages, and
  *  the fake's log emptied. */
 async function tipStopped(): Promise<void> {
-  const info = await tipDurable();
+  const info = await eventsDurable();
   if (info === undefined) throw new Error("the first start left no durable");
   const messagesBefore = await sql(tipMessagesOfTheSecond);
   await resetPullReads();

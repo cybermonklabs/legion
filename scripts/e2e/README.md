@@ -4237,6 +4237,7 @@ the seven checks below, from `older-rows` to `limit-of-one`.
 Three more cases prove the `dispatch` command itself (`parseCommand` in `packages/envoy-client/src/dispatch-command.ts`).
 It refuses a bare `-` given to any text flag its help lists, except `dispatch artifact --path`, whose value names a local file.
 It keeps every other value of a text flag byte for byte.
+One more case, `first-start-tip`, proves the first start after a deploy on its own NATS and database, after every other: it reads no event the bus held, a push after it writes its head, and a second start reads no event again.
 
 Each item below names an input and its default, then what it means.
 
@@ -4277,8 +4278,9 @@ Each item below names an input and its default, then what it means.
 
 - `VERIFICATION_RESULTS_E2E_ONLY` — unset
 
-  one case of the seven checks, which a negative control runs alone.
-  The driver then skips every case before the one-pass phases, and every phase of another case but the self-check of the boundary.
+  one case of the seven checks, or `first-start-tip`, which a negative control runs alone.
+  Named `first-start-tip`, the run runs that case and nothing else: no other case, no phase and no `older-rows`.
+  Named one of the seven, `first-start-tip` does not run, and the driver skips every case before the one-pass phases, and every phase of another case but the self-check of the boundary.
   The first phase of `rule-reaches-each-row` still makes its writes, and asserts nothing, when it names `key-reading-changes` or `stores-agree`, which stand on them.
   A phase whose assert the driver skips prints `skip <phase>`, never `ok <phase>`.
   The run exits 1, with the driver's `FAIL <case>` line, only when the named case failed.
@@ -4290,6 +4292,12 @@ Each item below names an input and its default, then what it means.
   `1` names a server built before the attribution line of a pass, as a `DISPATCH_BIN` built from such a commit is.
   The boundary of one pass then rests on the two records of the pass and the free lease, and does not count that line.
   Without it, a log that holds no such line fails the boundary, so only a negative control's command sets it
+
+- `VERIFICATION_RESULTS_E2E_TIP_CONTROL` — unset
+
+  `1` is `first-start-tip`'s negative control, which the run refuses without `VERIFICATION_RESULTS_E2E_ONLY=first-start-tip`:
+  before the first start the driver creates the intake's durable to deliver from the stream's first message.
+  A run of the head never sets it
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
@@ -4313,6 +4321,10 @@ A case that reads the answers of exactly one pass is a one-pass phase, which the
 `older-rows` runs before every case, on a database the release before's build wrote (`older_rows_upgrade`).
 That build starts on the emptied database and migrates it, with a NATS of `older-rows`' own, and stores the case's 300 pull requests itself from their events and one pass of its own reconcile; then this checkout's build starts on that database and `older-rows`' two phases run.
 The script then empties the database again, removes the driver's state file and starts the run's own NATS, so the cases and every later phase start from nothing, with no delivery settings, as they would with no `older-rows` before them.
+
+`first-start-tip` runs after every other case and phase (`first_start_tip`), on a NATS of its own and an emptied database.
+Each of its starts has the delivery reconcile's next pass an hour away, and the CI reconcile and the webhook redelivery sweep an hour apart, so the first pass of each, at a random moment in its hour, falls in a window whose calls the driver counts only about once in a thousand runs.
+A server with no GitHub App, so with no delivery intake, starts and makes the stream, as a deployment's stream stands before the first start that runs an intake.
 
 The driver, `verification-results.ts`, acts as one session with the agent token (each write naming the session as `actor`) and as the person `alice` through `GET /auth/_dev/signin`.
 It also runs the `dispatch` command as a process: the `bin/dispatch.ts` that `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` names, else this checkout's `packages/envoy-client/bin/dispatch.ts`.
@@ -4463,7 +4475,8 @@ each pass also reads again the open pull requests the earlier cases left in `acm
   Its log line counts `facts_left` and `reads_left` 0, and `dispatch attribution` prints 0 for both
 
 - `older-rows` — 300 merged pull requests `#7001` to `#7300` (i = n − 7000, j = i % 6), each on `legion/N(j)` with the body `Follows D(j). Closes L(j).` (`#7051` to `#7060`: `Follows D(j).`), as GitHub answers them from the start.
-  The release before's build stores them, under the delivery settings its intake needs to take any event (deploy repository `acme/attribution-deploy`).
+  The release before's build stores them, under delivery settings (deploy repository `acme/attribution-deploy`), which its timeline rows need, and which its intake, in a release before main's #5525, needs to take any event.
+  The driver publishes the events once that intake's durable is push-bound: such a release binds it after the settings, and a later one as it starts.
   First the issues `L(j)` are made, with `acme/old-name` the project's default repository (through the route its build serves, as the setup above writes a default), and the merged events of `#7221` to `#7240` are published under that name.
   Then `acme/attribution-live`, the name the repository has after its rename, becomes the project's default repository, and the events of `#7001` to `#7220` and `#7241` to `#7260` are published under it.
   Its intake stores 260 results rows with no texts, as `L(j)` by `title_body` and `#7051` to `#7060` as no issue, and the timeline rows of `#7001` to `#7060`, whose author is of the settings' population.
@@ -4521,6 +4534,17 @@ each pass also reads again the open pull requests the earlier cases left in `acm
   The installation of `acme/attribution-live` has spent its rate limit, with a read owed and a partial row of its own
 
   after one pass, `#11` has a results row and no owed read, `#12` is at GitHub's head, `#13` has texts with its messages, `#14` is written and not partial with its first commit, `#15` is stored and not partial, and the pass's log line names `rate_limit_scope=installation:259`, the first installation's limit
+
+- `first-start-tip` — the project `TIP` and `acme/first-start`, on an installation of its own.
+  While no server runs, the driver publishes `#21`'s `opened` and `synchronize` events and `#22`'s `opened` event to the stream; no durable of the intake exists.
+  The server starts with the App; after its first start, a pass of the case's check is recorded at a new head, and `#22` is pushed there with its body naming the issue.
+  The server starts a second time, and then once more with the durable made again to deliver from the stream's first message.
+  The fake GitHub's log of calls (`GET /__fixture/requests`'s `calls`) is what the case reads of GitHub, and its self-check is one read of a pull request the driver makes, which must be the one call in the log
+
+  after the first start: no head row of `#21` or `#22`, the intake bound at the stream's next sequence, and no read of either pull request from GitHub.
+  Within 5 seconds of the push, `#22` is stored open at its new head, `#21` has no row, and `dispatch results` compares the check with `#22` at that head.
+  After the second start: the intake bound right after the ack floor the first start left, the durable redelivered nothing, `#21` has no row, no pull request is read by the REST routes the intake reads with, and every call of GitHub but the webhook redelivery sweep's is the reconcile pass's facts line reading `#22`'s commit messages, which the read of the push did not store because the body named the issue: the installation lookup, the token and one GraphQL query asking for `#22` alone, with the messages not stored before the second start and stored after its pass.
+  The last start binds at or below that ack floor and reads a pull request from GitHub, so the readings of the second start can see a start that reads an event again
 
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
@@ -4633,6 +4657,12 @@ DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=older-rows bash <tree with that d
 #   fixture, want 1
 # → UNKNOWN older-rows: the run stopped at older-rows, before the check of older-rows: …; exit 2:
 #   the run shows the boundary's refusal, and nothing of older-rows' own check
+# The first start's durable made before it, to deliver from the stream's first message:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=first-start-tip VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 \
+  bash scripts/e2e/verification-results.sh
+# → FAIL first-start-tip: T1: the first start wrote heads from the events the bus held: #21 open at
+#   d1d1d1d1d1d1; #22 open at d2d2d2d2d2d2 … T1: the first start's intake bound at stream sequence 1,
+#   want 4 … T1: the first start read the pull requests of the events the bus held from GitHub: …
 ```
 
 ## child-adoption.sh
