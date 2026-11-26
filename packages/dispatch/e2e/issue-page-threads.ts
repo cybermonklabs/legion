@@ -1538,6 +1538,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
  *  at this width: its toggle from 1280 px up, and its item of the one control's menu below. */
 export async function pressThreads(page: Page): Promise<void> {
   await presetRow(page).waitFor();
+  // The view row is mounted and chooses toggles or one chooser synchronously from viewport width.
   if ((await presetChooser(page).count()) > 0) {
     await presetChooser(page).click();
     await expect(threadsMenuItem(page), "the view row's menu holds no Threads").toHaveCount(1);
@@ -1579,6 +1580,7 @@ export async function expectRowsDrawn(page: Page, where: string): Promise<number
 /** The number the control under the rows says is left, or 0 where it draws none. */
 export async function leftNumber(page: Page): Promise<number> {
   const control = showNextControl(page);
+  // Callers settle the current page's rows first, and the paging control renders in the same commit.
   if ((await control.count()) === 0) return 0;
   const name = ((await control.textContent()) ?? "").replace(/\s+/g, " ").trim();
   return Number(SHOW_NEXT_NAME.exec(name)?.[1] ?? Number.NaN);
@@ -1599,6 +1601,7 @@ export async function drawEveryPage(
     pages.push(rows.slice(seen).map((row) => row.id));
     seen = rows.length;
     left.push(await leftNumber(page));
+    // The rows of the current page have settled above, and the paging control renders in the same commit.
     if ((await showNextControl(page).count()) === 0) return { left, pages };
     await showNextControl(page).click();
     await expect

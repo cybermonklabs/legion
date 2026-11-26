@@ -175,6 +175,7 @@ function endsWith(path: string): RegExp {
  *  and the names of the one control's menu items below. */
 async function viewRowNames(page: Page): Promise<string[]> {
   await presetRow(page).waitFor();
+  // The view row is mounted and chooses toggles or one chooser synchronously from viewport width.
   if ((await presetChooser(page).count()) === 0) {
     return (await presetToggles(page).locator("[data-preset-name]").allTextContents()).map((name) =>
       name.trim()
@@ -788,6 +789,7 @@ test("each row draws its kind, its first line, who is in it, its last activity a
       await loadThreads(page, key);
       await drawEveryPage(page, `All ${at}`);
       const [records, reads] = await Promise.all([recordsById(key), markReads(key)]);
+      // Every page of All has already settled in drawEveryPage above before this read runs.
       const drawn = await drawnRows(page);
       for (const row of drawn) {
         const known = records.get(row.id);
@@ -1282,6 +1284,7 @@ test("New thread sends a message to an agent, and the agent's reply comes back i
       [stopped, "aside"],
     ] as const) {
       const words = `A new thread to ${party.title}.`;
+      // On pass one the list is open; on pass two the previous loop settled on the opened record.
       if (width < SIDE_BY_SIDE_FROM && (await backToList(page).count()) > 0) {
         await backToList(page).click();
       }
@@ -1314,14 +1317,18 @@ test("New thread sends a message to an agent, and the agent's reply comes back i
       ).toEqual(parties.map((one) => one.target).sort());
       const filter = panel.getByRole("textbox", { exact: true, name: CHOOSER_FILTER });
       await filter.fill(live.title);
-      for (const name of await chooser
-        .getByRole("option")
-        .evaluateAll((options) => options.map((option) => option.textContent ?? ""))) {
-        expect(
-          name.toLowerCase(),
-          "the chooser's filter keeps a party it does not match"
-        ).toContain(live.title.toLowerCase());
-      }
+      await expect
+        .poll(
+          async () => {
+            const names = await chooser.getByRole("option").allTextContents();
+            return (
+              names.length > 0 &&
+              names.every((name) => name.toLowerCase().includes(live.title.toLowerCase()))
+            );
+          },
+          { message: "the chooser's filter keeps a party it does not match" }
+        )
+        .toBe(true);
       await filter.fill("");
       const send = panel.getByRole("button", { exact: true, name: SEND });
       await expect(send, "Send is offered with no agent chosen").toBeDisabled();
@@ -1922,6 +1929,7 @@ test("a write that lands while Threads is open is drawn with no reload, and the 
         })
         .toBe(target.id);
     } finally {
+      // seenListRows disconnects the mutation observer and returns snapshots already recorded before the poll settled.
       seen = await seenListRows(page);
     }
     expect(seen.length, "the list drew nothing as the agent's reply landed").toBeGreaterThan(0);
@@ -2145,10 +2153,9 @@ test("with the setting off, today's page draws for /threads what main draws", as
     await expect(panel, "today's page draws no Dashboard panel").toBeVisible();
     const waiting = panel.getByRole("region", { exact: true, name: "Waiting on you" });
     await expect(waiting).toBeVisible();
-    for (
-      let next = waiting.getByRole("button", { name: /^Show the next five/ });
-      (await next.count()) > 0;
-    ) {
+    const next = waiting.getByRole("button", { name: /^Show the next five/ });
+    // Today's Dashboard renders Waiting on you only after its single replies read has settled.
+    while ((await next.count()) > 0) {
       await next.click();
     }
     for (const [id, kind] of [
