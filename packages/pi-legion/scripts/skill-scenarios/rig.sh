@@ -40,6 +40,11 @@
 #                                                  passed each clause, and its verdict; a control
 #                                                  form's case the control's own cell over every
 #                                                  owner of the form, with cells' verdict
+#   rig.sh forward-cell <scenario> <label> <world> <count>
+#                                                  a forward scenario's cell (score.ts
+#                                                  forward-cell): its discarded launches, then C6's
+#                                                  decision on a control label's cell or the head's
+#                                                  line, then whether the head's Job may start
 #   rig.sh evidence  [<scenario>]                  the cells, each label's built-from and each
 #                                                  run's row and model, as Markdown
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
@@ -145,7 +150,8 @@
 #                   names the world, which the run's name carries: <scenario>-<world>-<label>-<n>.
 #                   The run has no daemon stand-in, and the rig starts no Oh My Pi:
 #                   `label-texts.sh daemon` runs the label's TestRigDaemonLive, whose daemon
-#                   launches the pane (run_forward, below).
+#                   launches the pane (run_forward, below). Scored by forwardOnly, one run at a time
+#                   (`score.ts runs --run`), and decided in cells (`rig.sh forward-cell`).
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -2730,6 +2736,14 @@ build_label_texts() {
   if [ "${SKILL_SCENARIOS_PATH_CHECK:-}" = 1 ]; then label_texts build --compile; else label_texts build; fi
 }
 
+# cmd_forward_cell SCENARIO LABEL WORLD COUNT prints the cell of WORLD under LABEL (score.ts
+# forward-cell): each discarded launch, then C6's decision line of a control label's cell, or the
+# head's line, then whether the head's Job of WORLD may start.
+cmd_forward_cell() {
+  [ $# = 4 ] || fail "usage: rig.sh forward-cell <forward-only|forward-owner> <label> <world> <count>"
+  bun "$here/score.ts" forward-cell "$work/runs" "$@"
+}
+
 # Where a label manifest's patch and text files are named from (controls/patches/README.md).
 rig_files=$here
 
@@ -3222,6 +3236,7 @@ run) shift && cmd_run "$@" ;;
 score) shift && cmd_score "$@" ;;
 rows) shift && cmd_rows "$@" ;;
 cell) shift && cmd_cell "$@" ;;
+forward-cell) shift && cmd_forward_cell "$@" ;;
 evidence) shift && cmd_evidence "$@" ;;
 label-tree) shift && cmd_label_tree "$@" ;;
 unpatch-holds) shift && cmd_unpatch_holds "$@" ;;

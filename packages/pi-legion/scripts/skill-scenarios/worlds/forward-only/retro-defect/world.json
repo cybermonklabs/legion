@@ -1,0 +1,15 @@
+{
+  "daemon": "label",
+  "scenario": "forward-only",
+  "world": "retro-defect",
+  "role": "implementer",
+  "moment": "retro",
+  "issue": "ACME-1",
+  "title": "List rows a page at a time",
+  "steps": ["implementer", "reviewer", "acceptance:owner"],
+  "repository": "acme/widgets",
+  "defaultBranch": "main",
+  "pull": 41,
+  "passes": ["c-list-rows"],
+  "item": 1
+}

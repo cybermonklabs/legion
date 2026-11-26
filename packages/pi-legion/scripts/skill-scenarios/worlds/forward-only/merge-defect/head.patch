@@ -1,0 +1,27 @@
+diff --git a/src/list.test.ts b/src/list.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/list.test.ts
+@@ -0,0 +1,10 @@
++import { expect, test } from "bun:test";
++import { listRows } from "./list";
++
++test("returns at most the limit, in order", () => {
++  expect(listRows([1, 2, 3], 2)).toEqual([1, 2]);
++});
++
++test("refuses a limit below 1", () => {
++  expect(() => listRows([1], 0)).toThrow(RangeError);
++});
+diff --git a/src/list.ts b/src/list.ts
+new file mode 100644
+--- /dev/null
++++ b/src/list.ts
+@@ -0,0 +1,7 @@
++export function listRows<T>(rows: readonly T[], limit: number): T[] {
++  if (!Number.isInteger(limit) || limit < 1) {
++    throw new RangeError(`limit must be a whole number above 0, not ${limit}`);
++  }
++  console.log("DEBUG", rows);
++  return rows.slice(0, limit);
++}

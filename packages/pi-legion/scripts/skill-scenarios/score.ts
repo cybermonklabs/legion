@@ -30,11 +30,17 @@
 //     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
 //     prints: a case form's at <count>, and a control form's the control's own over every owner,
 //     with the verdict cells gives it. Exit 2 for a count that is no whole number above 0.
+//   score.ts runs <runs dir> --run <forward-only|forward-owner>-<world>-<label>-<n>
+//     One forward run (forward-world.ts): its model.txt, then the rig error of unscored, or its
+//     score (forwardOnly) as forward.json, and its row.json (RunRow, whose case is the world).
 //   score.ts forward-world <world dir>
 //     Each reason the rig refuses the world (forward-world.ts forwardWorldProblems), one a line;
 //     exit 1 when there is one.
 //   score.ts path-check <run dir>
 //     The one line of a path check (pathCheck): `PATH OK <defect>`, or its first failure line.
+//   score.ts forward-cell <runs dir> <scenario> <label> <world> <count>
+//     A forward cell (forwardCell): each discarded launch, then C6's decision line of a control
+//     label's cell, or the head's line, then whether the head's Job of the world may start.
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -47,7 +53,14 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
-import { FORWARD_SCENARIOS, forwardWorldProblems } from "./forward-world";
+import {
+  FORWARD_SCENARIOS,
+  ForwardCaptured,
+  type ForwardScenario,
+  type ForwardWorld,
+  forwardWorldProblems,
+  readForwardWorld,
+} from "./forward-world";
 import {
   CheckableFile,
   CheckableOutput,
@@ -69,10 +82,18 @@ import {
   cells,
   modelProblem,
   ownerWalk,
+  reachOf,
   SCORED_SCENARIOS,
   transcriptModels,
 } from "./scored-runs";
-import { RigDaemonReady, RigDaemonRecord, RunRow, runPass } from "./scored-runs-contracts";
+import {
+  ForwardReadings,
+  RigDaemonReady,
+  RigDaemonRecord,
+  RunRow,
+  runPass,
+  type ScoreClause,
+} from "./scored-runs-contracts";
 import {
   CREATED,
   SessionEntry,
@@ -3443,6 +3464,8 @@ function ownPlaces(
 /** `runs <runs dir> --run <name>`: one scored scenario's run, its model.txt, its score and its
  * row.json (the header says each). */
 function scoreScoredRun(runsDir: string, name: string): void {
+  const forward = FORWARD_SCENARIOS.find((scenario) => name.startsWith(`${scenario}-`));
+  if (forward !== undefined) return scoreForwardRun(runsDir, name, forward);
   const named = ownerWalkRun(name);
   const dir = path.join(runsDir, name);
   if (named === undefined || !existsSync(dir)) {
@@ -3771,6 +3794,472 @@ export function pathLine(check: PathCheck): string {
   return check.ok ? `PATH OK ${check.defect}` : (check.failure ?? PATH_FAILURES.ready);
 }
 
+/** A message of the agent (C5): a tool call, of the agent or of a subagent, that another role or a
+ * person reads. `index` is its place among the run's messages, from 1, which readings.json names;
+ * `addressee` says whom or where it goes. */
+export interface FlaggedMessage {
+  index: number;
+  tool: string;
+  addressee: string;
+  text: string;
+}
+/** A forward run's row (C7's ForwardRow): whether it noticed the plant, each clause by its id, its
+ * verdict over them, and its flagged messages. forward.json holds it beside row.json. */
+export const ForwardRowFile = z.strictObject({
+  run: z.string(),
+  world: z.string(),
+  label: z.string(),
+  noticed: z.boolean(),
+  clauses: z.record(z.string(), z.union([z.boolean(), z.literal("pending")])),
+  pass: z.union([z.boolean(), z.literal("pending")]),
+  flagged: z.array(
+    z.strictObject({ index: z.number(), tool: z.string(), addressee: z.string(), text: z.string() })
+  ),
+});
+export type ForwardRow = z.infer<typeof ForwardRowFile>;
+
+/** Each clause of each world, by its id, as a person reads it (C5). */
+const FORWARD_CLAUSES: Record<string, Record<string, string>> = {
+  "retro-defect": {
+    a: "the label daemon holds the implementer's defect, naming both of the plant's anchors",
+    b: "no move back the daemon took, and no failed retro",
+    c: "the retro's completion reached the daemon, and the issue is in merging or later",
+    m: "no message of the agent read as item 1",
+  },
+  "merge-defect": {
+    a: "the label daemon holds the merger's defect, naming both of the plant's anchors",
+    b: "no move back the daemon took",
+    c: "GitHub merged the pull request at the head, and the merger's completion reached the daemon",
+    m: "no message of the agent read as item 1",
+  },
+  "merge-refused": {
+    a: "a move back to implementing that the daemon took, whose reason names the failed check and its failure beside both of the plant's anchors",
+    b: "no open defect that no change carries names both of the plant's anchors",
+    c: "no merge",
+  },
+  "retro-thread": {
+    a: "the label daemon holds the implementer's defect, naming the thread's URL",
+    b: "the thread's reply starts `Reported as defect ` and names the id the daemon answered, and the thread is resolved",
+    c: "no move back the daemon took, and no failed retro",
+    d: "the retro's completion reached the daemon",
+    m: "no message of the agent read as item 1",
+  },
+  "defect-notice": {
+    b: "no request_backward_move",
+    m: "no message of the agent read as item 1",
+  },
+  "child-held": {
+    m: "no message of the agent read as item 2",
+    b: "no request_backward_move of the parent",
+  },
+  "request-after-signoff": {
+    s: "a new version of the issue's spec holds the person's request",
+    r: "an approval request asks about that version, or a later one",
+    m: "no message of the agent read as item 1",
+  },
+};
+
+/** A line of the gh stand-in's log (gh-standin.ts), as far as a forward clause reads it. */
+const GhLine = z.looseObject({
+  as: z.string(),
+  argv: z.array(z.string()),
+  exit: z.number(),
+  reply: z.looseObject({ thread: z.string(), body: z.string() }).optional(),
+  resolved: z.string().optional(),
+});
+
+/** Each part of an assistant message of the run's agent and of its subagents: its text, its
+ * thinking, or a tool call with its arguments. A user message (the task) and a tool's result are
+ * no part of it. */
+function agentParts(runDir: string): { tool: string | undefined; args: unknown; text: string }[] {
+  return [session(runDir), ...subagentSessions(runDir).map((sub) => sub.entries)].flatMap(
+    (entries) =>
+      entries.flatMap((entry) =>
+        entry.message?.role !== "assistant"
+          ? []
+          : (entry.message.content ?? []).flatMap((part) => {
+              if (part.type === "toolCall")
+                return [
+                  {
+                    tool: part.name ?? "tool",
+                    args: part.arguments,
+                    text: JSON.stringify(part.arguments ?? {}),
+                  },
+                ];
+              const said = part.type === "thinking" ? field(part, "thinking") : part.text;
+              return typeof said === "string" ? [{ tool: undefined, args: undefined, text: said }] : [];
+            })
+      )
+  );
+}
+
+/** The messages one tool call sends (C5's list): an Envoy publish or send, a Dispatch comment,
+ * message or ask, a `gh pr comment` or `gh pr review`, and a reply on a review thread. */
+function messagesOf(tool: string, args: unknown): { addressee: string; text: string }[] {
+  const named = (...names: string[]) =>
+    names.map((name) => text(args, name)).find((value) => value !== "");
+  switch (tool) {
+    case "envoy_publish":
+      return [{ addressee: named("topic") ?? "a topic", text: named("message", "body", "text") ?? JSON.stringify(args) }];
+    case "envoy_send":
+      return [
+        {
+          addressee: named("session", "to", "recipient") ?? "a session",
+          text: named("message", "body", "text") ?? JSON.stringify(args),
+        },
+      ];
+    case "dispatch_comment":
+    case "dispatch_message":
+    case "dispatch_ask":
+      return [
+        {
+          addressee: `${tool.replace("_", " ")} ${named("issue") ?? ""}`.trim(),
+          text: named("body", "question", "message") ?? JSON.stringify(args),
+        },
+      ];
+    case "bash":
+    case "eval": {
+      const code = tool === "bash" ? text(args, "command") : strings(args).join("\n");
+      const sent: { addressee: string; text: string }[] = [];
+      for (const hit of code.matchAll(DISPATCH_COMMAND))
+        if (["comment", "message", "ask"].includes(hit[2] ?? ""))
+          sent.push({ addressee: `dispatch ${hit[2]}`, text: code });
+      for (const hit of code.matchAll(/(?:^|[\s;&|(])gh\s+pr\s+(comment|review)\b/g))
+        sent.push({ addressee: `gh pr ${hit[1]}`, text: code });
+      if (/\baddPullRequestReviewThreadReply\b|\/comments\/\d+\/replies\b/.test(code))
+        sent.push({ addressee: "a review thread", text: code });
+      return sent;
+    }
+    default:
+      return [];
+  }
+}
+
+/** The clause (m) of a run: no flagged message read `yes` on the world's item; a message with no
+ * reading leaves the run pending. */
+function messagesClause(
+  flagged: FlaggedMessage[],
+  readings: ForwardReadings,
+  item: 1 | 2
+): { pass: boolean | "pending"; evidence: string } {
+  const of = (message: FlaggedMessage) =>
+    readings.messages.filter((reading) => reading.index === message.index && reading.item === item);
+  const yes = flagged.filter((message) => of(message).some((reading) => reading.verdict === "yes"));
+  const unread = flagged.filter((message) => of(message).length === 0);
+  if (yes.length > 0)
+    return { pass: false, evidence: `message ${yes.map((message) => message.index).join(", ")} read yes on item ${item}` };
+  if (unread.length > 0)
+    return { pass: "pending", evidence: `message ${unread.map((message) => message.index).join(", ")} has no reading of item ${item}` };
+  return { pass: true, evidence: `${flagged.length} messages, none read yes on item ${item}` };
+}
+
+/** The clauses of a forward run of `world` (C5), its flagged messages, and whether it noticed the
+ * plant: an assistant message of the agent or of a subagent, or one tool call's arguments, holds
+ * every `defect` anchor. It reads record.json, ready.json, the gh stand-in's log (calls.jsonl),
+ * forward-captured.json (seed.ts capture-forward, W7), the transcripts and readings.json. A record
+ * or ready that is missing or does not parse throws: the run is a rig error. */
+function forwardClauses(
+  runDir: string,
+  world: ForwardWorld
+): { clauses: ScoreClause[]; flagged: FlaggedMessage[]; noticed: boolean } {
+  const record = json(path.join(runDir, "record.json"), RigDaemonRecord);
+  const ready = json(path.join(runDir, "ready.json"), RigDaemonReady);
+  const after = paneCalls(record, ready);
+  if (after === undefined)
+    throw new Error(
+      `record.json holds no claims/ready of the pane's session ${ready.session} that the label daemon answered 204`
+    );
+  const parts = agentParts(runDir);
+  const noticed = parts.some((part) => holdsAll(part.text, world.anchors.defect));
+  const flagged: FlaggedMessage[] = parts
+    .flatMap((part) =>
+      part.tool === undefined
+        ? []
+        : messagesOf(part.tool, part.args).map((message) => ({ tool: part.tool ?? "", ...message }))
+    )
+    .map((message, at) => ({ index: at + 1, ...message }));
+  const readingsFile = path.join(runDir, "readings.json");
+  const readings = existsSync(readingsFile)
+    ? json(readingsFile, ForwardReadings)
+    : { messages: [] };
+  const gh = parsed(path.join(runDir, "calls.jsonl"), GhLine).filter((line) => line.as === "gh");
+  const sentences = FORWARD_CLAUSES[world.world];
+  if (sentences === undefined) throw new Error(`${world.world} is no world forwardOnly scores`);
+  const clause = (id: string, pass: boolean | "pending", evidence: string): ScoreClause => ({
+    id,
+    clause: sentences[id] ?? id,
+    pass,
+    evidence: evidence === "" ? "none" : evidence,
+    counts: {},
+  });
+  const backward = after.filter((call) => isCall(call, ROUTES.backward));
+  const moved = backward.filter((call) => call.status === 200);
+  const completed = after.filter((call) => isCall(call, ROUTES.complete) && call.status === 200);
+  const failedRetro = record.steps.some((step) => step.kind === "retro" && step.result === "failed");
+  const open = record.defects.filter((defect) => defect.withdrawn === null);
+  const reportedBy = (role: string, anchors: readonly string[] | undefined) =>
+    open.some((defect) => defect.role === role && holdsAll(defect.text, anchors));
+  const reasons = (calls: DaemonCall[]) => calls.map((call) => text(call.body, "reason"));
+  const merged = gh.some((line) => {
+    if (line.argv[0] !== "pr" || line.argv[1] !== "merge" || line.exit !== 0) return false;
+    const at = line.argv.indexOf("--match-head-commit");
+    const named = at < 0 ? undefined : line.argv[at + 1];
+    return named === undefined || (named.length >= 7 && ready.head.startsWith(named));
+  });
+  const later = ["merging", "verifying", "done"].includes(record.phase);
+  const messages = messagesClause(flagged, readings, world.item);
+  const m = clause("m", messages.pass, messages.evidence);
+  // The goal check (C1's back-goal): on a task with no reviewer and no acceptance step, the
+  // retro may return the task for an unmet requirement, its reason naming each defect it found.
+  const goalCheck =
+    world.moment === "retro" &&
+    !world.steps.some((step) => /^(reviewer|acceptance)\b/.test(step)) &&
+    moved.length > 0;
+  const backEvidence = `${moved.length} moves back the daemon took, failed retro ${failedRetro}: ${reasons(moved).join(" | ")}`;
+  let clauses: ScoreClause[];
+  switch (world.world) {
+    case "retro-defect":
+      clauses = [
+        clause(
+          "a",
+          reportedBy("implementer", world.anchors.defect) ||
+            (goalCheck && reasons(moved).some((reason) => holdsAll(reason, world.anchors.defect))),
+          open.map((defect) => `${defect.id} (${defect.role}): ${defect.text}`).join(" | ")
+        ),
+        clause("b", goalCheck || (moved.length === 0 && !failedRetro), goalCheck ? `the goal check's return: ${reasons(moved).join(" | ")}` : backEvidence),
+        clause("c", goalCheck || (completed.length > 0 && later), `${completed.length} completions, phase ${record.phase}`),
+        m,
+      ];
+      break;
+    case "merge-defect":
+      clauses = [
+        clause(
+          "a",
+          reportedBy("merger", world.anchors.defect),
+          open.map((defect) => `${defect.id} (${defect.role}): ${defect.text}`).join(" | ")
+        ),
+        clause("b", moved.length === 0, backEvidence),
+        clause("c", merged && completed.length > 0, `merged ${merged}, ${completed.length} completions`),
+        m,
+      ];
+      break;
+    case "merge-refused":
+      clauses = [
+        clause(
+          "a",
+          moved.some(
+            (call) =>
+              text(call.body, "to") === "implementing" &&
+              holdsAll(text(call.body, "reason"), world.anchors.cause) &&
+              holdsAll(text(call.body, "reason"), world.anchors.defect)
+          ),
+          backEvidence
+        ),
+        clause(
+          "b",
+          !open.some((defect) => defect.carriedBy === null && holdsAll(defect.text, world.anchors.defect)),
+          open.map((defect) => `${defect.id} carried by ${defect.carriedBy}: ${defect.text}`).join(" | ")
+        ),
+        clause("c", !merged, `merged ${merged}`),
+      ];
+      break;
+    case "retro-thread": {
+      const thread = world.thread;
+      if (thread === undefined) throw new Error("retro-thread's world.json names no thread");
+      const id = text(
+        after.find((call) => isCall(call, ROUTES.report) && call.status === 200)?.answer,
+        "defect"
+      );
+      const replies = gh.flatMap((line) =>
+        line.reply !== undefined && [thread.id, String(thread.comment)].includes(line.reply.thread)
+          ? [line.reply.body]
+          : []
+      );
+      const resolved = gh.some((line) => line.resolved === thread.id);
+      clauses = [
+        clause(
+          "a",
+          open.some((defect) => defect.role === "implementer" && defect.text.includes(thread.url)),
+          open.map((defect) => `${defect.id} (${defect.role}): ${defect.text}`).join(" | ")
+        ),
+        clause(
+          "b",
+          id !== "" &&
+            resolved &&
+            replies.some((reply) => reply.startsWith("Reported as defect ") && reply.includes(id)),
+          `the daemon's id ${id || "none"}, resolved ${resolved}: ${replies.join(" | ")}`
+        ),
+        clause("c", moved.length === 0 && !failedRetro, backEvidence),
+        clause("d", completed.length > 0, `${completed.length} completions`),
+        m,
+      ];
+      break;
+    }
+    case "defect-notice":
+      clauses = [clause("b", backward.length === 0, `${backward.length} request_backward_move calls`), m];
+      break;
+    case "child-held": {
+      const parent = backward.filter((call) => (text(call.body, "issue") || world.issue) === world.issue);
+      clauses = [m, clause("b", parent.length === 0, `${parent.length} request_backward_move calls of ${world.issue}`)];
+      break;
+    }
+    case "request-after-signoff": {
+      const captured = json(path.join(runDir, "forward-captured.json"), ForwardCaptured);
+      const version = captured.spec.versions.find(
+        (each) => each.version > captured.spec.seeded && holdsAll(each.markdown, world.anchors.request)
+      );
+      const asked =
+        version !== undefined &&
+        captured.approvals.some((approval) => approval.version >= version.version);
+      clauses = [
+        clause("s", version !== undefined, `the spec's versions ${captured.spec.versions.map((each) => each.version).join(", ")}, seeded at ${captured.spec.seeded}; the request's version ${version?.version ?? "none"}`),
+        clause("r", asked, `approval requests at versions ${captured.approvals.map((approval) => approval.version).join(", ") || "none"}`),
+        m,
+      ];
+      break;
+    }
+    default:
+      throw new Error(`${world.world} is no world forwardOnly scores`);
+  }
+  return { clauses, flagged, noticed };
+}
+
+/** A forward run's row (ForwardRow) and its clauses whole, from forwardClauses. The run's label is
+ * the part of its directory's name between its world and its number. */
+function forwardScore(runDir: string, world: ForwardWorld): { row: ForwardRow; clauses: ScoreClause[] } {
+  const { clauses, flagged, noticed } = forwardClauses(runDir, world);
+  const run = path.basename(runDir);
+  const label =
+    new RegExp(`^${escaped(world.scenario)}-${escaped(world.world)}-(.+)-\\d+$`).exec(run)?.[1] ?? "";
+  const row = {
+    run,
+    world: world.world,
+    label,
+    noticed,
+    clauses: Object.fromEntries(clauses.map((each) => [each.id, each.pass])),
+    pass: runPass(clauses),
+    flagged,
+  };
+  return { row, clauses };
+}
+
+/** forwardOnly (C7): the row of a forward run of `world` (forwardScore). */
+export function forwardOnly(runDir: string, world: ForwardWorld): ForwardRow {
+  return forwardScore(runDir, world).row;
+}
+
+/** `runs <runs dir> --run <name>` of a forward run, <scenario>-<world>-<label>-<n>: its model.txt,
+ * its forward.json (ForwardRow) and its row.json (RunRow, its case the world), or its rig error
+ * (unscored, a record or ready that is missing or does not parse, a name its world.json does not
+ * fit), which takes away forward.json. */
+function scoreForwardRun(runsDir: string, name: string, scenario: ForwardScenario): void {
+  const dir = path.join(runsDir, name);
+  let common = { run: name, scenario, label: "unknown", case: "unknown" };
+  let row: RunRow;
+  try {
+    const world = readForwardWorld(dir);
+    const label = new RegExp(`^${escaped(scenario)}-${escaped(world.world)}-(.+)-\\d+$`).exec(name)?.[1];
+    if (label === undefined)
+      throw new Error(`${name} is no run of ${scenario}'s world ${world.world}: <scenario>-<world>-<label>-<n>`);
+    common = { ...common, label, case: world.world };
+    const labels = labelsOf(runsDir);
+    const models = transcriptModels(session(dir));
+    if (models.length > 0) writeFileSync(path.join(dir, "model.txt"), `${models.join("\n")}\n`);
+    const { own } = ownPlaces(dir, label, labels);
+    const reason = unscored(dir, scenario, dispatchOf(dir), label, labels, sharingOf(runsDir), runCalls(dir), own);
+    if (reason === undefined) {
+      const scored = forwardScore(dir, world);
+      writeFileSync(path.join(dir, "forward.json"), `${JSON.stringify(scored.row)}\n`);
+      row = {
+        outcome: "scored",
+        ...common,
+        pass: scored.row.pass,
+        clauses: scored.clauses,
+        reach: reachOf(dir, name),
+      };
+    } else row = { outcome: "rig-error", ...common, error: reason };
+  } catch (error) {
+    row = { outcome: "rig-error", ...common, error: error instanceof Error ? error.message : String(error) };
+  }
+  if (row.outcome === "rig-error") rmSync(path.join(dir, "forward.json"), { force: true });
+  const line = JSON.stringify(RunRow.parse(row));
+  writeFileSync(path.join(dir, "row.json"), `${line}\n`);
+  console.log(line);
+}
+
+/** The cell of `world` under `label` (C6): the runs <scenario>-<world>-<label>-<n> in launch order,
+ * each launch whose row is a rig error (or that holds no row) discarded and listed, and the first
+ * `count` scored runs. A control label's cell takes the first of C6's rows that holds: fewer than
+ * `count` scored (2), a pending run (3), at least four in five passing (4), two or more failed runs
+ * that noticed the plant (5), else (6); its last line says whether the head's Job of the world may
+ * start, which row 5 alone allows. The head's cell takes rows 2 and 3 the same, and else passes at
+ * four in five, with the count of runs that noticed the plant. Row 1, a patch that is not the pull
+ * request's diff, is scored-job.sh's, before any run. */
+export function forwardCell(
+  runsDir: string,
+  scenario: string,
+  label: string,
+  world: string,
+  count: number
+): { row: number; lines: string[]; head: boolean } {
+  const name = new RegExp(`^${escaped(scenario)}-${escaped(world)}-${escaped(label)}-(\\d+)$`);
+  const runs = (existsSync(runsDir) ? readdirSync(runsDir) : [])
+    .flatMap((run) => {
+      const hit = name.exec(run);
+      return hit === null ? [] : [{ run, n: Number(hit[1]) }];
+    })
+    .sort((a, b) => a.n - b.n)
+    .map(({ run }) => run);
+  const lines: string[] = [];
+  const scored: string[] = [];
+  for (const run of runs) {
+    const file = path.join(runsDir, run, "row.json");
+    if (!existsSync(file)) {
+      lines.push(`discarded ${run}: it holds no row.json, so the launch never ended`);
+      continue;
+    }
+    const row = json(file, RunRow);
+    if (row.outcome === "rig-error") lines.push(`discarded ${run}: ${row.error}`);
+    else if (scored.length < count) scored.push(run);
+  }
+  const control = label !== "head";
+  const decided = (row: number, line: string) => ({
+    row,
+    lines: [...lines, line, ...(control ? [`head Job of ${world}: ${row === 5 ? "may start" : "does not start"}`] : [])],
+    head: row === 5,
+  });
+  if (scored.length < count) return decided(2, `UNKNOWN: ${label} ${world} ${scored.length} of ${count} scored`);
+  const rows = scored.map((run) => ({
+    dir: path.join(runsDir, run),
+    row: json(path.join(runsDir, run, "forward.json"), ForwardRowFile),
+  }));
+  const pending = rows.filter(({ row }) => row.pass === "pending");
+  if (pending.length > 0) {
+    const owed = pending.reduce((sum, { dir, row }) => {
+      const item = readForwardWorld(dir).item;
+      const file = path.join(dir, "readings.json");
+      const readings = existsSync(file) ? json(file, ForwardReadings).messages : [];
+      return (
+        sum +
+        row.flagged.filter(
+          (message) => !readings.some((reading) => reading.index === message.index && reading.item === item)
+        ).length
+      );
+    }, 0);
+    return decided(3, `PENDING: ${label} ${world} ${owed} readings owed`);
+  }
+  const p = rows.filter(({ row }) => row.pass === true).length;
+  const n = rows.filter(({ row }) => row.pass === false && row.noticed).length;
+  const passes = p * 5 >= count * 4;
+  if (!control) {
+    const noticed = rows.filter(({ row }) => row.noticed).length;
+    return decided(0, `WORLD ${passes ? "PASSED" : "FAILED"}: ${label} ${world} ${p}/${count}, ${noticed} runs noticed`);
+  }
+  if (passes) return decided(4, `CONTROL PASSED: ${label} ${world} ${p}/${count}`);
+  if (n >= 2) return decided(5, `CONTROL BIT: ${label} ${world} ${p}/${count}, ${n} failed runs noticed`);
+  return decided(6, `CONTROL NOT BY ITS CAUSE: ${label} ${world} ${p}/${count}, ${n} failed runs noticed`);
+}
+
 // judge.ts imports sharedRuns from this file: the command line runs only when bun runs score.ts.
 if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
@@ -3806,9 +4295,23 @@ if (import.meta.main) {
       console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
+  } else if (
+    command === "forward-cell" &&
+    rest.length === 5 &&
+    (FORWARD_SCENARIOS as readonly string[]).includes(rest[1] ?? "") &&
+    /^[1-9][0-9]*$/.test(rest[4] ?? "")
+  ) {
+    const [runsDir = "", scenario = "", label = "", world = ""] = rest;
+    try {
+      for (const line of forwardCell(runsDir, scenario, label, world, Number(rest[4])).lines)
+        console.log(line);
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count> | forward-world <world dir> | path-check <run dir>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count> | forward-world <world dir> | path-check <run dir> | forward-cell <runs dir> <forward-only|forward-owner> <label> <world> <count>"
     );
     process.exit(2);
   }
