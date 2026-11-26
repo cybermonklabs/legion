@@ -51,7 +51,20 @@ export interface QuarantineEntry {
 
 /** The quarantined rows. An entry is written as `entryLines` prints it, which is what
  *  `e2e/tools/quarantine-check.ts` names as the lines to add or to remove. */
-export const quarantine: readonly QuarantineEntry[] = [];
+export const quarantine: readonly QuarantineEntry[] = [
+  // The row's wait for a quiet page timed out on a read that the page it left sent at the
+  // navigation. Playwright never reported that read as ended, so `watchApiRequests`
+  // (e2e/traffic.ts) held it in flight. traffic.ts now drops such reads when the new document
+  // commits (pull request #4523). INFRA-3904 swaps this entry for a fix entry that names that
+  // change's commit on main, once the nightly's quarantine leg shows the row pass.
+  {
+    file: "issue-page-i.e2e.ts",
+    project: "iphone",
+    title: "the children are one group of rows of the outline @phone",
+    issue: "dispatch://INFRA-3904",
+    added: "2026-11-26",
+  },
+];
 
 /** A row a commit on main fixed, which a quarantine entry is not: the row stays in every gating
  *  lane, and the nightly's check counts only the flakes of runs whose head holds `fixed`, or that
