@@ -17,13 +17,13 @@ import (
 // (LEGION_TEST_NATS_MONITOR_URL, or a test's own server's) with a path and a query (path and
 // query): the read of the server's client connections asks /connz joined onto that path with the
 // query kept (urljoin.Join), and its errors for an answer that is not 200, one cut short and one
-// that is not JSON each name that URL. Where the read wrote /connz after the URL's text, /connz
-// went inside the query and the stand-in was asked /prefix. A plain origin (origin) is asked
-// /connz, as before.
+// that is not JSON each name that URL as oauth2call.AskedURL names it (its path, never its query).
+// Where the read wrote /connz after the URL's text, /connz went inside the query and the stand-in
+// was asked /prefix. A plain origin (origin) is asked /connz, as before.
 func TestConnectionsAtJoinsConnzOntoTheMonitoringURL(t *testing.T) {
-	for _, c := range []struct{ name, suffix, asked string }{
-		{"path and query", "/prefix?key=k3y-made-up", "/prefix/connz?key=k3y-made-up"},
-		{"origin", "", "/connz"},
+	for _, c := range []struct{ name, suffix, asked, named string }{
+		{"path and query", "/prefix?key=k3y-made-up", "/prefix/connz?key=k3y-made-up", "/prefix/connz"},
+		{"origin", "", "/connz", "/connz"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -49,7 +49,7 @@ func TestConnectionsAtJoinsConnzOntoTheMonitoringURL(t *testing.T) {
 				}
 				return connections, err
 			}
-			want := monitor.URL + c.asked
+			want := monitor.URL + c.named
 
 			connections, err := read(func(w http.ResponseWriter) { fmt.Fprint(w, `{"connections":[{"cid":7,"name":"row"}]}`) })
 			if err != nil || !slices.Equal(connections, []Connection{{CID: 7, Name: "row"}}) {
