@@ -1,9 +1,9 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
+import { fileRowLimit, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
 // Each row runs the stand-in as a bun process of its own, a start a loaded machine stretches: each
 // test and hook gets the limit test-limit.ts computes from the bounds of what they wait for, and
@@ -18,6 +18,8 @@ const runs = {
   refused: temporaryDirectory("gh-standin-refused", { real: true }),
   listed: temporaryDirectory("gh-standin-listed", { real: true }),
   edited: temporaryDirectory("gh-standin-edited", { real: true }),
+  moved: temporaryDirectory("gh-standin-moved", { real: true }),
+  cloned: temporaryDirectory("gh-standin-cloned", { real: true }),
 };
 const review = "^gh api .*pulls/702/reviews";
 
@@ -27,13 +29,13 @@ function routed(run: string, routes: unknown[]) {
   writeFileSync(path.join(run, "fixtures.json"), JSON.stringify({ routes }));
 }
 
-/** Runs the stand-in as a run's `gh` on the run's fixtures as they stand, and returns its answer
- * and its record. */
-function ask(run: string, ...args: string[]) {
+/** Runs the stand-in as a run's `gh` in `cwd` on the run's fixtures as they stand, and returns its
+ * answer and its record. */
+function askIn(cwd: string | undefined, run: string, ...args: string[]) {
   const result = spawnWithin(
     { ...SCRIPT_RUN, part: "gh-standin.ts" },
     ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-    { env: { ...process.env, SKILL_SCENARIO_RUN: run } }
+    { cwd, env: { ...process.env, SKILL_SCENARIO_RUN: run } }
   );
   const calls = readFileSync(path.join(run, "calls.jsonl"), "utf8").trim().split("\n");
   return {
@@ -43,6 +45,10 @@ function ask(run: string, ...args: string[]) {
     call: JSON.parse(calls.at(-1) ?? "{}"),
   };
 }
+
+/** Runs the stand-in as a run's `gh` on the run's fixtures as they stand, and returns its answer
+ * and its record. */
+const ask = (run: string, ...args: string[]) => askIn(undefined, run, ...args);
 
 /** Runs the stand-in as a run's `gh` with `routes`, and returns its answer and its record. */
 function gh(run: string, routes: unknown[], ...args: string[]) {
@@ -186,4 +192,88 @@ test("a body edit gives each object of a list answer that has a body the new bod
   expect(ask(runs.edited, "api", "repos/example/widgets/issues/7/comments").stdout).toBe(
     '[{"id":1}]\n'
   );
+});
+
+// Catches: a `-R <repo>` typed before the command (`gh -R o/r pr diff 702`), which gh reads as the
+// flag of the command after it, failing every route since each starts with its command: a rig error
+// in place of GitHub's answer. The call is matched and recorded as gh reads it, so the scorer sees
+// its command first. A command that takes no `-R` (`gh api`) keeps the call as typed.
+test("a -R or --repo before a pr or run command is read after the command, as gh reads it", () => {
+  routed(runs.moved, [
+    { match: "^gh pr diff -R example/widgets 702$", stdout: "the diff" },
+    { match: "^gh pr view --repo=example/widgets 702 --json number$", stdout: { number: 702 } },
+    { match: "^gh run list --repo example/widgets --limit 10$", stdout: "the runs" },
+  ]);
+  const diff = ask(runs.moved, "-R", "example/widgets", "pr", "diff", "702");
+  expect({ code: diff.code, stdout: diff.stdout }).toEqual({ code: 0, stdout: "the diff\n" });
+  expect(diff.call).toMatchObject({
+    argv: ["pr", "diff", "-R", "example/widgets", "702"],
+    route: "^gh pr diff -R example/widgets 702$",
+    exit: 0,
+  });
+  expect(
+    ask(runs.moved, "--repo=example/widgets", "pr", "view", "702", "--json", "number").stdout
+  ).toBe('{"number":702}\n');
+  expect(
+    ask(runs.moved, "--repo", "example/widgets", "run", "list", "--limit", "10").stdout
+  ).toBe("the runs\n");
+  const api = ask(runs.moved, "-R", "example/widgets", "api", "repos/example/widgets/pulls/702");
+  expect(api.code).toBe(97);
+  expect(api.call).toMatchObject({
+    argv: ["-R", "example/widgets", "api", "repos/example/widgets/pulls/702"],
+    no_route: true,
+  });
+});
+
+// Catches: a `gh repo clone` answered with no clone (the agent then works in a directory that does
+// not exist) or with a clone of something other than the run's remote, and git's flags after `--`
+// dropped or taken for gh's.
+test("gh repo clone clones the run's remote into the directory it names, with git's flags after --", () => {
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnWithin(
+      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
+      [
+        "git",
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
+      { cwd }
+    );
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    return result.stdout.toString().trim();
+  };
+  const source = path.join(runs.cloned, "source");
+  mkdirSync(source, { recursive: true });
+  git(runs.cloned, "init", "-q", "--bare", "-b", "main", "remote.git");
+  git(source, "init", "-q", "-b", "main");
+  writeFileSync(path.join(source, "README.md"), "# widgets\n");
+  git(source, "add", "README.md");
+  git(source, "commit", "-qm", "init");
+  git(source, "commit", "-q", "--allow-empty", "-m", "second");
+  git(source, "push", "-q", path.join(runs.cloned, "remote.git"), "main");
+  const head = git(source, "rev-parse", "HEAD");
+  const work = path.join(runs.cloned, "work");
+  mkdirSync(work);
+  routed(runs.cloned, [{ match: "^gh repo clone example/widgets( |$)", clone: true }]);
+
+  const named = askIn(work, runs.cloned, "repo", "clone", "example/widgets", "w702", "--", "--depth", "1");
+  expect(named.code).toBe(0);
+  expect(named.call).toMatchObject({ route: "^gh repo clone example/widgets( |$)", exit: 0 });
+  expect(readFileSync(path.join(work, "w702", "README.md"), "utf8")).toBe("# widgets\n");
+  expect(git(path.join(work, "w702"), "rev-parse", "HEAD")).toBe(head);
+  expect(git(path.join(work, "w702"), "rev-parse", "--is-shallow-repository")).toBe("true");
+
+  const unnamed = askIn(work, runs.cloned, "repo", "clone", "example/widgets");
+  expect(unnamed.code).toBe(0);
+  expect(git(path.join(work, "widgets"), "rev-list", "--count", "HEAD")).toBe("2");
+
+  const again = askIn(work, runs.cloned, "repo", "clone", "example/widgets", "w702");
+  expect(again.code).not.toBe(0);
+  expect(again.stderr).toContain("already exists and is not an empty directory");
+  expect(existsSync(path.join(work, "w702", "README.md"))).toBe(true);
 });

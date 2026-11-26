@@ -675,6 +675,95 @@ test("the repository, its branches, refs, protection and rules, /user, and anoth
   );
 });
 
+// Catches, in this row and the three after it: a call the architects of the ci-check-fail worlds
+// made that the world had no route for, each a rig error. Each is answered as gh answers it off a
+// terminal. Here `gh repo view` with no `--json`: the repository's name, its description and the
+// base's README; a repository not the world's has no route.
+test("gh repo view with no --json prints the name, the description and the README", () => {
+  const readme = "name:\texample/widgets\ndescription:\t\n--\n# widgets\n\nSmall CLI helpers.\n\n";
+  expect(answer(plain, "gh repo view example/widgets")).toBe(readme);
+  expect(answer(plain, "gh repo view")).toBe(readme);
+  expect(answer(plain, "gh repo view https://github.com/example/widgets")).toBe(readme);
+  expect(answer(plain, "gh repo view example/widgets --json defaultBranchRef")).toMatchObject({
+    nameWithOwner: "example/widgets",
+  });
+  expect(() => routeOf(plain, "gh repo view skills-rig/project")).toThrow("no route names");
+});
+
+// Catches: `gh repo clone` with no route. The route asks the stand-in for its clone of the run's
+// remote (gh-standin.test.ts runs it); a repository not the world's has no route.
+test("gh repo clone of the world's repository is the stand-in's clone", () => {
+  for (const call of [
+    "gh repo clone example/widgets",
+    "gh repo clone example/widgets w702 -- -q",
+    "gh repo clone https://github.com/example/widgets.git repo -- --depth 1",
+  ])
+    expect(routeOf(plain, call)).toMatchObject({ clone: true });
+  expect(() => routeOf(plain, "gh repo clone skills-rig/project")).toThrow("no route names");
+});
+
+// Catches: `gh pr close` with no route, and a close answered for another pull request than the
+// one it names. A number the world holds no pull request of, and a close that would delete the
+// branch, have no route.
+test("gh pr close of a pull request the world holds prints gh's line", () => {
+  for (const [call, pr] of [
+    ["gh pr close 703 -R example/widgets --comment superseded", 703],
+    ["gh pr close -R example/widgets 703 --comment x", 703],
+    ["gh pr close #702", 702],
+    ["gh pr close https://github.com/example/widgets/pull/703", 703],
+  ] as const)
+    expect(routeOf(plain, call)).toMatchObject({
+      stderr: `✓ Closed pull request example/widgets#${pr} (A usage page (ACME-7))\n`,
+    });
+  expect(() => routeOf(plain, "gh pr close 704")).toThrow("no route names");
+  expect(() => routeOf(plain, "gh pr close 703 --delete-branch")).toThrow("no route names");
+});
+
+// Catches: `gh run list` with no route, and a list that is not the REST runs': the repository's
+// runs, a head's by its commit or branch (none for another), and each run's fields under `--json`.
+// A filter the world cannot apply (a workflow, a status) has no route.
+test("gh run list prints the workflow runs, all or one head's, as gh does", () => {
+  const failed = renderHeadsRoutes(world({ named: [USAGE_FAILED] }));
+  const line = (status: string, workflow: string, branch: string, id: number) =>
+    `completed\t${status}\tA usage page (ACME-7)\t${workflow}\t${branch}\tpull_request\t${id}\t0s\t2026-11-22T12:00:00Z`;
+  const run1 = line("success", "ci", "legion/ACME-7-702", 1);
+  const run42 = line("failure", "usage-test", "legion/ACME-7-702", 42);
+  const run101 = line("success", "ci", "legion/ACME-7-703", 101);
+  expect(answer(failed, "gh run list -R example/widgets --limit 10")).toBe(
+    [run1, run42, run101].join("\n")
+  );
+  expect(answer(failed, "gh run list")).toBe([run1, run42, run101].join("\n"));
+  expect(answer(failed, `gh run list --commit ${H702}`)).toBe([run1, run42].join("\n"));
+  expect(answer(failed, "gh run list -b legion/ACME-7-703")).toBe(run101);
+  expect(answer(failed, `gh run list --commit=${"9".repeat(40)}`)).toBe("");
+  expect(answer(failed, "gh run list --json databaseId,conclusion -L 5")).toMatchObject([
+    { databaseId: 1, conclusion: "success", headSha: H702, workflowName: "ci" },
+    {
+      databaseId: 42,
+      status: "completed",
+      conclusion: "failure",
+      name: "usage-test",
+      displayTitle: "A usage page (ACME-7)",
+      headBranch: "legion/ACME-7-702",
+      event: "pull_request",
+      url: "https://github.com/example/widgets/actions/runs/42",
+    },
+    { databaseId: 101, headSha: H703 },
+  ]);
+  expect(answer(failed, `gh run list -c ${H703} --json databaseId`)).toMatchObject([
+    { databaseId: 101 },
+  ]);
+  for (const call of ["gh run list --workflow usage-test", "gh run list -s failure --json name"])
+    expect(() => routeOf(failed, call)).toThrow("no route names");
+  const running = renderHeadsRoutes(world({ named: [GO_CHECKS] }));
+  expect(answer(running, `gh run list --commit ${H702}`)).toBe(
+    [
+      line("success", "ci", "legion/ACME-7-702", 1),
+      "in_progress\t\tA usage page (ACME-7)\tgo-checks\tlegion/ACME-7-702\tpull_request\t41\t0s\t2026-11-22T12:00:00Z",
+    ].join("\n")
+  );
+});
+
 // Catches: a compare of the base with a head that is not GitHub's, and a compare with a commit
 // the world does not hold answered as if it did (an architect compared the base with one).
 test("compare: the base with each head by name or sha, and GitHub's 404 for an unknown commit", () => {
