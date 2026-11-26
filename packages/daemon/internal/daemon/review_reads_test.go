@@ -910,7 +910,8 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 // seedReviewBesideFix gives CAPTURE-1 a plan of one task, `implementer reviewer`, standing at its
 // review, whose run started at captureHead with the record the reviewer's start keeps
 // (workflow's startStep), and, where fix holds, fix 1 of the task, for a check failed at
-// captureHead, running beside that review since after its start.
+// captureHead, running beside that review since after its start, with the review's start marked
+// beside it as the fix's start marks it (workflow's tellStepsOfFix).
 func seedReviewBesideFix(t *testing.T, pool *store.Pool, fix bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -945,7 +946,10 @@ func seedReviewBesideFix(t *testing.T, pool *store.Pool, fix bool) {
 		}
 		at := started.Add(time.Minute)
 		running.State, running.Entry, running.StartedAt = record.FixRunning, 2, &at
-		return records.UpdateFix(ctx, tx, running)
+		if err := records.UpdateFix(ctx, tx, running); err != nil {
+			return err
+		}
+		return records.MarkStepBesideFix(ctx, tx, "CAPTURE-1", place, 1, running.Fix)
 	}); err != nil {
 		t.Fatalf("seed CAPTURE-1's review step and the fix beside it: %v", err)
 	}
