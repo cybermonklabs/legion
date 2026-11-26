@@ -11,6 +11,7 @@ import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { canHoldFocus } from "./focus-keeper";
+import { GRAPH_EDIT_META } from "./graph-edit/room-writes";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
 /**
@@ -73,6 +74,24 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
  *  (`caretInBlock`). */
 export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
   return drawnBlock(host, blockId) !== null;
+}
+
+/**
+ * Holds the box of the editor in `host` shut while it draws no block of a new row yet
+ * (INFRA-5705's R3), and, where `focus`, puts the focus in its editable, so the row stands empty
+ * until the reader's first character writes its block: the editor holds the whole document, and
+ * its box would draw the rest of it in the row. The editable takes the focus as `caretInBlock`
+ * gives it, and the key that types the first character is the row's to write (`confineKey`'s
+ * `onFirst`); its block drawn, the box is opened at it (`holdEditorAtBlock`). Answers whether the
+ * editor is drawn.
+ */
+export function caretForNewBlock(host: HTMLElement, focus: boolean): boolean {
+  const box = host.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  const editable = box?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
+  if (box === null || editable === null) return false;
+  box.style.maxHeight = "0px";
+  if (focus && !editable.contains(document.activeElement)) editable.focus({ preventScroll: true });
+  return true;
 }
 
 /**
@@ -157,6 +176,45 @@ export type Point = readonly [node: Node, offset: number];
  *  entries name them (`graph-edit/placement.ts`): Indent, Outdent, Move up and Move down. */
 export type MoveKey = "indent" | "move_down" | "move_up" | "outdent";
 
+/** The two keys of a new node that Graph's editor takes with the caret at the end of a block's
+ *  text (INFRA-5705's R3): Enter, a new row below (`new_below`, the menu's entry), and
+ *  Shift+Enter, a paragraph inside the block (`paragraph`), which Enter makes there today. */
+export type EndKey = "new_below" | "paragraph";
+
+/**
+ * The key of a new node `event` asks for with the selection from `anchor` to `focus` inside
+ * `block`, or undefined: Enter or Shift+Enter, held with neither Alt, Ctrl nor Meta and with no
+ * input method's composition, while the caret is at the end of the block's text
+ * (`lastPlace`). Enter anywhere else in the text asks for none, and keeps today's behaviour.
+ */
+function endKeyOf(
+  event: KeyboardEvent,
+  block: HTMLElement,
+  anchor: Point,
+  focus: Point
+): EndKey | undefined {
+  if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey) return undefined;
+  if (inputMethodKey(event) || compare(anchor, focus) !== 0) return undefined;
+  if (compare(focus, lastPlace(block)) < 0) return undefined;
+  return event.shiftKey ? "paragraph" : "new_below";
+}
+
+/** The words `event` types where it types any: one character, held with neither Ctrl nor Meta,
+ *  and no input method's key. */
+function typedWordsOf(event: KeyboardEvent): string | undefined {
+  if (event.ctrlKey || event.metaKey || inputMethodKey(event) || event.key === "Process") {
+    return undefined;
+  }
+  return [...event.key].length === 1 ? event.key : undefined;
+}
+
+/** Runs the editor `view`'s own Enter on its selection, as its keymap answers the key
+ *  (`prosemirror-keymap`'s `handleKeyDown`): in a typed block, a paragraph inside it. */
+function enterInEditor(view: EditorView): void {
+  const enter = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" });
+  view.someProp("handleKeyDown", (handle) => handle(view, enter));
+}
+
 /**
  * The move `event` asks for, or undefined: Tab indents, Shift+Tab outdents, Alt+Shift+Up moves
  * up and Alt+Shift+Down moves down (R4), each held with neither Ctrl nor Meta. The key catalogue
@@ -210,6 +268,13 @@ export function moveKeyOf(event: KeyboardEvent): MoveKey | undefined {
  * is. One it does not take - a block R2 does not admit - goes on as every key does. Undefined
  * everywhere else, Conversation and every filter among them, where the keys are today's.
  *
+ * In Graph too, with the caret at the end of the block's text (`endKeyOf`), Enter and Shift+Enter
+ * go first to `onMove` (R3): Enter taken - a new row below, or an entry grey there - goes no
+ * further, and Shift+Enter taken - in a typed block - runs the editor's own Enter instead, which
+ * makes a paragraph inside it. And in a new row whose block the editor draws none of yet, the
+ * reader's first character goes to `onFirst`, which writes the block with it: taken, it goes no
+ * further, so the editor never types it outside the block.
+ *
  * `view` is that editor's view, as the page handed it to the row (`useNodeEditing.ts`), whose own
  * selection a key the editor answers acts on.
  */
@@ -217,8 +282,9 @@ export function confineKey(
   host: HTMLElement,
   blockId: string | undefined,
   event: KeyboardEvent,
-  onMove: ((move: MoveKey) => boolean) | undefined,
-  view: EditorView | undefined
+  onMove: ((move: MoveKey | EndKey) => boolean) | undefined,
+  view: EditorView | undefined,
+  onFirst?: (words: string) => boolean
 ): void {
   if (event.defaultPrevented || PASSING_KEYS[event.key] === true) return;
   const editable = editableHolding(host, event.target);
@@ -226,6 +292,12 @@ export function confineKey(
   const block = blockIn(editable, blockId);
   const selected = block === null ? null : selectionIn(block);
   if (block === null || selected === null) {
+    const words = block === null && onFirst !== undefined ? typedWordsOf(event) : undefined;
+    if (words !== undefined && onFirst?.(words) === true) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Tab") {
       // Tab is how the reader leaves an editor with no caret in the block, so its default - the
       // focus moving on - stays. But Milkdown answers Tab and Shift+Tab in a list item, on its own
@@ -252,6 +324,16 @@ export function confineKey(
     if (onMove(move)) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+  }
+  const end = onMove === undefined ? undefined : endKeyOf(event, block, ...selected);
+  if (end !== undefined && onMove !== undefined) {
+    if (!holdsSelection(view, ...selected)) document.dispatchEvent(new Event("selectionchange"));
+    if (onMove(end)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (end === "paragraph" && view !== undefined) enterInEditor(view);
       return;
     }
   }
@@ -515,6 +597,11 @@ const BLOCK_ID_PROPERTY = "blockId";
  * one of them: a plugin's state may be worked out for a state the editor never takes, which
  * leaves a note nobody reads. The report goes through this plugin, as a plugin of its own would
  * change the editor's plugins (above). A hold let go reports nothing.
+ *
+ * A transaction of the editor's own that Graph makes on purpose applies wherever it lands too:
+ * one carrying `GRAPH_EDIT_META` (`graph-edit/room-writes.ts`) - a new row's block, written
+ * at the end of the document with the selection in it (INFRA-5705's R3), which `heldBlock`
+ * names already, so the reader's next letters keep to it.
  */
 export function holdEditsToBlock(
   view: EditorView,
@@ -537,6 +624,7 @@ export function holdEditsToBlock(
         filterTransaction: (transaction, editorState) =>
           letGo ||
           transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
+          transaction.getMeta(GRAPH_EDIT_META) !== undefined ||
           (!transaction.docChanged && !transaction.selectionSet) ||
           keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
         // The block's start, as last found: the guess a transaction checks before it searches.

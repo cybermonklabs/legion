@@ -217,6 +217,9 @@ interface NewRow {
   /** The message its kind is read under. */
   readonly kind: string;
   readonly parent: string;
+  /** The `parent` its one placing `PATCH` names: `parent` in the node route's form, a block by
+   *  its read id and any other node by `<kind>/<read id>`, as `ask/<id>` for the question. */
+  readonly patchParent: string;
   readonly what: string;
   readonly words: string;
 }
@@ -240,7 +243,7 @@ function expectPlaced(answer: IssueTreeRead, sent: readonly NodeRequest[], row: 
       .filter((write) => write.id === row.id)
       .map((write) => ({ method: write.method, parent: parentOf(write), rest: write.rest })),
     `${row.what} is placed by one PATCH of the node`
-  ).toEqual([{ method: "PATCH", parent: row.parent, rest: "" }]);
+  ).toEqual([{ method: "PATCH", parent: row.patchParent, rest: "" }]);
 }
 
 // c-new-node: Enter at the end of the criterion's text, New row below and New row under on the
@@ -302,6 +305,8 @@ test("a new node below and under is a prose block the reader types @phone", asyn
       await held.promise;
       await route.continue();
     };
+    // The hold stays routed once released, and passes each later read through: unrouting it here
+    // raced the read it released, whose `route.continue` then failed as already handled.
     await page.route(treeReadRoute(key), hold);
     try {
       await openRowMenu(page, "press", "the prose block");
@@ -326,11 +331,16 @@ test("a new node below and under is a prose block the reader types @phone", asyn
       expect(nodeWrites(sent).length, "a grey move of a new row sends a request").toBe(from);
       await closeRowMenu(page, "the new row under the prose block");
       await page.keyboard.press("Enter");
+      // The letters typed next go into the block once the caret is back in it: until then the
+      // focus is the row's, whose keys move through the outline.
+      await expectCaretInNewRow(
+        page,
+        "Enter on the new row under the prose block puts no caret in it"
+      );
       await page.keyboard.press("End");
     } finally {
       held.resolve();
     }
-    await page.unroute(treeReadRoute(key), hold);
     const underProse = await typeNewRow(
       page,
       sent,
@@ -427,6 +437,7 @@ test("a new node below and under is a prose block the reader types @phone", asyn
         id: belowCriterion,
         kind: "the new node below the criterion is a prose block",
         parent: ids.question,
+        patchParent: `ask/${ids.question}`,
         what: "the new row below the criterion",
         words: TYPED.belowCriterion,
       },
@@ -435,6 +446,7 @@ test("a new node below and under is a prose block the reader types @phone", asyn
         id: belowProse,
         kind: "the new node below the prose block is a prose block",
         parent: ids.criterion,
+        patchParent: ids.criterion,
         what: "the new row below the prose block",
         words: TYPED.belowProse,
       },
@@ -443,6 +455,7 @@ test("a new node below and under is a prose block the reader types @phone", asyn
         id: underProse,
         kind: "the new node under the prose block is a prose block",
         parent: ids.prose,
+        patchParent: ids.prose,
         what: "the new row under the prose block",
         words: TYPED.underProse,
       },
@@ -451,6 +464,7 @@ test("a new node below and under is a prose block the reader types @phone", asyn
         id: belowStatement,
         kind: "the new node below the first statement is a prose block",
         parent: ids.criterion,
+        patchParent: ids.criterion,
         what: "the new row below the first statement",
         words: TYPED.belowStatement,
       },
@@ -549,7 +563,10 @@ test("a new node the index owes is read again every 30 seconds for 2 minutes", a
     await landOn(page, key, ids.prose, "the prose block");
     await seedEventsLanded(page);
     await expectLoadSettled(traffic);
-    await page.route(treeReadRoute(key), owed);
+    // One matcher for the route and its unroute (`treeReadRoute`), so the reload below reads the
+    // server's own answer.
+    const treeRead = treeReadRoute(key);
+    await page.route(treeRead, owed);
     await openRowMenu(page, "press", "the prose block");
     await menuEntry(page, EDIT_LABELS.edit_new_below).click();
     await expectCaretInNewRow(page, "New row below puts the caret in no new row");
@@ -597,7 +614,12 @@ test("a new node the index owes is read again every 30 seconds for 2 minutes", a
     ).toContainText(EDIT_LINES.saved_not_placed);
     expect(nodeWrites(sent), "the page sends a PATCH for a block the index owes").toEqual([]);
 
-    await page.unroute(treeReadRoute(key), owed);
+    await page.unroute(treeRead, owed);
+    // The clock the periods were driven on is the context's, and a reload keeps it: held still,
+    // it would hold every timer of the reloaded page, the query cache's own notice that a read
+    // answered among them (`notifyManager` tells on a `setTimeout`), so the page would read
+    // `whoami` and draw nothing more. The clock runs on from here; every period is counted above.
+    await page.clock.resume();
     const answer = await treeAfterReload(page, key);
     const made = (answer.nodes ?? []).filter((node) => !before.has(node.id));
     expect(
@@ -612,7 +634,18 @@ test("a new node the index owes is read again every 30 seconds for 2 minutes", a
       ownBlocks.at(-1)?.id,
       "the new block stands at the end of the issue's own blocks under the issue"
     ).toBe(made[0]?.id);
-    await landOn(page, key, made[0]?.id ?? "", "the new block");
+    // The node is drawn where the server keeps it: Graph at its own address names no node and no
+    // zoom, so no address the reload kept roots the outline elsewhere, and the new block's row is
+    // drawn among the rows under the issue.
+    await gotoIssue(page, presetPath(key, "graph"));
+    await expect(
+      readRow(page, made[0]?.id ?? "").first(),
+      "the new block is drawn after the reload"
+    ).toBeVisible();
+    expect(
+      await parentReadIdOf(page, made[0]?.id ?? ""),
+      "the new block is drawn under a row, not under the issue"
+    ).toBeNull();
     await expectLoadSettled(traffic);
     expect(nodeWrites(sent), "the page sends a PATCH for the new block after the reload").toEqual(
       []
@@ -738,13 +771,21 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
     const traffic = watchApiRequests(page);
     await landOn(page, key, statement3, "the third statement");
     await markDocument(page);
+    // The hold takes the first PATCH of the third statement on its own route or on one under it,
+    // so a move sent another way is held and named by the route assertion below, before any
+    // answer, rather than waited for until the row's guard.
     const indentWrite = await holdFirstRequest(
       page,
-      new RegExp(`/api/v1/issues/${key}/nodes/${encodeURIComponent(statement3)}$`, "u"),
+      new RegExp(`/api/v1/issues/${key}/nodes/${encodeURIComponent(statement3)}(?:/.*)?$`, "u"),
       { method: "PATCH" }
     );
     await openRowMenu(page, "press", "the third statement");
     await menuEntry(page, EDIT_LABELS.edit_indent).click();
+    const sentIndent = await nthWrite(sent, 1, "each move is one PATCH of the node");
+    expect(
+      { id: sentIndent.id, method: sentIndent.method, rest: sentIndent.rest },
+      "each move is one PATCH of the node"
+    ).toEqual({ id: statement3, method: "PATCH", rest: "" });
     const pendingIndent = await indentWrite.held;
     try {
       await openRowMenu(page, "press", "the third statement");
@@ -1295,9 +1336,11 @@ const EDITING_ENTRIES = [
   EDIT_LABELS.edit_delete,
 ] as const;
 
-// c-grey, first row: every editing entry grey with its reason on the question, the comment, the
-// message, the result, the agent's decision and the child's borrowed check, New row under offered
-// where R3 offers it, no write sent, and the menu and both submenus fitting the screen.
+// c-grey, first row: every editing entry grey with its reason on the question, the person's
+// comment on the issue (the comment on the third statement's text is drawn in the margin, not as a
+// row), the message, the result, the agent's decision and the child's borrowed check, New row
+// under offered where R3 offers it, no write sent, and the menu and both submenus fitting the
+// screen.
 // SLOW(>=2s): eight landings, a menu opened on each, and both submenus opened at the row's width.
 test("the menu greys each act a node does not take @phone", async ({ browser }) => {
   test.setTimeout(360_000);
@@ -1309,9 +1352,14 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
     await page.setViewportSize(size);
     const sent = watchNodeRequests(page, key);
 
-    for (const { id, reason, under, what } of [
+    for (const { id, reason, under, via, what } of [
       { id: ids.questionRow, reason: EDIT_LINES.grey_kind, under: true, what: "the question" },
-      { id: ids.comment, reason: EDIT_LINES.grey_kind, under: true, what: "the comment" },
+      {
+        id: ids.issueComment,
+        reason: EDIT_LINES.grey_kind,
+        under: true,
+        what: "the person's comment on the issue",
+      },
       { id: ids.message, reason: EDIT_LINES.grey_kind, under: true, what: "the person's message" },
       { id: ids.result, reason: EDIT_LINES.grey_kind, under: false, what: "the result" },
       {
@@ -1324,17 +1372,25 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
         id: ids.childCheck,
         reason: EDIT_LINES.grey_own_issue,
         under: false,
+        // A node of another issue is read here as this Graph draws it, under the first statement
+        // it serves; the address of another issue's node is that issue's, not this row's.
+        via: ids.statements[0],
         what: "the child's borrowed check",
       },
     ]) {
-      await landOn(page, key, id, what);
+      if (via === undefined) {
+        await landOn(page, key, id, what);
+      } else {
+        await landOn(page, key, via, "the first statement");
+        await focusOn(await rowUnder(page, via, id, what), what);
+      }
       await openRowMenu(page, "press", what);
       for (const word of EDITING_ENTRIES) {
         await expectGrey(
           page,
           word,
           reason,
-          id === ids.comment && word === EDIT_LABELS.edit_indent
+          id === ids.issueComment && word === EDIT_LABELS.edit_indent
             ? "the comment's Indent is grey"
             : `${word} is grey on ${what}, with its reason`
         );
@@ -1608,8 +1664,9 @@ test("a refused write keeps the tree as the server holds it", async ({ browser }
     await page.unroute(nodeRoutes, holdNodes);
     const refused = await nthWrite(sent, 1, "Move up sends no PATCH");
     expect((await refused.answer)?.status, "the move behind the architect's answers 412").toBe(412);
+    // The read hold stays routed once released, and passes each later read through, as the new
+    // row's hold does.
     reads.resolve();
-    await page.unroute(treeReadRoute(key), holdReads);
     await expectLoadSettled(traffic);
     expect(nodeWrites(sent), "no request writes after the refusal").toHaveLength(1);
     await expect
@@ -1864,9 +1921,9 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
       sent.map((request) => ({ dryRun: request.dryRun, id: request.id, method: request.method })),
       "a menu on a statement sends one dry run"
     ).toEqual([{ dryRun: true, id: statement3, method: "DELETE" }]);
-    await focusOn(readRow(page, ids.comment).first(), "the comment");
-    await openRowMenu(page, "press", "the comment");
-    await closeRowMenu(page, "the comment");
+    await focusOn(readRow(page, ids.issueComment).first(), "the person's comment on the issue");
+    await openRowMenu(page, "press", "the person's comment on the issue");
+    await closeRowMenu(page, "the person's comment on the issue");
     await expectLoadSettled(traffic);
     expect(sent, "a menu on a comment sends a dry run").toHaveLength(1);
 

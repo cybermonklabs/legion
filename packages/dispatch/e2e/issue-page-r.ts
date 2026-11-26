@@ -45,12 +45,15 @@ import { settledState, settledValue } from "./settled";
  *   `ARCHITECT`), a person's question and a criterion under it, three statements under the
  *   criterion (the second the architect's), a check serving all three under the first with one
  *   recorded result, the architect's check under the second, a plan task, a person's comment on
- *   the third statement's text, a person's message and the architect's reply, the architect's
- *   decision, and a prose block of the issue's own fragment placed under the criterion after the
- *   statements; a child, a view of the spec, whose check serves the first statement; and a second
- *   issue the conversion has not reached, created while a live process that lists no issue room
- *   stands beside the server, as the Go tests' `createDigestIssue` makes one. `graphEditIds` names
- *   each node by the id the server's tree read gives it, never one this file builds.
+ *   the third statement's text (which part T draws in the margin beside it, not as a row), a
+ *   person's comment on the issue itself, tied to no text (which Graph draws as a row, and which
+ *   the Go fixture does not write: no unit case reads it), a person's message and the architect's
+ *   reply, the architect's decision, and a prose block of the issue's own fragment placed under
+ *   the criterion after the statements; a child, a view of the spec, whose check serves the first
+ *   statement; and a second issue the conversion has not reached, created while a live process
+ *   that lists no issue room stands beside the server, as the Go tests' `createDigestIssue` makes
+ *   one. `graphEditIds` names each node by the id the server's tree read gives it, never one this
+ *   file builds.
  * - **The gates**, each a `Gate` read by `owedUnless` (`e2e/issue-page-t-tree.ts`), built as
  *   `convertedGate` is there: `deleteRouteGate` (INFRA-1253's `DELETE` of a node, in
  *   `GET /api/v1`), `roomWriteGate` (part Y's editor writing through the issue's one room),
@@ -156,6 +159,9 @@ export const SEED_WORDS = {
   comment: "Does a refused move store nothing either?",
   criterion: "The reader edits the graph by keyboard alone.",
   decision: "The graph keeps one write for each move.",
+  /** The person's comment on the issue itself, tied to no text: a post, which Graph draws as a
+   *  row (Verification preamble). */
+  issueComment: "Which acts does a comment on the issue take?",
   memo: "The memo the graph keeps first.",
   message: "The menu ships with the moves first.",
   planTask: "Build the node menu of Graph.",
@@ -179,6 +185,8 @@ export interface GraphEditSeed {
   readonly child: string;
   /** The person's comment on the third statement's text. */
   readonly comment: string;
+  /** The person's comment on the issue itself, tied to no text. */
+  readonly issueComment: string;
   readonly key: string;
   /** The person's message to the issue, and the architect's reply to it. */
   readonly message: string;
@@ -463,6 +471,7 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
     anchor: { artifact: "spec", quote: SEED_WORDS.statement3Quote },
     body: SEED_WORDS.comment,
   });
+  const issueComment = await createComment(key, { body: SEED_WORDS.issueComment });
   const message = await createMessage(key, { body: SEED_WORDS.message });
   const reply = await createMessage(
     key,
@@ -508,6 +517,7 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
     askId,
     child: child.key,
     comment: comment.id,
+    issueComment: issueComment.id,
     key,
     message: message.id,
     plan: plan.artifact.id,
@@ -547,10 +557,14 @@ export interface GraphEditIds {
    *  read; undefined until a reader types one there, since the child's spec is a role document
    *  whose prose the tree read leaves out (INFRA-1253 R2) and the seed writes none. */
   readonly childParagraph: string | undefined;
+  /** The person's comment on the third statement's text, which part T draws in the margin beside
+   *  that statement, not as a row. */
   readonly comment: string;
   readonly criterion: string;
   readonly decision: string;
   readonly issue: string;
+  /** The person's comment on the issue itself, tied to no text, which Graph draws as a row. */
+  readonly issueComment: string;
   readonly message: string;
   readonly planTask: string;
   readonly prose: string;
@@ -603,6 +617,11 @@ export async function graphEditIds(page: Page, seed: GraphEditSeed): Promise<Gra
       answer,
       "issue node",
       (node) => node.kind === "issue" && node.id === answer.issue
+    ).id,
+    issueComment: nodeWhere(
+      answer,
+      "person's comment on the issue",
+      (node) => node.kind === "comment" && node.parent?.kind === "issue"
     ).id,
     message: message.id,
     planTask: ownBlock(answer, "t1", "plan_task").id,

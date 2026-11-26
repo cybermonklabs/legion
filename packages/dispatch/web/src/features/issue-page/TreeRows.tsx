@@ -8,7 +8,7 @@ import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import type { PointMark } from "./current-point";
 import { useDocumentAdmissions } from "./document-admission";
-import { type RowReveal, useRowEdits } from "./graph-edit/row-edits";
+import { type RowEditor, type RowReveal, useRowEdits } from "./graph-edit/row-edits";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { LensActContext, useLensAct } from "./lenses/LensMenu";
@@ -46,6 +46,7 @@ export function TreeRows({
   onToggle,
   points,
   report,
+  rowEditor,
   rowReveal,
   rows,
   tabStop,
@@ -87,6 +88,9 @@ export function TreeRows({
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
+  /** The issue's room editor the rows' node menus write a new row through, in Graph
+   *  (`graph-edit/new-row-editing.ts`); none elsewhere. */
+  rowEditor?: RowEditor;
   /** The outline's way of taking the reader to a row, which Graph's node menu takes them by after
    *  a move and from a refusal's line (`IssueTree.tsx`'s `useRowReveal`). */
   rowReveal?: RowReveal;
@@ -120,7 +124,14 @@ export function TreeRows({
   const lensAct = useLensAct();
   // Graph's node menu (`graph-edit/RowMenu.tsx`): each row's, and the delete's confirm while one
   // is open, which outlives the row's focus. Nothing outside Graph.
-  const edits = useRowEdits({ act: lensAct, isClosed, reveal: rowReveal, rows, zoomRoot });
+  const edits = useRowEdits({
+    act: lensAct,
+    editor: rowEditor,
+    isClosed,
+    reveal: rowReveal,
+    rows,
+    zoomRoot,
+  });
   // The room of the issue's tree read, read once for every row as Enter reads it
   // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
   const room = useRoomFacts(useOutlineWriter()?.issueKey);

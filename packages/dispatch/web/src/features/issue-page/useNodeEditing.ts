@@ -11,11 +11,13 @@ import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { roomTarget, takesCaret, useRoomFacts } from "./model-rows/room-target";
 import {
+  caretForNewBlock,
   caretInBlock,
   caretOutOfBlock,
   confineKey,
   drawsBlock,
   EDITOR_BOX_ATTRIBUTE,
+  type EndKey,
   type HoldParts,
   holdEditorAtBlock,
   holdEditsToBlock,
@@ -68,17 +70,24 @@ export interface NodeEditing {
 /**
  * What the tree and Graph's move keys (`graph-edit/move-keys.ts`, INFRA-5705's R4) hand each other
  * through a row's editing: `take`, Graph's, takes a move key pressed with the caret in the node's
- * block of the edited row `row` and answers whether it took it (`node-caret.ts`'s `confineKey`);
+ * block of the edited row `row` and answers whether it took it (`node-caret.ts`'s `confineKey`),
+ * and so Enter and Shift+Enter with the caret at the end of that block (R3, `EndKey`);
  * `follow`, the editing's own, moves the editing of row `from` onto row `to`, the same node drawn
  * by a move under another row's key, with the document's one editor, and puts the caret back where
  * the reader had it in the node's block; `restore`, the editing's own too, puts that caret back in
- * the edited row with the focus, where a move's drawing dropped them. Outside Graph nothing sets
- * `take`.
+ * the edited row with the focus, where a move's drawing dropped them. Graph's too
+ * (`graph-edit/new-row-editing.ts`, R3): `fresh`, whether `row` is a new row, whose block the
+ * document may not hold yet - its caret goes in the editor with none drawn, the box shut, and once
+ * the block is drawn where the reader's typing left it - and `write`, which writes that block with
+ * the reader's first character `words` in the editor `view`, and answers whether it did. Outside
+ * Graph nothing sets `take`, `fresh` or `write`.
  */
 export interface MoveKeyBridge {
-  take?: (row: string, move: MoveKey) => boolean;
+  take?: (row: string, move: MoveKey | EndKey) => boolean;
   follow?: (from: string, to: string) => void;
   restore?: () => void;
+  fresh?: (row: string) => boolean;
+  write?: (row: string, words: string, view: EditorView) => boolean;
 }
 
 /** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
@@ -740,10 +749,30 @@ export function useNodeEditing({
         return hold.current === "on";
       }
       if (offRow || unheld) return endUnplaced(row, rowsFocus, offRow);
+      // A new row of Graph's (`MoveKeyBridge.fresh`, INFRA-5705's R3) whose block the editor does
+      // not draw yet takes the caret with none - the box shut, the editable focused once the hold
+      // is on - and is looked at again as the reader's first character draws the block; then the
+      // caret stays where their typing left it, in the block, rather than at its start.
+      const fresh = bridge.current?.fresh?.(rowKey) === true;
+      if (fresh && !drawsBlock(row, blockId)) {
+        caretForNewBlock(row, hold.current === "on");
+        return false;
+      }
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
-      if (hold.current !== "on" || !caretInBlock(row, blockId)) return false;
+      if (hold.current !== "on") return false;
+      const inNewBlock =
+        fresh &&
+        document.activeElement?.getAttribute("contenteditable") === "true" &&
+        row.contains(document.activeElement) &&
+        !caretOutOfBlock(row, blockId);
+      if (
+        !(inNewBlock || (fresh && putKeptCaret(row, blockId, editorView.current))) &&
+        !caretInBlock(row, blockId)
+      ) {
+        return false;
+      }
       settled = holdEditorAtBlock(row, blockId);
       // The row a move drew the node at anew (`follow`): the caret goes back where the reader had
       // it in the node's block, not to the block's start where Enter puts it (R4).
@@ -856,7 +885,10 @@ export function useNodeEditing({
           ) {
             return;
           }
-          caretInBlock(row, editingBlock);
+          // A new row with no block drawn yet takes the focus back in its editor (R3).
+          if (!caretInBlock(row, editingBlock) && bridge.current?.fresh?.(editingRow) === true) {
+            caretForNewBlock(row, true);
+          }
         }
       });
     };
@@ -913,17 +945,25 @@ export function useNodeEditing({
         const onMove =
           take === undefined
             ? undefined
-            : (move: MoveKey) => {
+            : (move: MoveKey | EndKey) => {
                 const taken = take(editingRow, move);
                 if (taken) keyMoved.current = editingBlock;
                 return taken;
               };
+        // A new row's first character writes its block, where Graph gives the way (R3).
+        const write = bridge.current?.write;
+        const view = editorView.current;
+        const onFirst =
+          write === undefined || view === undefined || hold.current !== "on"
+            ? undefined
+            : (words: string) => write(editingRow, words, view);
         confineKey(
           row,
           hold.current === "on" ? editingBlock : undefined,
           event,
           onMove,
-          editorView.current
+          editorView.current,
+          onFirst
         );
       },
       { capture: true, signal: listening.signal }

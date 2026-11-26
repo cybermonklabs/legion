@@ -22,10 +22,13 @@ import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { useMoveKeyBridge, useMoveKeys } from "./graph-edit/move-keys";
+import { useNewRowEditing } from "./graph-edit/new-row-editing";
+import { useNewRows, useNewRowWords, withNewRows } from "./graph-edit/new-rows";
 import { useRowReveal } from "./graph-edit/row-reveal";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
+import { useLensAct } from "./lenses/LensMenu";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
@@ -127,7 +130,7 @@ export function IssueTree({
   readsSettled = true,
   request,
   reveal,
-  root,
+  root: viewRoot,
   rootRow,
   zoomAt,
 }: {
@@ -277,6 +280,13 @@ export function IssueTree({
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
+  // In Graph, the new rows the reader made (INFRA-5705's R3), each drawn at its place until the
+  // one `PATCH` that places its node is taken (`graph-edit/new-rows.ts`): every row, key and focus
+  // of the tree below reads the tree with them.
+  const lensAct = useLensAct();
+  const graphKey = lensAct?.outline === "graph" ? lensAct.issueKey : undefined;
+  const newRows = useNewRows(graphKey);
+  const root = useMemo(() => withNewRows(viewRoot, newRows), [newRows, viewRoot]);
   // The failed reads' lines over the tree, and the one whose Retry the page opens on where no
   // question that waits on the reader is drawn (`opening`): the asks', which bring the questions
   // the issue's own read does not hold, where it is one of them, else the first whose read the
@@ -326,6 +336,16 @@ export function IssueTree({
       words: editWords(block),
     };
   }, []);
+  // An edit of a new row's block notes the words it left there too, which the row draws until a
+  // read holds its node (`graph-edit/new-rows.ts`).
+  const noteNewRowWords = useNewRowWords(graphKey);
+  const onOwnEdit = useCallback(
+    (row: string, block: DisplayTree) => {
+      noteEdit(row, block);
+      noteNewRowWords(row, block);
+    },
+    [noteEdit, noteNewRowWords]
+  );
   // Graph's move keys in a row's editor, and the editing that follows a node they moved
   // (`graph-edit/move-keys.ts`, below).
   const moveKeys = useMoveKeyBridge();
@@ -334,7 +354,7 @@ export function IssueTree({
     container: body,
     moveKeys,
     onEditing,
-    onOwnEdit: noteEdit,
+    onOwnEdit,
     onReport: reportHere,
   });
 
@@ -572,12 +592,29 @@ export function IssueTree({
   // Graph's node menu takes the reader to a row through these: the row a taken move put under a
   // new parent, and the row a refusal's line names (`graph-edit/row-reveal.ts`).
   const rowReveal = useRowReveal({ body, reach, root, unfoldPath });
+  // In Graph, the room editor the node menu and the editor's keys are given, which makes a new
+  // row and starts its editing in the render that draws it (`graph-edit/new-row-editing.ts`).
+  const rowEditor = useNewRowEditing({
+    body,
+    bridge: moveKeys,
+    closed: shown.closed,
+    edit,
+    editing,
+    issue: graphKey,
+    newRows,
+    reader,
+    reveal: rowReveal,
+    root,
+    rows,
+    unfoldPath,
+  });
   // In Graph, the keys of the moves with the caret in a block R2 admits, and the editing kept on
   // a node they drew under another row's key, its folded new parent unfolded, in this render.
   useMoveKeys({
     bridge: moveKeys,
     closed: shown.closed,
     editing,
+    editor: rowEditor,
     isClosed,
     root,
     rows,
@@ -1409,6 +1446,7 @@ export function IssueTree({
             {...(report === undefined
               ? {}
               : { report: { line: report.line, row: report.row ?? tabStop } })}
+            rowEditor={rowEditor}
             rowReveal={rowReveal}
             rows={rows}
             tabStop={tabStop}

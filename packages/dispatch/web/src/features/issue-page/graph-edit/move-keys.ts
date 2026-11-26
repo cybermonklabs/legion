@@ -1,17 +1,23 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useContext, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
 import { useLensAct } from "../lenses/LensMenu";
-import type { MoveKey } from "../node-caret";
+import type { EndKey, MoveKey } from "../node-caret";
 import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
-import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
+import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
 import type { EditedRow, MoveKeyBridge } from "../useNodeEditing";
 import { useNodeWrites } from "./node-writes";
-import { type GreyReason, type PlacementRow, placementOf } from "./placement";
-import { RowEditorContext } from "./row-edits";
+import {
+  type GreyReason,
+  type Placement,
+  type PlacementRow,
+  placementOf,
+  type Verdict,
+} from "./placement";
+import type { RowEditor } from "./row-edits";
 import { ownPathTo } from "./row-reveal";
 
 /**
@@ -33,7 +39,15 @@ import { ownPathTo } from "./row-reveal";
  * document's one editor and the caret where the reader had it, so the reader goes on typing; a
  * folded branch above that row - a folded new parent - is unfolded first, in the same render, so
  * no render draws the tree with the edited row gone, which would end the editing
- * (`IssueTree.tsx`). No word of this file is a literal: the reasons are `ANSWER_LINES`'.
+ * (`IssueTree.tsx`).
+ *
+ * Two keys of a new row (R3) go the same way, with the caret at the end of the block's text:
+ * Enter makes a new row below, as the menu's New row below does, through the room editor the
+ * outline gives (`RowEditor.newRow`), and is grey where that entry is, the row showing why - on a
+ * block of the Verification document or the plan, and on a new row not placed yet; and Shift+Enter
+ * in a typed block makes a paragraph inside it, which Enter does there today. Enter elsewhere in
+ * the text, and both keys on a block R2 does not admit, do what they do today. No word of this
+ * file is a literal: the reasons are `ANSWER_LINES`'.
  */
 
 /** The reasons R2 greys every editing entry of a block it does not admit, where the move keys are
@@ -43,6 +57,15 @@ const NOT_ADMITTED: Readonly<Partial<Record<GreyReason, true>>> = {
   grey_closed: true,
   grey_kind: true,
   grey_own_issue: true,
+};
+
+/** The supertags of R2's typed blocks - a criterion, a statement, a check, a plan task - inside
+ *  which Shift+Enter at the end makes a paragraph (R3). */
+const TYPED: Readonly<Record<string, true>> = {
+  check: true,
+  criterion: true,
+  plan_task: true,
+  requirement: true,
 };
 
 /** One row of the outline that stands for a node. */
@@ -62,12 +85,14 @@ export function useMoveKeyBridge(): MoveKeyBridge {
  * `take` in Graph alone, and follows a node a move key moved to its new row. `closed` is the set
  * of places of the rows the outline draws folded (`tree-fold.ts`' `OpenedBranches`), and
  * `unfoldPath` how it unfolds a path; `zoomRoot` is the id of the node the outline is zoomed to
- * (`TreeNode.id`).
+ * (`TreeNode.id`); `editor` is the room editor the outline gives its rows (`RowEditor`), which
+ * Enter's new row is made through.
  */
 export function useMoveKeys({
   bridge,
   closed,
   editing,
+  editor,
   isClosed,
   root,
   rows,
@@ -77,6 +102,7 @@ export function useMoveKeys({
   readonly bridge: MoveKeyBridge;
   readonly closed: ReadonlySet<string>;
   readonly editing: EditedRow | undefined;
+  readonly editor: RowEditor | undefined;
   readonly isClosed: boolean;
   readonly root: TreeNode;
   readonly rows: readonly DrawnRow[];
@@ -85,7 +111,6 @@ export function useMoveKeys({
 }): void {
   const act = useLensAct();
   const key = act?.outline === "graph" ? act.issueKey : undefined;
-  const editor = useContext(RowEditorContext);
   const client = useQueryClient();
   const readIds = new Map<string, string>();
   for (const row of rows) {
@@ -112,14 +137,14 @@ export function useMoveKeys({
   bridge.take =
     key === undefined
       ? undefined
-      : (rowKey: string, move: MoveKey): boolean => {
+      : (rowKey: string, move: MoveKey | EndKey): boolean => {
           const row = rows.find(
             (each): each is NodeDrawnRow => each.kind === "node" && rowKeyOf(each) === rowKey
           );
-          const readId = row?.node.readId;
-          const held = client.getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
-          if (row === undefined || readId === undefined || held?.converted !== true) return false;
-          if (!(held.nodes ?? []).some((node) => node.id === readId)) return false;
+          // A new row the read does not hold yet is named by the block id the page chose for it.
+          const readId =
+            row === undefined ? undefined : (row.node.readId ?? editor?.readIdOf?.(row.node.id));
+          if (row === undefined || readId === undefined) return false;
           // A second row of a node stands under a node it serves, which the verdicts name by its
           // read id, as the menu's row does (`row-edits.tsx`).
           const above = row.trail.at(-1);
@@ -127,17 +152,51 @@ export function useMoveKeys({
             !row.node.transcluded || above === undefined
               ? "own"
               : { under: readIds.get(above) ?? above };
-          const verdict = placementOf({
-            held,
-            node: readId,
-            row: from,
-            status,
-            unplaced: editor?.unplaced?.(readId) === true ? true : undefined,
-            zoomRoot: zoomRead,
-          })[move];
+          // The verdicts from Graph's held read as it stands, with the new rows it does not hold
+          // yet (`RowEditor.held`), or undefined where it does not hold the node.
+          const verdictsNow = (): { held: TreeAnswer; verdicts: Placement } | undefined => {
+            const read = client.getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
+            const held = read === undefined ? undefined : (editor?.held?.(read) ?? read);
+            if (held?.converted !== true) return undefined;
+            if (!(held.nodes ?? []).some((node) => node.id === readId)) return undefined;
+            const verdicts = placementOf({
+              held,
+              node: readId,
+              row: from,
+              status,
+              unplaced: editor?.unplaced?.(readId) === true ? true : undefined,
+              zoomRoot: zoomRead,
+            });
+            return { held, verdicts };
+          };
+          const now = verdictsNow();
+          if (now === undefined) return false;
+          if (move === "paragraph") {
+            const below = now.verdicts.new_below;
+            const supertag = now.held.nodes?.find((node) => node.id === readId)?.supertag ?? "";
+            return (
+              TYPED[supertag] === true &&
+              !(below.kind === "grey" && NOT_ADMITTED[below.reason] === true)
+            );
+          }
+          const verdict = now.verdicts[move];
           if (verdict.kind === "grey") {
             if (NOT_ADMITTED[verdict.reason] === true) return false;
             writes.grey(readId, verdict.reason);
+            return true;
+          }
+          if (move === "new_below") {
+            if (editor === undefined) return false;
+            // A place on a page the page has not read is asked again once that page is read, as
+            // the menu's entry does.
+            void (async () => {
+              let next: Verdict | undefined = verdict;
+              while (next?.kind === "read_next") {
+                await readNextTreePage(client, key, "graph");
+                next = verdictsNow()?.verdicts.new_below;
+              }
+              if (next?.kind === "new") editor.newRow(readId, "new_below", next.place, next.line);
+            })().catch(() => undefined);
             return true;
           }
           moving.current = { id: row.node.id, row: rowKey };

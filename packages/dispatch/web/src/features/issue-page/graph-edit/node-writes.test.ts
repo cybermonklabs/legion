@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { onFakeClock, settle } from "../../../__tests__/fake-clock";
+import { jump, onFakeClock, settle } from "../../../__tests__/fake-clock";
 import { type KeptTab, keptTab, memoryFiles } from "../../../__tests__/kept-sends-harness";
 import { answerRequests } from "../../../__tests__/network";
 import {
@@ -18,12 +18,26 @@ import {
   withIfMatch,
   writeRequest,
 } from "../../../api/client";
+import { eventRefreshTargets } from "../../../api/event-refresh";
+import { refreshQueries } from "../../../api/query-refresh";
+import type { DispatchEvent } from "../../../api/types";
 import { newSendKey } from "../../../lib/send-key";
 import { plainWrite, Writes } from "../../writes/write-store";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
 import { fixture } from "./graph-edit-fixtures";
+import {
+  drawNewRow,
+  NEW_ROW_READ_MS,
+  NEW_ROW_WAIT_MS,
+  type NewRowAsk,
+  newRowLine,
+  subscribeRefusedPlacings,
+  typeNewRow,
+  useNewRows,
+} from "./new-rows";
 import { type NodeWrites, refusalLine, useNodeWrites } from "./node-writes";
+import { placementOf } from "./placement";
 
 /**
  * The writes of Graph's node menu: `graph-edit/node-writes.ts` (R4, R7, R8 of INFRA-5705's spec),
@@ -77,10 +91,10 @@ const ROUTE = "/api/v1/issues/{key}/nodes/{id}";
 /** The fixture's stable name of the issue, which no route of the page takes for a key. */
 const NAMED = "<issue>";
 
-/** `value` with the fixture's name of the issue written as the key the routes take: a name for
- *  a name, no other change to what the server answered. */
-function renamed<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value).replaceAll(NAMED, KEY)) as T;
+/** `value` with the fixture's name of an issue, `from` (this issue's by default), written as the
+ *  key the routes take: a name for a name, no other change to what the server answered. */
+function renamed<T>(value: T, from = NAMED): T {
+  return JSON.parse(JSON.stringify(value).replaceAll(from, KEY)) as T;
 }
 
 const converted = renamed(fixture.tree.converted.person.body) as unknown as TreeAnswer;
@@ -668,4 +682,238 @@ test("a refused move keeps the tree and draws one line", async () => {
   // And nothing is read for it: the refusal is no taken write and no stale tree.
   await letRequestsSettle();
   expect(reads.cursors).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// A new row (R3; plan task t14's table "A new row", its logic): the wait for its node and the one
+// `PATCH` that places it (`new-rows.ts`), over the fixture's issue whose tree artifact owes its
+// index - `owed`, the read before the block index has read the room's write, which names the tree
+// artifact among `owed_documents` and holds no node of the block, and `indexed`, the read after,
+// which holds the paragraph the page wrote with a rank and a `placement_seq`, at the end of the
+// issue's own blocks under the issue, where the server keeps it.
+// ---------------------------------------------------------------------------------------------
+
+const OWED_ISSUE = "<owed-issue>";
+const owedRead = renamed(fixture.owed.owed.body, OWED_ISSUE) as unknown as TreeAnswer;
+const indexedRead = renamed(fixture.owed.indexed.body, OWED_ISSUE) as unknown as TreeAnswer;
+
+/** The block the page wrote, by the block id it chose for it, which the fixture's server indexed
+ *  the paragraph under. */
+const WRITTEN = "<owed-paragraph>";
+
+/** The new row New row below makes on the owed issue's criterion, a block of its spec: first among
+ *  the issue's own blocks, right after the spec's, under the issue. */
+function belowCriterion(): NewRowAsk {
+  const from = "<owed-criterion>";
+  const verdict = placementOf({ held: owedRead, node: from, status: "in_progress" }).new_below;
+  if (verdict.kind !== "new") throw new Error("New row below is not offered on the owed criterion");
+  return {
+    blockId: WRITTEN,
+    entry: "new_below",
+    from,
+    parent: KEY,
+    place: verdict.place,
+    under: KEY,
+  };
+}
+
+/** The server's answer to the one placing `PATCH` of `ask`: the node where its body puts it, under
+ *  the next placement_seq, as a move's answer is (`fixture.moved`). */
+function placedAnswer(ask: NewRowAsk): Exchange {
+  return { body: { ...ask.place.body, placement_seq: "<seq:owed-paragraph>@2" }, status: 200 };
+}
+
+// The reads a case holds, each put back after the case.
+const spies: { mockRestore(): void }[] = [];
+afterEach(() => {
+  for (const spy of spies.splice(0)) spy.mockRestore();
+});
+
+/** Answers each read of Graph's tree with `answer`, or with none where none is given, and counts
+ *  them. */
+function answerOutline(answer?: TreeAnswer): { readonly count: () => number } {
+  let count = 0;
+  const never = Promise.withResolvers<TreeAnswer>().promise;
+  spies.push(
+    spyOn(api, "getIssueTree").mockImplementation(() => {
+      count += 1;
+      return answer === undefined ? never : Promise.resolve(answer);
+    })
+  );
+  return { count: () => count };
+}
+
+/** The page's new rows of the issue and its node writes, under a client that holds Graph's read
+ *  `held`, observed as Graph observes it, so a refresh of it reads it. */
+function mountNewRows(held: TreeAnswer = owedRead) {
+  const client = signedIn();
+  client.setQueryData(outlineQuery(KEY, "graph").queryKey, held);
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(MemoryRouter, { initialEntries: [`/issues/${KEY}/graph`] }, children)
+    );
+  const view = renderHook(
+    () => {
+      useQuery(outlineQuery(KEY, "graph"));
+      return { rows: useNewRows(KEY), writes: useNodeWrites({ key: KEY, status: "in_progress" }) };
+    },
+    { wrapper }
+  );
+  return { client, view };
+}
+
+/** Draws the new row `ask` and has its first character written in the room. */
+function typed(client: QueryClient, ask: NewRowAsk): void {
+  act(() => {
+    drawNewRow(client, KEY, ask);
+    typeNewRow(client, KEY, ask.blockId, "A");
+  });
+}
+
+/** The version the room's write publishes for the tree artifact, as the live feed delivers it. */
+function treeVersion(): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-01-01T00:00:00Z",
+    id: 2,
+    issue_key: KEY,
+    notify: true,
+    payload: { artifact_id: owedRead.tree, name: "tree", version: 2 },
+    project: "CORE",
+    seq: 2,
+    type: "artifact.version",
+  } as unknown as DispatchEvent;
+}
+
+// The tree is read again on the tree artifact's version event by the page's event refresh, which
+// this part adds no read to; the first character reads nothing.
+test("the tree artifact's version reads the tree again", async () => {
+  const reads = answerOutline(indexedRead);
+  const ask = belowCriterion();
+  const patches = answerPatches(placedAnswer(ask));
+  const { client } = mountNewRows();
+  typed(client, ask);
+  await letRequestsSettle();
+  expect(reads.count(), "the first character read the tree").toBe(0);
+  // The feed runs each event's refresh as this does (`api/event-feed.ts`).
+  act(() => refreshQueries(client, eventRefreshTargets(treeVersion())));
+  await waitFor(() => expect(reads.count(), "the version read no tree").toBe(1));
+  // That read holds the node with a rank and a placement_seq, which it places.
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+});
+
+// While the read Graph holds names the tree artifact among `owed_documents`, one read goes each 30
+// s of the page's clock from the first character, and none at the 2 minutes or past them.
+test("an owed fragment is read again every 30 s for at most 2 minutes", async () => {
+  await onFakeClock(async () => {
+    const reads = answerOutline(owedRead);
+    const send = spyOn(api, "send");
+    spies.push(send);
+    expect(owedRead.owed_documents?.some((owed) => owed.artifact_id === owedRead.tree)).toBe(true);
+    const { client } = mountNewRows();
+    typed(client, belowCriterion());
+    await settle();
+    expect(reads.count(), "the first character read the tree").toBe(0);
+    for (const period of [1, 2, 3]) {
+      await jump(NEW_ROW_READ_MS);
+      expect(reads.count(), `the read of the period ending at ${period * 30} s`).toBe(period);
+    }
+    for (const period of [4, 5, 6]) {
+      await jump(NEW_ROW_READ_MS);
+      expect(reads.count(), `a read in the period ending at ${period * 30} s`).toBe(3);
+    }
+    expect(send, "a write went for a node no read holds").not.toHaveBeenCalled();
+  });
+});
+
+// A read that lacks the node sends nothing; the first that holds it with a rank and a
+// placement_seq sends one PATCH to the row's place, under that placement_seq, through the node's
+// chain: its answer is written into the held read, the row leaves the store, and the outline is
+// read once (R7). A read after it sends no second PATCH.
+test("the read that holds the node sends the one placing PATCH", async () => {
+  const ask = belowCriterion();
+  const patches = answerPatches(placedAnswer(ask));
+  const reads = answerOutline();
+  const { client, view } = mountNewRows();
+  const { queryKey } = outlineQuery(KEY, "graph");
+  typed(client, ask);
+  act(() => client.setQueryData(queryKey, owedRead));
+  await letRequestsSettle();
+  expect(patches.calls, "a read that lacks the node sent a PATCH").toEqual([]);
+  const written = indexedRead.nodes?.find((node) => node.id === WRITTEN);
+  expect(written?.rank, "the fixture's indexed read holds the node with no rank").toBeString();
+  act(() => client.setQueryData(queryKey, indexedRead));
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(patches.calls[0]).toEqual({
+    body: ask.place.body,
+    id: WRITTEN,
+    ifMatch: `"${String(written?.placement_seq)}"`,
+  });
+  await waitFor(() => expect(view.result.current.rows).toEqual([]));
+  expect<unknown>(heldNode(client, WRITTEN)?.placement_seq).toBe("<seq:owed-paragraph>@2");
+  expect(heldNode(client, WRITTEN)?.parent?.id).toBe(KEY);
+  await waitFor(() => expect(reads.count(), "the outline was not read after the PATCH").toBe(1));
+  act(() => client.setQueryData(queryKey, indexedRead));
+  await letRequestsSettle();
+  expect(patches.calls, "a later read sent a second PATCH").toHaveLength(1);
+  expect(reads.count(), "the outline was read more than once").toBe(1);
+});
+
+// Past 2 minutes of the page's clock from the first character, the row says that its block is
+// saved and not yet placed, and no read and no PATCH goes for it, then or later, though a read
+// that holds the node comes.
+test("past 2 minutes the row says the block is saved and not yet placed", async () => {
+  await onFakeClock(async () => {
+    const reads = answerOutline(owedRead);
+    const send = spyOn(api, "send");
+    spies.push(send);
+    const { client, view } = mountNewRows();
+    typed(client, belowCriterion());
+    await settle();
+    // `jump` moves the clock 1 ms past its span: this stands 1 ms before the 2 minutes, and the
+    // jump after it at them.
+    await jump(NEW_ROW_WAIT_MS - 2);
+    expect(view.result.current.rows[0]?.stage, "the row is waited out before 2 minutes").toBe(
+      "typed"
+    );
+    await jump(0);
+    expect(view.result.current.rows[0]?.stage).toBe("waited");
+    expect(newRowLine(view.result.current.rows, WRITTEN)).toBe(ANSWER_LINES.saved_not_placed);
+    const atTwoMinutes = reads.count();
+    act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedRead));
+    await jump(NEW_ROW_READ_MS * 2);
+    expect(send, "a PATCH went past the 2 minutes").not.toHaveBeenCalled();
+    expect(reads.count(), "a read went past the 2 minutes").toBe(atTwoMinutes);
+    expect(newRowLine(view.result.current.rows, WRITTEN)).toBe(ANSWER_LINES.saved_not_placed);
+  });
+});
+
+// A refusal of the placing PATCH leaves the node where the server keeps it, under the issue with
+// its placement_seq, with the refusal's line on its row: the row leaves the store, so the tree
+// draws the node there, and the outline hears of it, which keeps the focus on it.
+test("a refused placing PATCH keeps the node where the server holds it", async () => {
+  const patches = answerPatches(refused.INVALID_POINTER);
+  answerOutline();
+  const { client, view } = mountNewRows();
+  const heard: string[] = [];
+  const stop = subscribeRefusedPlacings(client, KEY, (node, blockId) =>
+    heard.push(`${node} ${blockId}`)
+  );
+  try {
+    typed(client, belowCriterion());
+    act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedRead));
+    await waitFor(() => expect(patches.calls).toHaveLength(1));
+    await waitFor(() => expect(view.result.current.rows).toEqual([]));
+    expect(heldNode(client, WRITTEN)).toEqual(
+      indexedRead.nodes?.find((node) => node.id === WRITTEN)
+    );
+    expect(view.result.current.writes.lines.get(WRITTEN)?.text).toContain(
+      WORDS.refused_invalid_pointer ?? ""
+    );
+    expect(heard).toEqual([`${WRITTEN} ${WRITTEN}`]);
+  } finally {
+    stop();
+  }
 });

@@ -23,7 +23,14 @@ import {
   type TreeAnswer,
   type TreeAnswerNode,
 } from "../tree-read/tree-read";
-import { bandOf, type Entry, type GreyReason, type PlacementRow, placementOf } from "./placement";
+import {
+  bandOf,
+  type Entry,
+  type GreyReason,
+  type MoveBody,
+  type PlacementRow,
+  placementOf,
+} from "./placement";
 
 /**
  * The writes of Graph's node menu (R4, R6, R7 and R8 of INFRA-5705's spec): the moves of a node,
@@ -48,6 +55,10 @@ import { bandOf, type Entry, type GreyReason, type PlacementRow, placementOf } f
  * loaded, that page is read first (`readNextTreePage`). No other read goes between two acts of a
  * chain: the next act goes out within the answer's own reaction, before the write store's hold on
  * the tree reads ends (`subscribeTreeFreshness`).
+ *
+ * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
+ * the place its entry gave it, under the `placement_seq` the read that first held it ranked
+ * answered, its answer written into the held read as a move's is (`new-rows.ts`).
  *
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
@@ -91,6 +102,9 @@ const OUTLINES: readonly Outline[] = ["graph", "conversation"];
 
 /** The four entries that move a node (R4). */
 export type MoveEntry = Extract<Entry, "indent" | "move_down" | "move_up" | "outdent">;
+
+/** The two entries that make a new row (R3), whose node one `PATCH` places (`placeNode`). */
+export type NewEntry = Extract<Entry, "new_below" | "new_under">;
 
 /** The line a row draws for a write that did not go (R8). */
 export interface RefusalLine {
@@ -194,7 +208,17 @@ interface DeleteAct {
   readonly done: (outcome: DeleteOutcome) => void;
 }
 
-type Act = MoveAct | DeleteAct;
+/** The one `PATCH` that places a new row's node where R3 puts it (`new-rows.ts`), from the entry
+ *  that made the row: its body is the place `placement.ts` gave the row as it was made, and it
+ *  goes under the node's `placement_seq` as the held read holds it at its turn. */
+interface PlaceAct {
+  readonly kind: "place";
+  readonly body: MoveBody;
+  readonly entry: NewEntry;
+  readonly done: (outcome: MoveOutcome) => void;
+}
+
+type Act = MoveAct | DeleteAct | PlaceAct;
 
 /** The acts of one node of one issue, in press order, the first of them the one whose turn it
  *  is. */
@@ -355,14 +379,19 @@ function heldRead(client: QueryClient, issue: string): TreeAnswer | undefined {
 
 /**
  * Reads each outline read of `issue` the cache holds again, once, its loaded pages and older
- * comment pages included (`readTree`), and marks it stale. A read a write of the issue holds
- * (`subscribeTreeFreshness`, which leaves it no enabled observer) is only marked: the hold owes
- * it, and reads it once the last write settles. The scheduler reads an observed outline after
- * any older request settles, so that request's answer cannot pay for the refresh.
+ * comment pages included (`readTree`), and marks it stale: each of `outlines`, both by default. A
+ * read a write of the issue holds (`subscribeTreeFreshness`, which leaves it no enabled observer)
+ * is only marked: the hold owes it, and reads it once the last write settles. The scheduler reads
+ * an observed outline after any older request settles, so that request's answer cannot pay for
+ * the refresh. A new row's wait reads Graph's alone (`new-rows.ts`).
  */
-function readOutlinesAgain(client: QueryClient, issue: string): void {
+export function readOutlinesAgain(
+  client: QueryClient,
+  issue: string,
+  outlines: readonly Outline[] = OUTLINES
+): void {
   const cache = client.getQueryCache();
-  for (const outline of OUTLINES) {
+  for (const outline of outlines) {
     const options = outlineQuery(issue, outline);
     const { queryKey } = options;
     const query = cache.find({ exact: true, queryKey });
@@ -516,7 +545,9 @@ function refuse(client: QueryClient, chain: Chain, error: unknown): void {
   const again =
     act.kind === "move"
       ? () => pressMove(client, chain.issue, chain.node, act)
-      : () => pressDelete(client, chain.issue, chain.node, act.count);
+      : act.kind === "place"
+        ? () => placeNode(client, chain.issue, chain.node, act.body, act.entry)
+        : () => pressDelete(client, chain.issue, chain.node, act.count);
   writeLine(client, chain, line.text, dropped.length, {
     ...(line.container === undefined ? {} : { container: line.container }),
     ...(line.retry ? { again } : {}),
@@ -524,11 +555,12 @@ function refuse(client: QueryClient, chain: Chain, error: unknown): void {
 }
 
 /** The act whose turn it is goes unsent: its entry is grey for `reason`, or the held read no
- *  longer holds its node (no reason). It and every move after it are dropped. */
+ *  longer holds its node (no reason). It and every move after it are dropped; a new row's
+ *  placing (`PlaceAct`) answers as a move does. */
 function drop(client: QueryClient, chain: Chain, reason: GreyReason | undefined): void {
   const act = chain.acts.shift();
   if (act === undefined) return;
-  const dropped = [...(act.kind === "move" ? [act] : []), ...takeMoves(chain)];
+  const dropped = [...(act.kind === "delete" ? [] : [act]), ...takeMoves(chain)];
   if (act.kind === "delete") act.done(DROPPED);
   const outcome: MoveOutcome = reason === undefined ? DROPPED : { reason, status: "dropped" };
   for (const move of dropped) move.done(outcome);
@@ -547,6 +579,12 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
     const request = placed(deleteRequest(chain.issue, chain.node, query), node);
     return { kind: "send", send: () => sendDelete(client, chain, act, request) };
   }
+  const params = { id: chain.node, key: chain.issue };
+  if (act.kind === "place") {
+    const request = placed(writeRequest("patch", NODE_ROUTE, params, act.body), node);
+    const label = CONTROL_LABELS[`edit_${act.entry}`];
+    return { kind: "send", send: () => sendMove(client, chain, act, request, label) };
+  }
   const verdict = placementOf({
     held,
     node: chain.node,
@@ -560,9 +598,9 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
     case "read_next":
       return READ_NEXT;
     case "move": {
-      const params = { id: chain.node, key: chain.issue };
       const request = placed(writeRequest("patch", NODE_ROUTE, params, verdict.body), node);
-      return { kind: "send", send: () => sendMove(client, chain, act, request) };
+      const label = CONTROL_LABELS[`edit_${act.entry}`];
+      return { kind: "send", send: () => sendMove(client, chain, act, request, label) };
     }
     default:
       throw new Error(`placement answered ${verdict.kind} for ${act.entry}`);
@@ -622,13 +660,15 @@ function writeOf<T>(chain: Chain, label: string, request: WriteRequest<T>) {
   } as const;
 }
 
+/** The `PATCH` of a move, or of a new row's placing, labelled `label` in the write store: a taken
+ *  answer is written into the held read at its place, and the chain goes on. */
 function sendMove(
   client: QueryClient,
   chain: Chain,
-  act: MoveAct,
-  request: WriteRequest<NodeMoved>
+  act: MoveAct | PlaceAct,
+  request: WriteRequest<NodeMoved>,
+  label: string
 ): void {
-  const label = CONTROL_LABELS[`edit_${act.entry}`];
   const sent = writesOf(client).run(writeOf(chain, label, request));
   void sent.then(
     (answer) => {
@@ -718,6 +758,25 @@ function pressDelete(
 ): Promise<DeleteOutcome> {
   const { promise, resolve } = Promise.withResolvers<DeleteOutcome>();
   press(client, issue, node, { count, done: resolve, kind: "delete" });
+  return promise;
+}
+
+/**
+ * Places the node of read id `node`, a new row's (R3), with the one `PATCH` of `body` - the place
+ * `placement.ts` gave the row as `entry` made it - under the node's `placement_seq` as Graph's
+ * held read of `issue` holds it, on the node's own chain, as a move goes (`MoveOutcome`): a taken
+ * answer is written into the held read at its `parent` and `after`, a refusal draws the row's line
+ * (R8), and once the chain is empty the outline reads are read again (R7).
+ */
+export function placeNode(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  body: MoveBody,
+  entry: NewEntry
+): Promise<MoveOutcome> {
+  const { promise, resolve } = Promise.withResolvers<MoveOutcome>();
+  press(client, issue, node, { body, done: resolve, entry, kind: "place" });
   return promise;
 }
 

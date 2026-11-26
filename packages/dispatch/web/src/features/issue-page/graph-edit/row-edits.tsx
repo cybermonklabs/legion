@@ -1,20 +1,14 @@
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal, flushSync } from "react-dom";
 
 import { ConfirmDialog } from "../../project/ConfirmDialog";
+import type { TreeNode } from "../issue-tree";
 import type { LensAct } from "../lenses/LensMenu";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { DrawnRow } from "../tree-fold";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import { READER_ACTS } from "../useNodeEditing";
-import { type NodeWritesIssue, useNodeWrites } from "./node-writes";
+import { type NewEntry, type NodeWritesIssue, useNodeWrites } from "./node-writes";
 import type { NewPlace, PlaceLine, PlacementRow, RetypeAttributes, RetypeKind } from "./placement";
 
 /**
@@ -61,28 +55,41 @@ export interface RowReveal {
 }
 
 /**
- * What the issue's room editor gives the node menu (stage B: INFRA-5705's R3 and R5, through part
- * Y's room): the entries that write in the room, and what the menu's verdicts read of it. Where
- * none is given (`RowEditorContext`), New row below, New row under and Retype are grey on a row
- * that takes them, with `ANSWER_LINES.grey_no_editor`, and the menu writes nothing for them.
+ * What the issue's room editor gives the node menu and the editor's keys (stage B: INFRA-5705's
+ * R3 and R5, through part Y's room; `IssueTree.tsx` gives Graph's, `new-row-editing.ts`): the
+ * entries that write in the room, and what the menu's verdicts read of it. Where none is given
+ * (`OutlineEdits.editor`), New row below, New row under and Retype are grey on a row that takes
+ * them, with `ANSWER_LINES.grey_no_editor`, and the menu writes nothing for them; so is Retype
+ * where the editor gives no `retype`.
  */
 export interface RowEditor {
   /** The kinds the editor's schema for the node's fragment lets it make (R5, `placement.ts`'
    *  `kinds`); each of the four where it gives none. */
   readonly kinds?: readonly RetypeKind[];
-  /** Whether the node of read id `node` is a new row the reader typed in that no `PATCH` has
-   *  placed yet (R3, `placement.ts`' `unplaced`). */
+  /** Whether the node of read id `node` is a new row the reader made that no `PATCH` has placed
+   *  yet (R3, `placement.ts`' `unplaced`). */
   readonly unplaced?: (node: string) => boolean;
-  /** Draws a new row at `place`, from the row of read id `node`, with the caret in it (R3), and
-   *  the line `line` where the new row stands after the spec's blocks. */
-  readonly newRow: (node: string, place: NewPlace, line: PlaceLine | undefined) => void;
+  /** The read id the menu and the keys name the node of the row `id` (`TreeNode.id`) by, where
+   *  the node carries none: a new row the read does not hold yet (R3). */
+  readonly readIdOf?: (id: string) => string | undefined;
+  /** Graph's held read as the verdicts read it: with a node for each new row it does not hold
+   *  yet (R3). */
+  readonly held?: (answer: TreeAnswer) => TreeAnswer;
+  /** The line the row of `node` draws as a new row (R3): that it stands after the spec's blocks,
+   *  or that its block is saved and not yet placed; undefined for every other row. */
+  readonly lineOf?: (node: TreeNode) => string | undefined;
+  /** Draws a new row that `entry` makes at `place`, from the row of read id `node`, with the
+   *  caret in it (R3), and the line `line` where the new row stands after the spec's blocks. */
+  readonly newRow: (
+    node: string,
+    entry: NewEntry,
+    place: NewPlace,
+    line: PlaceLine | undefined
+  ) => void;
   /** Gives the block of read id `node` the kind `kind`, with the attributes that keep it where it
    *  stands (R5). */
-  readonly retype: (node: string, kind: RetypeKind, attributes: RetypeAttributes) => void;
+  readonly retype?: (node: string, kind: RetypeKind, attributes: RetypeAttributes) => void;
 }
-
-/** The room editor the page gives the node menu, where it gives one (`RowEditor`). */
-export const RowEditorContext = createContext<RowEditor | undefined>(undefined);
 
 /** What every row of Graph's outline shares for its menu. */
 export interface OutlineEdits {
@@ -90,6 +97,8 @@ export interface OutlineEdits {
   readonly issue: NodeWritesIssue;
   /** Opens the delete's confirm for the node of read id `node`, naming `count` (R6). */
   readonly confirmDelete: (node: string, count: number) => void;
+  /** The issue's room editor the menu writes in (`RowEditor`), where the outline gives one. */
+  readonly editor: RowEditor | undefined;
   /** The outline's way of taking the reader to a row; undefined for rows drawn with no outline
    *  around them. */
   readonly reveal: RowReveal | undefined;
@@ -124,16 +133,19 @@ interface DeleteAsk {
  * The node menus of the rows `TreeRows.tsx` draws (`act`, its `useLensAct`, says where): in Graph,
  * each row's `RowEdit`, and the delete's confirm while one is open; anywhere else, no row's and
  * none. `zoomRoot` is the id of the node the outline is zoomed to (`TreeNode.id`), whose read id
- * the verdicts read; `reveal` is the outline's (`IssueTree.tsx`).
+ * the verdicts read; `reveal` is the outline's (`IssueTree.tsx`), and `editor` the room editor it
+ * gives its rows (`RowEditor`).
  */
 export function useRowEdits({
   act,
+  editor,
   isClosed,
   reveal,
   rows,
   zoomRoot,
 }: {
   readonly act: LensAct | undefined;
+  readonly editor: RowEditor | undefined;
   readonly isClosed: boolean;
   readonly reveal: RowReveal | undefined;
   readonly rows: readonly DrawnRow[];
@@ -171,10 +183,11 @@ export function useRowEdits({
         ? undefined
         : {
             confirmDelete,
+            editor,
             issue: { key, status, ...(zoomRead === undefined ? {} : { zoomRoot: zoomRead }) },
             reveal,
           },
-    [confirmDelete, key, reveal, status, zoomRead]
+    [confirmDelete, editor, key, reveal, status, zoomRead]
   );
   const own = useMemo(
     () => (outline === undefined ? undefined : { outline, row: "own" as const }),
