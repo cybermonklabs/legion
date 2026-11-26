@@ -103,9 +103,12 @@ function Fact({
   testId: string;
 }): ReactNode {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2">
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
       <dt className={`text-xs font-medium ${textMutedOnSurface}`}>{label}</dt>
-      <dd className={`text-sm ${textSecondaryOnSurface}`} data-testid={testId}>
+      <dd
+        className={`min-w-0 text-sm [overflow-wrap:anywhere] ${textSecondaryOnSurface}`}
+        data-testid={testId}
+      >
         {children === undefined || children === "" ? "—" : children}
       </dd>
     </div>
@@ -298,6 +301,10 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   ));
 }
 
+/** One check of the Verification document. Its head line's groups, in this order: its standing
+ *  (whether its pass stands, and from which roles), then its words; when the line is too narrow
+ *  the words move under the standing whole and wrap inside themselves. Its facts follow as a list
+ *  of names and values, then its results. */
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];
@@ -328,7 +335,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         {/* A check's words are shown as the characters they are, and so are its negative
             control, a result's reading and a retraction's reason below: the reading list's
             `check-text` (`DISPATCH_READING_SURFACES`) says why. */}
-        <span className="font-medium">{check.text}</span>
+        <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{check.text}</span>
       </div>
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
         <Fact label="When" testId="verification-check-when">
