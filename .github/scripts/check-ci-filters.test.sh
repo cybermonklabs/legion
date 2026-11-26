@@ -39,10 +39,11 @@
 # that list must read it in its one shape and is the gate on that filter, a hand-written read that
 # matches no file is refused, every spec file the `references)` arm of
 # .github/scripts/dispatch-browser-shard-suite.sh lists in lane_files must be one the
-# dispatch_references filter matches, and a release's version argument list (VERSION_ARGS) must
-# cover every package directory, go.mod and go.work its build compiles from for any of its
-# targets and name no path of the build's modules it compiles nothing from, while its build script
-# still holds the pinned command. A script's go command is read under every step of each job
+# dispatch_references filter matches, and a release's version argument list (VERSION_ARGS) must,
+# as git reads it, cover every package directory, go.mod and go.work its build compiles from for
+# any of its targets, name no path git reads no file for and no path of the build's modules it
+# compiles nothing from, while its build script runs the pinned line exactly, with no env:, export
+# or sourced file around it. A script's go command is read under every step of each job
 # that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
 # under that caller alone and reads its other jobs under every caller whose filter is not
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
@@ -2830,42 +2831,46 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names it" "$(contains "$out" 'PUSH_WORKFLOWS names .github/workflows/site.yaml for filter site, which is not in the repository')"
 
-# Rule 25: a release's version argument list names every first-party file its build compiles from.
-# release_args <root>: release.yaml's APP_VERSION_ARGS names what the release builds from -
-# mod/cmd/app, mod/lib (which cmd/app imports), mod/go.mod and go.work - and release.sh builds
-# ./cmd/app for linux/amd64 and darwin/arm64. VERSION_ARGS pins release.sh's two lines and stands
-# for its build with one go command per target.
+# Rule 25: a release's version argument list names every first-party file its build compiles from,
+# as git reads the list.
+# release_args <root>: release.yaml's LEGION_VERSION_ARGS names what the release builds from -
+# mod/cmd/app, mod/lib (which cmd/app imports), mod/go.mod and go.work - and its job build runs
+# release.sh, which builds ./cmd/app for linux/amd64 and darwin/arm64 on one line. VERSION_ARGS
+# stands for that build with one go command per target, each pinned to that line as a script_run
+# Run is. The key is LEGION_VERSION_ARGS because around_job reads the workflow's env: too, and
+# ENV_ALLOWED holds that name.
+release_build='CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app'
 release_args() {
   cat > "$1/.github/workflows/release.yaml" <<'YAML'
 name: Release
 on: workflow_dispatch
 env:
-  APP_VERSION_ARGS: >-
+  LEGION_VERSION_ARGS: >-
     --patch-path mod/lib/
     -- mod/cmd/app/ mod/lib/ mod/go.mod go.work
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - run: .github/scripts/release.sh
+      - name: Build the app
+        run: .github/scripts/release.sh
 YAML
-  cat > "$1/.github/scripts/release.sh" <<'SH'
-#!/usr/bin/env bash
-for target in linux/amd64 darwin/arm64; do
-  CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app
-done
-SH
+  printf '#!/usr/bin/env bash\nfor target in linux/amd64 darwin/arm64; do\n  %s\ndone\n' "$release_build" \
+    > "$1/.github/scripts/release.sh"
   replace "$1/.github/scripts/ci_job_reads.py" 'VERSION_ARGS = []' "$(cat <<'PY'
 from ci_filter_coverage import version_args
-VERSION_ARGS = [version_args(
-    ".github/workflows/release.yaml", "APP_VERSION_ARGS", ".github/scripts/release.sh",
-    ["for target in linux/amd64 darwin/arm64; do",
-     'CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app'],
-    [run("mod", ["./cmd/app"], "release.sh's build for " + t, mode="build",
-         env={"CGO_ENABLED": "0", "GOOS": t.split("/")[0], "GOARCH": t.split("/")[1]})
-     for t in ("linux/amd64", "darwin/arm64")])]
+BUILD = 'CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app'
+VERSION_ARGS = [version_args(".github/workflows/release.yaml", "LEGION_VERSION_ARGS", "build", [
+    run("mod", ["./cmd/app"], "release.sh's build for " + t, mode="build", source=".github/scripts/release.sh",
+        text=BUILD, env={"CGO_ENABLED": "0", "GOOS": t.split("/")[0], "GOARCH": t.split("/")[1]})
+    for t in ("linux/amd64", "darwin/arm64")])]
 PY
 )"
+}
+
+# The report line of a run that read the build, with its three counts.
+version_args_report() {
+  printf '^report: .github/workflows/release.yaml LEGION_VERSION_ARGS: .github/scripts/release.sh compiles %s first-party package directories and reads 2 go.mod and go.work files for linux/amd64, darwin/arm64; %s no listed path covers, %s listed paths cover none, %s listed paths git reads no file for$' "$@"
 }
 
 echo "case: a release's version arguments that cover what its build compiles from"
@@ -2873,8 +2878,7 @@ root=$(fixture version-args-covered)
 release_args "$root"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "reports what the build compiles from and that the list covers it" \
-  "$(contains "$out" '^report: .github/workflows/release.yaml APP_VERSION_ARGS: .github/scripts/release.sh compiles 2 first-party package directories and reads 2 go.mod and go.work files for linux/amd64, darwin/arm64; 0 no listed path covers, 0 listed paths cover none$')"
+check "reports what the build compiles from and that the list covers it" "$(contains "$out" "$(version_args_report 2 0 0 0)")"
 
 echo "case: a package the release build compiles that no path of its version arguments covers"
 root=$(fixture version-args-package-missing)
@@ -2884,8 +2888,8 @@ replace "$root/.github/workflows/release.yaml" '    --patch-path mod/lib/' '    
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the package's directory, the build, the targets and the fix" \
-  "$(contains "$out" "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's APP_VERSION_ARGS names no path that covers mod/lib/, the directory of a package .github/scripts/release.sh compiles (\`go list -deps ./cmd/app\` in mod, for linux/amd64, darwin/arm64), so a commit that changes only that package releases no binary; add mod/lib/ after its \`--\`$")"
-check "reports one path uncovered" "$(contains "$out" '1 no listed path covers, 0 listed paths cover none$')"
+  "$(contains "$out" "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's LEGION_VERSION_ARGS names no path that covers mod/lib/, the directory of a package .github/scripts/release.sh compiles (\`go list -deps ./cmd/app\` in mod, for linux/amd64, darwin/arm64), so a commit that changes only that package releases no binary; add mod/lib/ after its \`--\`$")"
+check "reports one path uncovered" "$(contains "$out" "$(version_args_report 2 1 0 0)")"
 
 echo "case: a module file of the release build's workspace that no path of its version arguments covers"
 root=$(fixture version-args-workspace-missing)
@@ -2893,7 +2897,7 @@ release_args "$root"
 replace "$root/.github/workflows/release.yaml" ' mod/go.mod go.work' ' mod/go.mod'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names go.work" "$(contains "$out" "APP_VERSION_ARGS names no path that covers go.work, a module file of the workspace .github/scripts/release.sh builds in")"
+check "names go.work" "$(contains "$out" "LEGION_VERSION_ARGS names no path that covers go.work, a module file of the workspace .github/scripts/release.sh builds in")"
 check "names no package" "$(is "$(contains "$out" 'names no path that covers mod/')" false)"
 
 # GOOS and GOARCH decide which files, and so which imports, a build compiles: a package only the
@@ -2908,20 +2912,57 @@ check "names the package and the one target that compiles it" \
   "$(contains "$out" "names no path that covers mod/other/, the directory of a package .github/scripts/release.sh compiles (\`go list -deps ./cmd/app\` in mod, for darwin/arm64)")"
 
 # A path under which the build compiles nothing cuts a release for a change the binary does not
-# hold; a path outside every module the build binds is another input of the release, and one under
-# a wider path of the list is covered by that path.
+# hold; a path that reads a file outside every module the build binds is another input of the
+# release, and one whose files a wider path of the list reads too lies under that path.
 echo "case: a listed path under which the release build compiles nothing"
 root=$(fixture version-args-idle)
 release_args "$root"
+mkdir -p "$root/mod/lib/testdata"
+echo '{}' > "$root/mod/lib/testdata/case.json"
 replace "$root/.github/workflows/release.yaml" ' mod/go.mod go.work' ' mod/go.mod go.work mod/other/ docs/ mod/lib/testdata/'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the path and the fix" \
-  "$(contains "$out" "APP_VERSION_ARGS names mod/other/, under which .github/scripts/release.sh compiles no package and holds no module file (\`go list -deps ./cmd/app\` in mod, for linux/amd64, darwin/arm64), so a commit that changes only it releases a binary it is not in; take it out of the list, and its --patch-path, which release-bump.sh refuses without it$")"
-check "leaves a path outside the modules alone" "$(is "$(contains "$out" 'names docs/, under which')" false)"
-check "leaves a path under a wider one alone" "$(is "$(contains "$out" 'names mod/lib/testdata/, under which')" false)"
-check "reports one idle path" "$(contains "$out" '0 no listed path covers, 1 listed paths cover none$')"
+  "$(contains "$out" "LEGION_VERSION_ARGS names mod/other/, under which .github/scripts/release.sh compiles no package and holds no module file (\`go list -deps ./cmd/app\` in mod, for linux/amd64, darwin/arm64), so a commit that changes only it releases a binary it is not in; take it out of the list, and its --patch-path, which release-bump.sh refuses without it$")"
+check "leaves a path outside the modules alone" "$(is "$(contains "$out" 'names docs/, ')" false)"
+check "leaves a path under a wider one alone" "$(is "$(contains "$out" 'names mod/lib/testdata/, ')" false)"
+check "reports one idle path" "$(contains "$out" "$(version_args_report 2 0 1 0)")"
 
+# release-bump.sh runs `git log <range> -- <paths>` from the repository's root, and git reads a
+# path ending in `/` as a directory alone: `mod/go.mod/` reads no commit of the file mod/go.mod. The
+# fixture's own git log shows it before the rule is held to it.
+echo "case: a listed file written with a trailing slash, which git reads nothing for"
+root=$(fixture version-args-trailing-slash)
+release_args "$root"
+replace "$root/.github/workflows/release.yaml" ' mod/go.mod go.work' ' mod/go.mod/ go.work docs/readme.md/'
+base=$(commit_all "$root" base)
+echo '// a later line' >> "$root/mod/go.mod"
+commit_all "$root" 'fix: the module file' >/dev/null
+check "git log reads no commit through mod/go.mod/" \
+  "$(is "$(git -C "$root" log --format=%s "$base..HEAD" -- mod/go.mod/)" '')"
+check "and the commit through mod/go.mod" \
+  "$(is "$(git -C "$root" log --format=%s "$base..HEAD" -- mod/go.mod)" 'fix: the module file')"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the path, what git reads for it and the fix" \
+  "$(contains "$out" "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's LEGION_VERSION_ARGS names mod/go.mod/, for which git reads no file of the tree, so the git log release-bump.sh runs over the list finds no commit through it, and the list names a path the release's version step never reads; write it mod/go.mod, as git names a file$")"
+check "names one outside the modules too" "$(contains "$out" "LEGION_VERSION_ARGS names docs/readme.md/, for which git reads no file of the tree")"
+check "names the module file it leaves uncovered" "$(contains "$out" "LEGION_VERSION_ARGS names no path that covers mod/go.mod, a module file")"
+check "reports both" "$(contains "$out" "$(version_args_report 2 1 0 2)")"
+
+# git normalizes `./`, `//` and `..` in a pathspec, and reads a directory named without a slash as
+# the directory: the rule reads each as git does, so none of them is refused.
+echo "case: listed paths git normalizes are read as git reads them"
+root=$(fixture version-args-normalized)
+release_args "$root"
+replace "$root/.github/workflows/release.yaml" '    -- mod/cmd/app/ mod/lib/' '    -- mod/cmd/../cmd/app ./mod//lib/'
+replace "$root/.github/workflows/release.yaml" '    --patch-path mod/lib/' '    --patch-path ./mod//lib/'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "reports the list covers the build" "$(contains "$out" "$(version_args_report 2 0 0 0)")"
+
+# The Runs stand for the release's build only while the script runs exactly the pinned line, with
+# nothing around it that moves what it compiles.
 echo "case: a release build that no longer runs the command its go commands stand for"
 root=$(fixture version-args-stale-pin)
 release_args "$root"
@@ -2929,23 +2970,81 @@ replace "$root/.github/scripts/release.sh" ' go -C mod build -o' ' go -C mod bui
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the script and the pinned text, its % escaped as an annotation escapes it" \
-  "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh no longer holds \`CGO_ENABLED=0 GOOS=\"\${target%25/\*}\" GOARCH=\"\${target#\*/}\" go -C mod build -o \"out/\$target/app\" ./cmd/app\`, which VERSION_ARGS in ci_job_reads.py pins")"
+  "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh no longer holds \`CGO_ENABLED=0 GOOS=\"\${target%25/\*}\" GOARCH=\"\${target#\*/}\" go -C mod build -o \"out/\$target/app\" ./cmd/app\`, the build VERSION_ARGS in ci_job_reads.py pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS")"
 check "judges no list against a build it cannot stand for" "$(is "$(contains "$out" 'listed paths cover none')" false)"
 
-echo "case: a release workflow with no such list, and one whose list holds a pathspec with magic"
+for prefix in 'GOFLAGS=-tags=extra' 'GOWORK=off'; do
+  echo "case: the release build's line with $prefix in front of it"
+  root=$(fixture "version-args-prefix-${prefix%%=*}")
+  release_args "$root"
+  replace "$root/.github/scripts/release.sh" '  CGO_ENABLED=0 GOOS=' "  $prefix CGO_ENABLED=0 GOOS="
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the line that is more than the pinned text" \
+    "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh's \`.*\`, the build VERSION_ARGS pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS, may compile other than its go commands say: its line is \`$prefix CGO_ENABLED=0 ")"
+  check "judges no list against a build it cannot stand for" "$(is "$(contains "$out" 'listed paths cover none')" false)"
+done
+
+# A line beside the pinned one can set what the build compiles with: an export of a name go reads,
+# `set -a` before an assignment, a file sourced into the script's own shell. A name the pinned line
+# sets on itself is that line's, which no other line moves.
+echo "case: a release script that exports a name go reads before the build"
+root=$(fixture version-args-export)
+release_args "$root"
+replace "$root/.github/scripts/release.sh" 'for target in' $'export GOWORK=off GOFLAGS=-tags=extra\nfor target in'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line and the name" \
+  "$(contains "$out" "may compile other than its go commands say: its line \`export GOWORK=off GOFLAGS=-tags=extra\` names GOWORK, which go reads, and the pinned line does not set it")"
+root=$(fixture version-args-sourced)
+release_args "$root"
+replace "$root/.github/scripts/release.sh" 'for target in' $'source ./build.env\nfor target in'
+run_check "$root"
+check "fails on a file sourced into the script" \
+  "$(contains "$out" "its line \`source ./build.env\` hands the commands after it what it sets, or another file's settings")"
+root=$(fixture version-args-own-name)
+release_args "$root"
+replace "$root/.github/scripts/release.sh" 'for target in' $'export CGO_ENABLED=1\nfor target in'
+run_check "$root"
+check "passes an export of a name the pinned line sets on itself" "$(is "$status" 0)"
+
+echo "case: a release job whose env sets a name go reads"
+root=$(fixture version-args-step-env)
+release_args "$root"
+replace "$root/.github/workflows/release.yaml" '        run: .github/scripts/release.sh' $'        env:\n          GOFLAGS: -tags=extra\n        run: .github/scripts/release.sh'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the name" \
+  "$(contains "$out" "may compile other than its go commands say: step \"Build the app\"'s env sets GOFLAGS")"
+
+echo "case: a release workflow that is gone, a job that runs the script no more, no list, a pathspec with magic"
+root=$(fixture version-args-no-workflow)
+release_args "$root"
+rm "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the workflow as absent" \
+  "$(contains "$out" "\.github/workflows/release.yaml, the workflow VERSION_ARGS names for LEGION_VERSION_ARGS, is absent")"
+check "and not as a missing key" "$(is "$(contains "$out" 'workflow env: has no')" false)"
+root=$(fixture version-args-unrun)
+release_args "$root"
+replace "$root/.github/workflows/release.yaml" '        run: .github/scripts/release.sh' '        run: echo build'
+run_check "$root"
+check "fails when no step of the job runs the script" \
+  "$(contains "$out" "no step of .github/workflows/release.yaml's job build runs .github/scripts/release.sh, the script VERSION_ARGS pins LEGION_VERSION_ARGS's build to")"
 root=$(fixture version-args-no-list)
 release_args "$root"
-replace "$root/.github/workflows/release.yaml" '  APP_VERSION_ARGS: >-' '  OTHER_ARGS: >-'
+replace "$root/.github/workflows/release.yaml" '  LEGION_VERSION_ARGS: >-' '  PI_LEGION_VERSION_ARGS: >-'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the key it could not read" \
-  "$(contains "$out" "workflow env: has no APP_VERSION_ARGS that names paths after \`--\`, so whether .github/workflows/release.yaml's APP_VERSION_ARGS covers what .github/scripts/release.sh builds is unknown")"
+  "$(contains "$out" "workflow env: has no LEGION_VERSION_ARGS that names paths after \`--\`, so whether .github/workflows/release.yaml's LEGION_VERSION_ARGS covers what its build compiles is unknown")"
 root=$(fixture version-args-magic)
 release_args "$root"
 replace "$root/.github/workflows/release.yaml" ' mod/go.mod go.work' ' mod/go.mod go.work :(exclude)mod/lib'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the pathspec it does not read" "$(contains "$out" 'APP_VERSION_ARGS names :(exclude)mod/lib, a pathspec with magic, which this check does not read')"
+check "names the pathspec it does not read" "$(contains "$out" 'LEGION_VERSION_ARGS names :(exclude)mod/lib, a pathspec with magic, which this check does not read')"
 
 # A step that runs a package under a build tag and selects with -run runs only what the tag adds,
 # so the job TAG_RUNS pairs it with must run that package's untagged tests in every run it runs:

@@ -34,10 +34,8 @@ Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-ini
   another pull request added earlier can be missing from any of them.
 - A package `go list -deps ./cmd/legion` in `packages/daemon` names is source of the `legion`
   binary too: it goes into `LEGION_VERSION_ARGS` in `release.yaml`, or a change to it releases no
-  `legion` (rule 25 of `.github/scripts/check-ci-filters.sh` now fails the pull request that
-  leaves it out, for every release target). When `go list -deps` of the daemon-pane.go program
-  names it too, it goes into the `pi_legion` filter of `envoy-and-contracts.yaml`, whose
-  daemon-pane test compiles that program.
+  `legion`. When `go list -deps` of the daemon-pane.go program names it too, it goes into the
+  `pi_legion` filter of `envoy-and-contracts.yaml`, whose daemon-pane test compiles that program.
 - A script a job runs (a helper the harness execs) goes into the job's filter and into the
   workflow's own `on.push.paths` and `on.pull_request.paths`: a filter never fires for a workflow
   its trigger never started.

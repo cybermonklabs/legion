@@ -105,21 +105,31 @@ for any legion target of .github/go-release-targets.json (one binary each, which
 .github/scripts/release-build-legion.sh builds): GOOS and GOARCH decide which files, and so
 which imports, a build compiles. A change to any of those packages changes the binary and must
 release one. The list also names the module files that decide what that build compiles and with
-which toolchain: the envoy module's go.mod, with its go.sum, and go.work, the workspace the
-build runs in, whose go line and use list move the toolchain and the module versions as a
-go.mod does.
+which toolchain: the envoy module's go.mod, and go.work, the workspace the build runs in, whose
+go line and use list move the toolchain and the module versions as a go.mod does. It carries the
+envoy module's go.sum too, which holds checksums and chooses nothing; the check below neither
+requires nor refuses it.
 
 The list is written out because the version step runs before setup-go
 (.github/ci-notes/release.md#why-legion_build-reads-the-tags-before-setup-go), where no go
 command can compute it. Rule 25 of .github/scripts/check-ci-filters.sh holds it to the build
-instead, from the entry `.github/scripts/ci_job_reads.py#VERSION_ARGS` declares. The rule reads
-the packages each target's build compiles from the go list runs lint's notices step already
-asks for. It fails naming each package directory or module file that no listed path covers,
-and each listed path inside the two modules under which the build compiles nothing. The
-ci-filters job runs it on the pull request, on every change to a Go file, a module file or a
-workflow. The entry pins the loop and the `go build` line of release-build-legion.sh, so a
-change to either fails the check until the entry says what the build runs now. The envoy part
-of the list for the host's target, by hand, from packages/daemon:
+instead, from the entry `.github/scripts/ci_job_reads.py#VERSION_ARGS` declares, and the ci-filters
+job runs it on the pull request, on every change to a Go file, a module file or a workflow:
+
+- What the build compiles: the package directories each target's build lists, from the go list
+  runs lint's notices step already asks for, and the go.mod and go.work of its workspace.
+- What the list reads: git decides, reading the same words from the repository's root as the git
+  log of release-bump.sh does. A path ending in `/` takes in a directory alone, so `go.mod/` reads
+  nothing.
+- It fails naming each package directory or module file the list does not read, each listed path
+  git reads no file for, and each listed path inside the build's modules under which the build
+  compiles nothing. It does not refuse a listed path wider than the build, such as packages/.
+- The entry's go commands are pinned to the build's line of release-build-legion.sh, as every
+  script_run Run is: that line alone, unchanged and unbroken, with no env: of the job or the
+  workflow, no export or plain assignment of a name go reads and no sourced file in the script
+  around it. Any of those fails the check until the entry says what the build runs now.
+
+The envoy part of the list for the host's target, by hand, from packages/daemon:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 

@@ -375,18 +375,26 @@
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
 #  25. a release's version argument list - an entry of ci_job_reads.py's VERSION_ARGS, today
-#      release.yaml's LEGION_VERSION_ARGS - whose paths after `--` leave out a first-party
-#      package directory the release's build compiles for one of its targets, or a go.mod or
-#      go.work of the workspace it builds in, or that name a path inside one of the build's
-#      modules under which it compiles no package and holds no module file, naming each, the
-#      targets that compile it and the fix. release-bump.sh cuts a version from the commits
-#      that touch those paths, so a package left out is a change that releases no binary, and
-#      an idle path is a release cut for a change the binary does not hold. The build is the
-#      entry's go commands, one per target, listed as every closure here is; they stand for the
-#      release's own build only while its script holds each text the entry pins, so a pin the
-#      script no longer holds fails naming the script and the text, and so does a list the
-#      workflow does not hold, a path with pathspec magic, which this rule does not read, and a
-#      build that lists no first-party package or module file.
+#      release.yaml's LEGION_VERSION_ARGS - whose paths after `--`, as git reads them, leave out
+#      a first-party package directory the release's build compiles for one of its targets, or a
+#      go.mod or go.work of the workspace it builds in, or that name a path git reads no file
+#      for, or one inside the build's modules under which it compiles no package and holds no
+#      module file, naming each, the targets that compile it and the fix. release-bump.sh cuts a
+#      version from the commits `git log <range> -- <paths>` finds, so a package left out is a
+#      change that releases no binary, a path git reads nothing for (a file written `go.mod/`,
+#      which git reads as a directory alone) is a line the version step never reads, and an
+#      idle path is a release cut for a change the binary does not hold. git itself reads the
+#      list, over a scratch index holding the tree's files and a new file in each package
+#      directory, from the repository's root, as release-bump.sh's git log does. A path wider
+#      than the build (packages/) is not refused. The build is the entry's go commands, one per
+#      target, listed as every closure here is, and script_run Runs pinned to its script's line
+#      as a gate's are: the line must be the pinned text alone and unbroken, no env:, shell,
+#      container or environment write of the release's job may move it, and no other line of
+#      the script may export, assign or unset a name go reads that the pinned line does not set
+#      on itself, `set -a` or source a file. Each of those fails, and so does a workflow that is
+#      absent, a job that runs no step naming the script, a list the workflow does not hold, a
+#      path with pathspec magic, which this rule does not read, and a build that lists no
+#      first-party package or module file.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
