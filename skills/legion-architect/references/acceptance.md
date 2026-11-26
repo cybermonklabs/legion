@@ -60,7 +60,9 @@ If the pull request merged before its last round, move nothing back. Once the ch
 ## After your sign-off
 
 The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's rules; you start none of it.
-A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
+A person's request after your sign-off is no defect.
+Write it into a new version of the spec, and ask that person to approve it.
+The approved version reaches the role that holds the phase as a news task.
 When the merger reports:
 
 - the issue moved back with `request_backward_move`: its reason says why the fix is a change to the change's own logic that no merge of the base resolves; you start nothing;
