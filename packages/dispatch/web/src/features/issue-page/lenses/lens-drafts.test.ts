@@ -828,9 +828,9 @@ test("an author's words linked to a store address link the node's row", () => {
 
 // A verdict that cites a risk is drawn in the shape of the same verdict that cites none: one line
 // of the plain words its stored string reads as, a list's items and emphasis among them, the
-// risk's name in place of its address. The one that cites is one paragraph of those words, whose
-// link opens the risk's row; the one that cites none has no reading, and its row draws its words
-// as they are.
+// risk's name in place of its address. Both carry a one-paragraph reading of those words, so the
+// row parses neither again in the page; the citing one's one change is the named words, whose
+// link opens the risk's row.
 test("a verdict draws one line of plain words whether or not it cites a risk", () => {
   const risk = "d4000000-0000-4000-8000-000000000004";
   const cited = `dispatch://risk/${risk}`;
@@ -852,8 +852,8 @@ test("a verdict draws one line of plain words whether or not it cites a risk", (
   const citing = rowOf(root, FIRST);
   const plain = rowOf(root, SECOND);
 
-  expect(plain.tree).toBeUndefined();
   expect(plain.text).toBe("Keep one region: the cost doubles Failover takes minutes first");
+  expect(plain.tree).toEqual(reading(plain.text));
   expect([citing.text, nodeWords(citing), lineWordsRaw(citing)]).toEqual([
     plain.text,
     plain.text,
@@ -875,9 +875,9 @@ test("a verdict draws one line of plain words whether or not it cites a risk", (
   ]);
 });
 
-// A verdict's code span that holds a store address keeps it as written, as `storedWords` reads a
-// code span; the same address outside the code is named, linked to its row, and nothing else of
-// the verdict's plain words changes.
+// A verdict's code span that holds a store address keeps its code mark and its words as written;
+// the same address outside the code is named, linked to its row, and nothing else of the
+// verdict's plain words changes.
 test("a verdict's code span keeps a store address as written while its words name it", () => {
   const risk = "d4000000-0000-4000-8000-000000000004";
   const cited = `dispatch://risk/${risk}`;
@@ -900,7 +900,9 @@ test("a verdict's code span keeps a store address as written while its words nam
   expect(verdict.tree?.content).toEqual([
     {
       content: [
-        { text: `Run dispatch read ${cited} before `, type: "text" },
+        { text: "Run ", type: "text" },
+        { marks: [{ type: "inlineCode" }], text: `dispatch read ${cited}`, type: "text" },
+        { text: " before ", type: "text" },
         {
           marks: [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
           text: "Failover takes minutes",

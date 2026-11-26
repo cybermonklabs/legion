@@ -22,7 +22,7 @@ import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
+import { type Gate, TREE_PATH, type TreeAnswerWatch } from "./issue-page-t-tree";
 import { isLiveSocket } from "./live-socket-watch";
 
 /**
@@ -517,15 +517,12 @@ export async function lensCatalogue(): Promise<LensKind[]> {
 // What the page received of the tree read.
 // ---------------------------------------------------------------------------------------------
 
-/** The tree read's path, whatever issue it reads (`GET /api/v1/issues/{key}/tree`). */
-const TREE_ROUTE = /^\/api\/v1\/issues\/[^/]+\/tree$/;
-
 /** Whether `response` is an answer of the tree read with no view that the page could read. */
 function treeReadAnswer(response: Response): boolean {
   const url = new URL(response.url());
   return (
     response.request().method() === "GET" &&
-    TREE_ROUTE.test(url.pathname) &&
+    TREE_PATH.test(url.pathname) &&
     url.searchParams.get("view") === null &&
     response.ok()
   );
