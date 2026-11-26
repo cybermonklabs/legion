@@ -14,6 +14,7 @@ import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
 import {
   commentNode,
+  markedCommentNode,
   type TreeNodeExtra,
   treeAnswer,
   treeNode,
@@ -373,9 +374,10 @@ test("what waits on the reader is their open questions, the review list and thei
 
 // R7 and R13, and R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any
 // more, so the decision it was asked of is back on the review list and in the header's count,
-// in the tree as in the count. The tree read answers it with no body and no mark of the delete,
-// so the comments read tells it. Anchored on that decision's words, the deleted Change is no row
-// of the outline (R9): the margin beside the decision draws it.
+// in the tree as in the count. The tree read's answer carries the delete's marks on the comment's
+// node, as a delete's correction writes them into the answer the cache holds
+// (`api/corrected-post.ts`), with no body. Anchored on that decision's words, the deleted Change
+// is no row of the outline (R9): the margin beside the decision draws it.
 test("a Change its author deleted leaves its decision on the review list and in the count", () => {
   const deleted: Comment = {
     ...change,
@@ -389,15 +391,12 @@ test("a Change its author deleted leaves its decision on the review list and in 
     decisionNode("listed", ["r1"]),
     decisionNode("untied", []),
     decisionNode("changed", ["r1"]),
-    commentNode(deleted, "changed"),
+    markedCommentNode(deleted, "changed"),
   ]);
-  const counted = waitingOnReader(issue, "alice", isCoverageStatement, {
-    answer: tree,
-    comments: [deleted],
-  });
+  const counted = waitingOnReader(issue, "alice", isCoverageStatement, { answer: tree });
   expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
 
-  const root = buildIssueTree({ comments: [deleted], coverage, issue, tree, viewer: "alice" });
+  const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
   expect(waitingIn(root)).toEqual(["mine", "spec#b-listed", "spec#b-changed"]);
   expect(parentsOf(root, deleted.id)).toEqual([]);
 });
@@ -506,7 +505,9 @@ test("an overtaken open question is not counted", () => {
 // second decision's words that the read hangs elsewhere - under the issue, or under the first
 // decision, whose words hold the same sentence - is no Change of it, and the second decision
 // still waits on the reader; once the read hangs it under the second decision, that decision
-// waits on its agent, in the count as in the tree. No quote is matched for it.
+// waits on its agent. No quote is matched for it. The read answers the comment's anchor on its
+// node, so where it hangs the comment under a decision the comment is on that node's text and no
+// row of the outline (R9, R10: the margin beside the node draws it); under the issue it is a post.
 test("a Change is only the comment under its decision", () => {
   const first = decisionNode("d1", [], { text: "Keep the model pure. Draw it once." });
   const second = decisionNode("d2", ["r1"], { text: "Draw it once." });
@@ -529,16 +530,14 @@ test("a Change is only the comment under its decision", () => {
   };
 
   expect(hungUnder(KEY)).toEqual({ drawnUnder: [KEY], waits: [1, ["spec#b-d2"]] });
-  expect(hungUnder("d1")).toEqual({ drawnUnder: ["spec#b-d1"], waits: [1, ["spec#b-d2"]] });
-  expect(hungUnder("d2")).toEqual({ drawnUnder: ["spec#b-d2"], waits: [0, []] });
+  expect(hungUnder("d1")).toEqual({ drawnUnder: [], waits: [1, ["spec#b-d2"]] });
+  expect(hungUnder("d2")).toEqual({ drawnUnder: [], waits: [0, []] });
 });
 
 // The count and the tree find a decision node's Change in the same place, the comment the tree
-// read hangs under the node, and neither finds it in the comments read, which says only which
-// Changes their author deleted: so they agree while that read has not answered yet, or answered
-// before the Change was written, and the count does not call the decision waiting on the reader
-// while the outline draws it waiting on its agent.
-test("the count and the tree agree on a decision node's Change the comments read does not hold", () => {
+// read hangs under the node, so they agree: the count does not call the decision waiting on the
+// reader while the outline draws it waiting on its agent. Neither reads a comment list of its own.
+test("the count and the tree agree on a decision node's Change, read from the tree read alone", () => {
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const tree = answerOf([statement, decisionNode("noded", ["r1"]), commentNode(asked, "noded")]);
 
@@ -567,10 +566,11 @@ test("a decision past Conversation's first page with the reader's Change in the 
   ).toEqual({ approvals: [], asks: 0, decisions: 1, total: 1 });
 });
 
-// Decision 337: a Change its author deleted asks nothing any more, and the tree read answers a
-// deleted comment with no mark of the delete, so the comments read tells it. The decision whose
-// node the read hangs that Change under is back on the review list, in the count as in the tree,
-// and the deleted Change keeps its place under the node, drawn as the deleted line.
+// A Change its author deleted asks nothing any more. The tree read's answer marks the delete on
+// the comment's node, as a delete's correction writes it into the answer the cache holds
+// (`api/corrected-post.ts`), with no text. The decision whose node the read hangs that Change
+// under is back on the review list, in the count as in the tree, and the deleted Change keeps its
+// place under the node, drawn as the deleted line.
 test("a deleted Change under its decision node leaves the decision on the review list and in the count", () => {
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const deleted: Comment = {
@@ -579,17 +579,19 @@ test("a deleted Change under its decision node leaves the decision on the review
     deleted_at: "2026-11-05T12:00:00Z",
     deleted_by: { id: "alice", kind: "user" },
   };
-  const tree = answerOf([statement, decisionNode("noded", ["r1"]), commentNode(deleted, "noded")]);
+  const tree = answerOf([
+    statement,
+    decisionNode("noded", ["r1"]),
+    markedCommentNode(deleted, "noded"),
+  ]);
   const root = buildIssueTree({
-    comments: [deleted],
     coverage,
     issue: quiet,
     tree,
     viewer: "alice",
   });
   expect([
-    waitingOnReader(quiet, "alice", isCoverageStatement, { answer: tree, comments: [deleted] })
-      .decisions,
+    waitingOnReader(quiet, "alice", isCoverageStatement, { answer: tree }).decisions,
     waitingIn(root),
   ]).toEqual([1, ["spec#b-noded"]]);
   expect(parentsOf(root, deleted.id)).toEqual(["spec#b-noded"]);
@@ -599,10 +601,14 @@ test("a deleted Change under its decision node leaves the decision on the review
     text: "Deleted by alice · 2026-11-05T12:00:00Z",
   });
   // The same Change not deleted is counted, as above.
-  expect(
-    waitingOnReader(quiet, "alice", isCoverageStatement, { answer: tree, comments: [asked] })
-      .decisions
-  ).toBe(0);
+  const standing = answerOf([
+    statement,
+    decisionNode("noded", ["r1"]),
+    commentNode(asked, "noded"),
+  ]);
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, { answer: standing }).decisions).toBe(
+    0
+  );
 });
 
 // A person's comment under a decision is a

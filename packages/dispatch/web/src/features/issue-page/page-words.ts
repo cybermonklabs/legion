@@ -710,8 +710,8 @@ export const STATE_LINES = joinWords("STATE_LINES", {
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
-   *  which checks serve each statement, the checks' results, the questions, the comments and the
-   *  messages; the issue's decisions are nodes of the tree read, whose own failed line says so.
+   *  which checks serve each statement, the checks' results, the questions and the messages; the
+   *  issue's decisions and comments are nodes of the tree read, whose own failed line says so.
    *  The spec's, the plan's and the verification document's lines, last, are what the Plan and
    *  the Verification views say of a tree read refused before it first answered, each named by
    *  the part the document whose blocks the view waits on plays (`PlanFilterBody`,
@@ -720,7 +720,6 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   coverage_unreadable: "Could not load which checks serve each statement.",
   results_unreadable: "Could not load the checks' results.",
   asks_unreadable: "Could not load the questions.",
-  comments_unreadable: "Could not load the comments.",
   messages_unreadable: "Could not load the messages.",
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",

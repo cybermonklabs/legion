@@ -2,23 +2,28 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Comment, CommentWithTrees, IssueDetails } from "../../../api/types";
+import type { CommentWithTrees, IssueDetails } from "../../../api/types";
 import { standsFailed } from "../../refs/reference-target";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
-import { type ChangeComment, decisionNodeChanges, deletedPostIds } from "../decision-review";
+import {
+  type ChangeComment,
+  decisionNodeChanges,
+  deletedPostIds,
+  treeComments,
+} from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeRead } from "../spec-filter/tree-read";
 import { coverageStatementOf, treeContext } from "../tree-drafts";
 import { holdsPlanTask } from "../tree-read/tree-nodes";
 import { outlineQuery, type TreeAnswer, useLastAnswer, viewQuery } from "../tree-read/tree-read";
-import { issueCommentsQuery, issueMessagesQuery, viewTree } from "../useIssueTree";
+import { issueMessagesQuery, viewTree } from "../useIssueTree";
 import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./decisions-parts";
 
 /**
  * The one seam between the page's reads and the Decisions view: it
- * turns the decisions view, the tree read, the issue's asks and its comments into the view's
- * parts, so no other file of the view names a read. Once the server's decisions model gives the
- * view its entries, that model's read replaces this module and leaves the view as it is.
+ * turns the decisions view, the tree read and the issue's asks into the view's parts, so no
+ * other file of the view names a read. Once the server's decisions model gives the view its
+ * entries, that model's read replaces this module and leaves the view as it is.
  *
  * The decisions are the decision nodes of the decisions view (`?view=decisions`), which holds
  * the issue's decisions wherever they are written. The page holds that view on the issue's node
@@ -26,10 +31,10 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * (`decisionNodes`). A decision's Change is the comment the read its decision is read from hangs
  * under its node (`decision-review.ts`' `decisionNodeChanges`): the view read carries each
  * comment on the text of a node it holds, so a Change stands with its decision whatever page of
- * Conversation's read holds it, and no quote is matched for it. The comments read says what the
- * tree read answers no mark of: which Changes their author deleted, which ask nothing any more
- * (`deletedPostIds`), and when its author last edited a Change, which its row draws. A view that
- * holds no decision gives none, and no error.
+ * Conversation's read holds it, and no quote is matched for it. The same read answers on each
+ * comment node what its author did to it (`treeComments`): which Changes their author deleted,
+ * which ask nothing any more (`deletedPostIds`), and when its author last edited a Change, which
+ * its row draws. A view that holds no decision gives none, and no error.
  *
  * The nodes the parts stand on are that view read's too (R2): the tree its answer builds by the
  * page's one tree rule, as each filter's view read builds its own (`useDecisionsTree`,
@@ -58,11 +63,11 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * with it.
  *
  * The reads are the page's own, under the keys it reads them by (`useIssueTree.ts`,
- * `ViewReadProvider`): Conversation's read, the decisions view, the issue's asks, its comments
- * and its coverage, the asks and the comments by the tree's own definitions of those reads
- * (`issueAskThreadsQuery`, `issueCommentsQuery`), and the other reads the page's tree is built
- * from, which the view read's tree is built from too; each watched and never sent, so the view
- * adds no request of its own and reads none of them again when it is opened.
+ * `ViewReadProvider`): Conversation's read, the decisions view, the issue's asks and its
+ * coverage, the asks by the tree's own definition of that read (`issueAskThreadsQuery`), and the
+ * other reads the page's tree is built from, which the view read's tree is built from too; each
+ * watched and never sent, so the view adds no request of its own and reads none of them again
+ * when it is opened.
  *
  * The view draws the model's parts as the model gives them. A decision another person made
  * stands in `others`, which the view draws under "Decided by others", after the reader's own
@@ -203,19 +208,14 @@ export function useDecisionsEntries({
   const asksRead = useQuery(treeRead(issueAskThreadsQuery(issue.key)));
   const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer: the
-  // decisions are read from it, and the Changes it hangs under them (`changesOf`).
+  // decisions are read from it, and the Changes it hangs under them, with what each Change's
+  // author did to it, as its node answers that (`changesOf`).
   const held = root.views?.decisions ?? tree;
   const decisions = useMemo(
     () => (held === undefined ? undefined : decisionNodes(held, { asks, issue })),
     [asks, held, issue]
   );
-  // The issue's comments, watched the same way: the page's tree reads them under this key, and
-  // they say which Changes their author deleted and when one was last edited (`changesOf`).
-  const comments = useQuery(treeRead(issueCommentsQuery(issue.key))).data;
-  const changes = useMemo(
-    () => changesOf(held, decisions ?? [], comments),
-    [comments, decisions, held]
-  );
+  const changes = useMemo(() => changesOf(held, decisions ?? []), [decisions, held]);
   // The statements the coverage read holds, watched the same way: the page's tree reads it under
   // this key. A tie names a statement by the rule the review list is read by everywhere
   // (`coverageStatements`), beside the tree's own requirement nodes, so a statement past the
@@ -351,11 +351,11 @@ export function useDecisionsEntries({
  * `buildIssueTree`), so the view draws no decision until it can draw each with them. The tree is
  * built from the reads the page's tree is built from, under the keys it reads them by and each
  * watched and never sent: the asks read, which says which questions wait on `viewer`, the
- * comments and the messages, which mark a post its author edited or deleted, the coverage and
- * the results, and of the Plan view read's answer the issue's node holds (`TreeNode.views`)
- * whether it holds a plan task. It is built without the names read, whose set of addresses is the
- * page's tree's own: no row the view draws names a chip. A view answer over one answer of
- * Conversation's read is built once (`viewTree`).
+ * messages, which mark a message its author edited or deleted, as the answer's own nodes mark a
+ * comment, the coverage and the results, and of the Plan view read's answer the issue's node
+ * holds (`TreeNode.views`) whether it holds a plan task. It is built without the names read,
+ * whose set of addresses is the page's tree's own: no row the view draws names a chip. A view
+ * answer over one answer of Conversation's read is built once (`viewTree`).
  *
  * The view's slot draws the view over this tree (`slots/view-decisions.tsx`): the node its
  * address names, the nodes its words filter keeps, its rows and its keys are read over the nodes
@@ -380,7 +380,6 @@ export function useDecisionsTree(
   );
   const tree = useQuery(treeRead(outlineQuery(key, "conversation"))).data;
   const asks = useQuery(treeRead(issueAskThreadsQuery(key))).data;
-  const comments = useQuery(treeRead(issueCommentsQuery(key))).data;
   const coverage = useQuery(treeRead(issueCoverageQuery(key))).data;
   const messages = useQuery(treeRead(issueMessagesQuery(key))).data;
   const results = useQuery(treeRead(issueResultsQuery(key))).data;
@@ -393,7 +392,6 @@ export function useDecisionsTree(
     const built = viewTree(
       {
         asks,
-        comments,
         coverage,
         holdsPlanTask: planTaskHeld,
         issue,
@@ -408,7 +406,6 @@ export function useDecisionsTree(
   }, [
     answer,
     asks,
-    comments,
     coverage,
     heldViews,
     issue,
@@ -430,19 +427,18 @@ export function useDecisionsTree(
  * nodes by the same id: the decisions view's wherever the page holds it, which carries each
  * comment on the text of a node it holds, so a Change on a decision past the pages of
  * Conversation's read held so far stands with its decision, and Conversation's read until then.
- * A Change its author deleted asks nothing any more, and when its author last edited one is
- * answered by `comments`, the page's comments read, which the tree read answers no mark of
- * (`deletedPostIds`). None while `answer` has not answered.
+ * Which Changes their author deleted, which ask nothing any more, and when its author last
+ * edited one are the marks `answer` answers on the comment's node (`treeComments`,
+ * `deletedPostIds`): a Change carries no edit time where the read answers no edit mark. None
+ * while `answer` has not answered.
  */
 export function changesOf(
   answer: TreeAnswer | undefined,
-  decisions: readonly DecisionNode[],
-  comments?: readonly Pick<Comment, "deleted_at" | "edited_at" | "id">[]
+  decisions: readonly DecisionNode[]
 ): ReadonlyMap<string, ChangeComment & Pick<CommentWithTrees, "body_tree">> {
   const changes = new Map<string, ChangeComment & Pick<CommentWithTrees, "body_tree">>();
   if (answer === undefined) return changes;
-  const asked = decisionNodeChanges(answer, undefined, deletedPostIds(comments));
-  const edited = new Map((comments ?? []).map((comment) => [comment.id, comment.edited_at]));
+  const asked = decisionNodeChanges(answer, undefined, deletedPostIds(treeComments(answer)));
   for (const decision of decisions) {
     const comment = asked.get(decision.node.id);
     // A Change is a person's comment the read records a time for (`decisionNodeChanges`), so it
@@ -454,7 +450,7 @@ export function changesOf(
       body: comment.text,
       ...(comment.text_tree === undefined ? {} : { body_tree: comment.text_tree }),
       created_at: comment.made_at,
-      edited_at: edited.get(comment.id) ?? null,
+      ...(comment.edited_at === undefined ? {} : { edited_at: comment.edited_at }),
       id: comment.id,
     });
   }

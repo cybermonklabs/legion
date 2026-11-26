@@ -70,6 +70,7 @@ import {
   GLYPH_NAMES,
   GLYPH_TOKENS,
   isReader,
+  NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   type NodeType,
   PRESET_NAMES,
@@ -308,6 +309,34 @@ test("an author is drawn by a name and a shape of its own kind", () => {
     title: null,
     token: "author-unknown",
   });
+});
+
+// A decision whose Change may stand on a comment page the read has not loaded
+// (`TreeNode.changeUnread`) says so after its state as a count with more to read does: "+", the
+// page's mark of R15, after the keeper's name where it was kept. Every other decision draws its
+// state alone.
+test("a decision whose Change may stand on an unread comment page draws + after its state", () => {
+  const stateOf = (partial: Partial<TreeNode>) => {
+    const view = renderRow(node({ id: "spec#b-d1", type: "decision", ...partial }));
+    try {
+      const state = view.container.querySelector("[data-node-margin] [data-node-state]");
+      return {
+        mark: state?.querySelector("[data-change-unread]")?.textContent ?? null,
+        text: state?.textContent ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  const waiting = NODE_STATE_WORDS.decision.waiting_review;
+  expect(stateOf({ changeUnread: true, state: "waiting_review" })).toEqual({
+    mark: "+",
+    text: `${waiting}+`,
+  });
+  expect(
+    stateOf({ changeUnread: true, keptBy: { id: "alice", kind: "user" }, state: "kept" })
+  ).toEqual({ mark: "+", text: `${NODE_STATE_WORDS.decision.kept} alice+` });
+  expect(stateOf({ state: "waiting_review" })).toEqual({ mark: null, text: waiting });
 });
 
 /** One row of the tree as `ConversationRows` draws it: the node as the tree model built it, its
@@ -1406,7 +1435,6 @@ test("another issue's spec reads alike in a line the page feeds, a line's own re
   );
   for (const queryKey of [
     ["asks", KEY, "thread"],
-    ["comments", KEY],
     ["issue-messages", KEY],
   ]) {
     reads.setQueryData(queryKey, []);
@@ -2365,7 +2393,6 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
   // The reads the page's writer makes (`outline-writer.tsx`), answered before it mounts.
   for (const key of [
     ["asks", KEY, "thread"],
-    ["comments", KEY],
     ["issue-messages", KEY],
   ]) {
     queryClient.setQueryData(key, []);
@@ -2918,12 +2945,7 @@ test("a press on an option of an unfocused row picks it and focuses the row in o
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  for (const key of [
-    ["asks", "CORE-1", "thread"],
-    ["comments", "CORE-1"],
-    ["issue-messages", "CORE-1"],
-    ["agents"],
-  ]) {
+  for (const key of [["asks", "CORE-1", "thread"], ["issue-messages", "CORE-1"], ["agents"]]) {
     queryClient.setQueryData(key, []);
   }
   const asked = node({
@@ -3014,12 +3036,7 @@ function rowControls(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  for (const key of [
-    ["asks", "CORE-1", "thread"],
-    ["comments", "CORE-1"],
-    ["issue-messages", "CORE-1"],
-    ["agents"],
-  ]) {
+  for (const key of [["asks", "CORE-1", "thread"], ["issue-messages", "CORE-1"], ["agents"]]) {
     queryClient.setQueryData(key, []);
   }
   const row = (
@@ -3177,12 +3194,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  for (const key of [
-    ["asks", "CORE-1", "thread"],
-    ["comments", "CORE-1"],
-    ["issue-messages", "CORE-1"],
-    ["agents"],
-  ]) {
+  for (const key of [["asks", "CORE-1", "thread"], ["issue-messages", "CORE-1"], ["agents"]]) {
     queryClient.setQueryData(key, []);
   }
   const reply: ReplyTarget = {

@@ -113,7 +113,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { blockNodeId } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { commentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
+import { markedCommentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   outlineQuery,
@@ -531,7 +531,7 @@ function renderPageTree(root: TreeNode, reader = "alice") {
   });
   client.setQueryData(["whoami"], { kind: "user", login: reader });
   // The writer's own reads, answered empty, so it asks the network for nothing.
-  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  for (const read of ["asks", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   const held: PageHold = {};
   const draw = (drawn: TreeNode) => (
@@ -6181,6 +6181,78 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
   }
 });
 
+// At 390 by 664 a zoom from just under the band placed its crumb line and a check of 230 px under
+// it whole on screen, and then the line, which names the check's requirement by its words, went
+// from one line of text to two and took the row 20 px past the window's foot: the page moved a
+// row it had drawn. A row the zoom placed whole stays where it was placed as the line grows above
+// it, until the reader's next act, after which the line's growth moves it as it moves any row.
+// happy-dom lays nothing out, so the boxes are given, the row 4 px under the line and both moved
+// by each scroll, under a band of 60 px; each size observer still observing is called by hand
+// once the line grows.
+test("a zoom keeps the row it placed whole on screen where it stands as its crumb line grows", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const band = 60;
+  const rowHeight = 230;
+  let scrolledTo = 0;
+  let lineHeight = 28;
+  // The line's top down the page, which leaves the row's foot 12 px above the window's while the
+  // line is one line of text tall.
+  const lineTop = window.innerHeight - 12 - rowHeight - 4 - lineHeight;
+  const rowTop = () => lineTop + lineHeight + 4 - scrolledTo;
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.matches("p") && this.querySelector("[data-crumb]") !== null) {
+      return new DOMRect(0, lineTop - scrolledTo, 390, lineHeight);
+    }
+    const row = this.closest<HTMLElement>("[data-node-row]");
+    if (row?.dataset.nodeId !== "comment-1") return new DOMRect();
+    return this === row
+      ? new DOMRect(0, rowTop(), 390, rowHeight)
+      : this.matches("[data-node-bullet]")
+        ? new DOMRect(0, rowTop() + 2, 18, 24)
+        : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  const sizes = sizesByHand();
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, `${band}px`);
+  const whole = () => rowTop() >= band && rowTop() + rowHeight <= window.innerHeight;
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    expect(whole(), "the zoom left the row, which fits, off the screen").toBe(true);
+    const placed = rowTop();
+
+    // The line takes a second line of text, which pushes the row under it down 32 px.
+    lineHeight = 60;
+    await sizes.resized();
+    expect(rowTop(), "the row the zoom placed whole moved as its crumb line grew").toBe(placed);
+    expect(whole(), "the line's growth took the row off the screen").toBe(true);
+    expect(lineTop - scrolledTo, "the line went under the band").toBeGreaterThanOrEqual(band);
+
+    // The reader presses a key that moves no focus: the line growing again moves the row.
+    await user.keyboard("{Shift}");
+    const line = view.container.querySelector("[data-crumb]")?.parentElement ?? undefined;
+    expect(line).toBeDefined();
+    lineHeight = 92;
+    await sizes.resized(line);
+    expect(rowTop(), "the row was still held once the reader had acted").toBe(placed + 32);
+  } finally {
+    sizes.restore();
+    boxes.mockRestore();
+    scrolled.mockRestore();
+    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+  }
+});
+
 // `.` zooms into a row of the outline's top level and `,` draws the whole outline again with the
 // focus still on that row: it took no new focus, so nothing of its own placed it, and a zoom back
 // out to the issue placed nothing either - at 1440 by 900 on a long issue the row stood 2,000 to
@@ -8678,6 +8750,14 @@ test("r and a on the focused row set the page's writer", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const bob = { id: "bob", kind: "user" } as const;
+  answerRequests(
+    http.get("/api/v1/comments/comment-1", () =>
+      Response.json({
+        comment: { ...readComment("comment-1", 1, null, bob), body: "The first words." },
+        replies: [],
+      })
+    )
+  );
   const root = node({
     children: [
       node({
@@ -8992,9 +9072,9 @@ test("a crumb of a deleted comment draws its deleted line, and an edited one's s
 });
 
 /** Seeds `client` with the reader and every read the body's tree is built from (`slots/body.tsx`),
- *  each answered empty, but the comments', which answer `comments` and are left unread where
- *  none are given, and the tree read, which holds the issue, `nodes` and each of `comments` as a
- *  node (`treeReadOf`), since the outline draws its rows from the tree read. */
+ *  each answered empty, and the tree read, which holds the issue, `nodes` and each of `comments`
+ *  as a node (`treeReadOf`), since the outline draws its rows and its comments from the tree
+ *  read. */
 function seedBodyReads(
   client: QueryClient,
   {
@@ -9012,7 +9092,6 @@ function seedBodyReads(
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(comments ?? [], nodes, tuples));
   client.setQueryData(
@@ -9023,9 +9102,11 @@ function seedBodyReads(
 
 /** The tree read's answer for an issue that holds `comments`, `nodes` and nothing else, as
  *  `issue-tree.test.ts` answers a comments read: `nodes` under the issue unless one names another
- *  parent, then each comment a node under the comment it replies to, else under the issue, and
- *  none of a thread only agents wrote in, which the read places nowhere (`agents-only.ts`). With
- *  no such node the answer holds no node at all. */
+ *  parent, then each comment a node under the comment it replies to, else under the issue, with
+ *  its anchor and the marks its author's corrections leave, as a correction writes them into the
+ *  answer the cache holds (`api/corrected-post.ts`), and none of a thread only agents wrote in,
+ *  which the read places nowhere (`agents-only.ts`). With no such node the answer holds no node at
+ *  all. */
 function treeReadOf(
   comments: readonly Comment[],
   nodes: readonly TreeAnswerNode[] = [],
@@ -9034,7 +9115,7 @@ function treeReadOf(
   const agentsOnly = agentsOnlyIds(comments, undefined, []);
   const turns = comments
     .filter((comment) => !agentsOnly.has(comment.id))
-    .map((comment) => commentNode(comment));
+    .map((comment) => markedCommentNode(comment));
   const held = [...nodes, ...turns];
   return treeAnswer(held.length === 0 ? [] : [treeNode(KEY, "issue", null), ...held], tuples);
 }
@@ -9056,12 +9137,12 @@ function questionNode(ask: {
 }
 
 // The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads
-// are still out - the asks, the comments, the messages, the coverage, the results and the
-// documents' blocks each draw nodes once they answer, and only the children come with the issue -
-// so the line that the issue holds nothing was drawn on every cold load of an issue with no
-// children, and rows then drawn in its place. The body draws it only once those reads have
-// answered, and nothing in its place before. Here every read has answered but the comments', the
-// tree read among them, with no node and so no decision.
+// are still out - the asks, the messages, the coverage, the results and the documents' blocks
+// each draw nodes once they answer, and only the children come with the issue - so the line that
+// the issue holds nothing was drawn on every cold load of an issue with no children, and rows
+// then drawn in its place. The body draws it only once those reads have answered, and nothing in
+// its place before. Here every read has answered but the messages', the tree read among them,
+// with no node and so no decision.
 test("the outline says the issue holds nothing only once the reads its nodes come from have answered", async () => {
   setViewport(1440);
   const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
@@ -9070,9 +9151,10 @@ test("the outline says the issue holds nothing only once the reads its nodes com
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   seedBodyReads(client);
-  // The comments' read, held out until the case answers it.
+  client.removeQueries({ exact: true, queryKey: ["issue-messages", KEY] });
+  // The messages' read, held out until the case answers it.
   const held = Promise.withResolvers<never[]>();
-  const comments = spyOn(api, "listComments").mockReturnValue(held.promise as never);
+  const messages = spyOn(api, "listIssueMessages").mockReturnValue(held.promise as never);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   try {
     const view = render(
@@ -9088,10 +9170,10 @@ test("the outline says the issue holds nothing only once the reads its nodes com
         </QueryClientProvider>
       </MemoryRouter>
     );
-    await waitFor(() => expect(comments).toHaveBeenCalled());
+    await waitFor(() => expect(messages).toHaveBeenCalled());
     expect(
       view.container.textContent,
-      "the outline said the issue holds nothing with its comments' read still out"
+      "the outline said the issue holds nothing with its messages' read still out"
     ).not.toContain(EMPTY_STATE_LINES.conversation);
 
     await act(async () => held.resolve([]));
@@ -9102,7 +9184,7 @@ test("the outline says the issue holds nothing only once the reads its nodes com
       ).toContain(EMPTY_STATE_LINES.conversation)
     );
   } finally {
-    comments.mockRestore();
+    messages.mockRestore();
     names.mockRestore();
   }
 });
@@ -9753,19 +9835,36 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
   }
 });
 
+/** Answers each comment's own read (`GET /api/v1/comments/{id}`) from `comments`: the comment
+ *  and every comment that replies to it, as the server answers it. */
+function answerCommentReads(comments: readonly Comment[]) {
+  return spyOn(api, "getComment").mockImplementation(async (id: string) => {
+    const comment = comments.find((one) => one.id === id);
+    if (comment === undefined) throw noSuchComment();
+    return {
+      comment,
+      replies: comments.filter((one) => one.reply_to === id),
+    } as never;
+  });
+}
+
 // A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
 // its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,
 // which is no row, so the outline's tab stop - and says at that row that the thread is the agents'
-// alone. The item is not read as the old page reads one: it is named as a kind of its own.
+// alone. The page holds no comments list: the turn's thread is read from the turn's own read
+// (`GET /api/v1/comments/{id}`), which answers it with its replies, and is named as a kind of its
+// own, never as an item the issue may not hold.
 test("an address naming a turn only agents wrote in lands on its nearest drawn ancestor and says there the thread is the agents' alone", async () => {
   setViewport(1440);
   const agent = { id: "session-1", kind: "session" } as const;
+  const comments = [...TWO_THREADS, readComment("agents-1", 5, null, agent)];
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const read = spyOn(api, "getComment");
+  const read = answerCommentReads(comments);
+  const list = spyOn(api, "listComments");
   try {
     const body = renderAddressedBody(
       buildIssuePath({ id: "agents-1", key: KEY, kind: "comment" }),
-      [...TWO_THREADS, readComment("agents-1", 5, null, agent)]
+      comments
     );
     const { container } = body.view;
     await waitFor(() =>
@@ -9780,13 +9879,67 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
     ).not.toBeNull();
     expect(rowsFor(container, "agents-1"), "the outline drew the agents' turn").toEqual([]);
     expect(
-      read,
-      "the agents' turn was read as an item the issue may not hold"
-    ).not.toHaveBeenCalled();
+      read.mock.calls.map(([id]) => id),
+      "the turn was not read once, on its own"
+    ).toEqual(["agents-1"]);
+    expect(list, "the page read the issue's comments").not.toHaveBeenCalled();
     expect(body.view.queryByRole("heading", { name: "Comment not found" })).toBeNull();
   } finally {
     names.mockRestore();
     read.mockRestore();
+    list.mockRestore();
+  }
+});
+
+// The page reads no issue's whole comments list. An address naming a reply in a thread only
+// agents wrote in reads the reply's own comment, and, since the server stores a reply's
+// `reply_to` as its thread's head, the head's, which answers the whole thread: from those it tells
+// the thread is the agents' alone, and lands on the reply's nearest drawn ancestor, the issue,
+// saying so there. The issue's own address reads neither.
+test("an address naming a reply in an agents-only thread reads the reply and its head, and no comments list", async () => {
+  setViewport(1440);
+  const agent = { id: "session-1", kind: "session" } as const;
+  const comments = [
+    ...TWO_THREADS,
+    readComment("agents-1", 5, null, agent),
+    readComment("agents-2", 6, "agents-1", agent),
+  ];
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = answerCommentReads(comments);
+  const list = spyOn(api, "listComments").mockResolvedValue([]);
+  try {
+    const reply = renderAddressedBody(
+      buildIssuePath({ id: "agents-2", key: KEY, kind: "comment" }),
+      comments
+    );
+    await waitFor(() =>
+      expect(rowReport(reply.view.container), "no row says the thread is the agents' alone").toBe(
+        KEY_REPORTS.agents_thread
+      )
+    );
+    expect(focusedRow(reply.view.container)).toBe("head-a");
+    expect(read.mock.calls.map(([id]) => id)).toEqual(["agents-2", "agents-1"]);
+    expect(list, "the page read the issue's comments").not.toHaveBeenCalled();
+    expect(
+      reply.client.getQueryCache().find({ exact: true, queryKey: ["comments", KEY] }),
+      "the page observes the issue's comments list"
+    ).toBeUndefined();
+    reply.view.unmount();
+
+    read.mockClear();
+    const plain = renderAddressedBody(`/issues/${KEY}`, comments);
+    await waitFor(() => expect(focusedRow(plain.view.container)).toBe("head-a"));
+    expect(read, "the issue's own address read a comment").not.toHaveBeenCalled();
+    expect(list, "the issue's own address read the issue's comments").not.toHaveBeenCalled();
+    expect(
+      plain.client.getQueryCache().find({ exact: true, queryKey: ["comments", KEY] }),
+      "the issue's own address observes the issue's comments list"
+    ).toBeUndefined();
+    plain.view.unmount();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+    list.mockRestore();
   }
 });
 
@@ -9821,6 +9974,7 @@ test("an agents-only turn's landing on the issue, kept while a document added to
   const agent = { id: "session-1", kind: "session" } as const;
   const comments = [...TWO_THREADS, readComment("agents-1", 5, null, agent)];
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = answerCommentReads(comments);
   const treeOut = Promise.withResolvers<TreeAnswer>();
   const tree = spyOn(api, "getIssueTree").mockReturnValue(treeOut.promise);
   try {
@@ -9875,6 +10029,7 @@ test("an agents-only turn's landing on the issue, kept while a document added to
   } finally {
     tree.mockRestore();
     names.mockRestore();
+    read.mockRestore();
   }
 });
 
@@ -10054,7 +10209,6 @@ test("a line drawn after the reader's row left the outline and they pressed a co
 
     // The outline draws its turns from the tree read, so every comment leaves the tree read too.
     await act(async () => {
-      body.client.setQueryData(["comments", KEY], []);
       body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf([]));
     });
     await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
@@ -10423,13 +10577,11 @@ test("a names line that stands again for a failure it counted is drawn without s
     // The outline draws its turns from the tree read, so the reply leaves the tree read too.
     const without = cited.filter((comment) => comment.id !== "reply-b");
     await act(async () => {
-      body.client.setQueryData(["comments", KEY], without);
       body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf(without));
     });
     await failedLinesGone(container, "names");
     names.mockReturnValueOnce(out.promise as never);
     await act(async () => {
-      body.client.setQueryData(["comments", KEY], cited);
       body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf(cited));
     });
     await failedLines(container, 1, "names");
@@ -10919,24 +11071,27 @@ test("a failed asks read that answers with a question that waits before its Retr
 });
 
 // Where no question waits on the reader, a failed read the rows come from still takes the
-// opening: the question that waits may be what it failed to bring. The comments' read failed here,
-// and the one question drawn waits on somebody else, so the page opens on the comments' Retry and
-// not on that question's row, the outline's first. The tree read holds the question as a node,
-// whose standing the asks' read brings.
-test("a failed comments read opens the page on its Retry where no question waits on the reader", async () => {
+// opening: the question that waits may be what it failed to bring. The messages' read failed
+// here, and the one question drawn waits on somebody else, so the page opens on the messages'
+// Retry and not on that question's row, the outline's first. The tree read holds the question as
+// a node, whose standing the asks' read brings.
+test("a failed messages read opens the page on its Retry where no question waits on the reader", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const elsewhere = { ...WAITING_QUESTION, waiting_on_person: "bob" };
   const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([elsewhere] as never);
-  const comments = spyOn(api, "listComments").mockRejectedValue(serverDown());
+  const messages = spyOn(api, "listIssueMessages").mockRejectedValue(serverDown());
   try {
     const { view } = renderAddressedBody(`/issues/${KEY}`, undefined, StageSlot, {
       nodes: [questionNode(elsewhere)],
-      unread: [["asks", KEY]],
+      unread: [
+        ["asks", KEY],
+        ["issue-messages", KEY],
+      ],
     });
     const { container } = view;
-    const { line, retry } = await failedLines(container, 1, "comments");
-    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.comments_unreadable);
+    const { line, retry } = await failedLines(container, 1, "messages");
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.messages_unreadable);
     await waitFor(
       () =>
         expect(
@@ -10946,7 +11101,7 @@ test("a failed comments read opens the page on its Retry where no question waits
       OWN_WORDS
     );
     await waitFor(
-      () => expect(retry, "the page did not open on the comments' Retry").toHaveFocus(),
+      () => expect(retry, "the page did not open on the messages' Retry").toHaveFocus(),
       OWN_WORDS
     );
     // The opening places its focus once.
@@ -10954,7 +11109,7 @@ test("a failed comments read opens the page on its Retry where no question waits
     expect(retry, "a frame after the opening moved its focus").toHaveFocus();
   } finally {
     asks.mockRestore();
-    comments.mockRestore();
+    messages.mockRestore();
     names.mockRestore();
   }
 });
@@ -11542,7 +11697,6 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
     // The outline draws its turns from the tree read, so the comment leaves the tree read too.
     const without = TWO_THREADS.filter((comment) => comment.id !== "reply-b");
     await act(async () => {
-      body.client.setQueryData(["comments", KEY], without);
       body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf(without));
     });
     await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
@@ -11589,7 +11743,6 @@ async function dropFocusedComment(
   // The outline draws its turns from the tree read, so the comment leaves the tree read too.
   const without = THREE_COMMENTS.filter((comment) => comment.id !== dropped);
   await act(async () => {
-    body.client.setQueryData(["comments", KEY], without);
     body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf(without));
   });
   await waitFor(() => expect(rowsFor(container, dropped)).toEqual([]));
@@ -12120,7 +12273,7 @@ test("a comment's row drawn after the reader acted since following its address m
   setViewport(1440);
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const comments = spyOn(api, "listComments");
+  const messages = spyOn(api, "listIssueMessages");
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
@@ -12153,20 +12306,23 @@ test("a comment's row drawn after the reader acted since following its address m
   ] as const;
   try {
     for (const [what, run, stays] of acts) {
-      const answer = Promise.withResolvers<Comment[]>();
-      comments.mockReturnValue(answer.promise as never);
+      // A read the tree's rows wait on, the messages', held out until the comment's row draws.
+      const answer = Promise.withResolvers<never[]>();
+      messages.mockReturnValue(answer.promise as never);
       const body = renderAddressedBody(
         buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }),
-        undefined
+        undefined,
+        BodySlot,
+        { unread: [["issue-messages", KEY]] }
       );
-      await waitFor(() => expect(comments).toHaveBeenCalled());
+      await waitFor(() => expect(messages).toHaveBeenCalled());
       await run();
       expect(document.activeElement, `${what} left the focus elsewhere`).toBe(stays);
       for (const scroll of scrolls) scroll.mockClear();
 
       // The outline draws its turns from the tree read, which answers the comment with them.
       await act(async () => {
-        answer.resolve([...TWO_THREADS]);
+        answer.resolve([]);
         body.client.setQueryData(
           outlineQuery(KEY, "conversation").queryKey,
           treeReadOf(TWO_THREADS)
@@ -12184,12 +12340,12 @@ test("a comment's row drawn after the reader acted since following its address m
         `the comment's row, drawn after ${what}, scrolled the page`
       ).toEqual([]);
       body.view.unmount();
-      comments.mockClear();
+      messages.mockClear();
       await act(async () => outside.control.blur());
     }
   } finally {
     names.mockRestore();
-    comments.mockRestore();
+    messages.mockRestore();
     boxes.mockRestore();
     for (const scroll of scrolls) scroll.mockRestore();
   }

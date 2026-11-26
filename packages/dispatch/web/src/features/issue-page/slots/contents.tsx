@@ -52,8 +52,8 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   // same words filter as the view row does, once it may be counted (`briefCounts`).
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const counts = useMemo(
-    () => briefCounts({ namesHeld, readsHeld, root }, address.filter),
-    [address.filter, namesHeld, readsHeld, root]
+    () => briefCounts({ namesHeld, readsHeld, root }, address.filter, address.preset),
+    [address.filter, address.preset, namesHeld, readsHeld, root]
   );
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),

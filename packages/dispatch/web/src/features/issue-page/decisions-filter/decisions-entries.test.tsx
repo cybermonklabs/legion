@@ -11,7 +11,7 @@ import type { TreeNode } from "../issue-tree";
 import { DECISIONS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { inDocument } from "../slots/stage-fixtures";
-import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { pagedAnswer, skipWithoutTreeNodeMarks, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries, useDecisionsTree } from "./decisions-entries";
 import {
@@ -41,28 +41,27 @@ import { entryStanding } from "./entry-standing";
 /**
  * The seam between the page's reads and the Decisions view.
  * Each case holds the decisions view on the tree's root,
- * as `useIssueTree.ts` sets it there (`TreeNode.views`), and puts the tree read, the asks and the
- * comments in the cache under the keys the page's tree reads them by, as the cache holds them
- * once the tree is drawn, and no query reads again on mount, so any request the seam made would
- * be one of its own. The view is the one the slot passes: the tree as the Decisions view leaves
- * it (`presetView`).
+ * as `useIssueTree.ts` sets it there (`TreeNode.views`), and puts the tree read and the asks in
+ * the cache under the keys the page's tree reads them by, as the cache holds them once the tree
+ * is drawn, and no query reads again on mount, so any request the seam made would be one of its
+ * own. The tree read's answer holds the comments, each Change under its decision with its
+ * author's marks. The view is the one the slot passes: the tree as the Decisions view leaves it
+ * (`presetView`).
  */
+
+/** Skips the cases that need the tree read to answer a post's marks on its node. */
+const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
 /** A client that holds the page's reads as the cache holds them once the tree is drawn: the
- *  tree read's answer `tree`, `asks` and `comments`, none of which is read again on mount. */
-function heldClient(
-  asks: readonly DecisionsAsk[],
-  comments: readonly Comment[],
-  tree: TreeAnswer
-): QueryClient {
+ *  tree read's answer `tree` and `asks`, neither of which is read again on mount. */
+function heldClient(asks: readonly DecisionsAsk[], tree: TreeAnswer): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(conversationTreeKey(KEY), tree);
   client.setQueryData(["asks", KEY, "thread"], asks);
-  client.setQueryData(["comments", KEY], comments);
   return client;
 }
 
@@ -141,16 +140,15 @@ async function partsOver(
 }
 
 /** The seam's parts for the issue whose tree holds `children`, with `decisions` the decisions
- *  view held on its root (undefined for a view that has not answered), and `asks`, `comments`
- *  and the tree read's answer `tree` as the cache holds them. */
+ *  view held on its root (undefined for a view that has not answered), and `asks` and the tree
+ *  read's answer `tree` as the cache holds them. */
 function entriesOf(
   children: readonly TreeNode[],
   decisions: TreeAnswer | undefined,
   asks: readonly DecisionsAsk[] = [],
-  comments: readonly Comment[] = [],
   tree: TreeAnswer = treeAnswer([])
 ): Promise<DecisionsParts> {
-  return partsOver(heldClient(asks, comments, tree), children, decisions);
+  return partsOver(heldClient(asks, tree), children, decisions);
 }
 
 /** The node ids of each part, in the order the part draws them. */
@@ -206,9 +204,9 @@ async function seamOf(quote: string) {
     decision("minor"),
   ];
   // The reader's Change on the second decision, made after both last changed, anchored on the
-  // spec with its anchor quoting `quote`. The comments read holds it, and the decisions view and
-  // the tree read each hang it under the second decision, as the server's view carries each
-  // comment on the text of a node it returns.
+  // spec with its anchor quoting `quote`. The decisions view and the tree read each hang it under
+  // the second decision, as the server's view carries each comment on the text of a node it
+  // returns.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
@@ -244,7 +242,7 @@ async function seamOf(quote: string) {
     ...made,
     changeComment(change.id, "asked", change.created_at, change.body, change.author),
   ]);
-  const parts = await entriesOf(children, read, asks, [change], read);
+  const parts = await entriesOf(children, read, asks, read);
   return { change, parts };
 }
 
@@ -304,23 +302,46 @@ test("a Change stands under the decision it was asked on, where another decision
 });
 
 // R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any more. The decisions
-// view still hangs it under its decision, with no body and no mark of the delete, and the comments
-// read says it was deleted: the decision is back on the review list and carries no Change. The
-// same Change not deleted moves the decision to the reader's own.
+// view still hangs it under its decision, with no body, and marks the delete on its node, as a
+// delete's correction writes it into the answer the cache holds (`api/corrected-post.ts`): the
+// decision is back on the review list and carries no Change. The same Change not deleted moves
+// the decision to the reader's own.
 test("a Change its author deleted asks nothing, and its decision waits for review again", async () => {
   const children = [statement("s1"), decisionNode("asked")];
   const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
   const at = "2026-11-15T09:00:00Z";
-  const tree = treeAnswer([...made, changeComment("change-asked", "asked", at, "")]);
-  const asked = { deleted_at: null, edited_at: null, id: "change-asked" } as Comment;
+  const asked = changeComment("change-asked", "asked", at, "");
+  const tree = treeAnswer([...made, asked]);
   const deleted = { ...asked, deleted_at: "2026-11-15T10:00:00Z", deleted_by: READER_ACTOR };
+  const goneTree = treeAnswer([...made, deleted]);
 
-  const standing = await entriesOf(children, tree, [], [asked], tree);
+  const standing = await entriesOf(children, tree, [], tree);
   expect([idsOf(standing).review, idsOf(standing).yours]).toEqual([[], [D("asked")]]);
-  const gone = await entriesOf(children, tree, [], [deleted], tree);
+  const gone = await entriesOf(children, goneTree, [], goneTree);
   expect([idsOf(gone).review, idsOf(gone).yours]).toEqual([[D("asked")], []]);
   expect(gone.review[0]).not.toHaveProperty("change");
 });
+
+// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// `deleted_by`): a decision's Change says when its author last edited it, read from the node the
+// read hangs under the decision.
+test.skipIf(withoutTreeNodeMarks)(
+  "a Change the seam takes from the tree read carries when its author last edited it",
+  async () => {
+    const editedAt = "2026-11-15T10:00:00Z";
+    const children = [statement("s1"), decisionNode("asked")];
+    const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
+    const asked = {
+      ...changeComment("change-asked", "asked", "2026-11-15T09:00:00Z", "Name the read."),
+      edited_at: editedAt,
+    };
+    const tree = treeAnswer([...made, asked]);
+    const parts = await entriesOf(children, tree, [], tree);
+    expect(
+      parts.yours.map((one) => (one.kind === "decision" ? one.change?.editedAt : undefined))
+    ).toEqual([editedAt]);
+  }
+);
 
 // A reading of an answered question is a person's write-up of that answer, and no entry of its
 // own: the question it restates is the person's decision. The tree places the reading under the
@@ -338,7 +359,7 @@ test("a reading under an answered question is a write-up, which no part draws an
   const at = "2026-11-12T09:00:00Z";
   const made = [decision("minor")];
   const hook = await mountOver(
-    heldClient([closing("a-answered", { at, kind: "answered" })], [], treeAnswer(made)),
+    heldClient([closing("a-answered", { at, kind: "answered" })], treeAnswer(made)),
     [
       answeredAsk("a-answered", { at, text: "Mine." }, { children: [writeUp], held: 1 }),
       decisionNode("minor"),
@@ -361,17 +382,16 @@ test("a reading under an answered question is a write-up, which no part draws an
 // R8: each read the seam watches takes the page's freshness: events refresh it, never its age.
 // The stage mounts the view again on every press of Decisions, so under the app's own defaults,
 // whose `staleTime` is 30 s (`main.tsx`), a press more than 30 s after the page loaded would
-// otherwise read all three again. Here the three answers - the tree read, which the decisions
-// come from, the asks and the comments - were given 31 s ago; the seam reads no document's
-// blocks.
+// otherwise read both again. Here the two answers - the tree read, which the decisions and their
+// Changes come from, and the asks - were given 31 s ago; the seam reads no document's blocks.
 test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
   const made = [decision("minor")];
-  const names = ["getIssueTree", "listIssueAskThreads", "listComments"] as const;
-  // Each of the three reads, held, so a read the mount started reaches no server.
+  const names = ["getIssueTree", "listIssueAskThreads"] as const;
+  // Each of the two reads, held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
   );
-  // Any request at all, past those three.
+  // Any request at all, past those two.
   const request = spyOn(globalThis, "fetch");
   try {
     const client = new QueryClient({
@@ -380,7 +400,6 @@ test("answers older than the app's staleTime are not read again as the seam moun
     const given = { updatedAt: Date.now() - 31_000 };
     client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), given);
     client.setQueryData(["asks", KEY, "thread"], [], given);
-    client.setQueryData(["comments", KEY], [], given);
     const hook = await mountOver(
       client,
       [statement("s1"), openAsk("q-open"), decisionNode("minor")],
@@ -391,7 +410,6 @@ test("answers older than the app's staleTime are not read again as the seam moun
       Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls]))
     ).toEqual({
       getIssueTree: [],
-      listComments: [],
       listIssueAskThreads: [],
     });
     expect(request).not.toHaveBeenCalled();
@@ -408,10 +426,10 @@ test("answers older than the app's staleTime are not read again as the seam moun
 // all the same (`readsHeld`). While any one of the seam's reads has not answered, the questions
 // are drawn all the same. The view knows what the issue holds once the tree read and the asks
 // have answered, which say which questions and decisions there are; the decisions view only
-// stands over the tree read's decisions and the comments say nothing of an entry, so the view
-// knows while those are out. Either of the first two refused before it first answers is the
-// seam's to name, with a retry of its own, so the body can say so without naming a read; one
-// refused only on a later read keeps the answer it gave, and is none.
+// stands over the tree read's decisions, so the view knows while it is out. Either of the first
+// two refused before it first answers is the seam's to name, with a retry of its own, so the body
+// can say so without naming a read; one refused only on a later read keeps the answer it gave,
+// and is none.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   for (const [read, decisions] of [
@@ -438,7 +456,7 @@ test("an empty decisions member gives the questions alone and no error", async (
   // comes into the cache later, as a read that answers puts it there. `knownWhileOut` is whether
   // the view knows what the issue holds while that read is out. The seam watches each read and
   // sends none of its own, so the fetch is never started.
-  const held = { asks: [], comments: [], tree: treeAnswer([]) };
+  const held = { asks: [], tree: treeAnswer([]) };
   const cold = [
     {
       answer: held.tree,
@@ -458,12 +476,11 @@ test("an empty decisions member gives the questions alone and no error", async (
       knownWhileOut: true,
       read: "getIssueTree",
     },
-    { answer: held.comments, key: ["comments", KEY], knownWhileOut: true, read: "listComments" },
   ] as const;
   for (const { answer, key, knownWhileOut, read } of cold) {
     const started = spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise);
     try {
-      const client = heldClient(held.asks, held.comments, held.tree);
+      const client = heldClient(held.asks, held.tree);
       client.removeQueries({ exact: true, queryKey: key });
       const hook = await mountOver(client, children, undefined);
       const reading = () => ({
@@ -512,7 +529,7 @@ test("an empty decisions member gives the questions alone and no error", async (
     const asked = spyOn(api, request).mockRejectedValue(new Error("refused"));
     const notAsked = spyOn(api, other);
     try {
-      const client = heldClient(held.asks, held.comments, held.tree);
+      const client = heldClient(held.asks, held.tree);
       client.removeQueries({ exact: true, queryKey: key });
       await refuse(client);
       const hook = await mountOver(client, children, undefined);
@@ -550,7 +567,7 @@ test("an empty decisions member gives the questions alone and no error", async (
     const answer = Promise.withResolvers<never>();
     const asked = spyOn(api, request).mockReturnValue(answer.promise);
     try {
-      const client = heldClient(held.asks, held.comments, held.tree);
+      const client = heldClient(held.asks, held.tree);
       const hook = await mountOver(client, children, treeAnswer([]));
       const reading = () => ({
         read,
@@ -595,15 +612,15 @@ test("a decision stands in its part with its state from the tree read until the 
     decision("minor"),
   ];
   const tree = treeAnswer(made);
-  const failing = heldClient([], [], tree);
+  const failing = heldClient([], tree);
   await failing.prefetchQuery({
     ...viewQuery(KEY, "decisions"),
     queryFn: () => Promise.reject(new Error("offline")),
   });
   expect(failing.getQueryState(viewKey(KEY, "decisions"))?.status).toBe("error");
   const readings = [
-    ["the view answered", await entriesOf(children, treeAnswer(made), [], [], tree)],
-    ["the view not answered yet", await entriesOf(children, undefined, [], [], tree)],
+    ["the view answered", await entriesOf(children, treeAnswer(made), [], tree)],
+    ["the view not answered yet", await entriesOf(children, undefined, [], tree)],
     ["the view's read failed", await partsOver(failing, children, undefined)],
   ] as const;
 
@@ -635,10 +652,7 @@ test("a decision stands in its part with its state from the tree read until the 
 // builds, as the slot hands it (`slotOver`).
 test("a decision the view read holds stands in its part where the tree read has not reached it yet", async () => {
   const view = treeAnswer([decision("first", TIED), decision("later", TIED)]);
-  const { parts } = await slotOver(
-    heldClient([], [], treeAnswer([S1, decision("first", TIED)])),
-    view
-  );
+  const { parts } = await slotOver(heldClient([], treeAnswer([S1, decision("first", TIED)])), view);
 
   expect(
     [...idsOf(parts).review].sort(),
@@ -660,7 +674,7 @@ test("a waiting decision past Conversation's first page with the reader's Change
   };
   const view = treeAnswer([decision("first", TIED), decision("later", TIED), asked]);
   const firstPage = pagedAnswer(treeAnswer([S1, decision("first", TIED)]), "next-page", 30);
-  const { parts } = await slotOver(heldClient([], [], firstPage), view);
+  const { parts } = await slotOver(heldClient([], firstPage), view);
 
   expect(
     { review: idsOf(parts).review, yours: idsOf(parts).yours },
@@ -688,7 +702,7 @@ test("a waiting decision past Conversation's first page with the reader's Change
 test("a waiting decision Conversation's pages hold and the Decisions view read's page does not is no entry, count or part of the view", async () => {
   const conversation = treeAnswer([S1, decision("first", TIED), decision("later", TIED)]);
   const decisions = pagedAnswer(treeAnswer([decision("first", TIED)]), "next-page", 30);
-  const { parts, signal } = await slotOver(heldClient([], [], conversation), decisions);
+  const { parts, signal } = await slotOver(heldClient([], conversation), decisions);
 
   expect(
     `${signal.count}${signal.more === true ? "+" : ""}`,
@@ -717,7 +731,6 @@ test("the seam mounted over reads older than the app's stale time sends no reque
   ];
   client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
   client.setQueryData(["asks", KEY, "thread"], [], { updatedAt: minuteAgo });
-  client.setQueryData(["comments", KEY], [], { updatedAt: minuteAgo });
   const never = () => new Promise<never>(() => {});
   const getIssueTree = spyOn(api, "getIssueTree").mockImplementation(never);
   const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(never);

@@ -554,12 +554,15 @@ test("a decision the reader asked to change leaves the review list and carries t
       at: "2026-11-12T09:00:00Z",
       body: "Change asked, please.",
       by: READER_ACTOR,
-      editedAt: null,
       id: "c-new",
       path: `/issues/${KEY}/comments/c-new`,
     },
     standing: "change_requested",
   });
+  // The read answers no edit mark on the Change's node, so the change carries none: an absent
+  // mark is not known, never "not edited" (`decision-review.ts`' `ChangeComment`).
+  const asked = parts.yours[0];
+  expect(asked?.kind === "decision" ? asked.change : undefined).not.toHaveProperty("editedAt");
   // The one rule the count of what waits on the reader reads too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
   expect(

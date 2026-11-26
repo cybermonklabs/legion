@@ -16,6 +16,7 @@ import { useOutlineReads } from "../outline-reads";
 import type { Preset } from "../page-words";
 import { type Filter, filterSignals, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { planTasksOut } from "../tree-read/tree-read";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
@@ -89,7 +90,10 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
  * what of it asks something of the reader, and nothing for Conversation or Graph. Each follows
  * the words filter (`filter`, `?q=`), and carries "+" while the read it is read from holds nodes
  * no page read yet holds (R15). None while the reads (`readsHeld`) or the reader's login
- * (`viewer`) do not hold, nor under a words filter while the names do not (`namesHeld`).
+ * (`viewer`) do not hold, nor under a words filter while the names do not (`namesHeld`). Plan's
+ * control draws none either while the plan's tasks are still to be read (`planTasksOut`): the
+ * outline read holds none of them, so its count would read 0 for what the page has not read
+ * yet, and then change; its room stays empty (`IssuePresets`'s `SIGNAL_ROOM`) so no control moves.
  * Decisions is counted off the tree its view is drawn over (`decisionsRoot`, `presets.ts`'
  * `filterSignals`): the one its own view read builds once the page holds that read, and `root`
  * until then, as where none is given.
@@ -117,7 +121,10 @@ export function viewRowSignals({
   viewer: string | undefined;
 }): Readonly<Record<Filter, PresetSignal | undefined>> | undefined {
   if (!namesHeld && filter !== "") return undefined;
-  if (readsHeld && viewer !== undefined) return filterSignals(root, filter, decisionsRoot);
+  if (readsHeld && viewer !== undefined) {
+    const signals = filterSignals(root, filter, decisionsRoot);
+    return planTasksOut(root, preset) ? { ...signals, plan: undefined } : signals;
+  }
   const cold = TREE_FILTERS.find((one) => one === preset);
   if (cold === undefined || root.views?.[cold] === undefined) return undefined;
   return {
