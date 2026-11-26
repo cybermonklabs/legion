@@ -2098,9 +2098,17 @@ const REVIEWED_WAIT_SITES: readonly {
     file: "packages/envoy-client/src/dispatch-http.ts",
     text: "fetch",
     kind: "fetch handed on as a value",
-    count: 1,
+    count: 2,
     bound:
-      "DispatchClient's default fetchImpl (:1000), called only at :1029 for the requests of :2324 and :2651",
+      "DispatchClient's default fetchImpl and checkedDispatchClient's, which hands it to the same constructor: called only by the client's own #fetch for the requests of #sendOnce and #attempt, and by the private-project check's whoami, each under the client's signal",
+  },
+  {
+    file: "packages/envoy-client/src/private-check.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 2,
+    bound:
+      "checkedDispatchFetch's and checkDispatchSocket's default fetch, whose whoami runs under the caller's signal or AbortSignal.timeout(WHOAMI_DEADLINE_MS); the open-asks mode does not reach them, since its client's check asks through the client's own #fetch",
   },
   {
     file: "packages/envoy-client/src/session-answers.ts",

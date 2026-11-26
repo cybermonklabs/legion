@@ -4,7 +4,7 @@
 // names, and counts what the client sent. The state each row starts from is a cache directory of
 // its own and a Dispatch URL of its own, so no row reads another's.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -444,19 +444,17 @@ describe("the shared state", () => {
   });
 
   test("a cache directory nobody can write changes nothing but the sharing", async () => {
-    const cache = makeDirectory("read-only");
-    chmodSync(cache, 0o500);
-    try {
-      const dispatch = standIn({ header: () => "1" });
-      const { client } = rig(dispatch.fetchImpl, cache);
-      expect((await client(BROKER).getIssue("PRIV-1")).title).toBe(PRIVATE_TEXT);
-      expect(await thrown(client(bearerCredential(PRIV_TOKEN)).getIssue("PRIV-1"))).toBeInstanceOf(
-        PrivateProjectRefused
-      );
-      expect(existsSync(join(cache, "agent-private"))).toBe(false);
-    } finally {
-      chmodSync(cache, 0o700);
-    }
+    // A regular file where the cache directory would be: no process, root included, can make a
+    // directory under it, which a directory's mode bits would not stop root from doing.
+    const cache = join(makeDirectory("not-a-directory"), "cache");
+    writeFileSync(cache, "a file, not a directory\n");
+    const dispatch = standIn({ header: () => "1" });
+    const { client } = rig(dispatch.fetchImpl, cache);
+    expect((await client(BROKER).getIssue("PRIV-1")).title).toBe(PRIVATE_TEXT);
+    expect(await thrown(client(bearerCredential(PRIV_TOKEN)).getIssue("PRIV-1"))).toBeInstanceOf(
+      PrivateProjectRefused
+    );
+    expect(readFileSync(cache, "utf8")).toBe("a file, not a directory\n");
   });
 
   test("the state file holds times and no bearer", async () => {

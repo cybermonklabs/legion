@@ -1,10 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import { sleep } from "@legion/contracts";
-import { scrub } from "@legion/contracts/held-secrets";
-import { errorClass, urlForText } from "@legion/contracts/log-text";
-import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { setTimeout as pauseFor } from "node:timers/promises";
 
 /**
  * The check that keeps a private project's answers from a bearer that names one, wherever this
@@ -41,6 +38,10 @@ import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
  * Before sending, with the state `1`, a write with a bearer waits for the check, so nothing is
  * written with a refused bearer, and a read runs the check beside its request. With the state `0`
  * or unknown nothing is sent first: with no project private, the requests are today's.
+ *
+ * It imports Node's built-ins alone, so a file that loads it gains this one file: the approval
+ * eval's pinned decision (`RESERVE_ASK_CLOSURE`, scripts/approval-eval/s10-decision.ts) names
+ * every file it loads by its sha256.
  */
 
 /** The header every response Dispatch's handlers write carries: `1` when the deployment names a
@@ -66,8 +67,12 @@ export const ADMITTED_FOR_MS = 5 * MINUTE_MS;
  *  process does not write the file once per response. A transition is written at once. */
 const ZERO_WRITTEN_EVERY_MS = MINUTE_MS;
 
+/** The longest a whoami waits for a caller that gives the check no signal of its own: the
+ *  Dispatch client's own deadline (`DISPATCH_TOOL_DEADLINE_MS`, dispatch-http.ts). */
+const WHOAMI_DEADLINE_MS = MINUTE_MS;
+
 /** A bearer naming a private project, refused before anything Dispatch answered reaches the
- *  caller. A command exits 2 on it, and a tool shows it as a refused call. */
+ *  caller. The `dispatch` command exits 2 on it, and a tool's call fails with it. */
 export class PrivateProjectRefused extends Error {
   override readonly name = "PrivateProjectRefused";
   readonly code = "private_project_refused";
@@ -309,14 +314,23 @@ export class PrivateCheck {
   readonly #warn: (line: string) => void;
 
   constructor(baseUrl: string, fetchImpl: DispatchFetch, settings: PrivateCheckSettings = {}) {
-    this.#url = withoutTrailingSlashes(baseUrl);
-    this.#shown = urlForText(this.#url, "the configured Dispatch URL");
+    this.#url = baseUrl.replace(/\/+$/, "");
+    // The URL as a line may name it: its origin and path, never its user info or query.
+    let shown = "the configured Dispatch URL";
+    try {
+      const parsed = new URL(this.#url);
+      shown = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      // Not a URL: named by the setting alone.
+    }
+    this.#shown = shown;
     this.#file = stateFile(this.#url, settings.env ?? process.env);
     this.#store = this.#file ?? `memory:${this.#url}`;
     this.#fetch = fetchImpl;
     this.#now = settings.now ?? Date.now;
     this.#retry = settings.retry ?? ASK_ONCE;
-    this.#warn = settings.warn ?? ((line) => console.warn(scrub(line)));
+    // A line holds no secret: the URL as `#shown` names it, and a status or an error's class.
+    this.#warn = settings.warn ?? ((line) => console.warn(line));
   }
 
   /**
@@ -448,7 +462,12 @@ export class PrivateCheck {
    *  answer. It answers a verdict to remember, or whoami's own 401 or 403. */
   async #ask(bearer: string, signal: AbortSignal): Promise<Verdict | WhoamiRefusal> {
     const { pausesMs, withinMs } = this.#retry;
-    const pause = this.#retry.pause ?? sleep;
+    const pause =
+      this.#retry.pause ??
+      ((ms: number, stop: AbortSignal) =>
+        pauseFor(ms, undefined, { signal: stop }).catch(() => {
+          throw stop.reason;
+        }));
     const clock = this.#retry.now ?? (() => performance.now());
     const started = clock();
     const request = `GET ${this.#shown}/api/v1/whoami`;
@@ -501,7 +520,16 @@ export class PrivateCheck {
       } catch (error) {
         if (signal.aborted) throw signal.reason;
         if (isPrivateCheckFailure(error)) throw error;
-        failure = `failed: ${error instanceof Error && error.name === "DispatchUnreachableError" ? error.message : errorClass(error)}`;
+        // The client's own transport failure names the URL alone; any other error by its class
+        // and code, never its message, which can repeat the host or the bearer.
+        const code =
+          error instanceof Error && "code" in error && typeof error.code === "string"
+            ? ` ${error.code}`
+            : "";
+        failure =
+          error instanceof Error && error.name === "DispatchUnreachableError"
+            ? `failed: ${error.message}`
+            : `failed: ${error instanceof Error ? error.name : typeof error}${code}`;
       }
       const wait = pausesMs[asked - 1];
       if (wait === undefined || clock() + wait - started > withinMs) {
@@ -589,7 +617,7 @@ export function checkedDispatchFetch(
     check.request(
       init.method ?? "GET",
       init.headers,
-      init.signal ?? new AbortController().signal,
+      init.signal ?? AbortSignal.timeout(WHOAMI_DEADLINE_MS),
       () => fetchImpl(input, init)
     );
 }
@@ -610,6 +638,6 @@ export async function checkDispatchSocket(
 ): Promise<Response | undefined> {
   return await new PrivateCheck(baseUrl, fetchImpl, settings).before(
     headers,
-    new AbortController().signal
+    AbortSignal.timeout(WHOAMI_DEADLINE_MS)
   );
 }

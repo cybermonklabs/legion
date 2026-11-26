@@ -46,6 +46,13 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * The pinned files are checked again once, right before the first child is spawned
  * (`Decision.confirm`).
  *
+ * The pin moved once since, by cybermonklabs/legion#5721, with the agreement of the owner of
+ * INFRA-2897's next round, after the reserve ended (`RESERVE_ENDED`): `dispatch-read.ts` sends
+ * each read through the Dispatch client's private-project check (`checkedDispatchFetch`), so the
+ * closure gains that check, `packages/envoy-client/src/private-check.ts`, which imports Node's
+ * built-ins alone. The check refuses only a personal token whose whoami names a private project;
+ * while Dispatch answers that none is private, every read returns the bytes it returned before.
+ *
  * The children. Each ask is decided by a child process (`spawnDecision`) run with neither
  * `APPROVAL_EVAL_RESERVE` nor `APPROVAL_EVAL_CLAIM_RUN` in its environment, so outside the claim's
  * read, and with `decision-preload.ts` preloaded: exit 0 keeps the candidate, 1 holds it, and any
@@ -61,9 +68,11 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * whose closure differs in any of these files, or loads a file more or less, is refused.
  */
 export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
+  "../../packages/envoy-client/src/private-check.ts":
+    "a5a107bba56abbe901d8077087bacf5b746fe3eb71cbd5d9d88763d52981a6a2",
   "corpus-io.ts": "fa89727871dcf12c849756f84a888e52c6141c81467a353277fbaf98aba03198",
   "decision-preload.ts": "50ff3dd835d4345aac95c64df7a3e820a30c625b1e1e63e1c0277ea278dccad3",
-  "dispatch-read.ts": "ba50fc251d372017d565a24b9f45690aa0b4370cb8d33d8ef757f608a85e05c3",
+  "dispatch-read.ts": "1bb50157426ed2dbac9f3c1f4ec039bedac8b7b5a5326533242a74c5bd50cab0",
   "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
   "reserve.ts": "f79418badd319caedd37c0ecd725af86c54c76521e10786e66ce8e0153d0df5c",
   "stats.ts": "aaf9b5a598436d3ae5be4173b659f5889a24dd4d8b8afef0be9b5852eec6ffe9",

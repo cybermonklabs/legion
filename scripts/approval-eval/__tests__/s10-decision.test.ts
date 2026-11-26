@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "../reserve";
 import {
   closureDigestOf,
@@ -33,8 +33,8 @@ const ENDED = "dispatch://ACME-1/comment/claim-result";
 /** This directory, which holds `reserve-ask.ts`, the rest of its closure and its preload. */
 const HERE = join(import.meta.dir, "..");
 
-/** The digest of the pinned closure at this head, as `sha256sum` over its six files prints it. */
-const PINNED_DIGEST = "55931c3f6c327a25abdfb70453e7692e9c61ed10cd9ff4ca1443ebceb15eadab";
+/** The digest of the pinned closure at this head, as `sha256sum` over its seven files prints it. */
+const PINNED_DIGEST = "fd39640518b834fb22846eea93da24c0e61ad9f808121cb35626b70cf4a2f159";
 
 let scratch: string | undefined;
 
@@ -51,10 +51,13 @@ async function directory(name: string): Promise<string> {
   return mkdtemp(join(scratch as string, `${name}-`));
 }
 
-/** A directory holding a copy of each file of the closure, `claim.ts` with them, and no other. */
+/** A directory holding a copy of each file of the closure, `claim.ts` with them, and no other. The
+ *  copy is the repository's own layout, `scripts/approval-eval/` and the Dispatch client's check
+ *  at `packages/envoy-client/src/private-check.ts`, so each file's imports reach the copies. */
 async function closureCopy(): Promise<string> {
-  const copy = await directory("closure");
+  const copy = join(await directory("closure"), "scripts", "approval-eval");
   for (const name of [...Object.keys(RESERVE_ASK_CLOSURE), RESERVE_ASK_REGISTRATION]) {
+    await mkdir(dirname(join(copy, name)), { recursive: true });
     await cp(join(HERE, name), join(copy, name));
   }
   return copy;
@@ -121,6 +124,7 @@ describe("the decision's pin", () => {
       [RESERVE_ASK_REGISTRATION]: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(Object.keys(RESERVE_ASK_CLOSURE)).toEqual([
+      "../../packages/envoy-client/src/private-check.ts",
       "corpus-io.ts",
       DECISION_PRELOAD_FILE,
       "dispatch-read.ts",
@@ -208,9 +212,10 @@ describe("the decision's pin", () => {
     await expect(reserveAskDecision(entry, null)).rejects.toThrow(
       `${preload} imports ./claim, which does not resolve`
     );
-    // With both beside it, the pinned files are compared, and the first the closure lacks named.
+    // With both beside it, the pinned files are compared, and the first the closure lacks named:
+    // by path, the Dispatch client's check comes first.
     await cp(join(HERE, RESERVE_ASK_REGISTRATION), join(lone, RESERVE_ASK_REGISTRATION));
-    const why = "it loads no corpus-io.ts, which the pin names";
+    const why = "it loads no ../../packages/envoy-client/src/private-check.ts, which the pin names";
     await expect(reserveAskDecision(entry, null)).rejects.toThrow(DecisionError);
     await expect(reserveAskDecision(entry, null)).rejects.toThrow(
       `${refusalOf(entry)}${why}. ${PIN_MOVES}`
