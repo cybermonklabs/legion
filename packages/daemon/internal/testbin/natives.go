@@ -20,17 +20,18 @@ import (
 )
 
 // OMPHome puts in home, a fresh HOME a test runs omp under, the native module omp would otherwise
-// write there on its first run: one .node file of about 123 MiB at the pin, the variant the CPU
-// runs, which omp extracts from its own binary into .omp/natives/<version> under any HOME that
-// lacks it. Oh My Pi reads that directory from elsewhere only under a variable a test would have
-// to set (getNativesDir, @oh-my-pi/pi-natives native/loader-state.js, in this order):
-// PI_NATIVES_DIR or OMP_DOWNLOAD_ROOT, which no pod or pane sets, then an existing
-// $XDG_DATA_HOME/omp, which moves its whole profile, then OMP_CONFIG_ROOT, which moves its whole
-// config root. The file is instead a hardlink to one copy per omp binary under the user's cache
-// directory, or a symlink to it where home is on another filesystem than the cache (linkTree), so
-// a case writes none of them and its HOME holds nothing of the operator's own ~/.omp. The copy's
-// files are read-only: every test HOME shares their inodes, so a write through one link would
-// reach all.
+// write there on its first run: one .node file of about 124 MiB at the pin, the variant the CPU
+// runs, which omp extracts from its own binary into .omp/natives/<version>-<digest prefix> (the
+// version and the first 12 hexadecimal digits of the embedded addons' digest) under any HOME that
+// lacks it. Oh My Pi reads that directory from elsewhere only under a variable a test would have to
+// set (getNativesDir, @oh-my-pi/pi-natives native/natives-dir.js, in this order): PI_NATIVES_DIR or
+// OMP_DOWNLOAD_ROOT, which no pod or pane sets, then $XDG_CACHE_HOME/omp/natives when
+// $XDG_CACHE_HOME/omp exists, then natives under OMP_CONFIG_ROOT, which moves its whole config
+// root, else under ~/$PI_CONFIG_DIR, which is .omp unless set. The file is instead a hardlink to one
+// copy per omp binary under the user's cache directory, or a symlink to it where home is on another
+// filesystem than the cache (linkTree), so a case writes none of them and its HOME holds nothing of
+// the operator's own ~/.omp. The copy's files are read-only: every test HOME shares their inodes,
+// so a write through one link would reach all.
 //
 // It assumes the test's environment sets none of those variables: a test that sets one reads
 // omp's natives where that variable names, and links them there itself.
@@ -76,7 +77,7 @@ func nativesCache(omp string) (string, error) {
 // Which natives a binary writes is its own choice: the pin writes only the variant its CPU
 // selects, and earlier binaries wrote every variant they embed. So the check reads what was
 // extracted rather than demanding each embedded name. What it refuses is a file that is not a
-// whole native of this binary: omp writes each native to a `.tmp.<pid>.<ms>` file and renames it
+// whole native of this binary: omp writes each native to a `.tmp.<pid>.<uuid>` file and renames it
 // only once it is whole, so a failed write leaves nothing (refused as an empty extraction), or a
 // leftover temporary file when the cleanup fails too (refused by its name), and anything that is
 // not a regular file, or not at its embedded size, is refused as well. Among the fills a failed
@@ -164,8 +165,9 @@ func fillNativesCache(root, omp string) (string, error) {
 
 // embeddedNative is one native file omp embeds, as pi-natives' scripts/embed-native.ts writes each
 // into the compiled binary: `{ variant: "modern", filename: "pi_natives.linux-x64-modern.node",
-// size: 185671184 },`. The scan finds each by its marker with bytes.Index, since a regexp over the
-// whole binary takes seconds.
+// size: 130426104, sha256: "c452fa13…", zstdPath: B0 }` at the pin. The scan finds each by its
+// marker with bytes.Index, since a regexp over the whole binary takes seconds, and reads no member
+// after `size`.
 var (
 	embeddedMarker = []byte(`filename: "pi_natives.`)
 	embeddedNative = regexp.MustCompile(`^filename: "(pi_natives\.[^"/]+)", size: ([0-9]+)`)

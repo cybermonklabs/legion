@@ -109,8 +109,8 @@ export interface CapabilityHost {
   readonly discoverMCPServers: (
     cwd: string
   ) => Promise<{ readonly manager: MCPServerManager; readonly errors: readonly unknown[] }>;
-  /** `discoverExtensionPaths([], cwd, disabled)`: the module path of every extension Oh My Pi
-   * would load for this workspace. */
+  /** The `path` of each entry `discoverExtensionPaths([], cwd, disabled)` answers: the module path
+   * of every extension Oh My Pi would load for this workspace. */
   readonly discoverExtensionPaths: (cwd: string) => Promise<readonly string[]>;
   /** `loadSkills({...skills settings, cwd, disabledExtensions})`: every skill it loads. */
   readonly loadSkills: (
@@ -756,7 +756,14 @@ export function ompCapabilityHost(): CapabilityHost {
         import("@oh-my-pi/pi-coding-agent/extensibility/settings"),
         hostSettings(),
       ]);
-      return discoverExtensionPaths([], cwd, cfgDisabledExtensions.get(settings));
+      // The host answers one `{path, scope}` entry per extension, and a host before
+      // 18.18.6-sami.20261124-152326 a bare path; the check reads the path alone.
+      const entries: readonly (string | { readonly path: string })[] = await discoverExtensionPaths(
+        [],
+        cwd,
+        cfgDisabledExtensions.get(settings)
+      );
+      return entries.map((entry) => (typeof entry === "string" ? entry : entry.path));
     },
     loadSkills: async (cwd) => {
       const [{ loadSkills }, { cfgDisabledExtensions, cfgSkills }, settings] = await Promise.all([

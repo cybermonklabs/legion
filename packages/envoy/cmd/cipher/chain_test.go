@@ -730,6 +730,50 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 	}
 }
 
+// TestAGitHubActionsMachineIdentityIsRefusedBeforeAnyTrade: the broker mints no launcher
+// credential for a GitHub Actions run either, so AGENT_SECRETS_MACHINE_IDENTITY=github-actions,
+// from the environment or the config file, is the same usage error, and nothing is asked of the
+// broker, GitHub or the metadata server. GitHub sets the request URL and its token in the job's
+// environment, which is where they are in both rows: the config file takes neither.
+func TestAGitHubActionsMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
+	binary := chainBinary(t)
+	for _, row := range []string{"the environment", "the config file"} {
+		t.Run(row, func(t *testing.T) {
+			broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
+			r := newChainRig(t, binary, broker)
+			metadata := r.withMetadata()
+			var asked sync.Mutex
+			githubRequests := 0
+			github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				asked.Lock()
+				githubRequests++
+				asked.Unlock()
+				http.Error(w, "no token for agent-secrets", http.StatusUnauthorized)
+			}))
+			t.Cleanup(github.Close)
+			r.env["ACTIONS_ID_TOKEN_REQUEST_URL"] = github.URL + "/idtoken?api-version=2.0"
+			r.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "example-actions-request-token"
+			settings := map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "github-actions", "AGENT_SECRETS_MACHINE_AUDIENCE": "https://cipher.example"}
+			if row == "the environment" {
+				maps.Copy(r.env, settings)
+			} else {
+				r.writeConfigFile(settings)
+			}
+
+			code, stdout, stderr := r.use()
+			if code != exitUsageError || stdout != "" || !strings.Contains(stderr, "AGENT_SECRETS_MACHINE_IDENTITY=github-actions") ||
+				!strings.Contains(stderr, "metadata") || !strings.Contains(stderr, "pool") {
+				t.Fatalf("exit %d, stdout %q, stderr %q; want exit %d refusing github-actions and naming metadata and pool", code, stdout, stderr, exitUsageError)
+			}
+			asked.Lock()
+			defer asked.Unlock()
+			if calls, n := broker.callCount(), metadata.totalRequests(); calls != 0 || n != 0 || githubRequests != 0 {
+				t.Fatalf("the broker saw %d calls, the metadata server %d requests and GitHub %d; want none before the refusal", calls, n, githubRequests)
+			}
+		})
+	}
+}
+
 // TestSignInTakesEffectAfterAMachineCache is c5's unit half: a machine that has already used its
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
