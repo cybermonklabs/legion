@@ -137,6 +137,14 @@ type dispatchStandIn struct {
 	// bound. A read the judge gave up on ends the handler at once, so a stand-in told to
 	// wait longer than the bound never keeps the server from closing.
 	delay time.Duration
+	// answerAt, when set, is when the issue and spec reads answer, in place of delay: it is
+	// given how many of them came before (0 for the first) and answers a time on the wall
+	// clock. The ask read keeps delay. A test that places each read at a fixed point of the
+	// phase keeps a read that woke late on a loaded runner from making every read after it
+	// late as well, which a delay per read would.
+	answerAt func(earlier int) time.Time
+	// phaseReads is how many issue and spec reads came so far, which answerAt is given.
+	phaseReads int
 }
 
 // newDispatch is a Dispatch holding one open issue with a spec document, and the ask on it that
@@ -173,13 +181,23 @@ func (d *dispatchStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	d.calls = append(d.calls, dispatchCall{r.Method, r.URL.Path, r.Header.Get("Authorization")})
 	status, body, delay, raw := d.issueStatus, d.issue, d.delay, ""
+	ask := false
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/artifacts/spec/text"):
 		status, body = d.specStatus, d.spec
 	case strings.HasPrefix(r.URL.Path, "/api/v1/asks/"):
 		status, body, raw = d.askStatus, d.ask, d.askRaw
+		ask = true
+	}
+	answerAt := d.answerAt
+	earlier := d.phaseReads
+	if !ask {
+		d.phaseReads++
 	}
 	d.mu.Unlock()
+	if answerAt != nil && !ask {
+		delay = time.Until(answerAt(earlier))
+	}
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
@@ -459,11 +477,16 @@ type fakeRequests struct {
 	// private and projectErr are what JudgeProject answers, projectAsked the names it was
 	// asked about and projectReasons the signed reasons, and projectTakes how long it takes to
 	// answer: like the real read of Dispatch, it gives up when its context ends first.
-	private        bool
-	projectErr     error
-	projectAsked   []string
-	projectReasons []string
-	projectTakes   time.Duration
+	// projectBeforeEnd, when not zero, has it answer that long before the end of the run's
+	// Dispatch phase instead, which phaseEnd holds: the deadline of the context the first
+	// JudgeProject call was given (dispatchPhaseEnd).
+	private          bool
+	projectErr       error
+	projectAsked     []string
+	projectReasons   []string
+	projectTakes     time.Duration
+	projectBeforeEnd time.Duration
+	phaseEnd         time.Time
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
 	// times a run asked it. LogJudged reads state too, for the verdict of the row it writes.
 	state      string
@@ -557,7 +580,13 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.projectAsked = append(f.projectAsked, name)
 	f.projectReasons = append(f.projectReasons, reason)
 	f.bounded = append(f.bounded, boundedCall{"JudgeProject", requests.UnderJudgeDispatch(ctx)})
+	if end, ok := ctx.Deadline(); ok && f.phaseEnd.IsZero() {
+		f.phaseEnd = end
+	}
 	takes := f.projectTakes
+	if f.projectBeforeEnd > 0 {
+		takes = time.Until(f.phaseEnd.Add(-f.projectBeforeEnd))
+	}
 	f.mu.Unlock()
 	if takes > 0 {
 		select {
@@ -569,6 +598,14 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.private, f.projectErr
+}
+
+// dispatchPhaseEnd is the end of the run's Dispatch phase, as the first JudgeProject call read it
+// from its context: the zero time before any call came.
+func (f *fakeRequests) dispatchPhaseEnd() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.phaseEnd
 }
 
 // projectsAsked is every name JudgeProject was asked about, in order, and reasonsAsked every

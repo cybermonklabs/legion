@@ -626,12 +626,25 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	// The phase's three reads — the project check's and the issue's two GETs — each take a
-	// third of its bound, less a twentieth of a second for the round trips themselves: the
-	// phase has to spend its bound and still answer, since a read the bound cut short would
-	// hand the request over and the model would never be asked. The ask read, under a bound
-	// of its own, takes a third of it.
-	machine.projectTakes = dispatchBound/3 - 50*time.Millisecond
+	// The phase's three reads, the project check's and the issue's two GETs, answer a third of
+	// its bound apart, the last lastReadMargin before the phase ends: the phase has to spend its
+	// bound and still answer, since a read the bound cut short would hand the request over and
+	// the model would never be asked. Each read answers at its own point of the phase, measured
+	// from the phase's own deadline, not after a delay of its own, so a read that wakes late on a
+	// loaded runner makes the reads after it no later; only the last read's own lateness counts
+	// against lastReadMargin. When each read took a third of the bound less 50 ms instead, three
+	// wakes' lateness added up, and past 150 ms the phase's bound cut the last read short: the run
+	// then wrote its row after 7 s, the model unasked. The ask read, under a bound of its own,
+	// takes a third of it.
+	//
+	// lastReadMargin: with the broker's database packages running beside this package, the
+	// phase's three reads ended 2-25 ms later than their sum in 11 runs, and one soak run saw
+	// more than 150 ms. 300 ms is twice that, and the phase still spends 94% of its bound.
+	const lastReadMargin = 300 * time.Millisecond
+	machine.projectBeforeEnd = 2*dispatchBound/3 + lastReadMargin
+	dispatch.answerAt = func(earlier int) time.Time {
+		return machine.dispatchPhaseEnd().Add(-time.Duration(1-earlier)*dispatchBound/3 - lastReadMargin)
+	}
 	dispatch.delay = dispatchBound/3 - 50*time.Millisecond
 	// The model never answers, so the call ends on modelBound.
 	model.delay = runBudget
