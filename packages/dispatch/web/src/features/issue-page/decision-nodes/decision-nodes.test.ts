@@ -566,6 +566,97 @@ test("a decision whose from_ask names an answered ask restates it, and one under
   ).toBe(true);
 });
 
+// INFRA-1196's decision 521 narrows decision 513: a decision whose `from_ask` names an answered
+// ask restates that answer only where every node it shaped is a node that ask shaped. One that
+// shaped any node the ask did not is an agent's decision, drawn under the question, and waits for
+// review on that shaping (root R35), as in Part I's `seedSpineCases`; one whose shaped ties are a
+// subset of the ask's (or none) still restates. Both the case where the read answers the person's
+// decision on the ask's node (`decision.links`) and the case where only `shaped` tuples say what
+// the ask shaped give the same verdict.
+test("a decision whose from_ask names an answered ask does not restate where it shaped a node the ask did not", () => {
+  const placed = (id: string, parent: string, position: number, members: Partial<Decision>) =>
+    node(id, "decision", parent, {
+      decision: {
+        changed_at: "2026-11-06T00:00:00Z",
+        text_sha256: `sum-${id}`,
+        waiting_review: true,
+        ...members,
+      },
+      document: { ...SPEC, position },
+    });
+  // Each link names its target by the store's node id (`to.id`), as `decisionread.readLinks` and
+  // the answer's tuples both do, beside the target's address (`to.ref`).
+  const linkToBlock = (blockId: string): DecisionLink => {
+    const base = linkTo(blockRef("spec", blockId));
+    return { ...base, to: { ...base.to, id: `${KEY}/${SPEC.slug}#${blockId}` } };
+  };
+  const r1 = linkToBlock("r1");
+  const r2 = linkToBlock("r2");
+  const tree = answer(
+    [
+      block("r1", "requirement", SPEC, 0),
+      block("r2", "requirement", SPEC, 1),
+      // Answer carries the person's decision (`decision.links`, as in the Decisions view, which
+      // holds no statement and so no `shaped` tuple to `r1`).
+      node("ask-decided", "ask", KEY, { decision: { links: [r1] } }),
+      placed("d-extra-decided", "ask-decided", 2, { asks: ["ask-decided"], links: [r2] }),
+      placed("d-both-decided", "ask-decided", 3, { asks: ["ask-decided"], links: [r1, r2] }),
+      placed("d-subset-decided", "ask-decided", 4, { asks: ["ask-decided"], links: [r1] }),
+      placed("d-none-decided", "ask-decided", 5, { asks: ["ask-decided"] }),
+      // Answer carries no person's decision on the ask: only its `shaped` tuple says what it
+      // shaped, and the asks read says it is answered.
+      node("ask-tupled", "ask", KEY),
+      placed("d-extra-tupled", "ask-tupled", 6, { asks: ["ask-tupled"], links: [r2] }),
+      placed("d-subset-tupled", "ask-tupled", 7, { asks: ["ask-tupled"], links: [r1] }),
+      placed("d-none-tupled", "ask-tupled", 8, { asks: ["ask-tupled"] }),
+    ],
+    [tuple("shaped", "ask-tupled", "r1")]
+  );
+  const reads: DecisionReads = {
+    asks: [question("ask-tupled", { state: "answered" })],
+    issue: { key: KEY },
+  };
+  const lookup = lookupOf(tree, reads);
+
+  expect(
+    [
+      "d-extra-decided",
+      "d-both-decided",
+      "d-subset-decided",
+      "d-none-decided",
+      "d-extra-tupled",
+      "d-subset-tupled",
+      "d-none-tupled",
+    ].map((id) => [id, restatesAnswer(held(tree, id), lookup)])
+  ).toEqual([
+    ["d-extra-decided", false],
+    ["d-both-decided", false],
+    ["d-subset-decided", true],
+    ["d-none-decided", true],
+    ["d-extra-tupled", false],
+    ["d-subset-tupled", true],
+    ["d-none-tupled", true],
+  ]);
+  const decided = decisionNodes(tree, reads);
+  expect(decided.map((one) => one.block_id)).toEqual([
+    "ask-decided",
+    "d-extra-decided",
+    "d-both-decided",
+    "ask-tupled",
+    "d-extra-tupled",
+  ]);
+  const isStatement = (reference: string) =>
+    reference === blockRef("spec", "r1") || reference === blockRef("spec", "r2");
+  for (const id of ["d-extra-decided", "d-both-decided", "d-extra-tupled"]) {
+    const one = decided.find((entry) => entry.block_id === id);
+    expect(one?.kind, `${id} is no agent's decision`).toBe("agent");
+    expect(
+      one !== undefined && inReviewList(one, isStatement),
+      `${id}, tied to a statement the ask did not shape, waits for no review`
+    ).toBe(true);
+  }
+});
+
 // INFRA-1196's decision 516: a decision block a person decided is that person's decision. The
 // test is who its `decided_by` names, read as every reader of a decision reads it
 // (`DecisionNode.decidedBy`): a person makes it that person's, and a session, or no `decided_by`

@@ -465,18 +465,34 @@ function compared(row: KeyedRow, field: keyof KeyedRow): unknown {
     : { answer, author, lines, options };
 }
 
-/** Whether `row` of the fixture is a section that restates a person's answer: a decision the
- *  fixture draws under an answered question. */
-export function restatesAnAnswer(row: KeyedRow, recorded: readonly KeyedRow[]): boolean {
-  return (
-    row.kind.type === "decision" &&
-    recorded.some(
-      (other) =>
-        other.key === row.parentKey &&
-        other.kind.type === "ask" &&
-        other.state?.token === "answered"
-    )
+/** The addresses of the nodes fixture row `row` names as shaped: a shaping chip on a decision or
+ *  ask row carries no tie word (its `label` is null, or the stale line alone,
+ *  `${CONTROL_LABELS.target_stale}:`; `Also under` is already in `alsoUnder`), and names its
+ *  target by its keyed `address` (`RowChip`). */
+function fixtureShapedAddresses(row: KeyedRow): string[] {
+  const stale = `${CONTROL_LABELS.target_stale}:`;
+  return row.chips.flatMap((chip) =>
+    chip.address !== null && (chip.label === null || chip.label === stale) ? [chip.address] : []
   );
+}
+
+/** Whether `row` of the fixture is a section that restates a person's answer (INFRA-1196's
+ *  decisions 513 and 521): a decision the fixture draws under an answered question where every
+ *  node the decision row names as shaped is a node the question's row names as shaped. */
+export function restatesAnAnswer(row: KeyedRow, recorded: readonly KeyedRow[]): boolean {
+  if (row.kind.type !== "decision") return false;
+  const shaped = fixtureShapedAddresses(row);
+  return recorded.some((other) => {
+    if (
+      other.key !== row.parentKey ||
+      other.kind.type !== "ask" ||
+      other.state?.token !== "answered"
+    ) {
+      return false;
+    }
+    const askShaped = new Set(fixtureShapedAddresses(other));
+    return shaped.every((address) => askShaped.has(address));
+  });
 }
 
 function rowName(row: KeyedRow): string {

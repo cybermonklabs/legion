@@ -1079,8 +1079,9 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
-    // The decision that settles the answered ask restates the person's answer, so it draws no
-    // row (INFRA-1196's decision 513): the owed row below reads it.
+    // The decision that settles the answered ask shaped a requirement that ask did not, so it is
+    // an agent's decision standing under that ask once the model stores it there (INFRA-1196's
+    // decision 521): the owed row below reads it.
     // A node with no stored parent stands at the outline's top level, under no row: the issue
     // itself is no row.
     expect(
@@ -1305,12 +1306,14 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 
 // c-spine's decision under the question it settles: the model stores the decision under that
 // question, and the page invents no parent, so the row is guarded by `decisionUnderAskGate` on a
-// base whose tree read answers no such parent. A person answered that question, and the
-// decision's `from_ask` names it, so the decision restates the person's answer, whose decision is
-// the question itself (INFRA-1196's decision 513): the page draws no row for it, and an address
-// naming its block lands on the question's row, focused, so no citation of it dangles (root R20).
-// SLOW(>=2s): two seeds, each loaded cold with its branches unfolded press by press, then loaded
-// again at the decision's address.
+// base whose tree read answers no such parent. Under INFRA-1196's decisions 513 and 521, a
+// decision whose `from_ask` names an answered question restates the person's answer only where
+// every node it shaped is a node that question shaped: `seedSpineCases`'s decision shaped a
+// requirement the question did not, so it is an agent's decision drawn under that question (root
+// R35), while `seedWholeIssue`'s second decision shaped nothing the question did not, so it draws
+// no row and an address naming its block lands on the question's row, focused (root R20).
+// SLOW(>=2s): two seeds, each loaded cold with its branches unfolded press by press, and the
+// second loaded again at the restating decision's address.
 test("each node sits under the parent the model stores, and a decision that restates the answer to the question it settles draws no row and its address lands on that question", async ({
   browser,
 }) => {
@@ -1330,24 +1333,18 @@ test("each node sits under the parent the model stores, and a decision that rest
     );
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    // The decision settles the ask its block's `from_ask` names, which a person answered.
+    // The decision settles the ask its block's `from_ask` names, which a person answered, and
+    // shaped a requirement that ask did not, so it is an agent's decision drawn under that ask.
     const stored = ((await getIssueDecisions(seeded.key)).entries ?? []).find(
       (one) => one.document?.block_id === seeded.decisionBlockId
     );
     expect(stored?.from_ask, "the server holds no ask the decision answers").toEqual([
       seeded.answeredAskId,
     ]);
-    await expect(
-      nodeRow(page, blockNodeId(specSlug, seeded.decisionBlockId)),
-      "the decision that restates the person's answer draws a row"
-    ).toHaveCount(0);
-    await gotoIssue(page, `/issues/${seeded.key}#b-${seeded.decisionBlockId}`);
-    await expectOpeningLanded(page);
-    await expect
-      .poll(() => focusedNodeId(page), {
-        message: "the decision's address does not land on the ask it answers",
-      })
-      .toBe(seeded.answeredAskId);
+    expect(
+      await parentOfRow(page, blockNodeId(specSlug, seeded.decisionBlockId)),
+      "the decision is not drawn under the ask it answers"
+    ).toBe(seeded.answeredAskId);
   });
 
   await phase(browser, seedWholeIssue, async (page, seeded) => {
