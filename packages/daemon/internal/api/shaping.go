@@ -1222,11 +1222,6 @@ const strandedTokenContract = 259
 // rather than its number for that reason.
 const startWaitTokenContract = 285
 
-// planRolesContract is the daemon contract at which an owner's plan can define a role of its own
-// (version.go's 301): `POST /legion/v1/plans/register` takes a `plan_role` block, and the state's
-// `settings` answers `models`. No answer changes its shape, so no band names it.
-const planRolesContract = 301
-
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
 // step's is; it keeps its slot and is at work, as step does; none of the phases an older
