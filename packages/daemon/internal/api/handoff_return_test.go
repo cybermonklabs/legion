@@ -126,13 +126,13 @@ func TestACheckReportNamesNoStepToReturnTo(t *testing.T) {
 	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 	tester := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
 	for _, verdict := range []string{"pass", "fail"} {
-		refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: verdict, ReturnTo: new(1)}),
+		refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: verdict, ReturnTo: new(1), CheckOpenedAt: &checkOpenedAt}),
 			http.StatusBadRequest, "RETURN_TO_NEEDS_FAIL")
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusals = %#v, want none", got)
 	}
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("facts after the report without returnTo = %#v, want one", got)
 	}

@@ -160,12 +160,11 @@ func TestARequestForTheResultsCapabilityIsRefusedBeforeAnyGrant(t *testing.T) {
 	for _, stored := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no stored secret of its name", true: "a stored secret of its name"}[stored], func(t *testing.T) {
 			m, enr, key := newAirlockFixture(t, resultsProfiles)
-			m.Airlock = policytest.Profiles(t, resultsProfiles, fixtureService).ProxyRules()
 			if stored {
 				retag(t, m, policytest.Secret(oauthwire.AirlockResultsName, fixtureOperator, policy.TierAgent, "stored-results-v1"))
 			}
-			if entry := m.Airlock.Lookup(oauthwire.AirlockResultsName); entry == nil || entry.Kind != proxyrules.KindDPoP {
-				t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s", oauthwire.AirlockResultsName, entry, proxyrules.KindDPoP)
+			if entry := m.AirlockRules().Lookup(oauthwire.AirlockResultsName); entry == nil || entry.Inline == nil || entry.Way != proxyrules.WayDPoP {
+				t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s", oauthwire.AirlockResultsName, entry, proxyrules.WayDPoP)
 			}
 			request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "write the results", oauthwire.AirlockResultsName), "")
 			if !errors.Is(err, policy.ErrUnknownSecret) || request.GrantID != nil {

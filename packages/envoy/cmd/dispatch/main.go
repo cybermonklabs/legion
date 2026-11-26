@@ -222,6 +222,12 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE=on. It turns on the refusal of three
+	// writes of a Legion issue from a credential that holds neither the person scope nor
+	// legion-status: a write of its status, the removal of its legion label, and a move that
+	// leaves it under no labelled issue, but for the status write of the architect of an issue
+	// above (api's legion_status_scope.go). Unset or off, it is false (api.Deps.LegionStatusScope).
+	LegionStatusScope bool
 	// ProofOrigins is DISPATCH_PROOF_ORIGINS read (proofOriginEntries): the origins Dispatch is
 	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
 	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
@@ -477,6 +483,22 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
+	// session_titles (migration 20261117100008) holds each session's newest stamped title,
+	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
+	// events stored before that, in committed batches, for document_search's reason above
+	// (20261117100016's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
+	// session_titles alone, so a process that served with the table unfilled would name every
+	// session stored before this release by its id. Production runs one replica under a
+	// Kubernetes Deployment's `strategy: Recreate` (README.md, "Database migrations"), so no
+	// process serves while this one migrates and fills: the old process has stopped, and this
+	// one listens only once the fill has ended.
+	if filled, err := database.FillSessionTitles(ctx); err != nil {
+		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
+		os.Exit(1)
+	} else if filled > 0 {
+		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
+	}
+
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
 	// lower-case document id, the form every server-written anchor carries. A row an earlier
 	// release stored with another spelling is left out, and settlement records no mark for it:
@@ -653,7 +675,7 @@ func main() {
 	// whose loops would each run everywhere, so it ends here.
 	//
 	// The loops come in these shapes, so that a database nobody writes costs them nothing except
-	// where GitHub gives them nothing to wake on, and the five timers of the last shape:
+	// where GitHub gives them nothing to wake on, and the seven timers of the last shape:
 	//   - woken loops, which run a pass at start and then only when a Postgres notification on the
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
@@ -679,10 +701,9 @@ func main() {
 	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
 	//     import every 5 minutes, each starting after a random delay within one interval
 	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
-	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
-	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
-	//     delivery intake runs only then), so the architecture import's timer repairs a push that
-	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     (redeliver.Sweeper.Run). A push of a source's branch imports that source at once
+	//     (delivery.PushImports, architecture.Importer.Pushed), so the architecture import's
+	//     timer repairs a push that never arrived. Each then
 	//     waits its interval less up to a tenth of it, drawn afresh every time
 	//     (duty.JitteredWithin), so no wait is longer than
 	//     the interval and two processes' ticks drift apart rather than staying in step. Under
@@ -692,15 +713,17 @@ func main() {
 	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
 	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
-	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
-	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
-	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
-	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
-	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     batch is full), the reference forms drain (docs.Service.RunRefsFormsReconciliation, at
+	//     the same pace under a lease of its own), the repair of closed and reopened issues' asks
+	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
+	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
+	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
+	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
+	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
+	//     first pass of a display parser version runs until every stored text has a tree at it),
+	//     each recording its passes in duty_passes like the timers above; each tick sends its
+	//     statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -772,6 +795,10 @@ func main() {
 	documentCompactionLeases := reserve("document compaction")
 	editNoticesLeases := reserve("edit notices")
 	blockIndexLeases := reserve("block index")
+	// The reference forms drain's, a caller of its own beside the block index's: the two passes
+	// run on their own goroutines under their own leases, so each can hold a connection while the
+	// other does.
+	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
 	// configuration runs them, as every caller's here is: the count the pool is sized for is the
@@ -1068,6 +1095,13 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The reference forms drain: each comment, ask, issue message and document a build that
+	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
+	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
+	// interval: a period a process of the previous release served under the block index's lease
+	// would otherwise drain none of it, and a document's row is settled only by this build's own
+	// index of the document.
+	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
@@ -1192,10 +1226,10 @@ func main() {
 		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
 		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
 		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has. While delivery settings are saved (the intake runs only then), the intake hands each
-		// push of a branch to the architecture importer the ticker and the routes share, which imports
-		// the enabled sources on that repository and branch at once; a push it hands over once the
-		// importer's Close has begun starts nothing (architecture.Importer.Pushed).
+		// it has, whether or not delivery settings are saved. The intake hands each push of a branch
+		// to the architecture importer the ticker and the routes share, which imports the enabled
+		// sources on that repository and branch at once; a push it hands over once the importer's
+		// Close has begun starts nothing (architecture.Importer.Pushed).
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
@@ -1713,6 +1747,15 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
 	}
+	// The value is strict, as DISPATCH_DEV_SIGNIN's is: a misspelt `on` must refuse the boot, not
+	// leave a deployment that meant to refuse these writes taking them.
+	switch value := env.get("DISPATCH_LEGION_STATUS_SCOPE"); value {
+	case "", "off":
+	case "on":
+		boot.LegionStatusScope = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_LEGION_STATUS_SCOPE=%q (expected on, off or unset)", value)
+	}
 	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
 	if err != nil {
 		return bootConfig{}, err
@@ -2089,6 +2132,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
+	built.LegionStatusScope = boot.LegionStatusScope
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
@@ -2396,7 +2440,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // 403 READ_ONLY_TOKEN before anything of the route runs. It serves a results token
 // (ciphertoken.Options.ServesResults) for the same reason: the scope results alone, which the
 // broker mints from a result entry for one CI run, reaches the routes the results list names
-// (resultsScopeRoutes) and every other route answers it 403 RESULTS_ONLY_TOKEN.
+// (resultsScopeRoutes) and every other route answers it 403 RESULTS_ONLY_TOKEN. It serves an
+// approve-only token too (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which
+// the broker mints for a person's approve grant and spends through its proxy, never released.
+// Dispatch's approve list (approveScopeRoutes) names the routes such a token may call, and every
+// other route answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2414,11 +2462,13 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read class, the results list and their gates are Dispatch's own
-		// (internal/dispatch/api), so a read-only token reaches the reads of that class and a
-		// results token the routes its list names, and neither any other route.
-		ServesReadOnly: true,
-		ServesResults:  true,
+		// The read class, the results list, the approve list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
+		// token the routes its list names and an approve-only token the routes the approve list
+		// names, and no other route.
+		ServesReadOnly:    true,
+		ServesResults:     true,
+		ServesApproveOnly: true,
 	})
 }
 

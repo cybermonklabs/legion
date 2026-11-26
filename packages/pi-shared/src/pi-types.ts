@@ -17,19 +17,29 @@ import type { Component } from "@oh-my-pi/pi-tui";
 export interface HostModel {
   readonly provider: string;
   readonly id: string;
+  /** The family the host's catalog reads from the model's id (`ModelIdentity`): `openai`,
+   * `anthropic`, …, or `unknown` for an id it cannot place, such as a gateway's alias. The
+   * host's OpenAI `cyber_policy` hold closes the `openai` and `unknown` classes
+   * (`closedByCyberPolicy`, `session/cyber-policy-closure.ts:9-11` at
+   * v18.18.6-sami.20261125-164517). A model the host hands back carries it; one a caller names
+   * by provider and id does not. */
+  readonly identity?: { readonly class?: string };
 }
 
 /** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
  * chain's resolution needs as its `RetryFallbackModelLookup`
  * (`packages/coding-agent/src/session/retry-fallback-chains.ts:38-42` at the pinned tag), and the
  * suppression the host's own turn recovery reads before it picks a fallback, by the entry's own
- * selector and by the key of the model it resolves to (`isRetryFallbackEntrySuppressed`,
- * `session/turn-recovery.ts:2233-2242` at the pinned tag), so an extension stepping down the same
- * chain can skip what the host skips. That function also passes over a route an OpenAI
- * `cyber_policy` refusal closed until the next prompt from a person (the session's
- * `cyberPolicyClosure`, which the registry does not hold), and nothing in this repository reads
- * that closure. Each is a method of the live registry, which reads private state of its own, so a
- * caller calls it on the registry rather than handing it over detached. */
+ * selector and by the key of the model it resolves to, so an extension stepping down the same
+ * chain can skip the entries the host suppresses. The host also passes over a route the OpenAI
+ * `cyber_policy` closure holds closed until a person's next prompt (`isRetryFallbackEntrySuppressed`,
+ * `session/turn-recovery.ts:2487-2496` at the pinned tag), and this registry does not expose that
+ * closure: such an extension can pick a closed route. Before the next model call the host moves
+ * the session off it to an open fallback where its chain has one, and holds the call otherwise
+ * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3966-3972` and
+ * `:4628-4631`).
+ * Each is a method of the live registry, which reads private state of its own, so a caller calls
+ * it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
   /** The model one provider and id name, or undefined when this deployment disables the provider
    * or holds no such model. */
@@ -145,6 +155,23 @@ export interface SessionContext {
     readonly current: () => HostModel | undefined;
     readonly resolve: (spec: string) => HostModel | undefined;
   };
+  /**
+   * The host's `ctx.compact()`: compacts the session's history. A compaction aborts the turn in
+   * flight and, once the summary is committed or there was nothing to compact, resumes that turn
+   * with the host's continue nudge; a compaction that interrupts nothing never continues, and a
+   * failed one resumes nothing (`CompactOptions`, `extensibility/extensions/types.ts:545-567`, and
+   * `session/session-maintenance.ts:1999-2006, 2428-2437` at v18.18.6-sami.20261125-164517).
+   * `origin: "outside"` ends the session's cyber-policy hold first, as a person's `/compact` does
+   * (`session/agent-session.ts:9369-9373` there). Its synchronous part aborts the agent, so a
+   * caller inside a hook the agent loop awaits stops that loop's request before it is sent.
+   * `mode` replaces the configured `compaction.methodOrder` for this one compaction: `soft` is a
+   * text summary by the session's model (`session/compact-modes.ts:16, 40-57` there). Absent on a
+   * host that predates it.
+   */
+  readonly compact?: (options: {
+    readonly origin?: "outside" | "inside";
+    readonly mode?: "soft" | "remote" | "snapcompact";
+  }) => Promise<void>;
   /** The host's own `ModelRegistry` (`packages/coding-agent/src/config/model-registry.ts` at the
    * pinned tag), as far as this package reads it. Every member is optional, as the neighbouring
    * host declarations are: a host build that exposes none still satisfies the type, and the
@@ -257,7 +284,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261125-001804, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261125-164517, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
@@ -325,7 +352,7 @@ export interface AgentEndMessage {
    * provider failure, `length` a truncation. */
   readonly stopReason?: string;
   /** What the provider said about an `error` stop, when it said anything: Oh My Pi carries
-   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1492-1500`,
+   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1499-1507`,
    * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:481-487`, at the pinned tag). */
   readonly stopDetails?: {
     readonly type?: string | null;
@@ -333,12 +360,12 @@ export interface AgentEndMessage {
     readonly explanation?: string | null;
   } | null;
   /** The error text of an `error` stop, which each provider writes its own way (`AssistantMessage`,
-   * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
+   * `packages/ai/src/types.ts:1499-1507` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
   /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
-   * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1517-1518` of
-   * cybermonklabs/oh-my-pi at the pinned tag). The host copies this
+   * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1524-1525` of
+   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261125-164517`). The host copies this
    * field into its `prompt_result`'s `httpStatus`
    * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag), and the
    * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
@@ -359,7 +386,7 @@ export interface AgentEndEvent {
    * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:6305-6308` at the pinned tag), which OMP reaches only after
+   * be delivered (`agent-session.ts:6454-6457` at the pinned tag), which OMP reaches only after
    * each of its retries and continuations has declined the turn: the pane is idle until the job's
    * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
@@ -407,6 +434,31 @@ export interface SessionStopEvent {
   readonly last_assistant_message?: unknown;
   /** Aborted when the settle pass is (a user interrupt, a shutdown). */
   readonly signal: AbortSignal;
+}
+
+/**
+ * What the host is about to compact, handed to `session_before_compact` before it summarizes
+ * (`CompactionPreparation`, `packages/agent/src/compaction/compaction.ts:1393-1419` at
+ * v18.18.6-sami.20261125-164517). The host goes on with this same object after the handlers
+ * return (`session/session-maintenance.ts:2483-2507` there), so a handler that moves messages
+ * between its lists changes what is summarized and what is kept: measured on that build, moving
+ * every kept message into `messagesToSummarize` and naming the branch's leaf as the first kept
+ * entry left the next request with the summary alone. Only the members this package changes are
+ * typed.
+ */
+export interface CompactionPreparation {
+  firstKeptEntryId: string;
+  messagesToSummarize: unknown[];
+  turnPrefixMessages: unknown[];
+  recentMessages: unknown[];
+  recentEntryIds?: string[];
+  isSplitTurn: boolean;
+}
+
+export interface SessionBeforeCompactEvent {
+  readonly preparation: CompactionPreparation;
+  /** The branch from its root to the current leaf, as `getBranch()` hands it. */
+  readonly branchEntries: readonly unknown[];
 }
 
 /** `continue` with `additionalContext` makes the host queue that text as one hidden message that
@@ -546,6 +598,11 @@ export interface PiEventContract {
   readonly auto_retry_end: { readonly event: AutoRetryEndEvent; readonly result: undefined };
   /** Every provider request the session's agent loop sends, each turn and each tool round. */
   readonly context: { readonly event: ContextEvent; readonly result: ContextEventResult };
+  /** A compaction is about to summarize; a handler may change what it summarizes and keeps. */
+  readonly session_before_compact: {
+    readonly event: SessionBeforeCompactEvent;
+    readonly result: undefined;
+  };
   /** Every input before it runs: the host's typed-input ingress, `sendUserInput` included. */
   readonly input: { readonly event: InputEvent; readonly result: InputEventResult };
   readonly session_stop: {
@@ -721,6 +778,12 @@ export interface PiApi {
     options?: {
       readonly deliverAs: "steer" | "aside" | "nextTurn" | "followUp";
       readonly triggerTurn: boolean;
+      /** `"outside"` marks the message as input from outside the session, which ends the
+       *  session's cyber-policy hold before the message is queued, whatever it is delivered as
+       *  (`sendCustomMessage`, `session/agent-session.ts:12605-12616` at
+       *  v18.18.6-sami.20261125-164517). Unset, it counts as made inside the session and the hold
+       *  stays; a host without the option ignores it. */
+      readonly origin?: "outside" | "inside";
     }
   ) => void;
   /**
@@ -731,7 +794,16 @@ export interface PiApi {
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
-    options?: { readonly deliverAs: "aside" | "followUp" }
+    options?: {
+      readonly deliverAs?: "aside" | "followUp";
+      /** `"outside"` when the text is a person's own turn the extension relays: the host's
+       *  `sendUserMessage` then ends the session's cyber-policy hold, as a prompt typed at its
+       *  terminal does (`session/agent-session.ts:12979`, the option at
+       *  `session/agent-session-types.ts:693-694`, at v18.18.6-sami.20261125-164517). Unset, the
+       *  text counts as made inside the session and the hold stays; a host without the option
+       *  ignores it. */
+      readonly origin?: "outside" | "inside";
+    }
   ) => void;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
@@ -743,7 +815,18 @@ export interface PiApi {
    */
   readonly sendUserInput?: (
     text: string,
-    options?: { readonly deliverAs?: "aside"; readonly tag?: string }
+    options?: {
+      readonly deliverAs?: "aside";
+      readonly tag?: string;
+      /** `"outside"` when the text is a person's own turn the extension relays, a bridge's typed
+       *  Send: the host hands it on to the prompt, skill or built-in the input runs, and a prompt
+       *  or skill so marked ends the session's cyber-policy hold as a prompt typed at the terminal
+       *  does (`extensibility/extensions/send-user-input-handler.ts:89-142` and
+       *  `SendUserInputOptions` at `extensibility/extensions/types.ts:2503-2508`, at
+       *  v18.18.6-sami.20261125-164517). Unset, the input counts as made inside the session and the
+       *  hold stays. */
+      readonly origin?: "outside" | "inside";
+    }
   ) => Promise<UserInputResult>;
   /** The session's extension, custom and skill slash commands (`skill:<name>`), never its
    *  built-ins. Every Oh My Pi build has it; Legion's own test hosts leave it out. */

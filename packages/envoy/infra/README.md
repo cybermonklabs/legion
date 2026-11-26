@@ -644,7 +644,10 @@ Each hub pod's exporter runs with the chart's arguments (`-jsz=all -prefix=nats`
 serves one series per stream for each server holding a copy of it, labelled with the server's and
 the stream's names; it has no metric of whether a copy is current. An alert on a stream with fewer
 than three current copies therefore counts the servers whose copy's `nats_stream_last_seq` equals
-the stream's highest; a KV bucket is the stream `KV_<bucket>`, so the same query covers it.
+the stream's highest; a KV bucket is the stream `KV_<bucket>`, so the same query covers it. The
+PodMonitoring drops every series named `nats_consumer_*`, each of which names a JetStream consumer,
+so none reaches Managed Prometheus; `-jsz=streams` would serve none of them, but no
+`nats_stream_limit_bytes` or `nats_stream_limit_messages` either.
 [Metrics and alerts](docs/nats-hub.md#metrics-and-alerts) in `docs/nats-hub.md` gives the metric
 names, their labels and the PromQL. A pod that is down, a hub pod (container `nats`), a tailnet
 host (container `tailscale`) or the session listener's pod (container `listener`), is read from
@@ -1427,6 +1430,24 @@ rendered, so a deployment that leaves it unset renders the pod it always had. An
 whose `envoy-dispatch` predates the setting ignores it, as it ignores every variable its
 settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting
 it replaces the app's pods as any change to its pod template does.
+
+`legionStatusScope`, `false` by default, turns on Dispatch's refusal of three writes of a Legion
+issue: `true` renders `DISPATCH_LEGION_STATUS_SCOPE=on` on the `envoy-dispatch` container alone,
+in every mode that runs Dispatch, right after `DISPATCH_PARENT_STATUS_RULE` (or where that
+variable would be). The three writes are a write of the issue's status, the removal of its
+`legion` label, and a move that leaves it under no labelled issue. With it Dispatch refuses
+them to a credential that holds neither the `person` scope nor `legion-status`, but for the
+status write of the architect of an issue above, of the issue's own project. A Legion issue
+carries the `legion` label, in any letter case, or is under an issue of its own project that
+carries it. The setting's row in
+`packages/envoy/cmd/dispatch/settings.go`, which `envoy-dispatch settings` prints, is the one
+place of the procedure: which releases to deploy first, and the four conditions on each project's
+Legion daemon and controller under which an operator sets the input. The refusal needs no
+one-time step and no crossing: a pod with the setting off beside one with it on takes those writes
+until the roll ends. Unset, nothing is rendered, so a deployment that leaves it unset renders the
+pod it always had. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as it
+ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
+list. Setting or unsetting it replaces the app's pods as any change to its pod template does.
 
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
@@ -4749,7 +4770,9 @@ the secrets broker's, and each
 namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
 certificate for any user, mint the operator's Google service account's token, make a guarded
 namespace on another cluster of the project or of the workload pool's fleet, register a cluster to
-that fleet or write the namespaces and RBAC its scopes put on the members, set IAM policy over any
+that fleet or write the namespaces and RBAC its scopes put on the members, make or change a
+Deployment Manager deployment on the project (Deployment Manager creates a deployment's resources as
+the project's Google APIs service agent, which holds `roles/editor` there), set IAM policy over any
 of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
 right outright or limits it to an object by name, and each principal that can become one of those:
 through IAM impersonation, reported as the chain, by minting the token of a Google service
@@ -4773,14 +4796,40 @@ which takes no other address. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster, or a Service of type ExternalName or with no
-selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed. It reads code first
-(`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming
-each principal and right, or 2 naming each step it could not read, a run that stopped mid-way
-included. It asks a cluster's SubjectAccessReviews in up to `REVIEW_WORKERS` kubectl calls at once
-(10 unless set), never more than the seats that cluster's API server gives the priority level
-global-default, which it reads from the server's `/metrics`, and in one call when it cannot read
-them. `--report <file>` writes the same as JSON, with each allowance the run was given
-(`--service-agent`, `--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
+selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed. One admission
+refusal is credited: the broker's pod fence, whose `broker-pod-connect` refuses exec, attach and
+port forward to every `envoy-broker-*` pod and whose `broker-pod-update` refuses any change but
+metadata to a broker pod, each bound `Deny` with `failurePolicy: Fail` in `dispatch` and with no
+exception. When `dispatch/envoy-broker` is a guarded pair (`--broker-workload` or a `--guarded`),
+and only when the renders and the operator's cluster each hold the five `broker-*` policies and
+their bindings with the reviewed specs `scripts/operator-token-minters/broker-fence.json` holds
+(each spec, or the sha256 of the two workload policies', less what the API server and GKE fill in);
+at least one `envoy-broker-*` pod runs as `envoy-broker`; no pod of `dispatch` named otherwise runs
+as `envoy-broker` or takes `--db-secret`, a token Secret there or a Secret a broker pod takes; and
+no webhook, whatever its selectors and rules, calls a Service in `dispatch`, a grant of exec,
+attach or port forward in `dispatch` prints a `CREDIT` line naming its use on the broker's pods
+instead of a finding, and goes into `--report`'s `credited` with the policy and the declared and
+live versions. Its use on the other pods of `dispatch` the fence does not refuse: Dispatch's own
+database login there can write the writer hold's tables, the residual `broker-fence.json` states
+and INFRA-4604 tracks, so each such grant also prints an `ALLOWANCE` line naming it and goes into
+`--report`'s `residuals`, and so does each chain to its holder: who can become such a
+ServiceAccount, or mint, sign as or act as such a Google service account (its minters' step), and
+so on along the chain, Google and Kubernetes alike, read until a pass names no new account. A
+chain that also reaches an account with a finding is a finding. Everything else stays a finding: a
+pod patch or update in `dispatch` (`broker-pod-update` admits a change of any pod's metadata, and a
+pod given the broker's label `app: envoy-broker` takes the broker's Services' traffic), an ephemeral container
+there, `create pods` there, every workload write, the token, impersonation, Secrets, every Google
+IAM right, the hold writers, and whoever can write or delete the fence. A fence missing or held
+otherwise prints `NO CREDIT` naming why and credits nothing; one whose policies, pods or webhooks
+cannot be read, or are answered as no list, is UNKNOWN. It reads code first (`--rbac-render`,
+`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal
+and right, or 2 naming each step it could not read, a run that stopped mid-way included. It asks
+a cluster's SubjectAccessReviews in up to `REVIEW_WORKERS` kubectl calls at once (10 unless set),
+never more than the seats that cluster's API server gives the priority level global-default, which
+it reads from the server's `/metrics`, and in one call when it cannot read them. `--report <file>`
+writes the same as JSON, with each credit under `credited`, each `ALLOWANCE` line under
+`residuals`, and each allowance flag the run was given (`--service-agent`, `--rbac-only-member`,
+`--fleet none`, `--credentials-arg`) under `allowances`,
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
 any step runs, and a value of another form is a usage error naming the flag, never the value, as is

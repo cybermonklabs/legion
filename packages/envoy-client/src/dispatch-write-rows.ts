@@ -168,14 +168,15 @@ const uploadedDocument = {
 /** The person or session a review or a retraction names, as `actorText` reads it. */
 const actor = InboundActorSchema;
 
-/** The rows of the POSTs that store nothing, `markdownRoundTrip`, `related` and `dryRunResult`,
- *  side by side in `WRITE_ROWS`: Dispatch's parse and render of a text (`POST
+/** The rows of the POSTs that store nothing, `markdownRoundTrip`, `fileRoundTrip`, `related` and
+ *  `dryRunResult`, side by side in `WRITE_ROWS`: Dispatch's parse and render of a text (`POST
  *  /api/v1/markdown/round-trip`: its handler, `postMarkdownRoundTrip`, parses and renders the text
- *  and answers it, and calls no store), the related-item check (`POST /api/v1/projects/{key}/related`:
- *  its handler's `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks
- *  record is written), and the dry run of a result's record (`POST
- *  /api/v1/issues/{key}/results/dry-run`: its handler, `dryRunCheckResult`, records nothing and
- *  appends no event). */
+ *  and answers it, and calls no store) and of a file's bytes (`POST
+ *  /api/v1/markdown/file-round-trip`, which writes nothing and reads no row), the related-item
+ *  check (`POST /api/v1/projects/{key}/related`: its handler's `answerRelated` runs `relatedCheck`
+ *  with `record` unset, so no related_checks record is written), and the dry run of a result's
+ *  record (`POST /api/v1/issues/{key}/results/dry-run`: its handler, `dryRunCheckResult`, records
+ *  nothing and appends no event). */
 const STORE_NOTHING = new WeakSet<z.ZodType>();
 
 /** `row`, marked as the row of a route that stores nothing (`rowStores`). */
@@ -228,6 +229,7 @@ export const WRITE_ROWS = {
     advice: caughtAdvice,
   }),
   markdownRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
+  fileRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
   related: storesNothing(z.looseObject({ outcome: z.string() })),
   /** `issueUpdateCommand` reads the key and the status on every path, and each other member only
    *  where the call wrote it, so those are optional. */
@@ -239,6 +241,23 @@ export const WRITE_ROWS = {
     status: issueFields.status,
     claim: z.looseObject({ at: z.string() }).nullable(),
     legion_managed_status: z.boolean().optional(),
+  }),
+  /** `statusChangeCommand` reads each changed issue's key, status and parent, and the named
+   *  issue's status and the URLs of its links, the links behind a `?? []` of its own. */
+  changeIssueStatus: z.looseObject({
+    changed: z
+      .array(
+        z.looseObject({
+          key: issueFields.key,
+          status: issueFields.status,
+          parent: z.string().nullable(),
+        })
+      )
+      .nullable(),
+    issue: z.looseObject({
+      status: issueFields.status,
+      external_links: z.array(externalLink).nullish(),
+    }),
   }),
   ask: askWrite,
   artifactAsk: askWrite,
@@ -320,23 +339,15 @@ export const WRITE_ROWS = {
     issue_key: commentFields.issue_key,
     artifact_id: commentFields.artifact_id,
   }),
-  /** `commentOwnerResult` reads the edited comment's id, issue and document. */
+  /** `editCommentCommand` reads what `resolveCommentCommand` reads of its answer. */
   editComment: z.looseObject({
     id: commentFields.id,
     issue_key: commentFields.issue_key,
     artifact_id: commentFields.artifact_id,
   }),
-  /** `messageIssueKey` reads the edited message's issue. */
-  editMessage: z.looseObject({ id: messageFields.id, issue_key: messageFields.issue_key }),
-  /** `statusChangeCommand` reads the issue's status and links and each changed entry; `changed` is
-   *  a list or null, as `StatusChangeAnswer` declares it. */
-  changeIssueStatus: z.looseObject({
-    issue: z.looseObject({ key: issueFields.key, status: issueFields.status }),
-    changed: z
-      .array(z.looseObject({ key: issueFields.key, status: issueFields.status }))
-      .nullable(),
-  }),
   message: z.looseObject({ id: messageFields.id, advice }),
+  /** `editMessageCommand` reads the id and the issue, which it refuses when null. */
+  editMessage: z.looseObject({ id: messageFields.id, issue_key: messageFields.issue_key }),
   agentMessage: z.looseObject({
     id: messageFields.id,
     deliveries: z

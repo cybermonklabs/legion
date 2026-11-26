@@ -41,28 +41,62 @@ operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
-reads a profiles file with the broker's own code and exits non-zero, naming the profile and the
-field or the parse position, when the broker would not serve that file, or when its start check of
-the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it;
+`envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
+reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
+the field, or the parse position, when the broker would not serve that file, or when its start
+check of the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it.
+A `proxy` block of any kind but `dpop` is refused, naming `kinds`, which replaced it.
 `--private-upstream` takes the value `BROKER_PROXY_PRIVATE_UPSTREAM` gives the broker, and holds
 each destination's address to the start's rule: an address no broker takes as a destination
 (loopback, link-local, a metadata server, an IPv6 form that carries an IPv4 address and the rest of
-`netaddr.DestinationNever`) and `localhost` exit 2, as a value the setting does not take;
+`netaddr.DestinationNever`) and `localhost` exit 2, as a value the setting does not take.
 `--cluster-ranges` takes the value `BROKER_AIRLOCK_CLUSTER_RANGES` gives the broker and makes that
 rule the start's whole one, so an address outside the private ranges and outside every range given
 exits 2 and one inside a range given passes; without it such an address, which only a broker's
 `BROKER_AIRLOCK_CLUSTER_RANGES` admit, prints one line saying it was not judged against the
-cluster ranges;
-on a file it would serve it prints every field of each profile the file adds and removes against
-the file `--against` names, and each field a profile both files hold changes: its source, tier,
-requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google
-scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
+cluster ranges.
+On a file it would serve it prints every field of each kind and each profile the file adds and
+removes against the file `--against` names, and each field one both files hold changes: a kind's
+hosts, headers, variables, ways, `allow` rows, `placeholder_prefix` and `max_grant`; a profile's
+source, tier, requesters and `maxGrant`, the kind its `proxy` key names as a string, its own `allow`
+rows, its GitHub accounts, repositories, permissions and value, its Google scopes, and a `dpop`
+block's hosts, headers, `allow` and `kind`.
+Who decides a request is no field of the file: it is the source key's `judge` and `guidance` tags;
+an old file's proxy block may still set `judge` and guidance, which `--against` reads and drops.
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
-whether each of those is right for its profile.
+whether each of those is right.
+It also refuses each fault for which the policy load would refuse a name behind the proxy, with
+the load's own rules and in its words, one line each, `profile "<name>": <reason>: <detail>` or
+`secret "<name>": <reason>: <detail>`: a `proxy` string that names another kind than its source's
+`proxy` tag, a source only the proxy scopes or an `allow` behind no kind, a way or a `max-grant`
+the kind does not take, an `allow` whose source lacks `proxy-narrowed=true`, a row on a host the
+kind does not bind, rows outside the kind's `allow`, a tag naming no kind, the narrowed rule
+(`Profiles.NarrowedFaults`) for a secret tagged `proxy-narrowed=true`, and a profile whose source
+the load does not serve: refused, absent, or another profile, which is never a source. It reads the
+store's tags and not its values, so a source the load refuses for its value, or one still waiting
+for its value, reads as a served one. A profile's kind is its own `proxy` string, or else its
+source's `proxy` tag, which is in the secret store, not the file: `--secrets-json` reads the tags
+from the output of
+`gcloud secrets list --filter='name~agent-secrets-' --format='json(name,annotations)'`. Without it,
+a profile with a `proxy` string is held to all the file decides of it, and each profile with none,
+in a file that declares a kind, gets an `UNKNOWN` line naming it; a run that refuses nothing then
+exits 3 after the whole report, so a caller that cannot read the store can accept 3 and still fail
+on 1.
+With `--against`, it lists under `widens` each row of a name's `allow` under the file that its
+`allow` under the old file does not cover, for each name behind the proxy under both files (its
+profile's own `allow`, else its kind's, else its proxy block's; a missing `allow` allows every
+method and path), and each host the change adds to a name. A widening exits 0: the reviewer reads
+it, and a gate that must see none reads the list. A name whose `allow` or hosts only the tags give
+is listed as not compared. Without `--secrets-json`, a stored secret behind a kind by its own
+`proxy` tag cannot be named, so each kind both files declare is compared on its own instead
+(`widens kind "<kind>": <row>`, `hosts kind "<kind>": <host> added`). Each of these makes a run
+without `--secrets-json` exit 3.
+With `--secrets-json`, it lists each secret's `proxy` and `proxy-narrowed` tags, then each name
+behind the proxy under the old file and how the file serves it, and exits 1 when a name leaves the
+proxy. The old file may be in either form, kinds or the proxy blocks they replaced.
 A profile whose proxy block is of kind `dpop`, a capability the broker mints and holds, is held to
 the boot's rules for it: one exact host, a non-empty `allow` list none of whose entries is every path
-(`""` or `/`), the `Authorization` header alone, and no block of another kind on that host.
+(`""` or `/`), the `Authorization` header alone, and no kind that binds that host.
 Its host must also be one private destination's, which only the broker's own
 `BROKER_PROXY_PRIVATE_UPSTREAM` names: `--private-upstream '<host>=<url> ...'` checks that too, and
 without the flag each such profile gets one line saying its tie to the destination was not checked.
@@ -158,10 +192,23 @@ expires at the token's own end, which the airlock's proxy reads to mint again fi
 it, as it does for every minted value; the release's `expires_at` is the grant's end. A rule that
 sets five minutes or less works, but every proxied call then mints again. The secret is human tier
 alone (the broker refuses one at agent tier as `type-human-tier`), and a person approves every
-release of it: the model judge decides none, whatever seconds a profile's `proxy` block gives the
-name, as for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
+release of it: the model judge decides none, whatever seconds its `judge` tag gives the judge, as
+for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
 `requesters` as a `google-service-account` secret does (one person, or one group, beside
 registered services), may carry `admin: true`, and carries no `scopes`.
+
+Behind the airlock, such a secret is served by the `anthropic` kind: its `proxy` tag names the
+kind, which binds `api.anthropic.com`, the header `Authorization`, the way `mint`, a `max_grant`
+of `1h` and an `allow` of `GET`, `POST` and `DELETE` under `/v1/organizations/`, so its token
+reaches Anthropic's Admin API alone and never the token exchange or the Messages API on the same
+host. The kind also declares the variable `ANTHROPIC_ADMIN_TOKEN`, which no release applies yet: a
+command reads the placeholder in the variable named as its secret. A secret narrowed further
+carries `proxy-narrowed=true` and one profile with an `allow` of its own inside the kind's. The
+local stack mints at stand-ins:
+`BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL` names the origin of the `generateIdToken` it reads the
+identity token at, and `BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL` the token exchange; a production
+start (one with `BROKER_FAKE_SECRETS_FILE` unset) refuses either, naming it, as it refuses every
+`BROKER_AIRLOCK_TEST_*` setting.
 
 ## Test
 

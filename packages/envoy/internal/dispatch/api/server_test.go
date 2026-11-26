@@ -67,9 +67,11 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
-// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
-// databases to drop and drops their templates, inside the broker harness's Run, which then drops
-// the database brokerstoretest.URL made the contract rows' broker schemas in.
+// TestMain runs the package's tests through the Dispatch harness's Main, which drops their
+// databases and their templates, inside the broker harness's Run, which then drops the database
+// brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
+// testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
+// harness's may have reached that bound, still waits testdb's floor for its own drop.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
@@ -256,6 +258,12 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// legionStatusScope is Deps.LegionStatusScope (DISPATCH_LEGION_STATUS_SCOPE): R26's refusal
+	// of a write that sets a Legion issue's status, takes the legion label off an issue, or moves
+	// a Legion issue out from under every labelled issue, from a credential that holds neither
+	// the person scope nor the legion-status scope. False is the deployment that has not turned
+	// it on, which every test but legion_status_scope_test.go's runs as.
+	legionStatusScope bool
 	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
 	parentStatusRule bool
 	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
@@ -427,6 +435,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:            options.buildCommit,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
+		LegionStatusScope:      options.legionStatusScope,
 		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
 		Clock:                  options.clock,

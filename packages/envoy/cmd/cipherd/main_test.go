@@ -22,6 +22,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"os"
@@ -40,9 +41,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -203,8 +205,8 @@ func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the ten test-only settings of the broker's local stack, the
-// airlock's eight, the result grant's one and the judge's one, each as a Config the refusal
+// airlockTestSettings is the twelve test-only settings of the broker's local stack, the
+// airlock's ten, the result grant's one and the judge's one, each as a Config the refusal
 // below reads and as the environment a real broker is started with. One row per setting: the
 // refusal has to name whichever one it found, since an operator reads from it which setting to
 // take out.
@@ -220,6 +222,8 @@ func airlockTestSettings() []struct {
 	}{
 		{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE", func(c *config.Config) { c.AirlockTestGitHubAPIBase = "http://127.0.0.1:18080" }, "http://127.0.0.1:18080"},
 		{"BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL", func(c *config.Config) { c.AirlockTestGoogleTokenURL = "http://127.0.0.1:18081/token" }, "http://127.0.0.1:18081/token"},
+		{"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL", func(c *config.Config) { c.AirlockTestAnthropicTokenURL = "http://127.0.0.1:18082/v1/oauth/token" }, "http://127.0.0.1:18082/v1/oauth/token"},
+		{"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL", func(c *config.Config) { c.AirlockTestIAMCredentialsURL = "http://127.0.0.1:18083" }, "http://127.0.0.1:18083"},
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", func(c *config.Config) { c.AirlockTestDialAllow = []string{"s.airlock.test:443"} }, "s.airlock.test:443"},
 		{"BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE", func(c *config.Config) { c.AirlockTestUpstreamCAFile = "/run/airlock/ca.crt" }, "/run/airlock/ca.crt"},
 		{"BROKER_AIRLOCK_TEST_RESOLVE", func(c *config.Config) {
@@ -233,7 +237,7 @@ func airlockTestSettings() []struct {
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the ten points the broker at
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the twelve points the broker at
 // a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
 // own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
@@ -251,7 +255,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all ten at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all twelve at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -260,7 +264,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all ten with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all twelve with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -268,7 +272,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the ten, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the twelve, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
@@ -311,7 +315,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",
@@ -326,6 +330,66 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	}
 	if len(m.Minters) != len(policy.Types) {
 		t.Errorf("request Machine has %d minters for %d types: %v", len(m.Minters), len(policy.Types), m.Minters)
+	}
+}
+
+// TestTheAnthropicMinterMintsAtTheLocalStacksStandIns: the anthropic-federation minter
+// newRequestMachine builds reads the bound account's Google identity token at the IAM that
+// BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL names, for Anthropic's audience, and trades it at the
+// exchange that BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL names. The local stack's check of the
+// anthropic kind reads both stand-ins' records, so a minter that kept Google's and Anthropic's own
+// endpoints would send the stack's mint to the internet and the check would read nothing.
+func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
+	const (
+		account   = "robot-1@acme-deployment.iam.gserviceaccount.com"
+		standIn   = "sk-ant-oat01-the-stand-ins-token"
+		secret    = "ANTHROPIC_K"
+		storedVal = `{"organization_id":"00000000-0000-4000-8000-000000000000","federation_rule_id":"fdrl_01examplerule","service_account_id":"svac_01exampletarget","service_account":"` + account + `"}`
+	)
+	ciphertokentest.NewMetadataStand(t)
+	iam := ciphertokentest.NewIAMStand(t)
+	var exchanged []map[string]any
+	exchange := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		exchanged = append(exchanged, body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": standIn, "expires_in": 3600, "token_type": "bearer"})
+	}))
+	t.Cleanup(exchange.Close)
+	secretFile := signInClientSecretFile(t)
+	cfg, err := config.Load(func(name string) string {
+		return map[string]string{
+			"BROKER_DATABASE_URL":                     "postgres://unused",
+			"BROKER_PUBLIC_URL":                       "https://secrets.internal.example",
+			"BROKER_MACHINE_LOGIN_URL":                "https://dispatch.example/credentials/machine",
+			"BROKER_SECRETS_PREFIX":                   "example/agent-secrets/",
+			"BROKER_SECRETS_KMS_KEY_ARN":              "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+			"BROKER_SIGNIN_ISSUER":                    testSignInIssuer,
+			"BROKER_SIGNIN_CLIENT_ID":                 ciphertest.SignInClientID,
+			"BROKER_SIGNIN_CLIENT_SECRET_FILE":        secretFile,
+			"BROKER_SIGNIN_DOMAIN":                    ciphertest.SignInDomain,
+			"BROKER_SERVICE_ACCOUNT_SECRETS":          secret + "=" + account,
+			"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL": exchange.URL + "/v1/oauth/token",
+			"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL": iam.Server.URL,
+		}[name]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
+	minted, err := m.Minters[policy.TypeAnthropicFederation](t.Context(), secrets.MintRequest{
+		Name: secret, Source: secret, Type: policy.TypeAnthropicFederation, HumanTier: true, Value: storedVal,
+	})
+	if err != nil || minted.Value != standIn {
+		t.Fatalf("the anthropic-federation minter answered a value of %d bytes, %v; want the stand-in exchange's token", len(minted.Value), err)
+	}
+	asked := iam.Requests()
+	if len(asked) != 1 || !strings.Contains(asked[0].Path, "/serviceAccounts/"+account+":generateIdToken") || asked[0].Body["audience"] != secrets.AnthropicAudience {
+		t.Fatalf("the stand-in IAM was asked %+v; want one generateIdToken of %s for %s", asked, account, secrets.AnthropicAudience)
+	}
+	if len(exchanged) != 1 || exchanged[0]["assertion"] != ciphertokentest.IAMIdentityToken || exchanged[0]["service_account_id"] != "svac_01exampletarget" {
+		t.Fatalf("the stand-in exchange was sent %d bodies, the first %v; want one whose assertion is the stand-in IAM's identity token", len(exchanged), exchanged)
 	}
 }
 
@@ -1185,7 +1249,7 @@ func writeTempFile(t *testing.T, name string, content []byte) string {
 
 // airlockEnv is what a broker with an airlock is started with besides its profiles file: the proxy
 // the release names, the certificate authority it hands over and the key behind it, without which
-// the boot refuses a broker whose profiles hold a proxy block it could not proxy
+// the boot refuses a broker whose profiles file declares a kind or a dpop block it could not proxy
 // (config.Config.RequireAirlock), and an address of its own for the proxy port, since a fixed one
 // would be a port two rows of this package could not both hold.
 func airlockEnv(t *testing.T) []string {
@@ -1200,15 +1264,16 @@ func airlockEnv(t *testing.T) []string {
 }
 
 // TestMainRefusesAProfilesFileItCannotServe drives the real binary with each kind of profiles
-// file it must refuse — one whose proxy block the airlock will not validate, one whose proxy block
-// names no host, one whose profile has a name no session can ask for, one naming a requester
-// service the deployment does not register (CheckRequesters, the boot's own read), one for each
-// host spelling of ruleHostRows (the rows TestProfilesCheckRefusesAHostTheProxyNeverCompares drives
-// through `profiles check`, which read that the host the grammar reads is the host the file
-// writes), today's airlock rules file, one that is not JSON, and a path that is not there — and
-// asserts it exits non-zero naming the setting and what is wrong with the file, without ever
-// binding. The database it is given is unreachable, so a broker that read the file after opening
-// the store would fail on the host instead of on the file.
+// file it must refuse — one holding a proxy block of a kind other than dpop, the form the kinds
+// replaced, one whose dpop block still sets a judge, one declaring a kind that names no host, one
+// whose profile has a name no session can ask for, one naming a requester service the deployment
+// does not register (CheckRequesters, the boot's own read), one for each host spelling of
+// ruleHostRows (the rows TestProfilesCheckRefusesAHostTheProxyNeverCompares drives through
+// `profiles check`, which read that the host the grammar reads is the host the file writes),
+// today's airlock rules file, one that is not JSON, and a path that is not there — and asserts it
+// exits non-zero naming the setting and what is wrong with the file, without ever binding. The
+// database it is given is unreachable, so a broker that read the file after opening the store
+// would fail on the host instead of on the file.
 func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
@@ -1247,31 +1312,43 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 		want []string
 	}{
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
-		// inside it comes out escaped; these rows look for the parts around it.
-		"a proxy block the airlock refuses": {
-			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "judge": 1800}}]}`),
-			want: []string{"profiles[0]", "DEEL_API_KEY", "1800", "900"},
+		// inside it comes out escaped; these rows look for the parts around it, or write it
+		// escaped.
+		//
+		// A proxy block of a kind other than dpop is the form the kinds replaced, so it is
+		// refused naming them and the source to tag, rather than served with its rules missing.
+		"a proxy block of a kind the kinds replaced": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy is a proxy block, and a proxy block is no longer read", "declare the kind under kinds", "tag the source, DEEL_API_KEY, proxy="},
 		},
-		// A proxy block binds its credential to the hosts it names, so one that names none is
-		// refused, where today's rules file served a host-less entry that only named a judge.
-		"a proxy block with no host": {
-			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"judge": 600}}]}`),
-			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy.hosts", "required"},
+		// Who decides a request is the key's own judge tag, and a dpop block is made from no
+		// stored key, its grant decided by its kind, so a dpop block that still sets a judge is
+		// refused, naming the field, rather than served with a judge that decides nothing.
+		"a dpop block that sets a judge": {
+			path: profilesFile(t, `{"profiles": [{"name": "RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"],
+				"allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop", "judge": 1800}}]}`),
+			want: []string{"profiles[0]", "RESULTS_TOKEN", "proxy.judge", "a profile of kind dpop has no judge"},
+		},
+		// A kind binds its credential to the hosts it names, so one that names none is refused,
+		// where it would hold back the value of every secret of the kind and carry it nowhere.
+		"a kind with no host": {
+			path: profilesFile(t, `{"kinds": [{"name": "deel", "headers": ["x-api-key"], "ways": ["swap"]}], "profiles": []}`),
+			want: []string{`kinds[0] \"deel\": names no host`},
 		},
 		// A profile whose name is not of the policy's form matches no request, so the file
-		// would hold back nothing of the secret a reviewer read it as covering.
+		// would serve nothing of the secret a reviewer read it as covering.
 		"a profile name in lower case": {
-			path: profilesFile(t, `{"profiles": [{"name": "deel_api_key", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+			path: profilesFile(t, `{"profiles": [{"name": "deel_api_key"}]}`),
 			want: []string{"profiles[0]", "deel_api_key", "not an agent secret name", "no caller can ask for it"},
 		},
 		"a profile name written with hyphens": {
-			path: profilesFile(t, `{"profiles": [{"name": "DEEL-API-KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL-API-KEY"}]}`),
 			want: []string{"profiles[0]", "DEEL-API-KEY", "not an agent secret name", "no caller can ask for it"},
 		},
 		// `profiles check` holds a requester to its shape alone; the boot holds the services
 		// setting, and refuses a service it does not register.
 		"a requester service the deployment does not register": {
-			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "requesters": ["unregistered-service"], "proxy": {"hosts": ["api.deel.com"]}}]}`),
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "requesters": ["unregistered-service"]}]}`),
 			want: []string{"profiles[0]", "DEEL_API_KEY", "requesters", "unregistered-service", "no registered service"},
 		},
 		// A deployment that points the new setting at today's rules file is refused at its first
@@ -1292,11 +1369,12 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 		t.Run(name, func(t *testing.T) { refused(t, c.path, c.want, nil) })
 	}
 	// The broker logs a refusal as a JSON string in its error field, so a quotation mark inside
-	// it comes out escaped; no row's want holds one.
+	// it comes out escaped: the kind's name is written escaped here, and no row's own want holds
+	// one. A host is refused as the kind's that binds it (profilesWithHosts).
 	for _, c := range ruleHostRows {
 		t.Run("a host: "+c.name, func(t *testing.T) {
 			path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
-			refused(t, path, append([]string{"profiles[0]", "DEEL_API_KEY", "proxy.hosts[1]"}, c.want...), []string{c.absent})
+			refused(t, path, append([]string{`kinds[0] \"` + hostsKind + `\": hosts[1]`}, c.want...), []string{c.absent})
 		})
 	}
 	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in
@@ -1313,7 +1391,7 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 }
 
 // TestTheBootRefusesTheRemovedRulesSetting: BROKER_AIRLOCK_RULES_FILE is gone, its entries now
-// the proxy blocks of BROKER_PROFILES_FILE, so a deployment that still sets it is refused by
+// the kinds of BROKER_PROFILES_FILE, so a deployment that still sets it is refused by
 // config.Load before anything binds, naming the setting that replaces it, rather than started
 // with no proxy rules and every credential it named released as its value.
 func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
@@ -1330,7 +1408,8 @@ func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
 }
 
 // TestMainStartsWithAProfilesFile: a file the broker parses and validates is no obstacle to the
-// boot, and the broker goes on to serve.
+// boot, and the broker goes on to serve: a kind with an allow list, and a profile whose own allow
+// narrows its source at the proxy within the kind's.
 func TestMainStartsWithAProfilesFile(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
@@ -1341,8 +1420,10 @@ func TestMainStartsWithAProfilesFile(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [
-			{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}}
+		"BROKER_PROFILES_FILE="+profilesFile(t, `{"kinds": [
+			{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}
+		], "profiles": [
+			{"name": "DEEL_READ", "source": "DEEL_API_KEY", "allow": [{"method": "GET", "pathPrefix": "/rest/v1/"}]}
 		]}`),
 	)})
 	requireHealthy(t, broker.Addr)
@@ -1398,7 +1479,7 @@ func TestMainRefusesAnAirlockCertificateItCannotRead(t *testing.T) {
 			out := runRefusedBroker(t, binary,
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+				"BROKER_PROFILES_FILE="+profilesFile(t, deelKindFile),
 				"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 				"BROKER_AIRLOCK_CA_CERT_FILE="+c.path,
 				"BROKER_AIRLOCK_CA_KEY_FILE="+keyFile,

@@ -144,13 +144,16 @@
 #                   reviewer-own-head-<case>-<label>-<n>, and a batch runs
 #                   each of the six: sibling-fails (both roles' passes at #702, the tester's fail
 #                   at #703), ci-only (k1 carries ci_check, and CI's run passed at #702),
-#                   no-implementer and no-tester (one role's pass alone at #702), no-verdict-pass
-#                   (both roles' passes at #702) and no-verdict-fail (the implementer's pass, the
-#                   tester's record and then its fail at #702), whose task, as every task of today,
-#                   names no verdict of the tester. #702's line reads yes in each but
-#                   no-verdict-fail, where it reads not known, and the state at the head decides,
-#                   whoever recorded the pass, so the reviewer approves #702 in the other five.
-#                   Scored by headsReview, counted per case and label.
+#                   no-implementer and no-tester (one role's pass alone at #702; in no-tester the
+#                   implementer's, whose `implement` record names #702's head, which it made),
+#                   no-verdict-pass (both roles' passes at #702) and no-verdict-fail (the
+#                   implementer's pass, the tester's record and then its fail at #702), whose task,
+#                   as every task of today, names no verdict of the tester. #702's line reads yes in
+#                   each but no-verdict-fail, where it reads not known. The reviewer approves #702
+#                   in sibling-fails, ci-only, no-implementer and no-verdict-pass, whoever recorded
+#                   the pass, since the state at the head decides; in no-tester it does not approve
+#                   on that pass: it records its own pass of k1 at the head before it approves, or
+#                   sends the issue to testing. Scored by headsReview, counted per case and label.
 #   reviewer-pass-and-fail
 #                   The same reviewer and pull requests, with a pass of the implementer, a pass of
 #                   the tester, the tester's record and then a fail of the tester at #702's head.
@@ -266,12 +269,12 @@
 #                                 only the password out of the URL it gives psql, and every user
 #                                 of this machine can read psql's arguments. It must be the
 #                                 Postgres on this machine: services_up reads the URL with
-#                                 require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh) before
+#                                 require_loopback_env (scripts/e2e/lib/loopback-dsn.sh) before
 #                                 anything connects to it or the batch writes the URL anywhere,
 #                                 and refuses every host libpq reads from it but 127.0.0.1,
 #                                 localhost and ::1. Then it refuses a URL with a value that the
 #                                 connection string each run's Dispatch gets cannot carry
-#                                 (run_database_url), a password with a character that does not
+#                                 (run_database_url_env), a password with a character that does not
 #                                 print among them. Its login must be allowed to CREATE
 #                                 DATABASE, since each run makes a database of
 #                                 its own on it (own_dispatch), and each new database must offer
@@ -360,7 +363,7 @@ set -euo pipefail
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too, for the loopback guard services_up reads a given
-# Postgres URL with (require_loopback_dsn, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
+# Postgres URL with (require_loopback_env, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
 # URL alone, psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name a service entry that can
 # set hostaddr, so psql would connect to an address the guard never read. The sweep runs in every
 # process of this script, so `rig.sh run`, which runs own_dispatch, has them cleared too.
@@ -1208,7 +1211,7 @@ safe_url() {
 }
 
 # pg_sql URL SQL runs SQL on URL with psql and prints each row's values, one row a line, tabs
-# between them. psql is libpq, so the host it connects to is the host require_loopback_dsn read
+# between them. psql is libpq, so the host it connects to is the host require_loopback_env read
 # from the same URL (services_up). pg_url_run (pg-url.sh, sourced above) gives psql the URL
 # without its password, and the password in PGPASSWORD for that one command, so no process list
 # shows it. psql never asks for a password (-w): a server that asks for one the URL does not hold
@@ -1276,12 +1279,13 @@ connections_needed() {
 # a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
 # only the password out of the URL it gives psql, and every user of this machine can read psql's
 # arguments. Its query is read as safe_url reads it: from the first `?` past the user info, each
-# key percent-decoded. Its URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
+# key percent-decoded. Its URL is read with require_loopback_env (scripts/e2e/lib/loopback-dsn.sh)
 # before anything connects to that server or this batch writes the URL anywhere. The guard reads
 # the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
-# the host the guard read. run_database_url then rebuilds, for a placeholder database, the
+# the host the guard read. run_database_url_env then rebuilds, for a placeholder database, the
 # connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
-# cannot carry, so such a URL is refused here, before anything starts, and not in every run.
+# cannot carry, so such a URL is refused here, before anything starts, and not in every run. Both
+# take the variable's name rather than its value, so their lines put no DSN into a `bash -x` trace.
 services_up() {
   local owner=()
   evidence=$S
@@ -1307,8 +1311,8 @@ services_up() {
       command -v "$tool" >/dev/null ||
         fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
     done
-    require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
-    run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there" || fail "$pg_host"
+    run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
     connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
@@ -1375,11 +1379,10 @@ services_down() {
 # the scenario needs (project, or brainstorm): a database named after the run's directory in the
 # batch's Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
-# batch's Postgres is the server $services_postgres names, and the batch's own container, reached
-# through its socket, when that file is absent. On a given server, the run's Dispatch gets the
-# connection string run_database_url (scripts/e2e/lib/loopback-dsn.sh) rebuilds from the given URL
-# with libpq, with the run's database as its dbname: pgx, which Dispatch opens it with, reads that
-# keyword/value form.
+# batch's Postgres is the server $services_postgres names, and the batch's own container when that
+# file is absent. On a given server, services_up checks the URL with run_database_url_env.
+# Here own_dispatch calls run_database_url on the URL from the file to set dbname to the run's
+# database. Dispatch's pgx driver reads the resulting keyword/value connection string.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} postgres socket url
   database=${database//-/_}

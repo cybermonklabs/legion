@@ -80,6 +80,42 @@ export const PRIORITY_ID_MAX = 200;
 export const PROJECT_NAME_MAX = 80;
 
 /**
+ * The most bytes of markdown one document may hold, counted in UTF-8 as the server counts a body:
+ * what one upload of a markdown document may send, and what a write may grow a stored document's
+ * rendering to. An upload past it is `413 CAP_EXCEEDED` with MARKDOWN_DOCUMENT_TOO_LARGE, up to the
+ * server's 25 MiB file cap; past that cap the server answers `artifact blob exceeds 25 MB` instead.
+ * Generated into Go as `contracts.MarkdownDocumentMaxBytes`, which is the server's
+ * `pmdoc.MaxDocumentBytes`. `dispatch artifact` and its dry run refuse a text past it, given
+ * inline, in `--content-file`, on stdin or in a Markdown `--path` file, before they ask the round
+ * trip or upload, and the call before it reads whether the owner holds the name.
+ */
+export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
+
+/**
+ * What the `413 CAP_EXCEEDED` of an upload whose markdown is past MARKDOWN_DOCUMENT_MAX_BYTES says.
+ * Generated into Go as `contracts.MarkdownDocumentTooLarge`, which the upload route answers, and
+ * `dispatch artifact` prints it after `CAP_EXCEEDED: ` for a text past that bound, however it is
+ * given, so its own refusal and the server's are one text for an upload within the server's 25 MiB
+ * file cap.
+ */
+export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB; a larger file is stored as a binary artifact under another content type`;
+
+/**
+ * The response header that the markdown round trips (`POST /api/v1/markdown/round-trip`, `POST
+ * /api/v1/markdown/file-round-trip`) put on their refusal of a text for the text alone, whatever
+ * the refusal's status: a mark, with one value, that says the answer is Dispatch's refusal of the
+ * text, so a client reads only that the header is there. The routes make the checks an upload
+ * makes of the text alone, in the order, status, code and words of that upload, and make a new
+ * document's only for a request that asks for them (`new_document`). Generated into Go as
+ * `contracts.TextRefusalHeader`. `dispatch artifact` asks for a new document's refusals only where
+ * the call makes a new document, so it reads an answer carrying the header as the call's own
+ * refusal, and any other failure of the round trip as no answer at all, so a check of the text
+ * Dispatch adds to that upload, at any status, reaches the call and its dry run with no change to
+ * the client.
+ */
+export const TEXT_REFUSAL_HEADER = "Dispatch-Text-Refusal";
+
+/**
  * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
  * as `contracts.MaxIssuePageLimit`, which the server enforces, and the `dispatch_issues` tool's
  * `limit` takes the same bound, so the two ends agree.
@@ -162,6 +198,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
  * the server's are one number.
  */
 export const MAX_BROADCAST_RECIPIENTS = 100;
+
+/**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
 
 /**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
@@ -267,13 +312,14 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person under the project scope `person`: the machine holding it
- * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
- * unaffected. The message names `agent-secrets login`, the one command that makes the write
- * possible, because whoever reads the refusal is whoever must run it. A token that names a
- * service and no person under the project scope `named` is no such token: an exchange account
- * entry naming no person minted it, its service is that account, and its writes are recorded
- * under the account.
+ * session and a service but no person under the project scope `person`: a machine's token, and
+ * the machine holding it has signed nobody in, so Dispatch has nobody to record the write under.
+ * Its reads are unaffected. A job's token names a service and no person too, but under the
+ * project scope `named` or `public`, and Dispatch takes its writes as that service rather than
+ * refusing them; so does a token an exchange account entry naming no person minted, under the
+ * project scope `named`, whose service is that account. The message names `agent-secrets
+ * login`, the one command that makes the write possible, because whoever reads the refusal is
+ * whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
@@ -315,6 +361,15 @@ export const SPEC_CHECK_OBSERVED_START = 500;
  *  `contracts.SpecCheckObservedEnd`. */
 export const SPEC_CHECK_OBSERVED_END =
   SPEC_CHECK_OBSERVED_MAX - SPEC_CHECK_OBSERVED_START - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
+
+/**
+ * The code of the `403` for a request by an approve-only token - the token the secrets broker
+ * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
+ * `approve` alone - to a route Dispatch's approve list (`approveScopeRoutes`) does not name, and
+ * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
+ * recorded. No sign-in and no other scope makes the request possible for that token.
+ */
+export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
 
 /**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's

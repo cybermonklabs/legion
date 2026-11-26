@@ -17,8 +17,9 @@ import "github.com/sjawhar/envoy/internal/dispatch/model"
 // packages/contracts to find the compatibility code, tests and documentation together.
 // Regenerate packages/contracts/schemas/dispatch-openapi.json with
 // `go run ./cmd/dispatch openapi --out ../contracts/schemas/dispatch-openapi.json` from
-// packages/envoy, then packages/contracts/src/dispatch-api.generated.ts with
-// `bun run gen:api` from packages/contracts. Keep standingCommit: the gate uses it.
+// packages/envoy; `bun run gen:api` in packages/contracts (or any `bun install`) renders the
+// uncommitted packages/contracts/src/dispatch-api.generated.ts from it. Keep standingCommit: the
+// gate uses it.
 
 // answerCompatibilityCurrency adds only the field older clients print. A read that names a
 // commit answers none: no such client makes one, and current there would mean the commit the

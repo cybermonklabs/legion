@@ -248,7 +248,7 @@ func (c *checkStatesSettler) nextDue(ctx context.Context) (time.Duration, bool, 
 // commit, which keeps every mark it read; owed is true where a due mark is left after the last
 // round.
 func (c *checkStatesSettler) settle(ctx context.Context, issue string) (ran, failed, owed bool) {
-	ran = c.exclusive(ctx, c.leases, checkStatesLeasePrefix+issue, time.Time{}, 0, func(ctx context.Context) {
+	ran = c.exclusive(ctx, nil, c.leases, checkStatesLeasePrefix+issue, time.Time{}, 0, func(ctx context.Context) {
 		for range c.schedule.rounds {
 			more, err := c.settleRound(ctx, issue)
 			if err != nil {

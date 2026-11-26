@@ -77,15 +77,6 @@
       },
       "requests": [
         {
-          "method": "GET",
-          "path": "/api/v1/issues/DSP-1/artifacts",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret"
-          },
-          "body": null
-        },
-        {
           "method": "POST",
           "path": "/api/v1/markdown/round-trip",
           "headers": {
@@ -94,8 +85,18 @@
             "Content-Type": "application/json"
           },
           "body": {
-            "markdown": "# Design\n"
+            "markdown": "# Design\n",
+            "new_document": true
           }
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/artifacts",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
         },
         {
           "method": "POST",

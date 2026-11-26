@@ -347,7 +347,7 @@ leak_engine=''
 # leak_guard <write> [<asset>...] -- <text>...: refuse <write>, and with it the
 # command, unless every <text> and every <asset> passes this repository's own
 # private-name rules, the rule file
-# packages/daemon/internal/leakguard/private-names.toml as this checkout holds
+# .github/private-names.toml as this checkout holds
 # it. That rule file alone is run, and no shared check: this job holds no
 # credential for the private repository that publishes the shared one and needs
 # none, since every refusal of the measured window was of this repository's own
@@ -384,9 +384,9 @@ leak_guard() {
     esac
   done
   if [ -z "$leak_engine" ]; then
-    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../../packages/daemon/internal/leakguard/private-names.toml"
+    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../private-names.toml"
     [ -f "$leak_rules" ] ||
-      fail_error "$setup the rule file packages/daemon/internal/leakguard/private-names.toml is not in this checkout"
+      fail_error "$setup the rule file .github/private-names.toml is not in this checkout"
     if [ -n "${RELEASE_PUSH_LEAK_ENGINE:-}" ]; then
       leak_engine=$RELEASE_PUSH_LEAK_ENGINE
     else
@@ -410,7 +410,7 @@ leak_guard() {
         --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
       status=$?
     [ "$status" = 0 ] ||
-      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file packages/daemon/internal/leakguard/private-names.toml does not parse, or this gitleaks refused it"
+      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file .github/private-names.toml does not parse, or this gitleaks refused it"
   fi
   for asset in "${texts[@]}"; do material+=$asset$'\n'; done
   for asset in "${assets[@]}"; do
@@ -1047,12 +1047,26 @@ case "$command" in
     repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
     # shellcheck source=.github/scripts/gh-read.sh
     source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
-    is_draft=$(gh_wait_reset --stderr /dev/null gh release view "$tag" --repo "$repo" \
-      --json isDraft -q .isDraft) && viewed=0 || viewed=$?
+    # The release, in one request gh-read.sh can read at a time. GitHub's REST route for a tag
+    # answers a published release alone (docs.github.com, REST API, "Get a release by tag name"),
+    # on the core budget, so a re-run of a published release needs no graphql budget. Where it
+    # answers anything else (a 404 for a draft or for no release, or a refusal), the GraphQL
+    # lookup gh release view makes for a draft tells a draft from no release, both answered with
+    # HTTP 200. gh release view itself sends both requests at once, so gh-read.sh could read
+    # neither answer.
+    is_draft=$(gh_wait_reset --stderr /dev/null gh api "repos/$repo/releases/tags/$tag" --jq .draft) &&
+      viewed=0 || viewed=$?
     # A spent budget the view could not wait for says nothing of the release, and the create
     # would meet the same budget: gh-read.sh has named it, and nothing is written.
     [ "$viewed" -ne 75 ] || exit 1
     if [ "$viewed" -ne 0 ]; then
+      is_draft=$(gh_wait_reset --stderr /dev/null gh api graphql \
+        -f query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }' \
+        -f owner="${repo%%/*}" -f name="${repo#*/}" -f tag="$tag" \
+        --jq '.data.repository.release | if . == null then "none" else .isDraft end') && viewed=0 || viewed=$?
+      [ "$viewed" -ne 75 ] || exit 1
+    fi
+    if [ "$viewed" -ne 0 ] || [ "$is_draft" = none ]; then
       # What the create publishes: the tag, the assets, the title, and the notes
       # where this lane wrote them itself. Where it passes --generate-notes,
       # GitHub composes that body server-side from the merged pull requests'
@@ -1098,7 +1112,7 @@ case "$command" in
         ;;
       *)
         printf -v shown '%q' "$is_draft"
-        echo "::error::gh release view $tag printed $shown for isDraft, not true or false"
+        echo "::error::GitHub's release lookup for $tag answered $shown for isDraft, not true or false"
         exit 1
         ;;
     esac

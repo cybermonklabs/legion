@@ -65,9 +65,13 @@ type Config struct {
 	// identities, and the issuers whose tokens it accepts as a subject token.
 	Exchange ExchangeConfig
 	// Airlock is what a result entry's run is handed beside its placeholder (AirlockSettings), nil
-	// for a broker whose airlock binds no DISPATCH_RESULTS_TOKEN: such a broker answers no run a
+	// for a broker whose proxy binds no DISPATCH_RESULTS_TOKEN: such a broker answers no run a
 	// placeholder, and config.Load refuses a start that lists a result entry without one.
 	Airlock *AirlockSettings
+	// Approve is the approve capability a person's sign-in is traded for (ApproveSettings), nil for
+	// a broker that serves none: such a broker refuses every approve trade that asks for a
+	// placeholder.
+	Approve *ApproveSettings
 }
 
 // Provider runs the machine login's device authorization and token endpoints, and the token
@@ -78,9 +82,11 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
-	// airlock is Config.Airlock, and accessLifetime Config.AccessLifetime, which a result grant's
-	// lifetime is bounded by (resultGrantLifetime).
+	// airlock is Config.Airlock and approve Config.Approve, and accessLifetime
+	// Config.AccessLifetime, which a result grant's and an approve grant's lifetimes are bounded by
+	// (resultGrantLifetime, approveGrantLifetime).
 	airlock        *AirlockSettings
+	approve        *ApproveSettings
 	accessLifetime time.Duration
 	// verificationURL is Config.VerificationURL, and "" when it named no page, so the RFC 8628
 	// factories are not composed: what the broker mounts its device authorization route on, what
@@ -302,7 +308,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
-		airlock: c.Airlock, accessLifetime: c.AccessLifetime,
+		airlock: c.Airlock, approve: c.Approve, accessLifetime: c.AccessLifetime,
 		verificationURL: c.VerificationURL, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down

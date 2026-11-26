@@ -73,6 +73,7 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+
       # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
       # instead of building helm with `go run`, which downloads and compiles it first: the render
       # took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in job
@@ -144,6 +145,12 @@ jobs:
       - name: Required-input test for airlock-check.sh k7 (no stack or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/airlock-check.test.sh bash scripts/airlock-check.test.sh
         working-directory: packages/envoy
+      - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
+        working-directory: packages/envoy
+      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants-apply.test.sh bash scripts/airlock-mutants-apply.test.sh
+        working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
         working-directory: packages/envoy
@@ -155,6 +162,16 @@ jobs:
         working-directory: packages/envoy
       - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
         run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
+        working-directory: packages/envoy
+      # approve-check.sh's scan of its session (scripts/approve/scan.ts), k31's step (e): it finds a
+      # logged binding's key as bare PEM and as PEM inside a JSON string, finds a token of the
+      # broker's shape in each form a file, a URL or an environment writes it in, and is UNKNOWN,
+      # exit 3, when it compared nothing.
+      - name: Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/approve/ bun test scripts/approve/
+        working-directory: packages/envoy
+      - name: Exit test for approve-check.sh (its steps library alone; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/approve-check.test.sh bash scripts/approve-check.test.sh
         working-directory: packages/envoy
       # The verdict on the script harnesses the steps above queued: it waits for the last of them,
       # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming

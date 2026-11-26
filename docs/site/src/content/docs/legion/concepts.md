@@ -141,16 +141,31 @@ gate and asks you nothing. The architect above it reviews each version of the ch
 question only you can answer goes up to the root's architect, which asks it on the root. Until the
 child's first phase starts, the architect above it keeps the child.
 
-**The children do the work first.** An issue's first phase does not start while Dispatch shows an
-open child under it, a child the architect has filed and not released yet included; the architect
-is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent's own first phase can start once the last of them has left the workflow, and its pull
-request then builds on a base that already carries their merges. For the same reason the daemon
-refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
-workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work. Where its task has an acceptance step, the child is accepted only
-after its last round, on a head that the step before its acceptance passed and at which its checks
-pass.
+**The children do the work first.** An issue starts no phase of its own while Dispatch shows an
+open child under it, a child the architect has filed and not released yet included. Before its
+first phase, the architect is told so once, with a notice naming each open child and the Dispatch
+status that holds it. A parent's own first phase can start once the last of them has left the
+workflow, and its pull request then builds on a base that already carries their merges.
+
+The rule holds after the first phase too. A child filed under an issue whose phases have started
+holds its next phase, and the daemon stops a phase that is under way and tells its worker to push
+what it has and stop. The issue then waits in `awaiting_children`: it holds no admission slot,
+Dispatch shows it `in_progress`, and no role of it works: the architect's `sign_off`,
+`request_backward_move` and `stop_task` on it are refused (`WAITING_ON_CHILDREN`). Once no child
+under it is open, it goes back by itself to the phase it held, a held test, review or acceptance
+as the first step of its plan after the implementer's (`testing` on the default steps) unless its
+pull request merged during the wait, with a task that names the children that merged during
+the wait. The return asks for no merge of the base into its branch, which takes its base under the
+rules of any other pull request. Every test round of a parent runs on its head merged with the tip
+of the pull request's base branch, once that tip carries each needed child's merge, in the
+tester's own checkout and pushed nowhere, and each result names that base commit. A parent is
+accepted on its head once each check a role runs has a pass there that names a base commit
+carrying the merge of every child the check needs, and the architect sends one whose pass names an
+older commit, or none, back to `testing` (`implementing` where no tester step comes before
+acceptance, with a reason that tells the implementer to run those checks as the tester would).
+The daemon also refuses a parent's acceptance, and a root's close, while an issue beneath it is
+still in the workflow. A child's own architect starts with the child's first phase, so a child it
+files stops the child's phase in this way.
 
 ## Phase workers
 
@@ -169,11 +184,12 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
+| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as the first step of its plan after the implementer's (`testing` on the default steps) unless its pull request merged during the wait. | none |
 | `planning` | planner | Writes the implementation plan into the issue's `plan.md` document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, and judges whether the tests would catch what breaks; it reads no CI, runs no lane again as a whole and waits for none. Records each check's result with `dispatch result` and completes with no verdict: the state of each `before_merge` check at the tested head sends the issue on to the reviewer or back to the implementer. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads the state of each `before_merge` check of the issue's Verification document at the approved head in `dispatch results`, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads the state of each `before_merge` check of the issue's Verification document at the approved head in `dispatch results`, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow, and an open child moves it to `awaiting_children`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -183,12 +199,18 @@ the default steps, the tester before the reviewer sees it. A head that starts co
 base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own.
 The round reads no check's conclusion, since the reviewer reads the code commit's checks on GitHub
-before it approves ([review signalling](#review-signalling)), but an approved head that GitHub
-holds blocked, on a check or a review the base branch requires, keeps the issue in `reviewing`
-until that merge state comes clean. What a red check does is reach the architect that owns
-the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+before it approves ([review signalling](#review-signalling)). An approved head that GitHub holds
+blocked keeps the issue in `reviewing` while a check or a commit status of that head is still
+running, while GitHub has not yet computed whether the head merges cleanly, and while GitHub holds
+a review request open on the pull request. Once the head is mergeable, nothing of it runs, its own
+checks have concluded and no review is asked for, the approval ends the round even though GitHub
+still reports the head blocked: that state is GitHub's answer to the reader, and a rule about the
+reader or another pull request's checks on the same commit can hold it where the merge would not
+be held. The merger's merge is then what GitHub answers, accepted or refused with its reason,
+and the merger brings a refusal to the architect. What a red check does is reach the architect
+that owns the issue, the worker of the issue's current phase and the implementer, as one message
+naming each check and its conclusion; and hold the merge, where GitHub applies the base branch's
+own required checks.
 
 ### The plan of an issue
 
@@ -234,8 +256,11 @@ requires an approving review the merger waits and tells the architect which revi
 The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
 at each round, and before each completion, its retro's included, answers and resolves each bot
 review thread still open, naming each one it declined to the architect. With no acceptance step,
-the last step passing starts the retro; a parent that gets there while an issue beneath it is
-still in the workflow is held before its retro until the last one leaves.
+the last step passing starts the retro; a parent that gets there while something holds its
+acceptance is held before its retro, and its architect is told what holds it: an issue beneath it
+still in the workflow, a root of another tree whose design rests on its approval and is still in
+the workflow, or an open Dispatch child of it, one never released included. Legion starts the
+retro by itself once none of them holds it.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
 ## Admission and the `legion` label
@@ -280,6 +305,9 @@ a `blocked_by` link to an issue that is not `done`, in another project or in thi
 Legion tree or by none, or an open child the daemon has released into the tree and runs.
 A wait on an open child the architect filed and has not released is not one, because releasing
 that child is the tree's own work.
+A parent whose phases started and that an open child holds is different: its phase stops, and it
+waits in `awaiting_children` with no slot and in no line until no child under it is open, as
+"The children do the work first" above says.
 
 An issue holding a slot starts its next phase whatever the cap says, and a start into `accepting`,
 `retro` or `merging`, which hold none, runs at once. An issue that holds none and is owed a start
@@ -399,13 +427,14 @@ no new run of the tree. A root you parked, by contrast, starts a new run when yo
 ## The design gate
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
-spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
-summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
-architect shows you that page first — pictures, or a page you can click — and gets your answer
-before it asks you to approve the spec; a small change, such as a label or a style fix, usually
-carries no pictures, unless the architect is unsure what you want. You approve from the document's
-header or from the approval question in your Dispatch Inbox; **Request changes** sends it back with
-your reason.
+spec, or the ancestor's spec that the root's spec is a view on (the last paragraph of this
+section). The architect settles the spec's decision blocks with you first, then asks for approval
+with a summary of what the tree will do. Where the tree builds a page you open, or changes one a
+lot, the architect shows you that page first — pictures, or a page you can click — and gets your
+answer before it asks you to approve the spec; a small change, such as a label or a style fix,
+usually carries no pictures, unless the architect is unsure what you want. You approve from the
+document's header or from the approval question in your Dispatch Inbox; **Request changes** sends
+it back with your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
 approves the new version. Your own answer to a decision block in the approved spec is the one
@@ -424,12 +453,23 @@ behalf, and the approval Dispatch records at your answer is yours, in your name.
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
 `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
 its primary document. The daemon keeps one gate record for each step listed, and the tree starts
-only once a person has approved every one of them; each closes on its own document's next
-version. Under a list that names `spec` and not `criteria`, the default among them, the architect
-can also register the root's Verification document as `criteria`: that tree then waits for both
-documents, and one approval of a request made with `--include-verification` opens both. A
-deployment that does not want the gate sets `gates.design: []`, and the tree starts as soon as the
-architect has written its spec.
+only once each of them is open on a person's approval, of its own document or of an ancestor's;
+each closes on its own document's next version. Under a list that names `spec` and not
+`criteria`, the default among them, the architect can also register the root's Verification
+document as `criteria`: that tree then waits for both documents, and one approval of a request
+made with `--include-verification` opens both. A deployment that does not want the gate sets
+`gates.design: []`, and the tree starts as soon as the architect has written its spec.
+
+A root under an approved ancestor can have a spec that is a view on the ancestor's spec: it
+delivers parts of the ancestor's requirements and states none of its own. Its architect then
+registers the step on your approval of the ancestor's version, and the step opens with no approval
+of the root's own spec. Where that version still waits for your approval, the step opens when you
+approve it. `legion state` shows such a step as `open_on_basis` or `pending_on_basis`
+([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)). The ancestor's own
+acceptance, and its root's close, wait until each root that rests on its approval is done or out of
+the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and until no Dispatch child of it is open
+(`SIGNOFF_CHILD_OPEN`), and the ancestor's architect is told when a root starts or stops resting on
+it (`resting-root`).
 
 ## Handoffs on the Dispatch issue
 
@@ -480,8 +520,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   undecided until the new head arrives; anything else sets it aside, and only an approval of the
   head itself or a request for changes ends the round. An approval does not end it on its own:
   the round ends once the record reaches the approved head and GitHub reports that head one the
-  issue may advance on. A head GitHub holds blocked, on a check or a review the repository
-  requires, leaves the issue in `reviewing` until that merge state comes clean.
+  issue may advance on. A head GitHub holds blocked leaves the issue in `reviewing` while a check of
+  it runs, while GitHub has not computed whether it merges, and while GitHub holds a review request
+  open; once it is mergeable, nothing of it runs, its own checks have concluded and no review is
+  asked for, the approval ends the round and the merger's merge answers the blocked state.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
@@ -514,7 +556,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   head, and keeps its turn, its background jobs, its process and its session. In `merging` the
   merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
   once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
-  `implementing` only the implementer is told.
+  `implementing` only the implementer is told. A parent that waits in `awaiting_children` is asked
+  nothing, and once it is back in a phase this rule reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
@@ -675,6 +718,9 @@ controller, which gives it to the tree that owns that code and files an issue on
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
+Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
+stored microseconds unchanged. That field alone selects a report on that check: without it,
+`handoff_complete` completes a step, never a look, whatever phase the issue is in.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The

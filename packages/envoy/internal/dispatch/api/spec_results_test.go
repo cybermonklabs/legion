@@ -1050,7 +1050,7 @@ func TestTheReadIsRefusedToAResultsToken(t *testing.T) {
 	t.Parallel()
 	rig := newSpecResultsRig(t)
 	response := rig.serve(rig.caller.presenting(t, http.MethodGet, "/api/v1/projects/"+specResultsProject+"/results?commit="+specResultsCommit, rig.token(nil), nil))
-	if why := notTheLimitedRefusal(response, codeResultsOnlyToken); why != "" {
+	if why := notTheGatesRefusal(response, codeResultsOnlyToken, ""); why != "" {
 		t.Fatalf("the read %s, want 403 %s", why, codeResultsOnlyToken)
 	}
 }

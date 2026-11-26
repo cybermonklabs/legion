@@ -21,19 +21,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A wake brings a released pod back. The release suspended every claim of the pod with the source
-// `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
-// role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
-// delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
-// is its own account of why the pod came back.
+// A wake brings a released pod back. The release read the pod's workspace first and went on only
+// where it held nothing that no branch or tag on origin holds; it suspended every claim of the pod
+// with the source `released` and deleted the pod, its disk and its Sandbox, or, where the Sandbox
+// owns a kept volume, kept that Sandbox Suspended with its volume. A wake resumes one of those
+// claims, which relaunches its session in a fresh pod that provisions the workspace from the
+// issue's pushed branch, or mounts the kept volume as the roles left it. Five things wake a pod,
+// and this file holds four of them: the CI settlement, the role message and the agent message the
+// Envoy listener reports, and the stored backstop. The fifth — a delivery the daemon already had
+// for a role of the pod — needs nothing here, because a delivery to a suspended claim already
+// resumes it (supervise's deliverResuming) and the delivery is its own account of why the pod came
+// back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
 // resume is what says so, so one head that settles again as each of its checks finishes wakes the
 // pod once.
+//
+// The listener's report of a message is also a mark on the claim it names, whatever that claim's
+// state (listenerWake, dispatch://INFRA-5682 R1): a wake of that claim that waits in the daemon's
+// pacing, or the one this report raises, goes ahead of the wakes that carry no message, because
+// Envoy keeps a role's message an hour and then drops it.
 
 // Pods is the daemon's record of its released pods as the workflow reads and writes it: the Envoy
 // listener's liveness report, the claims a release left released, the wake that brings one back,
@@ -51,11 +59,17 @@ type Pods interface {
 	RecordListenerReady(ctx context.Context, tx pgx.Tx, at time.Time) error
 	// ReleasedClaimOfRole is the released claim of issue's role, and whether there is one.
 	ReleasedClaimOfRole(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (supervise.Claim, bool, error)
-	// ReleasedClaimByToken and ReleasedClaimBySession are the released claim a listener's report
-	// names, by the role token a message was published to and by the session one was sent to.
-	// Every daemon reads the report and only the one holding a released claim of that name acts.
-	ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
-	ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
+	// ClaimByToken and ClaimBySession are the claim a listener's report names, by the role token a
+	// message was published to and by the session one was sent to, in whatever state it is. Every
+	// daemon reads the report and only the one holding a claim of that name acts.
+	ClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
+	ClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
+	// MarkMessage marks the claim token for an Envoy message that has waited since at, and
+	// answers the mark it wrote, or else the mark that stands once it has: the earliest of the
+	// marks the role has taken no turn since, and the zero time for a claim that takes none. A mark
+	// written where none stood can be one the role has taken a turn since, which stands not at all
+	// (the store's MarkClaimMessageTx).
+	MarkMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
 	// a wake another pass already took, which is already bringing the pod back. pause is the
 	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
@@ -88,6 +102,16 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// WaitsForItsSlot is whether issue owes a worker a start of its current phase and generation
+	// that waits for its admission slot while no slot of the issue stands
+	// (record.SuperviseRequest.NeedsSlot, which the outbox holds back until the slot comes): such
+	// an issue waits in the admission line, and the slot's start is what brings its worker back,
+	// so its backstop wakes no one (podBackstopDue). An older such start brings no one back, since
+	// admission finishes it without acting, so it silences no backstop.
+	WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
+	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
+	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
@@ -141,7 +165,7 @@ const (
 // role reads one account of its workspace, and what they say is what the daemon knows: the
 // release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
 // that no branch or tag on origin holds, or a working-copy change (internal/daemon's
-// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// checkIssueWorkspace, workspace.WorkRevset), and a pod whose disk went with it comes
 // back with a workspace that provisioning made from the issue's pushed branch. The read does not
 // count a commit that no working copy and no bookmark reaches, a side head a role left with
 // `jj new <base>`, so the release can take one, and the text says so: it never says that nothing
@@ -208,8 +232,14 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A
 // `listener_ready` report is the positive liveness signal R7's gate reads and wakes nothing. A
 // role or agent report names a role token or a session, and this daemon acts only when one of its
-// own claims is released under that name: every daemon consumes the subject, because the listener
-// does not know which daemon owns a session and must not learn.
+// own claims has that name: every daemon consumes the subject, because the listener does not know
+// which daemon owns a session and must not learn.
+//
+// The report marks that claim for the message it carried, in this transaction and whatever the
+// claim's state (Pods.MarkMessage, dispatch://INFRA-5682 R1), and once the fact commits the
+// claim's machine is told the mark the store holds (Config.MessageMarked), so a wake of the claim
+// that already waits in the pacing moves to the message queue. A claim that is released is woken
+// as well, and the start that wake queues finds the claim marked.
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -217,20 +247,29 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	if fact.Kind == intake.ListenerWakeReady {
 		return intake.Result{}, e.cfg.Pods.RecordListenerReady(ctx, tx, fact.At)
 	}
-	var released supervise.Claim
+	var named supervise.Claim
 	var found bool
 	var err error
 	kind, detail := pods.WakeRoleMessage, fact.Role
 	if fact.Kind == intake.ListenerWakeAgent {
 		kind, detail = pods.WakeAgentMessage, fact.Session
-		released, found, err = e.cfg.Pods.ReleasedClaimBySession(ctx, tx, fact.Session)
+		named, found, err = e.cfg.Pods.ClaimBySession(ctx, tx, fact.Session)
 	} else {
-		released, found, err = e.cfg.Pods.ReleasedClaimByToken(ctx, tx, fact.Role)
+		named, found, err = e.cfg.Pods.ClaimByToken(ctx, tx, fact.Role)
 	}
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	_, err = e.wakeReleased(ctx, tx, released, kind, detail, fact.At)
+	mark, err := e.cfg.Pods.MarkMessage(ctx, tx, named.Token, fact.At)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if notify := e.cfg.MessageMarked; notify != nil && !mark.IsZero() {
+		store.OnCommit(ctx, func() { notify(named.Token, mark) })
+	}
+	if named.Released() {
+		_, err = e.wakeReleased(ctx, tx, named, kind, detail, fact.At)
+	}
 	return intake.Result{}, err
 }
 
@@ -389,6 +428,14 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
+//
+// A backstop of an issue that waits for its admission slot fires and wakes no one
+// (Pods.WaitsForItsSlot). The issue gave its slot back to wait on another, or had its work come
+// back, and owes its worker a start that the outbox holds until the slot comes; the idle rule
+// releases its pod meanwhile. A wake would tell that worker to take up its phase while the
+// admission cap says the issue may not run, and its pod would go idle, be released and be woken
+// again, each idle period and backstop, for the whole wait. The slot's start brings the worker
+// back, with its task.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -400,6 +447,15 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, fact.Issue, fact.Role)
 	if err != nil || !found {
 		return intake.Result{}, err
+	}
+	waits, err := e.cfg.Pods.WaitsForItsSlot(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if waits {
+		e.logOnCommit(ctx, "wake: the backstop of an issue that waits for its admission slot wakes no one; the slot's start brings the role back",
+			"issue", fact.Issue, "role", fact.Role)
+		return intake.Result{}, nil
 	}
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())

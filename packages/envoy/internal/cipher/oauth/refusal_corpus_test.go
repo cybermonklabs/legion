@@ -63,8 +63,14 @@ var corpusRefusals = []corpusRefusal{
 	// another daemon holds, the second for a name bound to none.
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
+	// A trade for the approve capability's proxy placeholder that no person's sign-in made, or that a
+	// broker serving no approve capability was asked (grantApprove), and one that asks for the scope
+	// read (exchangeGrant).
+	{oauth2.ErrInvalidRequest, "Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it.", nil, "approve.go"},
+	{oauth2.ErrInvalidRequest, "A trade for the approve capability's proxy placeholder asks for the scope %s, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
-	// names, the launcher credential it may not ask for, and its cut.
+	// names, the launcher credential it may not ask for, its cut, and a job entry's read trade,
+	// refused since a job's token is minted whole.
 	{oauth2.ErrInvalidRequest, "A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read. Ask for it, or send no DPoP-Holder header.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.", nil, "exchange.go"},
@@ -76,6 +82,7 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names a time later than this trade, and a cut is a time that has passed.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The scope '%s' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read token refused a key a live launcher credential is bound to, as the store refuses it
 	// (oauthstore.Store.CreateAccessTokenSession): a trade that asked for read, and the read
 	// entry's trade that asked for no scope.
@@ -143,6 +150,8 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's %s claim is not a non-empty string", []any{exchange.ErrClaimMissing, "sub"}, policySource},
 	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 

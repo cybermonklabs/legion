@@ -70,6 +70,11 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.markdownRoundTrip("# A heading\n"),
   },
   {
+    method: "fileRoundTrip",
+    route: "POST /api/v1/markdown/file-round-trip",
+    call: (client) => client.fileRoundTrip(new TextEncoder().encode("# A heading\n")),
+  },
+  {
     method: "related",
     route: "POST /api/v1/projects/{key}/related",
     call: (client) => client.related("ACME", { title: "A title" }),
@@ -473,6 +478,7 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
     expect(stores.map(([method]) => method).sort()).toEqual([
       "dryRunResult",
+      "fileRoundTrip",
       "markdownRoundTrip",
       "related",
     ]);

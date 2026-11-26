@@ -981,10 +981,8 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, tc.pr)
-			// The reviewer's row as its approval left it: entered, with no completion of its own,
-			// under a claim the daemon started on the issue (record.Store.RoleRun), which
-			// leftItsPhase asks for.
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1})
+			// The approval left a started review with no completion of its own.
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1, EntryTask: "review this change"})
 			seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			landsMergeForward(t, pool)

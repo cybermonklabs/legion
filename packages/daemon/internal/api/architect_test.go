@@ -77,9 +77,13 @@ type statusWrite struct {
 }
 
 type statusRecorder struct {
-	noArtifacts
 	err    error
 	writes []statusWrite
+	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
+	// project>`: a message, a document upload, a role-holder publication, and a write of the
+	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
+	// keeps none of them.
+	taken []string
 	// documents maps each Dispatch document id this fake knows to the issue carrying it.
 	documents map[string]string
 	// approved maps a document id to the version Dispatch shows approved, its latest; absent means
@@ -89,6 +93,17 @@ type statusRecorder struct {
 	// approved.
 	approvals map[string]dispatch.Approval
 	issues    map[string]dispatch.Issue
+	// artifacts maps an issue key to the documents and files Dispatch lists for it; reviews maps a
+	// document id to its reviews, newest first, as Dispatch lists them, so a case can give a
+	// document a session's approval or Dispatch's own; and versions maps a document id to the
+	// markdown of each of its versions, by number. An issue or a document a case leaves out has
+	// none, and a version it gives no text is Dispatch's 404. None of these reads is logged in reads.
+	artifacts map[string][]dispatch.Artifact
+	reviews   map[string][]dispatch.Review
+	versions  map[string]map[int]string
+	// artifactFails names the issues whose artifacts read fails with the error given, as Dispatch's
+	// trouble.
+	artifactFails map[string]error
 	// handoffs is each Dispatch handoff record this fake knows, by id; handoffErr, when set, is
 	// every handoff read's answer instead, Dispatch's trouble.
 	handoffs   map[string]dispatch.Handoff
@@ -211,6 +226,7 @@ func (r *statusRecorder) ReleaseClaim(_ context.Context, key string) error {
 
 func (r *statusRecorder) PostMessage(_ context.Context, key, _ string) error {
 	r.asked("POST /api/v1/issues/%s/messages", key)
+	r.taken = append(r.taken, "PostMessage "+key)
 	return nil
 }
 func (r *statusRecorder) MessageBodiesSince(_ context.Context, key string, _ time.Time) ([]string, error) {
@@ -220,21 +236,6 @@ func (r *statusRecorder) MessageBodiesSince(_ context.Context, key string, _ tim
 func (r *statusRecorder) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
 	r.asked("GET /api/v1/issues/%s/events?after=%d", key, after)
 	return nil, nil
-}
-
-// ArtifactSlugs, UploadArtifact and PutRoleHolders answer as noArtifacts does, logging the
-// request.
-func (r *statusRecorder) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
-	r.asked("GET /api/v1/issues/%s/artifacts", key)
-	return noArtifacts{}.ArtifactSlugs(ctx, key)
-}
-func (r *statusRecorder) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
-	r.asked("POST /api/v1/issues/%s/artifacts %s", key, name)
-	return noArtifacts{}.UploadArtifact(ctx, key, name, content)
-}
-func (r *statusRecorder) PutRoleHolders(ctx context.Context, key string, holders []dispatch.RoleHolder) error {
-	r.asked("PUT /api/v1/issues/%s/role-holders", key)
-	return noArtifacts{}.PutRoleHolders(ctx, key, holders)
 }
 
 // Approval answers Dispatch's document read. A document this fake knows that the case under test
@@ -262,6 +263,42 @@ func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatc
 	return primary(dispatch.Approval{State: "none", LatestVersion: 1}), nil
 }
 
+// Ask answers Dispatch's 404 for every ask: no route of the API reads an ask by its id.
+func (r *statusRecorder) Ask(context.Context, string) (dispatch.Ask, error) {
+	return dispatch.Ask{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "ask not found"}
+}
+
+// Artifacts answers Dispatch's list of an issue's documents and files: those the case under test
+// gave the issue.
+func (r *statusRecorder) Artifacts(_ context.Context, key string) ([]dispatch.Artifact, error) {
+	if err, fails := r.artifactFails[key]; fails {
+		return nil, err
+	}
+	return r.artifacts[key], nil
+}
+
+// Reviews answers a document's review list, newest first: those the case under test gave the
+// document. A document this fake does not know is Dispatch's 404, as its approval read is.
+func (r *statusRecorder) Reviews(_ context.Context, artifactID string) ([]dispatch.Review, error) {
+	if _, ok := r.documents[artifactID]; !ok {
+		return nil, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+	}
+	return r.reviews[artifactID], nil
+}
+
+// DocumentVersion answers the markdown the case under test gave the document's version, and
+// Dispatch's 404 for a document this fake does not know or a version it holds no text for.
+func (r *statusRecorder) DocumentVersion(_ context.Context, artifactID string, version int) (string, error) {
+	if _, ok := r.documents[artifactID]; !ok {
+		return "", &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+	}
+	markdown, ok := r.versions[artifactID][version]
+	if !ok {
+		return "", &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+	}
+	return markdown, nil
+}
+
 func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff, error) {
 	r.asked("GET /api/v1/handoffs/%s", id)
 	if r.handoffErr != nil {
@@ -287,40 +324,50 @@ func (r *statusRecorder) ApprovedVersionBefore(context.Context, string, int) (in
 
 func (r *statusRecorder) PutGatedSteps(_ context.Context, project string, _ []string) error {
 	r.asked("PUT /api/v1/projects/%s/gated-steps", project)
+	r.taken = append(r.taken, "PutGatedSteps "+project)
 	return nil
 }
 
 func (r *statusRecorder) PutStep(_ context.Context, key, id string, _ dispatch.StepWrite) error {
 	r.asked("PUT /api/v1/issues/%s/steps/%s", key, id)
+	r.taken = append(r.taken, "PutStep "+key)
 	return nil
 }
 func (r *statusRecorder) PutStepRating(_ context.Context, key, id string, _ dispatch.StepWrite, _ dispatch.PlanRating) error {
 	r.asked("PUT /api/v1/issues/%s/steps/%s/rating", key, id)
+	r.taken = append(r.taken, "PutStepRating "+key)
 	return nil
 }
-func (r *statusRecorder) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+func (r *statusRecorder) PutStepExperiment(_ context.Context, key, _ string, _ dispatch.StepWrite, _ dispatch.StepExperiment) error {
+	r.taken = append(r.taken, "PutStepExperiment "+key)
 	return nil
 }
 func (r *statusRecorder) PutPlan(_ context.Context, key, id string, _ dispatch.PlanWrite) error {
 	r.asked("PUT /api/v1/issues/%s/plans/%s", key, id)
+	r.taken = append(r.taken, "PutPlan "+key)
 	return nil
 }
 func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispatch.DesignGateDocument) error {
 	r.asked("PUT /api/v1/issues/%s/design-gates", key)
+	r.taken = append(r.taken, "PutDesignGates "+key)
 	return nil
 }
 
-// noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under. It also
-// takes every role-holder publication and keeps none. No route of this package reads or writes a
-// document of an issue's, and none publishes a role holder.
-type noArtifacts struct{}
-
-func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
-func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
+// UploadArtifact answers an upload with the slug Dispatch files the name under, and keeps no
+// document. No route of this package writes a document of an issue's.
+func (r *statusRecorder) UploadArtifact(_ context.Context, key, name, _ string) (string, error) {
+	r.asked("POST /api/v1/issues/%s/artifacts %s", key, name)
+	r.taken = append(r.taken, "UploadArtifact "+key)
 	return name, nil
 }
-func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
+
+// PutRoleHolders takes a role-holder publication and keeps none. No route of this package
+// publishes a role holder.
+func (r *statusRecorder) PutRoleHolders(_ context.Context, key string, _ []dispatch.RoleHolder) error {
+	r.asked("PUT /api/v1/issues/%s/role-holders", key)
+	r.taken = append(r.taken, "PutRoleHolders "+key)
+	return nil
+}
 
 var _ dispatch.Client = (*statusRecorder)(nil)
 

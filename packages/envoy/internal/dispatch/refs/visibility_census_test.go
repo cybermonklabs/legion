@@ -165,8 +165,10 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
+		"to decide which keep their changed version across another renderer version's spelling",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
 	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
 		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
@@ -193,6 +195,7 @@ var readsWithoutAViewer = map[string]string{
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -208,6 +211,7 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StillOwed":          serverWork + " - a drain's read phase checks the queue row it listed is still owed under the source's owner lock",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -324,7 +328,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	for _, kind := range nodeKinds {
 		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, "")
 			return err
 		})
 		record("Node", "Node of kind "+kind, func() error {
@@ -349,7 +353,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		})
 	}
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
-		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", "")
 		return err
 	})
 	// A message's blocks record no revisions, so no block of one is ever removed and
@@ -369,7 +373,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1", "")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -403,7 +407,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, "")
 			return err
 		})
 	}
@@ -473,7 +477,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "")
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

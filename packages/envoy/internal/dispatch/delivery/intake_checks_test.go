@@ -117,7 +117,7 @@ func TestASettlementMarksTheIssueOfItsOpenHeadAndNothingElse(t *testing.T) {
 	issue := seedHeadIssue(t, ctx, pool, 9202)
 	storeHead(t, pool, 9202, "6666666666666666666666666666666666666666", "open", issue)
 	storeHead(t, pool, 9203, "7777777777777777777777777777777777777777", "open", "")
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
@@ -168,7 +168,7 @@ func TestASettlementMarksTheIssueOfItsOpenHeadAndNothingElse(t *testing.T) {
 // function is put back, and the envelope's second delivery, ownHandBackAfter later, writes the one
 // mark and is acknowledged.
 func TestASettlementWhoseMarkCouldNotBeWrittenIsHandedBack(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	issue := seedHeadIssue(t, ctx, pool, 9201)
@@ -211,7 +211,7 @@ func TestASettlementWhoseMarkCouldNotBeWrittenIsHandedBack(t *testing.T) {
 // durable is not created, the failure is logged at each attempt, and once the mark can be written
 // the next attempt marks and binds.
 func TestATakeOverMarksEveryIssueWithAnOpenHeadBeforeItBinds(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	open, closed := seedHeadIssue(t, ctx, pool, 9204), seedHeadIssue(t, ctx, pool, 9205)

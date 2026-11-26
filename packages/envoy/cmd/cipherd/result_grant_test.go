@@ -50,7 +50,7 @@ func resultsExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidct
 
 // askedForThePlaceholder is form asking for the airlock placeholder.
 func askedForThePlaceholder(form url.Values) url.Values {
-	return with(form, "requested_token_type", oauthwire.TokenTypeAirlockPlaceholder)
+	return with(form, "requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 }
 
 // postTokenAt posts form to the broker at addr's token endpoint with a DPoP proof of a fresh key
@@ -94,7 +94,7 @@ func TestAPlaceholderExchangeNeedsNoRouteToTheBrokersOwnPublicURL(t *testing.T) 
 	broker.AwaitRecord(t, "token exchange", map[string]any{"state": "on", "github": true, "result_workflows": 1})
 	status, body := postTokenAt(t, broker.Addr, publicURL, askedForThePlaceholder(runForm(mintRunToken(t, github, githubKey, resultsWorkflow, resultsBranch, "7"), "")))
 	held, _ := body["access_token"].(string)
-	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.MintedPrefix(oauthwire.AirlockResultsWord)) || body["issued_token_type"] != oauthwire.TokenTypeAirlockPlaceholder {
+	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.MintedPrefix(oauthwire.AirlockResultsWord)) || body["issued_token_type"] != oauthwire.TokenTypeProxyPlaceholder {
 		t.Fatalf("the placeholder exchange with BROKER_PUBLIC_URL=%s = %d %v, want 200 with a result placeholder", publicURL, status, body)
 	}
 }

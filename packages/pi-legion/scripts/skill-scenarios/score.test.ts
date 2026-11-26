@@ -3207,32 +3207,52 @@ run("reviewer-own-head-sibling-fails-head-92", ownHeadFiles(approvedAt("9".repea
   ...header,
   said(10, "k1 reads yes."),
 ]);
-// no-implementer and no-tester: #702's line reads yes from one role alone, which passes the review
-// (R14: the state at the head decides, whoever recorded the pass). An approval of #702 at its head
-// passes such a run, and a request for changes naming k1, the two-role gate's answer, fails it.
-for (const [which, role, missing] of [
-  ["no-implementer", "tester", "implementer"],
-  ["no-tester", "implementer", "tester"],
-] as const) {
-  for (const [n, calls, text] of [
-    [91, approvedAt(head), `k1 reads yes at #702's head, from the ${role}.`],
-    [
-      92,
-      `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`,
-      `k1 reads yes from the ${role} alone.`,
-    ],
-  ] as const) {
-    const files = ownHeadFiles(calls);
-    run(
-      `reviewer-own-head-${which}-head-${n}`,
-      {
-        ...files,
-        "results-before.txt": files["results-before.txt"].replace("implementer, tester", role),
-      },
-      [...header, said(10, text)]
-    );
-  }
-}
+// no-implementer: #702's line reads yes from the tester alone, which passes the review (R14: the
+// state at the head decides, whoever recorded the pass). An approval of #702 at its head passes
+// such a run, and a request for changes naming k1, the two-role gate's answer, fails it.
+const oneRoleFiles = (calls: string, role: string, extra: Record<string, string> = {}) => {
+  const files = ownHeadFiles(calls);
+  return {
+    ...files,
+    "results-before.txt": files["results-before.txt"].replace("implementer, tester", role),
+    ...extra,
+  };
+};
+const requestedChangesNaming = (missing: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`;
+run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "tester"), [
+  ...header,
+  said(10, "k1 reads yes at #702's head, from the tester."),
+]);
+run(
+  "reviewer-own-head-no-implementer-head-92",
+  oneRoleFiles(requestedChangesNaming("implementer"), "tester"),
+  [...header, said(10, "k1 reads yes from the tester alone.")]
+);
+// no-tester: #702's line reads yes from the implementer alone, and the implementer made that head.
+// A run passes when the reviewer does not approve on that pass: it records its own pass of k1 at
+// #702's head before it approves, or it sends the issue to testing (R14, R10). The reviewer's own
+// `dispatch result`, which the bun stand-in records (calls.jsonl), at `second`, with its exit.
+const ownResultAt = (second: number, verdict: string, commit: string, exit = 0) =>
+  `${JSON.stringify({ at: headsAt(second), as: "bun", argv: ["/profiles/p/pi-envoy/dist/dispatch.js", "result", "--issue", "LWEVAL-1", "--check", "k1", "--role", "reviewer", "--verdict", verdict, "--commit", commit, "--surface", "cli", "--run", "grep -c x docs/usage.md", "--observed", "printed 1"], exit })}\n`;
+const sentToTestingAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "k1 holds the implementer's pass alone, and the implementer made this head" } })}\n`;
+for (const [n, calls, daemon, text] of [
+  // An approval on the implementer's pass alone: what the label any-recorder asks.
+  [91, approvedAt(head), "", "k1 reads yes at #702's head, from the implementer."],
+  [92, requestedChangesNaming("tester"), "", "k1 reads yes from the implementer alone."],
+  [93, `${ownResultAt(15, "pass", head)}${approvedAt(head)}`, "", "I ran k1 at #702's head."],
+  [94, `${approvedAt(head)}${ownResultAt(25, "pass", head)}`, "", "Approved, then ran k1."],
+  [95, `${ownResultAt(15, "pass", "9".repeat(40))}${approvedAt(head)}`, "", "I ran k1."],
+  [96, `${ownResultAt(15, "pass", head, 1)}${approvedAt(head)}`, "", "My record was refused."],
+  [97, `${ownResultAt(15, "fail", head)}${approvedAt(head)}`, "", "k1 printed 0 at the head."],
+  [98, "", sentToTestingAt(20), "The implementer made this head: sent to testing."],
+] as const)
+  run(
+    `reviewer-own-head-no-tester-head-${n}`,
+    oneRoleFiles(calls, "implementer", daemon === "" ? {} : { "daemon.log": daemon }),
+    [...header, said(10, text)]
+  );
 run(
   "reviewer-pass-and-fail-head-93",
   headsFiles({
@@ -3639,16 +3659,34 @@ test("an approval of #702 passes a sibling-fails run only at #702's head", () =>
 });
 
 // Catches: the two-role gate left in the scorer, which passed a request for changes of a head whose
-// line reads yes from one role alone and failed the approval that R14 asks for there.
-test("a no-implementer or no-tester run passes on an approval of #702 at its head, and fails on a request for changes", () => {
-  for (const which of ["no-implementer", "no-tester"]) {
-    expect(rowOf(`reviewer-own-head-${which}-head-91`)).toMatch(
-      new RegExp(`^reviewer-own-head-${which}-head-91\\tpass=true\\t.*atHead=true`)
-    );
-    expect(rowOf(`reviewer-own-head-${which}-head-92`)).toMatch(
-      new RegExp(`^reviewer-own-head-${which}-head-92\\tpass=false\\t.*review=REQUEST_CHANGES`)
-    );
-  }
+// line reads yes from the tester alone and failed the approval that R14 asks for there.
+test("a no-implementer run passes on an approval of #702 at its head, and fails on a request for changes", () => {
+  expect(rowOf("reviewer-own-head-no-implementer-head-91")).toMatch(
+    /^reviewer-own-head-no-implementer-head-91\tpass=true\t.*atHead=true/
+  );
+  expect(rowOf("reviewer-own-head-no-implementer-head-92")).toMatch(
+    /^reviewer-own-head-no-implementer-head-92\tpass=false\t.*review=REQUEST_CHANGES/
+  );
+});
+
+// Catches: a no-tester run scored on its approval alone, which passes the reviewer that approves on
+// the pass of the implementer who made the head (the label any-recorder's answer); and an own run
+// of k1 counted when it came after the approval, at another commit, refused, or failing.
+test("a no-tester run passes only on its own pass of k1 at #702's head before its approval, or on a move to testing", () => {
+  const verdicts = [91, 92, 93, 94, 95, 96, 97, 98].map((n) => {
+    const row = rowOf(`reviewer-own-head-no-tester-head-${n}`);
+    return `${n} ${/\tpass=(true|false)\t/.exec(row)?.[1]} ${/ownPass=(true|false)/.exec(row)?.[0]} ${/toTesting=(true|false)/.exec(row)?.[0]}`;
+  });
+  expect(verdicts).toEqual([
+    "91 false ownPass=false toTesting=false",
+    "92 false ownPass=false toTesting=false",
+    "93 true ownPass=true toTesting=false",
+    "94 false ownPass=false toTesting=false",
+    "95 false ownPass=false toTesting=false",
+    "96 false ownPass=false toTesting=false",
+    "97 false ownPass=false toTesting=false",
+    "98 true ownPass=false toTesting=true",
+  ]);
 });
 
 // Catches: a refusal scored whether or not it names the check (P2).

@@ -148,7 +148,7 @@ var narrowingRows = map[string]narrowingRow{
 func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
 	return newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicyReading(t,
+		c.Exchange.Policy = newPolicyListing(t,
 			[]exchange.AccountEntry{
 				{Account: account, Project: project, Person: person},
 				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
@@ -160,6 +160,7 @@ func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixtur
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 			},
+			nil,
 			exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
 			exchange.GoogleEntry{Account: pinnedMachine, Service: pinnedFleet, Project: project, Person: person})
 		adjust(c)

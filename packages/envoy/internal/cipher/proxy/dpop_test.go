@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/dpop_test.go
 //
-// The rows of a host whose rules entry is of kind dpop: a capability the broker mints and holds
+// The rows of a host bound by a dpop block: a capability the broker mints and holds
 // (requests.MintedKind). The command holds the minted grant's placeholder alone and sends it as
 // its one Authorization header, DPoP <placeholder>; the proxy swaps in the grant's token, signs a
 // DPoP proof of the pod's own key for the bound host's origin, and sends the request without the
@@ -34,7 +34,7 @@ import (
 )
 
 // The one minted grant the dpop rows are served by: its grant id and session, the token the
-// broker minted for it, and a path its entry allows.
+// broker minted for it, and a path its block allows.
 const (
 	mintedName    = "TEST_MINTED_TOKEN"
 	mintedGrantID = "testkind:00000000-0000-4000-8000-000000000001"
@@ -49,15 +49,21 @@ const (
 // mintedPlaceholder is a minted grant's placeholder in the shape the broker mints them.
 var mintedPlaceholder = placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789ab"
 
-// dpopRules is the rules file of a broker whose airlock holds TEST_MINTED_TOKEN: kind dpop,
-// bound to the rig's host, carried in Authorization alone, allowing POST under the projects
-// route.
+// dpopRules is the airlock's rules of a broker whose profiles file holds a dpop block for
+// TEST_MINTED_TOKEN, which the policy reads as an inline binding of that name (way dpop): bound to
+// the rig's host, carried in Authorization alone, allowing POST under the projects route.
 func dpopRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name: mintedName, Hosts: []string{boundHost}, Headers: []string{"Authorization"},
+	return proxyrules.Rules{Names: []proxyrules.Binding{dpopBinding(mintedName, boundHost)}}
+}
+
+// dpopBinding is the inline binding a dpop block for name on host is read as (policy's
+// ProxyBlock.binding): its rule is the block's own, never a kind of the file's.
+func dpopBinding(name, host string) proxyrules.Binding {
+	return proxyrules.Binding{Name: name, Way: proxyrules.WayDPoP, Inline: &proxyrules.Kind{
+		Hosts: []string{host}, Headers: []string{"Authorization"},
 		Allow: []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/api/v1/projects/"}},
-		Kind:  proxyrules.KindDPoP,
-	}}}
+		Ways:  []string{proxyrules.WayDPoP},
+	}}
 }
 
 // mintedConnection is what the broker answers for a minted grant's placeholder: the grant, its
@@ -77,7 +83,7 @@ func newDPoPRig(t *testing.T) (*rig, *ecdsa.PrivateKey) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key})
+	r := newRuledRig(t, dpopRules(), Options{DPoPKey: key})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	return r, key
@@ -180,8 +186,8 @@ var commandForwardingHeaders = []string{
 
 // TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders: an allowed write carrying the six
 // forwarding headers reaches the service with none of them, so the service reads the broker's
-// address and not one the command wrote; the same headers sent to a host whose entry has no kind
-// reach it as they were sent.
+// address and not one the command wrote; the same headers sent to a host a stored value is
+// swapped into reach it as they were sent.
 func TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	answer, body := r.postMinted(append([]string{"Authorization", "DPoP " + mintedPlaceholder}, commandForwardingHeaders...)...)
@@ -198,11 +204,11 @@ func TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders(t *testing.T) {
 	plain := newRig(t, Options{})
 	answer, body = plain.get(plain.client(workerPlaceholder), "https://"+boundHost+"/v1/x", append([]string{"Authorization", "Bearer " + workerPlaceholder}, commandForwardingHeaders...)...)
 	if answer.StatusCode != http.StatusOK || len(plain.requests()) != 1 {
-		t.Fatalf("the plain entry's request = %d %s, want 200 and one request received", answer.StatusCode, body)
+		t.Fatalf("the swapped name's request = %d %s, want 200 and one request received", answer.StatusCode, body)
 	}
 	for i := 0; i < len(commandForwardingHeaders); i += 2 {
 		if got := plain.requests()[0].Header.Get(commandForwardingHeaders[i]); got != commandForwardingHeaders[i+1] {
-			t.Errorf("the plain entry's service received %s %q, want %q as the command sent it", commandForwardingHeaders[i], got, commandForwardingHeaders[i+1])
+			t.Errorf("the swapped name's service received %s %q, want %q as the command sent it", commandForwardingHeaders[i], got, commandForwardingHeaders[i+1])
 		}
 	}
 }
@@ -246,7 +252,7 @@ func TestACommandsOwnDPoPProofNeverReachesDispatch(t *testing.T) {
 }
 
 // TestNoKindLeavesADPoPHostItsKind: under Options.NoKind, the negative control that reads every
-// other entry's kind as none, a dpop host keeps its kind: the allowed write still arrives with one
+// other binding's way as a swap, a dpop host keeps its way: the allowed write still arrives with one
 // DPoP proof of the pod's key and none of the command's forwarding headers, and a write without
 // the placeholder is still refused 403 NO_PLACEHOLDER with nothing sent.
 func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
@@ -254,7 +260,7 @@ func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, NoKind: true})
+	r := newRuledRig(t, dpopRules(), Options{DPoPKey: key, NoKind: true})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	answer, body := r.postMinted()
@@ -276,13 +282,126 @@ func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
 // write to a dpop host is refused 403 NO_VALUE_RELEASED, saying nothing was sent, and the service
 // receives nothing.
 func TestAProxyWithNoDPoPKeySendsNothingToADPoPHost(t *testing.T) {
-	r := newRig(t, Options{Rules: dpopRules()})
+	r := newRuledRig(t, dpopRules(), Options{})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
 	refusedAs(t, "a write through a proxy with no DPoP key", answer, body, codeNoValue)
 	if seen := r.requests(); len(seen) != 0 {
 		t.Fatalf("the service received %d requests, want none", len(seen))
+	}
+}
+
+// TestARequestItsEntryRefusesMintsNoToken: a minted grant's token is minted when the proxy reads
+// the grant's values (requests.Machine's mintedValues, on the first allowed call of the grant on
+// this pod), so a request carrying the placeholder that the entry's rules refuse is refused 403
+// REQUEST_NOT_ALLOWED, saying nothing was sent, before that read: the values are never read, so
+// no token is minted, and the service receives nothing. The rows are a refusal of the allow list -
+// a write under a route it does not name, a GET of the allowed route - and three of the other rules
+// that a command's own request decides: a Host header naming another host, a dot segment back out
+// of the allowed route, and a method override header. That every rule of the decision but the
+// value's is read before the values are is proxyrules.Admit's, which
+// TestAdmitIsTheDecisionBeforeTheValue holds to the whole decision. The allowed write after them
+// reads the values once, so the count is one that can see a read.
+func TestARequestItsEntryRefusesMintsNoToken(t *testing.T) {
+	r, _ := newDPoPRig(t)
+	client := r.client(mintedPlaceholder)
+	for _, c := range []struct {
+		name, method, path string
+		headers            []string
+	}{
+		{"a write under a route the allow list does not name", http.MethodPost, "/api/v1/issues/ACME-1/comments", nil},
+		{"a GET of the allowed route", http.MethodGet, mintedPath, nil},
+		{"a write whose Host header names another host", http.MethodPost, mintedPath, []string{"Host", "other.example.com"}},
+		{"a write whose path holds a dot segment", http.MethodPost, "/api/v1/projects/../issues/ACME-1/comments", nil},
+		{"a write carrying a method override header", http.MethodPost, mintedPath, []string{"X-HTTP-Method-Override", http.MethodDelete}},
+	} {
+		headers := append([]string{"Authorization", "DPoP " + mintedPlaceholder}, c.headers...)
+		answer, body := r.do(client, c.method, "https://"+boundHost+c.path, `{"body":"a comment"}`, headers...)
+		refusedAs(t, c.name, answer, body, codeNotAllowed)
+	}
+	if reads := r.grants.valueReads(mintedGrantID); reads != 0 {
+		t.Fatalf("the grant's values were read %d times for the refused requests; want none, since that read mints the grant's token", reads)
+	}
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service received %d requests, want none", len(seen))
+	}
+	if answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder); answer.StatusCode != http.StatusOK {
+		t.Fatalf("the allowed write = %d %s, want 200", answer.StatusCode, body)
+	}
+	if reads := r.grants.valueReads(mintedGrantID); reads != 1 {
+		t.Fatalf("the grant's values were read %d times after the allowed write; want once", reads)
+	}
+}
+
+// TestAnEndedMintedGrantsValuesAreDropped: the proxy holds each grant's values it has read
+// (valuesFor), and a minted capability's grants come one per use - the approve capability's one
+// per review - so the values of a minted grant whose end has passed are dropped from what this pod
+// holds, by the first read of a new grant's values after that end. The values of a grant that has
+// not ended stay, and the drop reads nothing of the grant that ended.
+func TestAnEndedMintedGrantsValuesAreDropped(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
+	r := newRuledRig(t, dpopRules(), Options{DPoPKey: key, Now: clock.read})
+	// Three grants of the one minted name, each with a placeholder and an end of its own: the
+	// first ends a quarter of an hour in, the other two an hour after it.
+	type mintedGrant struct {
+		id, placeholder string
+		ends            time.Time
+	}
+	grants := []mintedGrant{
+		{"testkind:00000000-0000-4000-8000-000000000011", placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
+		{"testkind:00000000-0000-4000-8000-000000000012", placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
+		{"testkind:00000000-0000-4000-8000-000000000013", placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789gh", clock.read().Add(time.Hour)},
+	}
+	for _, g := range grants {
+		connection := mintedConnection()
+		connection.GrantID, connection.Expires = g.id, &g.ends
+		connection.Names = map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
+		r.grants.setConnection(g.placeholder, connection)
+		r.grants.setValues(g.id, storedValues(mintedName, mintedToken))
+	}
+	write := func(g mintedGrant) {
+		t.Helper()
+		answer, body := r.do(r.client(g.placeholder), http.MethodPost, "https://"+boundHost+mintedPath, `{"verdict":"pass"}`, "Authorization", "DPoP "+g.placeholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the write of grant %s = %d %s, want 200", g.id, answer.StatusCode, body)
+		}
+	}
+	holds := func(g mintedGrant) bool {
+		r.proxy.valuesMu.Lock()
+		defer r.proxy.valuesMu.Unlock()
+		_, held := r.proxy.values[g.id]
+		return held
+	}
+	first, second, third := grants[0], grants[1], grants[2]
+
+	write(first)
+	if !holds(first) {
+		t.Fatalf("the pod holds no values of grant %s after its write; the row cannot see a drop", first.id)
+	}
+	// Before the first grant's end, a new grant's read leaves the first grant's values held.
+	clock.set(first.ends.Add(-time.Minute))
+	write(second)
+	if !holds(first) || !holds(second) {
+		t.Fatalf("held: first %v, second %v; want both, since neither grant has ended", holds(first), holds(second))
+	}
+	// At its end the broker answers the first grant's placeholder as no live grant, and the next
+	// new grant's read drops the first grant's values and keeps the live ones.
+	clock.set(first.ends)
+	r.grants.refuseConnection(first.placeholder, requests.ErrGrantNotLive)
+	write(third)
+	if holds(first) {
+		t.Errorf("the pod still holds the values of grant %s, which ended at %s, with the clock at %s", first.id, first.ends, clock.read())
+	}
+	if !holds(second) || !holds(third) {
+		t.Errorf("held: second %v, third %v; want both, since neither grant has ended", holds(second), holds(third))
+	}
+	if reads := r.grants.valueReads(first.id); reads != 1 {
+		t.Errorf("the values of grant %s were read %d times; want once, for its write", first.id, reads)
 	}
 }
 
@@ -351,7 +470,7 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, Watch: watchFast})
+		r := newRuledRig(t, dpopRules(), Options{DPoPKey: key, Watch: watchFast})
 		r.grants.setConnection(mintedPlaceholder, mintedConnection())
 		r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 		r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ proxyrulestest.Request) bool {
@@ -417,7 +536,7 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 
 // TestAMintedGrantReachesNoHostItsGrantDoesNotBind: a minted capability's grant carries its
 // requests to the one host its grant binds, so its placeholder as the proxy password opens no
-// tunnel and no plain-HTTP forward anywhere else: a CONNECT to a host no entry binds, a CONNECT to
+// tunnel and no plain-HTTP forward anywhere else: a CONNECT to a host no binding binds, a CONNECT to
 // the bound host on another port, and a plain-HTTP request to an unbound host are each refused 403
 // MINTED_GRANT_HOST_ONLY, naming the rule, before any dial. A secret grant's CONNECT to the same
 // unbound host still opens its tunnel, the airlock's rule for every other grant.

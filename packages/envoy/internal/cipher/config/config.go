@@ -284,23 +284,24 @@ type Config struct {
 	// with automatic replication takes a global key). A secret under the prefix encrypted with any
 	// other key, the provider's default one included, is refused.
 	SecretsKMSKey string
-	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, which names each
-	// profile a caller asks for: its source secret, its scope and, in its proxy block, which hosts
-	// its credential may reach and in which headers. The broker reads it once at start, so a
-	// change to it rolls the pods; it refuses to start on a file it cannot read, cannot parse, or
-	// whose profiles it refuses, naming the file, the profile and the field. A profile with a
-	// proxy block is never released as a value: a session is given a placeholder, and the broker
-	// swaps the real value into the headers the block allows. Empty (the default) is a deployment
-	// with no profiles and no proxy, where every granted secret is released as its value.
+	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, whose kinds say which
+	// hosts a credential of each kind may reach and in which headers, and which names each
+	// profile a caller asks for: its source secret and its scope. The broker reads it once at
+	// start, so a change to it rolls the pods; it refuses to start on a file it cannot read,
+	// cannot parse, or whose kinds or profiles it refuses, naming the file, the kind or profile
+	// and the field. A secret whose proxy tag names a kind of the file is never released as a
+	// value: a session is given a placeholder, and the broker swaps the real value into the
+	// headers the kind names. Empty (the default) is a deployment with no kinds, no profiles and
+	// no proxy, where every granted secret is released as its value.
 	ProfilesFile string
 	// BROKER_AIRLOCK_LISTEN_ADDR: the address the airlock's proxy port binds, default
 	// 127.0.0.1:13381. It is a second port of the same process, so it is bound and drained with
-	// the API's. Bound only when a profile of BROKER_PROFILES_FILE has a proxy block; a deployment
-	// with none, or with no profiles file, binds no proxy port.
+	// the API's. Bound only when BROKER_PROFILES_FILE declares a kind or holds a dpop block; a
+	// deployment with neither, or with no profiles file, binds no proxy port.
 	AirlockListenAddr string
 	// BROKER_AIRLOCK_PROXY_URL: the URL a command reaches the airlock's proxy port at, which
 	// every release of a name behind the airlock carries, so the command points its HTTPS_PROXY
-	// at it. Required when a profile of BROKER_PROFILES_FILE has a proxy block. With
+	// at it. Required when BROKER_PROFILES_FILE declares a kind or holds a dpop block. With
 	// BROKER_PROFILES_FILE set, a value given is refused at start unless it is an absolute http or
 	// https URL with a host: a value with no scheme or no host would boot and then fail every
 	// airlock run one command at a time. It is a setting of its own rather than BROKER_PUBLIC_URL
@@ -308,17 +309,18 @@ type Config struct {
 	// broker binds.
 	AirlockProxyURL string
 	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificate of the airlock proxy's certificate
-	// authority, the one every release hands the command to trust. Required when a profile of
-	// BROKER_PROFILES_FILE has a proxy block, and then read once at start as half of that
-	// authority, with BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses the start.
-	// A deployment with no proxy block reads neither file. What a release carries is the
+	// authority, the one every release hands the command to trust. Required when
+	// BROKER_PROFILES_FILE declares a kind or holds a dpop block, and then read once at start as
+	// half of that authority, with BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses
+	// the start. A deployment with no kind and no dpop block reads neither file. What a release
+	// carries is the
 	// authority's own certificate rather than this file's bytes, so a file that holds more than
 	// the certificate hands a command nothing more. Both broker pods mount the same file from one
 	// Kubernetes Secret, so a command's trust does not depend on which pod released its values.
 	AirlockCACertFile string
 	// BROKER_AIRLOCK_CA_KEY_FILE: the PEM private key of BROKER_AIRLOCK_CA_CERT_FILE's
 	// certificate authority, which the proxy port signs each host's certificate with. Required
-	// when a profile of BROKER_PROFILES_FILE has a proxy block, and mounted from the same
+	// when BROKER_PROFILES_FILE declares a kind or holds a dpop block, and mounted from the same
 	// Kubernetes Secret, which no container but the broker's mounts: it is the key that lets its
 	// holder be any host a command trusts.
 	AirlockCAKeyFile string
@@ -335,8 +337,8 @@ type Config struct {
 	// unicast, so without this a command under an airlock grant could tunnel to a ClusterIP of the
 	// cluster the broker runs in. Each prefix is read as its network (34.118.230.7/20 is
 	// 34.118.224.0/20); an empty element, a prefix that does not parse and an IPv4-mapped IPv6
-	// prefix refuse the start, naming the element's position. With a profile of
-	// BROKER_PROFILES_FILE that has a proxy block and KUBERNETES_SERVICE_HOST set to a non-empty
+	// prefix refuse the start, naming the element's position. With a BROKER_PROFILES_FILE that
+	// declares a kind or holds a dpop block and KUBERNETES_SERVICE_HOST set to a non-empty
 	// value, which Kubernetes sets in every container to the address of the cluster's kubernetes
 	// Service, it is required, and the start is refused unless KUBERNETES_SERVICE_HOST is an IP
 	// address inside one of the ranges, so a list that misses the cluster's Service range cannot
@@ -371,7 +373,7 @@ type Config struct {
 	// kubernetesServiceHost is KUBERNETES_SERVICE_HOST as Load read it, which Kubernetes sets in
 	// every container to the address of the cluster's kubernetes Service. It is no setting of the
 	// broker's, so the configuration reference leaves it out. RequireAirlock reads it once the boot
-	// knows whether any profile has a proxy block (requireClusterRanges).
+	// knows whether the profiles file declares a kind or holds a dpop block (requireClusterRanges).
 	kubernetesServiceHost string
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
@@ -384,6 +386,17 @@ type Config struct {
 	// at a stand-in Google. For the broker's local stack alone: a production start, which is
 	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestGoogleTokenURL string
+	// BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL: the token exchange an anthropic-federation secret
+	// is minted at, in place of https://api.anthropic.com/v1/oauth/token, so a release of one
+	// mints at a stand-in Anthropic (cmd/dev-proxy-stands). For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestAnthropicTokenURL string
+	// BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL: the origin the anthropic-federation minter reads
+	// a bound account's Google identity token at (IAM Service Account Credentials'
+	// generateIdToken), in place of https://iamcredentials.googleapis.com, so a release of one
+	// presents an identity token a stand-in IAM minted. For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestIAMCredentialsURL string
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW: whitespace-separated <host>:<port> addresses the airlock
 	// proxy may dial although the address they resolve to is one it never dials - a loopback,
 	// cluster, link-local or private address. It is a list rather than a switch for loopback
@@ -727,13 +740,15 @@ type Config struct {
 	// person's pod would then choose the session names other pods exchange under. It refuses a
 	// mapped account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would
 	// mint the person's pod a token that names a service and no person. It refuses a mapped
-	// account that a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions
-	// in the name the caller gives. It refuses a mapped account that a BROKER_NATS_SERVICES entry
-	// names, because the NATS auth service would then answer a connection of the person's pod
-	// with a service's NATS grant. It refuses a mapped account that either side of a
-	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets the session names the token
-	// exchange binds for the account and for the other account cross. Unset, the setting maps no
-	// account.
+	// account that a BROKER_EXCHANGE_JOB_ACCOUNTS entry names, because the exchange would mint the
+	// person's pod a token that names the account as its service and no person. It refuses a
+	// mapped account that a BROKER_API_ACCOUNTS entry names, because that caller's routes relay
+	// decisions in the name the caller gives. It refuses a mapped account that a
+	// BROKER_NATS_SERVICES entry names, because the NATS auth service would then answer a
+	// connection of the person's pod with a service's NATS grant. It refuses a mapped account that
+	// either side of a BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets the session
+	// names the token exchange binds for the account and for the other account cross. Unset, the
+	// setting maps no account.
 	PodOperators map[string]string
 	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
 	// session names, whitespace-separated <account>=<account> entries, each account
@@ -749,8 +764,9 @@ type Config struct {
 	// account and keep the launcher's. A pair works both ways, so moving the pods back needs no
 	// change here. A pair does not chain: with A=B and B=C, C does not take a name A holds. A
 	// name the configuration fixes for a principal, the session an entry of
-	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
-	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An
+	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_JOB_ACCOUNTS,
+	// BROKER_EXCHANGE_WORKFLOWS, BROKER_EXCHANGE_JOB_WORKFLOWS, BROKER_VM_EXCHANGE_ACCOUNTS or
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS names, is never taken. An account may be in several pairs. An
 	// entry not of that form, a namespace's default account, an account paired with itself and a
 	// pair given twice, in either order, are refused, and so is an account BROKER_POD_OPERATORS
 	// maps to a person, on either side, since a person's account shares no session name with
@@ -786,7 +802,8 @@ type Config struct {
 	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
 	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
 	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
-	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS and BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
+	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
 	GoogleOIDCAudience string
 	// BROKER_VM_SERVICES: the VM services, whitespace-separated name=<service account email>
 	// entries, such as example-service=example-fleet@example-project.iam.gserviceaccount.com. A name
@@ -804,24 +821,43 @@ type Config struct {
 	// by account, each answering its service. Needs BROKER_GOOGLE_OIDC_AUDIENCE. Unset, no VM service
 	// is listed.
 	VMServicesByAccount map[string]string
-	// BROKER_VM_EXCHANGE_ACCOUNTS: the person and the Dispatch project each fleet writes for,
-	// whitespace-separated <service account email>=<project>=<person>[=<session>] entries, the
-	// grammar BROKER_EXCHANGE_ACCOUNTS uses for a pod, such as
+	// BROKER_VM_EXCHANGE_ACCOUNTS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS: what the token a machine of each
+	// fleet is minted writes for. BROKER_VM_EXCHANGE_ACCOUNTS names the person and the Dispatch
+	// project each fleet writes for, whitespace-separated
+	// <service account email>=<project>=<person>[=<session>] entries, the grammar
+	// BROKER_EXCHANGE_ACCOUNTS uses for a pod, such as
 	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
 	// exchange mints for a machine of that account may write that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone
-	// may carry one. Each account is named at most once and must be one BROKER_VM_SERVICES lists.
-	// An account BROKER_VM_SERVICES lists and this setting does not gets a token that names its
-	// service and no person at all, which a resource server holds to what a service may do. Needs
-	// BROKER_GOOGLE_OIDC_AUDIENCE. Unset, every listed account's machines get such a token. The
-	// person an entry names is also the one whose Dispatch Inbox lists a request one of that
-	// fleet's machines makes for a shared human-tier secret; it reaches no secret.
+	// may carry one. The person an entry names is also the one whose Dispatch Inbox lists a request
+	// one of that fleet's machines makes for a shared human-tier secret; it reaches no secret.
+	//
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS names a job's projects in place of a person,
+	// whitespace-separated <service account email>=<projects>[=<session>] entries, such as
+	// example-fleet@example-project.iam.gserviceaccount.com=public,PRIVA, the projects spelled as
+	// BROKER_EXCHANGE_JOB_ACCOUNTS spells them. A token the exchange mints for a machine of that
+	// account names the account's address as its service and no person, holds no OAuth scope, and
+	// carries the entry's projects whatever the request names, as a job account's token does; the
+	// launcher credential the exchange mints beside it still records the account's
+	// BROKER_VM_SERVICES service. Every machine of such an account then writes to Dispatch with no
+	// person signed in, under the session the entry fixes or, where it fixes none, the one the
+	// machine names, so list an account here only when every machine that runs as it is that job's.
+	// The session is everything after the second "=", so it alone may carry one.
+	//
+	// Refused at start, naming the setting and the entry: an entry of either setting not of its
+	// form or with a blank field, an account no VM service may name, as BROKER_VM_SERVICES refuses
+	// one, an account named twice, a job entry's projects of any other spelling, an account
+	// BROKER_VM_SERVICES does not list, and an account both settings name, since one account has
+	// one answer. An account BROKER_VM_SERVICES lists and neither setting names gets a token that
+	// names its service and no person at all, which a resource server holds to what a service may
+	// do. Both need BROKER_GOOGLE_OIDC_AUDIENCE. With both unset, every listed account's machines
+	// get such a token.
 	//
 	// The entries this answers are the whole of what the exchange decides a machine's token on:
 	// each one carries its account's service (BROKER_VM_SERVICES), the pins (BROKER_VM_PROJECTS
-	// and BROKER_VM_INSTANCES) and, where this setting names them, the person, the project and
-	// the session.
+	// and BROKER_VM_INSTANCES) and, where the two settings name them, the person and the project
+	// or the job's projects, and the session.
 	ExchangeGoogleAccounts []exchange.GoogleEntry
 	// BROKER_EXCHANGE_K8S_AUDIENCE: the audience a pod's projected service-account token must
 	// carry to be exchanged (RFC 8693) for a Dispatch access token. Its issuer is the one cluster
@@ -847,12 +883,18 @@ type Config struct {
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
 	// public-session account's, whose tokens act for that person and name no project. An entry
-	// may name neither a project nor a person (<service account>==): a job's own account, whose
+	// may name neither a project nor a person (<service account>==): an account whose
 	// tokens name no person and no project and act as the account itself, which Dispatch records
 	// their writes under. An entry naming a project and no person is refused: an entry that names
-	// a project names its person, so no token held to a project is personless. The session is
-	// everything after the third "=", so it alone may carry one. A namespace's default account is
-	// refused, as is an account listed twice. Needs BROKER_K8S_OIDC_ISSUER and
+	// a project names its person, so no account entry's token held to a project is personless. An
+	// entry whose fixed session is legion-daemon:<its own project> is a Legion daemon's own: the
+	// token minted for its pods holds the OAuth scope legion-status too. Dispatch reads that scope
+	// (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of a Legion issue's status
+	// needs it or the person scope, but for a status write of the architect of an issue
+	// above, which writes with its own broker token. No other token the exchange mints holds legion-status,
+	// whatever session it carries. The session is everything after the third "=", so it alone
+	// may carry one. A namespace's default account is refused, as is an account listed twice.
+	// Needs BROKER_K8S_OIDC_ISSUER and
 	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
 	// the entry naming no person refuses to start on one. Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry
@@ -875,6 +917,33 @@ type Config struct {
 	// than this setting does not read it, so it mints those accounts no token at all. Unset, no
 	// account exchanges for a read-only token.
 	ExchangeReadAccounts []exchange.ReadEntry
+	// BROKER_EXCHANGE_JOB_ACCOUNTS: the Kubernetes service accounts whose pods run a job that
+	// writes for no person, whitespace-separated <service account>=<projects>[=<session>] entries,
+	// such as system:serviceaccount:example-ns:example-job=EXAMPLE or
+	// system:serviceaccount:example-ns:example-sweeper=public,PRIVA,PRIVB=example-sweeper. The
+	// projects are one project key, or public followed by ,<key> for each of at most 16 private
+	// projects, the keys in any order, public counting toward none (exchange.ParseJobProjects).
+	// The token minted for a pod of the account names the account as its service and no person,
+	// holds no OAuth scope, so a route that needs one refuses it before Dispatch's project check
+	// runs, and carries the entry's projects whatever the exchange request names: the
+	// project scope named and its one project, for which that check judges the token as it judges a
+	// person's named token for that project, or the project scope public and the private projects,
+	// beside which it reaches every public project. At this release Dispatch does not read a public
+	// token's list, so such a token writes wherever a token that names no project may. A request
+	// may name no project or only projects of the entry, and one naming any other is refused. It
+	// writes under the session the entry fixes; an entry that
+	// fixes none requires the pod to name its own session, which a registration
+	// (BROKER_POD_REGISTRARS) may choose for it. The session is everything after the second "=", so
+	// it alone may carry one. Refused at start, naming the
+	// setting and the entry: an entry not of that form or with a blank account; an account that is
+	// not system:serviceaccount:<namespace>:<name>, or is a namespace's default account; an
+	// account listed twice; projects of any other spelling; an account BROKER_EXCHANGE_ACCOUNTS or
+	// BROKER_EXCHANGE_READ_ACCOUNTS lists too, since one account has one answer; and an account
+	// BROKER_POD_OPERATORS maps to a person. Needs BROKER_K8S_OIDC_ISSUER and
+	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
+	// this setting does not read it, so it mints those accounts no token at all. Unset, no account
+	// exchanges for a job's token.
+	ExchangeJobAccounts []exchange.AccountEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]
 	// entries, such as
@@ -886,7 +955,7 @@ type Config struct {
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_EXCHANGE_RESULT_WORKFLOWS: the GitHub workflows whose runs exchange their token for
-	// an airlock placeholder through which they write only the results of their project's spec
+	// a proxy placeholder through which they write only the results of their project's spec
 	// checks, whitespace-separated <repository>=<workflow path>=<ref pattern>=<project>=<person>
 	// entries, such as
 	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com.
@@ -894,7 +963,7 @@ type Config struct {
 	// path.Match reads one, a "*" standing for one segment of the ref and never a "/", so
 	// refs/heads/* takes every branch with no "/" in its name and refs/heads/*/* every branch with
 	// one. Its first two segments are literal: refs/ and a kind of ref, such as refs/heads/. Such a
-	// run asks for requested_token_type urn:envoy:params:oauth:token-type:airlock-placeholder and is
+	// run asks for requested_token_type urn:envoy:params:oauth:token-type:proxy-placeholder and is
 	// granted a placeholder and a result grant, never an access token: the grant holds only the
 	// OAuth scope results and the project scope results, acts for that person, writes under the
 	// session ci-results:<repository>/<workflow path>, and carries the run its GitHub token names:
@@ -917,6 +986,23 @@ type Config struct {
 	// holds. For the broker's local stack alone: a production start, which is one with
 	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	ResultGrantTestSeconds int
+	// BROKER_EXCHANGE_JOB_WORKFLOWS: the GitHub workflows whose runs are a job that writes for no
+	// person, whitespace-separated <repository>=<workflow path>=<ref>=<projects>[=<session>]
+	// entries, such as example-org/example-repo=.github/workflows/sweep.yaml=refs/heads/main=public.
+	// The repository, the workflow and the ref are compared exactly, as BROKER_EXCHANGE_WORKFLOWS
+	// compares them, and the projects are spelled as BROKER_EXCHANGE_JOB_ACCOUNTS spells them. The
+	// token minted for a run names the workflow, <repository>/<workflow path>@<ref>, as its service
+	// and no person, holds no OAuth scope, and carries the entry's projects whatever the request
+	// names, as a job account's token does. It writes under the session the entry fixes; an entry
+	// that fixes none requires the run to name its own session. The session is everything after the
+	// fourth "=", so it alone may carry one. Refused at start, naming the setting and the entry: an
+	// entry not of that form or with a blank repository, workflow or ref; a workflow listed twice;
+	// projects of any other spelling; and a workflow BROKER_EXCHANGE_WORKFLOWS lists too, since one
+	// workflow run has one answer. Needs BROKER_EXCHANGE_GITHUB_ISSUER and
+	// BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present. A broker of a build older than
+	// this setting does not read it, so it mints those runs no token at all. Unset, no workflow
+	// exchanges for a job's token.
+	ExchangeJobWorkflows []exchange.WorkflowEntry
 	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
 	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
 	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
@@ -1105,7 +1191,7 @@ const (
 var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
-// them required when a profile has a proxy block (Config.RequireAirlock). Every message that names
+// them required when the profiles file declares a kind or holds a dpop block (Config.RequireAirlock). Every message that names
 // them names them in this order.
 var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
 
@@ -1714,11 +1800,12 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // caller, a token of its own, a registrar's choice of session names or another account's session
 // names, since a mapped account acts for its person and for nothing else. The settings it checks
 // are BROKER_SERVICE_LOGINS, BROKER_SERVICES, BROKER_VM_SERVICES, BROKER_EXCHANGE_ACCOUNTS,
-// BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES
-// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting that Load reads through
-// getenv on the two configurations of TestEveryBrokerSettingLoadReadsIsMarked (the person sign-in
-// on and off, each with every condition in front of a read set) fails that test until its author
-// marks it, as giving a Kubernetes account a role, beside its refusal here and its row in
+// BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_JOB_ACCOUNTS,
+// BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES and BROKER_SESSION_ACCOUNT_PAIRS, in the order it
+// checks them. A setting that Load reads through getenv on the two configurations of
+// TestEveryBrokerSettingLoadReadsIsMarked (the person sign-in on and off, each with every condition
+// in front of a read set) fails that test until its author marks it, as giving a Kubernetes
+// account a role, beside its refusal here and its row in
 // TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none. A setting read
 // under a condition those configurations do not set, or read other than through getenv, is outside
 // the test: cmd/cipherd's BROKER_FAKE_SECRETS_FILE and the PG* variables pgconn.ParseConfig reads in
@@ -1739,17 +1826,21 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // (oauthstore.Store.RegisterPodSession), so the person's pod would choose the session names other
 // pods exchange under. The registration routes refuse a mapped account already (api's
 // serviceCaller, 403 PERSON_ACCOUNT), so such an entry could register nothing. A mapped account on
-// the pod side of an entry is not refused: a registration of its pod is admitted only under a
-// BROKER_EXCHANGE_ACCOUNTS entry that fixes no session (the pod-session policy's 409
-// SESSION_FIXED), and every BROKER_EXCHANGE_ACCOUNTS entry for the account names the same person
-// (the refusal above), so the pod acts for that person alone. It refuses a mapped
-// account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the
-// exchange would then mint the person's pod a read-only token that names that entry's service and
-// no person. It refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts),
-// because the named-caller routes it reaches act on the caller's word: the approval relays take the
-// deciding person's name from the caller, so the person's pod could decide any request in any
-// person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
-// person's pod would then be answered as that entry's service: by the NATS auth service
+// the pod side of an entry is not refused: a registration of its pod is admitted only under an
+// exchange entry that fixes no session (the pod-session policy's 409 SESSION_FIXED), every
+// BROKER_EXCHANGE_ACCOUNTS entry for the account names the same person (the refusal above), and
+// no BROKER_EXCHANGE_JOB_ACCOUNTS entry names it (the refusal below), so the pod acts for that
+// person alone. It refuses a mapped account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names
+// (cfg.ExchangeReadAccounts), because the exchange would then mint the person's pod a read-only
+// token that names that entry's service and no person. It refuses a mapped account that a
+// BROKER_EXCHANGE_JOB_ACCOUNTS entry names (cfg.ExchangeJobAccounts), because the exchange would
+// then mint the person's pod a job's token that names the account as its service and no person
+// and reaches the entry's projects. It refuses a mapped account that a BROKER_API_ACCOUNTS entry
+// names (cfg.APIAccounts), because the named-caller routes it reaches act on the caller's word:
+// the approval relays take the deciding person's name from the caller, so the person's pod could
+// decide any request in any person's name. It refuses a mapped account that a
+// BROKER_NATS_SERVICES entry names, because the person's pod would then be answered as that
+// entry's service: by the NATS auth service
 // (internal/cipher/natscallout) with that entry's service grant and, for an edge-listener entry, also by
 // GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
 // each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
@@ -1800,6 +1891,10 @@ func mappedAccountRefusal(cfg *Config) error {
 	for _, entry := range cfg.ExchangeReadAccounts {
 		readServices[entry.Account] = entry.Service
 	}
+	jobProjects := make(map[string]exchange.JobProjects, len(cfg.ExchangeJobAccounts))
+	for _, entry := range cfg.ExchangeJobAccounts {
+		jobProjects[entry.Account] = entry.Job
+	}
 	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
 		person := cfg.PodOperators[account]
 		login, listed := cfg.ServiceLogins[account]
@@ -1827,6 +1922,9 @@ func mappedAccountRefusal(cfg *Config) error {
 		if service, reads := readServices[account]; reads {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service %q; the exchange would mint the person's pod a read-only token that names that service and no person, so take the account out of BROKER_EXCHANGE_READ_ACCOUNTS or out of %s", setting, account, person, service, setting)
 		}
+		if job, runs := jobProjects[account]; runs {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_JOB_ACCOUNTS names it as a job's account for the projects %s; the exchange would mint the person's pod a job's token that names the account as its service and no person, so take the account out of BROKER_EXCHANGE_JOB_ACCOUNTS or out of %s", setting, account, person, job, setting)
+		}
 		if caller, calls := cfg.APIAccounts[account]; calls {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
@@ -1840,14 +1938,68 @@ func mappedAccountRefusal(cfg *Config) error {
 	return nil
 }
 
+// exchangeListingRefusal refuses an identity two exchange settings list: a Kubernetes service
+// account that BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS and
+// BROKER_EXCHANGE_JOB_ACCOUNTS list more than once between them, or a workflow that
+// BROKER_EXCHANGE_WORKFLOWS and BROKER_EXCHANGE_JOB_WORKFLOWS both list. One identity has one
+// answer: listed in two settings, it would mint two kinds of token. exchange.NewSet refuses it
+// too, but only this refusal can name both settings. Each setting's parser refuses an identity
+// that setting lists twice, so a second listing is in a later setting: the refusal names that
+// setting, then the one that lists the identity first, then the identity, and says why a token of
+// the later setting cannot share it. Load calls it once, after it reads all five settings. An
+// account BROKER_VM_EXCHANGE_JOB_ACCOUNTS and BROKER_VM_EXCHANGE_ACCOUNTS both name is refused
+// where Load merges the two into the machines of BROKER_VM_SERVICES.
+func exchangeListingRefusal(cfg *Config) error {
+	const account, workflow = "service account", "workflow"
+	// workflowName is a workflow as a refusal names it and as both workflow settings key it.
+	workflowName := func(entry exchange.WorkflowEntry) string {
+		return entry.Repository + "=" + entry.Workflow + "=" + entry.Ref
+	}
+	// listedBy is the setting that lists each identity, keyed by its kind and the identity as a
+	// refusal names it.
+	listedBy := map[[2]string]string{}
+	for _, entry := range cfg.ExchangeAccounts {
+		listedBy[[2]string{account, entry.Account}] = "BROKER_EXCHANGE_ACCOUNTS"
+	}
+	for _, entry := range cfg.ExchangeWorkflows {
+		listedBy[[2]string{workflow, workflowName(entry)}] = "BROKER_EXCHANGE_WORKFLOWS"
+	}
+	// list indexes identity, of kind, by setting, and refuses it when an earlier setting lists it,
+	// with reason, which says why a token of setting cannot share it.
+	list := func(setting, kind, identity, reason string) error {
+		key := [2]string{kind, identity}
+		if first, listed := listedBy[key]; listed {
+			return fmt.Errorf("%s and %s both name the %s %s; %s, so name it in one of them", setting, first, kind, identity, reason)
+		}
+		listedBy[key] = setting
+		return nil
+	}
+	for _, entry := range cfg.ExchangeReadAccounts {
+		if err := list("BROKER_EXCHANGE_READ_ACCOUNTS", account, entry.Account, "one account mints one kind of token, a read-only one or one that writes as its person or as the account"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range cfg.ExchangeJobAccounts {
+		if err := list("BROKER_EXCHANGE_JOB_ACCOUNTS", account, entry.Account, "one account mints one kind of token, and only a job's names the account as its service and carries projects"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range cfg.ExchangeJobWorkflows {
+		if err := list("BROKER_EXCHANGE_JOB_WORKFLOWS", workflow, workflowName(entry), "one workflow run has one answer, a token that acts for its person or a job's that names none"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
 // lists, in order. The project may be empty (<service account>==<person>), which is the shared
 // public-session account's entry: its named tokens act for the person and name no project. The
-// person may be empty with it (<service account>==), a job's own account, whose tokens act as the
+// person may be empty with it (<service account>==), an account whose tokens act as the
 // account itself. It refuses, naming the entry: one not of that form, with a blank account, or
 // naming a project and no person, since an entry that names a project names its person, so no
-// token held to a project is personless; an account that is not
+// account entry's token held to a project is personless; an account that is not
 // system:serviceaccount:<namespace>:<name>, or a namespace's default account (podAccountRefusal);
 // and an account listed twice, since one account writes as one identity. exchange.NewSet is the
 // second gate, and the session name's own form is its to refuse.
@@ -1860,7 +2012,7 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none, the person empty only beside it, and the session everything after the third =, got %q", setting, text)
 		}
 		if fields[1] != "" && fields[2] == "" {
-			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no token held to a project is personless", setting, text)
+			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token held to a project is personless", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -1882,8 +2034,8 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 // or a namespace's default account (podAccountRefusal); a service that is not a service's name,
 // or is policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account
 // listed twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS
-// lists too is Load's to refuse, since it reads both settings. exchange.NewSet is the second
-// gate, and the session name's own form is its to refuse.
+// lists too is exchangeListingRefusal's to refuse, since it reads both settings. exchange.NewSet
+// is the second gate, and the session name's own form is its to refuse.
 func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, error) {
 	var entries []exchange.ReadEntry
 	seen := map[string]bool{}
@@ -1908,6 +2060,74 @@ func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, err
 		entries = append(entries, exchange.ReadEntry{Account: account, Service: service, Session: session})
 	}
 	return entries, nil
+}
+
+// parseExchangeJobAccounts reads setting's whitespace-separated
+// <service account>=<projects>[=<session>] entries, the job accounts BROKER_EXCHANGE_JOB_ACCOUNTS
+// lists, in order, each with its projects as Job and no person and no project. It refuses what
+// parseJobEntries refuses, an account podAccountRefusal refuses among them. An account another
+// exchange setting lists too is exchangeListingRefusal's to refuse, since it reads them all.
+// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
+func parseExchangeJobAccounts(setting, value string) ([]exchange.AccountEntry, error) {
+	parsed, err := parseJobEntries(setting, value, "<service account>=<projects>[=<session>]", podAccountRefusal)
+	if err != nil {
+		return nil, err
+	}
+	var entries []exchange.AccountEntry
+	for _, entry := range parsed {
+		entries = append(entries, exchange.AccountEntry{Account: entry.account, Job: entry.job, Session: entry.session})
+	}
+	return entries, nil
+}
+
+// jobEntry is one entry of a job setting (BROKER_EXCHANGE_JOB_ACCOUNTS,
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS): the account it names, the job list its tokens carry, the
+// session name it fixes, if any, and its text as the setting gave it.
+type jobEntry struct {
+	account       string
+	job           exchange.JobProjects
+	session, text string
+}
+
+// parseJobEntries reads setting's whitespace-separated entries of form, an account, its projects
+// and an optional session, in order. The session is everything after the second "=", so it alone
+// may carry one. It refuses, naming the setting and the entry: one not of that form or with a
+// blank account; an account accountRefusal refuses; projects parseJobProjects refuses; and an
+// account named twice, since one account writes as one identity.
+func parseJobEntries(setting, value, form string, accountRefusal func(setting, text, account string) error) ([]jobEntry, error) {
+	var entries []jobEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		fields, ok := exchangeFields(text, 3)
+		if !ok || fields[0] == "" {
+			return nil, fmt.Errorf("%s must be %s entries, the session everything after the second =, got %q", setting, form, text)
+		}
+		account := fields[0]
+		if err := accountRefusal(setting, text, account); err != nil {
+			return nil, err
+		}
+		job, err := parseJobProjects(setting, text, fields[1])
+		if err != nil {
+			return nil, err
+		}
+		if seen[account] {
+			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account writes as one identity, so name it once", setting, account, text)
+		}
+		seen[account] = true
+		entries = append(entries, jobEntry{account: account, job: job, session: fields[2], text: text})
+	}
+	return entries, nil
+}
+
+// parseJobProjects reads projects, the projects field of the job setting's entry text, through
+// exchange.ParseJobProjects, and refuses projects it refuses, naming the setting and the entry
+// beside the rule they break.
+func parseJobProjects(setting, text, projects string) (exchange.JobProjects, error) {
+	job, err := exchange.ParseJobProjects(projects)
+	if err != nil {
+		return exchange.JobProjects{}, fmt.Errorf("%s names projects no job entry may name, got %q: %w", setting, text, err)
+	}
+	return job, nil
 }
 
 // vmExchangeGrant is one BROKER_VM_EXCHANGE_ACCOUNTS entry: the account it names, the Dispatch
@@ -2042,14 +2262,15 @@ func ParseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 	return ranges, nil
 }
 
-// RequireAirlock is the check of the airlock's settings against the profiles the boot read, proxied
-// naming each profile that has a proxy block, in the file's order. A broker whose profiles hold a
-// proxy block but that cannot proxy would hold back the value of every name such a block names and
-// release nothing in its place, so with any such profile the three settings the proxy cannot run
-// without are required, the refusal naming the ones missing and the profiles that need them, and,
-// in a cluster, so are the cluster's own ranges, which no fixed rule of the proxy covers
-// (requireClusterRanges). With none, there is no proxy and nothing is required: a deployment that
-// serves GitHub Apps through profiles with no proxy block runs no airlock.
+// RequireAirlock is the check of the airlock's settings against the profiles file the boot read,
+// proxied naming what of it puts a credential behind the proxy: each kind it declares and each
+// dpop block, in the file's order (AirlockSubjects). A broker whose file declares a kind but that
+// cannot proxy would hold back the value of every secret tagged with that kind and release
+// nothing in its place, so with any of them the three settings the proxy cannot run without are
+// required, the refusal naming the ones missing and what needs them, and, in a cluster, so are the
+// cluster's own ranges, which no fixed rule of the proxy covers (requireClusterRanges). With none,
+// there is no proxy and nothing is required: a deployment that serves GitHub Apps through
+// profiles and declares no kind runs no airlock.
 func (c Config) RequireAirlock(proxied []string) error {
 	if len(proxied) == 0 {
 		return nil
@@ -2065,10 +2286,27 @@ func (c Config) RequireAirlock(proxied []string) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("BROKER_PROFILES_FILE gives %s a proxy block, so the broker runs the airlock's proxy for them and needs %s; missing %s",
+		return fmt.Errorf("BROKER_PROFILES_FILE declares %s, so the broker runs the airlock's proxy for them and needs %s; missing %s",
 			strings.Join(proxied, ", "), strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
 	}
 	return requireClusterRanges(c.AirlockClusterRanges, c.kubernetesServiceHost)
+}
+
+// AirlockSubjects names what of the profiles file's rules (policy.Profiles.FileRules) puts a
+// credential behind the proxy, for RequireAirlock and the boot's choice to bind a proxy port:
+// "kind <name>" for each kind, then "dpop block <profile>" for each dpop block, in the file's
+// order. A file of neither answers nil.
+func AirlockSubjects(rules proxyrules.Rules) []string {
+	var subjects []string
+	for _, k := range rules.Kinds {
+		subjects = append(subjects, "kind "+k.Name)
+	}
+	for _, b := range rules.Names {
+		if b.Inline != nil {
+			subjects = append(subjects, "dpop block "+b.Name)
+		}
+	}
+	return subjects
 }
 
 // requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
@@ -2087,7 +2325,7 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 	}
 	serviceHost = strings.TrimSpace(serviceHost)
 	if len(ranges) == 0 {
-		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: a proxy block of BROKER_PROFILES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
+		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: a kind or a dpop block of BROKER_PROFILES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
 	}
 	host, err := netip.ParseAddr(serviceHost)
 	if err != nil {
@@ -2286,55 +2524,55 @@ func privateUpstreamAddress(upstream PrivateUpstream) (netip.Addr, error) {
 }
 
 // profilesFileSetting is BROKER_PROFILES_FILE, which the dpop block checks name as the file the
-// proxy blocks come from.
+// dpop blocks come from.
 const profilesFileSetting = "BROKER_PROFILES_FILE"
 
-// MintedEntryRules is every rule of the proxy blocks of kind dpop that the profiles file alone
-// decides, over its proxy blocks (policy.Profiles.ProxyRules). Each such block is a capability the
-// broker mints and holds (requests.MintedKind), whose token goes to every host the block binds,
-// with a DPoP proof of the broker's own key. So each binds one exact host and no "*." name, has a
-// non-empty allow list, the one list that holds every request of its grant, none of whose entries
-// names the path prefix "" or "/", which is every path; is carried in the Authorization header
-// alone (a block naming no headers carries the default, Authorization); and
-// no block of another kind binds its host (proxyrules.HostBound, so a "*." block over it counts),
-// so that every request that reaches that host through the proxy is a minted grant's, held to its
-// allow list. Two dpop blocks may share one host, each its own capability. The boot runs it through
-// ProxyMintedRules, and `profiles check` runs it whatever its arguments.
+// MintedEntryRules is every rule of the dpop blocks that the profiles file alone decides, over its
+// rules (policy.Profiles.FileRules), where each dpop block is a binding with an inline rule of way
+// dpop. Each such block is a capability the broker mints and holds (requests.MintedKind), whose
+// token goes to every host the block binds, with a DPoP proof of the broker's own key. So each
+// binds one exact host and no "*." name, has a non-empty allow list, the one list that holds every
+// request of its grant, none of whose entries names the path prefix "" or "/", which is every
+// path; is carried in the Authorization header alone (a block naming no headers carries the
+// default, Authorization); and no kind binds its host (proxyrules.HostBound, so a "*." host over it
+// counts), so that every request that reaches that host through the proxy is a minted grant's,
+// held to its allow list. Two dpop blocks may share one host, each its own capability. The boot
+// runs it through ProxyMintedRules, and `profiles check` runs it whatever its arguments.
 func MintedEntryRules(rules proxyrules.Rules) error {
-	for _, entry := range rules.Secrets {
-		if entry.Kind != proxyrules.KindDPoP {
+	for _, entry := range rules.Names {
+		block := entry.Inline
+		if block == nil || entry.Way != proxyrules.WayDPoP {
 			continue
 		}
 		switch {
-		case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
-			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, entry.Hosts)
-		case len(entry.Allow) == 0:
-			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.KindDPoP)
+		case len(block.Hosts) != 1 || strings.HasPrefix(block.Hosts[0], "*."):
+			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.WayDPoP, block.Hosts)
+		case len(block.Allow) == 0:
+			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.WayDPoP)
 		}
-		for _, allow := range entry.Allow {
+		for _, allow := range block.Allow {
 			if allow.PathPrefix == "" || allow.PathPrefix == "/" {
-				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.KindDPoP, allow.Method, allow.PathPrefix)
+				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.WayDPoP, allow.Method, allow.PathPrefix)
 			}
 		}
-		if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, headers)
+		if headers := block.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
+			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.WayDPoP, headers)
 		}
-		host := fold.ASCII(entry.Hosts[0])
-		for _, other := range rules.Secrets {
-			if other.Kind != proxyrules.KindDPoP && proxyrules.HostBound(other.Hosts, host) {
-				return fmt.Errorf("the profile %s of %s binds %s, the host of the profile %s of kind %s: no block of another kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", other.Name, profilesFileSetting, host, entry.Name, proxyrules.KindDPoP)
+		host := fold.ASCII(block.Hosts[0])
+		for _, kind := range rules.Kinds {
+			if proxyrules.HostBound(kind.Hosts, host) {
+				return fmt.Errorf("the kind %s of %s binds %s, the host of the profile %s of kind %s: no kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", kind.Name, profilesFileSetting, host, entry.Name, proxyrules.WayDPoP)
 			}
 		}
 	}
 	return nil
 }
 
-// ProxyMintedRules is the start check of the proxy blocks of kind dpop: MintedEntryRules, then
-// the private destinations' part (BROKER_PROXY_PRIVATE_UPSTREAM). cmd/cipherd runs it on every
-// broker with a profiles file, whatever capabilities it grants itself: every broker with an
-// airlock port serves every minted grant of the database it shares and mints that grant's token,
-// so a pod that grants none still sends a token, and a DPoP proof of its own key, to every host a
-// dpop block binds.
+// ProxyMintedRules is the start check of the dpop blocks: MintedEntryRules, then the private
+// destinations' part (BROKER_PROXY_PRIVATE_UPSTREAM). cmd/cipherd runs it on every broker with a
+// profiles file, whatever capabilities it grants itself: every broker with an airlock port serves
+// every minted grant of the database it shares and mints that grant's token, so a pod that grants
+// none still sends a token, and a DPoP proof of its own key, to every host a dpop block binds.
 //
 // A dpop block is held to the one place its service is named. No broker setting names a service's
 // public URL; a private destination names the service's address inside the cluster, and the proxy
@@ -2351,22 +2589,22 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 	for _, upstream := range upstreams {
 		bound[upstream.Host] = false
 	}
-	for _, entry := range rules.Secrets {
-		if entry.Kind != proxyrules.KindDPoP {
+	for _, entry := range rules.Names {
+		if entry.Inline == nil || entry.Way != proxyrules.WayDPoP {
 			continue
 		}
-		host := fold.ASCII(entry.Hosts[0])
+		host := fold.ASCII(entry.Inline.Hosts[0])
 		if _, named := bound[host]; !named {
 			if len(upstreams) == 0 {
-				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.WayDPoP, host, privateUpstreamSetting)
 			}
-			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.WayDPoP, host, privateUpstreamSetting)
 		}
 		bound[host] = true
 	}
 	for _, upstream := range upstreams {
 		if !bound[upstream.Host] {
-			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.KindDPoP)
+			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.WayDPoP)
 		}
 	}
 	return nil
@@ -2374,7 +2612,7 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 
 // ResultsEntryRules is the results capability's own part of the start check, beside
 // ProxyMintedRules, which holds its block as it holds every dpop block (one exact host, a private
-// destination's, an allow list, Authorization alone, no block of another kind on its host). Where
+// destination's, an allow list, Authorization alone, no kind on its host). Where
 // the profile oauthwire.AirlockResultsName has a proxy block, the block is of kind dpop: the broker
 // mints the results token for a CI run's result grant and holds it (requests.MintedKind), and a
 // block of another kind would carry a stored secret of that name. Result entries
@@ -2389,8 +2627,8 @@ func ResultsEntryRules(rules proxyrules.Rules, resultWorkflows bool) error {
 	switch {
 	case entry == nil && resultWorkflows:
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the profile %s, and %s holds no profile of that name", name, profilesFileSetting)
-	case entry != nil && entry.Kind != proxyrules.KindDPoP:
-		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its kind is %q", name, profilesFileSetting, proxyrules.KindDPoP, entry.Kind)
+	case entry != nil && (entry.Inline == nil || entry.Way != proxyrules.WayDPoP):
+		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its way is %q", name, profilesFileSetting, proxyrules.WayDPoP, entry.Way)
 	}
 	return nil
 }
@@ -2504,6 +2742,40 @@ func parseExchangeResultWorkflows(setting, value string) ([]exchange.ResultWorkf
 		entries = append(entries, exchange.ResultWorkflowEntry{
 			Repository: fields[0], Workflow: fields[1], RefPattern: fields[2],
 			Project: fields[3], Person: fields[4],
+		})
+	}
+	return entries, nil
+}
+
+// parseExchangeJobWorkflows reads setting's whitespace-separated
+// <repository>=<workflow path>=<ref>=<projects>[=<session>] entries, the job workflows
+// BROKER_EXCHANGE_JOB_WORKFLOWS lists, in order, each with its projects as Job and no person and
+// no project. It refuses, naming the setting and the entry: one not of that form or with a blank
+// repository, workflow or ref; projects parseJobProjects refuses; and a repository, workflow and
+// ref listed twice, since one workflow run writes as one identity. A workflow
+// BROKER_EXCHANGE_WORKFLOWS lists too is exchangeListingRefusal's to refuse, since it reads both
+// settings. exchange.NewSet is the second gate, and the repository's and the session name's own
+// forms are its to refuse.
+func parseExchangeJobWorkflows(setting, value string) ([]exchange.WorkflowEntry, error) {
+	var entries []exchange.WorkflowEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		fields, ok := exchangeFields(text, 5)
+		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <repository>=<workflow path>=<ref>=<projects>[=<session>] entries, the session everything after the fourth =, got %q", setting, text)
+		}
+		job, err := parseJobProjects(setting, text, fields[3])
+		if err != nil {
+			return nil, err
+		}
+		key := strings.Join(fields[:3], "=")
+		if seen[key] {
+			return nil, fmt.Errorf("%s names the workflow %s twice, got %q again; one workflow run writes as one identity, so name it once", setting, key, text)
+		}
+		seen[key] = true
+		entries = append(entries, exchange.WorkflowEntry{
+			Repository: fields[0], Workflow: fields[1], Ref: fields[2],
+			Job: job, Session: fields[4],
 		})
 	}
 	return entries, nil
@@ -2686,6 +2958,10 @@ func Load(getenv func(string) string) (Config, error) {
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
 	// cmd/cipherd refuses every one of them on a production start; what is refused here is a
 	// value the broker could not act on.
+	// The anthropic-federation minter's two stand-ins are read as given, as the GitHub and Google
+	// minter bases above are: a URL no exchange can be made at fails that release, at the minter.
+	cfg.AirlockTestAnthropicTokenURL = strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL"))
+	cfg.AirlockTestIAMCredentialsURL = strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL"))
 	var testSwitchErr error
 	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
@@ -2764,7 +3040,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// The private destinations, read and held to their form here, each against the start's
 	// address rule with the cluster ranges read above (PrivateUpstreamDialable); the dpop blocks
 	// that bind their hosts are checked where the profiles file is read (ProxyMintedRules), since
-	// Load reads no file. Without a profiles file no proxy block binds a host, so the setting would
+	// Load reads no file. Without a profiles file no dpop block binds a host, so the setting would
 	// send nothing anywhere.
 	if cfg.ProxyPrivateUpstreams, err = ParsePrivateUpstreams(getenv(privateUpstreamSetting)); err != nil {
 		return Config{}, err
@@ -2782,7 +3058,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// The address that says whether the broker runs in a cluster is read here with the rest.
 	cfg.kubernetesServiceHost = getenv("KUBERNETES_SERVICE_HOST")
 	// The proxy's URL, when a deployment with a profiles file gives one, held to its form, as
-	// BROKER_MACHINE_LOGIN_URL above is: every release of a name a proxy block holds back carries
+	// BROKER_MACHINE_LOGIN_URL above is: every release of a name behind the airlock carries
 	// this string, and a command's own client reads it as the proxy to dial. A value with no
 	// scheme or no host ("proxy:13381") boots and then fails every airlock run one command at a
 	// time, with a refusal in the CLI rather than in the pod that was configured wrong. With no
@@ -2944,7 +3220,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	cfg.SignInDeviceAudience = strings.TrimSpace(getenv("BROKER_SIGNIN_DEVICE_AUDIENCE"))
 	if cfg.GoogleOIDCAudience == "" {
-		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS", "BROKER_SIGNIN_DEVICE_AUDIENCE"} {
+		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS", "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", "BROKER_SIGNIN_DEVICE_AUDIENCE"} {
 			if strings.TrimSpace(getenv(setting)) != "" {
 				return Config{}, fmt.Errorf("%s needs BROKER_GOOGLE_OIDC_AUDIENCE, whose Google identity tokens it configures", setting)
 			}
@@ -2995,6 +3271,26 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		granted[grant.account] = grant
 	}
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS gives job lists to the accounts BROKER_VM_SERVICES lists:
+	// an account it names that is not listed, or that BROKER_VM_EXCHANGE_ACCOUNTS names too, is
+	// refused here, and exchange.NewSet is the second gate.
+	jobGrants, err := parseJobEntries("BROKER_VM_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_VM_EXCHANGE_JOB_ACCOUNTS"), "<service account email>=<projects>[=<session>]", vmAccountRefusal)
+	if err != nil {
+		return Config{}, err
+	}
+	jobGranted := map[string]jobEntry{}
+	for _, grant := range jobGrants {
+		if _, listed := cfg.VMServicesByAccount[grant.account]; !listed {
+			return Config{}, fmt.Errorf("BROKER_VM_EXCHANGE_JOB_ACCOUNTS names %s, got %q, but BROKER_VM_SERVICES does not list it; a job's projects are given to a listed VM account", grant.account, grant.text)
+		}
+		// One account has one answer: named in both settings, its machines would act for a
+		// person and be a job that names none. exchange.NewSet refuses the entry too, but only
+		// this refusal can name both settings.
+		if person, named := granted[grant.account]; named {
+			return Config{}, fmt.Errorf("BROKER_VM_EXCHANGE_JOB_ACCOUNTS and BROKER_VM_EXCHANGE_ACCOUNTS both name the service account %s, got %q and %q; one account has one answer, a token that acts for its person or a job's that names none, so name it in one of them", grant.account, grant.text, person.text)
+		}
+		jobGranted[grant.account] = grant
+	}
 	for _, entry := range vmServices {
 		// Each pin is optional and the two go together: an account pinned to a project but no
 		// instance name, or the other way round, says nothing clear about which machines it
@@ -3015,6 +3311,9 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		if grant, found := granted[entry.account]; found {
 			machine.Project, machine.Person, machine.Session = grant.project, grant.person, grant.session
+		}
+		if grant, found := jobGranted[entry.account]; found {
+			machine.Job, machine.Session = grant.job, grant.session
 		}
 		cfg.ExchangeGoogleAccounts = append(cfg.ExchangeGoogleAccounts, machine)
 	}
@@ -3077,22 +3376,14 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.ExchangeReadAccounts, err = parseExchangeReadAccounts("BROKER_EXCHANGE_READ_ACCOUNTS", getenv("BROKER_EXCHANGE_READ_ACCOUNTS")); err != nil {
 		return Config{}, err
 	}
-	if len(cfg.ExchangeReadAccounts) > 0 {
-		if cfg.ExchangeK8sAudience == "" {
-			return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
-		}
-		// One account mints one kind of token: listed in both settings, it would have two
-		// answers, a token that writes as its person and one that only reads. exchange.NewSet
-		// refuses it too, but only this refusal can name both settings.
-		writers := make(map[string]bool, len(cfg.ExchangeAccounts))
-		for _, entry := range cfg.ExchangeAccounts {
-			writers[entry.Account] = true
-		}
-		for _, entry := range cfg.ExchangeReadAccounts {
-			if writers[entry.Account] {
-				return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account %s; one account mints one kind of token, a read-only one or one that writes as its person, so name it in one of them", entry.Account)
-			}
-		}
+	if len(cfg.ExchangeReadAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
+	}
+	if cfg.ExchangeJobAccounts, err = parseExchangeJobAccounts("BROKER_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_EXCHANGE_JOB_ACCOUNTS")); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.ExchangeJobAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
 	}
 	if cfg.ExchangeWorkflows, err = parseExchangeWorkflows("BROKER_EXCHANGE_WORKFLOWS", getenv("BROKER_EXCHANGE_WORKFLOWS")); err != nil {
 		return Config{}, err
@@ -3111,7 +3402,17 @@ func Load(getenv func(string) string) (Config, error) {
 	// profiles file would grant placeholders no proxy honours. The profile itself is checked where
 	// the file is read (ResultsEntryRules), since Load reads no file.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
-		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted an airlock placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.KindDPoP)
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted an airlock placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
+	}
+
+	if cfg.ExchangeJobWorkflows, err = parseExchangeJobWorkflows("BROKER_EXCHANGE_JOB_WORKFLOWS", getenv("BROKER_EXCHANGE_JOB_WORKFLOWS")); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.ExchangeJobWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if err := exchangeListingRefusal(&cfg); err != nil {
+		return Config{}, err
 	}
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)

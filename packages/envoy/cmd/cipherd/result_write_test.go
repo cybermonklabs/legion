@@ -145,7 +145,7 @@ func (e *resultsEnvironment) grant(t *testing.T, b *resultsBroker, run string) r
 	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintRunToken(t, e.github, e.githubKey, resultsWorkflow, resultsBranch, run), "")))
 	held, _ := body["access_token"].(string)
 	grantID, _ := body[oauthwire.ExtraGrantID].(string)
-	airlock, _ := body[oauthwire.ExtraAirlock].(map[string]any)
+	airlock, _ := body[oauthwire.ExtraProxy].(map[string]any)
 	caPEM, _ := airlock["ca_certificate"].(string)
 	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.MintedPrefix(oauthwire.AirlockResultsWord)) || grantID == "" || caPEM == "" {
 		t.Fatalf("run %s's placeholder exchange = %d %v, want 200 with a result placeholder, its grant and the airlock's certificate", run, status, body)
@@ -192,8 +192,8 @@ func (g resultGrant) write(t *testing.T, client *http.Client) (*http.Response, s
 	return answer, string(body)
 }
 
-// stored fails t unless the write reached the stand-in and its answer came back as Dispatch's.
-func stored(t *testing.T, what string, answer *http.Response, body string) {
+// assertResultStored fails t unless the write reached the stand-in and its answer came back as Dispatch's.
+func assertResultStored(t *testing.T, what string, answer *http.Response, body string) {
 	t.Helper()
 	if answer.StatusCode != http.StatusCreated || answer.Header.Get("Cipher-Proxy-Forwarded") != "true" {
 		t.Fatalf("%s = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want the stand-in's 201, forwarded", what, answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Get("Cipher-Proxy-Code"), body)
@@ -239,7 +239,7 @@ func TestAResultWriteLeavesTheProxyWithTheRunsTokenAndAProofOfThePodsKey(t *test
 	b := e.start(t)
 	g := e.grant(t, b, "7")
 	answer, body := g.write(t, g.client(t, b))
-	stored(t, "the write", answer, body)
+	assertResultStored(t, "the write", answer, body)
 	tokens := e.dispatch.tokens(t)
 	if len(tokens) != 1 || tokens[0] == g.placeholder || strings.HasPrefix(tokens[0], placeholder.Prefix) {
 		t.Fatalf("the stand-in for Dispatch received tokens %q, want one that is no placeholder", tokens)
@@ -279,7 +279,7 @@ func TestTwoBrokersMintTheirOwnTokensForOneGrant(t *testing.T) {
 	g := e.grant(t, a, "7")
 	for _, through := range []*resultsBroker{b, a} {
 		answer, body := g.write(t, g.client(t, through))
-		stored(t, "a write of A's grant", answer, body)
+		assertResultStored(t, "a write of A's grant", answer, body)
 	}
 	tokens := e.dispatch.tokens(t)
 	if len(tokens) != 2 || tokens[0] == tokens[1] {
@@ -318,7 +318,7 @@ func TestAResultGrantOutlivesTheBrokerThatMadeIt(t *testing.T) {
 	a.WaitExit(t, "SIGTERM")
 	b := e.start(t)
 	answer, body := g.write(t, g.client(t, b))
-	stored(t, "the write through B after A stopped", answer, body)
+	assertResultStored(t, "the write through B after A stopped", answer, body)
 }
 
 // TestTwoRunsNeverShareACapability: two runs' grants through one broker: the token each write
@@ -329,7 +329,7 @@ func TestTwoRunsNeverShareACapability(t *testing.T) {
 	first, second := e.grant(t, b, "1"), e.grant(t, b, "2")
 	for _, g := range []resultGrant{first, second, first} {
 		answer, body := g.write(t, g.client(t, b))
-		stored(t, "a write of "+g.grantID, answer, body)
+		assertResultStored(t, "a write of "+g.grantID, answer, body)
 	}
 	for i, want := range []string{"91", "92", "91"} {
 		got := e.introspect(t, b, e.dispatch.tokens(t)[i])
@@ -373,7 +373,7 @@ func TestAnExpiredResultGrantEndsTheProxysUse(t *testing.T) {
 	g := e.grant(t, b, "7")
 	client := g.client(t, b)
 	answer, body := g.write(t, client)
-	stored(t, "the write inside the grant", answer, body)
+	assertResultStored(t, "the write inside the grant", answer, body)
 	token := e.dispatch.tokens(t)[0]
 	time.Sleep(3 * time.Second)
 	connect := rawConnect(t, b, g.placeholder)
@@ -401,7 +401,7 @@ func TestTheResultsTokenIntrospectsAsResultsAlone(t *testing.T) {
 	b := e.start(t)
 	g := e.grant(t, b, "7")
 	answer, body := g.write(t, g.client(t, b))
-	stored(t, "the write", answer, body)
+	assertResultStored(t, "the write", answer, body)
 	got := e.introspect(t, b, e.dispatch.tokens(t)[0])
 	run := oauthwire.CIRun{
 		Repository: exchangeRepository, WorkflowRef: exchangeRepository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,

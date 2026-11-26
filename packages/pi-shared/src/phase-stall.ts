@@ -156,10 +156,11 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // reminder. Reminding such a session at once only buys another refusal, which is what left
       // the implementer of dispatch://INFRA-264 reminded for ever; the runner arms a delayed one
       // instead, and a claim the daemon has failed by then is reminded of nothing. The daemon
-      // fails one at once for a refusal whose status cannot clear, of a prompt's turn or of a
-      // reminder's own, which it judges from the turn-outcome report since no prompt ran it, and
-      // never for a refusal that can clear, however long the run: that run is told to the
-      // project's controller once, at six in a row (dispatch://INFRA-4508).
+      // fails one at once for a refusal whose status cannot clear, or that Oh My Pi classes as
+      // OpenAI's cyber-policy refusal (`cyber_policy`, whatever the status), of a prompt's turn or
+      // of a reminder's own, which it judges from the turn-outcome report since no prompt ran it,
+      // and never for any other refusal, however long the run: that run is told to the project's
+      // controller once, at six in a row (dispatch://INFRA-4508).
       return { state };
     case "reminded":
       return state.state === "closed"

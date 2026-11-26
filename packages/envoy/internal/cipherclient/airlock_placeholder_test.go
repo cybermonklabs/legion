@@ -72,9 +72,9 @@ func tradeProofRefusal(proof, tokenURL string, key *ecdsa.PublicKey) string {
 // c8Answer is the token endpoint's answer to a result entry's run asking for the placeholder.
 func c8Answer(held string) map[string]any {
 	return map[string]any{
-		"access_token": held, "issued_token_type": oauthwire.TokenTypeAirlockPlaceholder, "token_type": "N_A", "expires_in": 900,
+		"access_token": held, "issued_token_type": oauthwire.TokenTypeProxyPlaceholder, "token_type": "N_A", "expires_in": 900,
 		oauthwire.ExtraGrantID: "result:00000000-0000-4000-8000-000000000001",
-		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{ProxyURL: "http://127.0.0.1:13381", CACertificate: "PEM", ProxyPassword: held,
+		oauthwire.ExtraProxy: oauthwire.AirlockRelease{ProxyURL: "http://127.0.0.1:13381", CACertificate: "PEM", ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: held, Slots: map[string]string{"value": held}, Hosts: []string{"dispatch.example.test"}}}},
 	}
 }
@@ -96,7 +96,7 @@ func TestAirlockPlaceholderAsksTheTokenEndpointForTheRunsPlaceholder(t *testing.
 	form := (*forms)[0]
 	if len(*forms) != 1 || form.Get("grant_type") != GrantTypeTokenExchange || form.Get("client_id") != oauthwire.ExchangeClientID ||
 		form.Get("subject_token") != "the-runs-oidc-token" || form.Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub ||
-		form.Get("requested_token_type") != oauthwire.TokenTypeAirlockPlaceholder ||
+		form.Get("requested_token_type") != oauthwire.TokenTypeProxyPlaceholder ||
 		form.Get(oauthwire.FormLauncherCredential) != oauthwire.FormLauncherCredentialDeclined {
 		t.Fatalf("the trade sent %v; want the run's token exchanged for the placeholder type and the credential declined", *forms)
 	}

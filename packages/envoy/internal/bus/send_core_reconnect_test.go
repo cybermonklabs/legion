@@ -57,8 +57,9 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	}
 
 	server.Stop(t)
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to read the stop", func() bool {
-		return conn.Status() == nats.RECONNECTING
+	testwait.Until(t, "the connection to read the stop", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.RECONNECTING
 	})
 	thaw := server.Freeze(t)
 	t.Cleanup(thaw)
@@ -84,30 +85,27 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	// anything buffers nothing, so the wait also ends when the answer arrives.
 	var got answer
 	pinged, done := false, false
-	testwait.WithinPolling(t, 10*time.Second, time.Millisecond, "the flush's PING in the reconnect buffer, or the send's answer", func() bool {
+	testwait.UntilPolling(t, time.Millisecond, "the flush's PING in the reconnect buffer, or the send's answer (the last read is how many bytes nats.go buffered)", func() (int, bool) {
 		select {
 		case got = <-answered:
 			done = true
-			return true
+			return 0, true
 		default:
 		}
 		buffered, err := conn.Buffered()
 		pinged = err == nil && buffered > 0
-		return pinged
+		return buffered, pinged
 	})
 	if pinged && conn.Status() != nats.RECONNECTING {
 		t.Fatalf("the connection reads %v once the PING is buffered; the test proves nothing", conn.Status())
 	}
 	thaw()
 	if !done {
-		select {
-		case got = <-answered:
-		case <-time.After(10 * time.Second):
-			t.Fatal("sendCore gave no answer")
-		}
+		got = testwait.Receive(t, "sendCore to answer", answered)
 	}
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect", func() bool {
-		return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+	testwait.Until(t, "the connection to reconnect", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 	})
 	if errors.Is(got.err, nats.ErrTimeout) {
 		t.Fatalf("the flush timed out, so no answer was read; the test proves nothing: %v", got.err)
@@ -163,8 +161,9 @@ func TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder(t *te
 		hooked = true
 		reconnects := conn.Stats().Reconnects
 		server.Restart(t, granting)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect inside the send", func() bool {
-			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		testwait.Until(t, "the connection to reconnect inside the send", func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 		})
 		// nats.go reads CONNECTED before it sends the subscriptions again, under the connection's
 		// lock, so this flush's PONG comes once the server holds the subscription it was sent.
@@ -222,14 +221,9 @@ func TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder(t *te
 		t.Fatalf("sendCore answered accepted=%v, error %v, for a send its connection reconnected under; want errSendSuperseded and no subscription", accepted, err)
 	}
 	let()
-	for n := range 2 {
-		select {
-		case got := <-handled:
-			if got != topic {
-				t.Fatalf("the handler was handed %s, want %s", got, topic)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the handler was handed %d of the 2 messages the new server delivered to the subscription the send made", n)
+	for _, which := range []string{"first", "second"} {
+		if got := testwait.Receive(t, "the "+which+" of the 2 messages the new server delivered to the subscription the send made to reach the handler", handled); got != topic {
+			t.Fatalf("the handler was handed %s, want %s", got, topic)
 		}
 	}
 }
@@ -304,11 +298,7 @@ func TestAReleasedAttemptIsNotSentAgainByAReconnectDuringItsDrain(t *testing.T) 
 	if !errors.Is(err, errSendSuperseded) || sub != nil {
 		t.Fatalf("sendCore answered error %v, subscription %v; want errSendSuperseded and no subscription, the drain this test needs", err, sub)
 	}
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the handler was handed no message; the drain has nothing pending and the test proves nothing")
-	}
+	testwait.Receive(t, "the handler to be handed a message, without which the drain has nothing pending and the test proves nothing", entered)
 
 	restartAndReconnect("the connection to reconnect during the drain")
 	trace := server.Log()
@@ -345,8 +335,9 @@ func TestALateReconnectCallbackDoesNotCutAReleasedAttemptsDrain(t *testing.T) {
 	client, err := Connect([]string{uri}, WithBeforeCoreSendFlush(func() {
 		reconnects := conn.Stats().Reconnects
 		server.Restart(t, granting)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect inside the send", func() bool {
-			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		testwait.Until(t, "the connection to reconnect inside the send", func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 		})
 		if err := conn.Flush(); err != nil {
 			t.Fatalf("flush the reconnected connection: %v", err)
@@ -413,24 +404,15 @@ func TestALateReconnectCallbackDoesNotCutAReleasedAttemptsDrain(t *testing.T) {
 		t.Fatalf("sendCore answered error %v, subscription %v; want errSendSuperseded and no subscription, the drain this test needs", err, sub)
 	}
 	unhold()
-	select {
-	case <-callbackRan:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect's callback never ran; the test proves nothing")
-	}
+	testwait.Receive(t, "the reconnect's callback to run, without which the test proves nothing", callbackRan)
 	// The watch wakes at the event the callback reported; this gives it the time to act on it
 	// before the handler is let go. A watch slower than this could let a cut drain pass here,
 	// never fail one that is kept.
 	time.Sleep(200 * time.Millisecond)
 	let()
-	for n := range 2 {
-		select {
-		case got := <-handled:
-			if got != topic {
-				t.Fatalf("the handler was handed %s, want %s", got, topic)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the handler was handed %d of the 2 messages the new server delivered to the attempt; the late callback of the reconnect the drain began after ended the drain", n)
+	for _, which := range []string{"first", "second"} {
+		if got := testwait.Receive(t, "the "+which+" of the 2 messages the new server delivered to the attempt to reach the handler (a drain the late callback of the reconnect it began after ended hands it none)", handled); got != topic {
+			t.Fatalf("the handler was handed %s, want %s", got, topic)
 		}
 	}
 }
@@ -460,8 +442,9 @@ func TestSendCoreGivesNoVerdictForAnAnswerReadAfterItsConnectionDropped(t *testi
 	client, err := Connect([]string{uri}, WithAfterCoreSendFlush(func() {
 		hooked = true
 		server.Stop(t)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to read the stop", func() bool {
-			return conn.Status() == nats.RECONNECTING
+		testwait.Until(t, "the connection to read the stop", func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.RECONNECTING
 		})
 	}))
 	if err != nil {
@@ -486,8 +469,9 @@ func TestSendCoreGivesNoVerdictForAnAnswerReadAfterItsConnectionDropped(t *testi
 	}
 
 	server.Restart(t, granting)
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect", func() bool {
-		return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > start
+	testwait.Until(t, "the connection to reconnect", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.CONNECTED && conn.Stats().Reconnects > start
 	})
 	// nats.go reads CONNECTED before it sends the subscriptions again, so this flush's PONG comes
 	// once the server has read every one.

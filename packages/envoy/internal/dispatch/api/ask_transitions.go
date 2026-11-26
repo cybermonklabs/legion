@@ -271,8 +271,18 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// takes first and which the transaction holds until Commit writes the queued answer, so the
 	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
 	// writeHandlerError gives the challenge header.
+	//
+	// An approve-only token (model.Credential.ApproveOnly) reaches this route because the approve
+	// list names it for the answer of an approval request, and for nothing else: an answer of any
+	// other ask, a question's free text among them, is no approval, so it is refused here, under
+	// the same lock and for the same reason, with the approve-only gate's own code.
+	approveOnly := approveOnlyRequest(r)
 	recordAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
+		if ask.Kind != "approval" && approveOnly {
+			return model.Ask{}, errorf(http.StatusForbidden, contracts.DispatchApproveOnlyToken,
+				"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
+		}
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 			return model.Ask{}, missingScopeError(model.ScopeApprove,
 				"this request's credential does not hold the approve scope, which answering an approval request requires")
@@ -513,15 +523,16 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// A transition writes no question text, so it reconciles none of the ask's own references.
-	// An answer is a part of the ask, though, so both transitions index the parts here, where
-	// the row write they queued comes before the index: a resolution adds no part, but its
-	// indexing still takes the ask's state row, reconciles the links its parts hold and clears
-	// owed_at, and writes every part of an ask an older build left owed. The answer a transition
-	// wrote is queued before the event, so the ask's Replies rows are read by the event's insert,
-	// after it.
+	// A transition writes no question text, but it holds the ask's parts alone: an answer is a
+	// part of the ask, so both transitions index the parts here, where the row write they queued
+	// comes before the index, and the parts' step reconciles the question's references after them
+	// and settles the ask's row of the forms queue there (questionReconciled false): a resolution
+	// adds no part, but its indexing still takes the ask's state row, reconciles the links its
+	// parts hold and clears owed_at, and writes every part of an ask an older build left owed. The
+	// answer a transition wrote is queued before the event, so the ask's Replies rows are read by
+	// the event's insert, after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, model.ReferenceChanges{})
+	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, false, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}

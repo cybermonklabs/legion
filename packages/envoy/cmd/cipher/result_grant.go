@@ -122,8 +122,10 @@ func cmdResultGrant(args []string, stdout, stderr io.Writer) int {
 	// The command gets the placeholder and no identity of the run's own: buildChildEnv drops
 	// every AGENT_SECRETS_* variable but sessionIdentityVars, AGENT_SECRETS_MACHINE_IDENTITY
 	// among them, which would let an `agent-secrets` the command runs trade the run's token again.
+	// It is released no value, so the trust decided and written is its inherited environment's,
+	// as the exec form decides it (prepareProxyTrustForCommand).
 	environ := os.Environ()
-	files, err := prepareAirlock(environ, release, grant.GrantID, &grant.ExpiresAt)
+	files, err := prepareProxyTrustForCommand(environ, nil, release, grant.GrantID, &grant.ExpiresAt, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets result-grant: %s\n", redact.OneLine(err.Error()))
 		return 1
