@@ -32,6 +32,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // gitFailure is a failed transfer from GitHub as git reports it, with how Fetch reads it:
@@ -1926,9 +1928,8 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 	}{
 		{"a cache answering not ready", func(t *testing.T) string { return (&fakeCache{notReady: 1 << 30}).serve(t) }, "503 Service Unavailable"},
 		{"a cache that does not answer", func(t *testing.T) string {
-			server := httptest.NewServer(http.NotFoundHandler())
-			server.Close()
-			return server.URL
+			// A port the test holds and nothing listens on: every dial to it is refused.
+			return "http://" + testport.Refused(t)
 		}, "connection refused"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
