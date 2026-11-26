@@ -98,6 +98,32 @@ func TestAnAnswerUnderTheBoundEndsTheTurnAsItIs(t *testing.T) {
 	}
 }
 
+// TestAnAnswerOfJustTheBoundIsHeldBack: an answer has fewer than wordsBound words as the bar
+// draws them, so a reply the bar draws in wordsBound words exactly is long, and is held back as one
+// of more words is: saved with its count, its frame marked and with no prose, and the next step's
+// model told how many words the person sees. The next, shorter reply ends the turn done.
+func TestAnAnswerOfJustTheBoundIsHeldBack(t *testing.T) {
+	bound, short := plainWords("bound", wordsBound), plainWords("short", 30)
+	fake := agenttest.New(t, lengthScript(bound, short))
+	server, client := newFakeServer(t, keptPlan)
+	workRun(t, fake.Model(), client, "what is the state of ACME-7's open children")
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateDone || len(bodies) != 2 || bodies[0].Text != bound || bodies[0].LongWords != wordsBound ||
+		bodies[1].Text != short || bodies[1].LongWords != 0 {
+		t.Fatalf("the run ended %s with %q, saving %+v; want done, the reply of %d words held back with its count and then the short one", end.State, end.Reason, bodies, wordsBound)
+	}
+	if steps := stepRequests(fake); len(steps) != 2 || !toldAfter(steps[1], bound, longTold(wordsBound)) {
+		t.Errorf("the run made %d steps' calls, want the second given the held reply and, after it, the note of its %d words", len(steps), wordsBound)
+	}
+	replies := server.replyFrames(t)
+	if len(replies) != 2 || !replies[0].HeldLong || replies[0].Text != "" || drawn(replies[0]) != wordsBound {
+		t.Fatalf("the reply frames are %+v, want the held reply's first, marked, with no prose and its %d words", replies, wordsBound)
+	}
+	if replies[1].Text != short || replies[1].HeldLong || drawn(replies[1]) != 30 {
+		t.Errorf("the answer's frame carries %q (held long %t) and %d drawn words, want the short reply and 30", replies[1].Text, replies[1].HeldLong, drawn(replies[1]))
+	}
+}
+
 // TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees: at 8a3e562b, 6 of 11 answers to "What
 // is the state of this issue's open children?" drew 120 words or more. A reply the bar draws in
 // wordsBound words or more, whose words ask for no more, is held back: saved with its

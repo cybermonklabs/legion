@@ -182,8 +182,11 @@ func TestAnAnswerIsStoredWithoutTheBlocksItsRunDrew(t *testing.T) {
 	}
 	// DEMO's issues: ```json {"status": "todo"} The query: ```sql select count(*) from issues; That
 	// is all. The fences alone, ``` and ```, are no words.
-	if answer.Drawn == nil || *answer.Drawn != 15 {
-		t.Errorf("the answer's frame says %v drawn words, want the 15 of the answer as stored", answer.Drawn)
+	switch {
+	case answer.Drawn == nil:
+		t.Error("the answer's frame says no count of drawn words, want the 15 of the answer as stored")
+	case *answer.Drawn != 15:
+		t.Errorf("the answer's frame says %d drawn words, want the 15 of the answer as stored", *answer.Drawn)
 	}
 }
 
