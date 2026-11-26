@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -57,7 +58,7 @@ type Keeper interface {
 	KeepProjectStanding(ctx context.Context, person, project, visibility string, visible bool, askedAt time.Time) error
 	// KeptProjectStanding is the last answer kept for person and project, as KeepProjectStanding
 	// wrote it, and when it was asked; found is false when no answer is kept.
-	KeptProjectStanding(ctx context.Context, person, project string) (visibility string, visible bool, askedAt time.Time, found bool, err error)
+	KeptProjectStanding(ctx context.Context, person, project string) (standing store.ProjectStanding, found bool, err error)
 }
 
 // unkeptKind is an answer's member kind that no write has kept, and the as_of it rests on.
@@ -332,7 +333,8 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 // (KeptProjectMessage), at most once a minute per person and project.
 func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (Answer, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keptReadTimeout)
-	visibility, visible, askedAt, found, readErr := c.keeper.KeptProjectStanding(readCtx, key.person, key.project)
+	standing, found, readErr := c.keeper.KeptProjectStanding(readCtx, key.person, key.project)
+	visibility, visible, askedAt := standing.Visibility, standing.Visible, standing.AskedAt
 	cancel()
 	c.mu.Lock()
 	unkept, remembered := c.unkeptProjects[key]

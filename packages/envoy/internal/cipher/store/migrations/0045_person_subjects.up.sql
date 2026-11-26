@@ -17,11 +17,12 @@
 --     page's sign-in verified (store.CreateBrowserSession).
 -- Each is null on every row written before this migration, and on a machine login whose approval
 -- an older Dispatch relayed: such a row is read as possibly the replaced account's, and the revoke
--- ends it too. A sign-in row with none recorded is ended by its next trade, which writes a row of
--- its own (0046 refuses any change of a recorded account). The two columns of each pair are set
--- together or not at all, and neither is ever empty, so a row either names one account or says
--- plainly that it names none. An issuer is stored as oidc.CanonicalIssuer spells it, which is the
--- spelling Dispatch names it by.
+-- ends it too. A sign-in row with none recorded is never given one (0046 refuses any change of a
+-- recorded account): where the broker asks Dispatch (BROKER_PROJECT_ACCESS_URL), its next trade
+-- ends it and writes a row of its own, and elsewhere it goes on recording none
+-- (store.RecordPersonSignIn). The two columns of each pair are set together or not at all, and
+-- neither is ever empty, so a row either names one account or says plainly that it names none. An
+-- issuer is stored as oidc.CanonicalIssuer spells it, which is the spelling Dispatch names it by.
 --
 -- replaced_person_subjects is what the revoke leaves behind: one row per account an address no
 -- longer belongs to, which every later sign-in trade, machine-login approval and approval-page
@@ -82,27 +83,19 @@
 -- SQLSTATE 23514: person is written once, session_generation only rises, a row is never deleted,
 -- and the table is never truncated, since a row removed or lowered lets a late revoke apply again.
 --
--- Earlier heads of cybermonklabs/legion#4199 shipped this migration without session_generation, the
--- guards and person_replacement_generations, or (7142c3108a) with a guard whose delete marker joined
--- its fields with '|', so a broker database an earlier head migrated keeps that shape: there the
--- revoke's own delete is refused (23514), as the marker it sets is not the one that guard compares,
--- or its read of person_replacement_generations fails on the missing table. Reset it (drop it,
--- create it empty, and let the broker migrate it) together with Dispatch's database, never one
--- alone, for the reason Dispatch's runbook gives (docs/site/src/content/docs/dispatch/running-
--- dispatch.md, "Signing people in"). This file was numbered 0032, then 0033, then 0037, then 0040,
--- then 0041, then 0042, then 0044, until it was merged onto bases whose 0032 to 0044 are other
--- migrations (0032_oauth_pod_sessions_binding, then 0033_credential_request_dismissals to
--- 0036_request_notify, then 0037_pod_carry_launcher to 0039_pod_session_registrars, then
--- 0040_enrollment_projects, then 0041_request_secrets_target, then
--- 0042_oauth_narrowed_access_tokens and 0043_request_secrets_github_app_field, then
--- 0044_nats_hold). A broker database an earlier head of this branch migrated recorded this file
--- and its followers under those numbers (0032 to 0034, 0033 to 0035, 0037 to 0039, 0040 to 0044,
--- 0041 to 0047, 0042 to 0048, or 0044 to 0050). The migrator records each file's identity and
--- refuses a version recorded under another file (pgmigrate's identity check), so such a database
--- refuses this head at its next boot, naming version 40, 41, 42 or 44, the first it recorded under
--- another file; one migrated before that check arrived holds no identity to compare, takes those
--- numbers for the base's files and fails at this file's first statement with SQLSTATE 42701 (the
--- column already exists). Reset either the same way, with its Dispatch database.
+-- Both guards run under a search_path of their own: pg_catalog, the schema the broker's tables
+-- are in, pg_temp (the do block at the end). A plpgsql function with no setting of its own
+-- resolves its names and operators under the caller's search_path, where Postgres searches a
+-- schema the session lists before pg_catalog, and the session's temporary schema before every
+-- schema of a path that does not name pg_temp, and making either needs no right a writer does not
+-- already hold (CREATE on the database, and the TEMP right PUBLIC holds). Each guard compares `<`
+-- for the generation, and guard_replaced_person_subjects reads current_setting, jsonb_build_array
+-- and pg_current_xact_id for the delete marker: with a session operator `<` on bigint that answers
+-- false, the generation the broker applied at an address would be lowered, and a revoke Dispatch
+-- recorded before the last replacement would apply again, ending what the account that holds the
+-- address now made. The setting is built from current_schema() in a do block, as Dispatch's
+-- 20261119021826 does, because the broker's tables are not always in public: the runner creates
+-- them in the schema RESET leaves on search_path.
 alter table person_signins
   add column issuer text,
   add column subject text,
@@ -194,3 +187,10 @@ create trigger person_replacement_generations_guarded before update or delete on
 
 create trigger person_replacement_generations_not_truncated before truncate on person_replacement_generations
   for each statement execute function guard_person_replacement_generations();
+
+do $$
+begin
+  execute format('alter function %I.guard_replaced_person_subjects() set search_path = pg_catalog, %I, pg_temp', current_schema(), current_schema());
+  execute format('alter function %I.guard_person_replacement_generations() set search_path = pg_catalog, %I, pg_temp', current_schema(), current_schema());
+end
+$$;

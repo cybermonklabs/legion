@@ -9,7 +9,7 @@ import (
 )
 
 // The broker keeps the last answer Dispatch's project route gave it for each person and project in
-// 0051's project_standing, so that while Dispatch cannot be asked the request machine's person rule
+// 0049's project_standing, so that while Dispatch cannot be asked the request machine's person rule
 // answers from it (projectaccess.OrKept): a project Dispatch last answered public or visible to the
 // person shows them the row, until an answer for anyone says the project is private since, and
 // every other answer, or none, refuses as before. Every process writes the answers its own asks
@@ -32,7 +32,18 @@ func (s *Store) KeepProjectStanding(ctx context.Context, person, project, visibi
 	return err
 }
 
-// KeptProjectStanding is the last answer kept for person and project: the later, by askedAt, of
+// ProjectStanding is one answer of Dispatch's project route as the broker keeps it.
+type ProjectStanding struct {
+	// Visibility is "public" or "private" as Dispatch answered it, or "" for an answer that
+	// Dispatch holds no such project.
+	Visibility string
+	// Visible is whether the person the answer was asked for may see the project.
+	Visible bool
+	// AskedAt is when the broker asked, read before the question was sent.
+	AskedAt time.Time
+}
+
+// KeptProjectStanding is the last answer kept for person and project: the later, by AskedAt, of
 // the answer kept for that person and an answer that Dispatch holds no such project, which is
 // kept for no person. Whether the project exists and whether it is public are facts of the
 // project, the same for every person, so that last answer stands only while no answer kept for
@@ -43,9 +54,8 @@ func (s *Store) KeepProjectStanding(ctx context.Context, person, project, visibi
 // refuses them as one never asked rather than show them the project's rows on the older fact. A
 // private answer is not ended by a later public one: whether the person may see a private
 // project rests on its owner and its access list, which a switch to public takes from nobody.
-// visibility is "public" or "private", or "" for a project Dispatch does not hold. found is false
-// when no answer is kept, which is no error.
-func (s *Store) KeptProjectStanding(ctx context.Context, person, project string) (visibility string, visible bool, askedAt time.Time, found bool, err error) {
+// found is false when no answer is kept, which is no error.
+func (s *Store) KeptProjectStanding(ctx context.Context, person, project string) (standing ProjectStanding, found bool, err error) {
 	err = s.Pool.QueryRow(ctx, `select coalesce(last.visibility, ''), last.visible, last.asked_at from (
 			select visibility, visible, asked_at from project_standing
 			where project = $2 and (person = $1 or (person = '' and visibility is null))
@@ -55,12 +65,12 @@ func (s *Store) KeptProjectStanding(ctx context.Context, person, project string)
 			where later.project = $2 and later.asked_at >= last.asked_at
 				and case when last.visibility is null then later.visibility is not null
 					when last.visibility = 'public' then later.visibility = 'private'
-					else false end)`, person, project).Scan(&visibility, &visible, &askedAt)
+					else false end)`, person, project).Scan(&standing.Visibility, &standing.Visible, &standing.AskedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, time.Time{}, false, nil
+		return ProjectStanding{}, false, nil
 	}
 	if err != nil {
-		return "", false, time.Time{}, false, err
+		return ProjectStanding{}, false, err
 	}
-	return visibility, visible, askedAt, true, nil
+	return standing, true, nil
 }
