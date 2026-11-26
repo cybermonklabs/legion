@@ -140,11 +140,15 @@ func TestPersonAnswersNotHeldUntil(t *testing.T) {
 	}
 }
 
-// TestPersonAnswersErrNoHeldFieldAndAsksAgainAfterFiveSeconds: an answer with no held, from a
+// TestPersonAnswersErrNoHeldFieldFromTheCacheForThirtySeconds: an answer with no held, from a
 // Dispatch older than the hold, is ErrNoHeldField and never read as not held. Person answers it
-// from the cache for five seconds, and asks Dispatch again once five seconds have passed since it
-// asked, though the entry is kept thirty for MemberKind.
-func TestPersonAnswersErrNoHeldFieldAndAsksAgainAfterFiveSeconds(t *testing.T) {
+// from the cache for CacheTTL, as every answer, and asks Dispatch again once thirty seconds have
+// passed since it asked, so such a Dispatch is asked once per person per thirty seconds, not six
+// times.
+//
+// Control: Person keeping such an answer five seconds, as it did; its read just under thirty
+// seconds later asks Dispatch again, and the test fails naming that read.
+func TestPersonAnswersErrNoHeldFieldFromTheCacheForThirtySeconds(t *testing.T) {
 	server, calls := personServer(t, func(person string, _ int) (int, string) {
 		return http.StatusOK, `{"person":"` + person + `","member_kind":"full","as_of":"2026-11-16T00:00:05Z"}`
 	})
@@ -162,10 +166,49 @@ func TestPersonAnswersErrNoHeldFieldAndAsksAgainAfterFiveSeconds(t *testing.T) {
 		}
 	}
 	ask(1, "first")
-	clock.advance(5*time.Second - time.Millisecond)
-	ask(1, "just under five seconds later")
+	clock.advance(projectaccess.CacheTTL - time.Millisecond)
+	ask(1, "just under thirty seconds later")
 	clock.advance(time.Millisecond)
-	ask(2, "five seconds later")
+	ask(2, "thirty seconds later")
+}
+
+// TestAFailedReadIsTheNextReadsAnswerWhicheverReadAsked: a read of the person route that failed is
+// the answer to the person's next reads for two seconds, whichever of MemberKind and Person made
+// it and whichever reads next: a Person read's failure fails the MemberKind read after it with no
+// call of its own, and a MemberKind read's failure fails the Person read after it the same way.
+// Once two seconds have passed, the next read asks Dispatch again.
+//
+// The fault: a Person read keeping no failure and taking none, as it did beside the hold gate's
+// own memory; the MemberKind read after its failure asks Dispatch, and the test fails naming that
+// read.
+func TestAFailedReadIsTheNextReadsAnswerWhicheverReadAsked(t *testing.T) {
+	server, calls := personServer(t, func(string, int) (int, string) {
+		return http.StatusServiceUnavailable, `{"error":"down"}`
+	})
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 10, 0, time.UTC)}
+	client.UseClock(clock.read)
+	read := func(person string, byPerson bool, wantCalls int, when string) {
+		t.Helper()
+		var err error
+		if byPerson {
+			_, err = client.Person(t.Context(), person)
+		} else {
+			_, err = client.MemberKind(t.Context(), person)
+		}
+		if !projectaccess.Unanswered(err) {
+			t.Fatalf("the read of %s %s = %v; want the failure of a read Dispatch did not answer", person, when, err)
+		}
+		if got := calls(); got != wantCalls {
+			t.Fatalf("the read of %s %s asked Dispatch %d times in all, want %d", person, when, got, wantCalls)
+		}
+	}
+	read("ada@example.com", true, 1, "by Person, first")
+	read("ada@example.com", false, 1, "by MemberKind right after Person's failed")
+	read("bob@example.com", false, 2, "by MemberKind, first")
+	read("bob@example.com", true, 2, "by Person right after MemberKind's failed")
+	clock.advance(2 * time.Second)
+	read("ada@example.com", false, 3, "by MemberKind two seconds after the failure")
 }
 
 // TestMemberKindReadsAnAnswerWithNoHeld: MemberKind reads member_kind from the one cached person

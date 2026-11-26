@@ -483,12 +483,13 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
 	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
-	// own Dispatch client, this rig's store and its registry, with the deadline rule where
-	// WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE does. Without
-	// WithDispatchAccess there is none, and every field that takes one is nil, which holds nobody.
+	// own Dispatch client, which keeps its answers in this rig's store, and on its registry, with
+	// the deadline rule where WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE
+	// does. Without WithDispatchAccess there is none, and every field that takes one is nil, which
+	// holds nobody.
 	var gate *hold.Gate
 	if config.projectAccess != nil {
-		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
+		gate = hold.New(hold.Config{Access: config.projectAccess, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.projectAccess = config.projectAccess
 			c.hold = gate

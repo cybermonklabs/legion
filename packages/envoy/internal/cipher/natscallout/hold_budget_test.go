@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -44,7 +45,7 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{"person":%q,"member_kind":"full","held":%t,"as_of":%q}`, person, isHeld, asOf.Format(time.RFC3339Nano))
 		}))
-		keeper := hold.New(hold.Config{Access: projectaccess.New(answering.URL, projectaccesstest.StaticAccount("token"), nil), Store: st})
+		keeper := hold.New(hold.Config{Access: keptBy(st, answering.URL)})
 		err := keeper.Check(t.Context(), person)
 		answering.Close()
 		if isHeld {
@@ -53,10 +54,10 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 		} else {
 			require.NoError(t, err, "Check(%s) with Dispatch answering not held", person)
 		}
-		kept, keptAt, _, found, err := st.PersonStanding(t.Context(), person)
+		kept, found, err := st.PersonStanding(t.Context(), person)
 		require.NoError(t, err, "read person_standing for %s", person)
-		require.True(t, found && kept == isHeld && keptAt.Equal(asOf),
-			"person_standing for %s = held %t as of %v (found %t), want held %t as of %v kept", person, kept, keptAt, found, isHeld, asOf)
+		require.True(t, found && kept.Held == isHeld && kept.AsOf.Equal(asOf),
+			"person_standing for %s = %+v (found %t), want held %t as of %v kept", person, kept, found, isHeld, asOf)
 	}
 
 	release := make(chan struct{})
@@ -68,7 +69,7 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 	}))
 	t.Cleanup(hanging.Close)
 	t.Cleanup(func() { close(release) })
-	gate := hold.New(hold.Config{Access: projectaccess.New(hanging.URL, projectaccesstest.StaticAccount("token"), nil), Store: st})
+	gate := hold.New(hold.Config{Access: keptBy(st, hanging.URL)})
 	base := introspector(served, held)
 	// introspect is base with the gate's answer mapped onto it as oauth.Provider's withHold maps it
 	// (internal/cipher/oauth/introspect.go), case for case. It mirrors that mapping rather than
@@ -104,4 +105,12 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 	require.NoError(t, err, "the hub refused a session whose person the broker keeps as not held, while Dispatch hangs")
 	_, err = connectSession(t, url, held, nil)
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a session whose person the broker keeps as held, while Dispatch hangs")
+}
+
+// keptBy is a client of the Dispatch at url that keeps its answers in st, as cmd/cipherd's does,
+// for the hold gate to answer from while that Dispatch cannot be asked.
+func keptBy(st *store.Store, url string) *projectaccess.Client {
+	client := projectaccess.New(url, projectaccesstest.StaticAccount("token"), nil)
+	client.Keep(st, nil, nil)
+	return client
 }

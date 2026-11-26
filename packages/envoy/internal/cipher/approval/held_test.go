@@ -87,7 +87,8 @@ func newHoldRig(t *testing.T) *holdRig {
 	access := projectaccess.New(h.dispatch.URL, h.account, nil)
 	access.UseClock(h.now)
 	h.rig = newRig(t, withHold(func(st *store.Store) *hold.Gate {
-		return hold.New(hold.Config{Access: access, Store: st, Now: h.now})
+		access.Keep(st, nil, nil)
+		return hold.New(hold.Config{Access: access, Now: h.now})
 	}))
 	return h
 }

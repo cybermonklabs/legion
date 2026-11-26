@@ -76,8 +76,9 @@ func (l *logs) at(level slog.Level, message, person string) []line {
 	return found
 }
 
-// rig is one broker process's gate over a store: its Dispatch client, the clock both read, the
-// lines it logs and the registry it counts on.
+// rig is one broker process's gate over a store: its Dispatch client, which keeps its answers in
+// the store as cmd/cipherd's does, the clock both read, the lines both log and the registry both
+// count on.
 type rig struct {
 	gate     *hold.Gate
 	client   *projectaccess.Client
@@ -98,7 +99,8 @@ func newRigWith(dispatchURL string, account ciphertoken.Account, st *store.Store
 	client.UseClock(clock.read)
 	logged := &logs{}
 	registry := metrics.New()
-	gate := hold.New(hold.Config{Access: client, Store: st, Log: slog.New(logged), Metrics: registry, Now: clock.read, RequireDeadline: requireDeadline})
+	client.Keep(st, slog.New(logged), registry)
+	gate := hold.New(hold.Config{Access: client, Log: slog.New(logged), Metrics: registry, Now: clock.read, RequireDeadline: requireDeadline})
 	return &rig{gate: gate, client: client, clock: clock, logs: logged, registry: registry}
 }
 
@@ -218,11 +220,20 @@ func standing(t *testing.T, st *store.Store, person string) (held bool, answered
 // standingUntil is standing with the deadline kept beside the answer, nil for none.
 func standingUntil(t *testing.T, st *store.Store, person string) (held bool, answeredAt time.Time, notHeldUntil *time.Time, found bool) {
 	t.Helper()
-	held, answeredAt, notHeldUntil, found, err := st.PersonStanding(context.Background(), person)
+	standing, found, err := st.PersonStanding(context.Background(), person)
 	if err != nil {
 		t.Fatalf("PersonStanding(%s): %v", person, err)
 	}
-	return held, answeredAt, notHeldUntil, found
+	return standing.Held, standing.AsOf, standing.NotHeldUntil, found
+}
+
+// keepHeld writes to person_standing that Dispatch held person as of asOf, as the client keeps a
+// held answer of a full member.
+func keepHeld(t *testing.T, st *store.Store, person string, asOf time.Time) {
+	t.Helper()
+	if err := st.KeepPersonAnswer(context.Background(), person, projectaccess.MemberFull, new(true), asOf, nil); err != nil {
+		t.Fatalf("keep a held answer of %s: %v", person, err)
+	}
 }
 
 // refuseWrites makes person_standing refuse every insert and update until allowWrites, as a
@@ -358,9 +369,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	for i, c := range failures {
 		t.Run(c.name, func(t *testing.T) {
 			person := "held" + strconv.Itoa(i) + "@example.com"
-			if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
-				t.Fatal(err)
-			}
+			keepHeld(t, st, person, kept)
 			r := newRig(c.dispatch(t), projectaccesstest.StaticAccount("token"), st)
 			start := time.Now()
 			err := r.gate.Check(ctx, person)
@@ -375,9 +384,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 
 	t.Run("an answer naming a member kind the broker does not know", func(t *testing.T) {
 		const person = "guest@example.com"
-		if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
-			t.Fatal(err)
-		}
+		keepHeld(t, st, person, kept)
 		r := newRig(answering(t, http.StatusOK, `{"person":"`+person+`","member_kind":"guest","held":false,"as_of":"`+asOf.Format(time.RFC3339Nano)+`"}`),
 			projectaccesstest.StaticAccount("token"), st)
 		if err := r.gate.Check(ctx, person); err != nil {
@@ -391,9 +398,7 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("a %d refusing the broker's own account", status), func(t *testing.T) {
 			person := "refused" + strconv.Itoa(status) + "@example.com"
-			if err := st.KeepPersonStanding(ctx, person, true, kept, nil); err != nil {
-				t.Fatal(err)
-			}
+			keepHeld(t, st, person, kept)
 			r := newRig(answering(t, status, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not listed"}`), projectaccesstest.StaticAccount("token"), st)
 			for _, checked := range []string{person, "nobody" + strconv.Itoa(status) + "@example.com"} {
 				if err := r.gate.Check(ctx, checked); !errors.Is(err, hold.ErrUncheckable) || errors.Is(err, hold.ErrHeld) {
@@ -412,9 +417,9 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 
 // TestHoldGateKeepsAnswerThirtySeconds: the gate answers from Dispatch's answer as long as the
 // broker caches it, thirty seconds from its ask, so a hold Dispatch records after that answer is
-// read at the first check after those thirty seconds. An answer the gate has written is not
-// written again, and one another caller fetched (the exchange's MemberKind) is written at the
-// gate's next check of that person.
+// read at the first check after those thirty seconds. Each answer is written once, by the read
+// that fetched it: the gate's check of a cached answer writes nothing, and one another caller
+// fetched (the exchange's MemberKind) is kept by that caller's read.
 func TestHoldGateKeepsAnswerThirtySeconds(t *testing.T) {
 	ctx := t.Context()
 	st := storetest.Open(t)
@@ -623,21 +628,19 @@ func TestHoldGateKeepsTheLatestAnswer(t *testing.T) {
 	}
 }
 
-// TestTheHoldGatesAnswerLeavesItsKeptKindServed: on a broker whose Dispatch client keeps the
-// member kind of each answer it fetches (projectaccess.Client.Keep) beside the gate's own
-// person_standing, as cmd/cipherd builds one, the gate writes the hold of the very answer whose
-// kind the client keeps, at the same as_of, and that kind stands: once Dispatch is down ada,
-// answered full and not held, is served full by the client and not held by the gate. A later
-// answer the gate keeps whose kind no write kept leaves no kind served.
+// TestTheHoldGatesAnswerLeavesItsKeptKindServed: on a broker whose Dispatch client keeps each
+// answer it fetches (projectaccess.Client.Keep), as cmd/cipherd builds one, the gate's check keeps
+// the hold and the member kind of the one answer it read, at the same as_of, and that kind stands:
+// once Dispatch is down ada, answered full and not held, is served full by the client and not held
+// by the gate.
 //
-// The fault: store.KeptMemberKind reading a kind no later than the hold's answer as none, not only
-// an earlier one; ada is refused once Dispatch is down.
+// The fault: the hold written apart from the kind, as by a second writer; the two rows rest on
+// different as_of times, and the test fails naming them.
 func TestTheHoldGatesAnswerLeavesItsKeptKindServed(t *testing.T) {
 	ctx := t.Context()
 	st := storetest.Open(t)
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberFull})
 	r := newRig(dispatch.URL, dispatch.Account, st)
-	r.client.Keep(st, slog.New(&logs{}), metrics.New())
 	if err := r.gate.Check(ctx, ada); err != nil {
 		t.Fatalf("Check(%s) answered full, not held = %v, want nil", ada, err)
 	}
@@ -653,12 +656,6 @@ func TestTheHoldGatesAnswerLeavesItsKeptKindServed(t *testing.T) {
 	}
 	if err := r.gate.Check(ctx, ada); err != nil {
 		t.Fatalf("Check(%s) while Dispatch is down = %v, want nil: kept not held", ada, err)
-	}
-	if err := st.KeepPersonStanding(ctx, ada, false, heldAsOf.Add(time.Second), nil); err != nil {
-		t.Fatal(err)
-	}
-	if kind, err := r.client.MemberKind(ctx, ada); err == nil {
-		t.Fatalf("MemberKind(%s) while Dispatch is down, a later hold kept with no kind = %q; want refused", ada, kind)
 	}
 }
 
@@ -701,7 +698,7 @@ func TestHoldGateKeepsTheHeldAnswerAgainstAnOlderNotHeld(t *testing.T) {
 // TestHoldGateRefusesWhenAHeldAnswerCannotBeWritten: a held answer the broker cannot write to
 // person_standing refuses the person as both hold.ErrUncheckable and hold.ErrHeld, since a later
 // outage of Dispatch could otherwise serve them. With Dispatch then stopped and the write still
-// failing, the person is held from the gate's memory; once the store takes writes, the next ask
+// failing, the person is held from the client's memory; once the store takes writes, the next ask
 // writes the row. A not-held answer it cannot write is served, logged at WARN once, and the next
 // answer from Dispatch is written as any answer is. The write runs apart from the caller's
 // request, so a caller that hangs up does not stop it.
@@ -734,7 +731,7 @@ func TestHoldGateRefusesWhenAHeldAnswerCannotBeWritten(t *testing.T) {
 		r.clock.advance(projectaccess.CacheTTL)
 		err = r.gate.Check(ctx, ada)
 		if !errors.Is(err, hold.ErrHeld) || !errors.Is(err, hold.ErrUncheckable) {
-			t.Fatalf("Check(%s) with Dispatch stopped and the write still failing = %v, want her held from the gate's memory, still unwritten", ada, err)
+			t.Fatalf("Check(%s) with Dispatch stopped and the write still failing = %v, want her held from the client's memory, still unwritten", ada, err)
 		}
 		if _, _, found := standing(t, st, ada); found {
 			t.Fatalf("person_standing holds a row for %s while it refuses writes", ada)
@@ -770,6 +767,9 @@ func TestHoldGateRefusesWhenAHeldAnswerCannotBeWritten(t *testing.T) {
 		go func() { done <- r.gate.Check(caller, ada) }()
 		storetest.AwaitLockWaiters(t, st.Pool, blocker, 1)
 		hangUp()
+		if err := <-done; err == nil {
+			t.Fatalf("Check(%s) whose caller hung up while the write waited = nil, want a refusal of a caller that is gone", ada)
+		}
 		// The sleep decides nothing this test asserts; it only feeds its control. A write bound to
 		// the caller would be cancelled by pgx asynchronously, and nothing observable marks that
 		// cancellation reaching Postgres, so the sleep gives such a write time to end before the
@@ -778,8 +778,10 @@ func TestHoldGateRefusesWhenAHeldAnswerCannotBeWritten(t *testing.T) {
 		if err := blocker.Rollback(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if err := <-done; !isHeld(err) {
-			t.Fatalf("Check(%s) whose caller hung up while the write waited = %v, want hold.ErrHeld alone: the write goes on", ada, err)
+		// A read of ada joins the ask still in flight, or reads what it settled, and so returns
+		// once its write has ended.
+		if answer, err := r.client.Person(ctx, ada); err != nil || !answer.Held || answer.Unkept != nil {
+			t.Fatalf("Person(%s) once the lock is let go = %+v, %v; want held and kept: the write goes on", ada, answer, err)
 		}
 		if held, _, found := standing(t, st, ada); !found || !held {
 			t.Fatalf("person_standing for %s after its caller hung up mid-write = held %t (found %t), want held", ada, held, found)
