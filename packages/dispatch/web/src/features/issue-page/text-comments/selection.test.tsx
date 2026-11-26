@@ -25,6 +25,7 @@ import {
   rowOf,
   type SeededReads,
   STATEMENT,
+  scrollingPage,
   selectAcross,
   selectWords,
   setSelection,
@@ -463,6 +464,68 @@ test("sending, 201: the focus the new thread took is the reader's again after a 
       "the thread took the focus back from a press on the node's words"
     ).toBe(false);
   } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+test("composer open, the field's focus scrolls the browser to the head of the column: the page is where it was and the box is brought to the window", async () => {
+  const user = userEvent.setup();
+  const page = scrollingPage(400, 0);
+  const { client, row, view } = await drawn({ threads: [] });
+  try {
+    const composer = await openComposer(view, row, user);
+    expect(
+      composer.contains(document.activeElement),
+      "the focus is not in the composer's box"
+    ).toBe(true);
+    expect(page.scrollY(), "the field's focus left the page at the head of the column").toBe(400);
+    await waitFor(() =>
+      expect(
+        page.revealed.some(
+          ({ element, options }) =>
+            composer.contains(element) && (options as { block?: string }).block === "nearest"
+        ),
+        "the box was not brought to the window, as far as it needs"
+      ).toBe(true)
+    );
+  } finally {
+    page.restore();
+    view.finish();
+    client.clear();
+  }
+});
+
+test("sending, 201: the thread's root takes the focus with no scroll of the browser's own and is brought to the window after it is placed", async () => {
+  const user = userEvent.setup();
+  const reads: SeededReads = { threads: [] };
+  const { client, row, view } = await drawn(reads);
+  const created = { ...ON_STATEMENT.comment, id: "new-thread" };
+  stubs.push(spyOn(api, "createComment").mockResolvedValue(created));
+  const page = scrollingPage(400, 0);
+  try {
+    const composer = await openComposer(view, row, user);
+    reads.threads = [{ ...ON_STATEMENT, comment: created }];
+    await send(composer, user);
+    const root = await waitFor(() => {
+      const card = view
+        .getByRole("region", { name: COLUMN })
+        .querySelector<HTMLElement>('[data-margin-item="new-thread"]');
+      expect(card?.contains(document.activeElement), "the thread took no focus").toBe(true);
+      return card as HTMLElement;
+    });
+    expect(page.scrollY(), "the root's focus left the page at the head of the column").toBe(400);
+    await waitFor(() =>
+      expect(
+        page.revealed.some(
+          ({ element, options }) =>
+            element === root && (options as { block?: string }).block === "nearest"
+        ),
+        "the new thread was not brought to the window"
+      ).toBe(true)
+    );
+  } finally {
+    page.restore();
     view.finish();
     client.clear();
   }

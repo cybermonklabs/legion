@@ -35,6 +35,8 @@ import { useFollowing } from "../slots/following";
 import { moveToRow } from "../useTreeKeymap";
 import { highlightThreadWords, type ThreadWords } from "./highlights";
 import { ITEM_KINDS } from "./on-text";
+import { revealAfterPlacement } from "./reveal";
+import { rowTextOf } from "./row-text-runs";
 import {
   type SelectedWords,
   SelectionComposer,
@@ -97,6 +99,10 @@ interface ComposerStore {
   landed: { readonly key: string; readonly outcome: TextComposerOutcome } | undefined;
   readonly listeners: Set<() => void>;
   place: MarkComposePlace | undefined;
+  /** How many sheets stand under the row of each node (`useSheet`), and the nodes that have one,
+   *  a set replaced at each change so that a reader of it (`useComposerPlace`) sees a new value. */
+  readonly sheetCounts: Map<string, number>;
+  sheets: ReadonlySet<string>;
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -114,6 +120,8 @@ function composerStoreOf(client: QueryClient): ComposerStore {
       landed: undefined,
       listeners,
       place: undefined,
+      sheetCounts: new Map(),
+      sheets: new Set(),
       subscribe: (listener) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -122,6 +130,40 @@ function composerStoreOf(client: QueryClient): ComposerStore {
     composerStores.set(client, store);
   }
   return store;
+}
+
+/**
+ * Records that a sheet stands under the row of `nodeId` while the caller is mounted, which a row
+ * site mounts at its part's gate (G6). From 1024 px the column takes a composer beside any node;
+ * below it only a node's sheet does (R5), so where no row draws one there is no place for it
+ * (`useComposerPlace`). With no node, records nothing.
+ */
+export function useSheet(nodeId: string | undefined): void {
+  const store = composerStoreOf(useQueryClient());
+  useEffect(() => {
+    if (nodeId === undefined) return;
+    const change = (by: 1 | -1) => {
+      const count = (store.sheetCounts.get(nodeId) ?? 0) + by;
+      if (count > 0) store.sheetCounts.set(nodeId, count);
+      else store.sheetCounts.delete(nodeId);
+      store.sheets = new Set(store.sheetCounts.keys());
+      tell(store);
+    };
+    change(1);
+    return () => change(-1);
+  }, [store, nodeId]);
+}
+
+/**
+ * Whether a composer opened on a node has a place at the window's width: the column from 1024 px
+ * (`CONTENTS_PANE_QUERY`), below it the node's sheet (`useSheet`). A control that would open a
+ * composer with no place stands nowhere, since it would promise a write the page cannot open.
+ */
+export function useComposerPlace(): (nodeId: string) => boolean {
+  const store = composerStoreOf(useQueryClient());
+  const wide = useMediaQuery(CONTENTS_PANE_QUERY);
+  const sheets = useSyncExternalStore(store.subscribe, () => store.sheets);
+  return useCallback((nodeId) => wide || sheets.has(nodeId), [wide, sheets]);
 }
 
 /** Tells each reader of `store` that what it holds changed. */
@@ -279,15 +321,23 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
   );
   // The column's place for a block's editor's composes (`useMarkComposePlace`), offered while the
   // column is mounted at every width, since the node's sheet draws the same composer below
-  // 1024 px. It reads the view and the composer as they stand when the editor asks, and opens the
-  // composer on the editor's words as the control does: Details closes first.
-  const now = useRef({ composer, view });
-  now.current = { composer, view };
+  // 1024 px; below it, while no row draws a sheet, there is no place and the editor's composer
+  // opens in the margin as it always has. It reads the view and the composer as they stand when
+  // the editor asks, and opens the composer on the editor's words as the control does: Details
+  // closes first.
+  const placed = useComposerPlace();
+  const offered = useSyncExternalStore(store.subscribe, () => wide || store.sheets.size > 0);
+  const now = useRef({ composer, placed, view });
+  now.current = { composer, placed, view };
   useEffect(() => {
+    if (!offered) return;
     const place: MarkComposePlace = (compose) => {
       const nodeId = composeNodeOf(now.current.view, compose.anchor);
       if (nodeId === undefined) {
         return Promise.reject(new Error("no node of the page holds the editor's words"));
+      }
+      if (!now.current.placed(nodeId)) {
+        return Promise.reject(new Error("no sheet under the row of the editor's node"));
       }
       const { promise, reject, resolve } = Promise.withResolvers<void>();
       now.current.composer.open({
@@ -306,7 +356,7 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
       store.place = undefined;
       tell(store);
     };
-  }, [store]);
+  }, [offered, store]);
   if (!wide || (view.threads.size === 0 && composer.request === undefined)) return null;
   return (
     <CardStackFocus.Provider value={stackFocus}>
@@ -435,10 +485,14 @@ export function cardIn(container: Element | null, key: string): HTMLElement | nu
 }
 
 /** Gives `target` the focus, as a script gives it to an element out of the tab order: one with
- *  no `tabindex` takes `tabIndex = -1` first. */
-export function takeFocus(target: HTMLElement): void {
+ *  no `tabindex` takes `tabIndex = -1` first. The focus takes no scroll of the browser's own,
+ *  which goes to where the card stood before the stack placed it, and the card is brought into
+ *  the window once it is placed (`revealAfterPlacement`): the nearest edge, or `center` for an
+ *  address. */
+export function takeFocus(target: HTMLElement, reveal: ScrollLogicalPosition = "nearest"): void {
   if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
-  target.focus();
+  target.focus({ preventScroll: true });
+  revealAfterPlacement(target, reveal);
 }
 
 /** What the column finds a box's words by in its node's row: the quote, which match of it, the
@@ -464,10 +518,24 @@ function wordsRange(row: Element, words: Words, view: ViewThreads, nodeId: strin
   const node = quotedNodeOf(view, nodeId);
   const block =
     words.block === null ? undefined : node?.blocks?.find((one) => one.block_id === words.block);
-  return rangeOf(row, words.quote, words.occurrence, {
+  const range = rangeOf(row, words.quote, words.occurrence, {
     ...(block === undefined ? {} : { block }),
     ...(node === undefined ? {} : { node }),
   });
+  return range === null || cutOff(range, row) ? null : range;
+}
+
+/**
+ * Whether the row does not draw the words `range` holds: a view that cuts a node's words
+ * (`CutWords`) clips what stands past the cut, so words there are in the text and in no line the
+ * reader sees. Their first line starts at or below the foot of the box that holds the node's words,
+ * which is the cut. R2 places a thread whose words the row does not draw level with the row's
+ * first line, as it places one whose words left the node's text.
+ */
+function cutOff(range: Range, row: Element): boolean {
+  const first = range.getClientRects()[0];
+  const box = rowTextOf(row)?.getBoundingClientRect();
+  return first !== undefined && box !== undefined && box.height > 0 && first.top >= box.bottom - 1;
 }
 
 /** The following of an address that names an item of a thread the column draws, and the item. */
@@ -706,7 +774,7 @@ function Column({
         : (lens ?? card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]'));
     if (target === null || target === undefined) return;
     landed.current = landing.following;
-    takeFocus(target);
+    takeFocus(target, "center");
   });
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws its
@@ -753,13 +821,50 @@ function Column({
   };
   const onFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target;
-    if (!(target instanceof Element)) return;
+    if (!(target instanceof Element) || pressed.current) return;
     focusBox(target.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`));
   };
   const onBlur = (event: FocusEvent<HTMLDivElement>) => {
     const next = event.relatedTarget;
+    if (pressed.current) return;
     if (!(next instanceof Node) || !event.currentTarget.contains(next)) focusBox(undefined);
   };
+  // A press takes the focus before it ends, and the stack stands the box in focus level with its
+  // words, so a card the stack had pushed under the thread above it moved from under the pointer
+  // on the press, the release landed outside its control, and the control did not act. The focus
+  // a pointer moves is taken up when the press ends, after the click it makes; the keyboard's and
+  // a script's, at once.
+  const pressed = useRef(false);
+  const take = useRef<() => void>(() => {});
+  take.current = () => {
+    const active = document.activeElement;
+    focusBox(
+      active instanceof Element && region.current?.contains(active)
+        ? active.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)
+        : undefined
+    );
+  };
+  useEffect(() => {
+    let timer: number | undefined;
+    const press = (event: Event) => {
+      pressed.current =
+        event.target instanceof Node && region.current?.contains(event.target) === true;
+    };
+    const release = () => {
+      if (!pressed.current) return;
+      pressed.current = false;
+      timer = window.setTimeout(() => take.current(), 0);
+    };
+    document.addEventListener("pointerdown", press, true);
+    document.addEventListener("pointerup", release, true);
+    document.addEventListener("pointercancel", release, true);
+    return () => {
+      document.removeEventListener("pointerdown", press, true);
+      document.removeEventListener("pointerup", release, true);
+      document.removeEventListener("pointercancel", release, true);
+      window.clearTimeout(timer);
+    };
+  }, [region]);
 
   // Escape in the composer, and its own Close, close it with its draft kept and give the focus
   // to the row of its node (R5's table, R6).

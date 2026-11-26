@@ -13,6 +13,7 @@ import { blockNodeId } from "../tree-drafts";
 import { useTreeKeymap } from "../useTreeKeymap";
 import {
   answerSeededReads,
+  clearSelection,
   type DrawnPage,
   drawFrame,
   newClient,
@@ -21,9 +22,12 @@ import {
   type SeededReads,
   STATEMENT,
   STATEMENT_WORDS,
+  selectWords,
   type TextThreadSeed,
 } from "./margin-fixtures";
 import { NodeThreads, TEXT_THREADS_ATTRIBUTE } from "./NodeThreads";
+import { SelectionComment } from "./SelectionComment";
+import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
 /**
  * R3: below 1024 px each thread on text stands in a sheet inside its node's row, after the row's
@@ -73,7 +77,14 @@ function nothing(): void {}
  * its words, with a link, which name the row; its facts; its acts, a control no key presses; the
  * sheet; and, while the row is unfolded, its child's row after it, as the outline draws its rows.
  */
-function SheetRow({ hold }: { readonly hold: RowHold }): ReactNode {
+function SheetRow({
+  hold,
+  sheet = true,
+}: {
+  readonly hold: RowHold;
+  /** Whether the row site mounts the sheet: none does before its part is on the base (G6). */
+  readonly sheet?: boolean;
+}): ReactNode {
   const tree = useRef<HTMLDivElement>(null);
   const [folded, setFolded] = useState(false);
   hold.fold = setFolded;
@@ -117,7 +128,7 @@ function SheetRow({ hold }: { readonly hold: RowHold }): ReactNode {
             Copy reference
           </button>
         </p>
-        <NodeThreads node={statement} />
+        {sheet ? <NodeThreads node={statement} /> : null}
       </div>
       {folded ? null : (
         <div data-node-id="child" data-node-row="" role="treeitem" tabIndex={-1}>
@@ -289,6 +300,94 @@ test("f reaches a sheet thread's links, then its controls", async () => {
       );
     }
   } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+/** The case's row, with the control "Comment" beside it, below 1024 px; a sheet under the row
+ *  where `sheet` holds. */
+async function drawnForControl(
+  sheet: boolean
+): Promise<{ readonly client: QueryClient; readonly row: HTMLElement; readonly view: DrawnPage }> {
+  stubs = answerSeededReads({ threads: [] });
+  const client = newClient();
+  const hold: RowHold = {};
+  const view = drawFrame(
+    client,
+    "conversation",
+    <>
+      <SheetRow hold={hold} sheet={sheet} />
+      <SelectionComment />
+    </>,
+    { width: BELOW_PANE }
+  );
+  const row = await waitFor(() => {
+    const drawn = view.container.querySelector<HTMLElement>(
+      `[data-case-tree] [data-node-id="${STATEMENT_NODE}"]`
+    );
+    expect(drawn, "the case's row is not drawn").not.toBeNull();
+    return drawn as HTMLElement;
+  });
+  return { client, row, view };
+}
+
+/** The animation frames the control reads a selection in, passed. */
+async function framesPass(): Promise<void> {
+  for (let frame = 0; frame < 3; frame += 1) {
+    await act(async () => {
+      await new Promise((done) => requestAnimationFrame(() => done(undefined)));
+    });
+  }
+}
+
+// R5: below 1024 px the composer stands in the node's sheet, so a control stands only where a row
+// site mounts one. Where none does (until G6) it would promise a write the page cannot open.
+test("below 1024 px with the row's sheet drawn, a selection draws the control and pressing it opens the composer in the sheet", async () => {
+  const user = userEvent.setup();
+  const { client, row, view } = await drawnForControl(true);
+  try {
+    selectWords(row, "page");
+    const control = await waitFor(() => view.getByRole("button", { name: "Comment" }));
+    await user.click(control);
+    await waitFor(() =>
+      expect(
+        row.querySelector(`[${TEXT_THREADS_ATTRIBUTE}] [${TEXT_COMPOSER_ATTRIBUTE}]`),
+        "the sheet holds no composer"
+      ).not.toBeNull()
+    );
+  } finally {
+    await act(async () => clearSelection());
+    view.finish();
+    client.clear();
+  }
+});
+
+test("below 1024 px with no sheet under the row, a selection draws no control and the chord opens no composer, and from 1024 px the control stands", async () => {
+  const user = userEvent.setup();
+  const { client, row, view } = await drawnForControl(false);
+  try {
+    selectWords(row, "page");
+    await framesPass();
+    expect(
+      view.queryByRole("button", { name: "Comment" }),
+      "a control stands where no sheet takes its composer"
+    ).toBeNull();
+    await user.keyboard("{Control>}{Alt>}m{/Alt}{/Control}");
+    await framesPass();
+    expect(
+      view.container.querySelector(`[${TEXT_COMPOSER_ATTRIBUTE}]`),
+      "the chord opened a composer with no place"
+    ).toBeNull();
+    await act(async () => view.window.set(1440));
+    await waitFor(() =>
+      expect(
+        view.queryByRole("button", { name: "Comment" }),
+        "the control does not stand where the column takes the composer"
+      ).not.toBeNull()
+    );
+  } finally {
+    await act(async () => clearSelection());
     view.finish();
     client.clear();
   }

@@ -6,7 +6,7 @@ import { MARGIN_WORDS, type Preset } from "../page-words";
 import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
 import { type SelectedWords, sendTargetOf } from "./SelectionComposer";
 import { quoteOf } from "./selection-quote";
-import { quotedNodeOf, useTextComposer } from "./TextMargin";
+import { quotedNodeOf, useComposerPlace, useTextComposer } from "./TextMargin";
 import { subjectOf, writeFor } from "./text-comment-write";
 import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";
 
@@ -81,7 +81,11 @@ function inOneTextBlock(range: Range, runs: TextRuns): boolean {
  * The node's write is asked first, so a selection in a row that takes none reads none of the
  * row's words in each frame it is read in.
  */
-function selectedIn(view: ViewThreads, issue: IssueDetails): Selected | null {
+function selectedIn(
+  view: ViewThreads,
+  issue: IssueDetails,
+  placed: (nodeId: string) => boolean
+): Selected | null {
   const selection = document.getSelection();
   if (selection === null || selection.rangeCount !== 1 || selection.isCollapsed) return null;
   const range = selection.getRangeAt(0);
@@ -90,7 +94,7 @@ function selectedIn(view: ViewThreads, issue: IssueDetails): Selected | null {
   const nodeId = row?.dataset.nodeId;
   const node = nodeId === undefined ? undefined : view.nodes.get(nodeId);
   if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
-  if (writeFor(subjectOf(node, issue.key)) === null) return null;
+  if (!placed(nodeId) || writeFor(subjectOf(node, issue.key)) === null) return null;
   const quoted = quotedNodeOf(view, nodeId);
   const words = rowTextOf(row);
   if (quoted === undefined || words === null) return null;
@@ -121,12 +125,21 @@ function isChord(event: KeyboardEvent): boolean {
 function Control({ issue, preset }: { readonly issue: IssueDetails; readonly preset: Preset }) {
   const view = useTextThreads(issue, preset);
   const composer = useTextComposer();
+  const placed = useComposerPlace();
   const [selected, setSelected] = useState<Selected | null>(null);
-  // The listeners read the view, the issue and the composer as they stand, so they are not bound
-  // again whenever a read answers.
-  const now = useRef({ composer, issue, view });
-  now.current = { composer, issue, view };
-  const find = useCallback(() => selectedIn(now.current.view, now.current.issue), []);
+  // The listeners read the view, the issue, the composer and where it has a place as they stand,
+  // so they are not bound again whenever a read answers.
+  const now = useRef({ composer, issue, placed, view });
+  now.current = { composer, issue, placed, view };
+  const find = useCallback(
+    () => selectedIn(now.current.view, now.current.issue, now.current.placed),
+    []
+  );
+  // A selection that stands while the composer's place changes - the window crosses 1024 px, a
+  // sheet is drawn or goes - draws its control, or loses it, with no change of the selection.
+  useEffect(() => {
+    setSelected(selectedIn(now.current.view, now.current.issue, placed));
+  }, [placed]);
 
   // The selection is read again at most once in an animation frame, however often it changes, and
   // not while a pointer button is down: the control is a later element of the page than the rows,

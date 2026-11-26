@@ -686,6 +686,58 @@ export function widthAt(element: HTMLElement, windowWidth: number): number | und
   return best?.width;
 }
 
+/**
+ * A window whose page the test scrolls: `scrollTo` moves it, and the browser's own scroll to a
+ * focused element, which a script's `focus()` with no `preventScroll` does, jumps it to `jumpTo`
+ * (the head of the column, where a card stands before the stack places it). Only a card or a
+ * field that is not in focus yet jumps it: those are what this part focuses by script, and a
+ * pointer's focus scrolls nothing. Each `scrollIntoView` is recorded with the element and its
+ * options. `restore` puts the page back as it was.
+ */
+export function scrollingPage(
+  startAt: number,
+  jumpTo: number
+): {
+  readonly revealed: { readonly element: Element; readonly options: unknown }[];
+  readonly restore: () => void;
+  readonly scrollY: () => number;
+} {
+  let y = startAt;
+  const revealed: { readonly element: Element; readonly options: unknown }[] = [];
+  const own = Object.getOwnPropertyDescriptor(window, "scrollY");
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => y });
+  const scrollTo = spyOn(window, "scrollTo").mockImplementation(((_left: number, top: number) => {
+    y = top;
+  }) as typeof window.scrollTo);
+  const focus = HTMLElement.prototype.focus;
+  HTMLElement.prototype.focus = function (this: HTMLElement, options?: FocusOptions) {
+    const byScript =
+      this.matches("[data-margin-item], textarea") && this !== document.activeElement;
+    if (byScript && options?.preventScroll !== true) y = jumpTo;
+    focus.call(this, options);
+  };
+  const reveal = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+  Object.defineProperty(Element.prototype, "scrollIntoView", {
+    configurable: true,
+    value(this: Element, options?: unknown) {
+      revealed.push({ element: this, options });
+    },
+    writable: true,
+  });
+  return {
+    restore: () => {
+      scrollTo.mockRestore();
+      HTMLElement.prototype.focus = focus;
+      if (own === undefined) Reflect.deleteProperty(window, "scrollY");
+      else Object.defineProperty(window, "scrollY", own);
+      if (reveal === undefined) Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      else Object.defineProperty(Element.prototype, "scrollIntoView", reveal);
+    },
+    revealed,
+    scrollY: () => y,
+  };
+}
+
 /** A rectangle as a layout would measure it. */
 export function rectOf(left: number, top: number, width: number, height: number): DOMRect {
   return new DOMRect(left, top, width, height);

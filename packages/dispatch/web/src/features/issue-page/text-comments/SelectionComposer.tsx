@@ -1,5 +1,12 @@
 import { hashKey, type MutationKey, useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { ApiError } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
@@ -13,6 +20,7 @@ import { MARGIN_ANSWERS } from "../page-words";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { quotedBlock } from "./on-text";
 import { quoteLine } from "./quote-line";
+import { revealAfterPlacement } from "./reveal";
 import {
   type ComposerAddress,
   composerAddressOf,
@@ -264,6 +272,20 @@ export function SelectionComposer({
     if (outcome === undefined) onLeave();
     else onLand(outcome);
   });
+  // `MentionComposer` focuses its field in an effect of the commit that mounts it, before the
+  // column has placed the box: the browser scrolls the page to the box's place then, the head of
+  // the column. Effects run from the children up, so this one, after the field's, puts the page
+  // back where it was as the box mounted, and brings the box to the window once it is placed.
+  const box = useRef<HTMLDivElement>(null);
+  const scrolledAt = useRef({ left: 0, top: 0 });
+  useLayoutEffect(() => {
+    scrolledAt.current = { left: window.scrollX, top: window.scrollY };
+  }, []);
+  useEffect(() => {
+    const { left, top } = scrolledAt.current;
+    if (window.scrollX !== left || window.scrollY !== top) window.scrollTo(left, top);
+    return box.current === null ? undefined : revealAfterPlacement(box.current);
+  }, []);
   const leave = useRef(onLeave);
   leave.current = onLeave;
   const nowhere = target === null;
@@ -283,7 +305,7 @@ export function SelectionComposer({
     onLeave();
   };
   return (
-    <div className="flex min-w-0 flex-col gap-2" onKeyDownCapture={leaveOnEscape}>
+    <div className="flex min-w-0 flex-col gap-2" onKeyDownCapture={leaveOnEscape} ref={box}>
       {target === null || target.address.anchor !== undefined ? null : (
         // The selected words, as the server's plain text reads them: the reading list's
         // `anchor-quote`.

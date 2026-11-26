@@ -1,6 +1,6 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
-import { act, type RenderResult, waitFor } from "@testing-library/react";
+import { act, type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -29,6 +29,7 @@ import {
   SERVES,
   type SeededReads,
   STATEMENT,
+  scrollingPage,
   seededNodes,
   type TextThreadSeed,
   widthAt,
@@ -338,6 +339,86 @@ test("column hidden by Details, an address of R8 names a thread on text: Details
   }
 });
 
+// R8: an address of a thread on text lands the reader on it from elsewhere. The item takes the focus
+// with no scroll of the browser's own, which goes to the head of the column where the card stood
+// before the stack placed it, and is brought to the middle of the window once it is placed.
+test("an address of R8 names a thread on text: the item takes the focus, the page is where it was until the item is placed, and it is brought to the middle of the window", async () => {
+  const page = scrollingPage(0, 0);
+  const { client, view } = await drawn({ threads: [ON_STATEMENT] }, "conversation");
+  try {
+    await columnDrawn(view, "no column is drawn");
+    await act(async () =>
+      view.held.navigate?.(`${presetPath(KEY, "conversation")}?comment=${ON_STATEMENT.comment.id}`)
+    );
+    const item = await waitFor(() => {
+      const focused = document.activeElement?.closest<HTMLElement>("[data-margin-item]") ?? null;
+      expect(focused, "the focus is not on the thread's item").not.toBeNull();
+      return focused as HTMLElement;
+    });
+    await waitFor(() =>
+      expect(
+        page.revealed.some(
+          ({ element, options }) =>
+            item.contains(element) && (options as { block?: string }).block === "center"
+        ),
+        "the item was not brought to the middle of the window"
+      ).toBe(true)
+    );
+  } finally {
+    page.restore();
+    view.finish();
+    client.clear();
+  }
+});
+
+// R2: a thread stands level with the first line of its quoted words in the node's row, or level with
+// the row's first line where the row does not draw those words. A view that cuts a node's words
+// (`CutWords`) clips what stands past the cut, which is in the text and in no line the reader sees.
+// happy-dom lays nothing out, so the case gives the row at 100 px, its words' box 144 px tall under
+// it, and the quoted words' first line at `firstLine`.
+async function threadTopWithWordsAt(firstLine: number): Promise<number> {
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.hasAttribute("data-node-words")) return new DOMRect(0, 100, 400, 144);
+    if (this.hasAttribute("data-node-id")) return new DOMRect(0, 100, 400, 200);
+    return new DOMRect(0, 0, 400, 0);
+  });
+  const line = new DOMRect(0, firstLine, 40, 20);
+  const list = Object.assign([line], { item: (index: number) => [line][index] ?? null });
+  const lines = spyOn(Range.prototype, "getClientRects").mockReturnValue(
+    list as unknown as DOMRectList
+  );
+  const { client, view } = await drawn({ threads: [ON_STATEMENT] }, "spec").finally(() =>
+    stubs.push(rect, lines)
+  );
+  try {
+    const column = await columnDrawn(view, "no column is drawn");
+    const box = await waitFor(() => {
+      const held = column.querySelector<HTMLElement>(
+        `[data-text-thread="${CSS.escape(ON_STATEMENT.comment.id)}"]`
+      );
+      expect(held?.style.top, "the thread is not placed").not.toBe("");
+      return held as HTMLElement;
+    });
+    return Number.parseFloat(box.style.top);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+}
+
+test("column, the quoted words stand in the row's words past the cut: the thread stands level with the row's first line", async () => {
+  expect(
+    await threadTopWithWordsAt(300),
+    "the thread stands level with words that no line of the row draws"
+  ).toBe(100);
+});
+
+test("column, the quoted words stand in the row's words within the cut: the thread stands level with them", async () => {
+  expect(await threadTopWithWordsAt(120), "the thread is not level with its words").toBe(120);
+});
+
 // R2: the column stacks its threads through `useCardStack` with the focused row's first thread as
 // the stack's focus (`CardStackFocus`): that thread stands level with its words, the threads above
 // it move up and those under it move down. Conversation draws the statement's row, then the
@@ -389,6 +470,74 @@ test("column, j or k moves the focus to a row with threads: that row's first thr
         tops(),
         "the check's thread is not at its words, with the statement's 8 px above it and the decision's 8 px under it"
       ).toEqual([-38, 120, 278])
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+// R2 and R4: a press on a control of a thread the stack pushed under the thread above it acts. The
+// press takes the focus before it ends and the stack stands the box in focus level with its words,
+// so, were the focus taken at once, the box would move from under the pointer and the release would
+// land outside its control. The focus a pointer moves is taken up when the press ends.
+test("column, a press on the Resolve of a thread the stack pushed down: the thread stays under the pointer until the press ends, then stands level with its words, and the press resolves it", async () => {
+  const user = userEvent.setup();
+  const threads = [ON_STATEMENT, ON_CHECK, ON_DECISION];
+  const rowTops = new Map([
+    [ON_STATEMENT.node, 100],
+    [ON_CHECK.node, 120],
+    [ON_DECISION.node, 140],
+  ]);
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return new DOMRect(0, rowTops.get(this.getAttribute("data-node-id") ?? "") ?? 0, 400, 24);
+  });
+  const resolve = spyOn(api, "resolveComment").mockResolvedValue(
+    undefined as unknown as Awaited<ReturnType<typeof api.resolveComment>>
+  );
+  const { client, view } = await drawn({ threads }, "conversation").finally(() =>
+    stubs.push(rect, resolve)
+  );
+  try {
+    const column = await columnDrawn(view, "no column is drawn");
+    await waitFor(() =>
+      expect(cardsOf(column), "the column draws no three threads").toHaveLength(3)
+    );
+    const box = (seed: TextThreadSeed): HTMLElement | null =>
+      column.querySelector<HTMLElement>(`[data-text-thread="${CSS.escape(seed.comment.id)}"]`);
+    for (const seed of threads) {
+      const held = box(seed);
+      if (held !== null) Object.defineProperty(held, "offsetHeight", { value: 150 });
+    }
+    const tops = () => threads.map((seed) => Number.parseFloat(box(seed)?.style.top ?? ""));
+    await act(async () => rowOf(view, blockNodeId(PLAN_DOCUMENT.slug, OTHER))?.focus());
+    await act(async () => rowOf(view, ON_STATEMENT.node)?.focus());
+    await waitFor(() =>
+      expect(tops(), "the check's thread is not pushed under the statement's").toEqual([
+        100, 258, 416,
+      ])
+    );
+    const checkBox = box(ON_CHECK) as HTMLElement;
+    const resolveButton = within(checkBox).getByRole("button", { name: "Resolve" });
+    await user.pointer({ keys: "[MouseLeft>]", target: resolveButton });
+    expect(document.activeElement, "the press did not give the focus to the control it is on").toBe(
+      resolveButton
+    );
+    await act(async () => new Promise((done) => setTimeout(done, 30)));
+    expect(tops(), "the thread moved from under the pointer while the press was down").toEqual([
+      100, 258, 416,
+    ]);
+    await user.pointer({ keys: "[/MouseLeft]", target: resolveButton });
+    await waitFor(() =>
+      expect(tops(), "the thread is not level with its words once the press ended").toEqual([
+        -38, 120, 278,
+      ])
+    );
+    expect(resolve, "the press did not resolve the thread").toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0]?.[0], "the press resolved another thread").toBe(
+      ON_CHECK.comment.id
     );
   } finally {
     view.finish();

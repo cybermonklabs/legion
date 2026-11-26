@@ -15,6 +15,7 @@ import {
   type TextComposer,
   type TextComposerRequest,
   takeFocus,
+  useSheet,
   useTextComposer,
 } from "./TextMargin";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
@@ -124,6 +125,9 @@ function Sheet({
   const composer = useTextComposer();
   const held = view.threads.get(node.id);
   const here = parent === undefined || held === undefined || held.parent === parent;
+  // The sheet is the node's place for a composer below 1024 px whether it draws a thread or not,
+  // as long as the row it stands in is the node's own.
+  useSheet(here ? node.id : undefined);
   const threads = here ? (held?.threads ?? []) : [];
   const request = here && composer.request?.nodeId === node.id ? composer.request : undefined;
   if (threads.length === 0 && request === undefined) return null;
