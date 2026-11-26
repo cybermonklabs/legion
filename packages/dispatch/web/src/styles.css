@@ -902,6 +902,25 @@ html:has([data-issue-page]) {
   }
 }
 
+/* Each row of the new issue page is laid out and painted only once it comes near the window
+   (`content-visibility: auto`): the rows a view draws in slices after its first screen
+   (`drawn-in-slices.ts`) are every one in the document once the load has ended, every word of
+   them, and the browser lays out and paints only those near the window. Nothing else hides a
+   row's words: they stay in the document, its accessibility tree, the browser's find-in-page
+   and the tab order, and `checkVisibility()` reads them as visible (R4). Until a row is first
+   laid out its place is held at 96 px, the height the first drawing guesses a row at
+   (`drawn-in-slices.ts`' `ROW_GUESS_PX`), and from then at the height it was laid out at
+   (`auto`), so a row scrolled past keeps its own. The rule brings paint containment, which cuts
+   what a row paints past its edge at its overflow clip edge: the focused outline row's ring is a
+   1 px shadow outside its card, whose edges are the row's, so that edge stands 1 px outside the
+   row (`overflow-clip-margin`). It is scoped to the new page by its `[data-issue-page]`
+   ancestor, with no `:has()` (decision 176). */
+[data-issue-page] [data-node-row] {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 96px;
+  overflow-clip-margin: 1px;
+}
+
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the
    prose paragraph margins into the card (a 20px gap under a 12px header). The repeated attribute
    selector lifts these rules to (0,5,0): a decision inside a reply drawn in another decision's

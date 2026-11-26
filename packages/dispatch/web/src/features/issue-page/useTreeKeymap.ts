@@ -54,12 +54,18 @@ export interface TreeKeyboard {
   readonly container: RefObject<HTMLElement | null>;
   /** What the key list says `z` does, when it does not cycle how much of the tree is drawn. */
   readonly cycleLabel?: string;
+  /** Draws `row`, which the tree is still to draw, with every row between its anchor and it, in
+   *  one commit made at once, before a key moves the focus there: a tree whose rows are drawn in
+   *  slices (`drawn-in-slices.ts`). Absent for a tree that draws every row at once. */
+  readonly drawUpTo?: (row: DrawnRow) => void;
   /** Whether a row of the tree is being edited, which Escape in its editor leaves
    *  (`tree-leave-caret`). */
   readonly editing: boolean;
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
   readonly holdsEscape: boolean;
+  /** Whether `row` is drawn, in a tree whose rows are drawn in slices; absent, every row is. */
+  readonly isDrawn?: (row: DrawnRow) => boolean;
   /** What `z` does: in the outline, unfolds every row the reader folded (R11); a view that
    *  draws more or less of itself by the key - the Decisions view's foot - draws it so. */
   readonly onCycle: () => void;
@@ -127,9 +133,6 @@ export type TreeSearch =
 type NodeRow = Extract<DrawnRow, { kind: "node" }>;
 
 const NODE_ROW = "[data-node-row]";
-
-/** How far a tree reaches when a key steps to its end. */
-const END = Number.MAX_SAFE_INTEGER;
 
 /** A block of a row's words that scrolls its own content and keeps a tab stop of its own while
  *  its row holds the focus: each code block, table and diagram's preview. It is known by the mark
@@ -244,12 +247,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     );
   };
 
-  /** The rows as the browser holds them, beside the rows as the fold drew them: the nth element
-   *  is the nth node row, so one index answers for both. */
+  /** The rows as the browser holds them, beside the rows as the fold drew them that are drawn
+   *  (`isDrawn`): the nth element is the nth node row drawn, so one index answers for both. */
   const drawn = (): { elements: HTMLElement[]; rows: NodeRow[] } => ({
     elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW) ?? [])],
-    rows: tree.rows.filter((row): row is NodeRow => row.kind === "node"),
+    rows: tree.rows.filter(
+      (row): row is NodeRow => row.kind === "node" && tree.isDrawn?.(row) !== false
+    ),
   });
+  /** Every node row, drawn or still to be drawn, in the order the keys move through them. */
+  const nodeRows = (): NodeRow[] => tree.rows.filter((row): row is NodeRow => row.kind === "node");
   /** Which row the reader is on, or -1 when the focus is not on one. A control inside a row
    *  answers with that row: the keys that move the reader are hers wherever she stands in it. */
   const at = (elements: readonly HTMLElement[]): number => {
@@ -326,58 +333,69 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     tree.onReport(atTheEnd !== undefined && target === document.activeElement ? atTheEnd : "");
     moveToRow(target);
   };
+  /** Moves to `target`, one of the tree's node rows, by `moveToRow`, drawing it first where the
+   *  tree is still to draw it (`drawUpTo`), and clears whatever a key reported; where it is the
+   *  row holding the focus itself, the key stands at the tree's end, says `atTheEnd` at the row
+   *  instead, and the row is still brought on screen. */
+  const moveToNode = (target: NodeRow | undefined, atTheEnd?: string): void => {
+    if (target === undefined) return;
+    if (tree.isDrawn?.(target) === false) tree.drawUpTo?.(target);
+    const { elements, rows } = drawn();
+    const element = elements[rows.indexOf(target)];
+    if (element === undefined) return;
+    tree.onReport(atTheEnd !== undefined && element === document.activeElement ? atTheEnd : "");
+    moveToRow(element);
+  };
   /** Takes the reader to `id`, unfolding whatever stands between them and it. */
   const goTo = (id: string): void => {
     tree.onReport("");
     tree.onReveal(id);
   };
-  /** The row that pages a node's children drawn right after the node row `on`, which `j` and
-   *  Down there press; undefined where the next row stands for a node, or none follows. */
-  const pageAfter = (on: number): PageRow | undefined => {
-    let seen = -1;
-    for (const [index, row] of tree.rows.entries()) {
-      if (row.kind === "node") seen += 1;
-      if (seen !== on) continue;
-      const next = tree.rows[index + 1];
-      return next?.kind === "page" ? next : undefined;
-    }
-    return undefined;
-  };
   /** What `j` does wherever the reader reads, and Down from a row: from the page itself it goes
-   *  to the first row, and from a row to the next. */
+   *  to the first row, and from a row to the next, which the tree draws first where it is still
+   *  to draw it. */
   const next = (): void => {
-    const { elements } = drawn();
-    const on = at(elements);
+    const { elements, rows } = drawn();
+    const here = rows[at(elements)];
+    const all = nodeRows();
     // The row that pages the children of a node is pressed from the row above it: it draws the
     // next page of them, and the focus goes to the first row it drew.
-    const page = on === -1 ? undefined : pageAfter(on);
-    if (page !== undefined && tree.onPage !== undefined) {
+    const after = here === undefined ? undefined : tree.rows[tree.rows.indexOf(here) + 1];
+    if (after?.kind === "page" && tree.onPage !== undefined) {
       tree.onReport("");
-      tree.onPage(page);
+      tree.onPage(after);
       return;
     }
     // The control after the last row reads the read's next page from it: its rows are drawn
     // where the read's order puts them, and the focus goes to the first row it drew.
-    if (on !== -1 && on === elements.length - 1 && tree.onMore !== undefined) {
+    if (here !== undefined && here === all.at(-1) && tree.onMore !== undefined) {
       tree.onReport("");
       tree.onMore();
       return;
     }
-    moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
+    moveToNode(
+      here === undefined ? all[0] : (all[all.indexOf(here) + 1] ?? here),
+      KEY_REPORTS.last_row
+    );
   };
   /** What `k` does wherever the reader reads, and Up from a row: from the page itself it goes to
-   *  the first row, and from a row to the one before. */
+   *  the first row, and from a row to the one before, which the tree draws first where it is
+   *  still to draw it. */
   const previous = (): void => {
-    const { elements } = drawn();
-    const on = at(elements);
+    const { elements, rows } = drawn();
+    const here = rows[at(elements)];
+    const all = nodeRows();
     // The control above the first row reads the older comments from it: they are drawn where the
     // read's order puts them, and the focus goes to the first row it drew.
-    if (on === 0 && tree.onOlder !== undefined) {
+    if (here !== undefined && here === all[0] && tree.onOlder !== undefined) {
       tree.onReport("");
       tree.onOlder();
       return;
     }
-    moveTo(on === -1 ? 0 : on - 1, KEY_REPORTS.first_row);
+    moveToNode(
+      here === undefined ? all[0] : (all[all.indexOf(here) - 1] ?? here),
+      KEY_REPORTS.first_row
+    );
   };
 
   useKeymap("issue", [
@@ -412,12 +430,13 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     },
     {
       // Home and End are the page's own scroll keys everywhere else, so they move through the
-      // tree only while the reader is standing in it.
+      // tree only while the reader is standing in it. The first and the last row are the tree's,
+      // drawn first where the tree is still to draw them.
       id: "tree-first",
       keys: "Home",
       label: "Move to the first row",
       palette: false,
-      run: () => moveTo(0, KEY_REPORTS.first_row),
+      run: () => moveToNode(nodeRows()[0], KEY_REPORTS.first_row),
       when: () => inTheTree() && !scrollsABlock(),
     },
     {
@@ -425,7 +444,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       keys: "End",
       label: "Move to the last row",
       palette: false,
-      run: () => moveTo(END, KEY_REPORTS.last_row),
+      run: () => moveToNode(nodeRows().at(-1), KEY_REPORTS.last_row),
       when: () => inTheTree() && !scrollsABlock(),
     },
     {
@@ -451,8 +470,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           tree.onFold(rowKeyOf(row), true);
           return;
         }
-        // Every level is drawn, so an open row's first child is the row below it.
-        if ((rows[on + 1]?.level ?? 0) > row.level) moveTo(on + 1);
+        // Every level is drawn, so an open row's first child is the row below it, drawn first
+        // where the tree is still to draw it.
+        const all = nodeRows();
+        const below = all[all.indexOf(row) + 1];
+        if ((below?.level ?? 0) > row.level) moveToNode(below);
       },
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
@@ -477,9 +499,13 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           tree.onFold(rowKeyOf(row), false);
           return;
         }
-        for (let above = on - 1; above >= 0; above -= 1) {
-          if ((rows[above]?.level ?? 0) === row.level - 1) {
-            moveTo(above);
+        // The parent is the nearest row above at the level above, drawn first where the tree is
+        // still to draw it.
+        const all = nodeRows();
+        for (let above = all.indexOf(row) - 1; above >= 0; above -= 1) {
+          const parent = all[above];
+          if ((parent?.level ?? 0) === row.level - 1) {
+            moveToNode(parent);
             return;
           }
         }

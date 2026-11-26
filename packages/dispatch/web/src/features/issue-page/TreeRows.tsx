@@ -1,5 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ComponentProps, type CSSProperties, type ReactNode, useState } from "react";
+import {
+  type ComponentProps,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useImperativeHandle,
+  useState,
+} from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
@@ -7,12 +15,14 @@ import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useDocumentAdmissions } from "./document-admission";
+import { type RowSlices, useDrawnInSlices } from "./drawn-in-slices";
 import { documentOfNode } from "./issue-artifacts";
 import { isStatement, type TreeNode } from "./issue-tree";
 import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
 import { type AuthorKind, authorKind, CONTROL_LABELS, isReader } from "./page-words";
+import { rowSelectorOf } from "./tree-focus";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 import { nodeEditable } from "./useNodeEditing";
@@ -26,9 +36,16 @@ import { nodeEditable } from "./useNodeEditing";
  * The row after a node's drawn children says how many are left and draws the next page of them,
  * the control above the first row reads the outline read's next page of older comments, and the
  * control after the last row reads the read's next page, each where it is given (R15).
+ *
+ * The rows are drawn the anchor's screen first, and the others in slices after it
+ * (`drawn-in-slices.ts`): the anchor is the row the page's opening or the address names, and the
+ * rows a key, an address or the Contents list takes the reader to are drawn first, with every row
+ * between the anchor and them (`needed`, and the keys' `slices`).
  */
 export function TreeRows({
+  anchor,
   artifacts,
+  container,
   context,
   coverageOut = false,
   editing,
@@ -36,19 +53,26 @@ export function TreeRows({
   foldedMore = false,
   isClosed,
   more,
+  needed,
   onFocus,
   onOlder,
   onPage,
   onToggle,
   report,
   rows,
+  slices,
   tabStop,
   threads,
   unplaced,
   zoomRoot,
 }: {
+  /** The key of the row the page's opening or the address names (`rowKeyOf`), which the first
+   *  drawing of the rows draws a screen around; the first row where it names none. */
+  anchor: string | undefined;
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
+  /** The tree the rows are drawn in, where each row's top is read (`drawn-in-slices.ts`). */
+  container: RefObject<HTMLElement | null>;
   /** The ids of the rows this preset draws only as the ancestor of a match. */
   context: ReadonlySet<string>;
   /** Whether the coverage read has not answered yet: each statement's row holds the line its
@@ -69,6 +93,9 @@ export function TreeRows({
    *  read holds after the pages read, where it says, and the press. Undefined where its answer
    *  names none, and the control is not drawn. */
   more?: { readonly left: number | undefined; readonly onPress: () => void };
+  /** The keys of the rows a key, an address or the Contents list is taking the reader to in this
+   *  render, each drawn now with every row between the anchor and it. */
+  needed: readonly string[];
   /** Gives the focus to one row, by its key (`rowKeyOf`) and its node, which the focus coming
    *  into the row does: one function for every row, which each row calls with its own key, so
    *  the tree makes it once and no row is given a new one (`NodeRow`'s `memo`). */
@@ -87,6 +114,9 @@ export function TreeRows({
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
   rows: readonly DrawnRow[];
+  /** Where the tree's keys find what they ask of the rows drawn in slices: whether a row is drawn,
+   *  and the drawing of the rows up to one before they move the focus there. */
+  slices: RefObject<RowSlices | null>;
   /** The key of the row that is the tree's one tab stop. */
   tabStop: string | undefined;
   /** Each thread's newest write by the node that draws it (`threadMarks`). */
@@ -113,6 +143,19 @@ export function TreeRows({
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();
+  // A row's top in the window, read from its element in the tree; undefined where it is not
+  // drawn, and for the row that pages a node's children, which carries no key of its own. In the
+  // commit that mounts the tree its element is given its ref after these rows' layout effects
+  // have run, so that commit reads its rows from the document, where React has put them already.
+  const measure = useCallback(
+    (key: string) =>
+      (container.current ?? document)
+        .querySelector<HTMLElement>(rowSelectorOf(key))
+        ?.getBoundingClientRect().top,
+    [container]
+  );
+  const drawing = useDrawnInSlices({ anchor, focused, keyOf: rowKeyOf, measure, needed, rows });
+  useImperativeHandle(slices, () => drawing.slices, [drawing.slices]);
   return (
     <>
       {onOlder === undefined ? null : (
@@ -120,7 +163,7 @@ export function TreeRows({
           {CONTROL_LABELS.older_comments}
         </PageControl>
       )}
-      {rows.map((row) => {
+      {drawing.drawn.map((row) => {
         const key = rowKeyOf(row);
         if (row.kind === "page") {
           return (

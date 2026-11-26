@@ -4,6 +4,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,6 +20,7 @@ import { PublishedReferenceNames, type PublishedReferences } from "../refs/refer
 import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { ChangeDraftsProvider } from "./DecisionActions";
+import type { RowSlices } from "./drawn-in-slices";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
@@ -399,6 +401,22 @@ export function IssueTree({
           : drawn
       )
     : NO_DRAWN_ROWS;
+  // The rows are drawn a screen around the anchor first, and the others in slices after it
+  // (`TreeRows.tsx`, `drawn-in-slices.ts`). The anchor is the node the address names, else the
+  // open question the page opens on, by the opening's own rule (below), else none: the first
+  // row. A key asks the rows of `slices` before it moves the focus to a row not drawn yet, and a
+  // render names the rows it is taking the reader to (`needed`, below).
+  const slices = useRef<RowSlices | null>(null);
+  const opensOnQuestion =
+    rootRow && target === undefined && branchAtMount.current === undefined && zoomAt === undefined;
+  const waitingId = useMemo(
+    () =>
+      opensOnQuestion
+        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
+        : undefined,
+    [opensOnQuestion, root]
+  );
+  const anchor = keyOfNodeRow(rows, target?.id ?? waitingId);
   const breadcrumb: readonly TreeNode[] = zoom === undefined ? [] : zoomBreadcrumb(root, zoom);
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row,
   // each mark the one made before for that row where it marks the same write, so a read that
@@ -756,8 +774,12 @@ export function IssueTree({
   useTreeKeymap({
     container: body,
     cycleLabel: "Unfold every row you folded",
+    // A row the rows are still to draw is drawn, with every row between the anchor and it, before
+    // a key moves the focus there (`TreeRows.tsx`).
+    drawUpTo: (row) => slices.current?.drawUpTo(rowKeyOf(row)),
     editing: editing !== undefined,
     holdsEscape,
+    isDrawn: (row) => slices.current?.isDrawn(rowKeyOf(row)) ?? true,
     onCycle: unfoldAll,
     onEdit: edit,
     onEditEnd: stopEditing,
@@ -792,21 +814,23 @@ export function IssueTree({
         ? undefined
         : rowKeyOf(first);
 
-  // An address that names a node puts the focus on it, in the frame after the commit that draws
-  // its row (`landOnRow`). The row is not on the page until the read that holds it has answered,
-  // and the document the preset draws beside the tree mounts later still and can leave the focus
-  // nowhere as it does, so this looks again on every tree the page draws and takes the focus
-  // back whenever nothing holds it (`focusIsLoose`: the page itself, or the element the app
-  // focuses at a page change, which holds the tree), until the reader's first act since they
-  // followed the address (`addressActs`; `READER_ACTS`, which end `acts`). A reader who acted
-  // before the row drew - the reads still out, a press on another control, a key, a turn of the
-  // wheel - keeps the focus where they put it and the page where they had it: the landing does
-  // nothing to the page - no focus, no scroll, no row's hold ended, no report - and the row is
-  // drawn where it stands, the branches the address opens opened. Watched only from the row's
-  // drawing, a row that drew late took the focus from the control they had moved to; brought on
-  // screen alone, it took the page away from the place they had scrolled to or the row they had
-  // moved to, and ended that row's hold. Whatever else holds the focus keeps it, and from the
-  // reader's first act the focus is theirs wherever they put it, nowhere included - a second
+  // An address that names a node brings its row on screen in the layout effect of the commit that
+  // draws it, before that commit is painted, and puts the focus on it in the frame after that
+  // commit (`landOnRow`): the commit draws every row between the anchor and it (`needed`), and the
+  // rows around it are drawn in slices after it. The row is not on the page until the read that
+  // holds it has answered, and the document the preset draws beside the tree mounts later still
+  // and can leave the focus nowhere as it does, so this looks again on every tree the page draws
+  // and takes the focus back whenever nothing holds it (`focusIsLoose`: the page itself, or the
+  // element the app focuses at a page change, which holds the tree), until the reader's first act
+  // since they followed the address (`addressActs`; `READER_ACTS`, which end `acts`). A reader
+  // who acted before the row drew - the reads still out, a press on another control, a key, a
+  // turn of the wheel - keeps the focus where they put it and the page where they had it: the
+  // landing does nothing to the page - no focus, no scroll, no row's hold ended, no report - and
+  // the row is drawn where it stands, the branches the address opens opened. Watched only from
+  // the row's drawing, a row that drew late took the focus from the control they had moved to;
+  // brought on screen alone, it took the page away from the place they had scrolled to or the row
+  // they had moved to, and ended that row's hold. Whatever else holds the focus keeps it, and from
+  // the reader's first act the focus is theirs wherever they put it, nowhere included - a second
   // Escape, a press on blank space: the effect takes it no more until the address is followed
   // again (`landingKey`: the following and the node), to this node or another. Keyed on the node
   // alone, a link to the node the reader had moved away from, followed again, landed nowhere; a
@@ -826,7 +850,7 @@ export function IssueTree({
     { readonly row: HTMLElement; readonly signal: AbortSignal } | undefined
   >(undefined);
   const targetId = target?.id;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (landingKey === undefined || targetId === undefined || !focusReveal) return;
     const held = taken.current?.key === landingKey ? taken.current : undefined;
     const loose = focusIsLoose(body.current);
@@ -917,6 +941,21 @@ export function IssueTree({
     });
     return () => settle.abort();
   }, []);
+  // The first drawing of the rows is painted with the question the page opens on in place (R3):
+  // the commit that first draws the rows brings the question's row on screen by the page's one
+  // rule, in its layout effect and before the frame is painted, where nothing else holds the
+  // focus and the opening is not done. That commit draws the question's screen first
+  // (`TreeRows.tsx`), and the rows drawn above it later leave it where it stands
+  // (`drawn-in-slices.ts`). The focus itself comes as the opening gives it (below), once the reads
+  // the rows come from have answered, in the frame after its row is drawn, and moves nothing then.
+  const firstDrawn = useRef(false);
+  useLayoutEffect(() => {
+    if (firstDrawn.current || !placed) return;
+    firstDrawn.current = true;
+    if (waitingId === undefined || opening.current.done || !focusIsLoose(body.current)) return;
+    const row = body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(waitingId));
+    if (row !== null && row !== undefined) bringOnScreen(row);
+  }, [placed, waitingId]);
   useEffect(() => {
     const held = opening.current;
     if (held.done) return;
@@ -1191,6 +1230,19 @@ export function IssueTree({
     };
   }, [landing]);
 
+  // The rows the reader is being taken to in this render, each drawn in it with every row between
+  // the anchor and it (`TreeRows.tsx`): the node the address names and the node a key, the
+  // Contents list or a write is taking them to (`named`), and the first row a page of children or
+  // a read they asked for draws, which takes the focus (`drawnFrom`).
+  const needed = [
+    ...named.map((id) => keyOfNodeRow(rows, id)),
+    drawnFrom === undefined
+      ? undefined
+      : "key" in drawnFrom
+        ? drawnFrom.key
+        : nodeRowKeys(rows).find((one) => !drawnFrom.before.has(one)),
+  ].filter((key): key is string => key !== undefined);
+
   const outline = (
     <div className="mb-3 flex min-w-0 flex-col">
       {/* Over the tree and never in it: an alert inside the tree would break its structure of
@@ -1290,7 +1342,9 @@ export function IssueTree({
             again under a new key: the drafts are the tree's. */}
         <ChangeDraftsProvider>
           <TreeRows
+            anchor={anchor}
             artifacts={artifacts}
+            container={body}
             context={context}
             coverageOut={coverageOut}
             editing={editing}
@@ -1300,6 +1354,7 @@ export function IssueTree({
             {...(more === undefined || !placed
               ? {}
               : { more: { left: more.left, onPress: readMore } })}
+            needed={needed}
             onFocus={focusRow}
             {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
             onPage={(page) => drawPage(page, false)}
@@ -1308,6 +1363,7 @@ export function IssueTree({
               ? {}
               : { report: { line: report.line, row: report.row ?? tabStop } })}
             rows={rows}
+            slices={slices}
             tabStop={tabStop}
             threads={threads}
             // The row the reader is editing in places nothing of its own: the editor keeps its
@@ -1371,6 +1427,14 @@ function nodeRowKeys(rows: readonly DrawnRow[]): string[] {
   return rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
 }
 
+/** The key of the first row of `rows` that draws node `id`, or undefined where none does or no
+ *  node is named. */
+function keyOfNodeRow(rows: readonly DrawnRow[], id: string | undefined): string | undefined {
+  if (id === undefined) return undefined;
+  const row = rows.find((one) => one.kind === "node" && one.node.id === id);
+  return row === undefined ? undefined : rowKeyOf(row);
+}
+
 /** What a crumb above a zoom says of a node other than the issue, which is named by its key:
  *  its one line, as every place that names a node by one draws it (`useNodeLine`) - each
  *  reference in it read as its target's current name (R8) - and its kind's word where its words
@@ -1421,13 +1485,16 @@ export function holdOnScreen(row: HTMLElement): AbortController {
 }
 
 /**
- * Lands the reader on `row`, a row the page takes them to of its own accord, in the next frame:
- * focuses it without scrolling, brings it on screen by the page's one rule (`bringOnScreen`), and
- * holds it there while the rest of the page arrives (`holdOnScreen`), in place of the row `held`
- * held. The focus waits for the frame because a focus given in the commit that draws the row
- * makes the browser lay the whole new page out there and then, inside the reader's press: on a
- * large issue, 831 ms of a 3.9 s press that changed the view. In the frame, the one read of the
- * row's box meets the layout the browser makes for that frame anyway.
+ * Lands the reader on `row`, a row the page takes them to of its own accord: brings it on screen
+ * by the page's one rule (`bringOnScreen`) at once, which its caller does in the layout effect of
+ * the commit that draws the row, so that commit is painted with the row in place (R3); then, in
+ * the next frame, focuses it without scrolling, brings it on screen again where what arrived in
+ * the meantime moved it, and holds it there while the rest of the page arrives
+ * (`holdOnScreen`), in place of the row `held` held. The focus waits for the frame because a
+ * focus given in the commit that draws the row makes the browser lay the whole new page out
+ * there and then, inside the reader's press: on a large issue, 831 ms of a 3.9 s press that
+ * changed the view. In the frame, the one read of the row's box meets the layout the browser
+ * makes for that frame anyway.
  *
  * Until the frame the landing is what `held` holds, so a later landing, the hold of another row
  * or the tree leaving the page ends it, and so does the reader's own act (`READER_ACTS`): the
@@ -1442,6 +1509,7 @@ export function landOnRow(
   held: RefObject<AbortController | undefined>,
   landed?: () => void
 ): AbortController {
+  bringOnScreen(row);
   held.current?.abort();
   const landing = abortOnReaderAct();
   held.current = landing;

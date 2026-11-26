@@ -267,7 +267,12 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
               ancestor ?? (address.target?.kind === "children" ? undefined : addressed.reveal)
             }
             root={view.root}
-            rootRow={view.rootRow}
+            // Graph's first focus is the stage's, on its tree's tab-stop row, as every view's is
+            // (`slots/stage.tsx`'s `ViewStage`), and the stage takes it before the opening's
+            // frame: the outline drawn for Graph opens on no question that waits on the reader,
+            // and so draws its first screen around its first row (`IssueTree`'s anchor), where
+            // the stage puts the focus.
+            rootRow={view.rootRow && outline === "conversation"}
             {...(address.zoom === undefined ? {} : { zoomAt: address.zoom })}
           />
         )}
