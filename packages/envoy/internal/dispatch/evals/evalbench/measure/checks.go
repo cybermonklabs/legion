@@ -674,7 +674,7 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 	// With no period and a context nothing cancels, Exclusive reports exactly whether the pass
 	// ran: it did not take the lease otherwise.
 	read := func(ctx context.Context) { c.staleReads(ctx, measured, catalog) }
-	for try := 1; !duty.Exclusive(ctx, leases, evals.RefresherLease, time.Time{}, 0, read); try++ {
+	for try := 1; !duty.Exclusive(ctx, nil, leases, evals.RefresherLease, time.Time{}, 0, read); try++ {
 		if try == fallbackLeaseTries {
 			c.r.fail("k16 fallback: no try of %d, %s apart, took the refresher's lease %s: a refresher pass held it at each, or the take failed (the dispatch duty lines above say which); no read of a stale cut is stated",
 				fallbackLeaseTries, fallbackLeaseWait, evals.RefresherLease)

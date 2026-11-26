@@ -612,7 +612,7 @@ func TestABootWaitsForTheFirstPaintsTheProcessHoldingTheLeaseFolds(t *testing.T)
 	holder, waiter := storetest.Leases(t, pool), storetest.Leases(t, pool)
 	go func() {
 		var folded error
-		duty.Exclusive(context.Background(), holder, RefresherLease, time.Time{}, 0, func(ctx context.Context) {
+		duty.Exclusive(context.Background(), nil, holder, RefresherLease, time.Time{}, 0, func(ctx context.Context) {
 			close(held)
 			<-release
 			for _, cut := range slices.SortedFunc(maps.Keys(marked), compareStaleCuts) {

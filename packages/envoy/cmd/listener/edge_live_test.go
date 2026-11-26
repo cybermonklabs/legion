@@ -90,12 +90,7 @@ func startEdgeLiveHub(t *testing.T, grants map[string]natsgrant.Permissions, dis
 	}
 	hub.server, hub.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(static...), []string{"-js"}, false)
 	dispatchSeed := hub.seeds[dispatch]
-	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return dispatchSeed, true
-		}
-		return "", false
-	}))
+	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(testnats.SeedOnly(dispatchSeed)))
 	if err != nil {
 		t.Fatalf("Dispatch's user creates the stream: %v", err)
 	}

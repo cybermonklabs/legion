@@ -1091,7 +1091,7 @@ func FoldFirstPaintsAtBoot(ctx context.Context, pool *store.Pool, leases duty.Le
 		}
 		if !held {
 			var failed error
-			ran := duty.Exclusive(ctx, leases, RefresherLease, time.Time{}, 0, func(ctx context.Context) {
+			ran := duty.Exclusive(ctx, nil, leases, RefresherLease, time.Time{}, 0, func(ctx context.Context) {
 				var cuts []staleCut
 				if cuts, failed = owedFirstPaints(ctx, pool); failed != nil {
 					return

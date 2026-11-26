@@ -1320,7 +1320,7 @@ func legionGh(t *testing.T, env map[string]string, args ...string) (code int, st
 func ghWrapperDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := execfile.Write(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+os.Args[0]+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+legionCopy(t)+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -1334,7 +1334,7 @@ func ghWrapperDir(t *testing.T) string {
 // the command and runs it, so that base environment is built in one place.
 func legionCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], args...)
+	cmd := exec.Command(legionCopy(t), args...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}, testDeadlineEnviron()...)
 	for name, value := range env {
@@ -1629,7 +1629,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	starts := filepath.Join(t.TempDir(), "starts")
 	legion := filepath.Join(t.TempDir(), "legion")
 	counting := "#!/bin/sh\necho start >>'" + starts + "'\n[ \"$(wc -l <'" + starts + "')\" -le 4 ] || exit 97\n" +
-		testMainEnv + "=1 exec '" + os.Args[0] + "' \"$@\"\n"
+		testMainEnv + "=1 exec '" + legionCopy(t) + "' \"$@\"\n"
 	wrappers, elsewhere := t.TempDir(), t.TempDir()
 	shim := filepath.Join(t.TempDir(), "gh")
 	for path, script := range map[string]string{
@@ -3261,7 +3261,7 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			hold := filepath.Join(bin, "legion")
 			holding := "#!/bin/sh\nprintf 'legion gh held\\n' >>\"$GH_STANDIN_RECORD\"\nticks=0\n" +
 				"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
-				"sleep 0.05\nexec '" + os.Args[0] + "' \"$@\"\n"
+				"sleep 0.05\nexec '" + legionCopy(t) + "' \"$@\"\n"
 			if err := execfile.Write(hold, []byte(holding), 0o700); err != nil {
 				t.Fatal(err)
 			}
