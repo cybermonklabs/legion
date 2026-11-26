@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -202,14 +203,18 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 }
 
 // migratedDispatchDatabase is a Dispatch store on an empty database of this test's own carrying
-// every migration (Dispatch's storetest.Open, which skips the test when DISPATCH_TEST_DATABASE_URL
-// is unset, as every Postgres-backed Dispatch test does), with the person whose writes the tests
-// make recorded. It is storetest's rather than internal/testpg's, which starts a container when
-// that variable is unset: testpg links testcontainers-go, whose package init reads every process
-// on the machine, and this test binary starts itself as the listener
+// every migration (Dispatch's storetest.Open), with the person whose writes the tests make
+// recorded. It is storetest's rather than internal/testpg's, which starts a container when
+// DISPATCH_TEST_DATABASE_URL is unset: testpg links testcontainers-go, whose package init reads
+// every process on the machine, and this test binary starts itself as the listener
 // (start_credential_wait_test.go's startListenerChild), so every such start would pay that init.
+// Without the variable the row skips, as every Postgres-backed Dispatch test does, and its skip
+// says what to set; CI's envoy-go-race job sets it for the step that runs this package.
 func migratedDispatchDatabase(t *testing.T) *dispatchstore.Store {
 	t.Helper()
+	if os.Getenv(dispatchstoretest.DatabaseURLEnv) == "" {
+		t.Skip(dispatchstoretest.DatabaseURLEnv + " is unset, so this row has no Postgres for Dispatch's store: set it to a Postgres server's admin URL, such as postgres://postgres:<password>@127.0.0.1:5432/postgres?sslmode=disable, as .github/workflows/ci-job-envoy-go-race.yaml does")
+	}
 	ctx := context.Background()
 	database := dispatchstoretest.Open(t)
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
