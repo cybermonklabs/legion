@@ -146,6 +146,12 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	rig.register(t, stopped, nil)
 	rig.stop(t, stopped)
 	rig.awaitNoConsumer(t, stopped)
+	// The stop's consumer delete runs off the route's goroutine and reads the stopped session's
+	// record again once the consumer is gone (sessionDelivery.deleteConsumer), which a starved run
+	// lets land during the first row. It is waited for here, so no row counts its read.
+	deletesDone, cancelDeletes := context.WithTimeout(context.Background(), listenerWaitBound(t))
+	rig.deps.consumers.awaitDeletes(deletesDone)
+	cancelDeletes()
 	conn := rig.harness.client.Conn
 	maxPayload := int(conn.MaxPayload())
 	sessionReads := []string{
@@ -158,6 +164,9 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 		contracts.LegacyAgentSubject(stopped), bus.DeliverSubject(stopped),
 		contracts.LegacyAgentSubject(unknown), bus.DeliverSubject(unknown),
 	}, sessionReads...)...)
+	// Anything published on the watched subjects before the rows, a registration's own work among
+	// it, is taken now and counted against no row.
+	watch.through(t, conn)
 
 	request := func(ctx context.Context, path string, fields map[string]string) *httptest.ResponseRecorder {
 		body := map[string]string{"source": "agent"}
