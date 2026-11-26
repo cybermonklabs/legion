@@ -2297,7 +2297,7 @@ func TestCacheRepacksAnUnmarkedDefaultBranchVolume(t *testing.T) {
 	narrowedBytes(t, log.all(), dir)
 	status, health, fields := healthzOf(t, c)
 	if status != http.StatusOK || !fields["defaultBranchOnly"] || !health.DefaultBranchOnly {
-		t.Errorf("/healthz after narrowing the unmarked volume answers %d %+v with fields %q, want ready and defaultBranchOnly", status, health, fields)
+		t.Errorf("/healthz after narrowing the unmarked volume answers %d %+v with fields %v, want ready and defaultBranchOnly", status, health, fields)
 	}
 }
 
@@ -2499,7 +2499,7 @@ func TestCacheInvalidatesItsMarkerWhenRenarrowingFails(t *testing.T) {
 		t.Errorf("fallback publication after failed narrowing = %v, want an unavailable cache", err)
 	}
 	if status, health, fields := healthzOf(t, c); status != http.StatusServiceUnavailable || health.Ready || fields["defaultBranchOnly"] {
-		t.Errorf("/healthz after failed narrowing answers %d %+v with fields %q, want 503 without defaultBranchOnly", status, health, fields)
+		t.Errorf("/healthz after failed narrowing answers %d %+v with fields %v, want 503 without defaultBranchOnly", status, health, fields)
 	}
 	restarted := cacheOn(t, opts)
 	if err := restarted.refresh(context.Background()); err != nil {
