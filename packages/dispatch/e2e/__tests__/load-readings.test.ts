@@ -7,6 +7,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  actBounds,
   actReading,
   type BoxEntry,
   boundHolds,
@@ -20,15 +21,25 @@ import {
   loadEnd,
   longestEvent,
   longestTaskAfter,
+  NOT_APPLICABLE,
   type RequestSpan,
   type ResourceEntry,
   readingLine,
 } from "../load-instruments";
 
-/** A frame stamped `time` by `requestAnimationFrame` and read at `at`, with the header's foot at
- *  120 px of a 900 px viewport. */
+/** A frame stamped `time` by `requestAnimationFrame`, read at `at` in its callback and shown 10 ms
+ *  after its start, with the header's foot at 120 px of a 900 px viewport. */
 function frame(time: number, marks: Partial<FrameEntry> = {}): FrameEntry {
-  return { at: time + 1, foot: 120, height: 900, rows: false, time, viewRow: false, ...marks };
+  return {
+    at: time + 1,
+    foot: 120,
+    height: 900,
+    rows: false,
+    shown: time + 10,
+    time,
+    viewRow: false,
+    ...marks,
+  };
 }
 
 /** A read the page sent, as Resource Timing gives it. */
@@ -190,7 +201,69 @@ test("a change of a box in a frame where the typeface's loadingdone fired is the
   ).toEqual([2, 4, 4]);
 });
 
-test("an act reads from its event's timeStamp to the first frame whose document holds its result, and a read sent after the event splits it in three", () => {
+test("an act reads from its event's timeStamp to the stamp of the frame that shows its result, taken after that frame's rendering, not to the frame's start", () => {
+  // The press is handled inside the frame that starts at 990, before that frame's callbacks, so
+  // its result is in the document when the callback looks: the frame's start is before the
+  // event, and the stamp of its end, at 1030, is what the reading runs to.
+  const frames = [frame(970), frame(990, { shown: 1030 }), frame(1040)];
+  const acts = [
+    {
+      event: { timeStamp: 1000, type: "keydown" },
+      loading: 1,
+      measured: true,
+      name: "j",
+      result: 1,
+    },
+  ];
+  expect(actReading({ acts, frames, resource: [] }, 0)).toEqual({
+    act: "j",
+    loading: 30,
+    read: null,
+    shown: 30,
+  });
+
+  // An act whose result no frame showed gives no reading.
+  const unshown = [{ ...acts[0], loading: null, result: null }];
+  expect(actReading({ acts: unshown, frames, resource: [] }, 0)).toEqual({
+    act: "j",
+    loading: null,
+    read: null,
+    shown: null,
+  });
+  // An act the page never received gives none either.
+  const unpressed = [{ ...acts[0], event: null, loading: null, result: null }];
+  expect(actReading({ acts: unpressed, frames, resource: [] }, 0).shown).toBeNull();
+});
+
+test("an act refuses a frame stamped before its event, and reads the first frame after the event that shows its result", () => {
+  // The frame the result was recorded at was shown at 995, before the event's timeStamp: it cannot
+  // show what the event did. The frame after it has no stamp yet, and the one after that, shown at
+  // 1060, is the first that shows the result after the event.
+  const frames = [
+    frame(960, { shown: 995 }),
+    frame(1010, { shown: null }),
+    frame(1040, { shown: 1060 }),
+  ];
+  const acts = [
+    {
+      event: { timeStamp: 1000, type: "pointerdown" },
+      loading: 0,
+      measured: true,
+      name: "a press on Details",
+      result: 0,
+    },
+  ];
+  expect(actReading({ acts, frames, resource: [] }, 0)).toEqual({
+    act: "a press on Details",
+    loading: 60,
+    read: null,
+    shown: 60,
+  });
+  // No frame from the recorded one on was shown after the event: no reading.
+  expect(actReading({ acts, frames: frames.slice(0, 2), resource: [] }, 0).shown).toBeNull();
+});
+
+test("an act needs a read only where a read sent after its event answered before the frame that shows its result, and is then read in three parts", () => {
   const frames = [frame(990), frame(1006), frame(1040), frame(1200), frame(1400), frame(1500)];
   const acts = [
     {
@@ -201,37 +274,76 @@ test("an act reads from its event's timeStamp to the first frame whose document 
       result: 5,
     },
   ];
-  const resource = [
-    // Sent with the load, before the press: it is no read of the press.
-    read("/api/v1/issues/LAY-1", 900, 1200),
-    read("/api/v1/issues/LAY-1/tree?view=spec", 1010, 1400),
+  // Sent with the load, before the press: it is no read of the press.
+  const before = read("/api/v1/issues/LAY-1", 900, 1200);
+  const spec = read("/api/v1/issues/LAY-1/tree?view=spec", 1010, 1400);
+  // The result's frame is shown at 1510: the view read answered at 1400, before it.
+  expect(actReading({ acts, frames, resource: [before, spec] }, 0)).toEqual({
+    act: "a press on Spec",
+    loading: 50,
+    read: { drawn: 110, sent: 10, url: "/api/v1/issues/LAY-1/tree?view=spec" },
+    shown: 510,
+  });
+
+  // The read was sent after the press and answered after the frame that shows the result, so
+  // the result was drawn from what the page held: no read is part of it.
+  const late = read("/api/v1/issues/LAY-1/tree?view=spec", 1010, 1600);
+  expect(actReading({ acts, frames, resource: [before, late] }, 0)).toEqual({
+    act: "a press on Spec",
+    loading: 50,
+    read: null,
+    shown: 510,
+  });
+  // Only a read sent before the press answered: none is the press's.
+  expect(actReading({ acts, frames, resource: [before] }, 0).read).toBeNull();
+});
+
+test("an act's bounds read the result of a load that needed no read to its result's frame, and its two read bounds n/a there", () => {
+  const needed = { drawn: 110, sent: 10, url: "/api/v1/issues/LAY-1/tree?view=spec" };
+  const readings = [
+    { act: "a press on Spec", loading: 50, read: needed, shown: 510 },
+    { act: "a press on Spec", loading: 40, read: { ...needed, drawn: 260 }, shown: 620 },
+    { act: "a press on Spec", loading: 60, read: null, shown: 90 },
+    { act: "a press on Spec", loading: 70, read: null, shown: 120 },
+    { act: "a press on Spec", loading: null, read: null, shown: null },
   ];
-  expect(actReading({ acts, frames, resource }, 0)).toEqual({
-    act: "a press on Spec",
-    loading: 40,
-    read: { drawn: 100, sent: 10, url: "/api/v1/issues/LAY-1/tree?view=spec" },
-    shown: 500,
-  });
+  const bounds = actBounds("during-load.a-press-on-spec", 2, 200, readings);
+  expect(bounds.map(readingLine)).toEqual([
+    "during-load.a-press-on-spec.result-ms rate=2 readings=50,40,90,120,none limit=200 fourth=120 pass",
+    "during-load.a-press-on-spec.read-sent-ms rate=2 readings=10,10,n/a,n/a,n/a limit=200 fourth=10 pass",
+    // A load that needed no read meets the read bounds, so of the two that needed one, one may
+    // read over the limit, as one load in five may for any bound.
+    "during-load.a-press-on-spec.read-drawn-ms rate=2 readings=110,260,n/a,n/a,n/a limit=200 fourth=110 pass",
+  ]);
+  const slower = readings.map((reading) =>
+    reading.read === null ? reading : { ...reading, read: { ...reading.read, drawn: 310 } }
+  );
+  expect(actBounds("during-load.a-press-on-spec", 2, 200, slower).map(readingLine)[2]).toBe(
+    "during-load.a-press-on-spec.read-drawn-ms rate=2 readings=310,310,n/a,n/a,n/a limit=200 fourth=310 fail"
+  );
 
-  // A press whose result needs no read: the reading is the event to the result's frame alone.
-  expect(actReading({ acts, frames, resource: resource.slice(0, 1) }, 0)).toEqual({
-    act: "a press on Spec",
-    loading: 40,
-    read: null,
-    shown: 500,
-  });
+  // An act no load of which needed a read: its two read bounds read n/a five times, and pass.
+  const held = actBounds("after-load.j", 4, 200, readings.slice(2).concat(readings.slice(2, 4)));
+  expect(held.slice(1).map(readingLine)).toEqual([
+    "after-load.j.read-sent-ms rate=4 readings=n/a,n/a,n/a,n/a,n/a limit=200 fourth=n/a pass",
+    "after-load.j.read-drawn-ms rate=4 readings=n/a,n/a,n/a,n/a,n/a limit=200 fourth=n/a pass",
+  ]);
+  expect(held.every(boundHolds)).toBe(true);
+});
 
-  // An act whose result no frame showed gives no reading.
-  const unshown = [{ ...acts[0], loading: null, result: null }];
-  expect(actReading({ acts: unshown, frames, resource: [] }, 0)).toEqual({
-    act: "a press on Spec",
-    loading: null,
-    read: null,
-    shown: null,
-  });
-  // An act the page never received gives none either.
-  const unpressed = [{ ...acts[0], event: null, loading: null, result: null }];
-  expect(actReading({ acts: unpressed, frames, resource }, 0).shown).toBeNull();
+test("a load a bound does not apply to reads n/a, which meets the bound, where a load that gave no reading is over it", () => {
+  expect(fourthSmallest([NOT_APPLICABLE, 300, NOT_APPLICABLE, 100, 250])).toBe(250);
+  expect(
+    fourthSmallest([NOT_APPLICABLE, NOT_APPLICABLE, NOT_APPLICABLE, NOT_APPLICABLE, 900])
+  ).toBe(NOT_APPLICABLE);
+  expect(fourthSmallest([NOT_APPLICABLE, null, null, 1, NOT_APPLICABLE])).toBeNull();
+  const bound = { bound: "after-load.k.read-drawn-ms", limit: 200, rate: 2 };
+  expect(boundHolds({ ...bound, readings: [NOT_APPLICABLE, 300, NOT_APPLICABLE, 100, 150] })).toBe(
+    true
+  );
+  expect(boundHolds({ ...bound, readings: [NOT_APPLICABLE, 300, NOT_APPLICABLE, 100, 250] })).toBe(
+    false
+  );
 });
 
 test("the longest task counts only tasks after the first drawing, and the longest event and paint are the load's largest", () => {

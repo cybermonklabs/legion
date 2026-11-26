@@ -13,12 +13,14 @@ import type * as WebVitals from "web-vitals";
  * `largest-contentful-paint`, `longtask`, `event` (Event Timing, `durationThreshold: 16`) and
  * `resource`; `web-vitals`' `onCLS` with `reportAllChanges: true`, loaded from the installed
  * package's IIFE build; each `loadingdone` of `document.fonts`; and a `requestAnimationFrame` loop
- * that stamps each frame and, where the load asks for it, records the boxes of the view row's
+ * that stamps each frame, with the time `requestAnimationFrame` gives it and with the time it was
+ * shown (`FrameEntry.shown`), and, where the load asks for it, records the boxes of the view row's
  * controls, the header's controls and band, the rows in the viewport and the row the load names
  * (`BOX_GROUPS`). A box is recorded at the frame it is first drawn in and at each frame it
  * differs, rounded to whole pixels. The same loop watches the act a row armed (`armStep`): the
  * event's `timeStamp` comes from a capturing listener of the first trusted `pointerdown` or
- * `keydown` after the arming, and the act's result is read in each frame after it.
+ * `keydown` after the arming, the act's result is looked for in each frame's callback after it,
+ * and the act is read to the time the first frame that holds the result was shown.
  *
  * **What the readers take**: plain arrays of those entries, in the shapes the observers give
  * them, serialised (`LoadRecord`), so a load's capture (`LoadCapture`) can be read back from a
@@ -105,8 +107,14 @@ export interface FrameEntry {
   readonly height: number;
   /** Whether the document holds a row of a view. */
   readonly rows: boolean;
-  /** The time `requestAnimationFrame` gives the frame: the frame that shows what the document
-   *  holds at its callback. */
+  /** When the frame was shown: `performance.now()` in a task the frame's callback posted (a
+   *  `MessageChannel` message), which runs once the frame's callbacks, style, layout and paint are
+   *  done. An act's result is read by this stamp. Null where that task had not run yet when the
+   *  record was read, which only the last frame can be. */
+  readonly shown: number | null;
+  /** The time `requestAnimationFrame` gives the frame, which is the frame's start: an input the
+   *  frame handles before its callbacks has a `timeStamp` after it. It is kept for the first
+   *  drawings (`firstDrawing`), which are frames, not acts. */
   readonly time: number;
   /** Whether the document holds the view row's controls. */
   readonly viewRow: boolean;
@@ -245,17 +253,30 @@ export function loadEnd(
   return now >= end ? end : null;
 }
 
+/** What a load reads for a bound that does not apply to it: an act's read, in a load whose act
+ *  needed none (`actBounds`). */
+export const NOT_APPLICABLE = "n/a";
+
+/** One load's reading of a bound: a number; null where the load gave none, which counts as
+ *  larger than any; or `NOT_APPLICABLE` where the bound does not apply to the load, which meets
+ *  it, since that load spent nothing on what the bound limits. */
+export type Reading = number | null | typeof NOT_APPLICABLE;
+
 /** The fourth smallest of five readings, which a bound holds when it meets: one load in five may
- *  read over it. A load that gave no reading (null) counts as larger than any, so two of them
- *  leave no fourth smallest. */
-export function fourthSmallest(readings: readonly (number | null)[]): number | null {
+ *  read over it. A load the bound does not apply to sorts first, and one that gave no reading
+ *  last, so two of the latter leave no fourth smallest, and a bound that applies to no load reads
+ *  `NOT_APPLICABLE`. */
+export function fourthSmallest(readings: readonly Reading[]): Reading {
   if (readings.length !== 5) {
     throw new Error(`a bound is read over five readings, and this one has ${readings.length}`);
   }
-  const sorted = [...readings].sort((a, b) =>
-    a === null ? (b === null ? 0 : 1) : b === null ? -1 : a - b
-  );
-  return sorted[3] ?? null;
+  const rank = (reading: Reading) =>
+    reading === NOT_APPLICABLE
+      ? Number.NEGATIVE_INFINITY
+      : reading === null
+        ? Number.POSITIVE_INFINITY
+        : reading;
+  return [...readings].sort((a, b) => rank(a) - rank(b) || 0)[3] ?? null;
 }
 
 /** One bound of one row: its name, a single word, the processor's slowing, the five loads'
@@ -264,18 +285,21 @@ export interface BoundReading {
   readonly bound: string;
   readonly limit: number;
   readonly rate: number;
-  readonly readings: readonly (number | null)[];
+  readonly readings: readonly Reading[];
 }
 
-/** Whether the bound holds: the fourth smallest of its five readings is at most its limit. */
+/** Whether the bound holds: the fourth smallest of its five readings meets its limit, a load the
+ *  bound does not apply to meeting it. */
 export function boundHolds(reading: BoundReading): boolean {
   const fourth = fourthSmallest(reading.readings);
-  return fourth !== null && fourth <= reading.limit;
+  return fourth === NOT_APPLICABLE || (fourth !== null && fourth <= reading.limit);
 }
 
-/** A reading, as a line prints it: to three decimals at most, `none` for a load that gave none. */
-function printed(value: number | null): string {
-  return value === null ? "none" : String(Math.round(value * 1000) / 1000);
+/** A reading, as a line prints it: to three decimals at most, `none` for a load that gave none,
+ *  `n/a` for a load the bound does not apply to. */
+function printed(value: Reading): string {
+  if (value === null) return "none";
+  return value === NOT_APPLICABLE ? value : String(Math.round(value * 1000) / 1000);
 }
 
 /** The line a row prints for one bound:
@@ -465,25 +489,43 @@ export function underHeader(box: Box, frame: Pick<FrameEntry, "foot" | "height">
 export interface ActReading {
   /** The step's name, null where the page was never armed for it. */
   readonly act: string | null;
-  /** From the event's `timeStamp` to the frame in which the control reads as current and the
-   *  view's place shows that it loads, or the result shows. */
+  /** From the event's `timeStamp` to the stamp of the first frame after it in which the control
+   *  reads as current and the view's place shows that it loads, or the result shows. */
   readonly loading: number | null;
-  /** The read the act sent after its event, where it sent one: from the event to the read's
-   *  start (`sent`), and from the read's answer to the frame that drew the result (`drawn`). */
+  /** Where the result needed a read the page did not hold: a read the page's code sent after the
+   *  event and whose answer came before the frame that shows the result. From the event to the
+   *  first such read's start (`sent`), and from the last such answer to that frame (`drawn`).
+   *  Null where no such read answered, so the result was drawn from what the page held. */
   readonly read: {
-    readonly drawn: number | null;
+    readonly drawn: number;
     readonly sent: number;
     readonly url: string;
   } | null;
-  /** From the event's `timeStamp` to the `requestAnimationFrame` time of the first frame whose
-   *  document holds the result; null where no frame did. */
+  /** From the event's `timeStamp` to the stamp of the first frame after it whose document holds
+   *  the result; null where no frame did. */
   readonly shown: number | null;
 }
 
-/** The reading of the step armed under `index`: from its event to the first frame that shows its
- *  result, and where Resource Timing shows a read the page's code sent (`fetch` or
- *  `xmlhttprequest`) after the event and by that frame, the three parts R2 bounds where a result
- *  needs a read. The read's answer is the last that came before the result's frame. */
+/** The stamp (`FrameEntry.shown`) of the first frame from `index` on that was shown at or after
+ *  `after`, an event's `timeStamp`: a frame shown before the event cannot show what the event
+ *  did, and a result, once in the document, stays there for the frames after it. Null where no
+ *  frame was recorded, or none from it on was shown after the event. */
+function shownFrom(
+  frames: readonly FrameEntry[],
+  index: number | null,
+  after: number
+): number | null {
+  if (index === null) return null;
+  for (const frame of frames.slice(index)) {
+    if (frame.shown !== null && frame.shown >= after) return frame.shown;
+  }
+  return null;
+}
+
+/** The reading of the step armed under `index`: from its event to the stamp of the first frame
+ *  after it that shows its result, and where the result needed a read the page did not hold - a
+ *  read the page's code sent (`fetch` or `xmlhttprequest`) after the event, which Resource Timing
+ *  shows answered before that frame - the three parts R2 bounds for such an act. */
 export function actReading(
   record: Pick<LoadRecord, "acts" | "frames" | "resource">,
   index: number
@@ -493,34 +535,67 @@ export function actReading(
   if (act === undefined || event === null) {
     return { act: act?.name ?? null, loading: null, read: null, shown: null };
   }
-  const shownAt = act.result === null ? null : (record.frames[act.result]?.time ?? null);
-  const loadingAt = act.loading === null ? null : (record.frames[act.loading]?.time ?? null);
+  const shownAt = shownFrom(record.frames, act.result, event.timeStamp);
+  const loadingAt = shownFrom(record.frames, act.loading, event.timeStamp);
   const reads = record.resource
     .filter(
       (entry) =>
         (entry.initiatorType === "fetch" || entry.initiatorType === "xmlhttprequest") &&
         entry.startTime >= event.timeStamp &&
-        (shownAt === null || entry.startTime <= shownAt)
+        shownAt !== null &&
+        entry.responseEnd <= shownAt
     )
     .sort((a, b) => a.startTime - b.startTime);
   const first = reads[0];
-  const answered = reads
-    .filter((entry) => shownAt === null || entry.responseEnd <= shownAt)
-    .reduce((latest, entry) => Math.max(latest, entry.responseEnd), Number.NEGATIVE_INFINITY);
   return {
     act: act.name,
     loading: loadingAt === null ? null : loadingAt - event.timeStamp,
     read:
-      first === undefined
+      first === undefined || shownAt === null
         ? null
         : {
-            drawn:
-              shownAt === null || answered === Number.NEGATIVE_INFINITY ? null : shownAt - answered,
+            drawn: shownAt - Math.max(...reads.map((entry) => entry.responseEnd)),
             sent: first.startTime - event.timeStamp,
             url: pathOf(first.name),
           },
     shown: shownAt === null ? null : shownAt - event.timeStamp,
   };
+}
+
+/** The three bounds R2 reads of an act over its five loads, each named under `prefix` and held
+ *  to `limit`. `result-ms`: the event to the frame that shows the result, or for a load whose
+ *  result needed a read (`ActReading.read`), the event to the frame in which the control reads as
+ *  current and the view's place shows that it loads. `read-sent-ms`: the event to the read's
+ *  start, and `read-drawn-ms`: the read's answer to the frame that shows the result, each
+ *  `NOT_APPLICABLE` for a load whose result needed no read. */
+export function actBounds(
+  prefix: string,
+  rate: number,
+  limit: number,
+  readings: readonly ActReading[]
+): BoundReading[] {
+  return [
+    {
+      bound: `${prefix}.result-ms`,
+      limit,
+      rate,
+      readings: readings.map((reading) =>
+        reading.read === null ? reading.shown : reading.loading
+      ),
+    },
+    {
+      bound: `${prefix}.read-sent-ms`,
+      limit,
+      rate,
+      readings: readings.map((reading) => reading.read?.sent ?? NOT_APPLICABLE),
+    },
+    {
+      bound: `${prefix}.read-drawn-ms`,
+      limit,
+      rate,
+      readings: readings.map((reading) => reading.read?.drawn ?? NOT_APPLICABLE),
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -672,7 +747,8 @@ function instrumentPage(config: PageConfig): void {
   const element: ElementEntry[] = [];
   const event: EventEntry[] = [];
   const fontsDone: number[] = [];
-  const frames: FrameEntry[] = [];
+  // Each frame's `shown` is filled once the task its callback posted runs (`stamps` below).
+  const frames: { -readonly [K in keyof FrameEntry]: FrameEntry[K] }[] = [];
   const lcp: LcpEntry[] = [];
   const longtask: TaskEntry[] = [];
   const resource: ResourceEntry[] = [];
@@ -944,12 +1020,20 @@ function instrumentPage(config: PageConfig): void {
   window.addEventListener("keydown", input, { capture: true });
 
   // The frame loop: each frame stamped, its marks read, its boxes kept and the armed act watched.
+  // The callback runs before the frame's style, layout and paint, so it posts a message whose task
+  // runs once they are done, and that task stamps the frame as shown.
+  const stamps = new MessageChannel();
+  stamps.port1.onmessage = (message: MessageEvent<number>) => {
+    const frame = frames[message.data];
+    if (frame !== undefined) frame.shown = performance.now();
+  };
   let drawnViewRow = false;
   let drawnRows = false;
   const tick = (time: number) => {
     requestAnimationFrame(tick);
     const at = performance.now();
     const index = frames.length;
+    stamps.port2.postMessage(index);
     const top = foot();
     const viewRow = document.querySelector(config.viewRow) !== null;
     const rows = document.querySelector(config.viewRows) !== null;
@@ -960,6 +1044,7 @@ function instrumentPage(config: PageConfig): void {
       foot: Math.round(top),
       height: window.innerHeight,
       rows,
+      shown: null,
       time,
       viewRow,
     });

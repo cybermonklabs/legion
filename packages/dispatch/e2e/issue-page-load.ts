@@ -21,6 +21,7 @@ import {
   type ActStep,
   type ActTarget,
   type ArmWhen,
+  actBounds,
   armStep,
   type BoundReading,
   boundHolds,
@@ -478,32 +479,11 @@ export function printReading(line: string): void {
   base.info().annotations.push({ description: line, type: "reading" });
 }
 
-/** Holds an act's five readings to R2 under `prefix`: the time to its result, and where a load's
- *  act sent a read after its event, the three parts of an act that needs a read. For such a load
- *  the result's reading is the first part, the frame in which the control reads as current and
- *  the view's place shows that it loads; the second is the event to the read's start, and the
- *  third the read's answer to the frame that draws the view's first screen. A load whose act sent
- *  no read reads 0 for those two, since none of its time went to a read. */
+/** Holds an act's five readings to R2 under `prefix`, as `actBounds` reads them: the time to its
+ *  result, and the two parts of a result that needed a read, each `n/a` for a load whose result
+ *  needed none. */
 export function holdAct(prefix: string, rate: number, readings: readonly ActReading[]): void {
-  holdBound({
-    bound: `${prefix}.result-ms`,
-    limit: ACT_MS,
-    rate,
-    readings: readings.map((reading) => (reading.read === null ? reading.shown : reading.loading)),
-  });
-  if (readings.every((reading) => reading.read === null)) return;
-  holdBound({
-    bound: `${prefix}.read-sent-ms`,
-    limit: ACT_MS,
-    rate,
-    readings: readings.map((reading) => (reading.read === null ? 0 : reading.read.sent)),
-  });
-  holdBound({
-    bound: `${prefix}.read-drawn-ms`,
-    limit: ACT_MS,
-    rate,
-    readings: readings.map((reading) => (reading.read === null ? 0 : reading.read.drawn)),
-  });
+  for (const bound of actBounds(prefix, rate, ACT_MS, readings)) holdBound(bound);
 }
 
 /** Holds the five loads' longest Event Timing entry and longest task after the first drawing of
