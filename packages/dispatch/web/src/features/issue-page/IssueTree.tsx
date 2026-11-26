@@ -27,7 +27,7 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
-import { threadMarks } from "./outline-thread-read";
+import { type ThreadMark, threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
@@ -394,8 +394,15 @@ export function IssueTree({
       : drawn;
   const breadcrumb: readonly TreeNode[] =
     rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
-  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
-  const threads = useMemo(() => threadMarks(root), [root]);
+  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row,
+  // once every read the rows come from has answered. Until then a row can stand that the settled
+  // outline draws no more - an answered question drawn whole until the decisions read puts its
+  // decision under it and folds it - and its mark read the unread set, and could mark the thread
+  // read, on a row the reader is not left with, as the reads happened to land.
+  const threads = useMemo(
+    () => (readsSettled ? threadMarks(root) : NO_THREAD_MARKS),
+    [readsSettled, root]
+  );
 
   // A row the page takes the reader to of its own accord - the node an address names, the open
   // question the page opens on - takes the focus while the outline's other reads are still
@@ -1371,6 +1378,9 @@ export const LANDING_WAIT_MS = 10_000;
 
 /** No branch folded in the cycle's last state: the state it starts in each time. */
 const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/** No thread marked read while the rows' reads are still landing (`readsSettled`). */
+const NO_THREAD_MARKS: ReadonlyMap<string, ThreadMark> = new Map();
 
 /** The element holding a row's words (`NodeRow.tsx`), which a press on them is read against
  *  (R18, `statementWordsAt`); references in it are counted as written (`data-row-written`). */
