@@ -132,7 +132,7 @@ type childrenHold struct {
 // accepting, one whose start is written and not delivered, and one whose worker is in the middle
 // of a phase through this same function.
 func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, s TaskScope, hold childrenHold) error {
-	issue := s.issue
+	issue := s.issueItself()
 	if issue.Phase == phase.AwaitingChildren {
 		return nil
 	}
@@ -152,7 +152,6 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, s TaskScope, hold
 	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return err
 	}
-	issue.ViewTask = ""
 	issue.Phase, issue.Hold, issue.Status = phase.AwaitingChildren, nil, status
 	children := make([]string, len(hold.Open))
 	for i, child := range hold.Open {

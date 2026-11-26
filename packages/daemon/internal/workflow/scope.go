@@ -39,6 +39,17 @@ func (s TaskScope) Task() string { return s.walk.Task }
 // Planned says whether s's run has plan rows.
 func (s TaskScope) Planned() bool { return s.plan != nil }
 
+// issueItself is s's copy as the issue itself, naming no task (record.Issue.ViewTask), for a write
+// of the issue itself (putScope, WriteIssue), since the store refuses to write a copy
+// (record.Postgres.PutIssue): putScope's write of the issue where its tasks put it, and a move of
+// the whole issue that a task's door makes, the move into awaiting_children among them
+// (awaitChildren).
+func (s TaskScope) issueItself() record.Issue {
+	issue := s.issue
+	issue.ViewTask = ""
+	return issue
+}
+
 // textNamesTask is the one presentation rule of the workflow's texts about s's task: a text names
 // the task only where s's plan holds a choice of tasks, so a plan of one task, and a run with no
 // plan rows, say what they always said. heldSummary (a held notice's summary) and arrive's journal
@@ -556,8 +567,7 @@ func (e *Engine) PromotedScope(ctx context.Context, tx pgx.Tx, issue record.Issu
 // mark (record.Issue.TakenBack) the write gave the issue, and its plan takes its task's row as
 // written.
 func (e *Engine) putScope(ctx context.Context, tx pgx.Tx, s *TaskScope) (record.Issue, error) {
-	written := s.issue
-	written.ViewTask = ""
+	written := s.issueItself()
 	if s.plan == nil {
 		return written, e.store.PutIssue(ctx, tx, written)
 	}
