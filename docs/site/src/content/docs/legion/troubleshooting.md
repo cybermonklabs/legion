@@ -2142,8 +2142,8 @@ stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughS
    of one record by its id answers `failed` with the error, and leaves the record as it was.
 3. **Have the cause removed.** A cause outside the daemon, such as the database out of reach, a
    Dispatch or GitHub outage, or GitHub's rate limit, needs no change to Legion: go on once it has
-   cleared. A defect in the daemon needs a fix that runs in the daemon: give the fix to the tree
-   that already works on that code, or hand the defect over as an issue for Legion. The controller
+   cleared. A defect in the daemon needs a fix that runs in the daemon:
+   hand the defect over as an issue for Legion. The controller
    hands over a clear defect as its skill says.
 4. **Replay once the fix runs in the daemon.** A replay applies the stored message through the
    handling a live delivery takes, and publishes nothing to the stream. It judges the fact against

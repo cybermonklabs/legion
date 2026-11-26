@@ -75,7 +75,7 @@ Only you write the project's merge holds, one line a hold in the Dispatch docume
 
 ## Findings, and the issues you file
 
-File an issue only when a person asks you to, for a clear defect, and the report issue. A clear defect goes to another tree from the role that found it, and you forward none. Any other problem is a finding: open a `dispatch ask` as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
+File an issue only when a person asks you to, for a clear defect, and the report issue. Any other problem is a finding: open a `dispatch ask` as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
 
 ## Daily report
 

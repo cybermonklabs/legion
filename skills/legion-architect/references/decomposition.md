@@ -1,6 +1,6 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
+Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on other work, or attach architecture components.
 
 ## Reading the tree
 

@@ -210,8 +210,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 }
 
 // A finding outside the tree takes the paths of skill://legion-worker/references/findings.md: the
-// tree fixes a clear defect itself, and writes it to the project's coordinator to file only when
-// the repository is out of reach;
+// tree fixes a clear defect itself;
 // a finding that needs a decision is an ask. The headless fragment composed into the same planner
 // prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {

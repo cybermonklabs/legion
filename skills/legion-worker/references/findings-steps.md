@@ -11,11 +11,11 @@ Read this when `skill://legion-worker/references/findings.md` sends you here for
    ```bash
    dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-<root key, lower case>-architect' --body-file - <<'EOF'
    Clear defect from <your role token>
-   <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix, and who makes it>
+   <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix; why you do not make it yourself>
    EOF
    ```
 
-For the controller, post the same comment on that project's report issue (the issue the deployment instructions name for Legion's reports, else the project's `Legion daily report`; a closed one takes a comment too, and with none, your own issue), with `--mention 'role:legion-<project>-controller'`. The controller replies under it and mentions your role. `Filed dispatch://<KEY>` names the issue it filed. On `Not filed: dispatch://<KEY> changes those files; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`, write the same comment on the issue it names, mentioning that role. On `Not filed: dispatch://<KEY> has it; role:<token> is mentioned here`, write nothing. On `Not filed: it stops your work, so it is yours to fix`, fix it. On any other `Not filed:` reply, open the ask yourself (`skill://legion-worker/references/findings.md`, step 3 of its first section).
+For the controller, post the same comment on that project's report issue (the issue the deployment instructions name for Legion's reports, else the project's `Legion daily report`; a closed one takes a comment too, and with none, your own issue), with `--mention 'role:legion-<project>-controller'`. The controller replies under it and mentions your role. `Filed dispatch://<KEY>` names the issue it filed. On `Not filed: dispatch://<ROOT>; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`, write the same comment on the issue it names, mentioning that role. On `Not filed: dispatch://<KEY>; role:<token> is mentioned here`, write nothing. On `Not filed: it stops your work, so it is yours to fix`, fix it. On any other `Not filed:` reply, open the ask yourself (`skill://legion-worker/references/findings.md`, step 3 of its first section).
 
 Apart from that reply, file nothing and wait for nothing. A production check's result names your comment, `dispatch://<KEY>/comment/<id>`.
 

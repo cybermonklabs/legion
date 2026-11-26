@@ -38,7 +38,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 
-4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.
+4. Decompose, adopt, split across repositories or record a wait on other work as `skill://legion-architect/references/decomposition.md` says.
 
 5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
    a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.

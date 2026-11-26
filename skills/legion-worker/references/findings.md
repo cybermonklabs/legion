@@ -4,7 +4,7 @@ Read it when you find a problem your issue does not cover (a defect in another c
 
 ## Fix it yourself, else write to the controller, and ask only for a decision
 
-A finding outside your issue never becomes a `dispatch issue` you file, except the child of step 1. Take the first step that fits:
+A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
 
 1. **Fix it yourself.** A defect that stops your work, and a defect with a clear fix, are your tree's to fix, in any repository your credentials reach, with judgment: in your own pull request, or in a separate pull request of your tree. The implementer makes the fix, and a tester or a reviewer sends it to the implementer with its evidence (a tester with its red test, the reviewer in its review). Say so in the PR body. A phase worker whose own pull request cannot carry the fix sends it to the architect that owns its issue with `envoy_publish`; that architect adds it to an open pull request or files a child. If your fix touches files that another tree's open pull request changes, tell that tree's architect in a comment and go on: do not wait for an answer ([Write by a mention](#write-by-a-mention)).
 2. **Write to the controller.** A defect in a repository your token does not reach goes to the controller of the project that repository maps to, or of your own project when Dispatch maps it to none, which files it. After the merge, the tester writes each clear defect a production check finds to that controller. How: [Write by a mention](#write-by-a-mention).

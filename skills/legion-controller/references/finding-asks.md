@@ -11,9 +11,9 @@ Every issue you file carries one line in its spec, which triage reads to tell yo
 
 ## File a clear defect
 
-A role writes a clear defect to you: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. Post the evidence of one you find yourself on the report issue, with `controller` as the role.
-A defect that stops its sender's work is the sender's to fix, wherever the fix belongs, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now: reply `Not filed: it stops your work, so it is yours to fix`.
-File any other only when it is clear, in a repository both role GitHub Apps are installed on, no open issue tracks it (an open issue in no live tree gets the evidence as a comment, and the reply `Filed dispatch://<KEY>`), and no live tree's open pull request changes the files the fix touches. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the role the finder writes to itself, or the reason the finder opens its ask.
+A role writes a clear defect to you: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. For a clear defect you find yourself, post its evidence on the report issue with `controller` as the role.
+File it only when it is clear, in a repository both role GitHub Apps are installed on, no open issue tracks it (an open issue that no live tree owns gets the evidence as a comment, and the reply `Filed dispatch://<KEY>`), and no live tree's open pull request changes the files the fix touches. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the role the finder writes to itself, or the reason the finder opens its ask.
+A defect that stops its sender's work, in a repository the sender's token reaches, is the sender's to fix, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now: reply `Not filed: it stops your work, so it is yours to fix`.
 The reply's form and the five steps are in `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect`: read them before every such defect.
 
 ## Follow it
@@ -54,4 +54,4 @@ Nothing wakes on or follows an ask while no controller runs, so at every start:
    ```
 
    Take each as [File a clear defect](#file-a-clear-defect) says.
-5. Take each ask earlier rules opened whose question opens `Clear defect from ` the same way, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered with a label that starts `Hand it`, a person's request: where step 2 or 3 of *File a clear defect* finds a live tree, reply `Not filed: dispatch://<KEY> has it; role:<token> is mentioned here` (`<KEY>` the issue), adding `--mention 'role:<its architect's token>'`: it reads the answer and evidence here; copy neither. If step 2's issue is in no tree, reply `Not filed: dispatch://<KEY> tracks it, in no tree` to its person, mentioning no finder.
+5. Take each ask earlier rules opened whose question opens `Clear defect from ` the same way, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered with a label that starts `Hand it`, a person's request: where step 2 or 3 of *File a clear defect* finds a live tree, reply `Not filed: dispatch://<KEY>; role:<token> is mentioned here` (`<KEY>` the issue or root), adding `--mention 'role:<its architect's token>'`: it reads the answer and evidence here; copy neither. If step 2's issue is in no tree, reply `Not filed: dispatch://<KEY> tracks it` to its person, mentioning no finder.
