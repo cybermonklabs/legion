@@ -4,6 +4,7 @@ import { dirname, relative, resolve } from "node:path";
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_APPROVE_ONLY_TOKEN,
@@ -47,6 +48,7 @@ import {
   MAX_ISSUE_COMPONENTS,
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_THREAD_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
   PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
@@ -133,6 +135,11 @@ import {
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
 } from "../src/subject";
+import {
+  renderDispatchFrameSchema,
+  renderDispatchFrameSchemaGo,
+  renderDispatchFrameVerdicts,
+} from "./gen-go-dispatch-frame";
 import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
@@ -547,6 +554,15 @@ const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 // and the \`dispatch issues\` command's cannot drift apart.
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
+
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = ${MAX_THREAD_PAGE_LIMIT}
+const DefaultThreadPageLimit = ${DEFAULT_THREAD_PAGE_LIMIT}
 
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
@@ -1399,6 +1415,8 @@ ${definitions.join("\n\n")}
 const envelope = (await Bun.file(envelopeFile).json()) as Schema;
 const blockSchema = (await Bun.file(blockSchemaFile).json()) as BlockSchemaDocument;
 
+const dispatchFrameSchema = renderDispatchFrameSchema();
+
 // Every generated file this script owns, each marked with the language it is written in: a Go
 // file is gofmt-formatted before it is written and before it is compared.
 const outputs = [
@@ -1427,7 +1445,22 @@ const outputs = [
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
   },
-] satisfies { path: string; rendered: string; language: "go" | "ts" }[];
+  {
+    path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+    rendered: dispatchFrameSchema,
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+    rendered: renderDispatchFrameVerdicts(),
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+    rendered: renderDispatchFrameSchemaGo(dispatchFrameSchema),
+    language: "go",
+  },
+] satisfies { path: string; rendered: string; language: "go" | "ts" | "json" }[];
 const fmt = Bun.which("gofmt");
 
 // `--check` pipes each Go render through gofmt and compares every render with the committed

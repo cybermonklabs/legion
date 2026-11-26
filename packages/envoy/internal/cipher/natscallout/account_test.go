@@ -181,6 +181,15 @@ func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 // needs nothing of Dispatch's and runs alone (-run 'TestAPrivateRenderAdmitsIntoEnvoy/ENVOY/operator');
 // Dispatch's write of the same key replaces it, and the bucket keeps one value a key.
 //
+// JETSTREAM holds a second stream on disk, ENVOY_NOTIFICATIONS, as the deployed hub's account holds
+// it beside the buckets, so the delete before the restore leaves the account directory in use.
+// nats-server v2.15.1 answers the delete of an account's last file stream and then removes the
+// account's streams directory and the account directory on goroutines of its own
+// (filestore.go:12246, stream.go:8926-8931). A restore sent at once can run between those removals
+// and its own os.MkdirAll of the stream's directory, whose mkdir of the streams directory then
+// finds no account directory: the restore fails with 10077, "could not create storage directory"
+// (filestore.go:438-440).
+//
 // The control is the setting left at $G, its default: the auth service places the same clients in
 // $G, which holds no stream and imports nothing. So the same write gets no responders (nats.go's
 // ErrNoStreamResponse, its name for a JetStream publish no stream answers, js.go:619-622), and the
@@ -220,6 +229,8 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 			require.NoError(t, err, "a static user of %s could not make the bucket through its import", envoyAccount)
 			_, err = adminKV.Put(key, value)
 			require.NoError(t, err, "a static user of %s could not write the key through its import", envoyAccount)
+			_, err = adminJS.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage})
+			require.NoError(t, err, "a static user of %s could not make %s through its import", envoyAccount, bus.Stream)
 
 			now := time.Now()
 			tokens := dispatchToken(now)

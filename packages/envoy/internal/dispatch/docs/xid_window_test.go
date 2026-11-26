@@ -34,8 +34,9 @@ import (
 // This file and anchor_blocks_xid_window_test.go build without the race detector (`//go:build
 // !race`), as the API's and delivery's window tests do. Under it the rig judges no gap
 // (storetest.XidJudgesGaps) and the shape is the same rule in either build, so a race run of
-// these tests proved nothing the plain run does not: envoy-go's step "Test what the race build
-// cannot run at all or at full size" runs them, judging shape and gaps both.
+// these tests proved nothing the plain run does not: envoy-go-alone's step "Test the xid window
+// rows, the API's issue-list bound and the auth service's storm, alone" runs them, judging shape
+// and gaps both.
 
 // xidService is a document service on a traced pool of a fresh database, settling after an hour so
 // only the settlement a test runs itself settles.
