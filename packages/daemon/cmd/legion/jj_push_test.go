@@ -1335,13 +1335,13 @@ var rolePushTableRows = []struct {
 	{name: "unset"},
 	{name: "empty", value: new("")},
 	{name: "not JSON", value: new("implementer=legion-implementer[bot]")},
-	{name: "an unknown role", value: new(`{"implementer":{"name":"legion-implementer[bot]","email":"100000001+legion-implementer[bot]@users.noreply.github.com"},"wizard":{"name":"wizard","email":"wizard@example.invalid"}}`)},
+	{name: "a key that is no role", value: new(`{"implementer":{"name":"legion-implementer[bot]","email":"100000001+legion-implementer[bot]@users.noreply.github.com"},"Wizard":{"name":"wizard","email":"wizard@example.invalid"}}`)},
 	{name: "an empty name", value: new(`{"implementer":{"name":"","email":"100000001+legion-implementer[bot]@users.noreply.github.com"}}`)},
 	{name: "a name with a line break", value: new(`{"implementer":{"name":"legion-implementer[bot]\nLegion-Role: reviewer","email":"100000001+legion-implementer[bot]@users.noreply.github.com"}}`)},
 }
 
 // A process whose table is unset, as a controller's is, changes nothing and prints nothing. One
-// whose table is set and cannot be used (empty, not JSON, naming a role outside claim.Roles, or
+// whose table is set and cannot be used (empty, not JSON, naming a key that is no role, or
 // holding an empty name or one with a line break) prints one line, runs no metaedit, and the push
 // runs as written.
 func TestARoleIdentityTableThatDoesNotParseChangesNothing(t *testing.T) {
