@@ -105,7 +105,7 @@ const ANSWERS: OutlineAnswers = {
  *  one before the agent a row of the box's picker names (`PICKER`), in the page's words: a
  *  running session's state, how long ago it was seen and what an unresponsive one's state means
  *  (`agent_running`, `agent_seen`, `agent_unresponsive_note`), and the other states in the words
- *  the claim says them in, which the registry judges alike. */
+ *  the claim says them in, which the registry judges alike, with no note after them (`notes`). */
 const TARGET_STATE_WORDS: AgentStateWords = {
   labels: {
     "not-running": CONTROL_LABELS.not_running,
@@ -113,8 +113,13 @@ const TARGET_STATE_WORDS: AgentStateWords = {
     unknown: CONTROL_LABELS.unchecked,
     unresponsive: CONTROL_LABELS.unresponsive,
   },
+  notes: {
+    "not-running": "",
+    running: "",
+    unknown: "",
+    unresponsive: CONTROL_LABELS.agent_unresponsive_note,
+  },
   seen: CONTROL_LABELS.agent_seen,
-  unresponsive: CONTROL_LABELS.agent_unresponsive_note,
 };
 
 /** The words the reference picker in the box draws, in the page's kind words: its names
@@ -464,6 +469,7 @@ function WriteLine({
     answers: ANSWERS,
     cancelReply: CONTROL_LABELS.write_on_issue,
     discardDraft: CONTROL_LABELS.discard_draft,
+    editing: writer.editing,
     end,
     endMark: CONTROL_LABELS.target_end_mark,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },

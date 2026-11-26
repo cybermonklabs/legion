@@ -394,12 +394,14 @@ export default {
         "Enter sends and Shift+Enter starts a new line; @ links an agent, a role or a person, # an issue, and [[ anything else",
       composer_keys_edit:
         "Enter saves and Shift+Enter starts a new line; @ links an agent, a role or a person, # an issue, and [[ anything else",
-      /** What the state mark before an agent that the box's target line or a row of its picker
-       *  names is named by, as a screen reader reads it (`AgentName`'s `stateWords`): a running
-       *  session, what stands between its state and how long ago a running or unresponsive
-       *  session was seen, and what an unresponsive one's state means, after both. The mark
-       *  names the other states in the claim's words of them, `not_running` and `unchecked`,
-       *  and `unresponsive`. */
+      /** The words of the state mark before an agent: its accessible name (`AgentName`'s
+       *  `stateWords`), which a screen reader reads on the box's target line, and which the agent
+       *  rows of the box's picker carry in their marks too, though no screen reader reads it
+       *  there, since a row's agent is one image the row's own words name (`RowAgent`). They say
+       *  a running session, what stands between its state and how long ago a running or
+       *  unresponsive session was seen, and what an unresponsive one's state means, after both.
+       *  The mark names the other states in the claim's words of them, `not_running` and
+       *  `unchecked`, and `unresponsive`. */
       agent_running: "running",
       agent_seen: ", seen ",
       agent_unresponsive_note:
