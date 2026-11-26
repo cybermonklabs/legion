@@ -230,6 +230,10 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) str
 			if ctx.Err() != nil {
 				return ""
 			}
+			// Control: the climb ends on the failure, as a climb once did.
+			w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
+				"issue", issue, "read", read, "error", err)
+			return ""
 			backoff = min(max(2*backoff, w.mergeStateWait()), mergeStateFollowWaits*w.mergeStateWait())
 			after, _ := githubrest.RetryAfter(err)
 			wait := max(backoff, after)
