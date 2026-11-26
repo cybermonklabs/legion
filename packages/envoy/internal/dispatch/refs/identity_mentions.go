@@ -121,10 +121,11 @@ func mentionReaches(visibility string, who model.Actor, target Target) bool {
 // names a person (graphstore.Uncaused.People), and a session's or a role's to tuples, with the
 // node's other facts. Either takes the id of the event it is stated under as its
 // legacy_source_seq, a session's and a role's because LegacyFromCause marks them and a person's
-// because graphstore.QueueCaused gives one to every fact of People: graph_edges' identity arm
-// answers that as the edge's source_seq, so a ?since= read of References whose window holds the
-// event lists the mention, and one stated at the sentinel (graphstore.NoEvent), by a pass no
-// event records, carries none and stays out of that read.
+// because graphstore.QueueCaused gives one to every fact of People, and a writer with no write
+// phase dates both alike (graphstore.Cause): graph_edges' identity arm answers that as the edge's
+// source_seq, so a ?since= read of References whose window holds the event lists the mention, and
+// one stated at the sentinel (graphstore.NoEvent), by a pass no event records, carries none and
+// stays out of that read.
 func stateMention(tuples []graphstore.UncausedTuple, people []graphstore.Tuple, fromKind, fromID string, target Target, who model.Actor, at time.Time, asserted bool) ([]graphstore.UncausedTuple, []graphstore.Tuple) {
 	tuple := graphstore.Tuple{
 		FromKind: fromKind, FromID: fromID, Kind: graphstore.TupleMentions,
@@ -181,22 +182,22 @@ func mentionsAfter(held map[Target]struct{}, stated []graphstore.Tuple) map[Targ
 // (text.ExtractAt) name every identity the whole grammar names, whatever deployment it is read
 // for. It answers the tuples split by the writer that appends them - a session's and a role's
 // beside the node's other facts (graphstore.Write), a person's through graphstore.ToPerson - each
-// stated under event, the write's own, which each carries as its source_event and, where it is an
-// event and not graphstore.NoEvent, as its legacy_source_seq, as this release's write of the text
-// states its own (stateMention). It plans no retraction: what it states is what the write of the
-// text named, and the retraction of what a later text no longer names is ItemUnnamedMentions'.
+// stated under no event: the caller states each under the write's own event, dated by it
+// (graphstore.Cause.Append), as this release's write of the text states its own (stateMention,
+// graphstore.QueueCaused). It plans no retraction: what it states is what the write of the text
+// named, and the retraction of what a later text no longer names is ItemUnnamedMentions'.
 //
 // The backfill reads it for a comment or an issue message an older build wrote, and for an edit
 // that build made of either (graphcensus' commentPointersPass, messagesPass and its pass over the
 // queue of that build's events): that build states none of these tuples and stores no row of a
 // person's mention (TargetOf), so the item's own text is the one record of whom it names.
-func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, event int64, body string, standing []Target) (identities, people []graphstore.Tuple) {
+func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, body string, standing []Target) (identities, people []graphstore.Tuple) {
 	named := identityTargets(text.ExtractAt(body, ""))
 	if len(named) == 0 {
 		return nil, nil
 	}
 	stated, people := identityMentions(string(kind), itemID, visibility, who, at, named, targetSet(standing))
-	return underEvent(statedMentions(stated), people, event)
+	return statedMentions(stated), people
 }
 
 // ItemUnnamedMentions is the retraction of each identity mention out of the comment or the
@@ -207,21 +208,22 @@ func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Ac
 // delivery routes, its comment_mentions rows (CommentRoutesRead), which no change of its text
 // retracts - and none of a person out of a node of visibility reserved for its author but that
 // author (mentionReaches); made by who, the node's maker, at `at`, the write's moment, in (kind,
-// id) order, split by the writer that appends them, and stated under event as ItemIdentityMentions
-// states its own. What a retracted mention caused stands: the delivered_to and the participates_in
-// a mention of a person brought are facts of their own, which no retraction touches.
+// id) order, split by the writer that appends them, and stated under no event, as
+// ItemIdentityMentions states its own, for the caller to state under the write's. What a
+// retracted mention caused stands: the delivered_to and the participates_in a mention of a person
+// brought are facts of their own, which no retraction touches.
 //
 // The backfill reads it for an edit or a delete an older build made of a comment or an issue
 // message (graphcensus' pass over the queue of that build's events), against the text the item
 // holds when the pass runs: that build retracts no mention, and a later write of the text, of that
 // build or of this release, is what the item's mentions follow once the pass has run.
-func ItemUnnamedMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, event int64, body string, standing, kept []Target) (identities, people []graphstore.Tuple) {
+func ItemUnnamedMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, body string, standing, kept []Target) (identities, people []graphstore.Tuple) {
 	if len(standing) == 0 {
 		return nil, nil
 	}
 	stated, people := unnamedMentions(string(kind), itemID, visibility, who, at, identityTargets(text.ExtractAt(body, "")),
 		targetSet(standing), targetSet(kept))
-	return underEvent(statedMentions(stated), people, event)
+	return statedMentions(stated), people
 }
 
 // targetSet is targets as a set, each person by their canonical login (model.CanonicalLogin), the
@@ -235,22 +237,6 @@ func targetSet(targets []Target) map[Target]struct{} {
 		held[target] = struct{}{}
 	}
 	return held
-}
-
-// underEvent is identities and people, a write's identity mentions as stateMention split them,
-// each stated under event: its source_event, and, where event is an event and not
-// graphstore.NoEvent, its legacy_source_seq, as stateMention says this release's write of a text
-// states its own.
-func underEvent(identities, people []graphstore.Tuple, event int64) ([]graphstore.Tuple, []graphstore.Tuple) {
-	for _, facts := range [][]graphstore.Tuple{identities, people} {
-		for index := range facts {
-			facts[index].SourceEvent = event
-			if event != graphstore.NoEvent {
-				facts[index].LegacySourceSeq = &event
-			}
-		}
-	}
-	return identities, people
 }
 
 // blockIdentityMentions plans the identity mentions of a document version's blocks: each

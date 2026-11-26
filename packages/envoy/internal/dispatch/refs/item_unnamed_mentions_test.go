@@ -13,10 +13,11 @@ import (
 // R5: the backfill's catch-up of an older build's edit or delete retracts what the item's text no
 // longer names as the item index retracts it (ItemUnnamedMentions, unnamedMentions): of the
 // identities the item's node mentions, each the text does not name, in (kind, id) order, made by
-// the node's maker at the write's moment and stated under its event, which each carries as its
-// source_event and its legacy_source_seq. A delivery route of a comment is kept though no text names
-// it, an identity the text spells only in code is retracted, and one the text names stands. A
-// session's and a role's retraction is planned beside the node's other facts, and a person's for
+// the node's maker at the write's moment. The plan states none of them under an event, and the
+// catch-up states each under the write's (graphstore.Cause), which each then carries as its
+// source_event and its legacy_source_seq. A delivery route of a comment is kept though no text
+// names it, an identity the text spells only in code is retracted, and one the text names stands.
+// A session's and a role's retraction is planned beside the node's other facts, and a person's for
 // graphstore.ToPerson. A delete's empty text names nobody, so it retracts every mention but the
 // route's.
 func TestTheRetractionOfWhatAnItemsTextNoLongerNamesKeepsItsRoutes(t *testing.T) {
@@ -68,16 +69,23 @@ func TestTheRetractionOfWhatAnItemsTextNoLongerNamesKeepsItsRoutes(t *testing.T)
 		people:     []string{retraction(graphstore.KindPerson, "dave@example.com"), retraction(graphstore.KindPerson, "erin@example.com")},
 	}} {
 		t.Run(write.name, func(t *testing.T) {
-			identities, people := ItemUnnamedMentions(ItemComment, "c1", graphstore.VisibilityProject, maker, at, event, write.body, standing, kept)
-			if got := planned(identities); !slices.Equal(got, write.identities) {
+			identities, people := ItemUnnamedMentions(ItemComment, "c1", graphstore.VisibilityProject, maker, at, write.body, standing, kept)
+			for _, tuple := range slices.Concat(identities, people) {
+				if tuple.SourceEvent != graphstore.NoEvent || tuple.LegacySourceSeq != nil {
+					t.Errorf("the plan states %s/%s under event %d with legacy %v, want neither: its caller states it under the write's",
+						tuple.ToKind, tuple.ToID, tuple.SourceEvent, tuple.LegacySourceSeq)
+				}
+			}
+			cause := graphstore.CauseOf(event)
+			if got := planned(cause.Append(nil, true, identities...)); !slices.Equal(got, write.identities) {
 				t.Errorf("the retraction of the sessions and roles is\n  %v\nwant\n  %v", got, write.identities)
 			}
-			if got := planned(people); !slices.Equal(got, write.people) {
+			if got := planned(cause.Append(nil, true, people...)); !slices.Equal(got, write.people) {
 				t.Errorf("the retraction of the people is\n  %v\nwant\n  %v", got, write.people)
 			}
 		})
 	}
-	if identities, people := ItemUnnamedMentions(ItemComment, "c1", graphstore.VisibilityProject, maker, at, event, "", nil, kept); len(identities)+len(people) != 0 {
+	if identities, people := ItemUnnamedMentions(ItemComment, "c1", graphstore.VisibilityProject, maker, at, "", nil, kept); len(identities)+len(people) != 0 {
 		t.Errorf("a node that mentions nobody plans the retractions %v and %v, want none", planned(identities), planned(people))
 	}
 }

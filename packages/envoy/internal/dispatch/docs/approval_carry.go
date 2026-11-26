@@ -810,20 +810,20 @@ func approvedVersion(ctx context.Context, q Queryer, artifactID string, number i
 // between that read and the record's plan writes, so the record reads no members of its own; the
 // event names the row the approver is about to hold. Where the request falls through to its
 // project's default assignee, that project's owner lock is taken shared before that read
-// (inboxwrite.HoldAskDefault), as every writer into an ask's thread takes it before it reads who
-// takes part: a move of the default either committed first, and the answer reaches the person
-// it moved the request to, or waits for the answer, and then finds the request answered and
-// moves nothing of it. The carry's writes are queued, so no asks row is locked before the hold.
+// (inboxwrite.HoldAskDefault, which reads that by the one rule every writer into an ask's thread
+// reads, inboxwrite.AskDefaultProject, and holds nothing for a request handed to somebody), as
+// every writer into an ask's thread takes it before it reads who takes part: a move of the default
+// either committed first, and the answer reaches the person it moved the request to, or waits for
+// the answer, and then finds the request answered and moves nothing of it. The carry's writes are
+// queued, so no asks row is locked before the hold.
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
 		return err
 	}
 	answer := model.AskAnswer{User: actor.ID, Selected: []string{ApprovalOptionApprove}, Text: &reason, At: answeredAt.UTC()}
-	if ask.AskedOf == nil {
-		if err := inboxwrite.HoldAskDefault(ctx, tx, ask.ID); err != nil {
-			return fmt.Errorf("answer approval ask: %w", err)
-		}
+	if err := inboxwrite.HoldAskDefault(ctx, tx, ask.ID); err != nil {
+		return fmt.Errorf("answer approval ask: %w", err)
 	}
 	before, err := inboxwrite.ReadAskAndMembers(ctx, tx, ask.ID)
 	if err != nil {

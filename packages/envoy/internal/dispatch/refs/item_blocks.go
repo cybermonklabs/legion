@@ -515,9 +515,11 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 				return ItemIndex{}, err
 			}
 			if kind != ItemAsk {
-				if _, _, _, index.mentioned, index.routes, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
+				links, err := heldItemBlockLinks(ctx, q, kind, tables, itemID)
+				if err != nil {
 					return ItemIndex{}, err
 				}
+				index.mentioned, index.routes = links.mentioned, links.routes
 			}
 		}
 		return index, nil
@@ -525,9 +527,12 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 	if index.stored, index.rows, err = storedItemBlocks(ctx, q, kind, tables, itemID, index.scope.held); err != nil {
 		return ItemIndex{}, err
 	}
-	if index.held, index.own, index.ownRead, index.mentioned, index.routes, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
+	links, err := heldItemBlockLinks(ctx, q, kind, tables, itemID)
+	if err != nil {
 		return ItemIndex{}, err
 	}
+	index.held, index.own, index.ownRead = links.blocks, links.own, links.ownRead
+	index.mentioned, index.routes = links.mentioned, links.routes
 	return index, nil
 }
 
@@ -1184,78 +1189,104 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 	return state, scope, true, nil
 }
 
+// heldItemLinks is what heldItemBlockLinks reads of one item, each class of row its statement
+// reads (heldRowBlock, heldRowOwn, heldRowMention, heldRowRoute) held apart from the others.
+type heldItemLinks struct {
+	// blocks is the block mentions the item's blocks hold, each with whether its row names its
+	// block's node.
+	blocks []itemBlockLink
+	// own is an ask's own refs rows, each with its kind and tuples_stored, and ownRead whether the
+	// statement read them, which it does for an ask alone.
+	own     []heldCitation
+	ownRead bool
+	// mentioned is each identity the store holds a mention of out of the item's node now, and
+	// routes each identity a comment's delivery routes name.
+	mentioned, routes map[Target]struct{}
+}
+
+// The class of a row heldItemBlockLinks' statement reads, which the statement's first column
+// names, so no value of a link's own columns - its kind among them - tells one class from
+// another, and the scan files each row by that column alone.
+const (
+	// heldRowBlock is a block mention of one of the item's blocks, a row of its block refs table.
+	heldRowBlock = "block"
+	// heldRowOwn is one of an ask's own refs rows.
+	heldRowOwn = "own"
+	// heldRowMention is an identity the store holds a mention of out of the item's node.
+	heldRowMention = "mention"
+	// heldRowRoute is an identity one of a comment's delivery routes names.
+	heldRowRoute = "route"
+)
+
 // heldItemBlockLinks is the block mentions the item's blocks hold, read with the predicate the
 // reconciling delete visits them by, so the index knows what it moves before it writes, and
 // whether each row names its block's node, which a retraction of the link it stands for needs.
 // For an ask the same statement reads the ask's own refs rows too, with the predicate HeldTargets
-// reads them by, each with its kind and tuples_stored (own, read true): a write of an ask's parts
-// alone reconciles its question's references after them (PlanAskParts), and plans that, with the
-// citations those rows stand for, against these rows rather than a read of its own
-// (ItemIndex.PlanOwnRefs). A row of the ask's own carries no block id, which tells the two apart,
-// and its last column is its tuples_stored where a link's is whether it names its block's node.
-// For a comment or a message the same statement reads the identities the store holds a mention
-// of out of the item's node now (mentioned, IdentityMentionsRead), each a row with no block id
-// whose far end is an identity's kind, which no refs row names (TargetOf): what the index appends
-// no mention of again, and retracts the mention of where the text no longer names it. For a
-// comment it reads its delivery routes too (routes, routeRows, CommentRoutesRead): the session or
-// the role each of its comment_mentions rows targets, and the session that row resolved to, each a
-// mention the comment's write states apart from its text (api's commentMentionFacts), which no edit
-// retracts.
-func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, mentioned, routes map[Target]struct{}, err error) {
+// reads them by, each with its kind and tuples_stored (own, ownRead true): a write of an ask's
+// parts alone reconciles its question's references after them (PlanAskParts), and plans that, with
+// the citations those rows stand for, against these rows rather than a read of its own
+// (ItemIndex.PlanOwnRefs). A row of the ask's own has its last column its tuples_stored where a
+// link's is whether it names its block's node. For a comment or a message the same statement reads
+// the identities the store holds a mention of out of the item's node now (mentioned,
+// IdentityMentionsRead): what the index appends no mention of again, and retracts the mention of
+// where the text no longer names it. For a comment it reads its delivery routes too (routes,
+// CommentRoutesRead): the session or the role each of its comment_mentions rows targets, and the
+// session that row resolved to, each a mention the comment's write states apart from its text
+// (api's commentMentionFacts), which no edit retracts. Each row names its class in its first
+// column (heldRowBlock, heldRowOwn, heldRowMention, heldRowRoute), which files it.
+func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (heldItemLinks, error) {
 	query, args := `
-		select block_id, kind, to_kind, to_id, node_kind is not null from `+tables.refs+` where `+tables.item+` = $1::uuid
+		select '`+heldRowBlock+`', block_id, kind, to_kind, to_id, node_kind is not null from `+tables.refs+` where `+tables.item+` = $1::uuid
 		union all
-		select null, '`+graphstore.TupleMentions+`', mentioned.to_kind, mentioned.to_id, true from (
+		select '`+heldRowMention+`', null, '`+graphstore.TupleMentions+`', mentioned.to_kind, mentioned.to_id, true from (
 			`+IdentityMentionsRead(`$2`, `$3`, `$4`)+`
 		) mentioned
 	`, []any{itemID, string(kind), itemID, IdentityKinds}
+	held := heldItemLinks{blocks: []itemBlockLink{}, own: []heldCitation{}, mentioned: map[Target]struct{}{}, routes: map[Target]struct{}{}}
 	switch kind {
 	case ItemComment:
 		query += `
 		union all
-		select null, '` + routeRows + `', route.to_kind, route.to_id, true from (` + CommentRoutesRead(`$1::uuid`) + `) route`
+		select '` + heldRowRoute + `', null, '` + graphstore.TupleMentions + `', route.to_kind, route.to_id, true from (` + CommentRoutesRead(`$1::uuid`) + `) route`
 	case ItemAsk:
 		query = `
-			select block_id, kind, to_kind, to_id, node_kind is not null from ask_block_refs where ask_id = $1::uuid
+			select '` + heldRowBlock + `', block_id, kind, to_kind, to_id, node_kind is not null from ask_block_refs where ask_id = $1::uuid
 			union all
-			select null, kind, to_kind, to_id, tuples_stored from refs where from_kind = 'ask' and from_id = $2 and to_kind = any($3)
+			select '` + heldRowOwn + `', null, kind, to_kind, to_id, tuples_stored from refs where from_kind = 'ask' and from_id = $2 and to_kind = any($3)
 		`
-		args, read = []any{itemID, itemID, nodeKinds}, true
+		args, held.ownRead = []any{itemID, itemID, nodeKinds}, true
 	}
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
-		return nil, nil, false, nil, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return heldItemLinks{}, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
 	defer rows.Close()
-	held, own, mentioned, routes = []itemBlockLink{}, []heldCitation{}, map[Target]struct{}{}, map[Target]struct{}{}
 	for rows.Next() {
+		var class string
 		var blockID *string
 		var link itemBlockLink
-		if err := rows.Scan(&blockID, &link.kind, &link.target.Kind, &link.target.ID, &link.named); err != nil {
-			return nil, nil, false, nil, nil, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
+		if err := rows.Scan(&class, &blockID, &link.kind, &link.target.Kind, &link.target.ID, &link.named); err != nil {
+			return heldItemLinks{}, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
 		}
-		switch {
-		case blockID == nil && kind == ItemComment && link.kind == routeRows:
-			routes[link.target] = struct{}{}
-		case blockID == nil && kind != ItemAsk:
-			mentioned[link.target] = struct{}{}
-		case blockID == nil:
-			own = append(own, heldCitation{target: link.target, kind: link.kind, stored: link.named})
-		default:
+		switch class {
+		case heldRowBlock:
 			link.blockID = *blockID
-			held = append(held, link)
+			held.blocks = append(held.blocks, link)
+		case heldRowOwn:
+			held.own = append(held.own, heldCitation{target: link.target, kind: link.kind, stored: link.named})
+		case heldRowMention:
+			held.mentioned[link.target] = struct{}{}
+		case heldRowRoute:
+			held.routes[link.target] = struct{}{}
+		default:
+			return heldItemLinks{}, fmt.Errorf("read a block mention of %s %s of no class the read names: %q", kind, itemID, class)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, false, nil, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return heldItemLinks{}, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
-	return held, own, read, mentioned, routes, nil
+	return held, nil
 }
-
-// routeRows is the kind heldItemBlockLinks' statement gives the rows it reads off a comment's
-// comment_mentions, the table's own name, which no tuple kind and no block link kind is, so the
-// scan tells a delivery route from a mention.
-const routeRows = "comment_mentions"
 
 // itemRefRows is the item's own refs rows by target, each with its created_at and source_seq,
 // which date the tuples an item's first indexing states of the links it inserts (planItemBlocks).

@@ -118,15 +118,19 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 	if err != nil {
 		return 0, err
 	}
+	// What the write's text names is stated under its event and dated by it, as this release's
+	// write of the text states it (graphstore.Cause); the deliveries and the participation below
+	// carry the event alone.
+	cause := graphstore.CauseOf(event)
 	if len(w.identities) > 0 {
-		identities := UnderEvent(w.identities, event)
+		identities := cause.Append(make([]graphstore.Tuple, 0, len(w.identities)), true, w.identities...)
 		if err := graphstore.Write(ctx, tx, nil, identities); err != nil {
 			return 0, fmt.Errorf("state the sessions and roles %s/%s names: %w", w.NodeKind, w.NodeID, err)
 		}
 		stated += len(identities)
 	}
 	if len(w.mentionedPeople) > 0 {
-		people = append(UnderEvent(w.mentionedPeople, event), people...)
+		people = append(cause.Append(make([]graphstore.Tuple, 0, len(w.mentionedPeople)+len(people)), true, w.mentionedPeople...), people...)
 	}
 	for _, login := range reached {
 		people = append(people, deliveredTo(w.NodeKind, w.NodeID, login, w.At, w.Who, event))
@@ -149,17 +153,6 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 		}
 	}
 	return stated + len(cleared), nil
-}
-
-// UnderEvent is tuples, each stated under event: an older write's own, as RecordOlder states what
-// such a write names. It is a new slice, and tuples is left as it was.
-func UnderEvent(tuples []graphstore.Tuple, event int64) []graphstore.Tuple {
-	under := make([]graphstore.Tuple, len(tuples))
-	for index, tuple := range tuples {
-		tuple.SourceEvent = event
-		under[index] = tuple
-	}
-	return under
 }
 
 // lockReachedAndReadCleared takes the user_threads rows of thread that reached and mentioned hold,

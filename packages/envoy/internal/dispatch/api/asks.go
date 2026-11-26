@@ -1344,11 +1344,33 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 // ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
 // server serves anything.)
 func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
-	ask, err := scanAskRow(tx.QueryRow(ctx, `
+	return s.scanAskForTransition(ctx, tx, tx.QueryRow(ctx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
 		where a.id = $1
 	`, id))
+}
+
+// readAskAndDefaultForTransition is readAskForTransition answering, beside the ask, the project
+// whose default assignee it falls through to, "" for none, read off the same row in the same
+// statement by the one rule every writer into an ask's thread reads (inboxwrite.AskDefaultProject),
+// for an answer, which holds that project before it reads who takes part in the thread
+// (transitionAskTx). The caller holds the ask's owner lock, under which none of the rows the rule
+// reads moves.
+func (s *server) readAskAndDefaultForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, string, error) {
+	var project string
+	ask, err := s.scanAskForTransition(ctx, tx, tx.QueryRow(ctx, `
+		select `+askRowColumns+`, `+inboxwrite.AskDefaultProject+`
+		`+askRowFrom+`
+		where a.id = $1
+	`, id), &project)
+	return ask, project, err
+}
+
+// scanAskForTransition decodes row, one ask askRowColumns reads, with extra receiving the columns
+// after them, and attaches the event that opened it.
+func (s *server) scanAskForTransition(ctx context.Context, tx pgx.Tx, row pgx.Row, extra ...any) (model.Ask, error) {
+	ask, err := scanAskRow(row, extra...)
 	if err != nil {
 		return model.Ask{}, err
 	}

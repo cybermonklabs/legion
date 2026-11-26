@@ -471,7 +471,7 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, edited olderEdited, event qu
 		}
 		others = append(others, standing[index])
 	}
-	identities, people := refs.ItemIdentityMentions(edited.item, event.target, visibility, maker, event.at, event.id, written, others)
+	identities, people := refs.ItemIdentityMentions(edited.item, event.target, visibility, maker, event.at, written, others)
 	var participation []graphstore.Tuple
 	if len(people) > 0 {
 		rootKind, rootID, err := inboxwrite.ThreadRoot(ctx, tx, string(edited.item), event.target)
@@ -505,8 +505,16 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, edited olderEdited, event qu
 	for index := range routeIDs {
 		kept[index] = refs.Target{Kind: routeKinds[index], ID: routeIDs[index]}
 	}
-	unnamed, unnamedPeople := refs.ItemUnnamedMentions(edited.item, event.target, visibility, maker, event.at, event.id, current, standing, kept)
-	tuples := slices.Concat(identities, people, participation, unnamed, unnamedPeople)
+	unnamed, unnamedPeople := refs.ItemUnnamedMentions(edited.item, event.target, visibility, maker, event.at, current, standing, kept)
+	// Each mention is stated under the write's event and dated by it, as this release's edit and
+	// delete state their own (graphstore.Cause); the participation carries the event alone.
+	cause := graphstore.CauseOf(event.id)
+	tuples := make([]graphstore.Tuple, 0, len(identities)+len(people)+len(participation)+len(unnamed)+len(unnamedPeople))
+	tuples = cause.Append(tuples, true, identities...)
+	tuples = cause.Append(tuples, true, people...)
+	tuples = append(tuples, participation...)
+	tuples = cause.Append(tuples, true, unnamed...)
+	tuples = cause.Append(tuples, true, unnamedPeople...)
 	if len(tuples) == 0 {
 		return 0, nil
 	}

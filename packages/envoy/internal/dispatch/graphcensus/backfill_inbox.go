@@ -551,7 +551,7 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 		}
 		written := inboxwrite.Message(held.row.ID, held.author, held.at, issue, "")
 		if issue != nil && held.row.BroadcastID == "" {
-			if identities, people := refs.ItemIdentityMentions(refs.ItemMessage, held.row.ID, held.visibility, held.maker, held.at, held.event, held.body, nil); len(identities)+len(people) > 0 {
+			if identities, people := refs.ItemIdentityMentions(refs.ItemMessage, held.row.ID, held.visibility, held.maker, held.at, held.body, nil); len(identities)+len(people) > 0 {
 				written = written.Names(identities, people)
 			}
 		}
@@ -1061,7 +1061,7 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 			continue
 		}
 		written := inboxwrite.Comment(held.id, held.author, held.at, held.issueKey, held.artifactID, "")
-		if identities, people := refs.ItemIdentityMentions(refs.ItemComment, held.id, held.visibility, held.maker, held.at, held.event, held.body, nil); len(identities)+len(people) > 0 {
+		if identities, people := refs.ItemIdentityMentions(refs.ItemComment, held.id, held.visibility, held.maker, held.at, held.body, nil); len(identities)+len(people) > 0 {
 			written = written.Names(identities, people)
 		}
 		owed, err := inboxwrite.RecordOlder(ctx, tx, written, held.event)
@@ -1260,11 +1260,13 @@ func writeCommentMentions(ctx context.Context, tx pgx.Tx, keys [][]string) (inbo
 			continue
 		}
 		// The comment's last row: every route its rows name is stated at once, with the mode its
-		// first row records, and the facts of the batch's next comment reuse the same slices.
+		// first row records, under the event that caused the comment's node, each mention dated by
+		// it (graphstore.Cause), and the facts of the batch's next comment reuse the same slices.
 		first := read[index+1-len(routes)]
-		stated = graphstore.CommentMentionFacts(stated[:0], held.comment, routes, first.delivery, held.author, held.at, held.event)
+		stated = graphstore.CommentMentionFacts(stated[:0], held.comment, routes, first.delivery, held.author, held.at)
+		cause := graphstore.CauseOf(held.event)
 		for _, fact := range stated {
-			tuples = append(tuples, fact.Tuple)
+			tuples = cause.Append(tuples, fact.LegacyFromCause, fact.Tuple)
 		}
 		routes = routes[:0]
 	}
