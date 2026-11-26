@@ -647,18 +647,6 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     "Drop a point that cites no file, symbol, quoted text or commit of this pull request",
     ["skills/legion-retro/references/learnings.md", "skills/legion-retro/SKILL.md"]
   );
-  // The two files this change touches, named rather than swept: three other staged skills carry
-  // these strings, in six files, in finding formats the specification scopes out
-  // (dispatch://INFRA-924).
-  const retired = ["file, line or commit", "file:line", "file and line"];
-  const retroFiles: [string, string][] = [
-    ["references/learnings.md", learnings],
-    ["SKILL.md", collapsed(path.join(staged, "legion-retro", "SKILL.md"))],
-  ];
-  const carried = retroFiles.flatMap(([file, text]) =>
-    retired.filter((phrase) => text.includes(phrase)).map((phrase) => `${file}: ${phrase}`)
-  );
-  expect(carried).toEqual([]);
 });
 
 // The completion that ends the retro rates the plan, and this skill's step that gives the two

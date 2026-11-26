@@ -14,7 +14,6 @@ Retro commits nothing and pushes nothing: the merger merges the branch's head, a
 Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
-In the workspace it changes nothing; outside it, it writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
 It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon.
 What the work taught is a `dispatch comment` for the skill librarian; no role writes to `docs/solutions/`.
 
@@ -22,9 +21,23 @@ What the work taught is a `dispatch comment` for the skill librarian; no role wr
 
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do not call `handoff_complete`:
 send the command and its output to the architect's topic on your `Legion addressing` line.
-A defect you find in the work, other than a bot thread that step 1 sends back, goes to the architect with its evidence, and you hold your completion until it answers:
-while retro holds the phase, `request_backward_move` is yours, and `handoff_complete` takes it away.
-End each turn of that hold with a WAITING line naming the defect and the answer you wait on.
+
+## A defect you find
+
+A defect you find in the change goes to the issue's next change, and your retro goes on.
+Call the `legion` tool's `report_defect` with `issue`, `defect` and `head`, the head you read in step 1.
+`defect` says what is wrong, with a file and line or a command and what it printed.
+Then do the remaining steps and complete: no `request_backward_move` for it, no wait for an answer.
+Only these send the work back:
+
+- a check with no pass standing at the head (step 1)
+
+- a news task whose approved new version makes the work stale
+
+- a check of the goal that another of your texts gives retro, for an unmet requirement
+
+That move's `reason` names each defect you found, and none goes to `report_defect`.
+A refused `report_defect` is a failed step: stop as *When retro stops* says.
 
 ## Steps
 

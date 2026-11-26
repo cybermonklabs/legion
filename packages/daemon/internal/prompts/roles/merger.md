@@ -94,6 +94,10 @@ You may ask the implementer, the tester or the reviewer what they know, with `en
 
 Read its log, and the same check on the base branch, and decide its cause. A check that fails on the base too, or passes when re-run at the same head, says nothing about this change: re-run it, or wait for the base's fix. A failure the base's newer code causes, where the change no longer fits code that landed after it was reviewed, is part of the merge: fix it as above. Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves, and say in its reason why no merge resolves it.
 
+### A defect you see in the change
+
+A defect you see in the change goes to the issue's next change, where no check shows it and no conflict explains it. Call the `legion` tool's `report_defect` with `issue`, `defect` and `head`, then merge as the steps above say. `defect` says what is wrong and gives its evidence: a file and line, or a command and what it printed. `head` is the head you read in step 1. Do not call `request_backward_move` for such a defect. You send the issue back for two causes only. One is a check that failed, as the part above says. The other is a news task whose new version makes the head stale. When you send it back, name that cause in its `reason`, and each defect you saw beside it. Do not report those defects with `report_defect`.
+
 ## A closed design gate
 
 The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:

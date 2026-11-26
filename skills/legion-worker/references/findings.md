@@ -10,7 +10,7 @@ A finding outside your issue never becomes a `dispatch issue` you file. Take the
 2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
 
-A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
+A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change while a step of your task is still to pass. After your task's last step passed, it goes to the `legion` tool's `report_defect`, and the next change of your issue fixes it. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
 
 Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence as a comment. An open ask on the report issue about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`); open no second one.
 
