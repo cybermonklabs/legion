@@ -213,6 +213,7 @@ func TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder(t *testing.T) {
 	before := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
 	after := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/lean"], ` + block + `}}`)
 	m, enrollmentID, key := targetFixture(t, policy.TierHuman, before)
+	beforeDigest := m.Policy.Get().Secrets["APP_KEY"].ProfileDigest
 	dropped, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", "https://github.com/ada/proofs"), "")
 	if err != nil || dropped.State != "pending" || dropped.RecordID == nil {
 		t.Fatalf("Create(APP_KEY --target ada/proofs) = %+v, %v; want it pending", dropped, err)
@@ -236,8 +237,8 @@ func TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder(t *testing.T) {
 	if got := readDecided(t, m, *dropped.RecordID); got.events != 0 || got.state != "pending" || len(got.approvers) != 0 {
 		t.Fatalf("after the refused approval = %+v; want the request untouched and pending, with no grant", got)
 	}
-	if got, want := recordedDigests(t, m, dropped.ID)["APP_KEY"], profileDigest(t, before, "APP_KEY"); got != want {
-		t.Fatalf("the refused request records the fingerprint %q; want %q, the entry it was made under", got, want)
+	if got := recordedDigests(t, m, dropped.ID)["APP_KEY"]; got != beforeDigest {
+		t.Fatalf("the refused request records the fingerprint %q; want %q, the entry it was made under", got, beforeDigest)
 	}
 
 	if dec, err := m.ApplyDecision(t.Context(), *kept.RecordID, true, fixtureOperator); err != nil || dec.GrantID == "" {

@@ -81,12 +81,6 @@ func proxyTag(t *testing.T, m *Machine, name, kind string) {
 	}
 }
 
-// profileDigest is the fingerprint the profile name of file has.
-func profileDigest(t *testing.T, file, name string) string {
-	t.Helper()
-	return policytest.Profiles(t, file, fixtureService).Digest(name)
-}
-
 // recordedDigests reads the profile fingerprint request requestID recorded for each name it
 // names.
 func recordedDigests(t *testing.T, m *Machine, requestID string) map[string]string {
@@ -121,8 +115,8 @@ func TestARequestRecordsEachNamesProfileDigest(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	recorded := recordedDigests(t, m, request.ID)
-	if want := profileDigest(t, file, "AUTO_TOKEN"); want == "" || recorded["AUTO_TOKEN"] != want {
-		t.Errorf("AUTO_TOKEN recorded digest = %q, want its profile's, %q", recorded["AUTO_TOKEN"], want)
+	if want := m.Policy.Get().Secrets["AUTO_TOKEN"].ProfileDigest; want == "" || recorded["AUTO_TOKEN"] != want {
+		t.Errorf("AUTO_TOKEN recorded digest = %q, want its served profile's, %q", recorded["AUTO_TOKEN"], want)
 	}
 	if recorded["DEEL_API_KEY"] != "" {
 		t.Errorf("DEEL_API_KEY recorded digest = %q, want none: no profile holds it", recorded["DEEL_API_KEY"])
@@ -200,7 +194,7 @@ func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecide
 	if err != nil || decided.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decided, err)
 	}
-	if got, want := recordedDigests(t, m, pending.ID)["SHARED_KEY"], profileDigest(t, two, "SHARED_KEY"); got != want {
+	if got, want := recordedDigests(t, m, pending.ID)["SHARED_KEY"], m.Policy.Get().Secrets["SHARED_KEY"].ProfileDigest; got != want {
 		t.Fatalf("the approved request records the digest %q; want %q, the profile it was decided under", got, want)
 	}
 	if release, err := m.Values(t.Context(), decided.GrantID, enr, ReleaseCall{}); err != nil || releasedValue(release, "SHARED_KEY") == "" {

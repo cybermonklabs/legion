@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // githubRead is a profile the broker serves: a GitHub App's reads on one account, as a bare token
@@ -276,7 +277,7 @@ func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 		t.Errorf("Names() = %v, want %v, the file's order", got, want)
 	}
 	var none policy.Profiles
-	if none.Lookup("GITHUB_WRITE") != nil || len(none.Names()) != 0 || none.Digest("GITHUB_WRITE") != "" || len(none.Kinds()) != 0 || len(none.FileRules().Names) != 0 {
+	if none.Lookup("GITHUB_WRITE") != nil || len(none.Names()) != 0 || len(none.Kinds()) != 0 || len(none.FileRules().Names) != 0 {
 		t.Error("the zero Profiles, a deployment with no profiles file, holds a profile")
 	}
 }
@@ -374,30 +375,41 @@ func TestCheckRequestersRefusesAServiceTheDeploymentDoesNotRegister(t *testing.T
 	}
 }
 
-// TestProfilesDigestMovesWithEachFieldOfTheEntry: a profile's digest moves with every field of
-// its entry, each of which decides what a live grant of it may do: the kind its proxy string names
-// and its allow among them, an absent allow, a present empty one and one of a row each apart. A
-// name the file does not hold has no digest, as a deployment with no profiles file gives every
-// name none.
+// TestProfilesDigestMovesWithEachFieldOfTheEntry: a served profile's digest (Secret.ProfileDigest)
+// moves with every field of its entry, each of which decides what a live grant of it may do: the
+// kind its proxy string names and its allow among them, an absent allow, a present empty one and
+// one of a row each apart. A name no profile holds is not served, so it has no digest.
 func TestProfilesDigestMovesWithEachFieldOfTheEntry(t *testing.T) {
+	set := func(t *testing.T, profile string) *policy.Set {
+		t.Helper()
+		app := policytest.TypeSecret("LEGION_IMPLEMENT_APP", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
+		app.Tags[policy.TagGitHubOwners] = "example-org"
+		admin := policytest.Secret("GITHUB_ADMIN_PAT", "ada@example.com", policy.TierHuman, "v")
+		other := policytest.Secret("OTHER_PAT", "ada@example.com", policy.TierHuman, "v")
+		if strings.Contains(profile, `"allow":`) {
+			admin.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
+			other.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
+		}
+		return policytest.ProfiledCurrent(t, secrets.NewLocal(app, admin, other), profilesFile(githubRead, profile)).Get()
+	}
 	digest := func(t *testing.T, name, profile string) string {
 		t.Helper()
-		profiles, err := policy.ParseProfiles([]byte(profilesFile(githubRead, profile)))
-		if err != nil {
-			t.Fatal(err)
+		secret, served := set(t, profile).Secrets[name]
+		if !served {
+			t.Fatalf("%s is not served from %s", name, profile)
 		}
-		return profiles.Digest(name)
+		return secret.ProfileDigest
 	}
 	const pat = `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": "github"}`
 	plain := digest(t, "GITHUB_ADMIN_PAT", pat)
 	if len(plain) != 64 || strings.Trim(plain, "0123456789abcdef") != "" {
-		t.Fatalf("Digest = %q, want SHA-256 in hex", plain)
+		t.Fatalf("ProfileDigest = %q, want SHA-256 in hex", plain)
 	}
 	if other := digest(t, "GITHUB_READ", pat); other == plain || other == "" {
 		t.Errorf("GITHUB_READ's digest = %q beside GITHUB_ADMIN_PAT's %q; want one of its own", other, plain)
 	}
-	if absent := digest(t, "GITHUB_WRITE", pat); absent != "" {
-		t.Errorf("the digest of a name no profile holds = %q, want none", absent)
+	if absent, served := set(t, pat).Secrets["GITHUB_WRITE"]; served {
+		t.Errorf("a name no profile holds is served, with the digest %q; want it not served", absent.ProfileDigest)
 	}
 	edits := map[string]string{
 		"another kind":           `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": "slack"}`,
@@ -407,8 +419,6 @@ func TestProfilesDigestMovesWithEachFieldOfTheEntry(t *testing.T) {
 		"the source's tier":      `{"name": "GITHUB_ADMIN_PAT", "proxy": "github"}`,
 		"requesters named":       `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "requesters": ["ada@example.com"], "proxy": "github"}`,
 		"a maxGrant":             `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "maxGrant": "1h", "proxy": "github"}`,
-		"another source":         `{"name": "GITHUB_ADMIN_PAT", "source": "OTHER_PAT", "tier": "human", "proxy": "github"}`,
-		"no proxy string":        `{"name": "GITHUB_ADMIN_PAT", "tier": "human"}`,
 	}
 	seen := map[string]string{plain: "the plain entry"}
 	for name, edited := range edits {
@@ -418,7 +428,12 @@ func TestProfilesDigestMovesWithEachFieldOfTheEntry(t *testing.T) {
 		}
 		seen[moved] = name
 	}
-	const write = `{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}%s}}`
+	// A profile of another source needs a name no stored secret holds (ReasonProfileNameTaken).
+	const view = `{"name": "PAT_VIEW", "source": "%s", "tier": "human", "proxy": "github"}`
+	if admin, other := digest(t, "PAT_VIEW", fmt.Sprintf(view, "GITHUB_ADMIN_PAT")), digest(t, "PAT_VIEW", fmt.Sprintf(view, "OTHER_PAT")); admin == other {
+		t.Errorf("another source left PAT_VIEW's digest at %s", admin)
+	}
+	const write = `{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "proxy": "github", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}%s}}`
 	github := digest(t, "GITHUB_WRITE", fmt.Sprintf(write, ""))
 	for name, edit := range map[string]string{
 		"a repository named": `, "repositories": ["example-org/legion"]`,
@@ -436,33 +451,34 @@ func TestProfilesDigestMovesWithEachFieldOfTheEntry(t *testing.T) {
 	}
 }
 
-// TestADigestIsTheOneItHadBeforeTheKinds pins the digest of three profiles the kinds leave as they
-// were to the values the merge base (commit 233828e4aeb) computed for the
-// same entries, printed by its Profiles.Digest: a GitHub profile and a google profile, neither of
-// them behind the proxy, and a dpop block, the one block a kinds file still serves. Each request
-// records the digest of the profile it was decided under (request_secrets.airlock_digest), and a
-// release ends a grant whose profile's digest moved; a minted grant records its entry's digest
-// (config.MintedEntryDigest, from the dpop block's Profiles.Digest) and is no longer live once it
-// moves. So a digest the kinds moved here would end every such grant in production at the first
-// broker of this release. A profile whose proxy block the kinds replace has a digest of its new
-// form, which its grants end at once on: its kind is what the move to kinds changes.
+// TestADigestIsTheOneItHadBeforeTheKinds pins the served digest (Secret.ProfileDigest) of two
+// profiles the kinds leave as they were, a GitHub profile and a google profile, neither of them
+// behind the proxy, to the values the merge base (commit 233828e4aeb) computed for the same
+// entries. Each request records the digest of the profile it was decided under
+// (request_secrets.airlock_digest), and a release ends a grant whose profile's digest moved, so a
+// digest the kinds moved here would end every such grant in production at the first broker of
+// this release. A profile whose proxy block the kinds replace has a digest of its new form, which
+// its grants end at once on: its kind is what the move to kinds changes.
 func TestADigestIsTheOneItHadBeforeTheKinds(t *testing.T) {
-	profiles, err := policy.ParseProfiles([]byte(profilesFile(
+	app := policytest.TypeSecret("LEGION_IMPLEMENT_APP", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
+	app.Tags[policy.TagGitHubOwners] = "example-org"
+	robot := policytest.TypeSecret("GCS_READER", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+	robot.Tags[policy.TagScopes] = "devstorage.read_only"
+	set := policytest.ProfiledCurrent(t, secrets.NewLocal(app, robot), profilesFile(
 		githubRead,
-		`{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.example.com"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}`,
 		`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "repositories": ["example-org/legion"], "permissions": {"contents": "write", "metadata": "read"}}}`,
 		`{"name": "GOOGLE_READ", "source": "GCS_READER", "requesters": ["ada@example.com"], "maxGrant": "1h", "google": {"scopes": ["devstorage.read_only"]}}`,
-	)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	)).Get()
 	for name, want := range map[string]string{
-		"TEST_MINTED_TOKEN": "fec1197a7981d4f713582b9ff60d3129e9fbce01f6db89d05c8957490d83f3ec",
-		"GITHUB_WRITE":      "5d1ba4af9bda69953e64e56c42517f3fd8c535012f0d76ac38b301a0063907ed",
-		"GOOGLE_READ":       "1ae68cb8b561e4892aced4159e44a8efe7a4b04f16f9f201b2559c205549b333",
+		"GITHUB_WRITE": "5d1ba4af9bda69953e64e56c42517f3fd8c535012f0d76ac38b301a0063907ed",
+		"GOOGLE_READ":  "1ae68cb8b561e4892aced4159e44a8efe7a4b04f16f9f201b2559c205549b333",
 	} {
-		if got := profiles.Digest(name); got != want {
-			t.Errorf("Digest(%s) = %s, want %s, the digest the merge base gave the same entry", name, got, want)
+		secret, served := set.Secrets[name]
+		if !served {
+			t.Fatalf("%s is not served; refused %+v", name, set.Refused)
+		}
+		if secret.ProfileDigest != want {
+			t.Errorf("the served %s ProfileDigest = %s, want %s, the digest the merge base gave the same entry", name, secret.ProfileDigest, want)
 		}
 	}
 }

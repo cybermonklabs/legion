@@ -343,6 +343,13 @@ func combine(calls []keyCall) (Verdict, agentloop.Usage, string, error) {
 			}
 			return Verdict{Word: Deny}, usage, c.raw, fmt.Errorf("the call deciding %s: %w", c.key, c.err)
 		}
+		if c.verdict.Word != Grant {
+			err := fmt.Errorf("the model answered %q, not %q or %q", c.verdict.Word, Grant, Deny)
+			if len(calls) == 1 {
+				return Verdict{Word: Deny}, usage, c.raw, err
+			}
+			return Verdict{Word: Deny}, usage, c.raw, fmt.Errorf("the call deciding %s: %w", c.key, err)
+		}
 	}
 	reasons := make([]string, 0, len(calls))
 	for _, c := range calls {
@@ -766,12 +773,9 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 	case row.asked && row.verdict.Word == Grant:
 		dec, err := r.opts.Requests.ApplyJudgeDecision(ctx, p.RecordID, modelID, row.detail(modelID))
 		if err == nil {
-			// The transaction wrote its own request.judged row and set that row's
-			// applied from what it did, so what is left for this line is the state
-			// it answered with: an approval the current policy turned into the
-			// request's own denial, or one whose enrollment had gone, commits and
-			// grants nothing.
-			row.decided = dec.State
+			// The transaction wrote its own request.judged row and returned the verdict it wrote.
+			// State stays for applied and decided on the log line; written is the row's outcome.
+			row.decided, row.written = dec.State, dec.JudgedVerdict
 			r.logged(p, row)
 			return
 		}
@@ -879,7 +883,8 @@ func rowContext(ctx context.Context) (context.Context, context.CancelFunc) {
 func (r *Runner) refuse(ctx context.Context, p requests.PendingRequest, row verdictRow) bool {
 	modelID := r.opts.Model.ID
 	why := refusalOf(row)
-	if _, err := r.opts.Requests.DenyJudged(ctx, p.RecordID, modelID, row.detail(modelID), why); err != nil {
+	dec, err := r.opts.Requests.DenyJudged(ctx, p.RecordID, modelID, row.detail(modelID), why)
+	if err != nil {
 		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, requests.ErrJudgeHoldEnded) {
 			slog.Info("broker judge: the request was decided, expired or handed over before the judge's refusal landed",
 				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
@@ -889,8 +894,7 @@ func (r *Runner) refuse(ctx context.Context, p requests.PendingRequest, row verd
 		}
 		return false
 	}
-	row.decided = "denied"
-	row.refusal = why
+	row.decided, row.written, row.refusal = dec.State, dec.JudgedVerdict, why
 	r.logged(p, row)
 	return true
 }
@@ -962,19 +966,9 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 	slog.Info("broker judge: wrote a verdict", attrs...)
 }
 
-// outcome is what became of the request, as the row this run wrote says it: for a row the
-// decision's own transaction wrote, the state that transaction left the request in, mapped as
-// decider.judgedRow maps the same state (requests.JudgedGranted, else JudgedRefused); for every
-// other row, the verdict LogJudged answered it wrote (written).
+// outcome is the word of the request.judged row this run wrote.
 func (v verdictRow) outcome() string {
-	switch {
-	case v.decided == "granted":
-		return requests.JudgedGranted
-	case v.decided != "":
-		return requests.JudgedRefused
-	default:
-		return v.written
-	}
+	return v.written
 }
 
 // firstFailure is the first check that failed, and nil for a run every check passed.

@@ -2512,7 +2512,7 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 
 // MintedEntryDigest is the digest a minted grant records of the entry it was made under and that a
 // broker compares with its own before it mints the grant's token (requests.MintedKind.EntryDigest):
-// the SHA-256, in hex, of the dpop block's own digest (policy.Profiles.Digest), a newline, and the
+// the SHA-256, in hex, of profileDigest, the fingerprint of the dpop block's entry, a newline, and the
 // scheme and host of the private destination of the block's host as one URL prefix. It is in it because the
 // token goes to the destination's address, not the bound host's, so a broker on the same database
 // with the same block and another destination serves none of the grant. The URL holds no

@@ -205,10 +205,9 @@ func TestAProfileTakesItsSourcesJudgeAndGuidance(t *testing.T) {
 // TestAProfileBehindTheProxyCarriesItsSourcesJudgeInItsDigest: a profile behind the proxy is served
 // with its source key's judge seconds in its fingerprint, where its proxy block held them before
 // the judge became the key's tag, so a judge tag added, changed or taken off its source ends the
-// profile's grants (requests' profileChanged), as an edit of the block's judge did. A profile
-// served from a source with no judge tag keeps its file's own fingerprint (Profiles.Digest). The
-// merge base's digests of these entries were their proxy blocks'; behind a kind, an entry's digest
-// is its new form's, which the move to kinds changes once.
+// profile's grants (requests' profileChanged), as an edit of the block's judge did. The merge
+// base's digests of these entries were their proxy blocks'; behind a kind, an entry's digest is its
+// new form's, which the move to kinds changes once.
 func TestAProfileBehindTheProxyCarriesItsSourcesJudgeInItsDigest(t *testing.T) {
 	const file = `{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": "github", "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}`
 	digest := func(judge int) string {
@@ -225,9 +224,6 @@ func TestAProfileBehindTheProxyCarriesItsSourcesJudgeInItsDigest(t *testing.T) {
 		return served.ProfileDigest
 	}
 	plain, judged300, judged600 := digest(0), digest(300), digest(600)
-	if own := policytest.Profiles(t, policytest.KindsFile(file)).Digest("RELEASE_READ"); plain == own {
-		t.Errorf("RELEASE_READ, from a source tagged proxy-narrowed, is served with its file's own digest %s; want the tag in it", own)
-	}
 	if judged300 == plain || judged600 == plain || judged300 == judged600 {
 		t.Errorf("RELEASE_READ's digests under no judge, 300 and 600 = %s, %s, %s; want three", plain, judged300, judged600)
 	}

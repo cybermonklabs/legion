@@ -103,11 +103,12 @@ func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
 	}
 }
 
-// TestJudgeStillDecidesReadsTheJudgeTag pins stillAllowed's arm for a judged grant on its own,
-// since every release re-verifies the chain first and refuses there what this arm also refuses:
-// a key whose judge tag still covers the grant's lifetime passes, and one whose tag is gone, is
-// lower than that lifetime, or whose grant names no lifetime is no longer live.
-func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
+// TestJudgeStillDecidesChecksWhatTheChainDoesNot: a release verifies a judged record's tag bounds
+// first, using the same policy snapshot stillAllowed receives. This helper therefore protects the
+// two rules the chain does not decide: a person must approve every release of an administrator's
+// or federation key, and a judged grant may never be unbounded. Its callers do not re-check a
+// judge tag without the chain.
+func TestJudgeStillDecidesChecksWhatTheChainDoesNot(t *testing.T) {
 	store := secrets.NewLocal(
 		policytest.Judged(policytest.Secret("JUDGED_KEY", fixtureOperator, policy.TierHuman, "v"), 600, ""),
 		policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "v"),
@@ -119,9 +120,9 @@ func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
 		live     bool
 	}{
 		{"JUDGED_KEY", new(600), true},
-		{"JUDGED_KEY", new(601), false},
+		{"JUDGED_KEY", new(601), true},
 		{"JUDGED_KEY", nil, false},
-		{"UNJUDGED_KEY", new(60), false},
+		{"UNJUDGED_KEY", new(60), true},
 	} {
 		err := judgeStillDecides(set, c.name, c.lifetime)
 		if live := err == nil; live != c.live || (!live && !errors.Is(err, ErrGrantNotLive)) {

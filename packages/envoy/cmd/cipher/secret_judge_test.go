@@ -20,6 +20,7 @@ import (
 // its own, and a removal beside another change is refused before anything is written, since it is
 // a retag of its own.
 func TestCreateAndRetagWriteTheJudgeTags(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv in secret_test.go); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify in secret_gcp.go); it sets a package variable the package's other tests read (main.useStdin, secretStdin set in secret_test.go).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "probe-value")
 		if _, stderr, code := runSecret("create", "JUDGED_KEY", "--owner", "me", "--tier", "human", "--judge", "900", "--guidance", "grant k14-grant"); code != 0 {

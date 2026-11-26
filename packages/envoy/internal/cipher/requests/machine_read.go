@@ -240,7 +240,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	if err != nil {
 		return grantRelease{}, err
 	}
-	if recordID, err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
+	// The chain and the release re-check must read the same policy snapshot. A judged record can
+	// name several keys, and a chain verifier stops at its first judge-tag refusal; its release
+	// needs the whole snapshot to distinguish "every failing key is unserved", which pauses, from
+	// a still-served key whose tag stopped admitting the grant, which ends it for good.
+	set := m.Policy.Get()
+	if recordID, err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at, set, granted, lifetime); err != nil {
 		noteLapsedApprover(grantID, recordID, at, granted, err)
 		return grantRelease{}, err
 	}
@@ -250,14 +255,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	for _, g := range granted {
 		recorder.NoteSecrets(g.name)
 	}
-	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
-	// A grant of a project-tagged name is re-checked on every release as a service's is: whether
-	// its project is private, and whether the session's person may still see it, are Dispatch's
-	// and not in the policy version (anyProjectTagged), so they are read here, on the pool and
-	// outside any transaction (projectFacts), before the names are re-evaluated. A grant holding
-	// a project-channels name is read every time too (anyChannelLimited): which channels its
-	// credential may post to is Dispatch's as well, and the airlock hands the pod that list.
-	set := m.Policy.Get()
+	// The snapshot above serves both the chain re-check and the minters' name, tier and owners.
 	restricted, err := m.restrictedOperator(ctx, enr)
 	if err != nil {
 		return grantRelease{}, err
@@ -354,11 +352,13 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 // (noLongerServed, endGrant), so it pauses a judged one too: such a refusal answers
 // noLongerServed, writes no broken-chain line and ends nothing, and the grant releases again
 // once the key is served with a tag that admits it (unservedJudgeKey).
-func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
-	recordID, err := m.verifyChain(ctx, grantID)
+func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string, set *policy.Set, granted []requestedSecret, lifetime *int) (string, error) {
+	recordID, err := m.verifyChain(ctx, grantID, set)
 	if errors.Is(err, ErrGrantChainInvalid) {
-		if name, unserved := m.unservedJudgeKey(err); unserved {
+		if name, refusal := unservedJudgeKey(err, set, granted, lifetime); name != "" {
 			return recordID, noLongerServed(name)
+		} else if refusal != nil {
+			err = fmt.Errorf("%w: %w", ErrGrantChainInvalid, refusal)
 		}
 		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 		if ended := m.endJudgedGrant(ctx, grantID, err); ended != nil {
@@ -368,16 +368,34 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollment
 	return recordID, err
 }
 
-// unservedJudgeKey answers the key a chain refusal names, and true, when chainErr is a judge-tag
-// refusal (record.JudgeTagRefusal) of a key the live policy does not serve: the chain read no
-// judge tag because there is no served secret to read one from. Any other refusal answers false.
-func (m *Machine) unservedJudgeKey(chainErr error) (string, bool) {
-	var refusal record.JudgeTagRefusal
-	if !errors.As(chainErr, &refusal) || refusal.Tagged || m.Policy == nil {
-		return "", false
+// unservedJudgeKey answers a name to pause when every judged key the snapshot does not admit is
+// unserved. A chain verifier stops at its first JudgeTagRefusal, so another judged key can be
+// served but have its tag removed or lowered behind an unserved first key. That is an end, not a
+// pause: returning its refusal lets endJudgedGrant end the grant and name the key that stopped
+// admitting it. Every read comes from set, the snapshot the chain verifier read.
+func unservedJudgeKey(chainErr error, set *policy.Set, granted []requestedSecret, lifetime *int) (string, error) {
+	var original record.JudgeTagRefusal
+	if !errors.As(chainErr, &original) || set == nil || lifetime == nil {
+		return "", nil
 	}
-	_, served := m.Policy.Get().Secrets[refusal.Name]
-	return refusal.Name, !served
+	unserved := ""
+	for _, granted := range granted {
+		if granted.decision != policy.Approval {
+			continue
+		}
+		bound, tagged := set.JudgeSeconds(granted.name)
+		if tagged && record.JudgeAllowsLifetime(bound, *lifetime) {
+			continue
+		}
+		if _, served := set.Secrets[granted.name]; !served {
+			if unserved == "" {
+				unserved = granted.name
+			}
+			continue
+		}
+		return "", record.JudgeTagRefusal{Name: granted.name, Tagged: tagged, Bound: bound, Lifetime: *lifetime}
+	}
+	return unserved, nil
 }
 
 // endJudgedGrant ends grantID for good (endGrant) when chainErr, the chain's refusal of it, is a
@@ -928,44 +946,17 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 	return nil
 }
 
-// judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the secret must
-// not be one a person approves every release of under the live policy (an administrator's, or an
-// Anthropic federation secret: policy.Secret.PersonApprovesEveryRelease), and its judge tag must
-// still give name a judge of at least lifetime, the seconds the grant was given. The judge's
-// authority is that tag and not a person's, so this arm reads the tag where the person's arm
-// reads a login: a secret handed to another person ends a grant that person must approve and did
-// not, and leaves a judged one alone, no person's approval being what it rested on, while a judge
-// tag taken off the secret, or lowered below what this grant holds, refuses it. A release meets
-// that refusal first in the chain check, which ends the grant for good there (record.MayJudge,
-// endJudgedGrant); this arm holds a caller that re-checks a grant without the chain to the same
-// rule. The tag is in the policy version (policy.Secret.Judge), so the release reaches this arm
-// whenever it moved.
-//
-// The admin tag is read first, because it outranks whatever the judge tag says: the admin tag's
-// promise is that a person approves every release of the credential (policy.TagAdmin), and a
-// release is exactly what this is deciding, so an owner who tags a secret an administrator's
-// after the judge decided it stops the releases a model approved rather than only the next
-// decision (judge's admin check, currentPolicyAdmits). The refusal ends the grant for good
-// (errJudgedAdminSecret): the session asks again, and the judge then refuses it at decision time.
-// A person's own grant of an admin secret is untouched, this arm being a judged grant's alone — a
-// person approved it, which is all the tag asks.
-//
-// A grant with no lifetime — one that lasts until its session ends — is not live under a judge
-// decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
-// exactly what the judge's seconds are there to bound, so the judge made no such grant and no
-// such grant is its.
+// judgeStillDecides is stillAllowed's arm for a grant the model judge decided. Chain verification
+// runs before stillAllowed and receives the same policy snapshot, so it has already held every
+// key the judge decided to its tag and lifetime. This arm keeps the two rules that are not a
+// chain-bound comparison: a person now approves every release of an administrator's or Anthropic
+// federation secret, and the judge may never have made an unbounded grant.
 func judgeStillDecides(set *policy.Set, name string, lifetime *int) error {
 	if set.Secrets[name].PersonApprovesEveryRelease() {
 		return judgedAdminSecret(name)
 	}
-	bound, ok := set.JudgeSeconds(name)
-	switch {
-	case lifetime == nil:
+	if lifetime == nil {
 		return fmt.Errorf("%w: %s was granted until its session ends, which the judge never decides", ErrGrantNotLive, name)
-	case !ok:
-		return fmt.Errorf("%w: %s carries no judge tag now, so the judge no longer decides it", ErrGrantNotLive, name)
-	case !record.JudgeAllowsLifetime(bound, *lifetime):
-		return fmt.Errorf("%w: %s's judge tag now lets the judge decide at most %d seconds of it, short of this grant's %d", ErrGrantNotLive, name, bound, *lifetime)
 	}
 	return nil
 }
@@ -1498,7 +1489,7 @@ candidates:
 		// The chain first, as a release checks it: one that fails, or a group approval that has
 		// lapsed, is passed over for the next candidate, its lines written as a release writes
 		// them.
-		if recordID, err := m.verifyChainForRelease(ctx, match.grantID, enr.ID, "reuse"); err != nil {
+		if recordID, err := m.verifyChainForRelease(ctx, match.grantID, enr.ID, "reuse", set, granted, lifetime); err != nil {
 			noteLapsedApprover(match.grantID, recordID, "reuse", granted, err)
 			if errors.Is(err, ErrGrantChainInvalid) || errors.Is(err, ErrGrantNotLive) {
 				continue candidates
