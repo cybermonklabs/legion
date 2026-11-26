@@ -1139,9 +1139,10 @@ func (w *workflowRuntime) readTotals(ctx context.Context, agents []claim.Token) 
 }
 
 // totalsFailure is the reason a read of a launch's totals that failed with err gave none. A shim
-// whose hello did not offer them does not count. A refusal names its words. A closed connection
-// is no connection. A read its bound or its fact's own context ended had no answer within the
-// bound. Any other failed answer is a refusal naming the error.
+// whose hello did not offer them does not count. A refusal names its words. A read its bound or its
+// fact's own context ended had no answer within the bound. That holds for a write the bound cut,
+// whose error wraps stream.ErrClosed too (stream's connWriter). Any other closed connection is no
+// connection. Any other failed answer is a refusal naming the error.
 func totalsFailure(err error) string {
 	var refused *stream.RefusedError
 	switch {
@@ -1149,10 +1150,10 @@ func totalsFailure(err error) string {
 		return "the shim does not count"
 	case errors.As(err, &refused):
 		return "refused: " + refused.Reason
-	case errors.Is(err, stream.ErrClosed):
-		return "no connection"
 	case errors.Is(err, errTotalsBound), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "no answer within the bound"
+	case errors.Is(err, stream.ErrClosed):
+		return "no connection"
 	}
 	return "refused: " + err.Error()
 }
