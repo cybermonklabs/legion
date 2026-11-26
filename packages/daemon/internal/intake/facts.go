@@ -1693,17 +1693,18 @@ type ClaimFailed struct {
 func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
 // ClaimFailedOf is the failure fact of c as the claim persists its end, with the deployment's
-// limits beside its budgets: the sentence the supervisor wrote when it gave up (Claim.Failure),
-// what the runtime last said of the death and of the start that never produced an agent
-// (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end its process was last observed
-// to have died of (Claim.PodEnd), so a notice written after a daemon restart still names the cause
-// the role never chose — an eviction above all. It is the one builder of the fact from a claim:
-// the daemon's apply of a claim's failure and the boot's replay of it (the daemon's
+// limits beside its budgets: the claim itself (Claim.Token), whose agent names the step of a plan of
+// several tasks the failure holds, the sentence the supervisor wrote when it gave up
+// (Claim.Failure), what the runtime last said of the death and of the start that never produced an
+// agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end its process was last
+// observed to have died of (Claim.PodEnd), so a notice written after a daemon restart still names
+// the cause the role never chose — an eviction above all. It is the one builder of the fact from a
+// claim: the daemon's apply of a claim's failure and the boot's replay of it (the daemon's
 // applyTerminal), and the outbox's refusal of a start of the issue's phase for a claim held for
 // OpenAI's cyber-policy refusal, which tells the workflow of that failure again where it now holds
 // the issue (the daemon outbox's heldStartRefused).
 func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
-	return ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
+	return ClaimFailed{Issue: c.Issue, Role: c.Role, Claim: c.Token, Reason: c.Failure, PodEnd: c.PodEnd,
 		Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 		Cause: c.FailureCause, Budgets: c.Budgets, Limits: limits}
 }
