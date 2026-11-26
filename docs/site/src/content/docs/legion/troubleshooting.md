@@ -647,15 +647,16 @@ Set these variables, and the message, in `runtime.kubernetes.pod.env` or `runtim
 Each rung's request goes as input from outside the session, so Oh My Pi's hold ends for that one
 request, and the next refusal starts the hold again. A compaction whose own summary is refused
 counts as a refused rung, and the fourth rung comes next. A compaction that fails for another
-reason sends the request again as it was, and one that is stopped ends the pass. A rung whose
-settle handler runs past 28 seconds changes nothing and sends nothing, because Oh My Pi stops
-waiting for it at 30. The bound is one pass per refusal: each rung once, and no refusal starts
-another pass until a model answers. The daemon's prompt stays open through the pass, so its
-result is the result of the last rung that ran. If a rung succeeds, the agent continues its work
-and the daemon gets no refusal. Only when the last rung is refused does the refusal reach the
-daemon, with its code, as described below. Two kinds of turn get no pass, and their refusal
-reaches the daemon at once: a refused reply that carries tool calls, and a turn that ends while a
-background job's result is due.
+reason sends the request again as it was, and one that is stopped ends the pass. Once 28 seconds
+have passed since a rung's settle handler started, it starts no model switch and sends nothing,
+because Oh My Pi stops waiting for it at 30; a switch already under way ends, and the refusal
+cooldown brings the model back. An abort ends the pass too. The bound is one pass per refusal:
+each rung once, and no refusal starts another pass until a model answers. The daemon's prompt
+stays open through the pass, so its result is the result of the last rung that ran. If a rung
+succeeds, the agent continues its work and the daemon gets no refusal. Only when the last rung is
+refused does the refusal reach the daemon, with its code, as described below. Two kinds of turn
+get no pass, and their refusal reaches the daemon at once: a refused reply that carries tool
+calls, and a turn that ends while a background job's result is due.
 
 **A pane whose ladder has compacted once runs no background compaction for the rest of its
 process.** To summarize the newest turn group, the ladder registers a `session_before_compact`

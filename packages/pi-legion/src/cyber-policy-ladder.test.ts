@@ -3,6 +3,7 @@ import type {
   CompactionPreparation,
   HostModel,
   SessionBeforeCompactEvent,
+  SessionContext,
 } from "@legion/pi-shared/pi-types";
 import {
   CYBER_POLICY_CONTINUE,
@@ -40,12 +41,7 @@ const SETTINGS: CyberPolicyLadderSettings = {
 
 const WEAKER: HostModel = { provider: "openai", id: "gpt-5.4-mini", identity: { class: "openai" } };
 
-interface Ctx {
-  compact?: (options: {
-    readonly origin?: "outside" | "inside";
-    readonly mode?: "soft" | "remote" | "snapcompact";
-  }) => Promise<void>;
-}
+type Ctx = Pick<SessionContext, "compact">;
 
 /** An error of the name Oh My Pi's own rejection of a compaction carries. */
 function named(name: string, message: string): Error {
@@ -54,19 +50,27 @@ function named(name: string, message: string): Error {
   return error;
 }
 
-function rig(
-  options: {
-    weaker?: HostModel;
-    compact?: "ok" | "fails" | "absent";
-    /** Runs inside `stepDownTo`, before it answers. */
-    duringStep?: () => void;
-  } = {}
-) {
+/** What a case does inside the ladder's collaborators, set after the rig is made. */
+interface Hooks {
+  /** Runs inside the host's classifier of a refusal, before it answers. */
+  onRefusalCheck?: () => void;
+  /** Runs inside `wait`, before it answers. */
+  onWait?: () => void;
+  /** Runs inside `stepDownTo` once it has begun the switch, before it answers. */
+  onStep?: () => void;
+  /** What `stepDownTo` answers; true by default. */
+  stepAnswer?: boolean;
+}
+
+function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" } = {}) {
   const calls: string[] = [];
   const waits: number[] = [];
   const warnings: string[] = [];
+  const hooks: Hooks = {};
   /** The handlers the ladder registered on `session_before_compact`. */
   const beforeCompact: Array<(event: SessionBeforeCompactEvent) => void> = [];
+  /** The settle budgets the ladder asked for, each a controller the case can abort. */
+  const budgets: Array<{ readonly ms: number; readonly controller: AbortController }> = [];
   let failCompaction: ((error: Error) => void) | undefined;
   let finishCompaction: (() => void) | undefined;
   const ctx: Ctx =
@@ -83,11 +87,15 @@ function rig(
         };
   const ladder = createCyberPolicyLadder<Ctx>({
     settings: SETTINGS,
-    cyberPolicyRefusal: async (message) =>
-      typeof message === "object" &&
-      message !== null &&
-      "errorMessage" in message &&
-      String(message.errorMessage).includes("cyber_policy"),
+    cyberPolicyRefusal: async (message) => {
+      hooks.onRefusalCheck?.();
+      return (
+        typeof message === "object" &&
+        message !== null &&
+        "errorMessage" in message &&
+        String(message.errorMessage).includes("cyber_policy")
+      );
+    },
     recordableRefusal: async (message) =>
       typeof message === "object" &&
       message !== null &&
@@ -99,14 +107,22 @@ function rig(
       calls.push(`${options?.origin ?? "inside"} ${options?.triggerTurn}`);
     },
     sameFamilyFallback: async () => options.weaker,
-    stepDownTo: async (_ctx, model) => {
+    stepDownTo: async (_ctx, model, signal) => {
+      // As `ModelFallback.stepDownTo` does: an aborted signal moves nothing.
+      if (signal.aborted) return false;
       calls.push(`step ${model.provider}/${model.id}`);
-      options.duringStep?.();
-      return true;
+      hooks.onStep?.();
+      return hooks.stepAnswer ?? true;
     },
     wait: async (ms, signal) => {
       waits.push(ms);
+      hooks.onWait?.();
       return signal?.aborted !== true;
+    },
+    timeout: (ms) => {
+      const controller = new AbortController();
+      budgets.push({ ms, controller });
+      return controller.signal;
     },
     registerBeforeCompact: (handler) => void beforeCompact.push(handler),
     log: { debug: () => undefined, warn: (message) => void warnings.push(message) },
@@ -118,6 +134,8 @@ function rig(
     calls,
     waits,
     warnings,
+    hooks,
+    budgets,
     beforeCompact,
     stop: (message: unknown, stopSignal: AbortSignal = signal) =>
       ladder.settle({ last_assistant_message: message, signal: stopSignal }, ctx),
@@ -247,11 +265,11 @@ describe("one pass of the ladder", () => {
     expect(pane.waits).toEqual([15_000, 25_000, 15_000]);
   });
 
-  test("the compaction's own abort of the turn it was asked from does not end the pass", async () => {
+  test("the compaction aborts its turn with no turn_end, so the resumed turn's refusal climbs on", async () => {
     const pane = rig();
     for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    // Oh My Pi disconnects before its compaction aborts the turn: no `turn_end` reaches the plugin.
     await pane.ladder.request([], pane.ctx);
-    pane.ladder.turnEnded({ role: "assistant", stopReason: "aborted" });
     pane.finishCompaction();
     await settle();
     // The resumed turn's refusal climbs the next rung, and with none left the pass is spent.
@@ -259,12 +277,25 @@ describe("one pass of the ladder", () => {
     expect(pane.waits).toEqual([15_000, 25_000, 25_000]);
   });
 
-  test("any other abort ends the pass, so the next refusal starts again at the retry", async () => {
+  test("an abort ends the pass, so the next refusal starts again at the retry", async () => {
     const pane = rig();
     await pane.stop(refused());
     pane.ladder.turnEnded({ role: "assistant", stopReason: "aborted" });
     expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
     expect(pane.waits).toEqual([15_000, 15_000]);
+  });
+
+  test("an abort after the compacted rung's compaction ends the pass too", async () => {
+    const pane = rig({ weaker: WEAKER });
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    pane.finishCompaction();
+    await settle();
+    // A person or the daemon interrupts the resumed turn.
+    pane.ladder.turnEnded({ role: "assistant", stopReason: "aborted" });
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.waits.at(-1)).toBe(15_000);
+    expect(pane.calls).not.toContain("step openai/gpt-5.4-mini");
   });
 
   test("another provider error and a clean end are no refusal and climb nothing", async () => {
@@ -287,14 +318,51 @@ describe("one pass of the ladder", () => {
     expect(pane.calls).toEqual([]);
   });
 
-  test("a rung whose settle pass ends during the model switch ends no hold", async () => {
+  test("a rung whose settle pass ends while its model switch runs ends no hold", async () => {
     const interrupt = new AbortController();
-    const pane = rig({ weaker: WEAKER, compact: "absent", duringStep: () => interrupt.abort() });
+    const pane = rig({ weaker: WEAKER, compact: "absent" });
+    pane.hooks.onStep = () => interrupt.abort();
     await pane.stop(refused(), interrupt.signal);
     await pane.stop(refused(), interrupt.signal);
-    // The weaker model's rung: the pass is aborted while the model switches.
+    // The weaker model's rung: the switch had begun when the pass was aborted, and nothing is sent.
     expect(await pane.stop(refused(), interrupt.signal)).toBeUndefined();
     expect(pane.calls).toEqual(["outside false", "outside false", "step openai/gpt-5.4-mini"]);
+  });
+
+  test("a rung whose 28 s budget, counted from the handler's start, runs out moves no model and ends no hold", async () => {
+    const pane = rig({ weaker: WEAKER, compact: "absent" });
+    await pane.stop(refused());
+    await pane.stop(refused());
+    // The weaker model's rung: its budget runs out during the wait.
+    pane.hooks.onWait = () => pane.budgets.at(-1)?.controller.abort();
+    expect(await pane.stop(refused())).toBeUndefined();
+    expect(pane.budgets.map((budget) => budget.ms)).toEqual([28_000, 28_000, 28_000]);
+    expect(pane.calls).toEqual(["outside false", "outside false"]);
+  });
+
+  test("a session change during the model switch leaves the new session's ladder whole", async () => {
+    const pane = rig({ weaker: WEAKER, compact: "absent" });
+    await pane.stop(refused());
+    await pane.stop(refused());
+    // The switch fails, and the pane moved to another session meanwhile.
+    pane.hooks.stepAnswer = false;
+    pane.hooks.onStep = () => pane.ladder.reset();
+    expect(await pane.stop(refused())).toBeUndefined();
+    pane.hooks.onStep = undefined;
+    // The new session's first refusal still gets a pass, from the retry.
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.waits.at(-1)).toBe(15_000);
+  });
+
+  test("a session change while a refusal is classed starts the new session at the retry", async () => {
+    const pane = rig();
+    await pane.stop(refused());
+    pane.hooks.onRefusalCheck = () => pane.ladder.reset();
+    // That refusal was the old session's: it climbs nothing.
+    expect(await pane.stop(refused())).toBeUndefined();
+    pane.hooks.onRefusalCheck = undefined;
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.waits).toEqual([15_000, 15_000]);
   });
 
   test("a host with no compaction for extensions passes over the compacted rung", async () => {

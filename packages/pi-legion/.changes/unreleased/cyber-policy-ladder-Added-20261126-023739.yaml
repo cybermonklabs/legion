@@ -9,7 +9,8 @@ body: |-
   `LEGION_CYBER_POLICY_COMPACT_WAIT_MS` and `LEGION_CYBER_POLICY_FALLBACK_WAIT_MS` 25000 each, at
   most 25000), and the appended message is `LEGION_CYBER_POLICY_RETRY_MESSAGE`. Each rung's
   request is sent as input from outside the session, so Oh My Pi's hold ends for it; one pass runs
-  per refusal, and a rung past 28 s of its settle handler sends nothing. Only a refusal of the last
+  per refusal, and once 28 s of its settle handler have passed a rung starts no model switch and
+  sends nothing. Only a refusal of the last
   rung settles the turn, so the daemon gets `cyber_policy` as before. A pane whose ladder has
   compacted once runs no background compaction for the rest of its process, since the ladder's
   `session_before_compact` handler cannot be removed.

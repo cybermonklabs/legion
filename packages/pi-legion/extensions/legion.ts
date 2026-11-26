@@ -332,8 +332,9 @@ export default function legionExtension(pi: PiApi): void {
     // `pi`'s own method, called on `pi` as every other send of this entry is.
     sendMessage: (message, options) => pi.sendMessage(message, options),
     sameFamilyFallback: (context) => modelFallback.sameFamilyFallback(context),
-    stepDownTo: (context, model) => modelFallback.stepDownTo(context, model),
+    stepDownTo: (context, model, signal) => modelFallback.stepDownTo(context, model, signal),
     wait: (delayMs, signal) => delay(delayMs, true, { signal }).catch(() => false),
+    timeout: (ms) => AbortSignal.timeout(ms),
     // At the ladder's first compaction only: with any handler registered Oh My Pi runs no
     // background compaction, and it has no way to remove one.
     registerBeforeCompact: (handler) =>
@@ -595,17 +596,19 @@ export default function legionExtension(pi: PiApi): void {
   });
   // The turn is over, so every call it held open is closed and no step runs for one of them, and
   // the turn's one abort goes with them so the next turn aborts for itself (`turnEnded` in
-  // `pi-shared/src/stall-watchdog.ts`). How that turn ended is read nowhere here: an aborted
-  // turn is readable from its last assistant message, which the `message_end` handler below
-  // already hands the watch, and `turnEnded` closes what an aborted message would close and
-  // clears what it would clear — so a call to `assistantMessage` here would be a second name
-  // for the same close in the log and nothing else. A subagent's turn is not this session's and
-  // closes none of its calls, the `task` call that is running it least of all; the case
-  // "the turn's end closes every call it held open" holds this line.
+  // `pi-shared/src/stall-watchdog.ts`). The stall watch reads nothing of how that turn ended: an
+  // aborted turn is readable from its last assistant message, which the `message_end` handler
+  // below already hands the watch, and `turnEnded` closes what an aborted message would close and
+  // clears what it would clear — so a call to `assistantMessage` here would be a second name for
+  // the same close in the log and nothing else. The cyber_policy ladder does read it, below. A
+  // subagent's turn is not this session's and closes none of its calls, the `task` call that is
+  // running it least of all; the case "the turn's end closes every call it held open" holds this
+  // line.
   pi.on("turn_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.turnEnded();
-    // A reply the provider gave ends a pass of the cyber_policy ladder (src/cyber-policy-ladder.ts).
+    // A reply the provider gave, or an abort, ends a pass of the cyber_policy ladder
+    // (src/cyber-policy-ladder.ts): its stop reason says which.
     cyberPolicyLadder.turnEnded(event.message);
   });
   // The run settled, or ended with the host going on: `turn_end` fires 3 ms before this for an

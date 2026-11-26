@@ -142,9 +142,14 @@ export interface ModelFallback {
   /**
    * Moves the session to `next` as one step down its chain, and arms the return to the model the
    * walk started from on the refusal cooldown, exactly as a content filter's step does
-   * (`walkChain`). Answers whether the session is on `next` with its return armed.
+   * (`walkChain`). Answers whether the session is on `next` with its return armed. With `signal`
+   * aborted before the step it moves nothing and answers false.
    */
-  readonly stepDownTo: (ctx: ModelFallbackContext, next: HostModel) => Promise<boolean>;
+  readonly stepDownTo: (
+    ctx: ModelFallbackContext,
+    next: HostModel,
+    signal?: AbortSignal
+  ) => Promise<boolean>;
 }
 
 /** The newest `model_change` on the branch, the one before it, and the one the walk ending there
@@ -781,7 +786,8 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         return undefined;
       }
     },
-    stepDownTo: async (ctx, next) => {
+    stepDownTo: async (ctx, next, signal) => {
+      if (signal?.aborted === true) return false;
       try {
         const current = ctx.models?.current?.();
         if (current === undefined) {

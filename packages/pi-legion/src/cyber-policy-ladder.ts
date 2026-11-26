@@ -6,6 +6,7 @@ import type {
   HostModel,
   PiApi,
   SessionBeforeCompactEvent,
+  SessionContext,
   SessionStopEvent,
   SessionStopEventResult,
 } from "@legion/pi-shared/pi-types";
@@ -40,9 +41,10 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  * marks as not yielded (`session/agent-session.ts:6458-6459, 7061-7067`), so the prompt stays open
  * across every rung and its result is the last rung's. The host stops waiting for a
  * `session_stop` handler at 30 s without aborting it (`extensibility/extensions/runner.ts:152,
- * 1983-1988, 2030`), so each wait is at most `LONGEST_RUNG_WAIT_MS`, and past `SETTLE_BUDGET_MS` a
- * rung changes nothing and sends nothing. The compaction itself runs outside every handler
- * (below), so its length is bound by nothing here.
+ * 1983-1988, 2030`), so each wait is at most `LONGEST_RUNG_WAIT_MS`, and once `SETTLE_BUDGET_MS`
+ * from the handler's start has passed a rung starts no model switch and sends nothing; a switch
+ * already under way ends, and the model fallback's return brings the model back. The compaction
+ * itself runs outside every handler (below), so its length is bound by nothing here.
  *
  * The compaction. It is asked for as `mode: "soft"`, a text summary by the session's model: the
  * shipped `compaction.methodOrder` puts provider-native compaction and snapcompact first, and
@@ -79,10 +81,10 @@ export type CyberPolicyRung = (typeof CYBER_POLICY_RUNGS)[number];
  * room for the rung's own work (a model switch, an outside message) after the wait. */
 export const LONGEST_RUNG_WAIT_MS = 25_000;
 
-/** How long one rung's `session_stop` handler may take before it gives up the rung: under the
- * 30 s after which Oh My Pi drops the handler's answer and lets the turn settle, so a handler that
- * runs late moves no model and ends no hold after that. */
-export const SETTLE_BUDGET_MS = 28_000;
+/** How long one rung's `session_stop` handler may run, from its start, before it gives up the
+ * rung: under the 30 s after which Oh My Pi drops the handler's answer and lets the turn settle,
+ * so a handler that runs late starts no model switch and ends no hold after that. */
+const SETTLE_BUDGET_MS = 28_000;
 
 /** The message the second rung appends, unless `LEGION_CYBER_POLICY_RETRY_MESSAGE` sets another. */
 export const DEFAULT_CYBER_POLICY_MESSAGE =
@@ -166,12 +168,7 @@ export function cyberPolicyLadderSettings(
 }
 
 /** The slice of the host's session context the ladder hands its collaborators. */
-export interface CyberPolicyLadderContext {
-  readonly compact?: (options: {
-    readonly origin?: "outside" | "inside";
-    readonly mode?: "soft" | "remote" | "snapcompact";
-  }) => Promise<void>;
-}
+export type CyberPolicyLadderContext = Pick<SessionContext, "compact">;
 
 export interface CyberPolicyLadderLog {
   readonly debug: (message: string, context?: Record<string, unknown>) => void;
@@ -192,10 +189,13 @@ export interface CyberPolicyLadderDeps<Context extends CyberPolicyLadderContext>
   readonly sendMessage: PiApi["sendMessage"];
   /** The model of the session model's family below it in its chain (`ModelFallback`). */
   readonly sameFamilyFallback: (ctx: Context) => Promise<HostModel | undefined>;
-  /** Moves the session to that model and arms its return (`ModelFallback.stepDownTo`). */
-  readonly stepDownTo: (ctx: Context, model: HostModel) => Promise<boolean>;
+  /** Moves the session to that model and arms its return (`ModelFallback.stepDownTo`); with
+   * `signal` already aborted it moves nothing and answers false. */
+  readonly stepDownTo: (ctx: Context, model: HostModel, signal: AbortSignal) => Promise<boolean>;
   /** Resolves true after `ms`, or false at once when `signal` aborts first. */
   readonly wait: (ms: number, signal?: AbortSignal) => Promise<boolean>;
+  /** A signal that aborts `ms` after it is made (`AbortSignal.timeout`). */
+  readonly timeout: (ms: number) => AbortSignal;
   /** Registers `handler` on the host's `session_before_compact`, for this pane's Legion sessions.
    * The ladder calls it once, before its first compaction, since a registered handler turns off
    * the host's background compaction and the host has no way to remove one. */
@@ -218,7 +218,8 @@ export interface CyberPolicyLadder<Context extends CyberPolicyLadderContext> {
     ctx: Context
   ) => Promise<readonly unknown[] | undefined>;
   /** `turn_end`: a reply the provider gave ends the pass, so the next refusal starts a new one,
-   * and so does an abort that is not the ladder's own compaction's. */
+   * and so does an abort. The ladder's own compaction aborts its turn with the agent disconnected
+   * (`session/session-maintenance.ts:2000-2001`), so that abort sends no `turn_end`. */
   readonly turnEnded: (message: AgentEndMessage | undefined) => void;
   /** The pane moved to another session: whatever pass ran was the old session's, and a compaction
    * it started answers nothing of the new one's. */
@@ -252,13 +253,10 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   let compactDue = false;
   /** The ladder's own compaction is running, which `widen` widens. */
   let compacting = false;
-  /** The ladder's compaction aborted the turn it was asked from, and that turn's `turn_end` has
-   * not come yet: the one abort that ends no pass. */
-  let ownAbortDue = false;
   /** `widen` is registered on the host's `session_before_compact`. */
   let widening = false;
   /** Which pass this is: ending a pass, spending it and `reset` move it on, so a compaction or a
-   * `settle` that began under an earlier one changes nothing when it ends. */
+   * `settle` that began under an earlier one changes nothing when it ends (`closePass`). */
   let pass = 0;
 
   const classify = async (
@@ -278,22 +276,31 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
     }
   };
 
-  const endPass = (why: string): void => {
-    if (next > 0) deps.log.debug(`legion: the cyber_policy ladder ended: ${why}`, { rungs: next });
+  /** Ends the pass `from` names, and does nothing when `from` is an earlier one: a `settle` or a
+   * compaction that began under that pass leaves the pass after it alone. */
+  const closePass = (from: number): boolean => {
+    if (from !== pass) return false;
     next = 0;
     compactDue = false;
     pass += 1;
+    return true;
   };
 
-  const exhaust = (): void => {
+  const endPass = (why: string, from = pass): void => {
+    const rungs = next;
+    if (closePass(from) && rungs > 0) {
+      deps.log.debug(`legion: the cyber_policy ladder ended: ${why}`, { rungs });
+    }
+  };
+
+  const exhaust = (from: number): void => {
+    const rungs = next;
+    if (!closePass(from)) return;
+    spent = true;
     deps.log.warn(
       "legion: every rung of the cyber_policy ladder was refused; the refusal goes to the daemon",
-      { rungs: next }
+      { rungs }
     );
-    next = 0;
-    compactDue = false;
-    spent = true;
-    pass += 1;
   };
 
   /** Input from outside the session, sent before each rung: it ends the host's hold for that
@@ -335,7 +342,6 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       deps.registerBeforeCompact(widen);
     }
     compacting = true;
-    ownAbortDue = true;
     const started = pass;
     // The synchronous part of the host's compaction aborts the agent, so the request this hook was
     // called for is never sent; the host resumes the turn once the summary is committed, or at
@@ -357,7 +363,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
           return;
         }
         if (name === COMPACTION_CANCELLED || name === "AbortError") {
-          endPass("its compaction was stopped");
+          endPass("its compaction was stopped", started);
           return;
         }
         deps.log.warn(
@@ -372,19 +378,27 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   return {
     settle: async (event, ctx) => {
       const started = pass;
+      // Oh My Pi stops waiting for this handler at 30 s without aborting it, and its clock starts
+      // when the handler does: so does this budget's (`SETTLE_BUDGET_MS`).
+      const signal = AbortSignal.any([event.signal, deps.timeout(SETTLE_BUDGET_MS)]);
       const last = event.last_assistant_message;
       if (assistantRefusal(last) === undefined) {
-        endPass("the turn ended with no refusal");
+        endPass("the turn ended with no refusal", started);
         return undefined;
       }
-      if (!(await classify(deps.cyberPolicyRefusal, last))) {
-        endPass("the turn ended in another provider error");
+      const refused = await classify(deps.cyberPolicyRefusal, last);
+      // The pane moved to another session meanwhile: this turn was the old session's.
+      if (started !== pass) return undefined;
+      if (!refused) {
+        endPass("the turn ended in another provider error", started);
         return undefined;
       }
       // A pass starts on OpenAI's own refusal only. A call the hold held is no new refusal: after a
       // spent pass it is the hold doing its work, and the turn settles.
-      if (next === 0 && (spent || !(await classify(deps.recordableRefusal, last)))) {
-        return undefined;
+      if (next === 0) {
+        if (spent) return undefined;
+        const recordable = await classify(deps.recordableRefusal, last);
+        if (started !== pass || !recordable) return undefined;
       }
       // A host with no compaction for extensions has no compacted rung: it is passed over.
       if (CYBER_POLICY_RUNGS[next] === "compact" && ctx.compact === undefined) {
@@ -395,34 +409,35 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       }
       const rung = CYBER_POLICY_RUNGS[next];
       if (rung === undefined) {
-        exhaust();
+        exhaust(started);
         return undefined;
       }
       next += 1;
+      /** The rung is given up: the settle pass was aborted or ran past its budget. */
+      const giveUp = (): undefined => {
+        endPass("the settle pass was aborted or ran past its budget", started);
+        return undefined;
+      };
       let target: HostModel | undefined;
       if (rung === "weaker-model") {
         target = await deps.sameFamilyFallback(ctx);
+        if (started !== pass) return undefined;
         if (target === undefined) {
-          exhaust();
+          exhaust(started);
           return undefined;
         }
       }
-      // Oh My Pi drops this handler's answer at 30 s without aborting it (`SETTLE_BUDGET_MS`).
-      const signal = AbortSignal.any([event.signal, AbortSignal.timeout(SETTLE_BUDGET_MS)]);
-      /** The rung is given up: the settle pass was aborted or ran past its budget, or the pane
-       * moved to another session, whose pass this one must leave alone. */
-      const giveUp = (): undefined => {
-        if (started === pass) endPass("the settle pass was aborted or ran past its budget");
-        return undefined;
-      };
-      if (!(await deps.wait(deps.settings.waitsMs[rung], signal))) return giveUp();
-      if (signal.aborted || started !== pass) return giveUp();
+      const waited = await deps.wait(deps.settings.waitsMs[rung], signal);
+      if (started !== pass) return undefined;
+      if (!waited || signal.aborted) return giveUp();
       if (target !== undefined) {
-        if (!(await deps.stepDownTo(ctx, target))) {
-          exhaust();
+        const stepped = await deps.stepDownTo(ctx, target, signal);
+        if (started !== pass) return undefined;
+        if (signal.aborted) return giveUp();
+        if (!stepped) {
+          exhaust(started);
           return undefined;
         }
-        if (signal.aborted || started !== pass) return giveUp();
       }
       endHold();
       deps.log.debug("legion: the cyber_policy ladder climbs a rung", { rung });
@@ -454,27 +469,18 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
     turnEnded: (message) => {
       const reason = message?.stopReason;
       if (reason === "aborted") {
-        // The ladder's compaction aborts the turn it was asked from: that abort is the rung's own.
-        if (ownAbortDue) {
-          ownAbortDue = false;
-          return;
-        }
         endPass("the turn was aborted");
         return;
       }
       if (reason === "stop" || reason === "toolUse" || reason === "length") {
         spent = false;
-        ownAbortDue = false;
         endPass("the provider answered");
       }
     },
     reset: () => {
-      next = 0;
       spent = false;
-      compactDue = false;
       compacting = false;
-      ownAbortDue = false;
-      pass += 1;
+      closePass(pass);
     },
   };
 }
