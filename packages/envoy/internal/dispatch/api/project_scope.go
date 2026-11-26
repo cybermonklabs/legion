@@ -225,7 +225,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			belongsTo := ""
 			if addressed {
 				var err error
-				if belongsTo, err = resolve(r.Context(), s.deps.Store.Pool, r, refs.VisibilityArg(reader)); err != nil {
+				if belongsTo, _, err = resolve(r.Context(), s.deps.Store.Pool, r, refs.VisibilityArg(reader)); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
@@ -347,10 +347,13 @@ func refuseCheckOutsideCallerProject(ctx context.Context, q queryer, who model.A
 }
 
 // projectResolver answers the project a request's addressed object belongs to, as the reader
-// whose visibility argument is viewer sees it. An empty project with no error means the address
-// resolved to no project: an object that belongs to none, an object of a project the reader does
-// not see, a target that does not exist, or an id Postgres will not read as a uuid.
-type projectResolver func(ctx context.Context, q queryer, r *http.Request, viewer any) (string, error)
+// whose visibility argument is viewer sees it, and whether the read found the object's row at all.
+// An empty project with no error means the address resolved to no project: an object that belongs
+// to none, which is found, or an object of a project the reader does not see, a target that does
+// not exist, or an id Postgres will not read as a uuid, none of which is found. A keyed repeat
+// tells a row of no project from no row by found (heldAnswerRefusal); the project check needs the
+// project alone.
+type projectResolver func(ctx context.Context, q queryer, r *http.Request, viewer any) (project string, found bool, err error)
 
 // projectResolverFor is the resolver a project's row calls for its object, read from the shape of
 // its pattern, and whether the pattern names an object it knows: the read a full member's broker
@@ -410,22 +413,22 @@ func addresses(pattern, prefix string) bool {
 	return pattern == prefix || strings.HasPrefix(pattern, prefix+"/")
 }
 
-// projectOfRow is the resolver that reads one column, the object's project, by the path value
-// named parameter and the reader's visibility argument at $2, answering no project for a target
-// that does not resolve rather than an error: no such row, a row the reader does not see, or a path
-// value Postgres will not read as a uuid (SQLSTATE 22P02, which it reports as it binds the
-// parameter).
+// projectOfRow is the resolver that reads one column, the object's project (empty for an object
+// of none), by the path value named parameter and the reader's visibility argument at $2. A row it
+// reads is found, its project empty or not. A target that does not resolve is not found, with no
+// project and no error: no such row, a row the reader does not see, or a path value Postgres will
+// not read as a uuid (SQLSTATE 22P02, which it reports as it binds the parameter).
 func projectOfRow(sql, parameter string) projectResolver {
-	return func(ctx context.Context, q queryer, r *http.Request, viewer any) (string, error) {
+	return func(ctx context.Context, q queryer, r *http.Request, viewer any) (string, bool, error) {
 		var project string
 		if err := q.QueryRow(ctx, sql, r.PathValue(parameter), viewer).Scan(&project); err != nil {
 			var malformed *pgconn.PgError
 			if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &malformed) && malformed.Code == "22P02") {
-				return "", nil
+				return "", false, nil
 			}
-			return "", err
+			return "", false, err
 		}
-		return project, nil
+		return project, true, nil
 	}
 }
 
