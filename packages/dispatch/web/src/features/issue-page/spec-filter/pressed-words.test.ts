@@ -57,12 +57,13 @@ function pressAt(
   }
 }
 
-/** What `run` answers while every element draws `line` as its one line. happy-dom lays nothing
- *  out and gives each element a box of no size at the page's corner, which the press at (1, 2)
- *  is past, so a case of a press inside an atom gives the atom a line that holds the press. */
-function withLine<Answer>(line: DOMRect, run: () => Answer): Answer {
+/** What `run` answers while every element draws `boxes` as its lines, one box a line. happy-dom
+ *  lays nothing out and gives each element a box of no size at the page's corner, which the press
+ *  at (1, 2) is past, so a case of a press inside an atom gives the atom a line that holds the
+ *  press. */
+function withLines<Answer>(boxes: readonly DOMRect[], run: () => Answer): Answer {
   const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
-    () => [line] as unknown as DOMRectList
+    () => boxes as unknown as DOMRectList
   );
   try {
     return run();
@@ -158,7 +159,7 @@ test("a press at the end of the text before a break, inside an atom or at the wo
   const end = pressIn(BROKEN, "Line one.", "Line one.".length);
   expect(end).toEqual({ x: 1, y: 2, offset: 9, word: ["Line ", "one.Line", " two,", 4] });
   expect(end.next).toBeUndefined();
-  const atom = withLine(AROUND_PRESS, () => pressIn(KEPT, "<name>", 2));
+  const atom = withLines([AROUND_PRESS], () => pressIn(KEPT, "<name>", 2));
   expect(atom).toEqual({ x: 1, y: 2, offset: "Kept by ".length });
   expect(atom.next).toBeUndefined();
   const start = pressIn(BROKEN, "Line one.", 0);
@@ -209,7 +210,7 @@ test("a press past an atom that ends the words says the caret goes after it", ()
 
 test("a press inside an atom that ends the words goes before it", () => {
   for (const [atom, inside] of ATOMS) {
-    const at = withLine(AROUND_PRESS, () =>
+    const at = withLines([AROUND_PRESS], () =>
       pressAt(`<p>${NOTE}${atom}</p>`, (words) =>
         inside(words.firstElementChild?.lastElementChild ?? words)
       )
@@ -265,6 +266,11 @@ test("a press the browser answers inside an atom, past the end of its last line,
       const rtl = `<p style="direction: rtl">${NOTE}${html}</p>`;
       expect(pressPast(rtl), `${past} px past, right to left`).toEqual(after);
     }
+    // An atom the browser draws in two boxes on one line has no line before its last.
+    earlier = new DOMRect(-90, -8, 30, 20);
+    line = new DOMRect(-60, -8, 30, 20);
+    expect(pressPast(`<p>${NOTE}${html}</p>`), "past two boxes on one line").toEqual(after);
+    earlier = undefined;
     // On the end of the atom's last line, inside the line, on the atom's line before its last,
     // and past the right edge of a line that runs right to left, whose end is its left edge.
     const stays = [
@@ -338,4 +344,21 @@ test("a press past a footnote reference that ends the words, below its raised bo
   } finally {
     lines.mockRestore();
   }
+});
+
+// An atom's box is as tall as its font, so the line before an atom's last runs on below that box
+// by its half-leading: an atom drawn over two lines stood at 147 to 165 px in a line of 144 to
+// 168 px, and at 171 to 189 px on the next. A press in that band, right of the last line's short
+// end, is on the earlier line, so it stays inside the atom, at its start, and does not go after
+// the atom, a line below the press. The two lines meet half way between the two boxes.
+test("a press below an atom's box on the line before its last stays at the atom's start", () => {
+  const boxes = [new DOMRect(-30, -18, 60, 18), new DOMRect(-99, 6, 60, 18)];
+  const at = withLines(boxes, () =>
+    pressAt(`<p>${NOTE}<span data-type="html">&lt;name&gt;</span></p>`, (words) => {
+      const atom = words.firstElementChild?.lastElementChild ?? words;
+      return [atom.firstChild ?? atom, 2];
+    })
+  );
+  expect(at).toEqual(AT_NOTE_END);
+  expect(at.next).toBeUndefined();
 });
