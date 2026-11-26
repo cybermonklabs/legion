@@ -75,9 +75,7 @@ const (
 	readPermissions  = `{"actions": "read", "attestations": "read", "checks": "read", "contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"}`
 	writePermissions = `{"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"}`
 	adaPermissions   = `{"contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "workflows": "write"}`
-	// proxyBlock puts a profile behind the github kind of policytest.Kinds (api.github.com,
-	// github.com and uploads.github.com, in Authorization) by its own proxy string.
-	proxyBlock = `"proxy": "github"`
+	proxyBlock       = `"proxy": {"hosts": ["api.github.com", "github.com", "uploads.github.com"], "headers": ["Authorization"]}`
 )
 
 // oldClientService is the service a Legion issue pod and a session pod enrol as, which the
@@ -98,7 +96,7 @@ const boxPerson = "ada@example.com"
 // and a person's GITHUB_APP_ADA, served to that person alone, and as GITHUB_APP_ADA_AGENT, a bare
 // token behind the airlock that every agent-tier caller may ask for, as a deployment serves a
 // person's App to the agents that act for them.
-var oldClientProfiles = policytest.KindsFile(
+var oldClientProfiles = policytest.ProfilesFile(
 	`{"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "github": {"accounts": ["acme", "ada", "cybermonklabs"], "permissions": `+readPermissions+`, "value": "token"}, `+proxyBlock+`}`,
 	`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon", "ada@example.com"], "github": {"accounts": ["acme", "ada", "cybermonklabs"], "permissions": `+writePermissions+`, "value": "token"}, `+proxyBlock+`}`,
 	`{"name": "LEGION_IMPLEMENT_APP", "requesters": ["ada@example.com"], "github": {"accounts": ["acme", "ada", "cybermonklabs"], "permissions": `+writePermissions+`, "value": "installations"}}`,
@@ -134,6 +132,7 @@ func newGitHubAppFieldServer(t *testing.T, off bool) *gitHubAppFieldServer {
 		cur := policytest.ProfiledCurrent(t, local, oldClientProfiles, oldClientService, otherService)
 		d.Policy, d.Machine.Policy, d.MachineLogin.Policy = cur, cur, cur
 		d.Machine.ServicesByAccount = map[string]string{workerAccount: oldClientService, otherAccount: otherService}
+		d.Machine.Airlock = policytest.Profiles(t, oldClientProfiles, oldClientService, otherService).ProxyRules()
 		d.Machine.AirlockProxyURL = "http://airlock.example:3128"
 		d.Machine.AirlockCACertificate = "the airlock's authority"
 		d.Machine.GitHubAppFieldOff = off

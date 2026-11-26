@@ -1,10 +1,9 @@
 // cmd/cipherd/airlock_settings_test.go
-// The airlock's settings against the REAL compiled broker. Only a secret behind a kind of the
-// profiles file is carried by the proxy port, so the settings that port cannot run without are
-// needed only when the profiles file declares a kind. config's own rows prove the check
-// (Config.RequireAirlock); these prove that the boot runs it on the profiles file it read, before
-// it binds anything, and that a broker whose profiles file declares no kind binds no proxy port
-// and still serves its GitHub profiles.
+// The airlock's settings against the REAL compiled broker. Only a profile with a proxy block is
+// carried by the proxy port, so the settings that port cannot run without are needed only when the
+// profiles file holds one. config's own rows prove the check (Config.RequireAirlock); these prove
+// that the boot runs it on the profiles it read, before it binds anything, and that a broker whose
+// profiles hold no proxy block binds no proxy port and still serves its GitHub profiles.
 package main
 
 import (
@@ -20,26 +19,15 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// githubReadProfile is a GitHub profile of the App secret EXAMPLE_APP behind no kind: it reads
+// githubReadProfile is a GitHub profile of the App secret EXAMPLE_APP with no proxy block: it reads
 // acme-org's contents, and a grant of it is released as the installation token itself.
 const githubReadProfile = `{"name": "EXAMPLE_APP_READ", "source": "EXAMPLE_APP",
 	"github": {"accounts": ["acme-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`
 
-// deelKind is a kind on the one host api.deel.com whose credential is a stored value. A profiles
-// file that declares it puts every secret whose proxy tag names deel behind the proxy, so the boot
-// needs the airlock's settings for it (config.AirlockSubjects names it "kind deel") whether or not
-// any secret carries that tag yet.
-const deelKind = `{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}`
-
-// deelKindFile is a profiles file that declares deelKind and holds no profile: the least file
-// that turns the airlock on.
-const deelKindFile = `{"kinds": [` + deelKind + `], "profiles": []}`
-
 // TestMainServesAGitHubProfileWithoutTheAirlock: a deployment whose profiles file holds GitHub
-// profiles and declares no kind, as one that serves GitHub Apps and runs no airlock writes it,
-// starts with none of the airlock's settings, in a cluster and without
-// BROKER_AIRLOCK_CLUSTER_RANGES, binds no proxy port, and releases a grant of its GitHub profile as
-// the token GitHub minted.
+// profiles and no proxy block, as one that serves GitHub Apps and runs no airlock writes it, starts
+// with none of the airlock's settings, in a cluster and without BROKER_AIRLOCK_CLUSTER_RANGES,
+// binds no proxy port, and releases a grant of its GitHub profile as the token GitHub minted.
 func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 	const (
 		podAudience  = "example-broker-pod"
@@ -85,7 +73,7 @@ func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 	// a proxy port the boot bound would be too.
 	broker.MetricsAddr(t)
 	if strings.Contains(broker.Log(), airlockProxyLine) {
-		t.Fatalf("a broker whose profiles file declares no kind bound a proxy port:\n%s", broker.Log())
+		t.Fatalf("a broker whose profiles hold no proxy block bound a proxy port:\n%s", broker.Log())
 	}
 
 	api := podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: podAudience}
@@ -99,13 +87,13 @@ func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 	}
 }
 
-// TestMainRefusesAKindWithoutTheAirlocksSettings drives the real binary with a profiles file that
-// declares a kind and each of the three settings the proxy port cannot run without left out, and
-// asserts it exits non-zero, without ever binding, naming the setting and the kind that needs it,
-// and not the GitHub profile beside it, which is behind no kind and needs none. The database it is
-// given is unreachable, so a broker that checked the settings after opening the store would fail
-// on the host instead.
-func TestMainRefusesAKindWithoutTheAirlocksSettings(t *testing.T) {
+// TestMainRefusesAProxyBlockWithoutTheAirlocksSettings drives the real binary with a profiles file
+// that holds a proxy block and each of the three settings the proxy port cannot run without left
+// out, and asserts it exits non-zero, without ever binding, naming the setting and the profile
+// whose proxy block needs it, and not the GitHub profile beside it, which needs none. The database
+// it is given is unreachable, so a broker that checked the settings after opening the store would
+// fail on the host instead.
+func TestMainRefusesAProxyBlockWithoutTheAirlocksSettings(t *testing.T) {
 	binary := buildBroker(t)
 	for _, missing := range airlockProxySettingNames {
 		t.Run(missing, func(t *testing.T) {
@@ -118,20 +106,21 @@ func TestMainRefusesAKindWithoutTheAirlocksSettings(t *testing.T) {
 			out := runRefusedBroker(t, binary, append(env,
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_PROFILES_FILE="+profilesFile(t, `{"kinds": [`+deelKind+`], "profiles": [`+githubReadProfile+`]}`),
+				"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [
+					{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}, `+githubReadProfile+`]}`),
 			)...)
-			for _, want := range []string{"BROKER_PROFILES_FILE declares kind deel", "missing " + missing} {
+			for _, want := range []string{"BROKER_PROFILES_FILE", "DEEL_API_KEY", "missing " + missing} {
 				if !strings.Contains(out, want) {
 					t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
 				}
 			}
 			if strings.Contains(out, "EXAMPLE_APP_READ") {
-				t.Fatalf("the refusal names EXAMPLE_APP_READ, a profile behind no kind: %s", out)
+				t.Fatalf("the refusal names EXAMPLE_APP_READ, a profile with no proxy block: %s", out)
 			}
 		})
 	}
 }
 
 // airlockProxySettingNames are the settings airlockEnv gives that the proxy port cannot run
-// without, each one a row of TestMainRefusesAKindWithoutTheAirlocksSettings.
+// without, each one a row of TestMainRefusesAProxyBlockWithoutTheAirlocksSettings.
 var airlockProxySettingNames = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}

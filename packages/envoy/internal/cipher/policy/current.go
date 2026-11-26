@@ -226,21 +226,12 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 				c.recent[name] = c.now()
 			}
 		}
-		set = setOf(c.loader.Profiles, set.Secrets, set.Refused, set.Pending, set.versions)
+		set = setOf(set.Secrets, set.Refused, set.Pending, set.versions)
 	}
 	first = c.base == nil
 	c.base = set
 	reads = c.list()
 	c.publish(c.withhold(), first)
-	// Each profile the live set serves behind its own proxy string whose source's proxy tag names
-	// the same kind is a string the file can drop now: one line for each, at each full load, so
-	// it stands out until the file drops it, and no reread repeats it. The loop goes with the
-	// proxy string, once every source a profile names carries its own proxy tag.
-	live := c.Get()
-	for _, name := range live.redundantProxy {
-		served := live.Secrets[name]
-		slog.Warn(ProxyKindRedundantMessage, "profile", name, "source", served.Profile.Source, "kind", served.Proxy)
-	}
 	// A full load, and only a full load, names its groups to the reader: a group it names for
 	// the first time is read at once, and a reread's new group (RefreshOne) waits for the next
 	// load, admitting nobody until then. The groups are those of the stored secrets with the
@@ -416,7 +407,7 @@ func (c *Current) reread(ctx context.Context, name string) (Lookup, []valueRead,
 	if changed {
 		merged := &Set{Secrets: maps.Clone(c.base.Secrets), Refused: maps.Clone(c.base.Refused), Pending: maps.Clone(c.base.Pending), versions: maps.Clone(c.base.versions)}
 		merge(merged, name, id, lk)
-		c.base = setOf(c.loader.Profiles, merged.Secrets, merged.Refused, merged.Pending, merged.versions)
+		c.base = setOf(merged.Secrets, merged.Refused, merged.Pending, merged.versions)
 		c.recent[name] = c.now()
 	}
 	read, unread := c.listOne(name)
@@ -693,7 +684,7 @@ func (c *Current) withhold() *Set {
 		refused[c.storeID(name)] = Refusal{Reason: ReasonValueMalformed, Owner: secret.Owner, Detail: state.why, SupersededBy: secret.SupersededBy}
 	}
 	if served != nil {
-		set = setOf(c.loader.Profiles, served, refused, c.base.Pending, c.base.versions)
+		set = setOf(served, refused, c.base.Pending, c.base.versions)
 	}
 	return c.loader.Profiles.apply(set, c.loader.Prefix)
 }

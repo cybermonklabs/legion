@@ -50,7 +50,7 @@ const restrictedGuest = "guest@outside.example"
 // 503 MEMBER_KIND_UNCHECKABLE with nothing written. The control: once Dispatch calls carol a full
 // member, her grant list holds the first grant, and she dismisses the request and ends that grant.
 func TestTheApproverRoutesGiveARestrictedMemberNothing(t *testing.T) {
-	ts, access := hiddenServer(t, sharedKeyJudged(t))
+	ts, access := hiddenServer(t, sharedKeyJudged)
 	// The judge's grant asks Dispatch afresh whether a reader naming no person sees PRIV, which
 	// only a public PRIV allows (requests.Machine.ApplyJudgeDecision).
 	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{

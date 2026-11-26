@@ -160,10 +160,9 @@ func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r := newRuledRig(t, proxyrules.Rules{
-				Kinds: []proxyrules.Kind{swapKind(workerKind, []string{boundHost}, "authorization")},
-				Names: []proxyrules.Binding{swapBinding(workerName, workerKind)},
-			}, Options{})
+			r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
+				Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
+			}}}})
 			answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
 			if answer.StatusCode != http.StatusOK {
 				t.Fatalf("the CONNECT answered %d; want 200", answer.StatusCode)

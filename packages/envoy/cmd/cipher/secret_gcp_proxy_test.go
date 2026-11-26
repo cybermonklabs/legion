@@ -35,10 +35,9 @@ import (
 )
 
 // The one grant of this file: a Google login whose access token the proxy holds and whose
-// placeholder the command holds, served behind a kind of its own bound to Secret Manager's host.
+// placeholder the command holds, bound to Secret Manager's host.
 const (
 	gcpAirlockHost        = "secretmanager.googleapis.com"
-	gcpAirlockKind        = "google"
 	gcpAirlockName        = "GCLOUD_TEST"
 	gcpAirlockGrantID     = "grant-gcloud-test"
 	gcpAirlockToken       = "the-real-access-token-of-the-grant"
@@ -74,17 +73,6 @@ func (gcpAirlockGrant) PolicyVersion() string { return gcpAirlockPolicy }
 
 func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string, string) (string, error) {
 	return "", fmt.Errorf("this grant has no Azure exchange")
-}
-
-// AirlockRules is the airlock's rules for the one grant: a kind on Secret Manager's host whose
-// credential travels in the default Authorization header on every method and path, and the
-// grant's one name bound to it as a Google login's token, which the broker mints and the proxy
-// swaps in, with no allow of a profile's own.
-func (gcpAirlockGrant) AirlockRules() proxyrules.Rules {
-	return proxyrules.Rules{
-		Kinds: []proxyrules.Kind{{Name: gcpAirlockKind, Hosts: []string{gcpAirlockHost}, Ways: []string{proxyrules.WayMint}}},
-		Names: []proxyrules.Binding{{Name: gcpAirlockName, Kind: gcpAirlockKind, Way: proxyrules.WayMint}},
-	}
 }
 
 // TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC: `agent-secrets secret list`,
@@ -145,6 +133,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	}
 	proxy := proxy.New(proxy.Options{
 		CA: ca, Grants: gcpAirlockGrant{},
+		Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: gcpAirlockName, Hosts: []string{gcpAirlockHost}}}},
 		Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 			if host != gcpAirlockHost {
 				return nil, fmt.Errorf("this test resolves %s alone, and the command asked for %s", gcpAirlockHost, host)

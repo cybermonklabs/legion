@@ -2,7 +2,7 @@
 // The GitHub stand-in a Service answers as: the App endpoints a github-app profile's release is
 // made and given back over, the repository read one of its tokens is spent at, and the three
 // routes that answer by the permissions a token holds. It is a value holding what it answers and
-// what it was asked, as the stand-ins of stands.go are, and it installs its Answer on a
+// what it was asked, as the seven stand-ins of stands.go are, and it installs its Answer on a
 // Service (Service.AnswerWith), so it may play a host of its own in the command and it may play
 // the bound host of a row that already has a service. It is in a file of its own because it is
 // the longest of the stand-ins by far — seven routes, and a record of what each token it minted

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -147,7 +148,7 @@ func TestReusingAGrantWhoseChainFailsIsLoggedAndAsksAfresh(t *testing.T) {
 // grant's own enrollment named, since the proxy proves no enrollment of its own.
 func TestTheAirlocksReadOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("DEEL_API_KEY", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, fixtureOperator, "DEEL_API_KEY")
 
 	values, version, err := m.AirlockValues(t.Context(), grantID)
@@ -166,7 +167,7 @@ func TestTheAirlocksReadOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 // for the same names, and none of the three writes the line.
 func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
 	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("DEEL_API_KEY", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
 	own, grantID := approvedGrant(t, m, testAudience, enr, key, fixtureOperator, "DEEL_API_KEY")
 
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})

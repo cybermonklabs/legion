@@ -190,8 +190,8 @@ type ServiceOptions struct {
 	// answers whoever reaches it.
 	Addr string
 	// Hosts are the names and addresses its certificate carries, and none is 127.0.0.1 and
-	// localhost. A service a kind of the rules binds carries that kind's host here, since the
-	// command's own TLS verification reads the name it asked for out of the certificate.
+	// localhost. A service a rules file binds a secret to carries that entry's host here, since
+	// the command's own TLS verification reads the name it asked for out of the certificate.
 	Hosts []string
 	// Authority signs that certificate, and nil is one of the service's own, read back from
 	// Authority. One authority over every service of a run is what lets a client trust them all

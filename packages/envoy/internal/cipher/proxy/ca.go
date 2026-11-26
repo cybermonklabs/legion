@@ -38,7 +38,7 @@ const (
 )
 
 // leafCacheSize is how many hosts' leaves Authority keeps. There is a cap because the hosts
-// are not the proxy's to count: a kind may bind a pattern ("*.example.com"), and a command
+// are not the proxy's to count: an entry may bind a pattern ("*.example.com"), and a command
 // that CONNECTs to a distinct resolvable subdomain each time would otherwise grow this map by
 // a key and a certificate per name for as long as the pod lives. A thousand is far more hosts
 // than a grant reaches and small enough to bound; past it the oldest leaf goes, and a host

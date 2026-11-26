@@ -193,50 +193,34 @@ func ParseRequesterShapes(raw string) (string, error) {
 	return parseRequesters(raw, nil, false)
 }
 
-// SplitGuards answers raw, a requesters tag as the store holds it, without the two rollback guard
-// entries, and whether it held each: the project tags' (RequestersRollbackGuard) and the kinds'
-// (KindsRollbackGuard), each wherever it stands. The rest is answered single-spaced when raw held
-// either guard, and raw unchanged when it held neither, so a tag no guard was written into reaches
-// ParseRequesters exactly as the store holds it. An entry is a run of characters between white
-// space, as ParseRequesters reads it, so a guard joined to another entry by a comma is no guard,
-// and ParseRequesters refuses that tag for its comma. It is the one reader of the guards: the
-// policy load reads the list through it, and so does `agent-secrets secret`.
-func SplitGuards(raw string) (rest string, project, kinds bool) {
+// SplitRequestersGuard answers raw, a requesters tag as the store holds it, without the entry
+// RequestersRollbackGuard, and whether it held that entry. The rest is answered single-spaced when
+// the entry was there, and raw unchanged when it was not, so a tag no guard was written into
+// reaches ParseRequesters exactly as the store holds it. An entry is a run of characters between
+// white space, as ParseRequesters reads it, so a guard joined to another entry by a comma is no
+// guard, and ParseRequesters refuses that tag for its comma.
+func SplitRequestersGuard(raw string) (rest string, guarded bool) {
 	fields := strings.Fields(raw)
 	kept := fields[:0]
 	for _, field := range fields {
-		switch field {
-		case RequestersRollbackGuard:
-			project = true
-		case KindsRollbackGuard:
-			kinds = true
-		default:
+		if field != RequestersRollbackGuard {
 			kept = append(kept, field)
 		}
 	}
-	if !project && !kinds {
-		return raw, false, false
+	if len(kept) == len(fields) {
+		return raw, false
 	}
-	return strings.Join(kept, " "), project, kinds
+	return strings.Join(kept, " "), true
 }
 
-// WithGuards answers list, a requesters tag's text ("" for none), with the guards it names after
-// its entries: the project tags' guard (RequestersRollbackGuard) where project is true, for a
-// secret that carries a dispatch-project or a project-channels tag, and then the kinds' guard
-// (KindsRollbackGuard) where kinds is true, for one that carries a proxy or a proxy-narrowed tag.
-// Each guard list already holds is taken out first (SplitGuards), so each guard is written once,
-// at its place, or not at all, and the answer is single-spaced: "" for a list of no entry and no
-// guard named. It is the one writer of the guards, which `agent-secrets secret` writes through.
-func WithGuards(list string, project, kinds bool) string {
-	rest, _, _ := SplitGuards(list)
-	entries := strings.Fields(rest)
-	if project {
-		entries = append(entries, RequestersRollbackGuard)
+// WithRequestersGuard answers list, a requesters list ("" for none), with RequestersRollbackGuard
+// after it: the requesters tag `agent-secrets secret` writes for a secret that carries a
+// dispatch-project or a project-channels tag.
+func WithRequestersGuard(list string) string {
+	if list == "" {
+		return RequestersRollbackGuard
 	}
-	if kinds {
-		entries = append(entries, KindsRollbackGuard)
-	}
-	return strings.Join(entries, " ")
+	return list + " " + RequestersRollbackGuard
 }
 
 // parseRequesters is the one reading behind both exported functions. registered says which check

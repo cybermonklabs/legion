@@ -16,11 +16,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// twoNameRules are the names the connection tests release behind the proxy: a stored key pair,
-// behind the aws kind, whose two slots prove that any slot of a grant opens a connection, and a
-// google-login, whose type the connection answers.
+// twoNameRules are the entries the connection tests release behind: a stored key pair, whose two
+// slots prove that any slot of a grant opens a connection, and a google-login, whose type the
+// connection answers.
 func twoNameRules() proxyrules.Rules {
-	return bound(rule("AWS_KEY", "aws"), rule("LOGIN_KEY", "example"))
+	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AWS_KEY", "aws"), rule("LOGIN_KEY", "")}}
 }
 
 // twoNameGrant is a live grant of AWS_KEY and LOGIN_KEY, released once so its placeholders exist,
@@ -128,21 +128,21 @@ func TestAirlockConnectionDropsAWithheldName(t *testing.T) {
 	}
 }
 
-// proxiedProfileFile is a profiles file of two profiles of the stored secret AUTO_TOKEN behind the
-// example kind, which the session gets without asking: AUTO_TOKEN, which holds the source's own
-// name, so the session can ask for the source and its operator withhold it by revoking that grant,
-// and AUTO_TOKEN_PROXY, a profile of another name.
-var proxiedProfileFile = policytest.KindsFile(
-	`{"name": "AUTO_TOKEN", "proxy": "example"}`,
-	`{"name": "AUTO_TOKEN_PROXY", "source": "AUTO_TOKEN", "proxy": "example"}`,
+// proxiedProfileFile is a profiles file of two proxied profiles of the stored secret AUTO_TOKEN,
+// which the session gets without asking: AUTO_TOKEN, which holds the source's own name, so the
+// session can ask for the source and its operator withhold it by revoking that grant, and
+// AUTO_TOKEN_PROXY, a profile of another name.
+var proxiedProfileFile = policytest.ProfilesFile(
+	`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
+	`{"name": "AUTO_TOKEN_PROXY", "source": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
 )
 
-// proxiedProfileFixture is newAirlockFixture serving proxiedProfileFile with the proxy's URL and
-// certificate, so a release of either profile takes the placeholder path.
+// proxiedProfileFixture is newAirlockFixture serving proxiedProfileFile with the airlock in force,
+// so a release of either profile takes the placeholder path.
 func proxiedProfileFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 	t.Helper()
 	m, enr, key := newAirlockFixture(t, proxiedProfileFile)
-	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
+	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = policytest.Profiles(t, proxiedProfileFile, fixtureService).ProxyRules(), testProxyURL, testCACertificate
 	return m, enr, key
 }
 
@@ -245,7 +245,7 @@ func carries(t *testing.T, m *Machine, release Release, want ...string) {
 // stands, as Values releases it (stillAllowed). So the proxy carries a withheld name its owner
 // approved for the session after the withhold, as it carries any other approval.
 func TestAirlockConnectionCarriesAWithheldNameAPersonApproved(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	withholdAsItsOperator(t, m, enr, key, "AUTO_TOKEN")
 	asked, err := m.Create(t.Context(), enr, signRequest(t, m, key, "asked again once withheld", "AUTO_TOKEN"), "")
 	if err != nil {
@@ -291,7 +291,7 @@ func TestAirlockConnectionCarriesAWithheldNameARequestGotWithoutAskingThatAPerso
 // policy version the checks ran under, which the proxy holds beside them. The names the
 // rules do not hold back are no part of it, since the session already holds them.
 func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -319,15 +319,17 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 
 // TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged: the proxy's own read makes the full
 // release checks, so a grant Values would end is ended here too rather than going on being
-// proxied by the pod that holds the connection: here a grant whose profile moved to another kind.
+// proxied by the pod that holds the connection: here a grant whose profile's proxy block moved.
 func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 
-	rollProfiles(t, m, rulesProfiles(t, bound(rule("AUTO_TOKEN", "slack"))))
+	moved := rule("AUTO_TOKEN", "")
+	moved.Hosts = []string{"api.example.org"}
+	rollProfiles(t, m, rulesProfiles(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{moved}}))
 	if values, version, err := m.AirlockValues(t.Context(), grantID); !errors.Is(err, ErrGrantNotLive) || values != nil || version != "" {
 		t.Fatalf("AirlockValues after the entry changed = %v, %q, %v; want ErrGrantNotLive and no value", values, version, err)
 	}
@@ -342,7 +344,7 @@ func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 // TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded: the rows of a live grant stay and
 // the rows of a revoked one go, so the table does not grow with every grant the broker ever made.
 func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, ended := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), ended, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)

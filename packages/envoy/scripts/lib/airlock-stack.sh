@@ -2,7 +2,7 @@
 # packages/envoy/scripts/lib/airlock-stack.sh
 # The airlock's own half of scripts/dev-stack.sh --project-access, in one place: the stand-ins
 # that mint the certificate authority a proxy decrypts with, run in a container, the profiles file
-# whose one kind says which host a secret behind it may go to, and the BROKER_PROFILES_FILE and
+# whose proxy blocks say which secret may go to which host, and the BROKER_PROFILES_FILE and
 # BROKER_AIRLOCK_* settings a broker is started with. It is sourced, never run, and dev-stack.sh is
 # its one caller.
 # scripts/dev-airlock.sh does not use it: that script starts its own stands as a process of this
@@ -98,19 +98,26 @@ airlock_stands_stop() {
   [ -z "${AIRLOCK_STANDS_CONTAINER:-}" ] || docker rm -f "$AIRLOCK_STANDS_CONTAINER" >/dev/null 2>&1 || true
 }
 
-# airlock_profiles_write writes the profiles file at $1 that declares one kind, named $2, whose one
-# host is $3, by the way swap, and names no profile. A stored secret whose proxy tag names that
-# kind is behind the proxy: its value leaves the broker only through the proxy, only to that host,
-# and only in the Authorization header, the kind's header when it names none. Such a secret needs
-# no profile, since its tag is what puts it behind the kind, and whoever writes the secret writes
-# the tag (scripts/project-secrets-check.sh, for this stack's one such secret).
+# airlock_profiles_write writes the profiles file at $1 that holds, for each name after it, a
+# profile of that stored secret's own name whose proxy block binds it to the host $2, and nothing
+# else: the value of such a secret leaves the broker only through the proxy, and only to that
+# host. A proxy block is the broker's one airlock entry (BROKER_PROFILES_FILE); a stored value's
+# profile must have one.
 airlock_profiles_write() {
-  jq -n --arg kind "$2" --arg host "$3" '{kinds: [{name: $kind, hosts: [$host], ways: ["swap"]}], profiles: []}' >"$1"
-  chmod 600 "$1"
+  local file="$1" host="$2"
+  shift 2
+  local entries="" name
+  for name in "$@"; do
+    [ -z "$entries" ] || entries="$entries,"
+    entries="$entries
+  {\"name\": \"$name\", \"proxy\": {\"hosts\": [\"$host\"]}}"
+  done
+  printf '{"profiles": [%s\n]}\n' "$entries" >"$file"
+  chmod 600 "$file"
 }
 
 # airlock_broker_env prints, one per line, the settings a broker reads to serve the airlock: the
-# profiles file $1, whose kind is the airlock's one entry, the proxy URL $2 a release hands
+# profiles file $1, whose proxy blocks are the airlock's entries, the proxy URL $2 a release hands
 # to a session, the address $3 the proxy listens on, the authority read above, and where the proxy
 # may dial the bound host. A caller reads them into an array (mapfile) and passes them to the
 # broker it starts.

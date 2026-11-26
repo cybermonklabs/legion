@@ -6,11 +6,13 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -912,10 +914,10 @@ func TestWithholdingAProfileWithholdsEachNameOfItsSource(t *testing.T) {
 // TestTheJudgeSettlesNoProfileOfAWithheldSource pins the judge's own guard on the same rule: the
 // decision transaction refuses the judge's approval of a profile whose source the session's
 // operator withheld, as it refuses a name withheld directly (TestTheJudgeSettlesNoWithheldName).
-// The judge tag is the source's, which its profile APP_KEY_ADA is decided by.
 func TestTheJudgeSettlesNoProfileOfAWithheldSource(t *testing.T) {
 	m, enr, key := sourceFixture(t)
-	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "APP_KEY", 900, "")
+	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "APP_KEY_ADA", Hosts: []string{"api.github.example"}, Judge: new(uint32(900))}}}
+	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
 	m.Judge = func(PendingRequest) {}
 	source, err := m.Create(t.Context(), enr, signRequest(t, m, key, "the source's own name", "APP_KEY"), "")
 	if err != nil || source.GrantID == nil {

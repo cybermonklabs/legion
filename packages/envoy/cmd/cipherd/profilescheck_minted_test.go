@@ -15,29 +15,23 @@ func checkProfiles(t *testing.T, profiles string, args ...string) (int, string, 
 	return code, stdout.String(), stderr.String()
 }
 
-// withKinds is profiles, a profiles file mintedProfiles wrote, with kinds, a JSON list of kinds,
-// declared before its profiles.
-func withKinds(profiles, kinds string) string {
-	return `{"kinds": ` + kinds + `, ` + strings.TrimPrefix(profiles, "{")
-}
-
 // TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock: `profiles check` refuses, exit 1, naming
 // the profile and the fault, every dpop block the boot refuses for its shape alone - a "*." host,
-// two hosts, no allow list, a header other than Authorization, a kind whose hosts hold its host -
+// two hosts, no allow list, a header other than Authorization, a block of no kind over its host -
 // whatever its arguments (config.MintedEntryRules). Given --private-upstream, the value the
 // broker's BROKER_PROXY_PRIVATE_UPSTREAM holds, it also refuses a dpop block of another host than
 // the destination's, and takes the destination's with no line saying anything was not checked.
 // Without the flag it takes that block, exits 0 and writes one line saying the block's tie to the
 // destination was not checked, so the command says what it could not see.
 func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
-	wildcard := `[{"name": "wildcard", "hosts": ["*.test"], "ways": ["swap"]}]`
+	plain := `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.test"]}}`
 	for _, c := range []struct{ name, profiles, says string }{
 		{"a *. host", mintedProfiles(`"*.test"`, []string{"FIRST_TOKEN"}), "one exact host"},
 		{"two hosts", mintedProfiles(`"dispatch.test", "other.test"`, []string{"FIRST_TOKEN"}), "one exact host"},
 		{"no allow list", `{"profiles": [{"name": "FIRST_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "kind": "dpop"}}]}`, "allow list"},
 		{"a header X-Token", `{"profiles": [{"name": "FIRST_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["X-Token"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}]}`, "Authorization header alone"},
 		{"an allow entry of every path", `{"profiles": [{"name": "FIRST_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/"}]}}]}`, "path prefix"},
-		{"a kind over the host", withKinds(mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}), wildcard), "the kind wildcard"},
+		{"a block of no kind over the host", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}, plain), "WILDCARD_TOKEN"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			code, stdout, stderr := checkProfiles(t, c.profiles)

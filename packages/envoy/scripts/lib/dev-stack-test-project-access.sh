@@ -39,17 +39,13 @@ assert_project_access() {
       fail "$label: the broker was not pointed at its own Dispatch's access routes with its own token"
     grep -q "oidc-issuer=http://127\.0\.0\.1:${process_port[dev-oidc-issuer]} oidc-audience=dispatch oidc-accounts=${access_account} access-accounts=${access_account}\$" "$dispatch_log" ||
       fail "$label: Dispatch does not admit the broker's account to its access routes"
-    # The airlock: the profiles file declaring the one kind priv, whose one host is the stand-in
-    # host, by the way swap, and naming no profile, since PRIV_KEY is behind the kind by its own
-    # proxy tag; the banner exporting that kind, which project-secrets-check.sh writes on PRIV_KEY;
-    # the authority the stands wrote into this run's own directory, the proxy URL on the port the
-    # run picked, and the stands' own address in both of the settings that let the proxy dial it.
+    # The airlock: the profiles file holding PRIV_KEY's proxy block, the authority the stands wrote
+    # into this run's own directory, the proxy URL on the port the run picked, and the stands' own
+    # address in both of the settings that let the proxy dial it.
     grep -q "profiles=${work_dir}/profiles\.json airlock-ca=${work_dir}/stands/ca\.crt airlock-proxy=http://127\.0\.0\.1:[0-9][0-9]* airlock-resolve=priv\.airlock\.test=172\.20\.0\.9 airlock-dial=priv\.airlock\.test:443\$" "$broker_log" ||
       fail "$label: the broker was not given the profiles file, the airlock's authority, proxy URL and the stands' own address"
-    jq -e '. == {"kinds": [{"name": "priv", "hosts": ["priv.airlock.test"], "ways": ["swap"]}], "profiles": []}' "${work_dir}/profiles.json" >/dev/null 2>&1 ||
-      fail "$label: the profiles file is not the one kind priv, whose one host is the stand-in host, with no profile: $(jq -c . "${work_dir}/profiles.json" 2>&1)"
-    [[ "$(exported "$log_file" DEV_STACK_AIRLOCK_KIND)" == priv ]] ||
-      fail "$label: the banner does not export the airlock's kind, priv"
+    jq -e '.profiles == [{"name": "PRIV_KEY", "proxy": {"hosts": ["priv.airlock.test"]}}]' "${work_dir}/profiles.json" >/dev/null 2>&1 ||
+      fail "$label: the profiles file is not one profile of PRIV_KEY whose proxy block binds it to the stand-in host"
     [[ "$(exported "$log_file" DEV_STACK_AIRLOCK_BOUND_URL)" == "https://priv.airlock.test" ]] ||
       fail "$label: the banner does not export the airlock's bound host"
   else
@@ -61,8 +57,6 @@ assert_project_access() {
       fail "$label: a run without --project-access started the airlock"
     [[ ! -e "${work_dir}/profiles.json" ]] ||
       fail "$label: a run without --project-access wrote a profiles file"
-    grep -qxF '  export DEV_STACK_AIRLOCK_KIND=' "$log_file" ||
-      fail "$label: a run without --project-access does not export an empty airlock kind"
   fi
 }
 

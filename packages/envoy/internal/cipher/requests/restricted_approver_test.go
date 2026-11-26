@@ -138,7 +138,7 @@ func groupApproverRows(t *testing.T) approverRows {
 func ownerApproverRows(t *testing.T, owner string) approverRows {
 	t.Helper()
 	m, enr, key := newJudgeFixture(t)
-	retag(t, m, policytest.Judged(policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"), 900, ""))
+	retag(t, m, policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"))
 	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds())}
 	pending := newSecretRequest(t, m, "box-pending")
 	rows.pending = *pending.RecordID

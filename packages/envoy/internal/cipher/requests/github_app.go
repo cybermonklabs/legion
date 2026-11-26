@@ -270,9 +270,7 @@ func (m *Machine) gitHubAppProfile(ctx context.Context, enr enrollmentRow, set *
 
 // narrowedServed is served as a release narrowed to narrowing hands it over: its GitHub profile
 // minted in the installations form a released client reads, cut to readOnlyPermissions for a
-// read-only narrowing, so the token is handed over as v33.7.0 handed it. What keeps the token out
-// of the airlock is readRelease, which reads no binding for a narrowed release, whatever kind the
-// name is behind; the dpop block cleared here is the one proxy object a profile can still hold.
+// read-only narrowing, and with no proxy block, so the token is handed over as v33.7.0 handed it.
 // The target is the request's, which gitHubScope cuts the scope to. served is not changed.
 func narrowedServed(served policy.Secret, narrowing GitHubAppNarrowing) policy.Secret {
 	if served.Profile == nil || served.Profile.GitHub == nil {

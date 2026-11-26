@@ -85,9 +85,6 @@ var settingRoles = map[string]settingRole{
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
 	"BROKER_TRUSTED_PROXY_HEADER":          givesNone("a header name"),
 
-	"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL": givesNone("a test-only URL"),
-	"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL": givesNone("a test-only URL"),
-
 	"BROKER_AIRLOCK_TEST_DIAL_ALLOW":      givesNone("test-only addresses"),
 	"BROKER_AIRLOCK_TEST_RESOLVE":         givesNone("test-only addresses"),
 	"BROKER_AIRLOCK_TEST_KEEP_VALUES":     givesNone("a test-only switch"),

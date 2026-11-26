@@ -183,8 +183,8 @@ type grantRelease struct {
 // grant is a person's pod's (personPodGrant: the policy's version does not cover which person
 // BROKER_POD_OPERATORS maps the pod's account to) — that the current policy still allows the
 // session, with the names its operator withheld from it, every granted name under the login that
-// decided it, or, for a grant the model judge decided, under the judge the name's tags still give
-// it (stillAllowed), and that no granted name's max-grant is now shorter than the lifetime the
+// decided it, or, for a grant the model judge decided, under the judge the rules still give that
+// name (stillAllowed), and that no granted name's max-grant is now shorter than the lifetime the
 // grant's request signed (overMaxGrant). On every release, whatever the version says, no granted
 // name's profile may differ from the one its request recorded as decided under, which ends the
 // grant for good.
@@ -287,7 +287,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	}
 	for _, g := range granted {
 		if recheck {
-			if err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
+			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
 				// A grant whose frozen source is not the one the name is served from now (its
 				// type was changed or removed) ends for good: setting the type back serves the
 				// same source again, and the grant must not come back with it. So does one whose
@@ -319,14 +319,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		// compares on every release, either one ends a grant decided under the other's entry; such
 		// a grant is simply asked for again.
 		if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
-			return grantRelease{}, m.endGrant(ctx, grantID, profileChanged(set, g.name, decidedBy))
-		}
-		// Nor does a name whose kind has lost a host or a header the grant was decided under:
-		// the grant would reach less than it did, or travel where the request did not, and no
-		// fingerprint of the file says so, since a kind that only gains one must end nothing.
-		// It too runs on every release, for the same reason as the comparison above.
-		if lost := kindLost(set.ProxyRules(), g.name, g.kind); lost != nil {
-			return grantRelease{}, m.endGrant(ctx, grantID, kindNarrowed(g.name, lost))
+			return grantRelease{}, m.endGrant(ctx, grantID, profileChanged(g.name))
 		}
 	}
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set, facts: facts, enr: enr}, nil
@@ -341,60 +334,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 // record the chain rests on, so each caller refuses or passes over exactly as before the line.
 // ApplyDecision, which also answers ErrGrantChainInvalid, is a decision and no release, and does
 // not come through here.
-//
-// A chain that fails because a key the judge decided is one its judge tag no longer admits
-// (record.JudgeTagRefusal: the tag taken off, or lowered below the grant's lifetime) also ends the
-// grant for good, in the same step (endJudgedGrant): the release, and every release after it, is
-// refused, and putting the tag back does not revive it, as a lowered max-grant does not. The
-// caller still answers the chain's refusal, which names the judge tag.
-//
-// A key the live policy does not serve at all gives the judge no seconds of it either, and the
-// chain refuses it the same way; but that is no judge tag taken away. A secret deleted before a
-// restore, a tag the load refuses or a value it cannot read pauses a person's grant
-// (noLongerServed, endGrant), so it pauses a judged one too: such a refusal answers
-// noLongerServed, writes no broken-chain line and ends nothing, and the grant releases again
-// once the key is served with a tag that admits it (unservedJudgeKey).
 func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
 	recordID, err := m.verifyChain(ctx, grantID)
 	if errors.Is(err, ErrGrantChainInvalid) {
-		if name, unserved := m.unservedJudgeKey(err); unserved {
-			return recordID, noLongerServed(name)
-		}
 		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
-		if ended := m.endJudgedGrant(ctx, grantID, err); ended != nil {
-			return recordID, ended
-		}
 	}
 	return recordID, err
-}
-
-// unservedJudgeKey answers the key a chain refusal names, and true, when chainErr is a judge-tag
-// refusal (record.JudgeTagRefusal) of a key the live policy does not serve: the chain read no
-// judge tag because there is no served secret to read one from. Any other refusal answers false.
-func (m *Machine) unservedJudgeKey(chainErr error) (string, bool) {
-	var refusal record.JudgeTagRefusal
-	if !errors.As(chainErr, &refusal) || refusal.Tagged || m.Policy == nil {
-		return "", false
-	}
-	_, served := m.Policy.Get().Secrets[refusal.Name]
-	return refusal.Name, !served
-}
-
-// endJudgedGrant ends grantID for good (endGrant) when chainErr, the chain's refusal of it, is a
-// key's judge tag refusing the judge's approval (record.JudgeTagRefusal), recording the refusal's
-// own words as the reason, and answers nil once it is ended or when chainErr is no such refusal.
-// It answers an error only when the end itself fails (a database error), which the release
-// returns in place of the chain's refusal.
-func (m *Machine) endJudgedGrant(ctx context.Context, grantID string, chainErr error) error {
-	var refusal record.JudgeTagRefusal
-	if !errors.As(chainErr, &refusal) {
-		return nil
-	}
-	reason := fmt.Errorf("%w: %s's judge tag no longer admits this grant the model judge made: %s", ErrGrantNotLive, refusal.Name, refusal.Error())
-	if err := m.endGrant(ctx, grantID, reason); !errors.Is(err, ErrGrantNotLive) {
-		return err
-	}
-	return nil
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -475,7 +420,7 @@ func (m *Machine) values(ctx context.Context, grantID, enrollmentID string, call
 	}
 	release := Release{Values: values, Expires: checked.expires, GitHubLeftOut: leftOut, Locations: grantLocations(checked.granted)}
 	if len(splits) > 0 {
-		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits, checked.set.ProxyRules()); err != nil {
+		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
 			m.giveBack(ctx, read)
 			return Release{}, err
 		}
@@ -512,22 +457,22 @@ func grantLocations(granted []requestedSecret) []string {
 	return nil
 }
 
-// readValue is one granted name's value and, for a minted type, when that value stops working and
-// what it was minted from (mintedFrom), with the refusals every release answers: a name the store
-// no longer holds (ErrSecretNotInStore), a profile's scope the minter refused, which is logged as
-// a refused scope and handed back as it is, and any other failure named with the secret.
-func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
-	minted, from, err := m.release(ctx, g, served)
+// readValue is one granted name's value and, for a minted type, when that value stops working,
+// with the refusals every release answers: a name the store no longer holds
+// (ErrSecretNotInStore), a profile's scope the minter refused, which is logged as a refused scope
+// and handed back as it is, and any other failure named with the secret.
+func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
+	minted, err := m.release(ctx, g, served)
 	if errors.Is(err, secrets.ErrNotFound) {
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
+		return secrets.Minted{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		slog.Warn(NarrowingRefusedMessage, "grant", grantID, "enrollment", enrollmentID, "name", g.name, "error", err)
 	}
 	if err != nil {
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("read %s: %w", g.name, err)
+		return secrets.Minted{}, fmt.Errorf("read %s: %w", g.name, err)
 	}
-	return minted, from, nil
+	return minted, nil
 }
 
 // recheckStoredSources checks every name of grantID that releases its stored value (a source no
@@ -567,40 +512,11 @@ func sourceMoved(name string) error {
 	return fmt.Errorf("%w: %w: %s is now served from another source than this grant's", ErrGrantNotLive, errSourceMoved, name)
 }
 
-// profileChanged is the refusal of a granted name whose fingerprint is not the one its request
+// profileChanged is the refusal of a granted name whose profile is not the one its request
 // recorded (requestedSecret.profileDigest against policy.Secret.ProfileDigest), which ends the
-// grant for good: at its release (checkRelease) and at Create's reuse of it (reuseLiveGrant). A
-// profile's fingerprint holds its entry and, beside it, tags of its source key
-// (policy.Profiles.servedDigest), so where such a tag can be what moved the refusal names it beside
-// the entry: either may be what moved, and the fingerprint does not say which. The proxy tag can
-// be, where it is the source's tag and not the profile's own proxy string that puts the profile
-// behind its kind, since the kind it is behind is in the fingerprint; so can the judge tag of a
-// profile behind the proxy, whose judge seconds are in it, where the source carries one now or the
-// model judge decided the grant (decidedBy), so it carried one then. A stored secret served by its
-// own name behind the proxy has its own proxy tag in its fingerprint, and no judge seconds. The
-// proxy-narrowed tag, which a fingerprint behind the proxy holds too, is never named: a change of
-// it refuses the name (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed)
-// rather than serve it with another fingerprint.
-func profileChanged(set *policy.Set, name, decidedBy string) error {
-	served := set.Secrets[name]
-	const changed = "%w: %s's profile changed since this grant was decided"
-	if served.Profile == nil {
-		if served.Proxy != "" {
-			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, policy.TagProxy)
-		}
-		return fmt.Errorf(changed, ErrGrantNotLive, name)
-	}
-	var tags []string
-	if served.Proxy != "" && served.Profile.ProxyKind == "" {
-		tags = append(tags, policy.TagProxy)
-	}
-	if _, judged := record.JudgeLogin(decidedBy); served.Proxy != "" && (served.Judge != 0 || judged) {
-		tags = append(tags, policy.TagJudge)
-	}
-	if len(tags) == 0 {
-		return fmt.Errorf(changed, ErrGrantNotLive, name)
-	}
-	return fmt.Errorf(changed+": its entry in the profiles file, or the %s tag of its source key %s", ErrGrantNotLive, name, strings.Join(tags, " or "), served.Profile.Source)
+// grant for good: at its release (checkRelease) and at Create's reuse of it (reuseLiveGrant).
+func profileChanged(name string) error {
+	return fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, name)
 }
 
 // requesterNotListed is the refusal of a granted name whose requesters tag no longer names the
@@ -689,24 +605,24 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // to the decode of its new type. The failure line and this release's answer are every
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
-func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
+func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
 	secretType, source, minted, err := policy.ParseTypeSource(g.source)
 	if err != nil {
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("secret %s: %w", g.name, err)
+		return secrets.Minted{}, fmt.Errorf("secret %s: %w", g.name, err)
 	}
 	if !minted {
 		stored, err := m.Secrets.Read(ctx, source)
 		if err != nil {
-			return secrets.Minted{}, mintedFrom{}, err
+			return secrets.Minted{}, err
 		}
-		return secrets.Minted{Value: trimmedValue(stored, g.name)}, mintedFrom{}, nil
+		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
 	}
 	if secretType == policy.TypeAzureLogin && g.decision != policy.Approval {
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
+		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
 	}
 	mint := m.Minters[secretType]
 	if mint == nil {
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, secretType)
+		return secrets.Minted{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, secretType)
 	}
 	// The scope in effect of the GitHub profile the name is served as: its request's target's, or
 	// the profile's own. Create refused a target the profile cannot serve (checkTarget), and an
@@ -714,19 +630,18 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	// reaches; it is answered rather than minted, since a scope it cannot build is never widened.
 	scope, err := gitHubScope(g.name, served, g.target)
 	if err != nil {
-		return secrets.Minted{}, mintedFrom{}, err
+		return secrets.Minted{}, err
 	}
 	// The version the policy lists for the value this release reads, which a refusal of that
 	// value below is keyed on: a load that lists a newer one meanwhile decodes that one itself.
 	version := m.Policy.Get().ValueVersion(g.name)
 	value, err := m.Secrets.Read(ctx, source)
 	if err != nil {
-		return secrets.Minted{}, mintedFrom{}, err
+		return secrets.Minted{}, err
 	}
-	spend := trimmedValue(value, g.name)
-	token, err := mint(ctx, mintRequest(g.name, secretType, served, spend, scope))
+	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name), scope))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
-		return secrets.Minted{}, mintedFrom{}, err
+		return secrets.Minted{}, err
 	}
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
@@ -735,14 +650,14 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		if errors.Is(err, secrets.ErrMintStoredValue) {
 			m.Policy.RefuseValue(ctx, g.name, version, secretType, err)
 		}
-		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
+		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	for _, account := range slices.Sorted(maps.Keys(token.LeftOut)) {
 		for _, permission := range token.LeftOut[account] {
 			slog.Warn(ProfilePermissionLeftOutMessage, "name", g.name, "account", account, "permission", permission)
 		}
 	}
-	return token, mintedFromOf(secretType, spend, scope), nil
+	return token, nil
 }
 
 // mintRequest is the input one granted name's release gives its minter: the name, the stored
@@ -786,12 +701,10 @@ func trimmedValue(value, name string) string {
 // requestedSecret is one name a request asked for that the policy did not deny when the request
 // was made: the secret it froze (source), the decision the policy gave it then, the fingerprint
 // of the profile it was served as then (profileDigest, from the column airlock_digest; "" for a
-// stored secret served by its own name behind no kind), the hosts and headers of the kind it was
-// behind then (kind, from the column airlock_kind; nil for none), and the target the request
-// narrowed that profile to (target, the zero record.Target for none).
+// stored secret served by its own name), and the target the request narrowed that profile to
+// (target, the zero record.Target for none).
 type requestedSecret struct {
 	name, source, decision, profileDigest string
-	kind                                  *kindReach
 	target                                record.Target
 	// gitHubAppField is true for a name of a request an earlier agent-secrets made with a
 	// github_app field, and gitHubAppReadOnly what that field's read_only said, nil for every
@@ -808,7 +721,7 @@ type requestedSecret struct {
 // waits to have approved (currentPolicyAdmits, and Create's join of a pending request), since one
 // denied name denies the whole request.
 func requestedSecrets(ctx context.Context, q querier, requestID string) ([]requestedSecret, error) {
-	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, airlock_kind, coalesce(target_account, ''), target_repositories, github_app_field, github_app_read_only
+	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, coalesce(target_account, ''), target_repositories, github_app_field, github_app_read_only
 		from request_secrets where request_id=$1 and decision <> 'deny' order by name`, requestID)
 	if err != nil {
 		return nil, err
@@ -817,11 +730,7 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	var requested []requestedSecret
 	for rows.Next() {
 		var g requestedSecret
-		var kind []byte
-		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &kind, &g.target.Account, &g.target.Repositories, &g.gitHubAppField, &g.gitHubAppReadOnly); err != nil {
-			return nil, err
-		}
-		if g.kind, err = kindReachOf(kind); err != nil {
+		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories, &g.gitHubAppField, &g.gitHubAppReadOnly); err != nil {
 			return nil, err
 		}
 		requested = append(requested, g)
@@ -887,11 +796,11 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // so, and the grant is not ended (policy.ReasonRequesterGroupUnread): the list may still name the
 // person, and a fresh read says so.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
-// held to the name's judge tag instead of to that login, and to the admin tag over both: the
-// secret must not be an administrator's now, and its judge tag must still give the name a judge of
-// at least the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
+// held to the rules instead of to that login, and to the admin tag over both: the secret must not
+// be an administrator's now, and the rules in force must still give the name a judge of at least
+// the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
 // No judge login goes through record.MayDecide, which refuses every one of them.
-func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
+func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
 	d, err := set.Evaluate(name, requester)
 	if errors.Is(err, policy.ErrUnknownSecret) {
 		return noLongerServed(name)
@@ -918,7 +827,7 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 	case frozenDecision == policy.Automatic && !set.Withholds(requester, name):
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
 	case judged:
-		return judgeStillDecides(set, name, lifetime)
+		return judgeStillDecides(set, rules, name, lifetime)
 	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy, set.Groups()):
 		// A group-approved record whose group does not admit its decider now is the chain
 		// check's to refuse and log (record.ChainVerifier.Verify, noteLapsedApprover), which runs
@@ -930,42 +839,43 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 
 // judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the secret must
 // not be one a person approves every release of under the live policy (an administrator's, or an
-// Anthropic federation secret: policy.Secret.PersonApprovesEveryRelease), and its judge tag must
-// still give name a judge of at least lifetime, the seconds the grant was given. The judge's
-// authority is that tag and not a person's, so this arm reads the tag where the person's arm
-// reads a login: a secret handed to another person ends a grant that person must approve and did
-// not, and leaves a judged one alone, no person's approval being what it rested on, while a judge
-// tag taken off the secret, or lowered below what this grant holds, refuses it. A release meets
-// that refusal first in the chain check, which ends the grant for good there (record.MayJudge,
-// endJudgedGrant); this arm holds a caller that re-checks a grant without the chain to the same
-// rule. The tag is in the policy version (policy.Secret.Judge), so the release reaches this arm
-// whenever it moved.
+// Anthropic federation secret: policy.Secret.PersonApprovesEveryRelease), and the rules in force
+// must still give name a
+// judge of at least lifetime, the seconds the grant was given. The judge's authority is that
+// entry and not a person's, so this arm reads the entry where the person's arm reads a login: a
+// secret handed to another person ends a grant that person must approve and did not, and leaves
+// a judged one alone, no person's approval being what it rested on, while a rules file that
+// stops letting the judge decide this name, or that lowers it below what this grant holds, ends
+// it. An entry that changed at all already ends the grant through the frozen
+// request_secrets.airlock_digest, so this states the same rule where a reader of the release
+// checks it, over the one thing the judge's approval rested on.
 //
-// The admin tag is read first, because it outranks whatever the judge tag says: the admin tag's
-// promise is that a person approves every release of the credential (policy.TagAdmin), and a
-// release is exactly what this is deciding, so an owner who tags a secret an administrator's
-// after the judge decided it stops the releases a model approved rather than only the next
-// decision (judge's admin check, currentPolicyAdmits). The refusal ends the grant for good
-// (errJudgedAdminSecret): the session asks again, and the judge then refuses it at decision time.
-// A person's own grant of an admin secret is untouched, this arm being a judged grant's alone — a
-// person approved it, which is all the tag asks.
+// The admin tag is read first and off the live policy set, because it outranks whatever seconds
+// a rules file gives the name: the tag's promise is that a person approves every release of the
+// credential (policy.TagAdmin), and a release is exactly what this is deciding, so an owner who
+// tags a secret an administrator's after the judge decided it stops the releases a model
+// approved rather than only the next decision (judge's admin check, currentPolicyAdmits). The
+// promise is the secret's and not the rules file's to make, so no judge entry answers it, and
+// the refusal ends the grant for good (errJudgedAdminSecret): the session asks again, and the
+// judge then refuses it at decision time. A person's own grant of an admin secret is untouched,
+// this arm being a judged grant's alone — a person approved it, which is all the tag asks.
 //
 // A grant with no lifetime — one that lasts until its session ends — is not live under a judge
 // decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
 // exactly what the judge's seconds are there to bound, so the judge made no such grant and no
 // such grant is its.
-func judgeStillDecides(set *policy.Set, name string, lifetime *int) error {
+func judgeStillDecides(set *policy.Set, rules proxyrules.Rules, name string, lifetime *int) error {
 	if set.Secrets[name].PersonApprovesEveryRelease() {
 		return judgedAdminSecret(name)
 	}
-	bound, ok := set.JudgeSeconds(name)
+	bound, ok := rules.JudgeSeconds(name)
 	switch {
 	case lifetime == nil:
 		return fmt.Errorf("%w: %s was granted until its session ends, which the judge never decides", ErrGrantNotLive, name)
 	case !ok:
-		return fmt.Errorf("%w: %s carries no judge tag now, so the judge no longer decides it", ErrGrantNotLive, name)
+		return fmt.Errorf("%w: the rules no longer let the judge decide %s", ErrGrantNotLive, name)
 	case !record.JudgeAllowsLifetime(bound, *lifetime):
-		return fmt.Errorf("%w: %s's judge tag now lets the judge decide at most %d seconds of it, short of this grant's %d", ErrGrantNotLive, name, bound, *lifetime)
+		return fmt.Errorf("%w: the rules now let the judge decide at most %d seconds of %s, short of this grant's %d", ErrGrantNotLive, bound, name, *lifetime)
 	}
 	return nil
 }
@@ -1416,8 +1326,8 @@ func writtenBeforeMigration13(alias string) string {
 // is tagged with a project (anyProjectTagged: whether it is private is Dispatch's) and the grant
 // is no person's pod's (personPodGrant: the policy's version does not cover which person
 // BROKER_POD_OPERATORS maps the pod's account to), or the current policy still allows it to the
-// session (stillAllowed, the check Values makes, which holds a judged grant to the judge its
-// name's tags still give it, over the lifetime this reuse matched it on, the grant's own, and refuses
+// session (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules
+// still give its name, over the lifetime this reuse matched it on, the grant's own, and refuses
 // one whose secret the policy now tags as an administrator's), and its whole approval chain still
 // verifies (verifyChainForRelease, the same check Values makes, read first). A caller that already
 // holds a live grant for these exact names never re-asks a human who already approved it, a policy
@@ -1514,7 +1424,7 @@ candidates:
 		}
 		for _, g := range granted {
 			if recheck {
-				err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, lifetime, requester)
+				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 				switch {
 				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed):
 					// The list dropped this requester while the grant was live, the secret
@@ -1533,18 +1443,11 @@ candidates:
 					return Request{}, false, err
 				}
 			}
-			// The entry this name was granted under is not the one served now, or its kind has
-			// lost a host or a header it was granted under, which every release of the grant
-			// would end it for (checkRelease): end it here, as that release would, and answer
-			// no reusable grant.
-			var why error
+			// The entry this name was granted under is not the one served now, which every
+			// release of the grant would end it for (checkRelease): end it here, as that
+			// release would, and answer no reusable grant.
 			if set.Secrets[g.name].ProfileDigest != g.profileDigest {
-				why = profileChanged(set, g.name, decidedBy)
-			} else if lost := kindLost(set.ProxyRules(), g.name, g.kind); lost != nil {
-				why = kindNarrowed(g.name, lost)
-			}
-			if why != nil {
-				if ended := m.endGrant(ctx, match.grantID, why); !errors.Is(ended, ErrGrantNotLive) {
+				if ended := m.endGrant(ctx, match.grantID, profileChanged(g.name)); !errors.Is(ended, ErrGrantNotLive) {
 					return Request{}, false, ended
 				}
 				return Request{}, false, nil
@@ -2227,41 +2130,27 @@ type RecordDetail struct {
 	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
 	// judge_until ahead. No person decides such a record until the judge has given it up.
 	JudgeDeciding bool
-	// Profiles is each name of an agent_secret record that the live policy serves as a profile or
-	// behind a kind of the profiles file, in the record's own order, with the target the record
-	// narrows it to: the scope a person's approval grants (recordProfiles). It is nil for a machine
-	// login and for a record of stored secrets behind no kind alone.
+	// Profiles is each name of an agent_secret record that the live policy serves as a profile,
+	// in the record's own order, with the target the record narrows it to: the scope a person's
+	// approval grants. It is nil for a machine login and for a record of stored secrets alone.
 	Profiles []RecordProfile
 }
 
-// RecordProfile is one name a record asks for whose scope an approval binds: a profile, or a
-// stored secret served by its own name behind a kind (its proxy tag names one). It holds its name,
-// its entry of the profiles file as the live policy serves it (nil for such a stored secret, which
-// has none), the kind it is behind (policy.Secret.Proxy, "" for none), the hosts and the allow
-// rows of that kind as the same policy holds them (kindScope), its fingerprint
-// (policy.Secret.ProfileDigest, which for such a stored secret holds its kind), and the target the
-// record's signed request narrows it to (record.AuthorizationDetail.Target), as a refusal of a
-// target words one (record.Target.String), "" for a record that names none. Every field is read
-// from one policy set, so a page that prints a record prints one reading of each name. The scope
-// is the live one, not one frozen with the record: an approval binds its grant to the fingerprint
-// live when it is given (decidedUnder), however it was when the request was made, and a change of
-// it after the approval ends that grant (checkRelease). So what an approval can release is what
-// the live policy says, and the approval page binds a person's approval to the scope it printed by
-// carrying Digest back in its decision form, refusing the approval when the live fingerprint is
-// another.
+// RecordProfile is one profile a record asks for: its name, its entry of the profiles file as the
+// live policy serves it, that entry's fingerprint (policy.Secret.ProfileDigest), and the target
+// the record's signed request narrows it to (record.AuthorizationDetail.Target), as a refusal of
+// a target words one (record.Target.String), "" for a record that names none. The profile is
+// the live one, not one frozen with the record: an approval binds its grant to the entry live
+// when it is given (decidedUnder), however the entry was when the request was made, and an edit
+// of the entry after the approval ends that grant (checkRelease). So what an approval can release
+// is what the live entry says, and the approval page binds a person's approval to the entry it
+// printed by carrying Digest back in its decision form, refusing the approval when the live
+// fingerprint is another.
 type RecordProfile struct {
 	Name    string
 	Profile *policy.Profile
-	Kind    string
-	// Hosts is where the name's credential may go behind its kind (kindScope): nil for a name
-	// behind no kind, empty for a profile whose own allow holds no row and so allows no request,
-	// and one host or more for every other name behind a kind.
-	Hosts []string
-	// Allow is the allow rows of the name's kind: nil for a kind with no allow, which allows any
-	// request on its hosts, and empty for one that allows none.
-	Allow  []proxyrules.Allow
-	Digest string
-	Target string
+	Digest  string
+	Target  string
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
@@ -2383,10 +2272,10 @@ func (m *Machine) readRecord(ctx context.Context, recordID string, shown func(ro
 }
 
 // RecordProfiles reads a record's kind, the names it asks for in its own order, and, for an
-// agent_secret record, each of them the live policy serves as a profile or behind a kind:
-// ReadRecord's Kind, Identifiers and Profiles, its Profiles built the same way (recordProfiles).
-// Unlike ReadRecord, whose SecretProjects asks Dispatch for a name of a project, it asks Dispatch
-// nothing. The approval page checks every record an approval names against it before deciding any
+// agent_secret record, each of them the live policy serves as a profile: ReadRecord's Kind,
+// Identifiers and Profiles, its Profiles built the same way (recordProfiles). Unlike ReadRecord,
+// whose SecretProjects asks Dispatch for a name of a project, it asks Dispatch nothing. The approval
+// page checks every record an approval names against it before deciding any
 // (approval.Page.profilesMoved), so that check holds while Dispatch is down: a record of a private
 // project's secret, or of a profile of one, is then still checked, and left to ApplyDecision,
 // which decides it as unavailable (ErrProjectAccessUnavailable), and the approval's other records
@@ -2413,41 +2302,18 @@ func (m *Machine) RecordProfiles(ctx context.Context, recordID string) (kind str
 }
 
 // recordProfiles is each name of an agent_secret record's details that set, the live policy read
-// once, serves as a profile or behind a kind, in the details' order, with its kind's hosts and allow
-// rows from the same set's rules and the target its detail narrows it to (RecordProfile): the
-// scope an approval grants, which ReadRecord prints and RecordProfiles answers alike, so what the
-// approval page printed and what its approval is checked against are one reading of the record. A
-// stored secret its proxy tag puts behind a kind has a fingerprint of its own, which holds that
-// kind, as a profile's holds its entry, so a retag between the page and the approval moves it as an
-// edit of a profile moves a profile's; one behind no kind has none, and is left out.
+// once, serves as a profile, in the details' order, with the target its detail narrows it to
+// (RecordProfile): the scope an approval grants, which ReadRecord prints and RecordProfiles
+// answers alike, so what the approval page printed and what its approval is checked against are
+// one reading of the record.
 func recordProfiles(set *policy.Set, details []record.AuthorizationDetail) []RecordProfile {
 	var profiles []RecordProfile
-	rules := set.ProxyRules()
 	for _, d := range details {
-		if served := set.Secrets[d.Identifier]; served.Profile != nil || served.Proxy != "" {
-			hosts, allow := kindScope(rules, d.Identifier)
-			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Kind: served.Proxy,
-				Hosts: hosts, Allow: allow, Digest: served.ProfileDigest, Target: d.Target().String()})
+		if served := set.Secrets[d.Identifier]; served.Profile != nil {
+			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: d.Target().String()})
 		}
 	}
 	return profiles
-}
-
-// kindScope is where rules let the credential of name go behind its kind, and the kind's allow
-// rows: the hosts the name's own allow (a profile's) narrows its kind to, where it narrows them
-// (proxyrules.AllowHosts), which for an allow of no row is no host at all; else the kind's hosts.
-// A kind binds at least one host (proxyrules.Validate), so no host answers that case alone. It
-// answers nil and nil for a name rules bind to no kind.
-func kindScope(rules proxyrules.Rules, name string) (hosts []string, allow []proxyrules.Allow) {
-	binding := rules.Lookup(name)
-	kind := rules.KindOf(binding)
-	if kind == nil {
-		return nil, nil
-	}
-	if narrowed, ok := proxyrules.AllowHosts(binding.Allow); ok {
-		return narrowed, kind.Allow
-	}
-	return kind.Hosts, kind.Allow
 }
 
 // ApproverGrant is one live grant a person may revoke, for GET /v1/grants?approver=<login>.

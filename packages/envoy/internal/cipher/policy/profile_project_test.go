@@ -16,13 +16,13 @@ import (
 
 // projectProfiles is the profiles file of these rows: PRIV_READ and GONE_READ, each a profile of
 // a stored secret of a project under a name of its own, behind the proxy as a stored value's
-// profile must be; APP_READ, a profile of APP_KEY behind no proxy; and APP_PROXIED, a profile of
-// the same App behind the proxy.
-var projectProfiles = policytest.KindsFile(
-	`{"name": "PRIV_READ", "source": "PRIV_KEY", "proxy": "example"}`,
-	`{"name": "GONE_READ", "source": "GONE_KEY", "proxy": "example"}`,
+// profile must be; APP_READ, a profile of APP_KEY with no proxy block; and APP_PROXIED, a profile
+// of the same App behind the proxy.
+var projectProfiles = policytest.ProfilesFile(
+	`{"name": "PRIV_READ", "source": "PRIV_KEY", "proxy": {"hosts": ["api.example.com"]}}`,
+	`{"name": "GONE_READ", "source": "GONE_KEY", "proxy": {"hosts": ["api.example.com"]}}`,
 	`{"name": "APP_READ", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"metadata": "read"}}}`,
-	`{"name": "APP_PROXIED", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"metadata": "read"}}, "proxy": "github"}`,
+	`{"name": "APP_PROXIED", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"metadata": "read"}}, "proxy": {"hosts": ["api.github.com"]}}`,
 )
 
 // loadProfiled is the policy a broker holding a K3 client publishes over stored, with

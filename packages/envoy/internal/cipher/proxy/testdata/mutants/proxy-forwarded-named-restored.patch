@@ -5,8 +5,8 @@
 
 --- a/packages/envoy/internal/cipher/proxy/bound.go
 +++ b/packages/envoy/internal/cipher/proxy/bound.go
-@@ -597,7 +597,8 @@
- 			// reason.
+@@ -476,7 +476,8 @@
+ 			// does, and which ReverseProxy dropped for that reason.
  			for _, name := range forwardedHeaders {
  				values, sent := pr.In.Header[name]
 -				if sent && !httpguts.HeaderValuesContainsToken(r.Header["Connection"], name) {

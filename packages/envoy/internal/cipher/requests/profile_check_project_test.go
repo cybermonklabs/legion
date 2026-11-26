@@ -67,7 +67,7 @@ func newPrivateProfileCheckFixture(t *testing.T, named ...string) *profileFixtur
 		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
 		Projects:   projectaccess.New(dispatch.URL, dispatch.Account, nil),
 	}
-	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Policy)
+	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Airlock)
 	return &profileFixture{Machine: machine, enrollmentID: enrollmentID, key: key, stand: stand}
 }
 

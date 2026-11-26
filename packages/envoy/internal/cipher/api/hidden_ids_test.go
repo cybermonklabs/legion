@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
@@ -34,7 +35,7 @@ const (
 	// elsewhere is a broker address other than the test server's.
 	elsewhere = "https://the-old-public-url.example"
 	// sharedKeyJudgeSeconds is how long a grant of SHARED_KEY the judge of sharedKeyJudged may
-	// make, and the lifetime every request here signs, so its judge tag admits each.
+	// make, and the lifetime every request here signs, so the judge's rules admit each.
 	sharedKeyJudgeSeconds = 300
 	// hiddenJudgeModel is the model the judge of sharedKeyJudged decides as.
 	hiddenJudgeModel = "claude-opus-4-6"
@@ -66,15 +67,15 @@ func hiddenServer(t *testing.T, adjust ...func(*api.Deps)) (*testServer, *projec
 	}), access
 }
 
-// sharedKeyJudged wires a judge to the server's machine and tags SHARED_KEY alone with a judge of
-// sharedKeyJudgeSeconds, as withJudge does without DEEL_API_KEY, which stays testApprover's to
-// approve. Its hook does nothing, so a request for SHARED_KEY is held for the test to decide as the
-// judge (requests.Machine.ApplyJudgeDecision).
-func sharedKeyJudged(t *testing.T) func(*api.Deps) {
-	return func(d *api.Deps) {
-		tagJudge(t, d, "SHARED_KEY", sharedKeyJudgeSeconds, "")
-		d.Machine.Judge = func(requests.PendingRequest) {}
-	}
+// sharedKeyJudged wires a judge to the server's machine whose airlock rules give it
+// sharedKeyJudgeSeconds of SHARED_KEY and nothing else, as withJudge does without DEEL_API_KEY,
+// which stays testApprover's to approve. Its hook does nothing, so a request for SHARED_KEY is
+// held for the test to decide as the judge (requests.Machine.ApplyJudgeDecision).
+func sharedKeyJudged(d *api.Deps) {
+	d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+		{Name: "SHARED_KEY", Judge: new(uint32(sharedKeyJudgeSeconds))},
+	}}
+	d.Machine.Judge = func(requests.PendingRequest) {}
 }
 
 // askPrivate has a session of testApprover's, on a box of its own, ask for name with privReason
@@ -239,7 +240,7 @@ func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecor
 // person the grant names. Once Dispatch answers, carol, on PRIV's list, ends the judged grant
 // through Dispatch.
 func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t *testing.T) {
-	ts, access := hiddenServer(t, sharedKeyJudged(t))
+	ts, access := hiddenServer(t, sharedKeyJudged)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	malloryID, malloryKey := ts.mintLauncherCredential(t, hiddenOutsider, "example-host-devbox-m")
 	// The judge's grant asks Dispatch afresh whether a reader naming no person sees PRIV, which

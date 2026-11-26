@@ -68,8 +68,7 @@
 # and one line naming the bash it needs and the one it is, while 5.1 and 5.3 are taken, by the
 # gate the driver runs at its top; (q) a --project-access run points the broker at its own
 # Dispatch's access routes with a token of its own account, has Dispatch admit that account, and
-# starts the airlock in a container of its own, with a profiles file of the one kind priv and no
-# profile and that kind in its banner, while a run without it sets none of it; (r) a
+# starts the airlock in a container of its own, while a run without it sets none of it; (r) a
 # --project-access run whose airlock proxy bound another port than the one it picked stops,
 # naming both ports; (s) only --project-access needs the airlock's stands: it builds
 # dev-airlock-stands beside the eight, given --binaries it needs that ninth binary there, and it
@@ -477,13 +476,12 @@ echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BR
 echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
-# The proxy binds the address it was given, as the real one does, and only when the profiles file
-# declares a kind or holds a dpop block, as the real one binds it (config.AirlockSubjects).
-# dev-stack.sh starts every process with env -i, so nothing of this test's environment reaches the
-# stub: the control for a lost port race bakes the other address in at build time, as
-# DEV_STACK_TEST_BROKER_FAILS does.
+# The proxy binds the address it was given, as the real one does, and only when a profile of the
+# profiles file has a proxy block, as the real one binds it. dev-stack.sh starts every
+# process with env -i, so nothing of this test's environment reaches the stub: the control for a
+# lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
 if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ] && [ -n "${BROKER_PROFILES_FILE:-}" ] &&
-  jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
+  jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
     "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
 fi

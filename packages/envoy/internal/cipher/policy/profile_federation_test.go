@@ -11,20 +11,16 @@ import (
 
 // TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules: an anthropic-federation secret
 // may be a profile's source, and R2 holds the profile to it as to any minted type. A profile that
-// narrows its maxGrant is served behind the anthropic kind its source's proxy tag names, with the
-// way mint; it keeps its source's type, so a person approves every release of it and the model
+// narrows its maxGrant is served with no proxy block, since R2 asks for one only of a stored value,
+// a google-login and an azure-login source, and the broker mints this type's credential at each
+// release; it keeps its source's type, so a person approves every release of it and the model
 // judge decides none (policy.Secret.PersonApprovesEveryRelease). Each profile the type's own tag
 // rules refuse is refused, the profile's tags over its source's: agent tier (type-human-tier), a
 // maxGrant over an hour (max-grant-required) and requesters that leave out its owner
 // (requesters-not-owner); and so are a github and a google block, neither of which fits the type.
-// The same profile of a source with no proxy tag is refused, profile-source-not-proxied: the
-// broker mints the type's token at each release and cannot narrow it there, so only the proxy
-// scopes it (spec v70 adds the type to the three of R2 that need it).
 func TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules(t *testing.T) {
-	fedAdmin := func() secrets.LocalSecret {
-		return policytest.TypeSecret("FED_ADMIN", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
-	}
-	stored := []secrets.LocalSecret{appSource(), policytest.Proxied(fedAdmin(), "anthropic")}
+	source := policytest.TypeSecret("FED_ADMIN", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
+	stored := []secrets.LocalSecret{appSource(), source}
 
 	cur, _ := profiled(t, stored, readProfile, `{"name": "FED_ADMIN_SHORT", "source": "FED_ADMIN", "maxGrant": "30m"}`)
 	set := cur.Get()
@@ -33,16 +29,8 @@ func TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules(t *testing.T
 		t.Fatalf("FED_ADMIN_SHORT = type %s, tier %s, max-grant %s, a person approves every release %t; want %s, %s, 30m, true",
 			served.Type(), served.Tier, served.MaxGrant, served.PersonApprovesEveryRelease(), policy.TypeAnthropicFederation, policy.TierHuman)
 	}
-	if served.Proxy != "anthropic" || served.Way != "mint" {
-		t.Errorf("FED_ADMIN_SHORT is served behind %q by way %q; want anthropic, mint", served.Proxy, served.Way)
-	}
 	if d, err := set.Evaluate("FED_ADMIN_SHORT", policy.Requester{Operator: appOwner}); err != nil || d.Outcome != policy.Approval || d.Approver != appOwner {
 		t.Fatalf("Evaluate(FED_ADMIN_SHORT) for its owner = %+v, %v; want an approval of %s", d, err, appOwner)
-	}
-	untagged, _ := profiled(t, []secrets.LocalSecret{appSource(), fedAdmin()}, readProfile, `{"name": "FED_ADMIN_SHORT", "source": "FED_ADMIN", "maxGrant": "30m"}`)
-	refusedProfile(t, untagged.Get(), "FED_ADMIN_SHORT", policy.ReasonProfileSourceNotProxied)
-	if refusal := untagged.Get().Refused[policytest.ID("FED_ADMIN")]; refusal.Reason != policy.ReasonProfileSourceNotProxied {
-		t.Errorf("the untagged source's own refusal = %+v; want %s", refusal, policy.ReasonProfileSourceNotProxied)
 	}
 
 	for _, row := range []struct {

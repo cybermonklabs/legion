@@ -4,19 +4,19 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -712,14 +712,7 @@
- 	case listed && hasMethodOverrideParameter(r.Query):
- 		return nil, "request carries a method override parameter"
+@@ -284,14 +284,7 @@
+ 	case sr.Allow != nil && hasMethodOverride(r):
+ 		return nil, "request carries a method override header"
  	}
 -	// A request that already carries the real value learnt it somewhere other than this
 -	// swap, so the airlock refuses it rather than forwarding it. The scan reads every
--	// header, not only the ones the kind names, and no way is exempt.
+-	// header, not only the ones the entry names, and an entry with a kind is not exempt.
 -	for _, h := range r.Headers {
 -		if Carries(value, h[1]) {
 -			return nil, "request already carries the value"
 -		}
 -	}
 +	// MUTANT: a request that already carries the real value is forwarded all the same.
- 	return k, ""
+ 	return sr, ""
  }
  

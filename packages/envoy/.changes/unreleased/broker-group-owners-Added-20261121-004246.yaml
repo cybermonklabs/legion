@@ -18,7 +18,7 @@ body: |-
   for 2 hours admits nobody, and every grant of a group's secret is checked again at each release
   and reuse: a grant whose deciding member the group no longer admits releases nothing and logs
   `group approval lapsed`, while a grant the model judge approved rests on no member and keeps
-  releasing as long as the secret's `judge` tag gives the judge that grant. A `requesters` entry naming a
+  releasing as long as the airlock rules give the judge that secret. A `requesters` entry naming a
   group not read for 2 hours denies a new request `requester-group-unread`, pauses a live grant
   without revoking it, and leaves an approval pending. The new secret type `anthropic-federation`
   releases an Anthropic access token (`sk-ant-oat01-…`): the broker mints the Google identity token

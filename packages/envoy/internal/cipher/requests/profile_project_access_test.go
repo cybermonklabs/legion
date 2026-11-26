@@ -17,19 +17,19 @@ import (
 )
 
 // privateProfiles is the profiles file of these rows: PRIV_READ, a profile of PRIV_KEY; TEAM_READ,
-// one of TEAM_TOKEN, both behind the example kind; and SLACK_POST, one of SLACK_TOKEN, behind the
-// slack kind. Each is behind the proxy, as a stored value's profile must be, and each source is
-// served only through its profile.
-var privateProfiles = policytest.KindsFile(
-	`{"name": "PRIV_READ", "source": "PRIV_KEY", "proxy": "example"}`,
-	`{"name": "TEAM_READ", "source": "TEAM_TOKEN", "proxy": "example"}`,
-	`{"name": "SLACK_POST", "source": "SLACK_TOKEN", "proxy": "slack"}`,
+// one of TEAM_TOKEN; and SLACK_POST, one of SLACK_TOKEN. Each is behind the proxy, as a stored
+// value's profile must be, and each source is served only through its profile.
+var privateProfiles = policytest.ProfilesFile(
+	`{"name": "PRIV_READ", "source": "PRIV_KEY", "proxy": {"hosts": ["api.example.com"]}}`,
+	`{"name": "TEAM_READ", "source": "TEAM_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
+	`{"name": "SLACK_POST", "source": "SLACK_TOKEN", "proxy": {"hosts": ["slack.com"]}}`,
 )
 
-// newPrivateProfileFixture is newProfiledProjectFixture serving privateProfiles.
+// newPrivateProfileFixture is newProfiledProjectFixture serving privateProfiles, with their proxy
+// blocks in force.
 func newPrivateProfileFixture(t *testing.T, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey) {
 	t.Helper()
-	m, enrollmentID, key, _ = newProfiledProjectFixture(t, privateProfiles, team)
+	m, enrollmentID, key, _ = newProfiledProjectFixture(t, privateProfiles, policytest.Profiles(t, privateProfiles, fixtureService).ProxyRules(), team)
 	return m, enrollmentID, key
 }
 

@@ -8,12 +8,12 @@
 // anywhere.
 //
 // This path is outside the Lean model, which covers the header swap alone: the model's Rewrite
-// swaps a placeholder for a value in the headers a kind names, and no signature is a
+// swaps a placeholder for a value in the headers an entry names, and no signature is a
 // substitution of that shape. What is inside the model is the decision that lets this path run.
 // proxyrules.Decide runs first, on the request as it came, so the bound host, the TLS name, the
-// Host header, the kind's and the profile's allow lists and the refusal of a request that
-// already carries the real value hold here exactly as they hold for a header swap; this file adds
-// the signature, and the removal of Cipher-Repository the swap would have made, and nothing else.
+// Host header, the entry's allow list and the refusal of a request that already carries the
+// real value hold here exactly as they hold for a header swap; this file adds the signature and
+// nothing else.
 package proxy
 
 import (

@@ -144,22 +144,12 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessEachEntryIsOne(t *testing.T) {
 	}
 }
 
-// mintedEntry is the inline binding of a dpop block named name (policy.ProxyBlock's binding):
-// bound to dispatch.test alone, carried in Authorization alone, with an allow list. Each call
-// answers a rule of its own, so a row that spoils one spoils no other.
-func mintedEntry(name string) proxyrules.Binding {
-	return proxyrules.Binding{Name: name, Way: proxyrules.WayDPoP, Inline: &proxyrules.Kind{
-		Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"}, Ways: []string{proxyrules.WayDPoP},
+// mintedEntry is a proxy block of kind dpop named name: bound to dispatch.test alone, carried in
+// Authorization alone, with an allow list.
+func mintedEntry(name string) proxyrules.SecretRule {
+	return proxyrules.SecretRule{
+		Name: name, Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"}, Kind: proxyrules.KindDPoP,
 		Allow: []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/"}},
-	}}
-}
-
-// plainRules is the rules of a file of one kind, plain on api.example.com, that one stored name is
-// behind, and no dpop block.
-func plainRules() proxyrules.Rules {
-	return proxyrules.Rules{
-		Kinds: []proxyrules.Kind{{Name: "plain", Hosts: []string{"api.example.com"}, Ways: []string{proxyrules.WaySwap}}},
-		Names: []proxyrules.Binding{{Name: "PLAIN_TOKEN", Kind: "plain", Way: proxyrules.WaySwap}},
 	}
 }
 
@@ -179,86 +169,70 @@ func upstreamsOf(t *testing.T, value string) []PrivateUpstream {
 	return upstreams
 }
 
-// TestEveryDPoPEntryIsHeldToItsOwnDestinationsHost: every dpop block - each a capability the
-// broker mints and holds, so a token minted for its grant goes to every host it binds, and each an
-// inline binding of way dpop in the file's rules - binds one exact host and no "*." name, has a
-// non-empty allow list none of whose entries is every path, is carried in Authorization alone (no
-// headers is the default, Authorization), and binds a private destination's host, so the token
-// goes to that service's own address and nowhere a name resolves to; no kind binds that host
-// (proxyrules.HostBound, so a kind of a "*." host over it counts, as does one of the host itself);
-// every destination needs a dpop block to bind its host; and dpop blocks need a destination. Two
-// dpop blocks may share one destination's host, each its own capability, two destinations each
-// take the blocks of their own host, and a kind of other hosts sits beside them. MintedEntryRules,
-// the part the profiles file alone decides, refuses the shape faults with no destination given;
-// with no destination and no dpop block, any rules are taken.
+// TestEveryDPoPEntryIsHeldToItsOwnDestinationsHost: every proxy block of kind dpop - each a
+// capability the broker mints and holds, so a token minted for its grant goes to every host it
+// binds - binds one exact host and no "*." name, has a non-empty allow list none of whose entries
+// is every path, is carried in Authorization alone (no headers is the default, Authorization), and
+// binds a private destination's host, so the token goes to that service's own address and nowhere
+// a name resolves to; no block of another kind binds that host (proxyrules.HostBound, so a "*."
+// block over it counts); every destination needs a dpop block to bind its host; and dpop blocks
+// need a destination. Two dpop blocks may share one destination's host, each its own capability,
+// and two destinations each take the blocks of their own host. MintedEntryRules, the part the
+// profiles file alone decides, refuses the shape faults with no destination given; with no
+// destination and no dpop block, any rules are taken.
 func TestEveryDPoPEntryIsHeldToItsOwnDestinationsHost(t *testing.T) {
 	upstream := []PrivateUpstream{dispatchUpstream(t)}
 	both := upstreamsOf(t, "dispatch.test=http://10.0.0.5:8766 results.test=http://10.0.0.6:8766")
-	two := func() proxyrules.Rules {
-		return proxyrules.Rules{Names: []proxyrules.Binding{mintedEntry("FIRST_TOKEN"), mintedEntry("SECOND_TOKEN")}}
-	}
-	if err := ProxyMintedRules(two(), upstream); err != nil {
+	two := proxyrules.Rules{Secrets: []proxyrules.SecretRule{mintedEntry("FIRST_TOKEN"), mintedEntry("SECOND_TOKEN")}}
+	if err := ProxyMintedRules(two, upstream); err != nil {
 		t.Fatalf("two dpop blocks on the destination's host: %v", err)
 	}
-	results := func() proxyrules.Binding {
-		results := mintedEntry("RESULTS_TOKEN")
-		results.Inline.Hosts = []string{"results.test"}
-		return results
-	}
-	eachOwn := proxyrules.Rules{Names: []proxyrules.Binding{mintedEntry("FIRST_TOKEN"), results()}}
+	results := mintedEntry("RESULTS_TOKEN")
+	results.Hosts = []string{"results.test"}
+	eachOwn := proxyrules.Rules{Secrets: []proxyrules.SecretRule{mintedEntry("FIRST_TOKEN"), results}}
 	if err := ProxyMintedRules(eachOwn, both); err != nil {
 		t.Fatalf("two destinations, each bound by a dpop block of its own host: %v", err)
 	}
 	defaultHeader := mintedEntry("FIRST_TOKEN")
-	defaultHeader.Inline.Headers = nil
-	if err := ProxyMintedRules(proxyrules.Rules{Names: []proxyrules.Binding{defaultHeader}}, upstream); err != nil {
+	defaultHeader.Headers = nil
+	if err := ProxyMintedRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{defaultHeader}}, upstream); err != nil {
 		t.Fatalf("the block with the default header: %v", err)
 	}
-	beside := plainRules()
-	beside.Names = append(beside.Names, two().Names...)
-	if err := ProxyMintedRules(beside, upstream); err != nil {
-		t.Fatalf("a kind of another host beside the dpop blocks: %v", err)
-	}
-	if err := ProxyMintedRules(plainRules(), nil); err != nil {
+	plain := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "PLAIN_TOKEN", Hosts: []string{"api.example.com"}}}}
+	if err := ProxyMintedRules(plain, nil); err != nil {
 		t.Fatalf("no destination and no dpop block: %v", err)
 	}
+	wildcard := proxyrules.SecretRule{Name: "WILDCARD_TOKEN", Hosts: []string{"*.test"}}
 	for _, c := range []struct {
 		name, says string
 		shape      bool // the profiles file alone decides it, so MintedEntryRules refuses it too
 		upstreams  []PrivateUpstream
 		spoil      func(*proxyrules.Rules)
 	}{
-		{"a dpop block of two hosts", "one exact host", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Hosts = []string{"dispatch.test", "other.test"} }},
-		{"a dpop block of a *. host", "one exact host", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Hosts = []string{"*.test"} }},
-		{"a dpop block with no allow list", "allow list", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Allow = nil }},
-		{"a dpop block with an empty allow list", "allow list", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Allow = []proxyrules.Allow{} }},
+		{"a dpop block of two hosts", "one exact host", true, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Hosts = []string{"dispatch.test", "other.test"} }},
+		{"a dpop block of a *. host", "one exact host", true, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Hosts = []string{"*.test"} }},
+		{"a dpop block with no allow list", "allow list", true, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Allow = nil }},
+		{"a dpop block with an empty allow list", "allow list", true, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Allow = []proxyrules.Allow{} }},
 		{"a dpop block allowing the path prefix \"\"", "path prefix", true, upstream, func(r *proxyrules.Rules) {
-			r.Names[1].Inline.Allow = []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/"}, {Method: "POST", PathPrefix: ""}}
+			r.Secrets[1].Allow = []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/"}, {Method: "POST", PathPrefix: ""}}
 		}},
 		{"a dpop block allowing the path prefix /", "path prefix", true, upstream, func(r *proxyrules.Rules) {
-			r.Names[1].Inline.Allow = []proxyrules.Allow{{Method: "GET", PathPrefix: "/"}}
+			r.Secrets[1].Allow = []proxyrules.Allow{{Method: "GET", PathPrefix: "/"}}
 		}},
-		{"a dpop block carried in X-Token", "Authorization header alone", true, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Headers = []string{"X-Token"} }},
-		{"a dpop block carried in Authorization and X-Token", "Authorization header alone", true, upstream, func(r *proxyrules.Rules) {
-			r.Names[1].Inline.Headers = []string{"Authorization", "X-Token"}
-		}},
-		{"a kind of a *. host over the dpop block's host", "the kind wildcard", true, upstream, func(r *proxyrules.Rules) {
-			r.Kinds = append(r.Kinds, proxyrules.Kind{Name: "wildcard", Hosts: []string{"*.test"}, Ways: []string{proxyrules.WaySwap}})
-		}},
-		{"a kind of the dpop block's host itself", "the kind dispatch", true, upstream, func(r *proxyrules.Rules) {
-			r.Kinds = append(r.Kinds, proxyrules.Kind{Name: "dispatch", Hosts: []string{"api.example.com", "dispatch.test"}, Ways: []string{proxyrules.WaySwap}})
-		}},
-		{"a dpop block of another host", "other.test", false, upstream, func(r *proxyrules.Rules) { r.Names[1].Inline.Hosts = []string{"other.test"} }},
+		{"a dpop block carried in X-Token", "Authorization header alone", true, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Headers = []string{"X-Token"} }},
+		{"a dpop block carried in Authorization and X-Token", "Authorization header alone", true, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Headers = []string{"Authorization", "X-Token"} }},
+		{"a block of no kind over the host", "WILDCARD_TOKEN", true, upstream, func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, wildcard) }},
+		{"a dpop block of another host", "other.test", false, upstream, func(r *proxyrules.Rules) { r.Secrets[1].Hosts = []string{"other.test"} }},
 		{"a dpop block of a host no destination of two names", "other.test", false, both, func(r *proxyrules.Rules) {
-			r.Names[1].Inline.Hosts = []string{"other.test"}
-			r.Names = append(r.Names, results())
+			r.Secrets[1].Hosts = []string{"other.test"}
+			r.Secrets = append(r.Secrets, results)
 		}},
 		{"dpop blocks and no destination", "BROKER_PROXY_PRIVATE_UPSTREAM", false, nil, func(*proxyrules.Rules) {}},
-		{"a destination no dpop block binds", "names the host dispatch.test", false, upstream, func(r *proxyrules.Rules) { *r = plainRules() }},
+		{"a destination no dpop block binds", "names the host dispatch.test", false, upstream, func(r *proxyrules.Rules) { *r = plain }},
 		{"the second of two destinations no dpop block binds", "names the host results.test", false, both, func(*proxyrules.Rules) {}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			rules := two()
+			rules := proxyrules.Rules{Secrets: append([]proxyrules.SecretRule(nil), two.Secrets...)}
 			c.spoil(&rules)
 			err := ProxyMintedRules(rules, c.upstreams)
 			if err == nil || !strings.Contains(err.Error(), c.says) {

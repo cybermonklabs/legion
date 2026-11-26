@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/azure_bound_test.go
 //
-// The bound on the exchange way: the federated token is the broker pod's own, and
+// The bound on the azure kind's exchange: the federated token is the broker pod's own, and
 // Entra takes it as the assertion of every application whose federated credential trusts the
 // broker, so the proxy exchanges it only at the token authority, only as the application and
 // only in the tenant the grant's own secret document names, in a form of its own, and sends it
@@ -25,7 +25,7 @@ import (
 // The application, the tenant and the scope a row names that the document does not: another
 // application federated with the broker's identity, the tenant it lives in, and another resource
 // the document's own application asks a token for. azureAuthorityHost is a token authority that
-// is not the rig's bound host: a row that names it makes that bound host the kind's second
+// is not the rig's bound host: a row that names it makes that bound host the entry's second
 // one, the service an access token is spent at, where no exchange may be made.
 const (
 	azureOtherClientID = "99999999-8888-7777-6666-000000000000"
@@ -35,11 +35,11 @@ const (
 	azureAuthorityHost = "login.example.net"
 )
 
-// azureRulesBindingAnAuthority is azureRules with the azure kind bound to two hosts:
-// azureAuthorityHost, the token authority, and the rig's bound host beside it.
+// azureRulesBindingAnAuthority is the azure entry bound to two hosts: azureAuthorityHost, the
+// token authority, and the rig's bound host beside it.
 func azureRulesBindingAnAuthority() proxyrules.Rules {
 	rules := azureRules()
-	rules.Kinds[0].Hosts = []string{azureAuthorityHost, boundHost}
+	rules.Secrets[0].Hosts = []string{azureAuthorityHost, boundHost}
 	return rules
 }
 
@@ -193,18 +193,18 @@ func TestAzureExchangeIsBoundToItsDocument(t *testing.T) {
 		{
 			// Every id is the document's and the host is one the entry binds, and the exchange
 			// would still hand that host the federated token: it is not the token authority.
-			name:      "another host the kind binds",
+			name:      "another host the entry binds",
 			path:      azureTokenPath,
 			authority: azureAuthorityHost,
 			field:     "host", stored: azureAuthorityHost, sent: boundHost,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rules, o := azureRules(), Options{}
+			o := Options{}
 			if row.authority != "" {
-				rules, o = azureRulesBindingAnAuthority(), Options{AzureAuthority: row.authority}
+				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
 			}
-			r, stand := newAzureRuledRig(t, rules, o)
+			r, stand := newAzureRig(t, o)
 			form := tokenForm(azureFederatedPlaceholder)
 			if row.form != nil {
 				row.form(form)
@@ -370,18 +370,18 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 			field:    "tenant", stored: azureTenantID, sent: azureOtherTenantID,
 		},
 		{
-			name:      "another host the kind binds",
+			name:      "another host the entry binds",
 			exchange:  azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID},
 			authority: azureAuthorityHost,
 			field:     "host", stored: azureAuthorityHost, sent: boundHost,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rules, o := azureRules(), Options{}
+			o := Options{}
 			if row.authority != "" {
-				rules, o = azureRulesBindingAnAuthority(), Options{AzureAuthority: row.authority}
+				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
 			}
-			r, stand := newAzureRuledRig(t, rules, o)
+			r, stand := newAzureRig(t, o)
 			access := placeholder.Prefix + "slotAccessSlotAccessSlotAccess01"
 			r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[azureAccessSlot(row.exchange)] = access
 			answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+access)
@@ -411,11 +411,11 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 // of every application federated with the broker, so the token leaves the broker in an exchange
 // at the token authority and in nothing else. A request that is no token request and carries
 // its placeholder is refused before anything is sent, whether it goes to the authority or to
-// another host its kind binds, whether or not the grant holds an access slot beside it, and
-// whatever way the binding of the name takes - swap, which a stored value's binding takes, or
-// swap read under Options.NoKind - since the azure-login value fills the federated slot under
-// every way; a request that carries an access token's placeholder is swapped as every other
-// way's is; and one that carries no placeholder, which is how az reads a tenant's OpenID
+// another host the entry binds, whether or not the grant holds an access slot beside it, and
+// whatever the kind of the entry that binds the name - none, as a rules entry has by default, or
+// none read under Options.NoKind - since the azure-login value fills the federated slot under
+// every kind; a request that carries an access token's placeholder is swapped as every other
+// kind's is; and one that carries no placeholder, which is how az reads a tenant's OpenID
 // configuration before its first token request, goes on with nothing swapped into it.
 func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 	access := placeholder.Prefix + "slotAccessSlotAccessSlotAccess01"
@@ -425,17 +425,16 @@ func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 		name string
 		// authority is the token authority the proxy is given, "" for the rig's bound host; a
 		// row that names another binds both (azureRulesBindingAnAuthority) and sends its
-		// request to the bound host, the kind's other one.
+		// request to the bound host, the entry's other one.
 		authority string
 		// slot is whether the grant holds an access slot of the document's own exchange, whose
 		// placeholder is access.
 		slot bool
-		// swapped is whether the rig's binding takes the way swap rather than exchange, and
-		// noKind whether the proxy reads every way as a swap (Options.NoKind, check k6's
-		// negative control).
-		swapped, noKind bool
-		path            string
-		headers         []string
+		// kindless is whether the rig's entry has no kind, and noKind whether the proxy reads
+		// every entry as having none (Options.NoKind, check k6's negative control).
+		kindless, noKind bool
+		path             string
+		headers          []string
 		// refused is whether the call is refused with nothing sent. For one that is not, calls
 		// is how many calls reach the bound host, the pod's own exchange among them, and
 		// authorization the Authorization the last of them carries.
@@ -444,28 +443,31 @@ func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 		authorization string
 	}{
 		{name: "the federated placeholder, to the token authority", path: "/v1/subscriptions", headers: federated, refused: true},
-		{name: "the federated placeholder, to the kind's other host", authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, to the entry's other host", authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
 		{name: "the federated placeholder, beside an access slot", slot: true, path: "/v1/subscriptions", headers: federated, refused: true},
 		{name: "the federated placeholder, to a token endpoint's path but no POST", path: azureTokenPath, headers: federated, refused: true},
-		{name: "the federated placeholder, under a binding of way swap", swapped: true, path: "/v1/subscriptions", headers: federated, refused: true},
-		{name: "the federated placeholder, under a binding of way swap, to the kind's other host", swapped: true, authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
-		{name: "the federated placeholder, with every way read as a swap", noKind: true, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, under an entry of no kind", kindless: true, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, under an entry of no kind, to the entry's other host", kindless: true, authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, with every kind read as none", noKind: true, path: "/v1/subscriptions", headers: federated, refused: true},
 		{
 			name: "an access token's placeholder", slot: true, path: "/v1/subscriptions",
 			headers: []string{"Authorization", "Bearer " + access}, calls: 2, authorization: "Bearer " + azureRealAccess,
 		},
 		{name: "no placeholder, as az's read of the tenant's OpenID configuration", path: "/" + azureTenantID + "/v2.0/.well-known/openid-configuration", calls: 1},
-		{name: "no placeholder, under a binding of way swap", swapped: true, path: "/" + azureTenantID + "/v2.0/.well-known/openid-configuration", calls: 1},
+		{name: "no placeholder, under an entry of no kind", kindless: true, path: "/" + azureTenantID + "/v2.0/.well-known/openid-configuration", calls: 1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rules, o := azureRules(), Options{NoKind: row.noKind}
+			o := Options{NoKind: row.noKind}
 			if row.authority != "" {
-				rules, o = azureRulesBindingAnAuthority(), Options{AzureAuthority: row.authority}
+				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
 			}
-			if row.swapped {
-				rules.Names[0].Way = proxyrules.WaySwap
+			if row.kindless {
+				if o.Rules.Secrets == nil {
+					o.Rules = azureRules()
+				}
+				o.Rules.Secrets[0].Kind = ""
 			}
-			r, stand := newAzureRuledRig(t, rules, o)
+			r, stand := newAzureRig(t, o)
 			if row.slot {
 				r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[azureAccessSlot(own)] = access
 			}
@@ -488,7 +490,7 @@ func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 					if strings.Contains(place.words, azureRealFederated) || strings.Contains(place.words, azureFederatedPlaceholder) {
 						t.Errorf("%s carries the federated token or its placeholder", place.what)
 					} else if !strings.Contains(place.words, azureName) || !strings.Contains(place.words, "federated token") {
-						t.Errorf("%s %q does not name the secret %s and its federated token", place.what, place.words, azureName)
+						t.Errorf("%s %q does not name the entry %s and its federated token", place.what, place.words, azureName)
 					}
 				}
 				noExchange(t, r, stand)

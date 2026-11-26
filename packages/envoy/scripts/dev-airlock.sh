@@ -20,42 +20,30 @@
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
 #     the resource host an access token is spent at; a stand-in AWS service that verifies
-#     Signature Version 4; the three the model judge calls - a model endpoint, a Dispatch
-#     holding one open issue and one done one, and a Compute Engine metadata server, which also
-#     answers the machine's access token; and the anthropic kind's three - its Admin API at
-#     api.anthropic.com, a recording HTTPS service like S, IAM's generateIdToken, where an
-#     anthropic-federation secret's Google identity token is minted, and Anthropic's token
-#     exchange, where that token is traded for an sk-ant-oat01- token. It writes the certificate
-#     authority the proxy signs each bound host with, the AWS key pair its own stand verifies,
-#     and the GitHub App key its GitHub stand mints for; this script reads all of it out of the
-#     JSON report that command prints.
+#     Signature Version 4; and the three the model judge calls - a model endpoint, a Dispatch
+#     holding one open issue and one done one, and a Compute Engine metadata server. It writes
+#     the certificate authority the proxy signs each bound host with, the AWS key pair its own
+#     stand verifies, and the GitHub App key its GitHub stand mints for; this script reads all
+#     of it out of the JSON report that command prints.
 #   - The model judge, on every broker: the six BROKER_JUDGE_* settings pointed at the model
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
-#     whose key's judge tag gives the judge seconds of it is decided by the model rather than by
+#     a profile's proxy block gives the judge seconds for is decided by the model rather than by
 #     a person.
-#   - A profiles file (BROKER_PROFILES_FILE) in the kinds form and a fake Secrets Manager (the
-#     file BROKER_FAKE_SECRETS_FILE names). The file's kinds say where a credential of each kind
-#     may go: stest, a stored secret bound to S; scoped, bound to S in authorization and x-key
-#     with GET /read alone; ghapp and glogin, a github-app and a google-login secret's minted
-#     token bound to S; azure, kind azure's exchange at the Microsoft stand-in and the stand-in
-#     resource host; aws, a stored AWS key pair signed again for the AWS stand-in; judged, the
-#     judge's five human-tier secrets bound to S; and anthropic, exactly as the spec writes it.
-#     Each secret is behind the proxy because its proxy tag in the fake store names one of them.
-#     The judge's five: two whose judge tags give the judge 900 and 600 seconds, each with a
-#     guidance tag of its own, one with no judge tag, one owned by nobody that anyone approves,
-#     and one tagged an administrator's whose judge tag gives the judge 900 seconds of it all the
-#     same, which the judge must refuse because the tag says a person approves every release of
-#     it. The two anthropic-federation secrets are an administrator's, each bound to a Google
-#     account of its own (BROKER_SERVICE_ACCOUNT_SECRETS): AIRLOCK_ANTHROPIC_NARROWED carries
-#     proxy-narrowed=true and one profile with ANTHROPIC_ADMIN_HDO's three allow rows, and
-#     AIRLOCK_ANTHROPIC_KIND has no profile, so the kind's allow alone bounds it. The file's
-#     profiles are the github-app secret's own, with the github block every github-app profile
-#     carries, that narrowed secret's, and AIRLOCK_PLAIN_GITHUB, a profile with no proxy whose
-#     release is the value itself: its source is a second github-app secret of the same App with
-#     no proxy tag, since a profile takes its source's tag, a github-app secret no profile names
-#     is refused (github-app-no-profile), and the broker reads profiles at boot alone, so a
-#     check's control that needs a GitHub token released to the command finds one here rather
-#     than adding one at run time.
+#   - A profiles file (BROKER_PROFILES_FILE) and a fake Secrets Manager (the file
+#     BROKER_FAKE_SECRETS_FILE names) that name each other, each profile a secret of its own name
+#     with a proxy block: a stored secret bound to S; a second stored secret bound to S with
+#     headers and allow of its own; a github-app secret, with the github block every github-app
+#     profile carries; a google-login secret; an azure-login secret, kind azure, bound to the
+#     Microsoft stand-in and the stand-in resource host; a stored AWS key pair, kind aws, bound to
+#     the AWS stand-in; and the judge's five human-tier secrets - two whose proxy blocks give the
+#     judge 900 seconds, each with guidance of its own, one they give it nothing of, one owned by
+#     nobody that anyone approves, and one tagged an administrator's that its proxy block gives the
+#     judge 900 seconds of all the same, which the judge must refuse because the tag says a person
+#     approves every release of it. One more profile, AIRLOCK_PLAIN_GITHUB, is the github-app
+#     secret's with no proxy block, whose release is the value itself: a github-app secret no
+#     profile names is refused (github-app-no-profile), and the broker reads profiles at boot
+#     alone, so a check's control that needs a GitHub token released to the command finds one
+#     here rather than adding one at run time.
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
 #     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
@@ -77,10 +65,8 @@
 #     have its calls refused 407 midway. Each renewal sends the pod token dev-oidc-issuer
 #     rewrites in place, as a kubelet rewrites a projected token.
 #
-# Every bound host but one is a name of this stack's own (s.airlock.test and the rest), which no
-# resolver answers; the one is api.anthropic.com, the anthropic kind's host as the spec writes
-# it. BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where each one is, the Admin API stand for
-# api.anthropic.com, so no call of this stack reaches Anthropic, and
+# Every bound host is a name of this stack's own (s.airlock.test and the rest), which no
+# resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where each one is and
 # BROKER_AIRLOCK_TEST_DIAL_ALLOW lets it dial that one loopback address and port, while every
 # other loopback, private and link-local address stays refused - which is what check k4 reads.
 # Each of them listens on port 443 of a loopback address of its own (127.0.0.2 and up): the
@@ -92,10 +78,8 @@
 # The airlock's secrets are owned by a registered service (BROKER_SERVICES), and the pod this
 # script enrols runs as that service's account, so its requests for them are granted at once. A
 # pod session has no operator, so the azure-login secret, which the broker releases its
-# projected token for only at human tier with a person's approval, and the two
-# anthropic-federation secrets, which the broker serves at human tier alone, wait: the exports
-# name the approver and the sign-in URL for them, and the broker takes that decision on its own
-# page alone.
+# projected token for only at human tier with a person's approval, waits: the exports name the
+# approver and the sign-in URL for it, and the broker takes that decision on its own page alone.
 #
 # Everything this script makes lives under ${TMPDIR:-/tmp}, as dev-broker.sh's work directory
 # now does: in a Legion pod /tmp is the container's own small disk, and one run of the checks
@@ -208,10 +192,9 @@ SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-5
 # only when both halves name that one service, as a deployment's daemon and its worker pods do,
 # so a request of the pod's for one of those secrets is granted at once.
 SERVICE="legion-daemon"
-# The names a check asks for, the stand-in hosts the kinds their proxy tags name bind them to, and
-# where each one listens. Each host but api.anthropic.com is a .test name no resolver answers:
-# BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where it is and BROKER_AIRLOCK_TEST_DIAL_ALLOW lets
-# it dial that one address.
+# The names a check asks for, the stand-in hosts their proxy blocks bind them to, and where each one
+# listens. Each host is a .test name no resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the
+# proxy where it is and BROKER_AIRLOCK_TEST_DIAL_ALLOW lets it dial that one address.
 #
 # Every bound host listens on port 443 of a loopback address of its own, rather than on one
 # address and a port the system picks. The airlock refuses a request whose Host header is not
@@ -227,52 +210,29 @@ AZURE_RESOURCE_HOST="azure-resource.airlock.test"
 MICROSOFT_ADDRESS="127.0.0.4:443"
 AWS_HOST="aws.airlock.test"
 AWS_ADDRESS="127.0.0.5:443"
-# The anthropic kind's one host is Anthropic's own name, as the spec's kind binds it, and the
-# Admin API stand answers it here; it is never dialled anywhere else (the header).
-ANTHROPIC_HOST="api.anthropic.com"
-ANTHROPIC_ADDRESS="127.0.0.6:443"
 GITHUB_OWNER="acme-org"
 GITHUB_INSTALLATION=7
 DEMO_SECRET="AIRLOCK_DEMO_TOKEN"
 SCOPED_SECRET="AIRLOCK_SCOPED_TOKEN"
 GITHUB_SECRET="AIRLOCK_GITHUB_APP"
-# The profile with no proxy (the header): the value released to the command, for a control. Its
-# source is a github-app secret of the same App with no proxy tag, because a profile is behind
-# the proxy when its source's proxy tag names a kind.
+# The github-app secret's profile with no proxy block (the header): the value released to the
+# command, for a control.
 PLAIN_GITHUB_PROFILE="AIRLOCK_PLAIN_GITHUB"
-PLAIN_GITHUB_SOURCE="AIRLOCK_PLAIN_GITHUB_APP"
 # What every GitHub profile of this stack asks for, which the stand's own map of each
 # installation holds, so its cut leaves nothing out.
 GITHUB_PERMISSIONS='{"contents": "read", "metadata": "read"}'
 GOOGLE_SECRET="AIRLOCK_GOOGLE_LOGIN"
 AZURE_SECRET="AIRLOCK_AZURE_LOGIN"
 AWS_SECRET="AIRLOCK_AWS_KEY"
-# The two anthropic-federation secrets of the anthropic kind's check (k47), each an
-# administrator's: human tier, admin "true", a max-grant of an hour (the kind's max_grant), and a
-# requesters list naming the approver, who owns both, and this stack's service, which the
-# enrolled pod acts for (policy.RequesterRule holds the type to its owner named once). Each is
-# bound to its own Google account (BROKER_SERVICE_ACCOUNT_SECRETS), whose identity token the iam
-# stand mints, and names that account in its stored value with the Anthropic ids the exchange
-# stand records. NARROWED carries proxy-narrowed=true and one profile with the three allow rows
-# of ANTHROPIC_ADMIN_HDO's profile in the deployment repository; KIND carries neither, so its refusals come
-# from the kind's allow alone.
-ANTHROPIC_NARROWED_SECRET="AIRLOCK_ANTHROPIC_NARROWED"
-ANTHROPIC_KIND_SECRET="AIRLOCK_ANTHROPIC_KIND"
-ANTHROPIC_NARROWED_ACCOUNT="anthropic-narrowed@airlock-stack.iam.gserviceaccount.com"
-ANTHROPIC_KIND_ACCOUNT="anthropic-kind@airlock-stack.iam.gserviceaccount.com"
-ANTHROPIC_MAX_GRANT="1h"
-# The three allow rows the anthropic kind and the narrowed secret's profile share: GET, POST and
-# DELETE under /v1/organizations/, the Admin API.
-ANTHROPIC_ALLOW='[{"method": "GET", "pathPrefix": "/v1/organizations/"}, {"method": "POST", "pathPrefix": "/v1/organizations/"}, {"method": "DELETE", "pathPrefix": "/v1/organizations/"}]'
 # The five the model judge is asked about. Each is human tier, so each waits for a person
 # unless the judge decides it first, and each is a stored value with no type: what the judge is
 # about is who may approve a request, and a type's minting is another check's subject.
-# JUDGED_SECRET is the one whose judge tag gives the judge seconds of it; UNJUDGED_SECRET the one
-# with no judge tag, which must still wait for its person; SHARED_SECRET the one
+# JUDGED_SECRET is the one its proxy block gives the judge seconds of; UNJUDGED_SECRET the one
+# whose block gives it nothing, which must still wait for its person; SHARED_SECRET the one
 # nobody owns, which anyone signed in approves and which the judge therefore approves in
 # anyone's place; ADMIN_SECRET the administrator's credential, which carries the same judge
-# tag as JUDGED_SECRET and which the judge must refuse all the same - the stack writes
-# exactly the tags the defect allowed, so a check can see the refusal come from the broker
+# seconds as JUDGED_SECRET and which the judge must refuse all the same - the stack writes
+# exactly the profile the defect allowed, so a check can see the refusal come from the broker
 # rather than from the absence of a judge.
 #
 # ADMIN_SECRET carries two tags the others do not, because the policy refuses an admin secret
@@ -284,23 +244,18 @@ UNJUDGED_SECRET="AIRLOCK_UNJUDGED_TOKEN"
 SHARED_SECRET="AIRLOCK_SHARED_TOKEN"
 ADMIN_SECRET="AIRLOCK_ADMIN_TOKEN"
 # SECOND_JUDGED_SECRET is a second judge key of the approver's, bound to S as JUDGED_SECRET is,
-# with a shorter judge tag and guidance of its own. A request for it beside JUDGED_SECRET is two
-# judge keys, which the judge decides together, each against its own guidance, for at most the
-# shorter of the two judge tags.
+# with guidance of its own. A request for it beside JUDGED_SECRET is two judge keys, which the
+# judge decides together, each against its own guidance.
 SECOND_JUDGED_SECRET="AIRLOCK_SECOND_JUDGED_TOKEN"
 ADMIN_MAX_GRANT="1h"
-# The seconds the judge tags let the judge decide of the judge keys, which is also the longest
-# lifetime a request for one of them may sign, and the lifetime a request naming none gets:
-# JUDGE_SECONDS for JUDGED_SECRET, SHARED_SECRET and ADMIN_SECRET, SECOND_JUDGE_SECONDS for
-# SECOND_JUDGED_SECRET.
+# The seconds the proxy blocks let the judge decide of the judge keys, which is also the longest
+# lifetime a request for one of them may sign, and the lifetime a request naming none gets.
 JUDGE_SECONDS=900
-SECOND_JUDGE_SECONDS=600
-# The guidance tags of JUDGED_SECRET and of SECOND_JUDGED_SECRET: the key owner's instruction,
-# which the stand-in model is shown with every request for the key. Each is printed
-# single-quoted in the exports below and written into the fake store's JSON as it is, and each
-# holds only what an AWS Secrets Manager tag value may (letters, digits, spaces and
-# `_ . : / = + - @`), as the guidance of a real key on that store must.
-JUDGE_GUIDANCE="grant for the stack check runs that name the run in the reason"
+# The guidance the proxy blocks give the judge for JUDGED_SECRET and for SECOND_JUDGED_SECRET:
+# the key owner's instruction, which the stand-in model is shown with every request for the key.
+# Each is printed single-quoted in the exports below and written into the profiles JSON as it
+# is, so neither may hold a quote of either kind or a backslash.
+JUDGE_GUIDANCE="grant for the stack check runs, which name the run in the reason"
 SECOND_JUDGE_GUIDANCE="grant for the stack release job"
 # What the judge is configured with: the model id its verdicts are recorded under
 # (record.JudgeActor writes "judge:<id>"), the protocol the model stand speaks, and the
@@ -317,7 +272,7 @@ DEMO_VALUE="the-real-airlock-demo-token-9f3a7c"
 SCOPED_VALUE="the-real-airlock-scoped-token-4b1e"
 # The values of the judge's own five secrets, which are stored values like the two above: what
 # a judged grant releases is the same sort of credential, read back by a check from the stand-in
-# its kind, judged, binds it to.
+# its proxy block binds it to.
 JUDGED_VALUE="the-real-airlock-judged-token-7c2d"
 UNJUDGED_VALUE="the-real-airlock-unjudged-token-5a8b"
 SHARED_VALUE="the-real-airlock-shared-token-2e6f"
@@ -497,13 +452,12 @@ echo "dev-airlock: created isolated database $DB_NAME" >&2
 # The banner names the database without any password the URL carries.
 DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 
-# --- The stand-ins. Each HTTPS stand's certificate carries the name a kind binds to it, since
+# --- The stand-ins. Each HTTPS stand's certificate carries the name a proxy block binds to it, since
 # the proxy verifies the name it dialled against the certificate the stand presents. The
 # Microsoft stand carries the resource host's name too: it answers the tenant's OpenID
 # configuration document, which is the first thing az reads of an authority, and a token
 # request at /{tenant}/oauth2/v2.0/token, and leaves every other request to its own body, so
-# one process plays the authority and the service an access token is spent at. The anthropic
-# stand carries api.anthropic.com, the Admin API a call behind the proxy reaches. ---
+# one process plays the authority and the service an access token is spent at. ---
 echo "dev-airlock: starting dev-airlock-stands..." >&2
 : >"$STANDS_LOG"
 "$STANDS_BIN" --dir "$STANDS_DIR" \
@@ -512,7 +466,6 @@ echo "dev-airlock: starting dev-airlock-stands..." >&2
   --address "microsoft=$MICROSOFT_ADDRESS" \
   --host "microsoft=$MICROSOFT_HOST" --host "microsoft=$AZURE_RESOURCE_HOST" \
   --address "aws=$AWS_ADDRESS" --host "aws=$AWS_HOST" \
-  --address "anthropic=$ANTHROPIC_ADDRESS" --host "anthropic=$ANTHROPIC_HOST" \
   --installation "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
   --google-lifetime 7m \
   --aws-session-token "$AWS_SESSION_TOKEN" \
@@ -530,15 +483,10 @@ AWS_SECRET_KEY="$(stand .aws_secret_key)"
 GITHUB_APP_ID="$(stand .github_app_id)"
 GITHUB_APP_KEY_FILE="$(stand .github_app_key_file)"
 # The GitHub and Google stands are reached by the broker itself, not through the proxy, so
-# they keep a port the system picked on 127.0.0.1 and are named by address; so are the two an
-# anthropic-federation secret is minted at, and the three the model judge calls.
+# they keep a port the system picked on 127.0.0.1 and are named by address; so are the three
+# the model judge calls.
 GITHUB_URL="$(stand '.stands.github.url')"
 GOOGLE_URL="$(stand '.stands.google.url')"
-ANTHROPIC_TOKEN_URL="$(stand '.stands["anthropic-token"].url')/v1/oauth/token"
-IAM_URL="$(stand '.stands.iam.url')"
-ANTHROPIC_ANSWER_URL="$(stand .anthropic_answer_url)"
-ANTHROPIC_TOKENS_URL="$(stand .anthropic_tokens_url)"
-IAM_TOKENS_URL="$(stand .iam_tokens_url)"
 MODEL_URL="$(stand '.stands.model.url')"
 MODEL_ANSWER_URL="$(stand .model_answer_url)"
 DISPATCH_URL="$(stand '.stands.dispatch.url')"
@@ -555,127 +503,90 @@ T_URL="https://${T_HOST}"
 MICROSOFT_URL="https://${MICROSOFT_HOST}"
 AZURE_RESOURCE_URL="https://${AZURE_RESOURCE_HOST}"
 AWS_URL="https://${AWS_HOST}"
-ANTHROPIC_URL="https://${ANTHROPIC_HOST}"
 # What the proxy may dial although it resolves to loopback, and where each name is. The two
 # together are what check k4 reads: in one run S and T on loopback are reachable and the
 # broker's own loopback port is still refused, which no switch for loopback could give.
-DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_HOST}:443 ${AWS_HOST}:443 ${ANTHROPIC_HOST}:443"
-RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*} ${ANTHROPIC_HOST}=${ANTHROPIC_ADDRESS%:*}"
+DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_HOST}:443 ${AWS_HOST}:443"
+RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*}"
 
-# --- The profiles file, in the kinds form. Its kinds say where a credential of each kind may go
-# and in which headers; a secret is behind the proxy when its proxy tag in the fake store below
-# names one of them, and who decides a request for it is its key's own judge tag there. The
-# anthropic kind is the spec's own: its host, its one header, its variable, its way, its longest
-# grant and its three allow rows. The other kinds are this stack's test kinds, each with the
-# hosts and headers the stack's secrets had before kinds, none with a variable, since a check
-# reads each placeholder in the variable named as its secret, and none with a max_grant, since a
-# kind that sets one refuses every secret of it with no max-grant tag. The profiles are the
-# github-app secret's own, with the github block every GitHub profile carries; AIRLOCK_PLAIN_GITHUB
-# (the header); and the narrowed anthropic secret's, whose own allow is the three rows of
-# ANTHROPIC_ADMIN_HDO's profile, which its proxy-narrowed tag requires it to have. No profile has
-# a proxy object: this stack holds no dpop capability. ---
+# --- The profiles file: each secret a profile of its own name whose proxy block says where its
+# value may go, in which headers, and how many seconds of it the model judge may decide; the
+# github-app secret's carries the github block every GitHub profile has, and AIRLOCK_PLAIN_GITHUB
+# is that secret's with no proxy block (the header). ---
 cat >"$PROFILES_FILE" <<EOF
-{"kinds": [
-  {"name": "stest", "hosts": ["$S_HOST"], "ways": ["swap"]},
-  {"name": "scoped", "hosts": ["$S_HOST"], "headers": ["authorization", "x-key"], "ways": ["swap"],
-   "allow": [{"method": "GET", "pathPrefix": "/read"}]},
-  {"name": "ghapp", "hosts": ["$S_HOST"], "ways": ["mint"]},
-  {"name": "glogin", "hosts": ["$S_HOST"], "ways": ["mint"]},
-  {"name": "azure", "hosts": ["$MICROSOFT_HOST", "$AZURE_RESOURCE_HOST"], "ways": ["exchange"]},
-  {"name": "aws", "hosts": ["$AWS_HOST"], "ways": ["sign"]},
-  {"name": "judged", "hosts": ["$S_HOST"], "ways": ["swap"]},
-  {"name": "anthropic", "hosts": ["$ANTHROPIC_HOST"], "headers": ["Authorization"], "variables": ["ANTHROPIC_ADMIN_TOKEN"],
-   "ways": ["mint"], "max_grant": "$ANTHROPIC_MAX_GRANT", "allow": $ANTHROPIC_ALLOW}
-],
-"profiles": [
-  {"name": "$GITHUB_SECRET", "github": {"accounts": ["$GITHUB_OWNER"], "permissions": $GITHUB_PERMISSIONS}},
-  {"name": "$PLAIN_GITHUB_PROFILE", "source": "$PLAIN_GITHUB_SOURCE",
+{"profiles": [
+  {"name": "$DEMO_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$SCOPED_SECRET", "proxy": {"hosts": ["$S_HOST"], "headers": ["authorization", "x-key"],
+   "allow": [{"method": "GET", "pathPrefix": "/read"}]}},
+  {"name": "$GITHUB_SECRET", "github": {"accounts": ["$GITHUB_OWNER"], "permissions": $GITHUB_PERMISSIONS},
+   "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$PLAIN_GITHUB_PROFILE", "source": "$GITHUB_SECRET",
    "github": {"accounts": ["$GITHUB_OWNER"], "permissions": $GITHUB_PERMISSIONS}},
-  {"name": "$ANTHROPIC_NARROWED_SECRET", "allow": $ANTHROPIC_ALLOW}
+  {"name": "$GOOGLE_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$AZURE_SECRET", "proxy": {"hosts": ["$MICROSOFT_HOST", "$AZURE_RESOURCE_HOST"], "kind": "azure"}},
+  {"name": "$AWS_SECRET", "proxy": {"hosts": ["$AWS_HOST"], "kind": "aws"}},
+  {"name": "$JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$JUDGE_GUIDANCE"}},
+  {"name": "$UNJUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$SHARED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
+  {"name": "$ADMIN_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
+  {"name": "$SECOND_JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$SECOND_JUDGE_GUIDANCE"}}
 ]}
 EOF
 
 # --- The fake Secrets Manager the brokers read, written with jq so the GitHub App's PEM and
 # each object value are escaped once and correctly. Every value here is this stack's own and
-# opens nothing. Every secret but one is behind the proxy by its proxy tag (policy.TagProxy),
-# which names its kind; the one is the plain github-app source, which a control needs released
-# as its value. The two stored secrets, the github-app and the google-login secret are owned
+# opens nothing. The two stored secrets, the github-app and the google-login secret are owned
 # by the service the enrolled pod runs as, so a request for one is granted at once; the
 # azure-login secret is human tier and owned by the approver, because the broker releases its
 # projected Azure token only for a human-tier name a person approved. The judge's five are
 # human tier too, so each waits for a person: four of them the approver's own, and one
 # owned by nobody (the owner tag "shared", policy.OwnerShared), which anyone signed in
-# approves and which the judge therefore approves in anyone's place. Four of them carry a judge
-# tag (policy.TagJudge) and two a guidance tag (policy.TagGuidance): the judge decides those
-# four, the administrator's among them by its tag but never in fact. One of the approver's is
+# approves and which the judge therefore approves in anyone's place. One of the approver's is
 # the approver's administrator's credential (admin: "true"), which carries the requesters list
 # and the hour's cap that tag demands of a secret: a list naming the approver and this stack's
 # service, since the enrolled pod acts for that service and a list no requester is on is
-# refused before owner and tier are read at all. The two anthropic-federation secrets carry the
-# same administrator's tags, the type's own, and the anthropic kind's proxy tag; the narrowed one
-# also proxy-narrowed=true (policy.TagProxyNarrowed), which is what lets its profile's allow be
-# in force. ---
+# refused before owner and tier are read at all. ---
 jq -n \
   --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
   --arg service "$SERVICE" --arg approver "$APPROVER_LOGIN" \
   --arg demo "$DEMO_VALUE" --arg scoped "$SCOPED_VALUE" \
   --arg judged "$JUDGED_VALUE" --arg unjudged "$UNJUDGED_VALUE" --arg shared "$SHARED_VALUE" \
   --arg admin "$ADMIN_VALUE" --arg second "$SECOND_JUDGED_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
-  --arg judge "$JUDGE_SECONDS" --arg secondjudge "$SECOND_JUDGE_SECONDS" \
-  --arg guidance "$JUDGE_GUIDANCE" --arg secondguidance "$SECOND_JUDGE_GUIDANCE" \
   --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
   --arg owner "$GITHUB_OWNER" \
   --arg awskey "$AWS_KEY_ID" --arg awssecret "$AWS_SECRET_KEY" --arg awssession "$AWS_SESSION_TOKEN" \
-  --arg anthropicgrant "$ANTHROPIC_MAX_GRANT" \
-  --arg narrowedaccount "$ANTHROPIC_NARROWED_ACCOUNT" --arg kindaccount "$ANTHROPIC_KIND_ACCOUNT" \
   '{secrets: [
      {name: ($prefix + "airlock-demo-token"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", proxy: "stest"}, value: $demo},
+      tags: {owner: $service, tier: "agent"}, value: $demo},
      {name: ($prefix + "airlock-scoped-token"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", proxy: "scoped"}, value: $scoped},
+      tags: {owner: $service, tier: "agent"}, value: $scoped},
      {name: ($prefix + "airlock-github-app"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner, proxy: "ghapp"},
-      value: ({app_id: $appid, private_key: $appkey} | tojson)},
-     {name: ($prefix + "airlock-plain-github-app"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
       value: ({app_id: $appid, private_key: $appkey} | tojson)},
      {name: ($prefix + "airlock-google-login"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", type: "google-login", proxy: "glogin"},
+      tags: {owner: $service, tier: "agent", type: "google-login"},
       value: ({type: "authorized_user", client_id: "the-stand-in-client",
                client_secret: "the-stand-in-client-secret",
                refresh_token: "the-stand-in-refresh-token"} | tojson)},
      {name: ($prefix + "airlock-azure-login"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", type: "azure-login", proxy: "azure"},
+      tags: {owner: $approver, tier: "human", type: "azure-login"},
       value: ({tenant_id: "the-stand-in-tenant", client_id: "the-stand-in-application"} | tojson)},
      {name: ($prefix + "airlock-aws-key"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", proxy: "aws"},
+      tags: {owner: $service, tier: "agent"},
       value: ({access_key_id: $awskey, secret_access_key: $awssecret,
                session_token: $awssession} | tojson)},
      {name: ($prefix + "airlock-judged-token"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", judge: $judge, guidance: $guidance, proxy: "judged"}, value: $judged},
+      tags: {owner: $approver, tier: "human"}, value: $judged},
      {name: ($prefix + "airlock-unjudged-token"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", proxy: "judged"}, value: $unjudged},
+      tags: {owner: $approver, tier: "human"}, value: $unjudged},
      {name: ($prefix + "airlock-shared-token"), kms_key_id: $kms,
-      tags: {owner: "shared", tier: "human", judge: $judge, proxy: "judged"}, value: $shared},
+      tags: {owner: "shared", tier: "human"}, value: $shared},
      {name: ($prefix + "airlock-admin-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human", admin: "true",
-             requesters: ($approver + " " + $service), "max-grant": $maxgrant, judge: $judge, proxy: "judged"},
+             requesters: ($approver + " " + $service), "max-grant": $maxgrant},
       value: $admin},
      {name: ($prefix + "airlock-second-judged-token"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", judge: $secondjudge, guidance: $secondguidance, proxy: "judged"}, value: $second},
-     {name: ($prefix + "airlock-anthropic-narrowed"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", admin: "true", type: "anthropic-federation",
-             requesters: ($approver + " " + $service), "max-grant": $anthropicgrant,
-             proxy: "anthropic", "proxy-narrowed": "true"},
-      value: ({organization_id: "00000000-0000-4000-8000-0000000000a1", federation_rule_id: "fdrl_01airlocknarrowed",
-               service_account_id: "svac_01airlocknarrowed", service_account: $narrowedaccount,
-               workspace_id: "wrkspc_01airlocknarrowed"} | tojson)},
-     {name: ($prefix + "airlock-anthropic-kind"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", admin: "true", type: "anthropic-federation",
-             requesters: ($approver + " " + $service), "max-grant": $anthropicgrant, proxy: "anthropic"},
-      value: ({organization_id: "00000000-0000-4000-8000-0000000000a2", federation_rule_id: "fdrl_01airlockkind",
-               service_account_id: "svac_01airlockkind", service_account: $kindaccount,
-               workspace_id: "wrkspc_01airlockkind"} | tojson)}
+      tags: {owner: $approver, tier: "human"}, value: $second}
    ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
@@ -717,12 +628,6 @@ PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 # azure exchange is held to, in place of login.microsoftonline.com: the proxy refuses an
 # exchange at any other host, and the stand-in is where this stack's az signs in.
 #
-# BROKER_SERVICE_ACCOUNT_SECRETS binds each anthropic-federation secret to its own Google account,
-# and BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL and BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL point
-# that type's minter at the iam and anthropic-token stands: it reads the account's identity token
-# at the first, spending the access token the metadata stand answers, and trades it at the
-# second, as it mints at Google and Anthropic in production.
-#
 # Each also gets the model judge: the six BROKER_JUDGE_* settings, which are all-or-none, and
 # GCE_METADATA_HOST. The credential the judge presents to its model endpoint is the broker's
 # own Google machine identity, read from the metadata server at call time; pointing
@@ -759,7 +664,6 @@ start_broker() {
   BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
   BROKER_AZURE_TOKEN_FILE="$AZURE_TOKEN_FILE" \
   BROKER_AZURE_LOGIN_SECRET="$AZURE_SECRET" \
-  BROKER_SERVICE_ACCOUNT_SECRETS="$ANTHROPIC_NARROWED_SECRET=$ANTHROPIC_NARROWED_ACCOUNT $ANTHROPIC_KIND_SECRET=$ANTHROPIC_KIND_ACCOUNT" \
   BROKER_PROFILES_FILE="$PROFILES_FILE" \
   BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_AIRLOCK_PROXY_URL="$PROXY_FRONT_URL" \
@@ -768,8 +672,6 @@ start_broker() {
   BROKER_AIRLOCK_IDLE_SECONDS="$IDLE_SECONDS" \
   BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
   BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL="$GOOGLE_URL/token" \
-  BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL="$ANTHROPIC_TOKEN_URL" \
-  BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL="$IAM_URL" \
   BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE="$CA_CERT_FILE" \
   BROKER_AIRLOCK_TEST_DIAL_ALLOW="$DIAL_ALLOW" \
   BROKER_AIRLOCK_TEST_RESOLVE="$RESOLVE" \
@@ -910,24 +812,9 @@ dev-airlock: ready.
   export AIRLOCK_DISPATCH_ANSWERED_ASK=$DISPATCH_ANSWERED_ASK
   export AIRLOCK_METADATA_URL=$METADATA_URL
   export AIRLOCK_METADATA_RECORDS=$RECORDS_URL/records/metadata
-  export AIRLOCK_ANTHROPIC_URL=$ANTHROPIC_URL
-  export AIRLOCK_ANTHROPIC_ADDRESS=${ANTHROPIC_ADDRESS%:*}
-  export AIRLOCK_ANTHROPIC_RECORDS=$RECORDS_URL/records/anthropic
-  export AIRLOCK_ANTHROPIC_TOKEN_URL=$ANTHROPIC_TOKEN_URL
-  export AIRLOCK_ANTHROPIC_TOKEN_RECORDS=$RECORDS_URL/records/anthropic-token
-  export AIRLOCK_ANTHROPIC_TOKENS_URL=$ANTHROPIC_TOKENS_URL
-  export AIRLOCK_ANTHROPIC_ANSWER_URL=$ANTHROPIC_ANSWER_URL
-  export AIRLOCK_IAM_URL=$IAM_URL
-  export AIRLOCK_IAM_RECORDS=$RECORDS_URL/records/iam
-  export AIRLOCK_IAM_TOKENS_URL=$IAM_TOKENS_URL
-  export AIRLOCK_ANTHROPIC_NARROWED_SECRET=$ANTHROPIC_NARROWED_SECRET
-  export AIRLOCK_ANTHROPIC_KIND_SECRET=$ANTHROPIC_KIND_SECRET
-  export AIRLOCK_ANTHROPIC_NARROWED_ACCOUNT=$ANTHROPIC_NARROWED_ACCOUNT
-  export AIRLOCK_ANTHROPIC_KIND_ACCOUNT=$ANTHROPIC_KIND_ACCOUNT
   export AIRLOCK_JUDGE_MODEL=$JUDGE_MODEL
   export AIRLOCK_JUDGE_AUDIENCE=$JUDGE_MODEL_AUDIENCE
   export AIRLOCK_JUDGE_SECONDS=$JUDGE_SECONDS
-  export AIRLOCK_SECOND_JUDGE_SECONDS=$SECOND_JUDGE_SECONDS
   export AIRLOCK_JUDGED_SECRET=$JUDGED_SECRET
   export AIRLOCK_UNJUDGED_SECRET=$UNJUDGED_SECRET
   export AIRLOCK_SHARED_SECRET=$SHARED_SECRET
@@ -943,42 +830,30 @@ dev-airlock: ready.
   export PATH=$BASE_BIN_DIR:\$PATH
 
 $BROKER_BANNER
-  secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, kinds stest and scoped, bound to
-                       $S_HOST; $SCOPED_SECRET in authorization and x-key, GET /read alone),
-                       $GITHUB_SECRET (github-app, kind ghapp, installation $GITHUB_INSTALLATION on
-                       $GITHUB_OWNER; $PLAIN_GITHUB_PROFILE is a profile of $PLAIN_GITHUB_SOURCE, the
-                       same App with no proxy tag, released as its value), $GOOGLE_SECRET
-                       (google-login, kind glogin), $AZURE_SECRET (kind azure, human tier),
-                       $AWS_SECRET (kind aws), and $ANTHROPIC_NARROWED_SECRET and $ANTHROPIC_KIND_SECRET
-                       (anthropic-federation, kind anthropic, human tier, an administrator's;
-                       $ANTHROPIC_NARROWED_SECRET proxy-narrowed with a profile of the kind's three
-                       rows, $ANTHROPIC_KIND_SECRET with none), each behind the proxy by its proxy tag;
-                       the kinds are in $PROFILES_FILE
-  anthropic:           the Admin API stand answers $ANTHROPIC_HOST on ${ANTHROPIC_ADDRESS%:*}; the
-                       broker mints at the iam stand ($IAM_URL) and the token exchange stand
-                       ($ANTHROPIC_TOKEN_URL), which answers an expires_in of 3600 until a check
-                       POSTs {"expires_in": <seconds>} to $ANTHROPIC_ANSWER_URL; what each minted is
-                       at $IAM_TOKENS_URL and $ANTHROPIC_TOKENS_URL
+  secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, bound to $S_HOST; $SCOPED_SECRET in
+                       authorization and x-key, GET /read alone), $GITHUB_SECRET (github-app,
+                       installation $GITHUB_INSTALLATION on $GITHUB_OWNER; $PLAIN_GITHUB_PROFILE is
+                       its profile with no proxy block, released as its value), $GOOGLE_SECRET
+                       (google-login), $AZURE_SECRET (kind azure, human tier) and $AWS_SECRET (kind
+                       aws), each a profile of its own name in $PROFILES_FILE
   judge:               $JUDGE_MODEL at $MODEL_URL, which answers grant until a check
                        POSTs another answer to $MODEL_ANSWER_URL; it reads, as data for the
                        model, $DISPATCH_OPEN_ISSUE (open) and $DISPATCH_DONE_ISSUE (done) at
                        $DISPATCH_URL and the one ask that stand holds, $DISPATCH_ANSWERED_ASK on
                        $DISPATCH_OPEN_ISSUE, answered by $APPROVER_LOGIN, and mints its own
                        credential at the metadata stand on $METADATA_ADDRESS.
-                       Who decides each key is its own judge tag: the judge decides up to
-                       $JUDGE_SECONDS seconds of $JUDGED_SECRET and $SECOND_JUDGE_SECONDS of
-                       $SECOND_JUDGED_SECRET (owned by $APPROVER_LOGIN, each against its guidance
-                       tag) and $JUDGE_SECONDS of $SHARED_SECRET (owned by nobody). A request for
-                       them alone is the judge's: no approve_url,
+                       Who decides each key is its profile's proxy block: the judge decides up to
+                       $JUDGE_SECONDS seconds of $JUDGED_SECRET and $SECOND_JUDGED_SECRET (owned by
+                       $APPROVER_LOGIN, each against its guidance) and of $SHARED_SECRET
+                       (owned by nobody). A request for them alone is the judge's: no approve_url,
                        a read-only page, never listed; granted, or refused for good. No request
-                       has to cite anything. $ADMIN_SECRET carries the same $JUDGE_SECONDS-second judge tag
+                       has to cite anything. $ADMIN_SECRET carries the same $JUDGE_SECONDS seconds
                        and is an administrator's secret (admin: "true", requesters $APPROVER_LOGIN
-                       and $SERVICE, max-grant $ADMIN_MAX_GRANT), and $UNJUDGED_SECRET carries no
-                       judge tag: each is $APPROVER_LOGIN's card, and so is any request with one of
+                       and $SERVICE, max-grant $ADMIN_MAX_GRANT), and $UNJUDGED_SECRET's proxy block
+                       names no judge: each is $APPROVER_LOGIN's card, and so is any request with one of
                        them beside a judge key. Ask with
                        agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming the stack check run>"
-  approver:            $APPROVER_LOGIN, who approves $AZURE_SECRET, $ANTHROPIC_NARROWED_SECRET and
-                       $ANTHROPIC_KIND_SECRET on ${API_FRONT_URL}/approve/<record>;
+  approver:            $APPROVER_LOGIN, who approves $AZURE_SECRET on ${API_FRONT_URL}/approve/<record>;
                        the sign-in at $ISSUER_URL signs that person in with no page to fill in,
                        and a POST to ${API_FRONT_URL}/approve needs an Origin header or the page answers 403
   database:            $DISPLAY_URL  (this instance's own; created and dropped by this script)

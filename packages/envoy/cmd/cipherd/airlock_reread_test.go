@@ -6,9 +6,8 @@
 // DropName, because what these rows are about is the wiring between the two.
 //
 // What they read is the audit trail: every read the proxy makes writes one grant.used row marked
-// airlock, which is the same row a session's own release writes. Every stored secret of the rig is
-// behind the one kind its profiles file declares (rereadKind), whose allow list is present and
-// empty, so it allows no method or path at all: every request through the proxy is refused by the
+// airlock, which is the same row a session's own release writes. Each profile the broker is given
+// allows no method or path at all, so every request through the proxy is refused by the
 // airlock's own decision — which runs after the values are read — and the rows need no service
 // for the proxy to reach.
 package main
@@ -91,18 +90,15 @@ const (
 	// rereadBoundAddress is RFC 5737's TEST-NET-1, which BROKER_AIRLOCK_TEST_RESOLVE gives each
 	// bound host, names no resolver answers, so that the CONNECT a row makes is neither refused
 	// as a local address nor dependent on a resolver this process may not have, and no request
-	// of these rows can reach the internet. A kind binds the name rather than the address,
+	// of these rows can reach the internet. An entry binds the name rather than the address,
 	// since the rules validation refuses an address literal: a TLS client sends no server name
 	// for one, and the airlock refuses a request whose server name is not its CONNECT host.
 	rereadBoundAddress = "192.0.2.1"
-	// rereadKind is the one kind of the rig's profiles file (rereadKinds), which the proxy tag of
-	// every stored secret of the rig names.
-	rereadKind = "airlock"
 )
 
 // airlockRereadRig is one compiled broker with an airlock, the one stored secret AIRLOCK_TOKEN
-// (the service's, agent tier, so its pod is granted at once, and behind rereadKind) and the
-// profiles it was started with, and a pod of the service enrolled on it.
+// (the service's, agent tier, so its pod is granted at once) and the profiles it was started
+// with, and a pod of the service enrolled on it.
 type airlockRereadRig struct {
 	t                   *testing.T
 	broker              *brokerProcess
@@ -116,24 +112,11 @@ type airlockRereadRig struct {
 	fakeSecretsFile string
 }
 
-// startAirlockReread starts the rig's broker serving profiles, each one entry's JSON, in a
-// profiles file that declares rereadKind on hosts (rereadKinds), with each of hosts resolved to
-// rereadBoundAddress.
-func startAirlockReread(t *testing.T, hosts []string, profiles ...string) *airlockRereadRig {
+// startAirlockReread starts the rig's broker serving profiles, the whole profiles file, with each
+// of hosts resolved to rereadBoundAddress.
+func startAirlockReread(t *testing.T, profiles string, hosts ...string) *airlockRereadRig {
 	t.Helper()
-	return startAirlockRereadWith(t, airlockRereadExtras{}, hosts, profiles...)
-}
-
-// rereadKinds is the kinds list of the rig's profiles file: rereadKind, binding hosts, carried in
-// Authorization, served by its stored value or by a token the proxy mints from an App's key, with
-// an allow list that is present and empty and so allows nothing.
-func rereadKinds(t *testing.T, hosts []string) string {
-	t.Helper()
-	bound, err := json.Marshal(hosts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return `[{"name": "` + rereadKind + `", "hosts": ` + string(bound) + `, "headers": ["authorization"], "ways": ["swap", "mint"], "allow": []}]`
+	return startAirlockRereadWith(t, airlockRereadExtras{}, profiles, hosts...)
 }
 
 // airlockRereadExtras is what a row adds to the rig's broker: entries of its fake store beside
@@ -144,7 +127,7 @@ type airlockRereadExtras struct {
 }
 
 // startAirlockRereadWith is startAirlockReread with extras added to the broker it starts.
-func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, hosts []string, profiles ...string) *airlockRereadRig {
+func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, profiles string, hosts ...string) *airlockRereadRig {
 	t.Helper()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
@@ -170,7 +153,7 @@ func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, hosts []st
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_AIRLOCK_TEST_RESOLVE=" + strings.Join(resolve, " "),
-		"BROKER_PROFILES_FILE=" + profilesFile(t, policytest.KindsFileOf(rereadKinds(t, hosts), profiles...)),
+		"BROKER_PROFILES_FILE=" + profilesFile(t, profiles),
 	}, extras.env...)})
 	requireHealthy(t, broker.Addr)
 	r.broker, r.certFile, r.proxyAddr = broker, certFile, airlockProxyAddr(t, broker)
@@ -180,13 +163,12 @@ func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, hosts []st
 	return r
 }
 
-// writeSecrets writes the rig's fake store whole: AIRLOCK_TOKEN, behind rereadKind, and each of
-// extra, one entry's JSON. A value of other bytes than the one before it is a new version of that
-// secret.
+// writeSecrets writes the rig's fake store whole: AIRLOCK_TOKEN, and each of extra, one entry's
+// JSON. A value of other bytes than the one before it is a new version of that secret.
 func (r *airlockRereadRig) writeSecrets(extra ...string) {
 	r.t.Helper()
 	entries := append([]string{`{"name": "` + testSecretsPrefix + `airlock-token", "kms_key_id": "` + testSecretsKMSKeyARN + `",
-		 "tags": {"owner": "` + rereadService + `", "tier": "agent", "` + policy.TagProxy + `": "` + rereadKind + `"}, "value": "the-real-airlock-token"}`}, extra...)
+		 "tags": {"owner": "` + rereadService + `", "tier": "agent"}, "value": "the-real-airlock-token"}`}, extra...)
 	writeWhole(r.t, r.fakeSecretsFile, `{"secrets": [`+strings.Join(entries, ",\n")+`]}`)
 }
 
@@ -228,7 +210,7 @@ func (r *airlockRereadRig) grant(name string) proxied {
 	}}}
 }
 
-// call sends GET https://host/path through the proxy on g's client. The kind's allow list is
+// call sends GET https://host/path through the proxy on g's client. The entry's allow list is
 // empty, which allows nothing, so the decision refuses every request - after the values the
 // decision needs have been read, which is what these rows count - and nothing is forwarded or
 // dialled.
@@ -246,7 +228,7 @@ func (r *airlockRereadRig) call(g proxied, host, path string) {
 	defer answer.Body.Close()
 	body, _ := io.ReadAll(answer.Body)
 	if answer.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "not allowed by rule") {
-		r.t.Fatalf("GET %s through the airlock's proxy = %d %q, want 403 naming \"not allowed by rule\": the kind allows nothing", path, answer.StatusCode, body)
+		r.t.Fatalf("GET %s through the airlock's proxy = %d %q, want 403 naming \"not allowed by rule\": the entry allows nothing", path, answer.StatusCode, body)
 	}
 }
 
@@ -287,7 +269,9 @@ func (r *airlockRereadRig) requireReads(g proxied, want int, when string) {
 // values again.
 func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 	const boundHost = "reread.airlock.test"
-	r := startAirlockReread(t, []string{boundHost})
+	r := startAirlockReread(t,
+		`{"profiles": [{"name": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`,
+		boundHost)
 	token := r.grant("AIRLOCK_TOKEN")
 
 	r.call(token, boundHost, "/v1/first")
@@ -309,9 +293,10 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 // swapping the old value into their requests until each grant ends: a stored value has no expiry.
 func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
 	const readHost, secondHost = "read.airlock.test", "second.airlock.test"
-	r := startAirlockReread(t, []string{readHost, secondHost},
-		`{"name": "AIRLOCK_READ", "source": "AIRLOCK_TOKEN"}`,
-		`{"name": "AIRLOCK_SECOND", "source": "AIRLOCK_TOKEN"}`)
+	r := startAirlockReread(t, `{"profiles": [
+		{"name": "AIRLOCK_READ", "source": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+readHost+`"], "headers": ["authorization"], "allow": []}},
+		{"name": "AIRLOCK_SECOND", "source": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+secondHost+`"], "headers": ["authorization"], "allow": []}}
+	]}`, readHost, secondHost)
 	read, second := r.grant("AIRLOCK_READ"), r.grant("AIRLOCK_SECOND")
 	r.call(read, readHost, "/v1/first")
 	r.call(second, secondHost, "/v1/first")
@@ -330,7 +315,7 @@ func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
 }
 
 // rereadAppSecret is the fake store's entry of AIRLOCK_APP, a github-app secret of the rig's
-// service at agent tier, behind rereadKind, whose github-owners tag names acme-org, holding value.
+// service at agent tier whose github-owners tag names acme-org, holding value.
 func rereadAppSecret(t *testing.T, value string) string {
 	t.Helper()
 	quoted, err := json.Marshal(value)
@@ -338,7 +323,7 @@ func rereadAppSecret(t *testing.T, value string) string {
 		t.Fatal(err)
 	}
 	return `{"name": "` + testSecretsPrefix + `airlock-app", "kms_key_id": "` + testSecretsKMSKeyARN + `",
-		 "tags": {"owner": "` + rereadService + `", "tier": "agent", "` + policy.TagType + `": "` + policy.TypeGitHubApp + `", "` + policy.TagGitHubOwners + `": "acme-org", "` + policy.TagProxy + `": "` + rereadKind + `"},
+		 "tags": {"owner": "` + rereadService + `", "tier": "agent", "` + policy.TagType + `": "` + policy.TypeGitHubApp + `", "` + policy.TagGitHubOwners + `": "acme-org"},
 		 "value": ` + string(quoted) + `}`
 }
 
@@ -370,8 +355,9 @@ func TestARereadOfAGitHubAppSourceDropsItsProfilesTokensOnlyWhenItMovedItsValue(
 	r := startAirlockRereadWith(t, airlockRereadExtras{
 		secrets: []string{rereadAppSecret(t, value)},
 		env:     []string{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE=" + service.URL()},
-	}, []string{boundHost}, `{"name": "AIRLOCK_APP_READ", "source": "AIRLOCK_APP",
-		"github": {"accounts": ["acme-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`)
+	}, `{"profiles": [{"name": "AIRLOCK_APP_READ", "source": "AIRLOCK_APP",
+		"github": {"accounts": ["acme-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"},
+		"proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`, boundHost)
 	app := r.grant("AIRLOCK_APP_READ")
 	r.call(app, boundHost, "/v1/first")
 	r.requireReads(app, 1, "for its first request")

@@ -389,7 +389,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 		PodOperators: podOperators, Projects: config.projectAccess,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,

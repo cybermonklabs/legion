@@ -11,44 +11,19 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// tagJudge gives the judge seconds of name, and guidance unless it is "", on the server d builds:
-// the judge and guidance tags on its stored secret, as its owner's retag writes them, and the
-// policy read again (policytest.JudgeTags).
-func tagJudge(t *testing.T, d *api.Deps, name string, seconds int, guidance string) {
-	t.Helper()
-	store, isAWS := d.Machine.Secrets.(secrets.AWS)
-	local, isLocal := store.Client.(*secrets.Local)
-	if !isAWS || !isLocal {
-		t.Fatalf("the test server's store is %T, not the secrets.Local its fixture holds", d.Machine.Secrets)
-	}
-	policytest.JudgeTags(t, local, d.Policy, name, seconds, guidance)
-}
-
-// judgeTags tags DEEL_API_KEY, testApprover's own human-tier secret, with a judge of 900 seconds
-// and guidance, and SHARED_KEY, which nobody owns, with a judge of 300.
-func judgeTags(t *testing.T, d *api.Deps) {
-	t.Helper()
-	tagJudge(t, d, "DEEL_API_KEY", 900, "grant for the payroll export job")
-	tagJudge(t, d, "SHARED_KEY", 300, "")
-}
-
-// withJudge wires a judge to the server's machine, with the tags judgeTags writes.
-func withJudge(t *testing.T) func(*api.Deps) {
-	return func(d *api.Deps) {
-		judgeTags(t, d)
-		d.Machine.Judge = func(requests.PendingRequest) {}
-	}
-}
-
-// withTagsAndNoJudge is withJudge's tags on a broker that runs no judge.
-func withTagsAndNoJudge(t *testing.T) func(*api.Deps) {
-	return func(d *api.Deps) { judgeTags(t, d) }
+// withJudge wires a judge to the server's machine, with rules that give it 900 seconds of
+// DEEL_API_KEY, testApprover's own human-tier secret, with guidance, and 300 of SHARED_KEY, which
+// nobody owns.
+func withJudge(d *api.Deps) {
+	d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: "grant for the payroll export job"},
+		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(300))},
+	}}
+	d.Machine.Judge = func(requests.PendingRequest) {}
 }
 
 // createFor signs and sends one request for names from the session, answering its status code and
@@ -65,7 +40,7 @@ func (ts *testServer) createFor(t *testing.T, sessionKey *ecdsa.PrivateKey, enro
 // for a person to approve — and the person's pending list does not show it. No reason cites
 // anything. The same request on a broker that runs no judge is an ordinary card, with its page.
 func TestARequestTheJudgeHoldsLinksNoPage(t *testing.T) {
-	ts := newTestServerWith(t, withJudge(t))
+	ts := newTestServerWith(t, withJudge)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, held, body := ts.createFor(t, sessionKey, enrollmentID, "export the payroll", 600, "DEEL_API_KEY")
 	if status != http.StatusOK || held.State != "pending" || held.ApproveURL != nil || held.JudgeDeciding == nil || !*held.JudgeDeciding {
@@ -81,7 +56,10 @@ func TestARequestTheJudgeHoldsLinksNoPage(t *testing.T) {
 		t.Fatalf("GET /v1/pending = %s; want the held request on nobody's list", body)
 	}
 
-	plain := newTestServerWith(t, withTagsAndNoJudge(t))
+	plain := newTestServerWith(t, func(d *api.Deps) {
+		withJudge(d)
+		d.Machine.Judge = nil
+	})
 	enrollmentID, sessionKey = plain.newSessionEnrollment(t, "session-"+t.Name()+"-plain", testApprover)
 	status, card, body := plain.createFor(t, sessionKey, enrollmentID, "export the payroll", 600, "DEEL_API_KEY")
 	if status != http.StatusOK || card.State != "pending" || card.ApproveURL == nil || card.JudgeDeciding != nil {
@@ -93,7 +71,7 @@ func TestARequestTheJudgeHoldsLinksNoPage(t *testing.T) {
 // seconds, and a request that asks for longer is refused in its create answer, naming the --ttl
 // that would do, as a max-grant tag refuses one. Nothing waits for anybody.
 func TestAJudgeKeysLongerLifetimeIsRefusedWhenWritten(t *testing.T) {
-	ts := newTestServerWith(t, withJudge(t))
+	ts := newTestServerWith(t, withJudge)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, _, body := ts.createFor(t, sessionKey, enrollmentID, "read the shared key", 600, "SHARED_KEY")
 	refusal := decode[wireError](t, body)
@@ -107,7 +85,7 @@ func TestAJudgeKeysLongerLifetimeIsRefusedWhenWritten(t *testing.T) {
 // 403 JUDGE_DECIDES — and never with the approval page they name for a request a person decides,
 // which a card on a broker with no judge still gets. Nothing is written.
 func TestTheDecisionRoutesRefuseARecordTheJudgeHolds(t *testing.T) {
-	ts := newTestServerWith(t, withJudge(t))
+	ts := newTestServerWith(t, withJudge)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, held, body := ts.createFor(t, sessionKey, enrollmentID, "export the payroll", 600, "DEEL_API_KEY")
 	if status != http.StatusOK || held.RecordID == nil {
@@ -141,18 +119,14 @@ func TestTheDecisionRoutesRefuseARecordTheJudgeHolds(t *testing.T) {
 func TestTheDecisionRoutesRefuseARecordOfAnotherAudienceAsBefore(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		judged bool
+		adjust func(*api.Deps)
 		code   string
 	}{
-		{"held by the judge", true, "JUDGE_DECIDES"},
-		{"a person's card", false, "DECIDE_ON_BROKER_PAGE"},
+		{"held by the judge", withJudge, "JUDGE_DECIDES"},
+		{"a person's card", func(*api.Deps) {}, "DECIDE_ON_BROKER_PAGE"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			adjust := func(*api.Deps) {}
-			if c.judged {
-				adjust = withJudge(t)
-			}
-			ts := newTestServerWith(t, adjust)
+			ts := newTestServerWith(t, c.adjust)
 			enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 			current := ts.machine.Audience
 			ts.machine.Audience = "https://the-old-public-url.example"
@@ -171,11 +145,11 @@ func TestTheDecisionRoutesRefuseARecordOfAnotherAudienceAsBefore(t *testing.T) {
 	}
 }
 
-// TestTheSettingsNameEachJudgeKeyAndItsGuidance: GET /v1/settings names each key whose judge tag
-// gives the judge seconds of it, with those seconds and its guidance tag, so an agent reads before
-// it asks who decides a request for it and what the judge will want. It is the policy's answer: a
-// broker with the same tags and no judge names the same keys, and one whose keys carry no judge
-// tag names none.
+// TestTheSettingsNameEachJudgeKeyAndItsGuidance: GET /v1/settings names each key the airlock
+// rules give the judge, with its seconds and its guidance, so an agent reads before it asks who
+// decides a request for it and what the judge will want. It is the rules' answer: a broker with
+// the same rules and no judge names the same keys, and one whose rules give the judge nothing
+// names none.
 func TestTheSettingsNameEachJudgeKeyAndItsGuidance(t *testing.T) {
 	type judgeKey struct {
 		Seconds  int    `json:"seconds"`
@@ -185,8 +159,11 @@ func TestTheSettingsNameEachJudgeKeyAndItsGuidance(t *testing.T) {
 		JudgeKeys map[string]judgeKey `json:"judge_keys"`
 	}
 	for name, adjust := range map[string]func(*api.Deps){
-		"a broker with a judge":                    withJudge(t),
-		"a broker with the same tags and no judge": withTagsAndNoJudge(t),
+		"a broker with a judge": withJudge,
+		"a broker with the same rules and no judge": func(d *api.Deps) {
+			withJudge(d)
+			d.Machine.Judge = nil
+		},
 	} {
 		ts := newTestServerWith(t, adjust)
 		code, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
@@ -197,38 +174,6 @@ func TestTheSettingsNameEachJudgeKeyAndItsGuidance(t *testing.T) {
 	}
 	unjudged := newTestServer(t)
 	if _, body := unjudged.req(t, http.MethodGet, "/v1/settings", nil, nil); strings.Contains(string(body), "judge_keys") {
-		t.Fatalf("GET /v1/settings with no key carrying a judge tag = %s; want no judge_keys", body)
-	}
-}
-
-// TestTheSettingsNameTheSourceOfAJudgedProfile: a profile made from a stored secret of another
-// name is served under the profile's name, and the source is served only through it, so judge_keys
-// names the profile, at its source's seconds and guidance, and says which source those are
-// (source), for `secret show` of that source to name its judged profiles. A name served as itself
-// carries no source.
-func TestTheSettingsNameTheSourceOfAJudgedProfile(t *testing.T) {
-	type judgeKey struct {
-		Seconds  int    `json:"seconds"`
-		Guidance string `json:"guidance"`
-		Source   string `json:"source"`
-	}
-	type settings struct {
-		JudgeKeys map[string]judgeKey `json:"judge_keys"`
-	}
-	ts := newProfiledTestServer(t, policytest.KindsFile(
-		`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": "example"}`,
-	), func(d *api.Deps) {
-		store := d.Machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
-		judged := policytest.Judged(policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job")
-		store.Put(judged)
-		store.Put(policytest.Judged(policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"), 300, ""))
-		if err := d.Policy.Refresh(t.Context()); err != nil {
-			t.Fatalf("policy refresh: %v", err)
-		}
-	})
-	code, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
-	got := decode[settings](t, body).JudgeKeys
-	if code != http.StatusOK || got["DEEL_READ"] != (judgeKey{900, "grant for the payroll export job", "DEEL_API_KEY"}) || got["SHARED_KEY"] != (judgeKey{Seconds: 300}) {
-		t.Errorf("GET /v1/settings = %d %s; want DEEL_READ at its source DEEL_API_KEY's 900 seconds and guidance, naming that source, and SHARED_KEY at 300 with none", code, body)
+		t.Fatalf("GET /v1/settings with rules that give the judge nothing = %s; want no judge_keys", body)
 	}
 }

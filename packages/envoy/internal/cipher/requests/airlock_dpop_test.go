@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
@@ -105,42 +104,27 @@ func withMintedKind(m *Machine, grants *memoryGrants, tokens *mintedTokens) *Mac
 	return m
 }
 
-// TestAStoredSecretUnderADPoPEntryIsNeverReleased: a stored secret whose name a dpop block binds -
-// the block of a capability the broker mints and holds - is never released, to the session or to
-// the proxy: the one read both releases share refuses it ErrMintedOnly, a refusal, before anything
-// of it is read or a placeholder row written. The live policy serves no secret by a name a dpop
-// block holds (the profiles' apply refuses the name, policy.ReasonProfileMinted), so the refusal
-// is the release's own second line, reached here with the set the loader builds before that apply:
-// in it the stored AUTO_TOKEN is served by its own name and the dpop block of its name binds it,
-// under the grant the session got of AUTO_TOKEN while no block held its name.
+// TestAStoredSecretUnderADPoPEntryIsNeverReleased: a stored secret whose rules entry is of kind
+// dpop - the kind of a capability the broker mints and holds - is never released, to the session
+// or to the proxy: the release is refused ErrMintedOnly, no placeholder row is written for
+// it, and the answer holds nothing of its value. The policy serves the name under a block of no
+// kind, so the grant is made, and the airlock's rules then hold it under a dpop entry, which is
+// the case a stored secret of a minted kind's name is.
 func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", proxyrules.KindDPoP)}}
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	checked, err := m.checkRelease(t.Context(), grantID, enr, "")
-	if err != nil {
-		t.Fatalf("checkRelease: %v", err)
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
+	if !errors.Is(err, ErrMintedOnly) || !IsRefusal(err) {
+		t.Fatalf("the session's release of a stored secret under a dpop entry = %v; want ErrMintedOnly, a refusal", err)
 	}
-	loader := policytest.Loader(fixtureStore(m), fixtureService)
-	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["dispatch.example.com"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}`), fixtureService)
-	unapplied, err := loader.Load(t.Context())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if _, served := unapplied.Secrets["AUTO_TOKEN"]; !served {
-		t.Fatalf("the set before the profiles' apply does not serve the stored AUTO_TOKEN; refused %+v", unapplied.Refused)
-	}
-	if binding := unapplied.ProxyRules().Lookup("AUTO_TOKEN"); binding == nil || binding.Way != proxyrules.WayDPoP {
-		t.Fatalf("AUTO_TOKEN's binding in the set before the profiles' apply = %+v; want the dpop block's", binding)
-	}
-	checked.set = unapplied
-	for _, want := range []releaseRead{{}, {airlockOnly: true}} {
-		read, err := m.readRelease(t.Context(), grantID, checked, want)
-		if !errors.Is(err, ErrMintedOnly) || !IsRefusal(err) || read != nil {
-			t.Fatalf("the release (proxy's: %t) of a stored secret under a dpop block = %v, %v; want ErrMintedOnly, a refusal, and nothing read", want.airlockOnly, read, err)
-		}
-	}
+	holdsNothingOf(t, release, "auto-v1")
 	if rows := placeholderRows(t, m, grantID); len(rows) != 0 {
 		t.Fatalf("the refused release wrote placeholder rows %v; want none", rows)
+	}
+	values, _, err := m.AirlockValues(t.Context(), grantID)
+	if !errors.Is(err, ErrMintedOnly) || values != nil {
+		t.Fatalf("the proxy's release of it = %v, %v; want ErrMintedOnly and no values", values, err)
 	}
 }
 
@@ -149,7 +133,7 @@ func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
 // row of airlock_placeholders holds the same hash for a live secret grant: the connection read
 // never falls through to the secret store's placeholders.
 func TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	grants := &memoryGrants{}
 	withMintedKind(m, grants, &mintedTokens{})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
@@ -169,7 +153,7 @@ func TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
 // a minted grant's, so one whose word no kind of this broker serves opens nothing and is never
 // read as a secret grant's placeholder, even where airlock_placeholders holds its hash.
 func TestAPlaceholderOfNoMintedKindOpensNothing(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	withMintedKind(m, &memoryGrants{}, &mintedTokens{})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {

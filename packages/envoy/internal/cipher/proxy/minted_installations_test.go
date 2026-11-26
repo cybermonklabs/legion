@@ -27,8 +27,7 @@ import (
 )
 
 // mintedSource is the github-installations secret GITHUB_READ is served from in these rows, of
-// profileOperator at agent tier, whose github-owners tag names acme and ada, behind profileKind by
-// its proxy tag and narrowed by the profile's own allow.
+// profileOperator at agent tier, whose github-owners tag names acme and ada.
 const mintedSource = "PROFILE_TOKENS"
 
 // mintAhead mints, at the stand-in minting serves, a token of each of acme and ada at the
@@ -85,21 +84,22 @@ func TestTheProxySwapsInTheStoredTokenOfAMintedInstallationsProfile(t *testing.T
 	value, adaToken := mintAhead(t, minting)
 	before := len(minting.Requests())
 
-	file := policytest.KindsFileOf(profileKindsJSON, `{"name": "`+profileName+`", "source": "`+mintedSource+`", "github": {"accounts": ["acme", "ada"], "permissions": `+readOnly+`, "value": "token"}, `+
-		`"allow": [{"method": "GET", "pathPrefix": "/repos/"}]}`)
+	file := policytest.ProfilesFile(`{"name": "` + profileName + `", "source": "` + mintedSource + `", "github": {"accounts": ["acme", "ada"], "permissions": ` + readOnly + `, "value": "token"}, ` +
+		`"proxy": {"hosts": ["` + boundHost + `"], "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}}`)
 	st := storetest.Open(t)
-	local := secrets.NewLocal(profiledSource(mintedSource, policy.TypeGitHubInstallations, value))
+	local := secrets.NewLocal(policytest.TypeSecret(mintedSource, profileOperator, policy.TierAgent, policy.TypeGitHubInstallations, value))
 	m := &requests.Machine{
 		Store: st, Policy: policytest.ProfiledCurrent(t, local, file), Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,
 		Replay:          (&enroll.Service{Store: st}).Replay,
 		Minters:         map[string]requests.Minter{policy.TypeGitHubInstallations: secrets.GitHubInstallations{}.Mint},
+		Airlock:         policytest.Profiles(t, file).ProxyRules(),
 		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nminted-rig\n-----END CERTIFICATE-----\n",
 	}
-	m.Chain = requests.NewChainVerifier(st, profileAudience, time.Minute, m.Policy)
+	m.Chain = requests.NewChainVerifier(st, profileAudience, time.Minute, m.Airlock)
 	grants := &rolledGrants{}
 	grants.machine.Store(m)
-	r := newRig(t, Options{Grants: grants})
+	r := newRig(t, Options{Rules: policytest.Profiles(t, file).ProxyRules(), Grants: grants})
 	r.answerWith(stand.Answer)
 
 	enrollmentID, key := ciphertest.InsertSession(t, st.Pool, profileOperator)

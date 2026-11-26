@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // TestTheAirlockRefusesAConnectionOfALostProject: a proxy connection with the placeholder of a
@@ -14,7 +16,7 @@ import (
 // enrollment does not name it, the next connection is refused ErrGrantNotLive and the grant is
 // ended for good.
 func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, bound(rule("TEAM_TOKEN", "example")), publicTeam)
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
@@ -40,7 +42,7 @@ func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
 // time plus airlockProjectRecheck, so a pod holding it runs the release checks again within that
 // bound; once the session's person leaves TEAM's list, the next AirlockValues ends the grant.
 func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, bound(rule("TEAM_TOKEN", "example")), privateTeam(fixtureOperator))
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, privateTeam(fixtureOperator))
 	nameProjects(t, m, enr, teamProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -71,7 +73,7 @@ func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
 // serving, leave a stored value's Expires zero, and ask Dispatch nothing of a project; what they
 // ask is the session's person's member kind (restrictedOperator).
 func TestTheAirlockOfAnUntaggedGrantKeepsItsValues(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", "example")), publicTeam)
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {

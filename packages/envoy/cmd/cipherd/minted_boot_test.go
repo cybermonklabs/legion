@@ -1,8 +1,8 @@
-// minted_boot_test.go drives the REAL compiled broker's start check of the dpop blocks
-// (config.ProxyMintedRules), each a capability the broker mints and holds: every broker with an
-// airlock port serves every minted grant of the database it shares, so every broker holds every
-// dpop block to the private destination's one host, whatever it grants itself. The helpers are
-// main_test.go's.
+// minted_boot_test.go drives the REAL compiled broker's start check of the proxy blocks of kind
+// dpop (config.ProxyMintedRules), each a capability the broker mints and holds: every broker
+// with an airlock port serves every minted grant of the database it shares, so every broker holds
+// every dpop block to the private destination's one host, whatever it grants itself. The helpers
+// are main_test.go's.
 package main
 
 import (
@@ -22,25 +22,25 @@ const mintedDestination = "BROKER_PROXY_PRIVATE_UPSTREAM=dispatch.test=http://10
 const dpopKeyLine = "broker: the proxy's DPoP key"
 
 // mintedProfiles is a profiles file of one dpop block per name, each binding hosts (a JSON list's
-// inside), carried in Authorization alone with an allow list.
-func mintedProfiles(hosts string, names []string) string {
+// inside), carried in Authorization alone with an allow list, and the extra profiles after them.
+func mintedProfiles(hosts string, names []string, extra ...string) string {
 	var profiles []string
 	for _, name := range names {
 		profiles = append(profiles, `{"name": "`+name+`", "proxy": {"hosts": [`+hosts+`], "headers": ["Authorization"],
 	"allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop"}}`)
 	}
-	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
+	return `{"profiles": [` + strings.Join(append(profiles, extra...), ", ") + `]}`
 }
 
 // TestTheBootHoldsEveryDPoPBlockToItsOwnDestinationsHost: a broker whose profiles hold a dpop block
 // binding a "*." name or two hosts, a dpop block with no private destination or with destinations
-// of other hosts only, a kind whose hosts hold the dpop block's host, or a destination no dpop
-// block binds, refuses to start, naming the profile, the kind or the setting and what is wrong,
-// without ever binding. The database it is given is unreachable, so a broker that checked the
-// blocks after opening the store would fail on the host instead.
+// of other hosts only, a block of no kind over the dpop block's host, or a destination no dpop block
+// binds, refuses to start, naming the profile or the setting and what is wrong, without ever
+// binding. The database it is given is unreachable, so a broker that checked the blocks after
+// opening the store would fail on the host instead.
 func TestTheBootHoldsEveryDPoPBlockToItsOwnDestinationsHost(t *testing.T) {
 	binary := buildBroker(t)
-	wildcard := `[{"name": "wildcard", "hosts": ["*.test"], "ways": ["swap"]}]`
+	plain := `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.test"]}}`
 	for _, c := range []struct {
 		name, profiles, says string
 		upstream             []string
@@ -50,8 +50,8 @@ func TestTheBootHoldsEveryDPoPBlockToItsOwnDestinationsHost(t *testing.T) {
 		{"no private destination", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}), "BROKER_PROXY_PRIVATE_UPSTREAM is unset", nil},
 		{"a destination of another host", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}), "binds dispatch.test, which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", []string{"BROKER_PROXY_PRIVATE_UPSTREAM=other.test=http://10.0.0.5:8766"}},
 		{"a second destination no dpop block binds", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}), "names the host results.test", []string{mintedDestination + " results.test=http://10.0.0.6:8766"}},
-		{"a kind over the host", withKinds(mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}), wildcard), "the kind wildcard of BROKER_PROFILES_FILE binds dispatch.test", []string{mintedDestination}},
-		{"a destination no dpop block binds", `{"kinds": [{"name": "example", "hosts": ["api.example.com"], "ways": ["swap"]}], "profiles": []}`, "names the host dispatch.test", []string{mintedDestination}},
+		{"a block of no kind over the host", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}, plain), "WILDCARD_TOKEN", []string{mintedDestination}},
+		{"a destination no dpop block binds", `{"profiles": [{"name": "PLAIN_TOKEN", "proxy": {"hosts": ["api.example.com"]}}]}`, "names the host dispatch.test", []string{mintedDestination}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := runRefusedBroker(t, binary, append(append(airlockEnv(t),

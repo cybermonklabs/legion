@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -45,37 +43,6 @@ func Secret(name, owner, tier, value string) secrets.LocalSecret {
 		KmsKeyID: KeyARN,
 		Tags:     map[string]string{policy.TagOwner: owner, policy.TagTier: tier},
 		Value:    value,
-	}
-}
-
-// Judged is s with a judge tag of seconds (policy.TagJudge), which makes it a key the model judge
-// decides for that long, and a guidance tag of guidance (policy.TagGuidance) unless guidance is "".
-func Judged(s secrets.LocalSecret, seconds int, guidance string) secrets.LocalSecret {
-	s.Tags[policy.TagJudge] = strconv.Itoa(seconds)
-	if guidance != "" {
-		s.Tags[policy.TagGuidance] = guidance
-	}
-	return s
-}
-
-// JudgeTags puts a judge tag of seconds on the secret store holds as name, and a guidance tag of
-// guidance unless it is "", as its owner's `agent-secrets secret retag --judge --guidance` does,
-// and has cur read the namespace again, so the policy a test's broker holds gives the judge that
-// key from here on.
-func JudgeTags(t testing.TB, store *secrets.Local, cur *policy.Current, name string, seconds int, guidance string) {
-	t.Helper()
-	tags := []smtypes.Tag{{Key: aws.String(policy.TagJudge), Value: aws.String(strconv.Itoa(seconds))}}
-	if guidance != "" {
-		tags = append(tags, smtypes.Tag{Key: aws.String(policy.TagGuidance), Value: aws.String(guidance)})
-	}
-	if _, err := store.TagResource(t.Context(), &secretsmanager.TagResourceInput{SecretId: aws.String(ID(name)), Tags: tags}); err != nil {
-		t.Fatalf("tag %s with judge %d: %v", name, seconds, err)
-	}
-	if err := cur.Refresh(t.Context()); err != nil {
-		t.Fatalf("policy.Current.Refresh after tagging %s: %v", name, err)
-	}
-	if got, judged := cur.Get().JudgeSeconds(name); !judged || got != uint32(seconds) {
-		t.Fatalf("after tagging %s with judge %d the policy judges it %d, %v", name, seconds, got, judged)
 	}
 }
 
@@ -314,49 +281,6 @@ func AppProfile(name string) string {
 // ProfilesFile is the profiles file holding profiles, each one entry's JSON, in order.
 func ProfilesFile(profiles ...string) string {
 	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
-}
-
-// Kinds is a kinds list a test's profiles file declares (KindsFile), one line of JSON: example, on
-// api.example.com, whose ways take a stored value, a minted token and an exchange alike, so a
-// secret of any type is served behind it; github, on GitHub's three hosts; gcp, on Google's APIs;
-// slack; aws, which signs a stored key pair; and anthropic as the spec's anthropic kind declares
-// it, on api.anthropic.com, with its three allow rows under /v1/organizations/ and a max_grant of
-// an hour. No kind but anthropic sets an allow or a max_grant, so a secret behind one of the
-// others is held to nothing a test has not set itself.
-const Kinds = `[` +
-	`{"name": "example", "hosts": ["api.example.com"], "ways": ["swap", "mint", "exchange"]}, ` +
-	`{"name": "github", "hosts": ["api.github.com", "github.com", "uploads.github.com"], "headers": ["Authorization"], "variables": ["GH_TOKEN", "GITHUB_TOKEN"], "ways": ["swap", "mint"]}, ` +
-	`{"name": "gcp", "hosts": ["*.googleapis.com", "*.pkg.dev"], "headers": ["Authorization"], "ways": ["mint"]}, ` +
-	`{"name": "slack", "hosts": ["slack.com"], "headers": ["Authorization"], "variables": ["SLACK_BOT_TOKEN"], "ways": ["swap"]}, ` +
-	`{"name": "aws", "hosts": ["*.amazonaws.com"], "ways": ["sign"]}, ` +
-	`{"name": "anthropic", "hosts": ["api.anthropic.com"], "headers": ["Authorization"], "variables": ["ANTHROPIC_ADMIN_TOKEN"], "ways": ["mint"], ` +
-	`"allow": [{"method": "GET", "pathPrefix": "/v1/organizations/"}, {"method": "POST", "pathPrefix": "/v1/organizations/"}, {"method": "DELETE", "pathPrefix": "/v1/organizations/"}], "max_grant": "1h"}` +
-	`]`
-
-// KindsFile is ProfilesFile with Kinds declared after its profiles, on the line they end on, so
-// a profile may name a kind of Kinds as its proxy string and a secret's proxy tag may name one.
-func KindsFile(profiles ...string) string {
-	return KindsFileOf(Kinds, profiles...)
-}
-
-// KindsFileOf is the profiles file holding profiles, each one entry's JSON, in order, and kinds, a
-// JSON list of kinds, after them on the line they end on.
-func KindsFileOf(kinds string, profiles ...string) string {
-	return `{"profiles": [` + strings.Join(profiles, ", ") + `], "kinds": ` + kinds + `}`
-}
-
-// Proxied is s with a proxy tag naming kind (policy.TagProxy), which puts it behind Cipher's proxy
-// under that kind of the profiles file.
-func Proxied(s secrets.LocalSecret, kind string) secrets.LocalSecret {
-	s.Tags[policy.TagProxy] = kind
-	return s
-}
-
-// Narrowed is s with the proxy-narrowed tag (policy.TagProxyNarrowed), which has the policy serve it
-// through exactly one profile, and one with an allow.
-func Narrowed(s secrets.LocalSecret) secrets.LocalSecret {
-	s.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
-	return s
 }
 
 // MeteredCurrent is Current with the policy's two metrics on registry, as cmd/cipherd/main.go

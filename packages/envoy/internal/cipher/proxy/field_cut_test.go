@@ -152,13 +152,12 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			return response
 		}
 	}
-	// anyMethod is the airlock's rules of the join's method row: a kind with no allow list, which
-	// the airlock reads as any method and path (proxyrules.Kind.Allow), so the upgrade the row
+	// anyMethod is the rules file of the join's method row: an entry with no allow list, which
+	// the airlock reads as any method and path (proxyrules.SecretRule.Allow), so the upgrade the row
 	// sends is carried rather than refused and its method reaches the join's line.
-	anyMethod := proxyrules.Rules{
-		Kinds: []proxyrules.Kind{swapKind(workerKind, []string{boundHost}, "authorization")},
-		Names: []proxyrules.Binding{swapBinding(workerName, workerKind)},
-	}
+	anyMethod := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
+		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
+	}}}
 	// suites is a ClientHello's cipher suites, none of which crypto/tls's server speaks: 4,000 ids
 	// from 0x2000 on, where no cipher suite is registered. crypto/tls refuses such a ClientHello
 	// listing every suite the client offered in hex, with no quotation mark (pickCipherSuite), so
@@ -200,10 +199,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		// panicked. A row that sets none writes a line with no stack.
 		frame  string
 		status int
-		// options is the rig's; the zero value is the plain rig every other row drives. rules is
-		// the rig's airlock rules, and the zero value is testRules.
+		// options is the rig's; the zero value is the plain rig every other row drives.
 		options Options
-		rules   proxyrules.Rules
 		send    func(t *testing.T, r *rig) *http.Response
 	}{
 		{name: "a refusal's method", message: answer.RefusalMessage, field: "method", held: sent, status: http.StatusBadRequest,
@@ -242,11 +239,11 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				return bound(r, http.MethodGet, "/v1/"+sent)
 			}},
 		{name: "a joined connection's method", message: joinMessage, field: "method", held: sent, status: http.StatusSwitchingProtocols,
-			options: Options{Watch: watchFast}, rules: anyMethod, send: join(sent, upgradePath)},
+			options: Options{Watch: watchFast, Rules: anyMethod}, send: join(sent, upgradePath)},
 		{name: "a joined connection's path", message: joinMessage, field: "path", held: "/v1/" + sent, status: http.StatusSwitchingProtocols,
 			options: Options{Watch: watchFast}, send: join(http.MethodGet, "/v1/"+sent)},
 		{name: "a cut call's method", message: cutMessage, field: "method", held: sent, status: http.StatusOK,
-			options: Options{Watch: watchFast}, rules: anyMethod, send: cut(sent, "/v1/stream")},
+			options: Options{Watch: watchFast, Rules: anyMethod}, send: cut(sent, "/v1/stream")},
 		{name: "a cut call's path", message: cutMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
 			options: Options{Watch: watchFast}, send: cut(http.MethodGet, "/v1/"+sent)},
 		{name: "a tunnel's host: a CONNECT to a name the proxy may dial that a service answers", message: tunnelMessage, field: "host",
@@ -327,11 +324,7 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
 			drove[row.message+" "+row.field] = true
-			rules := row.rules
-			if rules.Kinds == nil {
-				rules = testRules()
-			}
-			r := newRuledRig(t, rules, row.options)
+			r := newRig(t, row.options)
 			response := row.send(t, r)
 			id := response.Header.Get(answer.Header)
 			if response.StatusCode != row.status || id == "" {

@@ -1,10 +1,10 @@
 // packages/envoy/internal/cipher/proxyrules/proxyrulestest/stands.go
-// The six stand-ins a Service answers as: Google's token endpoint, Microsoft's authority, an
+// The seven stand-ins a Service answers as: Google's token endpoint, Microsoft's authority, an
 // AWS service that checks the signature it was sent, the WebSocket upgrade a bound host answers,
-// and two the broker's model judge reads — Dispatch's two issue reads, and the Compute Engine
-// metadata server a machine reads its own identity token from. The model endpoint the judge
-// calls is in model.go, and GitHub's App endpoints are in github.go, beside this file. Each is a
-// value holding what it answers and what it was asked, and each installs its Answer on a Service
+// and the three the broker's model judge calls — a model endpoint, Dispatch's two issue reads,
+// and the Compute Engine metadata server a machine reads its own identity token from. The eighth
+// stand-in, GitHub's App endpoints, is in github.go beside this file. Each is a value holding
+// what it answers and what it was asked, and each installs its Answer on a Service
 // (Service.AnswerWith), so one of them may play a host of its own in the command and the same
 // one may play the bound host of a row that already has a service.
 package proxyrulestest
@@ -598,6 +598,106 @@ func (u *UpgradeStand) Answer(w http.ResponseWriter, r *http.Request, seen Reque
 		return true
 	}
 	_ = buffered.Flush()
+	return true
+}
+
+// ModelAnswer is one reply a ModelStand gives: the whole of the assistant's text, and how long
+// the answer is held back before any of it is written.
+//
+// Text is the reply itself and no verdict of any kind: this package knows the Messages API's
+// wire shape and nothing about what a caller asks a model for, so a structured reply is that
+// JSON object as the reply's own text, which is how the protocol carries one and how agentloop
+// reads a Run's Final value back out of it.
+//
+// Delay holds the whole answer back, the call's own context ending the wait: it is how a check
+// spends a caller's time bound, since a delay past that bound is an answer the caller never
+// sees at all.
+type ModelAnswer struct {
+	Text  string
+	Delay time.Duration
+}
+
+// ModelOptions is what a ModelStand answers with.
+type ModelOptions struct {
+	// Answer is what it answers until Answers replaces it.
+	Answer ModelAnswer
+}
+
+// ModelStand is a model endpoint speaking the Messages API, which is agentloop's
+// anthropic-messages: it answers every call with one event stream carrying the answer it holds
+// — a message of one text block that stopped at its end — and records each call on the Service,
+// so a check reads back what was sent as well as what was answered.
+//
+// What it answers is set while it runs (Answers), because the cases a check drives against one
+// model are its answers and not its calls: a structured reply the caller can read, one it
+// cannot, and an answer that never comes.
+type ModelStand struct {
+	mu     sync.Mutex
+	answer ModelAnswer
+}
+
+// NewModelStand builds one. Install it with Service.AnswerWith(stand.Answer).
+func NewModelStand(o ModelOptions) *ModelStand { return &ModelStand{answer: o.Answer} }
+
+// Answers replaces what every call from here on is answered with, which is how one run of a
+// stack drives one case after another against a model that is already listening.
+func (m *ModelStand) Answers(answer ModelAnswer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.answer = answer
+}
+
+// standInModelID is the model this stand's own answer says wrote it. The caller's own model id
+// rides in the call, which the Service records; nothing reads this one but a reader of the
+// stream.
+const standInModelID = "the-stand-in-model"
+
+// standInModelUsage is the token count every answer reports. It is a plausible count and not a
+// measured one — nothing here runs a tokenizer — so that a caller which records what a call
+// spent has something of that shape to record.
+var standInModelUsage = map[string]any{
+	"input_tokens": 1200, "output_tokens": 48,
+	"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+}
+
+// Answer is one model call: the event stream the Messages API sends for a reply of one text
+// block, written once the answer's delay has passed. A caller that walked away during that wait
+// is answered nothing at all, which is the whole of what a stalled model is.
+func (m *ModelStand) Answer(w http.ResponseWriter, r *http.Request, seen Request) bool {
+	if seen.Method != http.MethodPost {
+		http.Error(w, "the stand-in model endpoint takes POST, not "+seen.Method, http.StatusMethodNotAllowed)
+		return true
+	}
+	m.mu.Lock()
+	answer := m.answer
+	m.mu.Unlock()
+	if answer.Delay > 0 {
+		select {
+		case <-time.After(answer.Delay):
+		case <-r.Context().Done():
+			return true
+		}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	event := func(name string, body map[string]any) {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, encoded)
+	}
+	event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+		"id": "msg_standin", "type": "message", "role": "assistant", "model": standInModelID,
+		"content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": standInModelUsage,
+	}})
+	event("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+		"content_block": map[string]any{"type": "text", "text": ""}})
+	event("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+		"delta": map[string]any{"type": "text_delta", "text": answer.Text}})
+	event("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	event("message_delta", map[string]any{"type": "message_delta",
+		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil}, "usage": standInModelUsage})
+	event("message_stop", map[string]any{"type": "message_stop"})
 	return true
 }
 

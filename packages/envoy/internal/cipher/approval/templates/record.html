@@ -54,16 +54,6 @@
 <dd>{{.ProxyHosts}}</dd>
 {{- end}}
 {{- end}}
-{{- range $r.Proxied}}
-<dt>Behind the proxy</dt>
-<dd><code>{{.Name}}</code></dd>
-<dt>Kind</dt>
-<dd><code>{{.Kind}}</code></dd>
-<dt>Proxy hosts</dt>
-<dd>{{.ProxyHosts}}</dd>
-<dt>Allowed requests</dt>
-<dd>{{.Allow}}</dd>
-{{- end}}
 {{- range $r.Projects}}
 <dt>Project of <code>{{.Secret}}</code></dt>
 <dd><code>{{.Project}}</code>, {{if .Private}}private, {{if .Named}}which the session names{{else}}which the session does not name{{end}}{{else}}public{{end}}</dd>

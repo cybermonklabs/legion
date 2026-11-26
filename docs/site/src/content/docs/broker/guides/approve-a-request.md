@@ -34,9 +34,9 @@ end it, however old that read is. A member may approve a request their own sessi
 one owner of a person's secret may: a group owner is not a second person.
 
 Some requests never reach you. Where the deployment configures a model judge, a request for keys
-whose `judge` tag gives the judge seconds of them, none of them an administrator's or an Anthropic
-federation key, is the judge's to decide: it grants or refuses it, each key against the guidance
-its owner wrote in its `guidance` tag, and while it decides the
+whose profile's `proxy` block in the profiles file (`BROKER_PROFILES_FILE`) gives the judge seconds,
+none of them an administrator's or an Anthropic federation key, is the judge's to decide: it grants
+or refuses it, each key against the guidance its owner gave in that block, and while it decides the
 request is on no list. A request the judge cannot decide comes to you once,
 as an ordinary card. If you open such a request's page while the judge holds it, the page is
 read-only and says the judge is deciding it. A judged grant's **State** line reads

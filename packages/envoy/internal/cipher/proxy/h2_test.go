@@ -188,13 +188,16 @@ func TestAForwardingHeaderTheCommandNamesInConnectionStopsAtTheProxy(t *testing.
 // Check is a call with one answer and whose Watch is a call whose answers stream.
 const grpcService = "grpc.health.v1.Health"
 
-// grpcRules is the airlock's rules of the gRPC rows: the one secret, bound by its kind to the
-// bound host, in Authorization, and allowed on the health service's calls alone. Every gRPC call
-// is a POST to /<service>/<method>.
+// grpcRules is the rules file of the gRPC rows: the one secret, bound to the bound host, in
+// Authorization, and allowed on the health service's calls alone. Every gRPC call is a POST to
+// /<service>/<method>.
 func grpcRules() proxyrules.Rules {
-	kind := swapKind(workerKind, []string{boundHost}, "authorization")
-	kind.Allow = []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/" + grpcService + "/"}}
-	return proxyrules.Rules{Kinds: []proxyrules.Kind{kind}, Names: []proxyrules.Binding{swapBinding(workerName, workerKind)}}
+	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
+		Name:    workerName,
+		Hosts:   []string{boundHost},
+		Headers: []string{"authorization"},
+		Allow:   []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/" + grpcService + "/"}},
+	}}}
 }
 
 // grpcStand is a gRPC service behind the bound host, in TLS with a certificate of the stand-in
@@ -349,7 +352,7 @@ func withPlaceholder(t *testing.T) context.Context {
 // handshake; and statusWriter flushing an answer with no body (whole), which turns some of the
 // failing calls into Internal.
 func TestAGRPCClientIsCarriedWithItsMetadataStreamsAndTrailers(t *testing.T) {
-	r := newRuledRig(t, grpcRules(), Options{})
+	r := newRig(t, Options{Rules: grpcRules()})
 	stand, health := grpcThrough(t, r)
 	ctx := withPlaceholder(t)
 
@@ -425,7 +428,7 @@ func TestAGRPCClientIsCarriedWithItsMetadataStreamsAndTrailers(t *testing.T) {
 // no watcher for a call that is not an upgrade, which leaves the stream running until the row's
 // deadline.
 func TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
-	r := newRuledRig(t, grpcRules(), Options{Watch: watchFast})
+	r := newRig(t, Options{Rules: grpcRules(), Watch: watchFast})
 	stand, health := grpcThrough(t, r)
 	ctx, cancel := context.WithTimeout(withPlaceholder(t), 2*cutWait)
 	defer cancel()
@@ -955,18 +958,17 @@ func h2Fields(method, scheme, authority, path string, rest ...hpack.HeaderField)
 // https, and the proxy forwards every stream to the target it decrypted for, so the value never
 // leaves in the clear; a stream to the bound host after all of those is still carried; and once
 // the operator withholds the name, and then once the grant ends, the next stream on the same
-// connection is refused. The kind allows every method and path, so what refuses the CONNECT is
-// the proxy's own refusal of one, not the kind's methods.
+// connection is refused. The entry allows every method and path, so what refuses the CONNECT is
+// the proxy's own refusal of one, not the entry's methods.
 //
 // The named reverts: http/1.1 alone in connectBound's NextProtos, which fails the handshake; the
 // CONNECT refusal taken out of serveBound, which carries the CONNECT stream to the service; and the
 // decision's Host read from the request's host header field (r.Header.Get("Host")) rather than
 // from :authority (r.Host), which carries the stream naming another authority to the bound host.
 func TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn(t *testing.T) {
-	r := newRuledRig(t, proxyrules.Rules{
-		Kinds: []proxyrules.Kind{swapKind(workerKind, []string{boundHost}, "authorization")},
-		Names: []proxyrules.Binding{swapBinding(workerName, workerKind)},
-	}, Options{})
+	r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
+		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
+	}}}})
 	c := h2Through(t, r)
 	authorization := hpack.HeaderField{Name: "authorization", Value: "Bearer " + workerPlaceholder}
 	// The grant as it reads once its operator has withheld the one name bound to the host,
@@ -1105,7 +1107,10 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 		workerPath      = "/v1/stream-worker"
 		betaPath        = "/v1/stream-beta"
 	)
-	r := newRuledRig(t, twoNameRules(workerName, betaName), Options{Watch: watchFast})
+	r := newRig(t, Options{Watch: watchFast, Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
+		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
+	}}})
 	both := testConnection()
 	both.Names = map[string]requests.AirlockGrantName{
 		workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},

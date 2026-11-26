@@ -109,42 +109,6 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 	}
 }
 
-// TestTheVerdictLineIsTheVerdictTheRowHolds: a row LogJudged writes takes its verdict from the
-// request's state in its own transaction, and the run gives it no verdict of its own to write. A
-// request its person decided after the run's last read is not pending by the time of that row, so
-// the row says not pending, and the run's verdict line says what the row says, with no
-// handed_over beside it. The control is the same run on a request still pending: handed to the
-// person, and handed_over=true.
-func TestTheVerdictLineIsTheVerdictTheRowHolds(t *testing.T) {
-	for _, c := range []struct{ state, verdict, handedOver string }{
-		{"denied", requests.JudgedNotPending, ""},
-		{"pending", requests.JudgedHandedOver, "handed_over=true"},
-	} {
-		t.Run(c.state, func(t *testing.T) {
-			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-			machine.state = c.state
-			runner := New(t.Context(), testOptions(t, dispatch, model, machine))
-			lines := capturedLog(t, func() {
-				runner.write(t.Context(), pending(), verdictRow{asked: true, err: errors.New("the model did not answer")})
-			})
-			_, logged := machine.rows()
-			if len(logged) != 1 || logged[0]["verdict"] != c.verdict {
-				t.Fatalf("the rows LogJudged wrote are %v; want one, verdict %q", logged, c.verdict)
-			}
-			if given := machine.givenVerdicts(); len(given) != 0 {
-				t.Errorf("the run gave the machine the verdicts %q; want none, since the row's own transaction reads the outcome", given)
-			}
-			line := lineWith(lines, "wrote a verdict")
-			if !strings.Contains(line, `verdict="`+c.verdict+`"`) {
-				t.Errorf("the verdict line is %q; want it to say %q, the verdict the row holds", line, c.verdict)
-			}
-			if got := strings.Contains(line, "handed_over=true"); got != (c.handedOver != "") {
-				t.Errorf("the verdict line is %q; want handed_over=true exactly when the row says handed to the person", line)
-			}
-		})
-	}
-}
-
 // TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal is the tester's minor on cybermonklabs/legion#4135
 // at 032301a2c4: a judge approval whose COMMIT the database never answered — its connection lost
 // mid-commit — is no refusal, and the row LogJudged then wrote says whether it applied. One that

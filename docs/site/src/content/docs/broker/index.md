@@ -35,7 +35,7 @@ it.
   itself, say who gets it automatically and who needs a yes. The request waits in that
   person's Dispatch Inbox, where they already work, and one click there opens its page on the
   broker, where one more click approves it. A deployment may also run a model judge, which decides
-  the keys whose own `judge` tag gives it seconds of them, each against its owner's guidance, and whose refusal is final;
+  the keys whose profiles' `proxy` blocks in the profiles file give it seconds, each against its owner's guidance, and whose refusal is final;
   a person never sees such a request unless the judge cannot decide it
   ([Concepts](/legion/broker/concepts/#the-model-judge)).
 - **Every grant is recorded.** Each approval rests on a signed, content-addressed record of who
@@ -70,7 +70,7 @@ sequenceDiagram
             Broker->>GitHub: revoke that token at once
             Broker-->>CLI: a profile GitHub refuses, or a cut that leaves nothing, is refused here, before the approval request
         end
-        alt every key is one whose judge tag lets the judge decide
+        alt every key is one whose profile's proxy block lets the judge decide
             Broker-->>CLI: pending, held for the judge, with no page
             CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
             Broker->>Dispatch: the issue and the ask the reason points at, if any
@@ -105,7 +105,7 @@ before, and the refusal comes when the grant is read
 ([Concepts](/legion/broker/concepts/#requests-and-grants)).
 
 The judge's step is there only where a deployment configures one. It takes a request whose every
-key that needs a decision has a `judge` tag and no `admin` tag. It grants
+key that needs a decision has a `judge` value in its profile's `proxy` block in the profiles file (`BROKER_PROFILES_FILE`) and no `admin` tag. It grants
 such a request or refuses it for good, and a request it cannot decide goes to the approver once;
 every other request waits for its person exactly as it does today
 ([Concepts](/legion/broker/concepts/#the-model-judge)).

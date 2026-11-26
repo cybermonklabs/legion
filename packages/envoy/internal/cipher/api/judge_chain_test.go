@@ -5,28 +5,40 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
-// judgedSeconds is the seconds DEEL_API_KEY's judge tag on this server gives the model judge: well
-// inside the 15 minutes of the human-tier class, so a record can ask for less than the class
-// allows and still more than its tag does.
+// judgedSeconds is the seconds the rules on this server's own airlock entry let the model judge
+// decide of DEEL_API_KEY: well inside the 15 minutes of the human-tier class, so a record can
+// ask for less than the class allows and still more than its entry does.
 const judgedSeconds = 300
 
 // judgedModel is the model a forged judge actor here names.
 const judgedModel = "claude-opus-4-6"
 
-// newJudgeServer is newTestServer with DEEL_API_KEY behind the airlock, its proxy tag naming a kind
-// of the profiles file, and tagged with a judge of judgedSeconds. The grant chain verifier reads
-// that tag from the server's live policy, as cmd/cipherd builds it; a test that moves the tag under
-// a grant retags the key afterwards.
-func newJudgeServer(t *testing.T) *testServer {
+// newJudgeServer is newTestServer with one airlock entry that gives the judge judgedSeconds of
+// DEEL_API_KEY, and the grant chain verifier built against those rules, as cmd/cipherd builds it
+// from the rules file it loaded. Without the rebuild the verifier would hold every judge
+// approval to no bound at all and refuse them all, which would pass the tests below for the
+// wrong reason. chainSeconds, when it is not judgedSeconds, is the entry the verifier is built
+// against instead: rules that moved under a grant after its request was written.
+func newJudgeServer(t *testing.T, chainSeconds uint32) *testServer {
 	t.Helper()
-	return newProxiedTestServer(t, []string{"DEEL_API_KEY"}, func(d *api.Deps) {
-		tagJudge(t, d, "DEEL_API_KEY", judgedSeconds, "")
+	return newTestServerWith(t, func(d *api.Deps) {
+		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(judgedSeconds))},
+		}}
+		d.Machine.AirlockProxyURL = "http://127.0.0.1:13381"
+		d.Machine.AirlockCACertificate = "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
+		chain := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(chainSeconds)},
+		}}
+		d.Machine.Chain = requests.NewChainVerifier(d.Machine.Store, d.PublicURL, time.Minute, chain)
 	})
 }
 
@@ -35,7 +47,7 @@ func newJudgeServer(t *testing.T) *testServer {
 // decision the page wrote into one the model judge made: the judge's own actor and no login at
 // all, which is how the broker writes its approvals (record.JudgeActor, a null login). That is
 // the forged half of a forged or stale judged record: a row saying the judge decided this, on a
-// record the tags may never have let it decide, or no longer do. Everything else about the
+// record the rules may never have let it decide, or no longer do. Everything else about the
 // record and its grant is what the real routes wrote.
 func grantOfJudgedRecord(t *testing.T, ts *testServer, enrollmentID string, sessionKey *ecdsa.PrivateKey, reason string, lifetime int, names ...string) string {
 	t.Helper()
@@ -69,17 +81,17 @@ func grantOfJudgedRecord(t *testing.T, ts *testServer, enrollmentID string, sess
 }
 
 // TestAForgedJudgedRecordReleasesNothing: a grant whose record carries the model judge's actor
-// releases only while its keys' judge tags still admit that record — the whole of what a judge's
+// releases only while the airlock rules still admit that record — the whole of what a judge's
 // approval rests on, since no person's login stands behind it. Every release re-derives the
-// chain (VerifyChain), so the two records the tags do not admit are refused at the route a
-// session reads values through, whether the row was forged outright or the tag moved under a
-// grant that was honestly judged: a record naming a key that needed a decision and that carries no
-// judge tag, and one whose signed lifetime is past the seconds the key's tag gives the judge now.
-// The records the tags do admit release — one whose reason names an issue and one whose reason
-// names none, since what the reason says is the judge's to read and no condition of the chain, and
-// one whose judge key stands beside WORKER_TOKEN, which the session got at once and which needed
-// no decision of anyone's — which is what makes the two refusals the tags' doing and not the
-// rewrite's.
+// chain (VerifyChain), so the two records the rules do not admit are refused at the route a
+// session reads values through, whether the row was forged outright or the rules moved under a
+// grant that was honestly judged: a record naming a key that needed a decision and that the rules
+// give the judge nothing of, and one whose signed lifetime is past the seconds the entry gives
+// the judge now. The records the rules do admit release — one whose reason names an issue and one
+// whose reason names none, since what the reason says is the judge's to read and no condition of
+// the chain, and one whose judge key stands beside WORKER_TOKEN, which the session got at once and
+// which needed no decision of anyone's — which is what makes the two refusals the rules' doing
+// and not the rewrite's.
 func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 	const judgeableReason = "INFRA-1353 needs the key to drive the stack"
 	for _, c := range []struct {
@@ -91,7 +103,7 @@ func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 		released     bool
 	}{
 		{
-			name: "a record naming a key that needed a decision and that carries no judge tag", reason: judgeableReason,
+			name: "a record naming a key that needed a decision and that the rules give the judge nothing of", reason: judgeableReason,
 			lifetime: judgedSeconds, secrets: []string{"SHARED_KEY"},
 		},
 		{
@@ -99,8 +111,8 @@ func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY", "WORKER_TOKEN"}, released: true,
 		},
 		{
-			// The tag gave the judge five minutes when the request was written, and two now.
-			name: "a lifetime past the seconds the key's tag gives the judge now", reason: judgeableReason,
+			// The entry gave the judge five minutes when the request was written, and two now.
+			name: "a lifetime past the seconds the entry gives the judge now", reason: judgeableReason,
 			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY"}, chainSeconds: 120,
 		},
 		{
@@ -108,17 +120,18 @@ func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY"}, released: true,
 		},
 		{
-			name: "a record the tags admit", reason: judgeableReason,
+			name: "a record the rules admit", reason: judgeableReason,
 			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY"}, released: true,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ts := newJudgeServer(t)
+			chainSeconds := c.chainSeconds
+			if chainSeconds == 0 {
+				chainSeconds = judgedSeconds
+			}
+			ts := newJudgeServer(t, chainSeconds)
 			enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 			grantID := grantOfJudgedRecord(t, ts, enrollmentID, sessionKey, c.reason, c.lifetime, c.secrets...)
-			if c.chainSeconds != 0 {
-				policytest.JudgeTags(t, ts.Secrets, ts.machine.Policy, "DEEL_API_KEY", int(c.chainSeconds), "")
-			}
 
 			status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
 			if !c.released {

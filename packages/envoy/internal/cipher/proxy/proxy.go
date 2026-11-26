@@ -103,17 +103,14 @@ type GrantSource interface {
 	// name and slot and answered again after, so a command that asks for one scope twice - and
 	// a second pod that exchanges that scope for itself - reads back the same string.
 	AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error)
-	// AirlockRules is the airlock's rules as the live policy holds them: the profiles file's
-	// kinds, and the binding of each name whose secret's proxy tag names one. A tag changes at
-	// runtime, so the proxy reads them on each request and each CONNECT rather than once at
-	// boot (requests.Machine.AirlockRules).
-	AirlockRules() proxyrules.Rules
 }
 
 // Options is what a Server is built from.
 type Options struct {
-	// Grants is the broker's own reads, in production a *requests.Machine: the grant behind a
-	// connection, its values, the policy version and the airlock's rules.
+	// Rules is the airlock's rules file, read once at boot: which hosts each secret may reach
+	// and in which headers.
+	Rules proxyrules.Rules
+	// Grants is the broker's own two reads, in production a *requests.Machine.
 	Grants GrantSource
 	// CA signs the certificate of each bound host.
 	CA *Authority
@@ -189,22 +186,22 @@ type Options struct {
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
 	// the check that both halves belong to.
 	KeepValues bool
-	// NoKind turns off the exchange of a command's token request and the AWS signing, so a
-	// binding whose way is exchange or sign takes the plain header swap instead, and a request
-	// carrying the federated token's placeholder in a header is still refused (serveBound).
-	// BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two ways belong
-	// to.
+	// NoKind turns off the azure kind's exchange of a command's token request and the AWS
+	// signing, so an entry whose kind names one of them takes the plain header swap instead, and
+	// a request carrying the federated token's placeholder in a header is still refused
+	// (serveBound). BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two
+	// kinds belong to.
 	NoKind bool
-	// AzureAuthority is the host of the token authority every exchange is made at (azure.go): a
-	// host name in lower case with no port, which the host of a token request's connection,
-	// ASCII lower-cased, must equal exactly, and "" for Microsoft's, login.microsoftonline.com. A
-	// token request to any other host an azure-login name's kind binds is refused, and so is an
-	// access slot that names one, since the exchange carries the broker's federated token.
-	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack, whose token
-	// authority is a stand-in.
+	// AzureAuthority is the host of the token authority every exchange of the azure kind is
+	// made at (azure.go): a host name in lower case with no port, which the host of a token
+	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
+	// login.microsoftonline.com. A token request to any other host an azure entry binds is
+	// refused, and so is an access slot that names one, since the exchange carries the broker's
+	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
+	// whose token authority is a stand-in.
 	AzureAuthority string
 	// DPoPKey is the pod's own key, which the proxy signs the DPoP proof of each request to a
-	// host whose binding is a dpop block with (mintedTransport): made at the broker's start, held
+	// host whose entry is of kind dpop with (mintedTransport): made at the broker's start, held
 	// in this process alone, and the key every token this pod mints for a minted capability's
 	// grant is bound to. Nil refuses every request to such a host, since no proof can be made.
 	DPoPKey *ecdsa.PrivateKey
@@ -213,6 +210,7 @@ type Options struct {
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
 // live grant.
 type Server struct {
+	rules  proxyrules.Rules
 	grants GrantSource
 	ca     *Authority
 	idle   time.Duration
@@ -335,6 +333,7 @@ type decryptedKey struct{}
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
 func New(o Options) *Server {
 	s := &Server{
+		rules:         o.Rules,
 		grants:        o.Grants,
 		ca:            o.CA,
 		idle:          o.Idle,
@@ -731,9 +730,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	r.URL = &forwarded
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
-	// port a kind's hosts speak about, while the refusal below is about no port at all: a
+	// port an entry's hosts speak about, while the refusal below is about no port at all: a
 	// value may not cross in the clear whatever port it was asked for on.
-	if len(candidates(s.grants.AirlockRules(), grant, host, 443)) > 0 {
+	if len(s.candidates(grant, host, 443)) > 0 {
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would
 		// cross the network in the clear, and no rule of the airlock says a secret may. The
 		// command asks again over https, where the proxy's own certificate covers it.

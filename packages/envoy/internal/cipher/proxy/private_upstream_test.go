@@ -58,12 +58,16 @@ func privateDestination() PrivateUpstream {
 	return PrivateUpstream{Host: privateHost, URL: &url.URL{Scheme: "http", Host: net.JoinHostPort(privateName, privatePort)}}
 }
 
-// privateRules is the rig's rules with TEST_MINTED_TOKEN beside its WORKER_TOKEN: a dpop block's
-// inline binding, on the destination's host, carried in Authorization alone, allowing POST under
-// the projects route.
+// privateRules is the rig's rules file with TEST_MINTED_TOKEN beside its WORKER_TOKEN: kind dpop,
+// bound to the destination's host, carried in Authorization alone, allowing POST under the
+// projects route.
 func privateRules() proxyrules.Rules {
 	rules := testRules()
-	rules.Names = append(rules.Names, dpopBinding(mintedName, privateHost))
+	rules.Secrets = append(rules.Secrets, proxyrules.SecretRule{
+		Name: mintedName, Hosts: []string{privateHost}, Headers: []string{"Authorization"},
+		Allow: []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/api/v1/projects/"}},
+		Kind:  proxyrules.KindDPoP,
+	})
 	return rules
 }
 
@@ -179,7 +183,7 @@ func newPrivateRig(t *testing.T, at netip.Addr, ranges []netip.Prefix) (*rig, *d
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRuledRig(t, privateRules(), Options{DPoPKey: key, ClusterRanges: ranges, PrivateUpstreams: []PrivateUpstream{privateDestination()}})
+	r := newRig(t, Options{Rules: privateRules(), DPoPKey: key, ClusterRanges: ranges, PrivateUpstreams: []PrivateUpstream{privateDestination()}})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	r.addresses[privateHost] = []netip.Addr{publicAddress}
@@ -412,9 +416,13 @@ func TestEachPrivateDestinationTakesItsOwnHostAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := privateRules()
-	rules.Names = append(rules.Names, dpopBinding(secondMinted, secondHost))
+	rules.Secrets = append(rules.Secrets, proxyrules.SecretRule{
+		Name: secondMinted, Hosts: []string{secondHost}, Headers: []string{"Authorization"},
+		Allow: []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/api/v1/projects/"}},
+		Kind:  proxyrules.KindDPoP,
+	})
 	second := PrivateUpstream{Host: secondHost, URL: &url.URL{Scheme: "http", Host: net.JoinHostPort(secondName, privatePort)}}
-	r := newRuledRig(t, rules, Options{DPoPKey: key, ClusterRanges: []netip.Prefix{serviceRange}, PrivateUpstreams: []PrivateUpstream{privateDestination(), second}})
+	r := newRig(t, Options{Rules: rules, DPoPKey: key, ClusterRanges: []netip.Prefix{serviceRange}, PrivateUpstreams: []PrivateUpstream{privateDestination(), second}})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	r.grants.setConnection(secondPlaceholder, requests.AirlockConnection{
