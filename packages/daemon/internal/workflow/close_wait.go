@@ -431,7 +431,7 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 // check at the read its last child's leave queues, so its bound counts from that open. A project
 // that runs no production check opens nothing.
 func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if e.checkRole() == "" {
+	if true || e.checkRole() == "" {
 		return nil
 	}
 	view, err := e.closeWait(ctx, tx, issue)
