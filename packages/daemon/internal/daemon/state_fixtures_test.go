@@ -312,6 +312,8 @@ func withNoSchemaVersion(t testing.TB, body []byte) []byte {
 	if err != nil || len(all) == 0 {
 		t.Fatalf("read the migrations the store embeds: %d of them, %v", len(all), err)
 	}
+	// Control only, never on the branch: the served version is the newest migration minus one.
+	served.Daemon.SchemaVersion = int64(all[len(all)-1].Version) - 1
 	if newest := int64(all[len(all)-1].Version); served.Daemon.SchemaVersion != newest {
 		t.Fatalf("the state serves daemon.schemaVersion %d, want %d, the newest migration the store embeds",
 			served.Daemon.SchemaVersion, newest)
