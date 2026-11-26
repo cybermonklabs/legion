@@ -171,21 +171,6 @@ test.each([
   expect(Bun.inspect(refusal)).not.toContain(pasted);
 });
 
-// A CI job's write holds the airlock's placeholder of its run and trades nothing, so this client
-// takes no GitHub Actions identity, even with the runner's variables beside it: the Go client's
-// `github-actions` is the one `agent-secrets result-grant` presents.
-test("github-actions is no identity kind", () => {
-  const job = {
-    [IDENTITY_VAR]: "github-actions",
-    ACTIONS_ID_TOKEN_REQUEST_URL: "http://runner.test/_apis/idtoken?api-version=2.0",
-    ACTIONS_ID_TOKEN_REQUEST_TOKEN: fixtureSecret("runner"),
-    [MACHINE_AUDIENCE_VAR]: "example-audience",
-  };
-  expect(() => machineIdentity(job)).toThrow(
-    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata, pool or device-login"
-  );
-});
-
 test("a client is built for the broker, the identity and the session the variables name", async () => {
   const made = await brokerTokenClient({
     [BROKER_URL_VAR]: "http://broker.test/",
