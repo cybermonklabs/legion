@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -10,7 +9,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"net"
 	"net/http"
@@ -167,6 +165,17 @@ const packManifestLimit = 64 << 20
 // few large packs, each with a small index, so four keep the pod's link busy without opening a
 // connection per object.
 const bucketDownloads = 4
+
+// downloadChunk and downloadChunks are the buffers each download reads its body into
+// (downloadObject): 1 MiB each, so the file is written and hashed in large steps rather than a TLS
+// record, at most 16 KiB, at a time, and at most 8 of them at once, so the body's reader can run 7
+// MiB ahead of a write or a hash that pauses. A download makes a buffer only when it first needs
+// one, so an index of a few kilobytes takes one, and none holds more than 8 MiB: a fetch's
+// bucketDownloads at once hold at most 32 MiB, however large their packs.
+const (
+	downloadChunk  = 1 << 20
+	downloadChunks = 8
+)
 
 // downloadWindow is the window each download's low-speed watch waits on (countingReader.window):
 // time.After, or a test's own.
@@ -482,6 +491,18 @@ func downloadObjects(ctx context.Context, manifest PackManifest, staging string)
 // answer other than 200 or one that states another length. It holds the repository cache's
 // low-speed bound (countingReader.watchStall, downloadWindow): a bucket that answers nothing, or
 // whose body falls below the bound, is ended, naming it. No failure names the address or its query.
+//
+// Three goroutines pass downloadChunks buffers of downloadChunk bytes round, each in order: one
+// does nothing but read the body into them (readChunks), this one writes each to the file, and one
+// hashes each the file took and hands it back to the reader. So the socket keeps draining while the
+// disk and the hash work, and the hash, the slowest of the three on a CPU without SHA instructions
+// (200 to 240 MB/s on an issue pod's), never waits on a write. Where one goroutine read, hashed and
+// wrote in turn, nothing read the socket while it hashed and wrote, its receive window filled and
+// the sender stalled: a 1 GiB pack arrived at 55 MB/s where a plain read of its address into a file
+// ran at 310 to 380 MB/s, and each of 20 fetches at once in one pod ran out of its
+// BucketFetchTimeout. The first failure, a write's, a read's or a byte past the size, is the answer:
+// no buffer after it reaches the file, the request's context is cancelled so the reader ends, and
+// both other goroutines have ended before this returns.
 func downloadObject(ctx context.Context, object PackObject, target string) (BucketObject, error) {
 	fetching, stop := context.WithCancel(ctx)
 	defer stop()
@@ -510,49 +531,102 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 		return failed(reasonWrite, err)
 	}
 	stream.reader = response.Body
-	// A body arrives a TLS record, at most 16 KiB, at a time: the buffer writes the file in 256 KiB
-	// writes rather than one per record.
-	sink := &objectSink{file: bufio.NewWriterSize(file, 256<<10), digest: sha256.New()}
-	n, err := io.Copy(sink, io.LimitReader(stream, object.Size+1))
-	if err == nil {
-		sink.err = sink.file.Flush()
+	free := make(chan []byte, downloadChunks)
+	for range downloadChunks {
+		free <- nil
 	}
+	full, written := make(chan []byte, downloadChunks), make(chan []byte, downloadChunks)
+	var readFailure error
+	go func() {
+		defer close(full)
+		readFailure = readChunks(fetching, io.LimitReader(stream, object.Size+1), free, full)
+	}()
+	digest, hashed := sha256.New(), make(chan struct{})
+	go func() {
+		defer close(hashed)
+		for chunk := range written {
+			digest.Write(chunk)
+			free <- chunk[:cap(chunk)]
+		}
+	}()
+	var (
+		n       int64
+		reason  string
+		failure error
+	)
+	// Each buffer the file took goes on to the hash, and every other straight back to free, until
+	// the reader has ended and closed full: after a failure, nothing more reaches the file.
+	for chunk := range full {
+		switch {
+		case failure != nil:
+		case n+int64(len(chunk)) > object.Size:
+			reason, failure = reasonSize, fmt.Errorf("the bucket sent more than the %d bytes the manifest states", object.Size)
+			stop()
+		default:
+			_, err := file.Write(chunk)
+			if err == nil {
+				n += int64(len(chunk))
+				written <- chunk
+				continue
+			}
+			reason, failure = reasonWrite, err
+			stop()
+		}
+		free <- chunk[:cap(chunk)]
+	}
+	close(written)
+	<-hashed
 	closed := file.Close()
 	switch {
-	case sink.err != nil:
-		return failed(reasonWrite, sink.err)
-	case err != nil:
-		return failed(reasonDownload, downloadCause(err, object.URL, stream))
+	case failure != nil:
+		return failed(reason, failure)
+	case readFailure != nil:
+		return failed(reasonDownload, downloadCause(readFailure, object.URL, stream))
 	case closed != nil:
 		return failed(reasonWrite, closed)
-	case n > object.Size:
-		return failed(reasonSize, fmt.Errorf("the bucket sent more than the %d bytes the manifest states", object.Size))
 	case n < object.Size:
 		return failed(reasonSize, fmt.Errorf("the bucket sent %d bytes, not the %d the manifest states", n, object.Size))
 	}
-	sum := hex.EncodeToString(sink.digest.Sum(nil))
+	sum := hex.EncodeToString(digest.Sum(nil))
 	if sum != object.SHA256 {
 		return failed(reasonSHA256, fmt.Errorf("its bytes have the SHA-256 %s, not the %s the manifest states", sum, object.SHA256))
 	}
 	return BucketObject{Name: object.Name, Size: n, SHA256: sum}, nil
 }
 
-// objectSink is where a download's bytes go: the object's file, through a buffer, and the SHA-256
-// of what was written to it. err is the file's failure, a write's or the buffer's last flush's,
-// which tells a write to the volume that failed from a read from the bucket that did.
-type objectSink struct {
-	file   *bufio.Writer
-	digest hash.Hash
-	err    error
-}
-
-func (s *objectSink) Write(p []byte) (int, error) {
-	n, err := s.file.Write(p)
-	s.digest.Write(p[:n])
-	if err != nil {
-		s.err = err
+// readChunks is downloadObject's reader: it takes a buffer from free, fills it from body, and hands
+// it to full, each buffer whole but the body's last, until body ends: nil at its end, and otherwise
+// the read's failure, or ctx's where ctx ended while it waited for a buffer. A nil from free is a
+// buffer not made yet, which it makes. It never waits on full, which has room for every buffer
+// there is, so it waits only on a read and on free, and a cancelled ctx ends both.
+func readChunks(ctx context.Context, body io.Reader, free <-chan []byte, full chan<- []byte) error {
+	for {
+		var buffer []byte
+		select {
+		case buffer = <-free:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if buffer == nil {
+			buffer = make([]byte, downloadChunk)
+		}
+		var n int
+		var err error
+		for n < len(buffer) && err == nil {
+			var read int
+			read, err = body.Read(buffer[n:])
+			n += read
+		}
+		if n > 0 {
+			full <- buffer[:n]
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return n, err
 }
 
 // downloadCause is what err, a failure of the download from address, says, without the address:
