@@ -218,8 +218,8 @@ func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSessio
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
 	}
-	if lines[0]["workspaceRead"] != "found no work" || lines[0]["workspaceReadBy"] != string(claim.RoleTester) || lines[0]["workspaceHead"] != passedOverHead {
-		t.Fatalf("the replacement's line names the read %+v, want one made through the tester that found nothing at %s", lines[0], passedOverHead)
+	if tester := rig.tokens[claim.RoleTester]; lines[0]["workspaceRead"] != "found no work" || lines[0]["workspaceReadBy"] != string(tester) || lines[0]["workspaceHead"] != passedOverHead {
+		t.Fatalf("the replacement's line names the read %+v, want one made through the tester's claim %s that found nothing at %s", lines[0], tester, passedOverHead)
 	}
 	wantField(t, lines[0], "notWaitedFor", reviewer)
 	if messages := rig.messages(); len(messages) != 0 {
