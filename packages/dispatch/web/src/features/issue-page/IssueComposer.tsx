@@ -670,7 +670,9 @@ function CriterionLine({
  *
  * It is a form of its own, with the line that writes on the issue kept mounted and hidden beside
  * it, so the page keeps one box. Its words go into the issue's own text, which tells nobody they
- * name, and its hint says so in words of its own (`criterion`).
+ * name (`criterion`), so the line lists nobody as mentioned. As on the write line, its field is
+ * described by what the box's keys do (`WRITE_NAMES`) and its picker draws the box's own words
+ * (`PICKER`).
  */
 function CriterionForm({
   issueKey,
@@ -760,8 +762,7 @@ function CriterionForm({
         <div className={`${pageComposer.line} flex-wrap`}>
           <MentionField
             body={line.text}
-            // The box's own words, as on its write line: what its keys do, and its picker's.
-            description={CONTROL_LABELS.composer_keys}
+            description={WRITE_NAMES.description}
             disabled={line.pending}
             issueKey={issueKey}
             label={CONTROL_LABELS.write_criterion}

@@ -4513,7 +4513,7 @@ test("the body drawn again over a refused read asks for it no more times", async
   }
 });
 
-// Part Y (R1): a criterion of the view is drawn as a row of the statements' list, in the
+// R1: a criterion of the view is drawn as a row of the statements' list, in the
 // statements' bullet colour, with its tag, its author and its day, and no mark; its statements
 // stand in the group it heads.
 test("a criterion is a row of the statements' list, with its tag, its words and its author, and no mark", () => {
@@ -4550,6 +4550,9 @@ test("a criterion is a row of the statements' list, with its tag, its words and 
     expect(row.getAttribute("data-node-type")).toBe("criterion");
     expect(row.querySelector("[data-node-tag]")?.textContent).toBe(NODE_TYPE_NAMES.criterion);
     expect(row.querySelector("[data-spec-author]")?.textContent).toBe(READER);
+    expect(row.querySelector("[data-spec-criterion]")?.textContent).toContain(
+      shortDay("2026-11-15T10:00:00Z")
+    );
     expect(row.querySelector("[data-node-words]")?.textContent).toBe(words);
     expect(bulletOf(row)).toBe(bulletOf(rowOf(view, "spec#b-r1")));
     expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("no_check");
@@ -4564,7 +4567,7 @@ test("a criterion is a row of the statements' list, with its tag, its words and 
   }
 });
 
-// Part Y (R5, R9): on a converted issue, Enter on a statement and a press on a criterion's words
+// R5, R9: on a converted issue, Enter on a statement and a press on a criterion's words
 // each edit in their room's artifact; a parent's statement drawn as context is edited on its own
 // issue and takes no caret.
 test("Enter on a statement and a press on a criterion edit each in its document's room, and a parent's statement is edited on its own issue", async () => {

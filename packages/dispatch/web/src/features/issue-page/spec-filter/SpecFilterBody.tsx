@@ -706,14 +706,15 @@ export function SpecFilterBody({
     stop !== undefined && statements.some((node) => node.id === stop)
       ? stop
       : ((addressTakes ? addressed : undefined) ?? statements[0])?.id;
-  const room = useRoomFacts(issue.key);
+  // The room the row's edit reads too (`useNodeEditing`), so the cue and Enter agree.
+  const room = useRoomFacts(writer?.issueKey);
   const rowProps = (node: TreeNode): SpecRowProps => {
     const rowKey = rowKeys.get(node.id);
     const place = documentOfNode(node.id, artifacts);
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
       // On a converted issue a criterion written into the issue takes its place from the room
-      // rather than from a document, so it carries the typing cue and takes a press on its words.
+      // rather than from a document, so it carries the typing cue.
       ...(room === undefined
         ? {}
         : { editable: takesCaret(node, artifacts, room, issue.closed_at !== null, admissions) }),

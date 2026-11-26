@@ -483,7 +483,7 @@ function filterView(
  * (`TreeViews.trees`), so the view draws its own read's rows whatever the outline read holds or
  * whether it was sent at all (R4, R5). Verification draws each statement the view holds as
  * context, with each check under each statement it serves and each result under its check. A
- * node neither tree drafts - a criterion - is no row, and neither is the memo, a callout. A
+ * node neither tree drafts is no row, and neither is the memo, a callout. A
  * decision and a constraint are never rows: each is a line of the row its tie names
  * (`PresetView.lines`). The words filter keeps the rows whose words hold it, as `filterView`
  * keeps them, and a node the address names is drawn whatever the filter: from the view where the
@@ -616,10 +616,13 @@ function heldFilterView(
   // where the check serves a statement it draws (`borrowedRows`).
   const borrowed =
     filter === "verification" ? borrowedRows(answer, treeOf, root.id) : NO_BORROWED_ROWS;
-  const rows = nodes.filter((node) => {
-    const own = viewRow(node, filter, root.id) || borrowed.has(node);
-    return treeOf.has(node) && (own ? kinds : contextKinds).includes(node.supertag);
-  });
+  const rows = nodes.filter(
+    (node) =>
+      treeOf.has(node) &&
+      (viewRow(node, filter, root.id) || borrowed.has(node) ? kinds : contextKinds).includes(
+        node.supertag
+      )
+  );
   const rowIds = new Set(rows.map((node) => treeOf.get(node)?.id));
   // Where each row stands: under its parent where that is a row, and under Verification a check
   // under each statement its `serves` tuples name too.
@@ -945,6 +948,7 @@ function lineOfParent(node: TreeNode): ParentLine {
  *  criterion stands in the group the criterion heads (`spec-filter/spec-decided-by.ts`). `view`
  *  itself where every such row carries that line already. */
 export function withCriterionLines(view: TreeNode): TreeNode {
+  if (view.children.length === 0) return view;
   let changed = false;
   const children = view.children.map((child) => {
     const drawn = withCriterionLines(child);
