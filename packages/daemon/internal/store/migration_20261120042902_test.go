@@ -4,12 +4,17 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
 // agentResumeGenerationVersion is the version of the migration this file tests, so the test can
-// migrate through everything before it whatever lands beside it.
-const agentResumeGenerationVersion = 20261120042902
+// migrate through everything before it whatever lands beside it. agentResumeGenerationMigration is
+// its file.
+const (
+	agentResumeGenerationVersion   = 20261120042902
+	agentResumeGenerationMigration = "20261120042902_claim_agent_resume_generation.up.sql"
+)
 
 // agentResumeGenerationRelease names the release whose way back the migration's header carries, as
 // a failure to read that block names it.
@@ -21,7 +26,10 @@ const agentResumeGenerationRelease = "the release that marks a launch that had O
 // notice kinds. It drops the column and deletes the migration's version row. Every other column of
 // claims, every claim and every other outbox row stays as it was. So the store is as it stood
 // before the migration. The roll-forward's Migrate applies the file again and adds the column again
-// at 0. The negative control is the store before the migration, whose claims hold no such column.
+// at 0. The block is one transaction, opened by begin and closed by commit, and a block of another
+// shape stops the test by name. The store checks alone passed with begin removed, so the test also
+// reads the block's shape. The negative control is the store before the migration, whose claims
+// hold no such column.
 func TestTheAgentResumeGenerationsWayBackLeavesTheStoreAsBeforeTheMigration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -62,7 +70,17 @@ func TestTheAgentResumeGenerationsWayBackLeavesTheStoreAsBeforeTheMigration(t *t
 	queue("controller_notice", `{"kind": "tick"}`)
 	queue("dispatch_message", `{"kind": "session-forgotten", "body": "a message that names the kind"}`)
 
-	if _, err := store.Pool().Exec(ctx, wayBackOf(t, agentResumeGenerationVersion, agentResumeGenerationRelease)); err != nil {
+	block := wayBackOf(t, agentResumeGenerationVersion, agentResumeGenerationRelease)
+	lines := strings.Split(block, "\n")
+	if lines[0] != "begin;" {
+		t.Fatalf("the way back of %s opens with %q, want %q: its statements must run as one transaction",
+			agentResumeGenerationMigration, lines[0], "begin;")
+	}
+	if last := lines[len(lines)-1]; len(lines) < 2 || last != "commit;" {
+		t.Fatalf("the way back of %s closes with %q, want %q: its statements must run as one transaction",
+			agentResumeGenerationMigration, last, "commit;")
+	}
+	if _, err := store.Pool().Exec(ctx, block); err != nil {
 		t.Fatalf("run the way back: %v", err)
 	}
 	want := slices.DeleteFunc(slices.Clone(migrated), func(column string) bool { return column == "agent_resume_generation" })
