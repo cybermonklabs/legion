@@ -4610,8 +4610,9 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // (SessionRun); the launch's replaceAgedSession, for the project controller's session older than
 // its age at a daemon-driven relaunch; retry, when freshSession says the retry needs a new session;
 // and the forget of a recorded session (forgetSession, the table's): the operator's
-// forget-session, which `legion claims retry --fresh-session` and the controller's fresh_session
-// run (api's freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the
+// forget-session, which `legion claims retry --fresh-session` runs too, and the controller's own
+// forget, which its fresh_session sends (api's forgetRecordedSession; RequestForgetSession.By names
+// which, forgottenBy). It clears the claim's mark of a start by Oh My Pi's own lookup with the
 // session (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier
 // forget the machine keeps for the fresh agent's launches; Machine.lostCause says why one that
 // drops nothing keeps it. startFresh sets the cause of its own forget after this call.
