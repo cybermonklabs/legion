@@ -33,9 +33,9 @@ func newWorkspaceCacheCommand(stdout, stderr io.Writer, ws workspaceProcess) *co
 // bearer token its clients present (LEGION_REPOSITORY_CACHE_TOKEN_FILE), git on PATH — before it
 // listens, runs git or touches its root, so a refusal leaves the volume as it was. It runs until
 // its context ends, each log line on stdout, and its HTTP server's errors on stderr, which passes
-// the URL rule (newRoot). What it reads of its process it reads from ws, but for one variable:
-// STORAGE_EMULATOR_HOST, which the cache's bucket reads from the process's own environment, as
-// Google's clients do (repocache's openBucket).
+// the URL rule (newRoot). What it reads of its process it reads from ws, except the variables that
+// Google's clients read from the process's own environment when the cache opens its bucket, such as
+// STORAGE_EMULATOR_HOST (repocache's openBucketAt) and GCE_METADATA_HOST (the metadata client).
 //
 // Where LEGION_REPOSITORY_CACHE_BUCKET (repocache.BucketEnv) is set and not empty, the cache keeps
 // its packs in the Cloud Storage bucket it names and answers /packs too; unset or empty, it serves
