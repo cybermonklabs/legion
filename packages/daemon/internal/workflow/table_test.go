@@ -423,6 +423,7 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 	TriggerReviewRejected:      "a review GitHub records during the wait is recorded and starts no phase",
 	TriggerRetroCompleted:      "no retro runs before the parent is accepted, after its children",
 	TriggerPullRequestMerged:   "a merge during the wait is recorded on the pull request and read at the return",
+	TriggerChecksPassed:        "the checks' pass closes only an issue in verifying (judgeClose), and a parent in awaiting_children never stands there",
 	TriggerSignOff:             "sign_off on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
 	TriggerBackward:            "request_backward_move on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
 }

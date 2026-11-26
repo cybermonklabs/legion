@@ -5,12 +5,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -179,11 +181,25 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			t.Fatalf("P = %s after the accepted sign-off, want retro", got)
 		}
 
-		// The merged close needs no hold of its own (R8): the sign-off waited for R.
+		// The merged close needs no hold of its own (R8): the sign-off waited for R. The merge stands P
+		// in verifying, as it stands any merged issue, and its close there waits for its own checks
+		// alone: their read after its production check recorded a pass closes it.
 		leave(t, pool, basisAncestor, phase.Merging, "retro")
 		applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41"})
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Verifying {
+			t.Fatalf("P = %s after its merge, want verifying: the merge stands it there as any merge does", got)
+		}
+		entered := engine.now() // the moment of P's entry into verifying
+		closed := entered
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{Issue: basisAncestor, Project: "LEGION",
+				Tree: basisAncestor, Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41", OpenedAt: entered, BoundAt: entered.Add(48 * time.Hour),
+				Role: claim.RoleTester, Looks: 1, Generation: 1, ClosedAt: &closed, Outcome: record.CheckRecorded})
+		})
+		applyRefusingNothing(t, pool, engine, intake.CloseChecksRead{Issue: basisAncestor, Generation: 1, ReadAt: entered.Add(time.Minute),
+			Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: basisAncestor}}})
 		if got := phaseOf(t, pool, basisAncestor); got != phase.Done {
-			t.Fatalf("P = %s after its merge, want done: the merge closes it as any merge does", got)
+			t.Fatalf("P = %s after the read of its checks, want done: nothing of R holds its close", got)
 		}
 	})
 
