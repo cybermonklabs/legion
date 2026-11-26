@@ -14,7 +14,7 @@ import {
 import { expect, test } from "./test";
 
 /**
- * Part G of the new issue page, decision 261 as R11 leaves it: nothing changes a row the reader
+ * A node's row on the new issue page, as R11 holds it: nothing changes a row the reader
  * can see. Every row is drawn whole, so no row changes its length once drawn, and a jump of the
  * view lands on rows that hold still: the words the reader was reading stay where they are, when
  * the row holding them is taller than the view and when it stands wholly in view. So this row
@@ -197,13 +197,13 @@ function expectViewHeld(read: ViewRead, where: string): void {
     .toBeLessThanOrEqual(1);
 }
 
-// Decision 261, as the root tester measured it on a copy of a real issue: after each jump, on a
-// fresh load at each width, the words under the middle of the view and the element that holds them
-// stay where they stood for 60 frames. Three jumps at each width: a landing at the middle of the
-// tallest row, which crosses the view's top and is the row decision 260 holds; a jump from the top
-// to the page's middle; and a jump from the foot up to a third of the way down. It carries `@phone`
-// for the reason the decision-252 row gives: the phone project lays the page out at three device
-// pixels to the CSS pixel.
+// As the root tester measured it on a copy of a real issue: after each jump, on a fresh load at
+// each width, the words under the middle of the view and the element that holds them stay where
+// they stood for 60 frames. Three jumps at each width: a landing at the middle of the tallest row,
+// which crosses the view's top; a jump from the top to the page's middle; and a jump from the foot
+// up to a third of the way down. It carries `@phone` for the reason the long-jump row of
+// `e2e/issue-page-g.e2e.ts` gives: the phone project lays the page out at three device pixels to
+// the CSS pixel.
 // SLOW(>=2s): forty-five long rows seeded, three of them taller than the view, loaded six times at
 // two widths, each load waited out until its rows are drawn.
 test("the words at the middle of the view hold still after a long jump or a landing inside the tallest row @phone", async ({

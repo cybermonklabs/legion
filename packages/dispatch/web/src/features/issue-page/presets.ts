@@ -23,7 +23,7 @@ import {
   type Preset,
 } from "./page-words";
 import { storedReading } from "./stored-reading";
-import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import { isForeign, nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -518,25 +518,39 @@ function heldFilterView(
   // statement the row serves (`TreeNode.alsoUnder`) - with the reading it is named by: its own,
   // else, for a chip with no words, the block's own words (`nodeReading`) where a tree holds the
   // block. The page publishes each such reading for the names (`PresetView.readings`), as it does
-  // the block a row's parent line names (`drawTop`), so the chip is drawn as any other is.
+  // the block a row's parent line names (`drawTop`), so the chip is drawn as any other is. The
+  // view draws a node at each of its placements, so whether a reference names a block, and a
+  // node's reading, are each worked out once for the call.
   const readings = new Map<string, ReferenceNameReading>();
-  const keep = (reference: string, reading: ReferenceNameReading): void => {
-    const route = parseNodeReference(reference);
-    if (
-      route !== undefined &&
-      (route.kind === "spec" || route.kind === "artifact") &&
-      route.block !== undefined
-    ) {
-      readings.set(reference, reading);
+  const namesBlock = new Map<string, boolean>();
+  const nameBlock = (reference: string, reading: ReferenceNameReading): void => {
+    let block = namesBlock.get(reference);
+    if (block === undefined) {
+      const route = parseNodeReference(reference);
+      block =
+        route !== undefined &&
+        (route.kind === "spec" || route.kind === "artifact") &&
+        route.block !== undefined;
+      namesBlock.set(reference, block);
     }
+    if (block) readings.set(reference, reading);
+  };
+  const readingOfNode = new Map<TreeNode, ReferenceNameReading>();
+  const nodeReadingOf = (node: TreeNode): ReferenceNameReading => {
+    let reading = readingOfNode.get(node);
+    if (reading === undefined) {
+      reading = nodeReading(node);
+      readingOfNode.set(node, reading);
+    }
+    return reading;
   };
   const chipsNamed = (chips: readonly NodeChip[]): readonly NodeChip[] =>
     chips.map((chip) => {
       if (chip.gone) return chip;
       const target = chip.reading === undefined ? byReference.get(chip.ref) : undefined;
-      const reading = chip.reading ?? (target === undefined ? undefined : nodeReading(target));
+      const reading = chip.reading ?? (target === undefined ? undefined : nodeReadingOf(target));
       if (reading === undefined) return chip;
-      keep(chip.ref, reading);
+      nameBlock(chip.ref, reading);
       return chip.reading === undefined ? { ...chip, reading } : chip;
     });
   // The tree's node each node of the view stands for: the one of its own id (`treeIdOfNode`), so
@@ -582,9 +596,9 @@ function heldFilterView(
       if (node.issue !== undefined && !issues.has(node.issue)) issues.set(node.issue, issues.size);
     }
     const place = (node: TreeAnswerNode): readonly [number, number] =>
-      node.issue === undefined || node.issue === root.id
-        ? [-1, 0]
-        : [issues.get(node.issue) ?? 0, node.document?.position ?? Number.POSITIVE_INFINITY];
+      isForeign(node, root.id)
+        ? [issues.get(node.issue) ?? 0, node.document?.position ?? Number.POSITIVE_INFINITY]
+        : [-1, 0];
     rows.sort((one, other) => {
       const [issue, at] = place(one);
       const [otherIssue, otherAt] = place(other);
@@ -742,7 +756,7 @@ function heldFilterView(
     const parent = parentOf.get(node);
     const line = part.drawn ? viewParentLine(node, root, parent) : undefined;
     if (line?.reference !== undefined && parent !== undefined) {
-      keep(line.reference, nodeReading(parent));
+      nameBlock(line.reference, nodeReadingOf(parent));
     }
     return line === undefined
       ? part
@@ -772,9 +786,7 @@ function heldFilterView(
  *  page is of, which the Plan read answers beside the issue's own as context, each marked with
  *  its issue. The row kinds (`ROW_KINDS`) still choose which of them are rows. */
 function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean {
-  return (
-    node.role === "query" || (filter === "plan" && node.issue !== undefined && node.issue !== key)
-  );
+  return node.role === "query" || (filter === "plan" && isForeign(node, key));
 }
 
 /**
@@ -782,13 +794,14 @@ function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean
  * size, the whole number of minutes the read answers as `plan.size` from the task's `size`
  * attribute, where it holds one; and the issue it belongs to, where that is an issue under `key`,
  * the issue the page is of. A size that is no whole number of minutes is no size. This is the
- * one place the page reads the read's `plan` of a node.
+ * one place the page reads `plan.size`; `tree-read/tree-nodes.ts`' `draftServing` reads only
+ * whether the read answered a `plan`.
  */
 function planFactsOf(node: TreeAnswerNode, key: string): Pick<TreeNode, "issue" | "size"> {
   const written = node.plan?.size;
   const size = typeof written === "string" && written !== "" ? Number(written) : Number.NaN;
   return {
-    ...(node.issue === undefined || node.issue === key ? {} : { issue: node.issue }),
+    ...(isForeign(node, key) ? { issue: node.issue } : {}),
     ...(Number.isInteger(size) && size >= 0 ? { size } : {}),
   };
 }

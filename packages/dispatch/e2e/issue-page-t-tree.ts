@@ -284,52 +284,48 @@ export function treeReads(
  *  tree read itself, which sends none (spec R1, R9, R10). */
 export type OutlineKind = "conversation" | "graph";
 
-/** How many reads of `outline` of issue `key`'s tree `requests` hold, each read's first page
- *  alone, as `treeReads` counts them: the requests with no view, with `kind=` for Conversation and
- *  with none for Graph, and a page of older comments (`comments_before=`) apart, since that is
+/** The query of each GET of issue `key`'s tree route among `requests`, in the order sent. */
+function treeQueries(requests: readonly ApiRequest[], key: string): URLSearchParams[] {
+  return requests.flatMap((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    return request.method === "GET" && url.pathname === treePath(key) ? [url.searchParams] : [];
+  });
+}
+
+/** Whether `query` is the first page of a read of an outline: no view, no cursor, since a read
+ *  asks for its next pages itself, and no `comments_before=`, since a page of older comments is
  *  no read of the outline but one more page of its comments (`olderCommentReads`). */
+function outlineFirstPage(query: URLSearchParams): boolean {
+  return !query.has("view") && !query.has("cursor") && !query.has("comments_before");
+}
+
+/** How many reads of `outline` of issue `key`'s tree `requests` hold, each read's first page
+ *  alone, as `treeReads` counts them (`outlineFirstPage`): with `kind=` for Conversation and with
+ *  none for Graph. */
 export function outlineReads(
   requests: readonly ApiRequest[],
   key: string,
   outline: OutlineKind
 ): number {
-  return requests.filter((request) => {
-    const url = new URL(request.path, "http://requests.invalid");
-    return (
-      request.method === "GET" &&
-      url.pathname === treePath(key) &&
-      !url.searchParams.has("view") &&
-      !url.searchParams.has("cursor") &&
-      !url.searchParams.has("comments_before") &&
-      url.searchParams.has("kind") === (outline === "conversation")
-    );
-  }).length;
+  return treeQueries(requests, key).filter(
+    (query) => outlineFirstPage(query) && query.has("kind") === (outline === "conversation")
+  ).length;
 }
 
-/** The `kind` values of each Conversation read of issue `key`'s tree that `requests` hold, each
- *  read's values in the order it sent them. */
+/** The `kind` values of each Conversation read of issue `key`'s tree that `requests` hold, one
+ *  entry per read, from its first page alone (`outlineFirstPage`), since its next pages and its
+ *  pages of older comments send the same values again: each read's values in the order it sent
+ *  them. */
 export function kindsSent(requests: readonly ApiRequest[], key: string): string[][] {
-  return requests.flatMap((request) => {
-    const url = new URL(request.path, "http://requests.invalid");
-    return request.method === "GET" &&
-      url.pathname === treePath(key) &&
-      url.searchParams.has("kind")
-      ? [url.searchParams.getAll("kind")]
-      : [];
-  });
+  return treeQueries(requests, key).flatMap((query) =>
+    outlineFirstPage(query) && query.has("kind") ? [query.getAll("kind")] : []
+  );
 }
 
 /** How many pages of older comments of issue `key`'s tree `requests` hold: each read with
  *  `comments_before=` (spec R15). */
 export function olderCommentReads(requests: readonly ApiRequest[], key: string): number {
-  return requests.filter((request) => {
-    const url = new URL(request.path, "http://requests.invalid");
-    return (
-      request.method === "GET" &&
-      url.pathname === treePath(key) &&
-      url.searchParams.has("comments_before")
-    );
-  }).length;
+  return treeQueries(requests, key).filter((query) => query.has("comments_before")).length;
 }
 
 /** Every request of `requests` that is no page of a read of issue `key`'s view `view`, as its
@@ -599,9 +595,9 @@ export const coverageIndexEventGate: Gate = {
  *  (`PRESET_ORDER`) with that view (spec R12). */
 const DASHBOARD_VIEW = "dashboard";
 
-/** Dashboard's part (dispatch://INFRA-5702) first on this branch's base: the view row's one list
- *  holds its view. That part brings Dashboard, the ask body and the decision card, which the rows
- *  of the Dashboard's reads and of the outline's asks and decisions read (spec R16, R17). */
+/** Dashboard's part first on this branch's base: the view row's one list holds its view. That
+ *  part brings Dashboard, the ask body and the decision card, which the rows of the Dashboard's
+ *  reads and of the outline's asks and decisions read (spec R16, R17). */
 export const dashboardPartGate: Gate = {
   met: (PRESET_ORDER as readonly string[]).includes(DASHBOARD_VIEW),
   owed:

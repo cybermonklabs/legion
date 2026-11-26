@@ -24,10 +24,10 @@ import { blockNodeId } from "../tree-drafts";
  *
  * `needs` is a `block[]` attribute of the plan's own blocks
  * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`), which the tree draws as a chip
- * on the task's row (`tree-drafts.ts`'s `placeBlocks`). The walk is worked out here from those
- * chips, and a task whose `needs` names a task this plan does not hold waits on nothing: its row
- * says the target is gone or names an address nothing answers to (`NodeRow.tsx`'s `Chip`), and
- * the order is the plan's own.
+ * on the task's row (`tree-read/tree-nodes.ts`' `needsChips`). The walk is worked out here from
+ * those chips, and a task whose `needs` names a task this plan does not hold waits on nothing: its
+ * row says the target is gone or names an address nothing answers to (`NodeRow.tsx`'s `Chip`),
+ * and the order is the plan's own.
  *
  * The plan's own order is the order its tasks are written in (`writtenOrder`), read off the
  * blocks the page already holds.
@@ -70,9 +70,9 @@ function documentOf(id: string): string {
 /**
  * The ids of the nodes `task` needs, as this issue addresses them: one per task its block's
  * `needs` pointers name, each once. The tree draws each pointer as a chip that says it is a need
- * (`tree-drafts.ts`'s `placeBlocks`, `NodeChip.label`), which is what tells it from a chip for
- * anything else the task names - a document its words cite, a statement it is also under - so a
- * chip naming a block of another document is no need, whatever that block's id is.
+ * (`tree-read/tree-nodes.ts`' `needsChips`, `NodeChip.label`), which is what tells it from a chip
+ * for anything else the task names - a document its words cite, a statement it is also under - so
+ * a chip naming a block of another document is no need, whatever that block's id is.
  *
  * `needs` points at a plan task of the task's own document (`blocks.json`: `targets:
  * ["plan_task"]`, `scope: "document"`), so the block id the reference carries is looked up in
@@ -321,8 +321,6 @@ export interface PlanAxis {
 /** The chart of time, as `planChart` answers it. */
 export interface PlanChart {
   readonly axis: PlanAxis;
-  /** Where the last bar ends, in the chart's units. */
-  readonly end: number;
   readonly rows: readonly PlanChartRow[];
 }
 
@@ -398,13 +396,12 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
   const sized = all.filter((task) => task.size !== undefined).length;
   if (sized === 0) {
     const { end, rows } = placeBars(entries, () => 1, 1);
-    const span = Math.max(1, end);
-    return { axis: { numbered: false, span, step: 1 }, end: span, rows };
+    return { axis: { numbered: false, span: Math.max(1, end), step: 1 }, rows };
   }
   const step = axisStep(placeBars(entries, (task) => task.size ?? 0, 0).end);
   const { end, rows } = placeBars(entries, (task) => task.size ?? step, step);
   const span = Math.max(step, Math.ceil(end / step) * step);
-  return { axis: { numbered: sized === all.length, span, step }, end, rows };
+  return { axis: { numbered: sized === all.length, span, step }, rows };
 }
 
 /**

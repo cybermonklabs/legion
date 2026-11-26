@@ -8053,8 +8053,8 @@ function checkServingSeven(): TreeNode {
 // row. A check that serves seven statements is drawn under each, seven rows of one node: a press
 // on one row's fold control folds that row alone, its count says how many rows it hides, and the
 // press that unfolds it adds exactly that many. Left, Right and `o` on one row do the same to that
-// row alone. Kept by the node, one press folded all seven rows, and unfolding added seven times
-// the count.
+// row alone: a fold is kept by the row's place, not by its node, so the other six rows stay as
+// they were.
 test("a press on the fold control of one of the seven rows of a check that serves seven statements folds that row alone", async () => {
   setViewport(1440);
   const user = userEvent.setup();

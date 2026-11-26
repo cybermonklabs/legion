@@ -7,15 +7,15 @@ import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-w
 import { getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { contentsPane, gotoIssue, outlineControl, outlineSheet, phase } from "./issue-page";
-import { DESKTOP, PHONE } from "./issue-page-g";
+import { DESKTOP, nodeRows, PHONE } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
-import { loadViews, ROW_MS } from "./issue-page-t-rows";
+import { contentsEntries } from "./issue-page-j";
+import { FILTERS, loadViews, PAGE_VIEWS, ROW_MS } from "./issue-page-t-rows";
 import {
   heldAnswer,
   outlineAnswerOf,
   outlineReads,
   owedUnless,
-  type TreeView,
   treeReadGate,
   treeReads,
 } from "./issue-page-t-tree";
@@ -29,20 +29,6 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * `e2e/issue-page-t-rows.ts` says what the rows read and what their gates are.
  */
 
-/** The views that draw the Contents list, in the view row's order: Conversation, the four
- *  filters and Graph (spec R13). */
-const CONTENTS_VIEWS = [
-  "conversation",
-  "spec",
-  "verification",
-  "plan",
-  "decisions",
-  "graph",
-] as const satisfies readonly Preset[];
-
-/** The views that read a view of the tree, of those. */
-const FILTERS: readonly string[] = ["spec", "verification", "plan", "decisions"];
-
 /** The issue's three sentences, wherever a view draws them (`IssueThreeThings.tsx`). */
 function threeThings(scope: Page | Locator): Locator {
   return scope.locator('[data-testid="issue-three-things"]');
@@ -51,9 +37,9 @@ function threeThings(scope: Page | Locator): Locator {
 /** The ids of the entries a Contents list draws, sorted: two lists hold the same entries where
  *  they hold the same ids, whichever outline read each takes its order from. */
 async function entriesOf(scope: Locator): Promise<string[]> {
-  const ids = await scope
-    .locator("[data-contents-entry]")
-    .evaluateAll((all) => all.map((entry) => entry.getAttribute("data-contents-entry") ?? ""));
+  const ids = await contentsEntries(scope).evaluateAll((all) =>
+    all.map((entry) => entry.getAttribute("data-contents-entry") ?? "")
+  );
   return ids.sort();
 }
 
@@ -78,9 +64,11 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
     // list holding the same entries in each, and the sentences drawn once, in the pane.
     await page.setViewportSize(DESKTOP);
     let entries: string[] = [];
-    for (const view of CONTENTS_VIEWS) {
+    for (const view of PAGE_VIEWS) {
       const name = PRESET_NAMES[view];
-      const conversation = outlineAnswerOf(page, "conversation");
+      // Conversation's read, watched from before its load, which only that view's load reads.
+      const conversation =
+        view === "conversation" ? outlineAnswerOf(page, "conversation") : undefined;
       const traffic = await openView(page, seeded.key, view);
       await expect(contentsPane(page), `the Contents pane stands beside ${name}`).toHaveCount(1);
       await expect(
@@ -91,7 +79,7 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
         threeThings(page),
         `at 1440 px, ${name} draws the three sentences other than once, in the pane`
       ).toHaveCount(1);
-      if (view === "conversation") {
+      if (conversation !== undefined) {
         await expect
           .poll(async () => (await entriesOf(contentsPane(page))).length, {
             message: "the Contents list beside Conversation holds no entry",
@@ -106,11 +94,9 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
           {
             graph: outlineReads(sent, seeded.key, "graph"),
             kind: outlineReads(sent, seeded.key, "conversation"),
-            views: (
-              ["spec", "verification", "plan", "decisions"] as const satisfies readonly TreeView[]
-            )
-              .flatMap((one) => (treeReads(sent, seeded.key, one) > 0 ? [one] : []))
-              .sort(),
+            views: FILTERS.flatMap((one) =>
+              treeReads(sent, seeded.key, one) > 0 ? [one] : []
+            ).sort(),
           },
           "Conversation's load sends no tree read but its kind= read and R4's view reads"
         ).toEqual({ graph: 0, kind: 1, views: [...views].sort() });
@@ -150,7 +136,7 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
     // Below 1024 px: the three sentences above the view's first row, once, and the Outline
     // control's sheet holding the same list and not the sentences.
     await page.setViewportSize(PHONE);
-    for (const view of CONTENTS_VIEWS) {
+    for (const view of PAGE_VIEWS) {
       const name = PRESET_NAMES[view];
       const traffic = await openView(page, seeded.key, view);
       await expect(contentsPane(page), `at 390 px, ${name} draws the Contents pane`).toHaveCount(0);
@@ -160,7 +146,7 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
       ).toHaveCount(1);
       const [sentences, firstRow] = await Promise.all([
         threeThings(page).boundingBox(),
-        page.locator("[data-issue-page] [data-node-row]").first().boundingBox(),
+        nodeRows(page).first().boundingBox(),
       ]);
       expect(
         (sentences?.y ?? Number.POSITIVE_INFINITY) + (sentences?.height ?? 0),
@@ -188,7 +174,7 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
           message: `at 390 px, the Outline sheet draws the Contents list in ${name}, with the entries beside Conversation`,
         })
         .toEqual(entries);
-      if (FILTERS.includes(view)) {
+      if ((FILTERS as readonly string[]).includes(view)) {
         await expect(
           threeThings(outlineSheet(page)),
           `at 390 px, under ${name} the Outline sheet draws the three sentences`

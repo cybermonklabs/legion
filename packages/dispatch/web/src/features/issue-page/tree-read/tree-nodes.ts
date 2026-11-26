@@ -135,10 +135,10 @@ export interface KeptReads {
    *  issue is still being indexed, its line, which the server writes in place of every missing
    *  check (`coverageNotes`). Each requirement the read holds draws them. */
   readonly coverageNotes: string[];
-  /** Whether the Plan view's answer the page holds (`IssueTreeReads.plan`) holds a plan task: one
-   *  of this issue, or of an issue under it, which that read answers with the issue's own. Once
-   *  one is held a statement no plan task serves is a gap, since a plan is written after the spec
-   *  is approved; false while that read holds no answer. */
+  /** Whether the Plan view's answer the page holds holds a plan task that is not gone
+   *  (`IssueTreeReads.holdsPlanTask`): one of this issue, or of an issue under it, which that read
+   *  answers with the issue's own. Once one is held a statement no plan task serves is a gap,
+   *  since a plan is written after the spec is approved; false while that read holds no answer. */
   readonly planned: boolean;
   /** What the author of each comment and message of the comments read and the messages read did
    *  to it, by the post's own id: the tree read answers its words, a deleted post's none, and no
@@ -1163,9 +1163,21 @@ function namesAny(node: TreeAnswerNode, kind: string, context: TreeDraftContext)
   return pointersOf(node, kind).length > 0;
 }
 
-/** Whether the read marks `node` as another issue's. */
-function isForeign(node: TreeAnswerNode, key: string): boolean {
+/** Whether the read marks `node` as another issue's: one whose `issue` is not `key`. */
+export function isForeign(
+  node: TreeAnswerNode,
+  key: string
+): node is TreeAnswerNode & { readonly issue: string } {
   return node.issue !== undefined && node.issue !== key;
+}
+
+/** Whether `answer`, the Plan view read's answer, holds a plan task that is not gone: one of this
+ *  issue, or of an issue under it, which that read answers with the issue's own
+ *  (`IssueTreeReads.holdsPlanTask`). False where it holds no answer. */
+export function holdsPlanTask(answer: TreeAnswer | undefined): boolean {
+  return (answer?.nodes ?? []).some(
+    (node) => node.supertag === "plan_task" && node.state !== "gone"
+  );
 }
 
 /** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). A
@@ -1208,9 +1220,7 @@ function keptReads(
       const node = nodes.get(decision.ref);
       return node === undefined ? undefined : idOf(node);
     }),
-    planned: (reads.plan?.nodes ?? []).some(
-      (node) => node.supertag === "plan_task" && node.state !== "gone"
-    ),
+    planned: reads.holdsPlanTask === true,
     posts: postMarksOf(reads),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
