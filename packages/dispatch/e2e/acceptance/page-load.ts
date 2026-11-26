@@ -48,11 +48,15 @@
  * - `socket <outcome> <url> count=<n> loads=<the loads>` for each socket the page opened
  *   (`sent-with-token`, `sent-unchanged`, or `refused` with Dispatch's reason after it), then
  *   `socket-frames sent=<n> refused=<n>`, the frames the page sent and those the rule refused;
- * - for each load, before any reading: `load <n> drew-first-screen=<yes|no> after=<ms>`, whether
- *   a frame of it held a row of the view and after how many ms from the navigation, or how long it
- *   waited for one (`none` for a load that never navigated); `load <n> stopped: <bound>: <why>`
- *   for a load that stopped at a bound; and `load <n> first-screen rows with no Element Timing
- *   entry: <rows>` where it happened;
+ * - for each load, before any reading: `load <n> drew-first-screen=<rows|empty-line|no>
+ *   after=<ms>`, what a frame of it held first, a row of the view or Conversation's empty line,
+ *   and after how many ms from the navigation, or `no` and how long it waited for either
+ *   (`after=none` for a load that never navigated); `load <n> comments-read path=<path>
+ *   encoded=<bytes> decoded=<bytes>` for each read of the issue's comments list the load made by
+ *   its end or stop, from Resource Timing or else the answer's own body, `comments-read none`
+ *   where it made none and `comments-read unread` where they could not be read;
+ *   `load <n> stopped: <bound>: <why>` for a load that stopped at a bound; and `load <n>
+ *   first-screen rows with no Element Timing entry: <rows>` where it happened;
  * - one reading line for each bound, as `readingLine` prints it
  *   (`<bound> rate=1 readings=<the five loads'> limit=<l> fourth=<v> <pass or fail>`): the paint
  *   of the first screen's rows, each act's three bounds, the longest task after the first drawing
@@ -68,11 +72,14 @@
  *   each failure joined to the next by `; `.
  *
  * **No load holds the run.** Each wait of a load has a bound (`LOAD_BOUNDS`): its setup, the
- * navigation and the first drawing of a row of the view (180 s), the load's end, each act, and
- * each read of the page. A load that waits past one stops there, prints `load <n> stopped:
- * <bound>: <the wait> did not end within <ms> ms` (or the wait's own failure, named by its bound),
- * reads `none` for whatever it had not read, and the run goes on with the next load. A load that
- * drew no row reads `none` for every bound, which counts as over each limit.
+ * navigation and the first drawing of a row of the view or its empty line (180 s), the load's
+ * end, each act, and each read of the page. A load that waits past one stops there, prints
+ * `load <n> stopped: <bound>: <the wait> did not end within <ms> ms` (or the wait's own failure,
+ * named by its bound), reads `none` for whatever it had not read, and the run goes on with the
+ * next load. A load that drew neither reads `none` for every bound, which counts as over each
+ * limit. A load that drew the empty line drew its first screen: its paint is the moment the frame
+ * that held the line was shown, and every reading of a row, the acts on a row among them, reads
+ * `none`.
  *
  * It exits 0 on a pass, 1 on a fail, and 2 when it cannot run: no `--issue`, no `DISPATCH_URL`, a
  * token file that is missing, unreadable or empty, a tree read that does not answer, no browser,
@@ -85,6 +92,7 @@ import { type Browser, chromium, type Page } from "@playwright/test";
 
 import type { AuthenticatedUser, LiveClientFrame } from "../../web/src/api/types";
 import { presetPath } from "../../web/src/features/issue-page/issue-address";
+import { EMPTY_STATE_LINES } from "../../web/src/features/issue-page/page-words";
 import {
   ACT_MS,
   afterLoadOrder,
@@ -536,12 +544,22 @@ export interface PageShape {
   readonly rows: number;
 }
 
-/** Whether a load drew the first screen's rows at all: whether a frame held a row of the view
- *  (`FrameEntry.rows`, the first drawing of the rows), and after how many ms: from the navigation's
- *  start to that frame, or where none came, how long the load waited for one. */
-export interface FirstRows {
+/** What a load drew first: a row of the view (`rows`), Conversation's empty line, the one line the
+ *  view draws in place of its rows for an issue whose tree holds nothing it shows
+ *  (`empty-line`), or neither by the first-screen bound (`no`); and after how many ms: from the
+ *  navigation's start to the first frame that held it, or where none came, how long the load
+ *  waited. */
+export interface FirstDrawn {
   readonly after: number;
-  readonly drawn: boolean;
+  readonly drew: "empty-line" | "no" | "rows";
+}
+
+/** One read of the issue's comments list (`GET /api/v1/issues/<KEY>/comments`) a load made by its
+ *  end: its path, its query cut, and its body's bytes as they came (`encoded`) and once decoded. */
+export interface CommentsRead {
+  readonly decoded: number;
+  readonly encoded: number;
+  readonly path: string;
 }
 
 /** What one load read. A reading is null where the load gave none: a first screen with a row that
@@ -549,7 +567,12 @@ export interface FirstRows {
 export interface LoadReading {
   /** Each act of `AFTER_LOAD_ACTS`, in its order. */
   readonly acts: readonly ActReading[];
-  readonly firstRows: FirstRows | null;
+  /** Each read of the comments list the load made by its end, or by its stop; null where the
+   *  load never navigated, or the read of them did not end. */
+  readonly commentsReads: readonly CommentsRead[] | null;
+  readonly firstDrawn: FirstDrawn | null;
+  /** The latest paint of the first screen's rows, or for a load that drew the empty line, the
+   *  moment the first frame that held it was shown. */
   readonly firstScreen: Reading;
   readonly largestContentfulPaint: Reading;
   readonly layoutShift: Reading;
@@ -579,7 +602,8 @@ const UNREAD_ACT: ActReading = { act: null, loading: null, read: null, shown: nu
 /** A load that read nothing. */
 const UNREAD_LOAD: LoadReading = {
   acts: AFTER_LOAD_ACTS.map(() => UNREAD_ACT),
-  firstRows: null,
+  commentsReads: null,
+  firstDrawn: null,
   firstScreen: null,
   largestContentfulPaint: null,
   layoutShift: null,
@@ -691,12 +715,21 @@ export function failures(record: PageLoadRecord): string[] {
 /** The record's lines, in the order the header of this file lists them, the verdict last. */
 export function recordLines(record: PageLoadRecord): string[] {
   const failed = failures(record);
-  // Each load says first whether it drew the first screen's rows at all, then where it stopped,
-  // before any of the readings it gave.
+  // Each load says first what it drew first and its reads of the comments list, then where it
+  // stopped, before any of the readings it gave.
   const notes = record.loads.flatMap((load, at) => [
-    `load ${at + 1} drew-first-screen=${load.firstRows?.drawn === true ? "yes" : "no"} after=${
-      load.firstRows === null ? "none" : Math.round(load.firstRows.after)
+    `load ${at + 1} drew-first-screen=${load.firstDrawn?.drew ?? "no"} after=${
+      load.firstDrawn === null ? "none" : Math.round(load.firstDrawn.after)
     }`,
+    ...(load.commentsReads === null
+      ? [`load ${at + 1} comments-read unread`]
+      : load.commentsReads.length === 0
+        ? [`load ${at + 1} comments-read none`]
+        : load.commentsReads.map(
+            (read) =>
+              `load ${at + 1} comments-read path=${read.path} encoded=${read.encoded} ` +
+              `decoded=${read.decoded}`
+          )),
     ...(load.stopped === null ? [] : [`load ${at + 1} stopped: ${load.stopped}`]),
     ...(load.unpainted.length === 0
       ? []
@@ -879,9 +912,9 @@ export const LOAD_BOUNDS: LoadBounds = {
   act: { ms: 180_000, name: "act-wait" },
   /** The close of the load's browser context, and of the browser after the last load. */
   close: { ms: 30_000, name: "close-wait" },
-  /** From the navigation to the first frame that holds a row of the view: past the 165 s after
-   *  which a cold load of INFRA-663 (9,252 comments) on part N's base had drawn no page
-   *  (Verification v7, `c-real-data`). */
+  /** From the navigation to the first frame that holds a row of the view or its empty line: past
+   *  the 165 s after which a cold load of INFRA-663 (9,252 comments) on part N's base had drawn no
+   *  page (Verification v7, `c-real-data`). */
   firstScreen: { ms: 180_000, name: "first-screen-wait" },
   /** The load's end (`waitForLoadEnd`), as the load ends and again after its acts. */
   loadEnd: { ms: 120_000, name: "load-end-wait" },
@@ -929,11 +962,19 @@ export interface ActsReading {
   readonly longestTask: Reading;
 }
 
+/** The first frame that held a row of the view or the view's empty line: which, the frame's time
+ *  (`performance.now()` in its `requestAnimationFrame` callback), and when it was shown, as an
+ *  act's frame is stamped (`FrameEntry.shown`), in ms from the navigation's start. */
+export interface FirstContent {
+  readonly at: number;
+  readonly kind: "empty-line" | "rows";
+  readonly shown: number;
+}
+
 /** The waits of one load's page, which `boundedLoad` makes in order, each within its bound. */
 export interface PageSteps {
-  /** Navigates, and answers once a frame holds a row of the view: that frame's time, in ms from
-   *  the navigation's start. */
-  firstRows(): Promise<number>;
+  /** Navigates, and answers once a frame holds a row of the view or the view's empty line. */
+  firstContent(): Promise<FirstContent>;
   /** Waits for the load's end (`waitForLoadEnd`), and answers when it was. */
   loadEnd(): Promise<number>;
   /** Makes `act` once the page has gone quiet, its steps armed from index `next` on, then the
@@ -941,6 +982,8 @@ export interface PageSteps {
   makeAct(act: LoadAct, next: number): Promise<{ readonly last: number; readonly next: number }>;
   /** Reads the acts whose measured steps were armed under `measured`. */
   readActs(measured: readonly number[]): Promise<ActsReading>;
+  /** Reads each read of the comments list that had answered by now (`commentsReads`). */
+  readComments(): Promise<CommentsRead[]>;
   /** Reads what the load drew as it ended at `end`. */
   readEnd(end: number): Promise<EndReading>;
 }
@@ -952,13 +995,18 @@ function alsoStopped(first: string | null, second: string): string {
 
 /**
  * One load, each of its waits within its bound of `bounds`: the setup (`open`), the navigation
- * and the first drawing of a row of the view, the load's end and the read of it, as Row 1 of
- * `c-load-1440` reads it, then each act after the load, as Row 5 makes them, the page's end after
- * them, and the read of the acts. A load that stops keeps what it read before, reads `none` for
- * the rest, and names in `stopped` the wait it stopped in; one that stops before its first rows
- * reads nothing but how long it waited for them (`now`, the wall clock). An act that stops ends
- * the acts, since the act after it would start from a page the act left half done, and the acts
- * made before it are still read.
+ * and the first drawing of a row of the view or of its empty line, the load's end and the read of
+ * it, as Row 1 of `c-load-1440` reads it, and of its reads of the comments list, then each act
+ * after the load, as Row 5 makes them, the page's end after them, and the read of the acts.
+ *
+ * A load that drew the empty line drew its first screen: its paint is the moment the frame that
+ * first held the line was shown, since the page names that line to no Element Timing entry, and
+ * the acts that need a row (`LoadAct.when` `rows`: a fold, an unfold, `j` and `k`) are not made,
+ * so they read `none`, as every reading of a row does there. A load that stops keeps what it read
+ * before, reads `none` for the rest, and names in `stopped` the wait it stopped in; one that draws
+ * neither by its bound reads nothing but how long it waited (`now`, the wall clock) and its reads
+ * of the comments list. An act that stops ends the acts, since the act after it would start from
+ * a page the act left half done, and the acts made before it are still read.
  */
 export async function boundedLoad(
   open: () => Promise<PageSteps>,
@@ -971,47 +1019,71 @@ export async function boundedLoad(
   } catch (error) {
     return { ...UNREAD_LOAD, stopped: messageOf(error) };
   }
+  // The load's reads of the comments list, read wherever it stops after its navigation, so a load
+  // that drew nothing still says what it read.
+  const withComments = async (reading: LoadReading): Promise<LoadReading> => {
+    try {
+      const reads = await within(
+        bounds.read,
+        "the read of the comments reads",
+        page.readComments()
+      );
+      return { ...reading, commentsReads: reads };
+    } catch (error) {
+      return { ...reading, stopped: alsoStopped(reading.stopped, messageOf(error)) };
+    }
+  };
   const asked = now();
-  let reading: LoadReading;
+  let first: FirstContent;
   try {
-    const after = await within(
+    first = await within(
       bounds.firstScreen,
-      "the wait for a row of the view",
-      page.firstRows()
+      "the wait for a row of the view or its empty line",
+      page.firstContent()
     );
-    reading = { ...UNREAD_LOAD, firstRows: { after, drawn: true } };
   } catch (error) {
-    return {
+    return await withComments({
       ...UNREAD_LOAD,
-      firstRows: { after: now() - asked, drawn: false },
+      firstDrawn: { after: now() - asked, drew: "no" },
       stopped: messageOf(error),
-    };
+    });
   }
+  let reading: LoadReading = { ...UNREAD_LOAD, firstDrawn: { after: first.at, drew: first.kind } };
   try {
     const end = await within(bounds.loadEnd, "the wait for the load's end", page.loadEnd());
     const read = await within(bounds.read, "the read of the load's end", page.readEnd(end));
-    reading = { ...reading, ...read };
+    reading = {
+      ...reading,
+      ...read,
+      ...(first.kind === "empty-line" ? { firstScreen: first.shown } : {}),
+    };
   } catch (error) {
-    return { ...reading, stopped: messageOf(error) };
+    return await withComments({ ...reading, stopped: messageOf(error) });
   }
+  reading = await withComments(reading);
+  // The acts made, by their place in `AFTER_LOAD_ACTS`, and the index each one's measured step
+  // was armed under.
+  const madeAt: number[] = [];
   const measured: number[] = [];
-  let stopped: string | null = null;
+  let stopped = reading.stopped;
   try {
     let next = 0;
-    for (const act of AFTER_LOAD_ACTS) {
+    for (const [at, act] of AFTER_LOAD_ACTS.entries()) {
+      if (first.kind === "empty-line" && act.when === "rows") continue;
       const made = await within(bounds.act, act.name, page.makeAct(act, next));
+      madeAt.push(at);
       measured.push(made.last);
       next = made.next;
     }
     await within(bounds.loadEnd, "the wait for the page's end after the acts", page.loadEnd());
   } catch (error) {
-    stopped = messageOf(error);
+    stopped = alsoStopped(stopped, messageOf(error));
   }
   try {
     const read = await within(bounds.read, "the read of the acts", page.readActs(measured));
     reading = {
       ...reading,
-      acts: AFTER_LOAD_ACTS.map((_, at) => read.acts[at] ?? UNREAD_ACT),
+      acts: AFTER_LOAD_ACTS.map((_, at) => read.acts[madeAt.indexOf(at)] ?? UNREAD_ACT),
       longestTask: read.longestTask,
     };
   } catch (error) {
@@ -1020,22 +1092,139 @@ export async function boundedLoad(
   return { ...reading, stopped };
 }
 
-/** The waits of a load of `page` at `address`, its requests watched by `requests`. */
-function pageSteps(page: Page, requests: LoadRequests, address: string): PageSteps {
+/** Conversation's empty line: the line of the page's own words (`data-page-chrome`) under the
+ *  body that says the issue holds nothing (`EMPTY_STATE_LINES.conversation`, which `IssueTree`
+ *  draws in place of its rows). The page gives the line no attribute or role of its own, so it is
+ *  found by that attribute and its words, as `e2e/issue-page-switch.e2e.ts` reads it. */
+const EMPTY_LINE = {
+  selector: "[data-issue-body] [data-page-chrome]",
+  words: EMPTY_STATE_LINES.conversation,
+} as const;
+
+/** One Resource Timing entry of a read of the comments list, as the page's observer keeps it. */
+export interface TimedRead {
+  readonly decodedBodySize: number;
+  readonly encodedBodySize: number;
+  readonly name: string;
+}
+
+/** One read of the comments list as Playwright saw it answered: its address, and its body's
+ *  bytes as they came and once decoded, read only where Resource Timing has none for it. */
+export interface AnsweredRead {
+  readonly url: string;
+  sizes(): Promise<{ readonly decoded: number; readonly encoded: number }>;
+}
+
+/** Each read of the comments list, in the order Playwright saw them answered, by its path, its
+ *  query cut, with Resource Timing's `encodedBodySize` and `decodedBodySize` of the entry of the
+ *  same address and turn, or where that entry is missing or holds no body, the answer's own sizes
+ *  (`AnsweredRead.sizes`). */
+export async function commentsReads(
+  timed: readonly TimedRead[],
+  answered: readonly AnsweredRead[]
+): Promise<CommentsRead[]> {
+  const turns = new Map<string, number>();
+  const reads: CommentsRead[] = [];
+  for (const read of answered) {
+    const turn = turns.get(read.url) ?? 0;
+    turns.set(read.url, turn + 1);
+    const entry = timed.filter((each) => each.name === read.url)[turn];
+    const sizes =
+      entry !== undefined && entry.decodedBodySize > 0
+        ? { decoded: entry.decodedBodySize, encoded: entry.encodedBodySize }
+        : await read.sizes();
+    reads.push({ ...sizes, path: urlOf(read.url)?.pathname ?? read.url });
+  }
+  return reads;
+}
+
+/** A first drawing as the page's poll marks it, until the frame that held it is shown. */
+interface FirstMark {
+  readonly at: number;
+  readonly kind: FirstContent["kind"];
+  shown: number | null;
+}
+
+declare global {
+  interface Window {
+    /** The Resource Timing entries of the comments list (`observeCommentsReads`). */
+    pageLoadCommentsReads?: TimedRead[];
+    /** The first drawing the script's poll found (`PageSteps.firstContent`). */
+    pageLoadFirstContent?: FirstMark;
+  }
+}
+
+/** The init script that keeps each Resource Timing entry of the comments list's `path` in the top
+ *  frame, from the document's start, on the window, where `readComments` reads it. It is
+ *  serialised into the page, so it reads nothing outside itself but its argument. */
+function observeCommentsReads(path: string): void {
+  if (window !== window.top) return;
+  const timed: TimedRead[] = [];
+  window.pageLoadCommentsReads = timed;
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      if (!(entry instanceof PerformanceResourceTiming)) continue;
+      if (new URL(entry.name).pathname !== path) continue;
+      timed.push({
+        decodedBodySize: entry.decodedBodySize,
+        encodedBodySize: entry.encodedBodySize,
+        name: entry.name,
+      });
+    }
+  }).observe({ buffered: true, type: "resource" });
+}
+
+/** The comments list's path of issue `key`, as the page's client reads it. */
+function commentsPath(key: string): string {
+  return `/api/v1/issues/${encodeURIComponent(key)}/comments`;
+}
+
+/** The waits of a load of `page` at `address`, its requests watched by `requests` and its
+ *  answered reads of the comments list by `answered`. */
+function pageSteps(
+  page: Page,
+  requests: LoadRequests,
+  address: string,
+  answered: readonly AnsweredRead[]
+): PageSteps {
   const settle = () => waitForLoadEnd(page, requests);
   return {
-    firstRows: async () => {
+    firstContent: async () => {
       // Neither wait takes a timeout of Playwright's own: the first-screen bound holds the
       // navigation and the first drawing together (`boundedLoad`), and its line names it.
       await page.goto(address, { timeout: 0, waitUntil: "commit" });
       const drawn = await page.waitForFunction(
-        (rows) => (document.querySelector(rows) === null ? false : performance.now()),
-        VIEW_ROW_SELECTOR,
+        ({ line, rows }) => {
+          const mark = window.pageLoadFirstContent;
+          if (mark !== undefined) return mark.shown === null ? false : mark;
+          const kind =
+            document.querySelector(rows) !== null
+              ? "rows"
+              : [...document.querySelectorAll(line.selector)].some(
+                    (found) => found.textContent?.trim() === line.words
+                  )
+                ? "empty-line"
+                : null;
+          if (kind === null) return false;
+          // Stamped as the instruments stamp a frame: in a task this callback posts, which runs
+          // once the frame's style, layout and paint are done.
+          const found: FirstMark = { at: performance.now(), kind, shown: null };
+          window.pageLoadFirstContent = found;
+          const channel = new MessageChannel();
+          channel.port1.onmessage = () => {
+            found.shown = performance.now();
+          };
+          channel.port2.postMessage(null);
+          return false;
+        },
+        { line: EMPTY_LINE, rows: VIEW_ROW_SELECTOR },
         { polling: "raf", timeout: 0 }
       );
-      const at = await drawn.jsonValue();
-      if (at === false) throw new Error("the page answered a drawn row with no time");
-      return at;
+      const first = await drawn.jsonValue();
+      if (first === false || first.shown === null) {
+        throw new Error("the page answered its first drawing with no time");
+      }
+      return { at: first.at, kind: first.kind, shown: first.shown };
     },
     loadEnd: settle,
     makeAct: async (act, next) => {
@@ -1048,6 +1237,12 @@ function pageSteps(page: Page, requests: LoadRequests, address: string): PageSte
         acts: measured.map((index) => actReading(last, index)),
         longestTask: longestTaskAfterViewRow(last),
       };
+    },
+    readComments: async () => {
+      // Read at the load's end or stop, the moment its reads are counted at: the entries kept by
+      // then are the reads it made, and a later read would count another moment's.
+      const timed = await page.evaluate(() => window.pageLoadCommentsReads ?? []);
+      return await commentsReads(timed, [...answered]);
     },
     readEnd: async (end) => {
       // The first screen is the rows in the viewport as the load ends, which `waitForLoadEnd` has
@@ -1076,9 +1271,10 @@ interface Sent {
 
 /** Load `load` of five: a new context, so its cache is empty, and in it (`boundedLoad`'s setup)
  *  the request route, answering the identity read with the event log's head as it stands just
- *  before the load, the socket route, the reader's choice of the new page and the instruments,
- *  installed before the navigation. A context the browser cannot open within its bound fails the
- *  run, since no load could be made; the context is closed within its bound after the load. */
+ *  before the load, the socket route, the reader's choice of the new page, the instruments and
+ *  the comments list's observer, installed before the navigation. A context the browser cannot
+ *  open within its bound fails the run, since no load could be made; the context is closed within
+ *  its bound after the load. */
 async function measuredLoad(
   browser: Browser,
   settings: RunSettings,
@@ -1114,9 +1310,24 @@ async function measuredLoad(
       rows: LOAD_ROW_SELECTOR,
       viewRows: VIEW_ROW_SELECTOR,
     });
+    const path = commentsPath(settings.issue);
+    await page.addInitScript(observeCommentsReads, path);
+    // Each answered read of the comments list, its body read only where Resource Timing gives
+    // none, at the read of them (`commentsReads`), so no body is fetched while the load runs.
+    const answered: AnsweredRead[] = [];
+    page.on("requestfinished", (request) => {
+      if (urlOf(request.url())?.pathname !== path) return;
+      answered.push({
+        sizes: async () => {
+          const body = await (await request.response())?.body();
+          return { decoded: body?.length ?? 0, encoded: (await request.sizes()).responseBodySize };
+        },
+        url: request.url(),
+      });
+    });
     const requests = watchLoadRequests(page);
     const address = new URL(presetPath(settings.issue, "conversation"), settings.origin);
-    return pageSteps(page, requests, address.href);
+    return pageSteps(page, requests, address.href, answered);
   });
   try {
     await within(LOAD_BOUNDS.close, "the close of the load's context", context.close());
