@@ -4573,7 +4573,7 @@ test("below 1280 px opening a one-line priority title, and a three-line one at 3
 // InPlaceField.tsx:354-360's layout effect reads no width change, so narrowing 1024 px to 390 px
 // leaves 84 px of a long title scrolled out of the box and closing moves the header by 84 px;
 // narrowing 1440 px to 1024 px moves it by 14 px. Measured in Chromium and Firefox.
-// SLOW(>=2s): a priority's page opened twice, with the window resized while its title box is open.
+// SLOW(>=2s): one page open, its title box opened twice, the window resized while it is open.
 // @firefox: the textarea's scrollHeight after a window resize in each engine.
 test("a priority's title box left open while the window is resized holds every line and leaves the header the height its heading has @firefox", async ({
   page,
