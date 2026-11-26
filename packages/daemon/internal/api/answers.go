@@ -196,10 +196,11 @@ var frozenAnswers = []Answer{
 	// `note` and which 46 is the floor for here.
 	{ID: AnswerHandoffComplete, Routes: []string{"POST /legion/v1/handoff/complete"}, Since: ServingFloor},
 	// Older than the floor: the empty object the fact routes answer. `tasks/stop` is
-	// OwnerPlanContract's and `steps/complete` completeStepContract's, and the answer they share is
-	// older than either, as the no-content answer is older than two of its routes. The child route
-	// that childRouteRemovedContract removed answered it too: that route now answers every call
-	// with the refusal (removedChildRoute), and no plugin at that contract calls it.
+	// OwnerPlanContract's, and the answer it shares is older than it, as the no-content answer is
+	// older than two of its routes. The child route that childRouteRemovedContract removed
+	// answered it too: that route now answers every call with the refusal (removedChildRoute), and
+	// no plugin at that contract calls it. `steps/complete` answers it too, and the entry that
+	// added that route adds it to this row in its own file (completeStepContract's answerRoutes).
 	{ID: AnswerEmptyObject, Routes: []string{
 		"POST /legion/v1/issues/status",
 		"POST /legion/v1/gates/register",
@@ -207,7 +208,6 @@ var frozenAnswers = []Answer{
 		"POST /legion/v1/phase/backward",
 		"POST /legion/v1/phase/retry",
 		"POST /legion/v1/signoff",
-		"POST /legion/v1/steps/complete",
 		"POST /legion/v1/roots/close",
 		"POST /legion/v1/children/rerun",
 	}, Since: ServingFloor},
