@@ -653,16 +653,8 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // lost by waiting. A boot pass whose report alone failed has done every step, so it does not
 // fail (coverPass). The context ending returns at once.
 //
-// The loop reports each time it settles into a wait it owes nothing from (Deps.coverageParked,
-// awaitingAnswer false): the pass succeeded and left no step waiting for the embedder to answer,
-// so until the interval is out the loop reads nothing, writes nothing and wakes nobody. That
-// report, not the goroutine's return, is what a test waits for to know the pass is done, since
-// this loop returns only when the process stops. It is made with the wait already armed, so a
-// test that takes it and then measures a quiet period cannot catch the loop between its pass and
-// its timer. It reports the other wait too, on the embedder's first answer after a run that
-// skipped the steps because the embedder had not answered (awaitingAnswer true), and only while
-// that answer has not come: a test that takes it knows the run proved nothing and left the rows
-// it skipped alone.
+// After each pass that succeeded it reports the wait it settles into to a test of this package
+// (reportParked).
 func runCoverage(ctx context.Context, deps Deps) {
 	pass := coverPass
 	for {
@@ -672,26 +664,15 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", deps.recheckInterval())
+			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", deps.identityRecheck)
 		default:
 			pass = recheckCoverage
 			if steps.skipped && steps.mine {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := time.NewTimer(duty.Jittered(deps.recheckInterval()))
-		if deps.coverageParked != nil {
-			switch {
-			case err == nil && answered == nil:
-				deps.coverageParked(false)
-			case answered != nil:
-				select {
-				case <-answered:
-				default:
-					deps.coverageParked(true)
-				}
-			}
-		}
+		timer := time.NewTimer(duty.Jittered(deps.identityRecheck))
+		deps.reportParked(err, answered)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -703,13 +684,23 @@ func runCoverage(ctx context.Context, deps Deps) {
 	}
 }
 
-// recheckInterval is how long Run's coverage loop waits between its runs: identityRecheckInterval,
-// or the shorter one a test of this package gave its own Run (Deps.identityRecheck).
-func (d Deps) recheckInterval() time.Duration {
-	if d.identityRecheck > 0 {
-		return d.identityRecheck
+// reportParked tells a test of this package (Deps.coverageParked) that the coverage loop has
+// settled into its wait after a pass that succeeded, which is what a test waits for to know the
+// pass is done, since the loop returns only when the process stops. awaitingAnswer is false for
+// the wait that owes nothing until the interval is out, when the loop reads nothing, writes
+// nothing and wakes nobody; and true for the wait on the embedder's first answer after a run that
+// skipped the identity steps for want of one, made only while that answer has not come, so a test
+// that takes it knows the run proved nothing and left the rows it skipped alone. The wait after a
+// failed pass is not reported.
+func (d Deps) reportParked(err error, answered <-chan struct{}) {
+	if d.coverageParked == nil || err != nil {
+		return
 	}
-	return identityRecheckInterval
+	select {
+	case <-answered:
+	default:
+		d.coverageParked(answered != nil)
+	}
 }
 
 // notIndexedKinds is every kind of node meaning search and keyword search hold no row of at

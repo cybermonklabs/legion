@@ -96,18 +96,15 @@ type Deps struct {
 	// idle and coverageParked are the two ends of Run's work, for a test that must know the
 	// process has finished all of it: idle is called whenever the scan loop waits with nothing
 	// owed and nothing due (duty.WokenLoop.Idle), and coverageParked each time the coverage loop
-	// settles into a wait (runCoverage). The coverage loop is not a thing that ends - it
-	// rechecks the identity for as long as the process runs - so what a test can wait for is the
-	// loop parked, not the loop returned. awaitingAnswer names the wait: false for the wait with
-	// nothing left to do, true for the wait on the embedder's first answer after a pass that
-	// skipped the identity steps for want of one, while that answer is still to come. Nil in
-	// production and for a caller that builds Deps itself; a test of this package sets them.
+	// settles into its wait after a pass that succeeded (reportParked). The coverage loop is not
+	// a thing that ends - it rechecks the identity for as long as the process runs - so what a
+	// test can wait for is the loop parked, not the loop returned. Nil in production and for a
+	// caller that builds Deps itself; a test of this package sets them.
 	idle           func()
 	coverageParked func(awaitingAnswer bool)
-	// identityRecheck, when positive, is the coverage loop's interval in place of
-	// identityRecheckInterval (recheckInterval): a test of the recheck runs its own Run's in
-	// seconds, beside tests whose Run keeps ten minutes. Zero in production and for a caller that
-	// builds Deps itself.
+	// identityRecheck is the coverage loop's interval between runs. Run sets it to
+	// identityRecheckInterval unless a test of the recheck has set a shorter one, to run its own
+	// Run's in seconds beside tests whose Run keeps ten minutes.
 	identityRecheck time.Duration
 }
 
@@ -195,6 +192,9 @@ func Run(ctx context.Context, deps Deps) {
 	if wake == nil {
 		wake = make(chan struct{}, 1)
 		deps.enqueued = wake
+	}
+	if deps.identityRecheck <= 0 {
+		deps.identityRecheck = identityRecheckInterval
 	}
 	coverageCtx, err := store.ForConcurrentRead(ctx)
 	if err != nil {

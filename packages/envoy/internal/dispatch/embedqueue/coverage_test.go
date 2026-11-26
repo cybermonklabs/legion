@@ -853,11 +853,9 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 
 	// Run's boot pass sends its canary from a goroutine of its own, and the row reads what Run
 	// left behind only once that pass has read the 404 and its loop has parked on the embedder's
-	// first answer with that answer still to come (Deps.coverageParked, awaitingAnswer true).
-	// Stopping Run as soon as the fake held the request, which it records before it answers, read
-	// the rows before the pass could have acted on its answer, and passed a loop that took a
-	// failed canary for proof. Such a loop never parks there: it runs the identity steps again at
-	// once and settles with nothing owed (awaitingAnswer false), which fails the row here.
+	// first answer with that answer still to come (Deps.coverageParked, awaitingAnswer true). A
+	// loop that took a failed canary for proof never parks there: it runs the identity steps
+	// again at once and settles with nothing owed (awaitingAnswer false), which fails the row.
 	reported := make(chan bool, 1)
 	running := deps
 	running.coverageParked = func(awaitingAnswer bool) {

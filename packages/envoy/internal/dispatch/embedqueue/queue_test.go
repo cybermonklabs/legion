@@ -3,8 +3,10 @@ package embedqueue
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +22,24 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// embedqueueTestParallelism is how many of this package's tests run at once when the command line
+// names no -parallel. Each parallel test has a database of its own (storetest.Open's clone) and
+// waits on Postgres far more than on a core, at about 4 connections a test; go test's default of
+// GOMAXPROCS is four on CI's runner but hundreds on a large machine, where every test's database
+// at once would open more connections than the test server allows. On 4 CPUs the package took
+// 67.6 and 78.1 s at 4 and 69.8 to 71.4 s at 8 (build-cluster runs at one head, one node), so 4.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const embedqueueTestParallelism = 4
+
+// TestMain sets the package's default -parallel and removes the databases the tests' pools are
+// cloned on (storetest.Main).
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(embedqueueTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // bedrockShaped gives a test embedder the Identity and Limits embed.Embedder asks for: Bedrock's
 // own, so the batch size and token ceiling the tests below count against are Bedrock's. Every
@@ -1464,8 +1483,8 @@ func runQueue(t *testing.T, deps Deps) (stop func()) {
 
 // runReturnBound is how soon Run must return once its context ends: its loops wait on nothing
 // that does not also end with it, so a statement in flight is cancelled and each loop returns
-// from its wait at once. It is the subject of the one test below; runQueue's wait for every
-// other Run is a hang guard.
+// from its wait at once. It is the subject of the two tests below, one with Run waiting and one
+// with a scan pass inside an embed; runQueue's wait for every other Run is a hang guard.
 const runReturnBound = 10 * time.Second
 
 // Run returns within runReturnBound of its context ending, from its loops' waits: the scan loop
@@ -1509,6 +1528,57 @@ func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
 		t.Logf("Run returned %s after its context ended", time.Since(ended).Round(time.Millisecond))
 	case <-time.After(runReturnBound):
 		t.Fatalf("Run did not return within %s of its context ending", runReturnBound)
+	}
+}
+
+// blockingEmbedder answers the canary at once and holds every other call until its context ends,
+// signalling entered (once, without blocking) when a call starts holding: a scan pass inside its
+// embed, the state a slow model service leaves a running process in.
+type blockingEmbedder struct {
+	bedrockShaped
+	entered chan struct{}
+}
+
+func (e *blockingEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
+	if len(texts) == 1 && texts[0] == embedCanary {
+		return fakeVectors(1), nil
+	}
+	select {
+	case e.entered <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// Run returns within runReturnBound of its context ending while a scan pass waits inside an embed
+// that answers only when its context ends: the cancel reaches the call in flight.
+func TestRunReturnsWithinItsBoundWhenItsContextEndsDuringAnEmbed(t *testing.T) {
+	// Not parallel: its assertion is a time - Run must return within runReturnBound of its context
+	// ending.
+	database := storetest.Open(t)
+	seedIssue(t, database, "HOLD", "HOLD-1", "Embedded by a model service that does not answer")
+	embedder := &blockingEmbedder{entered: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Run(ctx, Deps{Store: database, Embedder: embedder})
+	}()
+	// A Run that never returns is still waited for, so it cannot run on into the next test.
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(t, "Run to return once its context ended", done)
+	})
+	testwait.Receive(t, "a scan pass to hold inside its embed", embedder.entered)
+
+	cancel()
+	ended := time.Now()
+	select {
+	case <-done:
+		t.Logf("Run returned %s after its context ended", time.Since(ended).Round(time.Millisecond))
+	case <-time.After(runReturnBound):
+		t.Fatalf("Run did not return within %s of its context ending while a pass was inside an embed", runReturnBound)
 	}
 }
 
@@ -1772,7 +1842,7 @@ func TestAThrottledScanWaitsAtLeastRetryIntervalBeforeItsNextBatch(t *testing.T)
 // changed text - and not when the text is the one the row already holds.
 func TestEnqueueNotifiesOnlyWhenItWritesARow(t *testing.T) {
 	// Not parallel: the write that must notify nothing is read over a 500 ms window, and a
-	// notification load delayed past it would be taken by the next step, which expects one.
+	// notification that load delays past it would be taken by the next step, which expects one.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	listener, err := database.Pool.Listener(ctx)

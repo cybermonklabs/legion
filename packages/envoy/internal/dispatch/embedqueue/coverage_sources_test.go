@@ -253,7 +253,7 @@ func attrsOf(record slog.Record) map[string]slog.Value {
 // lock is released, the same pass logs its ordinary line with the coverage it leaves.
 func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	// Not parallel: it shortens coverageStatementTimeout (ShortenCoverageBoundForTest), a package
-	// variable every coverage report reads, and reads the default logger (logtest.SetDefault).
+	// variable every coverage report reads, and sets the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "BNDP", "BNDP-1", "An issue the pass records")
