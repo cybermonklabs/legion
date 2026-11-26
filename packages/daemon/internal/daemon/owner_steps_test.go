@@ -571,7 +571,7 @@ func newOwnerStepsUpgradeRig(t *testing.T) *inFlightRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Owner steps upgrade"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	// Two titles of the in-flight run, which Dispatch takes as two issues of no near-copy title.
 	for place, stood := range []phase.Phase{phase.Accepting, phase.Retro} {
 		title := inFlightTitles[4+place]
