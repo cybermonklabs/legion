@@ -4,11 +4,12 @@
 // (newTestHandlerWithStore, dispatchRequest).
 //
 // What it reads is the write a reader's edit makes as they type: its title or description,
-// with the value the edit started from beside it. Where somebody else wrote the attribute in
-// between, the write is refused 409 PRIORITY_CHANGED and states nothing — no tuple, so no act in
-// the history, and no `priority.updated` — rather than writing over that change unseen. A write
-// whose value is still the one stored lands, a write naming no expected writes as it always has,
-// and two writes whose edits started from one value cannot both land.
+// with the value the edit started from beside it, or a list of the values it may go over - that
+// one and the reader's own earlier writes that may have landed unseen. Where somebody else wrote
+// the attribute in between, the write is refused 409 PRIORITY_CHANGED and states nothing — no
+// tuple, so no act in the history, and no `priority.updated` — rather than writing over that
+// change unseen. A write that names the stored value lands, a write naming no expected writes as
+// it always has, and two writes whose edits started from one value cannot both land.
 package api
 
 import (
@@ -140,6 +141,78 @@ func TestPriorityPatchExpected(t *testing.T) {
 		}
 		if got := readTestPriority(t, handler, id); got.Title != "Ship it" || got.Description != "Alice's reasons" {
 			t.Fatalf("the priority reads back title %q description %q, want what the two writes wrote", got.Title, got.Description)
+		}
+	})
+
+	t.Run("a list of values writes where the stored value is one of them", func(t *testing.T) {
+		// What a page names where a write of the reader's may have landed unseen - its answer
+		// lost, or the write stopped while still out: the value the edit started from, and the
+		// reader's own texts the server may hold in its place.
+		start := readTestPriority(t, handler, id).Description
+		describe := func(text string, over ...string) map[string]any {
+			return map[string]any{"description": text, "expected": map[string]any{"description": over}}
+		}
+		// Its start is stored: the write lands.
+		lands(t, "a write over its start", describe("D1", start, "a stopped write that never landed"), 1, "alice")
+		// Her earlier write landed unseen: the server holds it, and her next write, naming her
+		// start and that write's text, lands over it.
+		lands(t, "her write whose answer was lost", map[string]any{
+			"description": "D2", "expected": map[string]any{"description": "D1"},
+		}, 1, "alice")
+		lands(t, "her next write over her own unseen one", describe("D3", "D1", "D2"), 1, "alice")
+		// Her write stopped while out lands late, after the write that followed it: that one
+		// named both, landed over its start, and the late one, naming only its own start, is
+		// refused, so her newer text stands.
+		lands(t, "her next write while the stopped one is still out", describe("D4", "D3", "D3, stopped"), 1, "alice")
+		changed(t, "the stopped write landing late", map[string]any{
+			"description": "D3, stopped", "expected": map[string]any{"description": "D3"},
+		}, `description is now "D4"`)
+		// Another person's text is none of hers: the write naming her texts is refused, naming
+		// his, and writes nothing.
+		lands(t, "Bob's description", map[string]any{"description": "Bob's reasons"}, 1, "bob")
+		changed(t, "her write over Bob's", describe("D5", "D4", "D4, stopped"), `description is now "Bob's reasons"`)
+		// A title names a list the same way.
+		title := readTestPriority(t, handler, id).Title
+		lands(t, "a rename naming a list", map[string]any{
+			"title": "Ship it by list", "expected": map[string]any{"title": []string{"Never stored", title}},
+		}, 1, "alice")
+	})
+
+	t.Run("an expected that names no value or not a string is refused", func(t *testing.T) {
+		for what, test := range map[string]struct {
+			body map[string]any
+			says string
+		}{
+			"an empty list": {
+				map[string]any{"description": "D6", "expected": map[string]any{"description": []string{}}},
+				"expected.description names no description",
+			},
+			"a list holding a number": {
+				map[string]any{"description": "D6", "expected": map[string]any{"description": []any{"D5", 1}}},
+				"expected.description is the description an edit started from, a string, or a list",
+			},
+			"a number": {
+				map[string]any{"title": "Ship", "expected": map[string]any{"title": 7}},
+				"expected.title is the title an edit started from, a string, or a list",
+			},
+			"a list beside no write of its attribute": {
+				map[string]any{"owner": "carol", "expected": map[string]any{"title": []string{"Ship it"}}},
+				"this write writes no title",
+			},
+		} {
+			before := readTestPriority(t, handler, id)
+			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/"+id, test.body, "alice")
+			code, text := refusalOf(t, response)
+			if response.Code != http.StatusBadRequest || code != codePriorityInput {
+				t.Fatalf("%s: status=%d code=%s error=%.300q, want 400 %s", what, response.Code, code, text, codePriorityInput)
+			}
+			if !strings.Contains(text, test.says) {
+				t.Fatalf("%s is refused with %q, want it to say %q", what, text, test.says)
+			}
+			if after := readTestPriority(t, handler, id); after.Title != before.Title ||
+				after.Description != before.Description || after.Owner != before.Owner {
+				t.Fatalf("%s moved the priority from %+v to %+v", what, before, after)
+			}
 		}
 	})
 

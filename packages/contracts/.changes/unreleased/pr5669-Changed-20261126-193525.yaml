@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    PatchPriorityExpected's title and description are each a string or a non-empty list of
+    strings (`string | string[]`): the text an edit began from, or the texts the write may go over.
+    A caller that sends a string is unchanged.
+time: 2026-11-26T19:35:25Z
+custom:
+    Issue: pr5669
