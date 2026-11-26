@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The `legion` tool tells an architect that `register_plan` refuses a version below the plan in
+  force (`PLAN_VERSION_OLD`), and answers the plan in force given again as taken, adding that
+  architect to the version's givers.
+time: 2026-11-24T09:04:07Z
+custom:
+    Issue: plan-give-duplicate

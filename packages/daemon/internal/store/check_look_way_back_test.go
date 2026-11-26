@@ -21,6 +21,7 @@ import (
 // in (R20 of dispatch://INFRA-3320) and still opens a merged issue's production check, so
 // LEGION-210, merged and set done by a person at merging, keeps its look as LEGION-209 does.
 func TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone(t *testing.T) {
+	t.Parallel()
 	s := migratedStore(t)
 	for _, fixture := range []struct {
 		key, project, status string

@@ -1,0 +1,34 @@
+kind: Fixed
+body: |-
+  `register_plan` answers a plan as taken only for the version that runs, or that the issue's first
+  step will run, and no longer by the registration's id. The daemon reads every registration
+  against its store, in the registration's own transaction:
+  - A version that the issue's first step passed over, given again at the same generation, is
+    stored. Before, it was answered 200 and nothing was stored.
+  - The version in force given again is answered 200 and stores nothing, also where the first
+    step carried it from generation 0, or a hand-over of the release before carried it with its
+    run. Before, those two were refused `409 PLAN_VERSION_OLD`.
+  - Before the first step of an issue the daemon has recorded, a version in force that no owner
+    of the issue gave is set aside at the give, as the first step sets it aside, and the owner's
+    version is stored and run. Before, the give was answered against that version, and the first
+    step then passed the owner's plan over.
+  - A version below the version in force is refused `409 PLAN_VERSION_OLD` also when it was taken
+    before; a give whose giver no longer acts on the issue on its Dispatch chain is refused
+    `ISSUE_NOT_OWNED`, and one of a generation the issue left `PLAN_STALE_GENERATION`, also where
+    the same give was taken before. Before, each was answered 200.
+  - Every owner that gave a version is one of its givers. A version is set aside as an earlier
+    owner's only when none of its givers owns the issue any more. The `plan-not-taken` notice
+    names each version it passed over once, with every giver of its copies. A second delivery of
+    a give writes nothing.
+
+  The store gains `issue_plans.earlier_givers`. An earlier release reads only `given_by`, the
+  giver the store added last, so after a rollback its first step sets a version aside when that
+  giver no longer owns the issue, though an earlier giver still does. A rollback onto a release
+  that has the plan tables needs no statement. A rollback past the plan tables also runs the way
+  back in the header of `20261124033010_plan_earlier_givers.up.sql`, before or after the plan
+  tables' own, in the session of each project that rolls back, as `docs/kubernetes.md` says under
+  "Rolling back the release whose owner's plan picks the steps"; each of its statements runs again
+  with no error once the table is gone.
+time: 2026-11-24T01:14:46Z
+custom:
+    Issue: plan-give-duplicate

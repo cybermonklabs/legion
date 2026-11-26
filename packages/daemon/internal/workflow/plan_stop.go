@@ -182,7 +182,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	case !w.Stored && beforeItsWork(*issue):
 		// The stop's task is one of the plan the issue's first step would walk: the newest its
 		// owner gave, or the task default of the project's default steps.
-		waiting, err := e.store.OwnersNewestPlan(ctx, tx, *issue)
+		waiting, err := record.OwnersNewestPlan(ctx, e.store, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
 		}

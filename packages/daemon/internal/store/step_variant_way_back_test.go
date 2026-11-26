@@ -310,6 +310,7 @@ func stepVariantKeptProblems(ctx context.Context, pool *Pool, issue string, roll
 // What this cannot show is the earlier daemon running: its binary is not here, so its decode is the
 // copy above (stepRecordBeforeTheVariant).
 func TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	for _, q := range stepVariantWayBackRows() {
 		write, isStep := q.payload.(record.StepRecord)
 		if !isStep {

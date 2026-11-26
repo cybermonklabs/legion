@@ -18,6 +18,7 @@ import (
 // does): no record holds a tree to clear (R22 of dispatch://INFRA-3320), so "cleared issue" is the
 // one clear a started step outlives.
 func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
+	t.Parallel()
 	for _, which := range []string{"no entry", "entry without task", "started", "empty token", "missing record", "cleared issue"} {
 		t.Run(which, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -94,6 +95,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 }
 
 func TestAStoppedStepsLateReportNeedsItsStartedRun(t *testing.T) {
+	t.Parallel()
 	for _, started := range []bool{true, false} {
 		name := "started"
 		if !started {

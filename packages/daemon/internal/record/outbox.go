@@ -3288,15 +3288,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
 // issue's architect once, whatever number of versions it passed over, after it deleted their
 // rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
-// passOverEarlierOwners, tellPassedOver): its giver acts on the issue no longer (PlanOwners), as
-// after Dispatch moves the issue from under the giver's issue; the reason names each version, its
-// document and its giver, the plan the first step runs (an owner's, of the issue's generation or
-// carried to it, or the default steps), and that the architect may give the plan again with
-// register_plan as its own. Or a plan of an issue whose experiment's group takes no plan from its
-// owner (workflow's passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave
-// is passed over, the run takes the project's default steps, and the reason names each version
-// and the group (intake's GroupClause), and offers no register_plan, which that issue's owner is
-// answered PLAN_NOT_TAKEN for.
+// passOverEarlierOwners, tellPassedOver): none of its givers acts on the issue any longer
+// (PlanOwners, GivenByOwner), as after Dispatch moves the issue from under the giver's issue; the
+// reason names each version once, its document and the givers of its copies, the plan the first
+// step runs (an owner's, of the issue's generation or carried to it, or the default steps), and
+// that the architect may give the plan again with register_plan as its own. Or a plan of an issue
+// whose experiment's group takes no plan from its owner (workflow's passOverOwners, tellNotTaken):
+// every plan its owner or an earlier owner gave is passed over, the run takes the project's
+// default steps, and the reason names each version and the group (intake's GroupClause), and
+// offers no register_plan, which that issue's owner is answered PLAN_NOT_TAKEN for.
 //
 // `reparented` tells an architect that the Dispatch parent of an issue in Legion's work changed
 // (ReparentedNotice, R18 of dispatch://INFRA-3320).

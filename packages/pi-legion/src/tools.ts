@@ -831,7 +831,8 @@ export function createLegionTool(deps: {
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
-        "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
+        "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
+        "again is answered as taken, and adds you to its givers), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue you do not own on its " +
         "Dispatch chain (ISSUE_NOT_OWNED, naming the architect that does), an issue the daemon has not recorded whose Dispatch " +
         "status is not triage, backlog, icebox or todo " +
@@ -1193,8 +1194,8 @@ export function createLegionTool(deps: {
               throw new Error("register_plan requires a positive integer version");
             }
             const artifactId = await documentIdOf("register_plan", dispatch, issue, reference);
-            // The fact is keyed by the issue, its generation, the document and the version, so a
-            // repeat is the registration again, answered the same.
+            // The daemon judges every give against its store: a repeat of a registration it
+            // applied is answered as taken while that version is in force, and writes nothing.
             const taken = await retryWhileDaemonRestarts(
               "register_plan",
               async () =>

@@ -309,7 +309,7 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 		var got *StoredPlan
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			got, err = NewStore().OwnersNewestPlan(ctx, tx, issue)
+			got, err = OwnersNewestPlan(ctx, NewStore(), tx, issue)
 			must(t, err)
 		})
 		return got
@@ -408,19 +408,19 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectThatActsOnTheIssue(t *testing.
 		putPlan(t, tx, defaults, defaultTasks, nil)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		got, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s under LEGION-209 = %#v, want LEGION-300's architect's alone: %#v", key, got, want)
 		}
 		chainRow(t, tx, key, "", 2)
-		got, err = NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier, byAbove}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s with no parent = %#v, want every plan but its own architect's: %#v", key, got, want)
 		}
 		chainRow(t, tx, key, "LEGION-777", 3)
-		got, err = NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if got != nil {
 			t.Fatalf("the plans of earlier owners of %s on an unknown chain = %#v, want none", key, got)
