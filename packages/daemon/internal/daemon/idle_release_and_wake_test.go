@@ -146,8 +146,23 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// names its phase is read from the daemon's own account of the adoption — the line it logs
 	// once the shim answers ok, naming the task's delivery and its phase — so this holds for the
 	// phase task itself and not for a frame some other send happened to bring.
+	//
+	// One issue is the exception: a parent starts no phase while a Dispatch child of it is open
+	// (awaiting_children, cybermonklabs/legion#4592), so the root of s27, whose child is open in
+	// implementing, is moved there by the first admission pass and given no start task. It is held
+	// to that instead: it stands in awaiting_children.
 	t.Run("APhaseTaskReachesItsRoleBehindOneAdoption", func(t *testing.T) {
 		for _, issue := range rig.issues {
+			if idleRigIsParent(issue.name) {
+				var at string
+				if err := rig.pool.QueryRow(context.Background(), "select phase from issues where key = $1", issue.key).Scan(&at); err != nil {
+					t.Fatalf("read the phase of %s: %v", issue.name, err)
+				}
+				if at != string(phase.AwaitingChildren) {
+					t.Errorf("%s, the parent of an open child, stands in %s, want %s", issue.name, at, phase.AwaitingChildren)
+				}
+				continue
+			}
 			prompts := rig.agents.prompts(issue.key, string(issue.role))
 			if len(prompts) == 0 {
 				t.Errorf("%s's role was given no task at the rig's start", issue.name)

@@ -661,8 +661,13 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	if err := e.closeTreeRows(ctx, tx, *issue, closing); err != nil {
 		return intake.Result{}, err
 	}
-	e.logOnCommit(ctx, "workflow: linger closed the tree", "tree", issue.Key, "generation", issue.Generation, "issues", len(members),
-		"retrosOpen", kept)
+	// The line names the members whose close an open retro after a close defers, and only when
+	// there are some, so a tree with none logs its close as it always did.
+	closed := []any{"tree", issue.Key, "generation", issue.Generation, "issues", len(members)}
+	if len(kept) > 0 {
+		closed = append(closed, "retrosOpen", kept)
+	}
+	e.logOnCommit(ctx, "workflow: linger closed the tree", closed...)
 	handed, err := e.unfinishedHandOvers(ctx, tx, *issue, members)
 	if err != nil {
 		return intake.Result{}, err

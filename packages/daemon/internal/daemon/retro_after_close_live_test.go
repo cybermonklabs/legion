@@ -320,11 +320,14 @@ func (r *retroLive) until(what string, bound time.Duration, cond func() bool) {
 
 // ---- the steps -----------------------------------------------------------------------------------
 
-// grandchild-closed (A1): T's architect releases child C and C's first phase starts; C's architect
-// files and releases grandchild G and G's first phase starts; C's implementer pushes a head; C's
-// architect writes done on G. G's retro agent gets one task after the close, whose text holds each
-// clause of R2 and names T's architect's role topic, not C's; the retro completes with a plan
-// rating; G's status stays done.
+// grandchild-closed (A1): T's architect releases child C and C's first phase starts; C's planner
+// runs C into implementing; C's architect files and releases grandchild G and G's first phase
+// starts; C's implementer pushes a head; C's architect writes done on G. A parent starts no phase
+// while a Dispatch child of it is open (main's awaiting_children, #4592): G's filing moves C, its
+// implementer in the middle of its phase, into awaiting_children, and the implementer pushes what
+// it has, as the move tells it to, and stops; G's close brings C back to implementing. G's retro
+// agent gets one task after the close, whose text holds each clause of R2 and names T's architect's
+// role topic, not C's; the retro completes with a plan rating; G's status stays done.
 func (r *retroLive) grandchildClosed() {
 	c, g := r.newKey(), r.newKey()
 	r.child = c
@@ -332,12 +335,17 @@ func (r *retroLive) grandchildClosed() {
 	r.releaseBy(r.root, c)
 	r.startsPlanning(c)
 	childArchitect := r.register(c, r.tree, claim.RoleArchitect)
+	r.walkTo(c, phase.Implementing)
+	implementer := r.registerTask(c, r.tree, claim.RoleImplementer)
 	r.board.place(g, "triage", c, false)
 	r.releaseBy(childArchitect, g)
 	r.startsPlanning(g)
-	r.note("T's architect released %s and %s's architect released %s: each started its first phase", c, c, g)
-	r.walkTo(c, phase.Testing)
-	r.note("%s's implementer pushed head %s on pull request #%d: %s is in testing", c, stepRecordsHead[:7], r.pullRequestOf(c), c)
+	r.waitPhase(c, phase.AwaitingChildren)
+	r.note("T's architect released %s, run into implementing, and %s's architect released %s, which started its first phase: %s waits for it in awaiting_children",
+		c, c, g, c)
+	r.openPullRequest(c)
+	implementer.endTurn()
+	r.note("%s's implementer pushed head %s on pull request #%d and stopped", c, stepRecordsHead[:7], r.pullRequestOf(c))
 
 	mark := r.markOf(g, claim.RoleImplementer)
 	r.sessionWrite(childArchitect, g, "done")
@@ -347,6 +355,12 @@ func (r *retroLive) grandchildClosed() {
 	r.note("read back: one retro task went to %s (the implementer of %s, %s) after the close: %s", agent.token, g, r.launchKind(agent.token), firstLine(task.Message))
 	r.completesRetro(g, agent, mark, 4)
 	r.requireStatusStays(g, "done", mark)
+	// With no open child left, C goes back to implementing, and its implementer takes the task the
+	// return gives it, so the close of step 2 finds it idle.
+	r.waitPhase(c, phase.Implementing)
+	implementer.next()
+	implementer.endTurn()
+	r.note("read back: with %s closed, %s came back to implementing and its implementer took the task of the return", g, c)
 }
 
 // child-closed (A1): T's architect writes done on C, whose implementer pushed a head. The same as

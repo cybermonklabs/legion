@@ -148,6 +148,18 @@ type idleRigIssue struct {
 // whose implementer's claim is bound to the root's tree.
 var idleRigChildOf = map[string]string{idleRigPastLingerChild: idleRigPastLinger}
 
+// idleRigIsParent is whether the rig issue called name is the root of a child of the rig
+// (idleRigChildOf): a parent whose child is open starts no phase (awaiting_children), so the boot
+// gives its role no start task.
+func idleRigIsParent(name string) bool {
+	for _, root := range idleRigChildOf {
+		if root == name {
+			return true
+		}
+	}
+	return false
+}
+
 // newIdleWakeRig readies every part, boots the daemon, and waits until every seeded issue's pod
 // runs its role, in order, with one issue per name given. Each issue is its own tree root, or a
 // child in the tree of the root idleRigChildOf names, in the workflow at `implementing` with its
