@@ -162,8 +162,8 @@ func (h *helperRun) guarded(script string) (first string, pid int, waited error)
 // ends, whether it was reaped (gone from /proc) and by how many of the reaper's passes.
 //
 // delayed, the forced control, holds the reaper after Wait4 made the orphan absent from /proc and
-// before record runs. The direct count below then reads 0, which is the same unpromised callback
-// order that made the together case flake.
+// before record runs, so a count read right after awaitGone would read 0: the same callback order
+// that made the together case flake. awaitReaps below waits for the record instead.
 func (h *helperRun) orphan(subreaper bool, delay *recordDelay) error {
 	h.delay = delay
 	if subreaper {
