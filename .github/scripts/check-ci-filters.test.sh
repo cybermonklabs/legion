@@ -6164,7 +6164,7 @@ typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-ty
 out=$(envoy_legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
-  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-typo, twice, unlisted, and the jobs whose legs run are envoy-go")"
+  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-typo, twice, unlisted, and the jobs whose legs run are envoy-go")"
 
 echo "case: an envoy go-legs.yaml entry without unlisted"
 nohome=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["unlisted"]; print(json.dumps(e))' "$real_envoy")
@@ -6188,10 +6188,17 @@ check "names the counted race package twice must name" \
   "$(contains "$out" "its twice names nothing, and the race legs' packages whose skips the unit legs count (packages/envoy/scripts/database-skips.sh's table) are internal/cipher/natscallout")"
 
 echo "case: a package other jobs run dropped from elsewhere"
-dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/dispatch/api"]; print(json.dumps(e))' "$real_envoy")
+dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/integration"]; print(json.dumps(e))' "$real_envoy")
 out=$(envoy_legs_held "$dropped")
 check "is refused" "$(contains "$out" '^RAISED: ')"
-check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/dispatch/api': 'envoy-go-race-api'")"
+check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/integration': 'envoy-go-natslive'")"
+
+echo "case: a single-package race job's legs that run another package"
+strayed=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-race-api"]["3"] = [{"internal/dispatch/docs": 3}]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$strayed")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the job, what its legs run and the one package it is for" \
+  "$(contains "$out" "its envoy-go-race-api legs run internal/dispatch/api, internal/dispatch/docs, and ENVOY_RACE_LANE's envoy-go-race-api is internal/dispatch/api")"
 
 # The race lane's trees, on a fixture holding the directory of each package envoy-go-race names:
 # on main the race step ran each tree as ./<tree>/..., so a package added under one ran raced with
