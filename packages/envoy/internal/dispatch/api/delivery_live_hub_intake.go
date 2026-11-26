@@ -22,9 +22,10 @@ import (
 // before the open P0 issues it arrives with, is what leaves no gap: every event at or below the
 // head was committed and is final before the reads that follow it (those P0 issues, each view's
 // recompute) run, and every event above it arrives on the feed. The listener's connection
-// (onConnected) catches the change log up after its LISTEN for the same reason, and marks every
+// (onConnected) catches the change log up after its LISTEN for the same reason, marks every
 // Legion view, which a notification lost before that LISTEN would otherwise leave stale until
-// the next one came, with no bound (dirtyLegionViews).
+// the next one came, with no bound (dirtyLegionViews), and reads the settings row's freshness,
+// which a lost notification leaves wrong for as long (readFreshness).
 func (h *deliveryHub) intake(g *hubGeneration) {
 	var feed relaySubscription
 	var held, open bool
@@ -60,6 +61,7 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 		case <-g.connected:
 			h.catchUp(g)
 			h.dirtyLegionViews(g)
+			h.readFreshness(g)
 			h.note(deliveryHubNote{what: "connected"})
 		case done := <-g.barrier:
 			h.catchUp(g)
