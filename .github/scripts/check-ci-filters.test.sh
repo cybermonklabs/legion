@@ -129,13 +129,22 @@ def legs_held(text):
     return "held"
 
 
-def envoy_legs_held(text):
+def envoy_legs_held(text, root=""):
     import yaml
     try:
-        reads.hold_envoy_legs(yaml.safe_load(text))
+        if root:
+            reads.hold_envoy_legs(yaml.safe_load(text), root)
+        else:
+            reads.hold_envoy_legs(yaml.safe_load(text))
     except ValueError as refusal:
         return f"RAISED: {refusal}"
     return "held"
+
+
+def plain_run(module, job, text):
+    import yaml
+    entry = yaml.safe_load(text)
+    return " ".join(reads.leg_run_packages(entry, job, reads.go_legs.go_packages(module)))
 
 
 def alone_held(root, alone, packages):
@@ -147,16 +156,8 @@ def alone_held(root, alone, packages):
     return "held"
 
 
-def alone_held_real():
-    try:
-        reads.hold_unit_alone_tests()
-    except ValueError as refusal:
-        return f"RAISED: {refusal}"
-    return "held"
-
-
 questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held,
-             "envoy_legs_held": envoy_legs_held, "alone_held": alone_held, "alone_held_real": alone_held_real}
+             "envoy_legs_held": envoy_legs_held, "plain_run": plain_run, "alone_held": alone_held}
 
 
 def field():
@@ -5973,7 +5974,7 @@ typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["daemon-go-t
 out=$(legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
-  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, unlisted, and the jobs whose legs ci-job-daemon-go.yaml runs are daemon-go and daemon-go-race, beside elsewhere and unlisted: a package under daemon-go-typo runs in no job")"
+  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, unlisted, and the jobs whose legs run are daemon-go and daemon-go-race (.github/workflows/ci-job-daemon-go.yaml), beside elsewhere and unlisted: a package under daemon-go-typo runs in no job")"
 
 echo "case: a go-legs.yaml entry with no race legs"
 norace=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["daemon-go-race"]; print(json.dumps(e))' "$real_legs")
@@ -5991,7 +5992,7 @@ check "names the plain job it must be" "$(contains "$out" "its unlisted is 'daem
 # The same hold on the entry for packages/envoy, which also holds the race legs to the race lane's
 # envoy-go-race packages, `twice` to the race packages whose skips the unit legs count, and
 # `elsewhere` to the packages other jobs' steps are built to run.
-envoy_legs_held() { ask envoy_legs_held "$1"; }
+envoy_legs_held() { ask envoy_legs_held "$@"; } # envoy_legs_held <entry JSON> [<root the race trees are walked under>]
 real_envoy=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/envoy"]))')
 echo "case: the repository's go-legs.yaml entry for envoy is held"
 check "passes" "$(is "$(envoy_legs_held "$real_envoy")" held)"
@@ -6037,29 +6038,76 @@ check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the job, what its legs run and the one package it is for" \
   "$(contains "$out" "its envoy-go-race-api legs run internal/dispatch/api, internal/dispatch/docs, and ENVOY_RACE_LANE's envoy-go-race-api is internal/dispatch/api")"
 
+# The race lane's trees, on a fixture holding the directory of each package envoy-go-race names:
+# on main the race step ran each tree as ./<tree>/..., so a package added under one ran raced with
+# no edit. Here `unlisted` would run such a package plain in envoy-go's last leg, so the hold walks
+# each tree and refuses a package under it that no race leg lists. Each case adds one package
+# under one tree and hands the hold the repository's own entry.
+race_trees="internal/dispatch/delivery internal/dispatch/store internal/kvwatch"
+trees_root() {
+  local root="$work/race-trees-$1" package
+  for package in $race_trees internal/bus cmd/listener internal/store internal/session natscred \
+    internal/cipher/natscallout internal/oidc; do
+    mkdir -p "$root/$package"
+  done
+  echo "$root"
+}
+echo "case: the race lane's trees hold no package the race legs leave out"
+root=$(trees_root none)
+mkdir -p "$root/internal/kvwatch/testdata/fixture"
+printf 'package fixture\n' > "$root/internal/kvwatch/testdata/fixture/f.go"
+check "passes, a testdata directory under a tree no package" "$(is "$(envoy_legs_held "$real_envoy" "$root")" held)"
+for tree in $race_trees; do
+  echo "case: a package added under the race tree $tree with no race leg line"
+  root=$(trees_root "${tree//\//-}")
+  mkdir -p "$root/$tree/brandnew"
+  printf 'package brandnew\n' > "$root/$tree/brandnew/brandnew.go"
+  out=$(envoy_legs_held "$real_envoy" "$root")
+  check "is refused" "$(contains "$out" '^RAISED: ')"
+  check "naming the package and the race leg it needs" \
+    "$(contains "$out" "the race lane's trees hold $tree/brandnew, which no envoy-go-race leg lists: unlisted would run each plain in envoy-go's last leg, with no race detector")"
+done
+
+# The plain gates' Run is built from leg_run_packages: the packages the plain job's legs list and
+# each package `go list ./...` prints that no place names, which that job's last leg runs. So a
+# change to only an unlisted package's _test.go files starts the job that runs them, in a merge
+# group too. Each case takes one package out of the repository's own entry.
+echo "case: a package no line names is in the plain gate's Run (envoy-go)"
+unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go"]["5"].remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
+check "the Run names it" "$(contains " $(ask plain_run packages/envoy envoy-go "$unclock") " ' internal/clock ')"
+check "and the race job's does not" "$(is "$(contains " $(ask plain_run packages/envoy envoy-go-race "$unclock") " ' internal/clock ')" false)"
+echo "case: a package no line names is in the plain gate's Run (daemon-go)"
+read -r dropped_daemon undaemon < <(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); legs = e["daemon-go"]; last = max(legs, key=lambda n: (len(str(n)), str(n))); p = next(x for x in legs[last] if isinstance(x, str)); legs[last].remove(p); print(p, json.dumps(e, separators=(",", ":")))' "$real_legs")
+check "the Run names it" "$(contains " $(ask plain_run packages/daemon daemon-go "$undaemon") " " $dropped_daemon ")"
+
 # UNIT_ALONE_TESTS' hold, on a fixture module: package a declares TestOwn, TestShared, behind a
 # tag no step passes TestTagged, behind a constraint the linux/arm64 runner meets TestOnLinux,
-# behind one it does not TestOffLinux, and in a comment TestInComment; package b declares
-# TestShared too. Each case hands the hold one list and reads what it answered.
+# behind one it does not TestOffLinux, in a file named for darwin with no constraint line
+# TestNamedDarwin, in one named for linux TestNamedLinux, and in a comment TestInComment; package b
+# declares TestShared too. Each case hands the hold one list and reads what it answered. (The
+# repository's own list is held by the import every question here starts from.)
 alone_held() { ask alone_held "$work/alone" "$1" "a b"; }
 mkdir -p "$work/alone/a" "$work/alone/b"
 printf 'package a\n\nimport "testing"\n\nfunc TestOwn(t *testing.T) {}\n\nfunc TestShared(t *testing.T) {}\n\n// func TestInComment(t *testing.T) {}\n' > "$work/alone/a/a_test.go"
 printf '//go:build natslive\n\npackage a\n\nimport "testing"\n\nfunc TestTagged(t *testing.T) {}\n' > "$work/alone/a/live_test.go"
 printf '//go:build linux && (arm64 || amd64) && !race\n\npackage a\n\nimport "testing"\n\nfunc TestOnLinux(t *testing.T) {}\n' > "$work/alone/a/on_linux_test.go"
 printf '//go:build darwin || windows\n\npackage a\n\nimport "testing"\n\nfunc TestOffLinux(t *testing.T) {}\n' > "$work/alone/a/off_linux_test.go"
+printf 'package a\n\nimport "testing"\n\nfunc TestNamedDarwin(t *testing.T) {}\n' > "$work/alone/a/clock_darwin_test.go"
+printf 'package a\n\nimport "testing"\n\nfunc TestNamedLinux(t *testing.T) {}\n' > "$work/alone/a/clock_linux_arm64_test.go"
 printf 'package b\n\nimport "testing"\n\nfunc TestShared(t *testing.T) {}\n' > "$work/alone/b/b_test.go"
 echo "case: the alone list holds a test its package declares and no other does"
 check "passes" "$(is "$(alone_held '{"a": ["TestOwn"]}')" held)"
 check "and a test behind a constraint the runner's build meets passes too" "$(is "$(alone_held '{"a": ["TestOnLinux"]}')" held)"
-check "and the repository's own list passes, as the import that loads it did" \
-  "$(is "$(ask alone_held_real)" held)"
+check "and one in a file named for linux/arm64" "$(is "$(alone_held '{"a": ["TestNamedLinux"]}')" held)"
+echo "case: the alone list names a test declared only in a file named for another platform"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestNamedDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestNamedDarwin, which no _test.go file')"
 echo "case: the alone list names a test no file declares (a rename, a deletion)"
 out=$(alone_held '{"a": ["TestGone"]}')
 check "is refused" "$(contains "$out" "^RAISED: UNIT_ALONE_TESTS names TestGone, which no _test.go file of .*/alone/a that the runner's linux/arm64 build compiles declares")"
 echo "case: the alone list names a test declared only in a comment"
 check "is refused" "$(contains "$(alone_held '{"a": ["TestInComment"]}')" '^RAISED: UNIT_ALONE_TESTS names TestInComment, which no _test.go file')"
 echo "case: the alone list names a test declared only behind a tag"
-check "is refused" "$(contains "$(alone_held '{"a": ["TestTagged"]}')" '^RAISED: UNIT_ALONE_TESTS names TestTagged, which no _test.go file .*a declaration behind a tag is none')"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestTagged"]}')" '^RAISED: UNIT_ALONE_TESTS names TestTagged, which no _test.go file .*behind a tag or for another platform, is none')"
 echo "case: the alone list names a test declared only for another platform"
 check "is refused" "$(contains "$(alone_held '{"a": ["TestOffLinux"]}')" '^RAISED: UNIT_ALONE_TESTS names TestOffLinux, which no _test.go file')"
 echo "case: the alone list names a test another unit package declares too"
