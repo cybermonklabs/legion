@@ -2,5 +2,9 @@
 # sentences on the choice of an agent taken out: the paragraph of go/architect-common.md, and the
 # sentence of the architect's plan reference. These are the two texts an owner loads that ask for
 # the choice and that the skills trim (#5564) keeps; patches/README.md says why there is no third.
+# So E is the control with every choice text taken out only at a label that carries that trim. At
+# a label without it, plan.md still holds the bullet "write the choice all the same", which asks
+# the owner for the choice, and a run of E there is no control of this form: it measures an owner
+# that was still asked.
 drop packages/daemon/internal/prompts/go/architect-common.md controls/drops/owner-walk-E-choice-paragraph.txt
 drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-sentence.txt

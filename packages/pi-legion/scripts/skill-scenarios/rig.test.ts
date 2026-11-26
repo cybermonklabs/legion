@@ -4056,7 +4056,7 @@ esac
       path.join(bin, "bun"),
       String.raw`#!/bin/sh
 case "$1 $2" in
-"install --frozen-lockfile") printf 'install %s\n' "$PWD" >>"$SKILL_SCENARIOS_WORK/bun-calls" ;;
+"install --frozen-lockfile") printf 'install %s\n' "$PWD" >>"$SKILL_SCENARIOS_WORK/rig-calls" ;;
 *"/owner-walk.ts cases") printf 'root-A-claude 3\nroot-B-claude 3\nchild-B-claude 3\nroot-D-claude 3\nroot-E-claude 3\n' ;;
 *) echo "the planted bun has no answer to $*" >&2; exit 9 ;;
 esac
@@ -4081,7 +4081,6 @@ esac
         stderr: result.stderr.toString(),
         calls: read("rig-calls"),
         env: read("rig-env"),
-        installs: read("bun-calls"),
       };
     };
     return { repo: realpathSync(repo), work, run };
@@ -4100,6 +4099,7 @@ esac
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
     expect(job.calls).toBe(
       [
+        `install ${repo}`,
         `plans-capture ${repo} ${work}/plans`,
         `profile head ${repo}`,
         "batch-scored owner-walk 1 head",
@@ -4127,9 +4127,10 @@ esac
   });
 
   // Catches: a Job that builds a label its cases do not run on, so a form-E Job stops on ctl-d's
-  // tree wherever D's patch does not apply; and a control tree profiled with no packages installed,
-  // whose plugin pack cannot build. Each control Job builds its own case's label alone.
-  test("scored-job.sh controls --case builds that case's label alone: its tree, its packages and its profile", () => {
+  // tree wherever D's patch does not apply; and a control tree profiled before its packages are
+  // installed, or with none installed, whose plugin pack has no node_modules to build through.
+  // The installs are in the same log as the rig's calls, so their order is read with it.
+  test("scored-job.sh controls --case builds that case's label alone: its tree, its packages, then its profile", () => {
     const standin = { ...pod, SKILL_SCENARIOS_MODEL: "standin" };
     const builds = (form: string) => {
       const { repo, work, run } = plantedJob();
@@ -4146,8 +4147,7 @@ esac
         stderr: job.stderr,
         calls: job.calls
           .split("\n")
-          .filter((call) => /^(label-tree|unpatch-holds|profile|batch-scored) /.test(call)),
-        installs: job.installs.trim().split("\n"),
+          .filter((call) => /^(label-tree|unpatch-holds|install|profile|batch-scored) /.test(call)),
         repo,
         commit: git(repo, "rev-parse", "HEAD").trim(),
         controls: path.join(repo, "packages/pi-legion/scripts/skill-scenarios/controls"),
@@ -4155,27 +4155,29 @@ esac
       };
     };
     const e = builds("E");
-    expect({ code: e.code, stderr: e.stderr, calls: e.calls, installs: e.installs }).toEqual({
+    expect({ code: e.code, stderr: e.stderr, calls: e.calls }).toEqual({
       code: 0,
       stderr: "",
       calls: [
+        `install ${e.repo}`,
         `label-tree ctl-e ${e.commit} ${e.controls}/owner-walk-E.txt`,
+        `install ${e.trees}/ctl-e/tree`,
         `profile ctl-e ${e.trees}/ctl-e/tree`,
         "batch-scored owner-walk 1 ctl-e",
       ],
-      installs: [`install ${e.repo}`, `install ${e.trees}/ctl-e/tree`],
     });
     const d = builds("D");
-    expect({ code: d.code, stderr: d.stderr, calls: d.calls, installs: d.installs }).toEqual({
+    expect({ code: d.code, stderr: d.stderr, calls: d.calls }).toEqual({
       code: 0,
       stderr: "",
       calls: [
+        `install ${d.repo}`,
         `label-tree ctl-d ${d.commit} ${d.controls}/owner-walk-D.txt`,
         `unpatch-holds ctl-d ${d.controls}/patches/owner-walk-D.patch`,
+        `install ${d.trees}/ctl-d/tree`,
         `profile ctl-d ${d.trees}/ctl-d/tree`,
         "batch-scored owner-walk 1 ctl-d",
       ],
-      installs: [`install ${d.repo}`, `install ${d.trees}/ctl-d/tree`],
     });
   });
 
