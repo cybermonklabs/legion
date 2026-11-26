@@ -114,8 +114,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
+          --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -211,11 +216,11 @@ jobs:
             packages/daemon/internal/testnats/nats.go Image
             packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
 
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
 
       # Each leg runs the packages .github/go-legs.yaml lists for its number under daemon-go: every
       # package of the module but the five the race legs test and internal/textcheck, whose tests
@@ -376,8 +381,9 @@ jobs:
         leg: [1, 2, 3, 4]
     # A step's worst case is its largest measured green duration plus its own -timeout, as
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
-    # at most, then the Postgres sizing step's 19 s (its cold build of the connections command
-    # and the service's restart, as envoy-go-race's job 137890840698 took them), then the race
+    # at most, then the Postgres ceiling step's 19 s (its cold build of the connections command
+    # and, before the service took its settings on its command line, the service's restart, as
+    # envoy-go-race's job 137890840698 took them), then the race
     # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes, and 70 is the
     # limit.
     timeout-minutes: 70
@@ -388,8 +394,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
+          --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -431,23 +442,23 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+
       # internal/daemon's scratch-Dispatch tests (startScratchDispatchOn) start the real Dispatch
       # server on a database of this service, and one Dispatch process opens up to
       # store.ConnectionsPerProcess connections (118): more than PostgreSQL's default
       # max_connections of 100 allows, before the five packages' own pools. A run holding several
       # at once had a scratch Dispatch refused with 53300 "sorry, too many clients already" and
-      # exit before it was ready (job 137919658889). So the service is raised to what a Dispatch
-      # test lane needs, as every lane that starts a Dispatch process raises its own. The go run of
-      # the script builds envoy's internal/dispatch/store/cmd/connections, after the cache restore
-      # so that it reads the restored module cache.
-      - name: Size the service for this lane's Dispatch processes
+      # exit before it was ready (job 137919658889). So the service's command line allows what a
+      # Dispatch test lane needs, and this checks it, as every lane that starts a Dispatch process
+      # does. The go run of the script builds envoy's internal/dispatch/store/cmd/connections,
+      # after the cache restore so that it reads the restored module cache.
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
-        timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux
