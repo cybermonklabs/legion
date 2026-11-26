@@ -141,6 +141,11 @@ var (
 	// of it, or one that names a code Dispatch answers for its own outage (outageCodes); and a 500
 	// whose body names no code or names internalCode.
 	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
+	// errStillAsking is a read's answer when a call of the person route for the same person has
+	// already run failureTTL with no answer: a Dispatch that hangs, where waiting the reader's own
+	// bound would gain nothing. It is Unanswered, so a kept answer serves and the hold reads the
+	// kept row, as a timed-out ask does.
+	errStillAsking = errors.New("projectaccess: dispatch has not answered a call already in flight")
 )
 
 // outageCodes are the codes Dispatch answers its access routes with, beside a 503, for an outage
@@ -167,8 +172,10 @@ const internalCode = "INTERNAL"
 // that clears by itself once Dispatch answers again. That is the read's deadline passing, its
 // caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
 // answer arrived (dispatchread.ErrNoAnswer); a 502, 503 or 504 whose body names no code of
-// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); and a 500
-// whose body names no code or internalCode, the 500 Dispatch answers while its database fails.
+// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); a 500
+// whose body names no code or internalCode, the 500 Dispatch answers while its database fails; and
+// a call that has already run failureTTL with no answer, which a later read does not wait on
+// (errStillAsking).
 // Every other failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the
 // broker's own account (dispatchread.ErrBrokerRefused), answering a member kind this broker does
 // not know (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 500
@@ -182,7 +189,7 @@ func Unanswered(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable)
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable) || errors.Is(err, errStillAsking)
 }
 
 // NoApprover is refusal, a caller's own refusal of a person who may not act as an approver there
@@ -381,11 +388,9 @@ type Client struct {
 	people  map[string]cachedPerson
 	// failures holds each person's read that failed, for failureTTL from when it came back, and
 	// flights each person's read in flight, which a read of the same person, MemberKind's or
-	// Person's, joins rather than making a call of its own. keptHolds is the one KeptHold read
-	// beside a current Person failure, so the hold gate does not reread the same kept row.
-	failures  map[string]failedRead
-	keptHolds map[string]cachedKeptHold
-	flights   map[string]*personFlight
+	// Person's, joins rather than making a call of its own.
+	failures map[string]failedRead
+	flights  map[string]*personFlight
 	// joined, when set, runs each time a read joins one already in flight for the same person: a
 	// test's signal that the read waits on that call rather than making its own.
 	joined func()
@@ -410,13 +415,12 @@ type cachedAnswer struct {
 // 10 s whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
 	return &Client{
-		read:      dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
-		now:       time.Now,
-		answers:   map[accessKey]cachedAnswer{},
-		people:    map[string]cachedPerson{},
-		failures:  map[string]failedRead{},
-		keptHolds: map[string]cachedKeptHold{},
-		flights:   map[string]*personFlight{},
+		read:     dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
+		now:      time.Now,
+		answers:  map[accessKey]cachedAnswer{},
+		people:   map[string]cachedPerson{},
+		failures: map[string]failedRead{},
+		flights:  map[string]*personFlight{},
 	}
 }
 
@@ -579,8 +583,8 @@ func (c *Client) keepAnswer(key accessKey, answer cachedAnswer) {
 	}
 }
 
-// sweepLocked drops every answer older than CacheTTL, every failure older than failureTTL and every
-// kept hold whose Person failure ended. c.mu is held.
+// sweepLocked drops every answer older than CacheTTL and every failure older than failureTTL. c.mu
+// is held.
 func (c *Client) sweepLocked() {
 	now := c.now()
 	for key, cached := range c.answers {
@@ -596,11 +600,6 @@ func (c *Client) sweepLocked() {
 	for person, failed := range c.failures {
 		if now.Sub(failed.at) >= failureTTL {
 			delete(c.failures, person)
-		}
-	}
-	for person, cached := range c.keptHolds {
-		if !now.Before(cached.until) {
-			delete(c.keptHolds, person)
 		}
 	}
 }

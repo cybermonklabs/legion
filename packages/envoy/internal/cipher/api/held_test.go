@@ -484,8 +484,8 @@ func TestHeldUpkeepIsServed(t *testing.T) {
 	b.serves(t, "ada", ada)
 
 	b.refuseAccount()
-	if v := b.gate.Decide(context.Background(), servedBob); v.Kind != hold.Uncheckable {
-		t.Fatalf("the broker's gate answered bob %+v, want hold.Uncheckable: the rows below would prove nothing", v)
+	if v := b.gate.Decide(context.Background(), servedBob); v.Kind != hold.BrokerRefused {
+		t.Fatalf("the broker's gate answered bob %+v, want hold.BrokerRefused: the rows below would prove nothing", v)
 	}
 	b.serves(t, "bob", bob)
 }

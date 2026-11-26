@@ -75,7 +75,7 @@ const readReserve = 500 * time.Millisecond
 
 // errNoTimeToAsk is the cause of a check whose caller had no more time than readReserve left and
 // whose person the client holds no young answer for: it asks Dispatch nothing and answers from the
-// kept row, and remembers no failure of Dispatch's.
+// kept row.
 var errNoTimeToAsk = errors.New("hold: the caller had no time left to ask Dispatch")
 
 // logEvery is how often the gate logs the same thing about one person while it goes on: a person
@@ -214,12 +214,10 @@ func (g *Gate) checkUntil(ctx context.Context, person string) (time.Time, error)
 		// once a minute for everyone, and answered below as a failure to ask is.
 		g.logNoHeld(person, err)
 	}
-	if ctx.Err() != nil {
-		// The caller hung up, which is no failure of Dispatch's to remember for the next one. An ask
-		// whose own bound ran out ends while the caller still has its readReserve, so it is
-		// Dispatch's failure, and is remembered below.
-		return g.unasked(ctx, person, err)
-	}
+	// Every failure to ask is answered from the kept row. A hang is no special case: the client
+	// shares one call per person and answers a later check errStillAsking once that call has run
+	// projectaccess.failureTTL, so a check inside that window reads the kept row at once rather than
+	// waiting its own bound (projectaccess.personAnswer).
 	return g.unasked(ctx, person, err)
 }
 
