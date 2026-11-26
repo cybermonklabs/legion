@@ -1289,6 +1289,147 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 	})
 }
 
+// A cache whose Sandbox's pod template places its pod other than cachePodTemplate places it now —
+// on the retired Legion pool, as every cache an earlier release made is, under another
+// RuntimeClass, or under the operator's earlier node selector or tolerations — is made again, as
+// one whose template reserves other than the configuration is (templateMoved beside
+// templateResized): the Sandbox controller makes every later pod of the cache from that template,
+// after a drain deletes the pod, say, so a cache left as it is would keep the old placement
+// through every pod it ever runs. The template the replacement writes places the pod as the
+// runtime does now, and the Sandbox and the volume holding the clone are kept. A cache whose
+// template already places it so is left alone, and one whose pod is still sending or queueing a
+// tar waits for its streams to end.
+func TestEnsureRepositoryCacheReplacesACacheWhoseTemplateIsPlacedElsewhere(t *testing.T) {
+	t.Parallel()
+	name := CacheSandboxName(testProject, cacheRepo)
+	// poolLabel is the retired Legion pool's node label and the key of its taint, written out so
+	// the test holds this key and not whatever the runtime's constant names.
+	const poolLabel = "legion.dev/pool"
+	// placement is where a cache's pod template puts its pod. Each one the test builds is fresh,
+	// sharing no map or slice with the rig's configuration or with another case.
+	type placement struct {
+		runtimeClass string
+		selector     map[string]string
+		tolerations  []corev1.Toleration
+	}
+	// dedicated is the toleration of the operator's dedicated taint.
+	dedicated := func() corev1.Toleration {
+		return corev1.Toleration{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Value: "builds", Effect: corev1.TaintEffectNoSchedule}
+	}
+	// current is where cachePodTemplate places a cache's pod under the rig's scheduling: gVisor,
+	// on the amd64 nodes, tolerating the dedicated taint.
+	current := func() placement {
+		return placement{gvisor, map[string]string{"kubernetes.io/arch": "amd64"}, []corev1.Toleration{dedicated()}}
+	}
+	// cacheOn is a rig whose operator's scheduling selects the amd64 nodes and tolerates the
+	// dedicated taint, holding a Running cache Sandbox whose pod template is placed at template,
+	// and a live pod of it on the runtime's image and account, whose /healthz counts serving
+	// streams when the case gives it any.
+	cacheOn := func(t *testing.T, template placement, serving int) (*rig, *logBuffer) {
+		t.Helper()
+		s, err := decodeSandbox(cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := &s.Spec.PodTemplate.Spec
+		spec.RuntimeClassName, spec.NodeSelector, spec.Tolerations = &template.runtimeClass, template.selector, template.tolerations
+		cache, err := encodeSandbox(*s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live := cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning)
+		var routes map[string]string
+		if serving > 0 {
+			served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(workspace.CacheRepositoryHeader, cacheRepo.String())
+				n := serving
+				_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: cacheRepo.String(), Streams: &n})
+			}))
+			t.Cleanup(served.Close)
+			live.Status.PodIP = "10.0.0.5"
+			routes = map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}
+		}
+		logs := &logBuffer{}
+		g := newRig(t, []k8sruntime.Object{cache, live}, withLog(logs), withOptions(func(o *Options) {
+			now := current()
+			o.Scheduling.NodeSelector, o.Scheduling.Tolerations = now.selector, now.tolerations
+		}))
+		if routes != nil {
+			g.r.cacheDial = (&podNetwork{routes: routes}).dial
+		}
+		g.clearActions()
+		return g, logs
+	}
+	// retired is the placement an earlier release wrote: the operator's scheduling with the Legion
+	// pool's label selected and its taint tolerated.
+	retired := func() placement {
+		p := current()
+		p.selector[poolLabel] = "legion"
+		p.tolerations = append([]corev1.Toleration{{Key: poolLabel, Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}}, p.tolerations...)
+		return p
+	}
+
+	for what, template := range map[string]placement{
+		"a template on the retired Legion pool":          retired(),
+		"a template under another RuntimeClass":          {microVMRuntimeClass, current().selector, current().tolerations},
+		"a template of an earlier operator's selector":   {gvisor, map[string]string{"kubernetes.io/arch": "arm64"}, current().tolerations},
+		"a template of an earlier operator's toleration": {gvisor, current().selector, nil},
+	} {
+		t.Run(what+" is made again", func(t *testing.T) {
+			g, _ := cacheOn(t, template, 0)
+			before := g.sandbox(name)
+			if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+				t.Fatalf("EnsureRepositoryCache: %v", err)
+			}
+			var suspended, running bool
+			for _, w := range g.writes() {
+				if w.resource == "sandboxes" && w.verb == "patch" {
+					suspended = suspended || modePatched(t, w.patch, modeSuspended)
+					running = running || modePatched(t, w.patch, modeRunning)
+				}
+			}
+			if !suspended || !running {
+				t.Errorf("the ensure of a cache placed %+v suspended %t and set Running %t, want both: writes %v", template, suspended, running, g.writes())
+			}
+			after := g.sandbox(name)
+			if after == nil || after.UID != before.UID || !jsonEqual(t, after.Spec.VolumeClaimTemplates, before.Spec.VolumeClaimTemplates) {
+				t.Fatalf("the cache Sandbox is %+v, want %s kept with its volume %+v", after, before.UID, before.Spec.VolumeClaimTemplates)
+			}
+			spec, want := after.Spec.PodTemplate.Spec, current()
+			if spec.RuntimeClassName == nil || *spec.RuntimeClassName != want.runtimeClass || !maps.Equal(spec.NodeSelector, want.selector) || !slices.Equal(spec.Tolerations, want.tolerations) {
+				t.Errorf("the pod template the replacement wrote is placed %s %v %+v, want %s %v %+v", runtimeClassText(spec.RuntimeClassName), spec.NodeSelector, spec.Tolerations, want.runtimeClass, want.selector, want.tolerations)
+			}
+		})
+	}
+
+	t.Run("a template placed as cachePodTemplate places it now is left alone", func(t *testing.T) {
+		g, _ := cacheOn(t, current(), 0)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" || w.resource == "pods" {
+				t.Errorf("a cache whose template is placed as the runtime places it was written: %s", w)
+			}
+		}
+	})
+
+	t.Run("a template on the retired Legion pool whose pod serves a stream waits", func(t *testing.T) {
+		g, logs := cacheOn(t, retired(), 2)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" || w.resource == "pods" {
+				t.Errorf("a cache pod on the retired pool sending 2 streams was replaced: %s", w)
+			}
+		}
+		if !strings.Contains(logs.String(), "repository cache pod is replaced once it serves no stream") {
+			t.Errorf("the waiting replacement was not logged:\n%s", logs)
+		}
+	})
+}
+
 // A repository of the cache set whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
