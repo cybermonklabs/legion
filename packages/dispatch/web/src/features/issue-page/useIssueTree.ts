@@ -227,6 +227,7 @@ const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>>
   decisions: true,
   issue: true,
   messages: true,
+  plan: true,
   results: true,
   targets: true,
   viewer: true,
@@ -365,7 +366,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     }
     return Object.keys(held).length === 0 ? undefined : held;
   }, [decisions.data, plan, spec, verification]);
-  // One value, so the model is given the reads and nothing else.
+  // One value, so the model is given the reads and nothing else. The Plan view's answer is the one
+  // the page holds (`plan`): a later read of it that is refused keeps the answer before, so a
+  // statement it marks keeps its mark.
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
@@ -374,6 +377,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       decisions: decisions.data,
       issue,
       messages: messages.data,
+      plan,
       results: results.data,
       tree: read.answer,
       viewer,
@@ -385,6 +389,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       decisions.data,
       issue,
       messages.data,
+      plan,
       read.answer,
       results.data,
       viewer,

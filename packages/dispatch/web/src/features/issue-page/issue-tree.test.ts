@@ -2342,8 +2342,9 @@ test("a person's decision is the answered ask's own node, which carries what it 
   expect(nodeOf(root, blockNodeId(SPEC, "q1"))?.chips.map((chip) => chip.ref)).toEqual([
     `dispatch://${KEY}/spec#b-r1`,
   ]);
-  // The edge is read from the ask's node.
-  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual(["shaped_disagreement"]);
+  // The edge is read from the ask's node, and its disagreeing with the statement's own origin
+  // draws no gap on the new page.
+  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual([]);
   expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual([]);
   expect(decisionBehind(root, blockNodeId(SPEC, "r-shaped"))?.id).toBe("ask-own");
   // The agent's decision that settles the question in the spec sits under it.

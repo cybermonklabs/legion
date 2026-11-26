@@ -858,29 +858,15 @@ export function markKeptAndUnsure(
 }
 
 /**
- * The gaps on one statement: the ones the coverage read carries that the page draws
- * (`coverageGapKind`), and `shaped_disagreement` where the statement has an origin - the node its
- * own `from` names - and a decision that says it shaped the statement (`shapers`, each by its
- * node id) is not that origin: the two edges disagree, and the page draws that rather than
- * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
- * draws none, and an absent `from` is no gap of its own (R10). A decision is what the decisions
- * read's entries hold one to be (`isDecisionEntry`): an open or a declined ask decided nothing.
- * `tree-read/tree-nodes.ts`' `draftRequirement` reads both edges from the tree read: the
- * statement's `from` attribute and the `shaped` tuples that end at it from a decision.
+ * The gaps on one statement that the coverage read carries and the page draws
+ * (`coverageGapKind`). `tree-read/tree-nodes.ts`' `draftRequirement` adds the ones it reads from
+ * the tree read and the Plan view itself.
  */
-export function requirementGaps(
-  coverage: readonly string[],
-  origin: string | undefined,
-  shapers: ReadonlySet<string> | undefined
-): GapKind[] {
-  const gaps = coverage.flatMap((line): GapKind[] => {
+export function requirementGaps(coverage: readonly string[]): GapKind[] {
+  return coverage.flatMap((line): GapKind[] => {
     const kind = coverageGapKind(line);
     return kind === undefined ? [] : [kind];
   });
-  if (origin !== undefined && [...(shapers ?? [])].some((shaper) => shaper !== origin)) {
-    gaps.push("shaped_disagreement");
-  }
-  return gaps;
 }
 
 /**

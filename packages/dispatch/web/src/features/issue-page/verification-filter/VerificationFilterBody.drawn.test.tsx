@@ -30,7 +30,12 @@ import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/ref
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import {
+  artifact,
+  issueDetails,
+  SPEC_DOCUMENT,
+  specRef,
+} from "../decisions-filter/decisions-fixtures";
 import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
@@ -54,10 +59,10 @@ import {
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
-import { drawStage, REFUSED, stubReads } from "../slots/stage-fixtures";
+import { drawStage, inDocument, REFUSED, stubReads, treeOf } from "../slots/stage-fixtures";
 import { useVerificationReads } from "../slots/view-verification";
-import { treeContext } from "../tree-drafts";
-import { treeAnswer } from "../tree-read/tree-fixtures";
+import { blockNodeId, treeContext } from "../tree-drafts";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswer } from "../tree-read/tree-read";
 import { shortCommit } from "./statement-state";
 import {
@@ -75,6 +80,7 @@ import {
   node,
   OTHER_COMMIT,
   result,
+  SPEC_SLUG,
   statementNode,
   VERIFICATION_SLUG,
   verificationView,
@@ -2580,6 +2586,89 @@ test("a check under two statements names the other by its words with no mark of 
   } finally {
     summary.mockRestore();
     view.unmount();
+  }
+});
+
+// A check drawn from the Verification view's own tree names the other statement it serves by that
+// statement's line. The outline's read holds the issue alone and the names read answers nothing,
+// so the view read alone holds the second statement's words: the view names the statement by them
+// (`PresetView.readings`) and the slot publishes that reading to the names store
+// (`slots/view-readings.ts`). The check's row under the first statement draws "Also under" with
+// the second statement's words, and neither an empty chip nor the statement's address.
+test("a row drawn from a view's own tree names its other parent by that parent's line", async () => {
+  const stubs = stubReads();
+  const base = issueDetails();
+  const verification = artifact("artifact-verification", VERIFICATION_SLUG);
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), verification],
+    verification_artifact_id: verification.id,
+  };
+  const firstWords = "The page draws the check.";
+  const secondWords = "The second statement.";
+  // The view read: the two statements as its context, and the check, its query, under the first
+  // and serving both.
+  const viewAnswer = treeOf(
+    [
+      treeNode("r1", "requirement", ISSUE_KEY, {
+        ...inDocument(SPEC_DOCUMENT, 0),
+        role: "context",
+        text: firstWords,
+      }),
+      treeNode("r2", "requirement", ISSUE_KEY, {
+        ...inDocument(SPEC_DOCUMENT, 1),
+        role: "context",
+        text: secondWords,
+      }),
+      treeNode("c1", "check", "r1", { ...inDocument(verification), role: "query" }),
+    ],
+    [treeTuple("serves", "c1", "r1"), treeTuple("serves", "c1", "r2")]
+  );
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view === undefined) return treeAnswer([treeNode(ISSUE_KEY, "issue", null)]);
+    return asked.view === "verification" ? viewAnswer : Promise.withResolvers<never>().promise;
+  });
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [
+      { block_id: "r1", checks: 1, gaps: [], plan_tasks: 0, ref: specRef("r1"), text: firstWords },
+      { block_id: "r2", checks: 1, gaps: [], plan_tasks: 0, ref: specRef("r2"), text: secondWords },
+    ],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [check({ block_id: "c1" })],
+    issue: ISSUE_KEY,
+    verification_artifact_id: verification.id,
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
+  const view = drawStage("", { issue, preset: "verification" });
+  try {
+    const row = `[data-verification-card][data-node-id="${blockNodeId(SPEC_SLUG, "r1")}"] [data-verification-check][data-node-id="${blockNodeId(VERIFICATION_SLUG, "c1")}"]`;
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(row),
+        "the view drew no row of the check under the first statement"
+      ).not.toBeNull()
+    );
+    const chips = `${row} [data-node-trail] [data-node-chip]`;
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll(chips)].map((chip) => chip.textContent),
+        "the check's row under the first statement does not name the second by its line"
+      ).toEqual([secondWords])
+    );
+    expect(view.container.querySelector(`${row} [data-node-trail]`)?.textContent).toBe(
+      `${CONTROL_LABELS.also_under} ${secondWords}`
+    );
+    // The names read was never asked for the second statement, so its line is the view's own.
+    expect(names.mock.calls.flat(2)).not.toContain(specRef("r2"));
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
   }
 });
 

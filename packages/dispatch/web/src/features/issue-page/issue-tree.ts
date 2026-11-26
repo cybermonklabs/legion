@@ -154,9 +154,10 @@ export interface NodeAnswer {
 /**
  * How a fact's value is drawn in a node's body: a command in a monospace block with its own
  * copy control (R15), a picture loaded through the bytes route the page already serves, one of
- * the page's own words, or the author's own text.
+ * the page's own words, the author's own text, or an issue's key as a link to that issue
+ * (`IssueChildren.tsx`'s `ChildIssueTag`), whose value is the key.
  */
-export type FactDrawing = "command" | "picture" | "text" | "word";
+export type FactDrawing = "command" | "issue" | "picture" | "text" | "word";
 
 /** One name/value fact of a node, which its body draws under its text: what the model holds
  *  about the node that a row has no line for, such as how a check is run and what a result
@@ -266,6 +267,10 @@ export interface TreeNode {
   /** The node's own address inside the issue: the issue key, `<slug>#b-<block id>`, else the id
    *  the model gives it. */
   readonly id: string;
+  /** The key of the issue under this one that this node belongs to, where the Plan view's read
+   *  answers a plan task of an issue under the issue the page is of (`presets.ts`'
+   *  `planFactsOf`); absent on every node of the issue itself. */
+  readonly issue?: string;
   /** The child issue a `child_issue` node is, as the issue read carries it: its row draws its
    *  title as its words, how it stands, what blocks it and who holds it, and its key as the tag
    *  (R12, `IssueChildren.tsx`). Absent for every other node. */
@@ -295,6 +300,10 @@ export interface TreeNode {
   readonly readId?: string;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
+  /** How long this plan task takes, in whole minutes, as the Plan view's read answers it
+   *  (`plan.size`, from the task's `size` attribute); absent where the task holds none and on
+   *  every other node. */
+  readonly size?: number;
   /** The parent a filter draws as no row, where it draws this node as one (R2): every parent
    *  that is not a kind the filter draws - an ask, a comment, a message, a requirement under
    *  the Plan filter - is one line on its child's row, read from the parent's id, kind and
@@ -425,6 +434,12 @@ export interface IssueTreeReads {
    *  last replaced its body - which the tree read answers no mark of
    *  (`tree-read/tree-nodes.ts`'s `postMarksOf`). The tree read answers each message as a node. */
   readonly messages?: readonly MessageRead[];
+  /** The Plan view read's answer (`?view=plan`), which holds the plan tasks of the issue and of
+   *  every issue under it: whether it holds one says whether a statement no plan task serves is a
+   *  gap (`tree-read/tree-nodes.ts`' `draftRequirement`). It is the answer the page holds:
+   *  undefined until the read first answers and while that first read stands refused, and the
+   *  answer held before where a later read of it is refused. */
+  readonly plan?: TreeAnswer;
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
