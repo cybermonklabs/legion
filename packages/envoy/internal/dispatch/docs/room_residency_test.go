@@ -19,7 +19,6 @@ import (
 	"time"
 	"weak"
 
-	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
@@ -71,7 +70,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				return
 			default:
 			}
-			connection, _, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, _, err := documentDialer(t).Dial(wsURL, headers)
 			if err != nil {
 				continue
 			}
@@ -165,7 +164,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				if err := version(); err != nil {
 					refuse("version %d: %v", round, err)
 				}
-				connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+				connection, response, err := documentDialer(t).Dial(wsURL, headers)
 				if err != nil {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
@@ -230,7 +229,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
-	peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+	peer, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
 	}
@@ -810,7 +809,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			if test.peer {
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 				testcleanup.Add(t, httpServer.Close)
-				peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+				peer, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 				if err != nil {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}

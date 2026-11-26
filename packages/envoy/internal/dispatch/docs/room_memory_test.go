@@ -120,7 +120,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	sockets := make(chan opened, 2)
 	for range 2 {
 		go func() {
-			connection, err := dialDocument(server.URL, artifactID)
+			connection, err := dialDocument(t, server.URL, artifactID)
 			sockets <- opened{connection, err}
 		}()
 	}
