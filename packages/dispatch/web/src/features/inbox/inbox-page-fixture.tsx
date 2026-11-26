@@ -5,16 +5,18 @@
  */
 import { spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import { act, render, screen } from "@testing-library/react";
+import { type ComponentProps, type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import type { Commits } from "../../__tests__/commits";
 import { api } from "../../api/client";
-import type { InboxRow, Issue, IssueDetails } from "../../api/types";
+import type { InboxRow, Issue, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { type InboxRoute, parseInboxSearch } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
@@ -85,6 +87,17 @@ export function RouteProbe() {
 /** One entry of the history `renderInbox` starts from: a path, or a location with its state. */
 type InitialEntry = NonNullable<ComponentProps<typeof MemoryRouter>["initialEntries"]>[number];
 
+/** The list of cards as the Peek drawer mounts it (`InboxDrawer`): a filter the host holds
+ *  itself, starting from the address the test opens on and never written back to it, every
+ *  narrowing reported to that host, and the keys on the dialog's scope. */
+function DrawerHostedInbox(): ReactNode {
+  const { search } = useLocation();
+  const [filter, setFilter] = useState<InboxRoute>(() => parseInboxSearch(search));
+  return (
+    <Inbox filter={filter} keymapScope={DIALOG_SCOPE} onFilterChange={setFilter} pane={false} />
+  );
+}
+
 /** `route` is the whole history when it is a list, the last entry being where the reader is:
  *  whether a filter change replaces its entry or pushes one is only visible from a history that
  *  has something underneath it. An entry may carry the state its history entry holds, as one the
@@ -92,9 +105,10 @@ type InitialEntry = NonNullable<ComponentProps<typeof MemoryRouter>["initialEntr
  *  document: that column mounts `ProofDocument`, which wants the document runtime and the
  *  margin the app shell gives it, and every other test's column shows a card and needs
  *  neither. `commits` records each commit of the Inbox; it has no one value a host passes, so
- *  each commit's `host` is null. `pane: false` is the list of cards the drawer draws, where a
- *  question is answered, snoozed and assigned in its own row: the page reads one row at a time
- *  at every width, and the rows that drive a card in its row drive that list. */
+ *  each commit's `host` is null. `pane: false` is the list of cards, mounted as the Peek drawer
+ *  mounts it (`DrawerHostedInbox`): the one screen that draws a question's card in its row, where
+ *  it is answered, snoozed and assigned. The page reads one row at a time at every width, and the
+ *  rows that drive a card in its row drive that list. */
 export function renderInbox(
   route: InitialEntry | readonly InitialEntry[] = "/",
   {
@@ -107,16 +121,11 @@ export function renderInbox(
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
+  const list = pane ? <Inbox /> : <DrawerHostedInbox />;
   const inbox = (
     <KeymapProvider>
       <RouteProbe />
-      {commits === undefined ? (
-        <Inbox pane={pane} />
-      ) : (
-        <commits.Recorded host={null}>
-          <Inbox pane={pane} />
-        </commits.Recorded>
-      )}
+      {commits === undefined ? list : <commits.Recorded host={null}>{list}</commits.Recorded>}
     </KeymapProvider>
   );
   const view = render(
@@ -214,4 +223,37 @@ export function address(): string {
 /** The pane reads one field of the question's issue: whether it is closed. */
 export function mockIssueReads() {
   return spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails);
+}
+
+/** A read of the reader's threads as `GET /api/v1/me/replies` answers it. */
+function threadsReadOf(rows: readonly MyReplyRow[]): MyRepliesResponse {
+  return {
+    as_of: "2026-10-12T02:00:00Z",
+    limit: 0,
+    offset: 0,
+    rows: [...rows],
+    total: rows.length,
+  };
+}
+
+/** The Inbox's own thread read (`inboxThreadsQuery`), held until the test lands it: the read the
+ *  page makes once the sign-in read has answered, which a reload or a link can see land after
+ *  the asks'. Every other replies read - an owner's unread set - answers at once with nothing. */
+export function holdThreadsRead(): {
+  land: (rows: readonly MyReplyRow[]) => Promise<void>;
+  restore: () => void;
+} {
+  const held = Promise.withResolvers<MyRepliesResponse>();
+  const read = spyOn(api, "listMyReplies").mockImplementation((page) =>
+    page.state === "inbox" ? held.promise : Promise.resolve(threadsReadOf([]))
+  );
+  return {
+    land: async (rows) => {
+      await act(async () => {
+        held.resolve(threadsReadOf(rows));
+        await held.promise;
+      });
+    },
+    restore: () => read.mockRestore(),
+  };
 }

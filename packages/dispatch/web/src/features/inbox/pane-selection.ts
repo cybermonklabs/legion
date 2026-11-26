@@ -84,6 +84,13 @@ export interface PaneSelectionOptions {
    *  The list keeps this record for its own motion hold, and the selection is answered against
    *  exactly the rows in it. */
   presented: RefObject<readonly PlacedRow[]>;
+  /** Whether the list holds every row it will draw from this read: the asks' read has landed and
+   *  the thread side has answered too, or has none to read (`useInboxThreadRows`'s `ready`). The
+   *  thread rows come from a read of their own, which can land after the asks', so until then
+   *  the selection is not settled at all: a `?item=` naming a thread row would read as a row
+   *  this list does not hold, which closes the reading view below the column's width and has the
+   *  column pick its top row beside the list. */
+  rowsReady: boolean;
   /** Ask ids whose own snooze write is out. */
   snoozing: ReadonlySet<string>;
 }
@@ -143,6 +150,7 @@ export function usePaneSelection({
   openFoldedBand,
   pane,
   presented,
+  rowsReady,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
   const navigate = useNavigate();
@@ -460,9 +468,10 @@ export function usePaneSelection({
   };
 
   // What the selection is, settled after each commit against the rows this list holds, by the
-  // rule of the width the Inbox is at: one or the other, chosen once.
+  // rule of the width the Inbox is at: one or the other, chosen once. Not before every row the
+  // list will draw has arrived (`rowsReady`): the address, a reload's or a link's, is read once.
   useEffect(() => {
-    if (!pane) {
+    if (!pane || !rowsReady) {
       return;
     }
     // A back step `leaveView` started is under way: the address still names the row it is

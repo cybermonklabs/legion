@@ -13,6 +13,9 @@ export interface InboxThreadRows {
   /** The read mark of the list read these rows came from, which **Mark all read** and a
    *  **Select all** dismiss both carry. */
   readonly asOf: string | undefined;
+  /** Whether the thread side has answered: the read of the list showing has settled, with rows
+   *  or with an error, or this list reads none - asks only, or a principal that is no person. */
+  readonly ready: boolean;
   readonly rows: readonly InboxListRow[];
   /** Reads the next page of the Dismissed view, or undefined where there is none to read: the
    *  Inbox's own list is unpaged, and the last dismissed page names no next cursor. */
@@ -64,10 +67,12 @@ export function useInboxThreadRows({
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
+  const reads = human && !asksOnly;
   return {
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
     // one snapshot its cursor walks on from.
     asOf: show === "dismissed" ? pages?.[0]?.as_of : threads.data?.as_of,
+    ready: !reads || (show === "dismissed" ? dismissed.isFetched : threads.isFetched),
     rows: listed.map((thread): InboxListRow => ({ kind: "thread", thread })),
     showMore:
       show === "dismissed" && dismissed.hasNextPage

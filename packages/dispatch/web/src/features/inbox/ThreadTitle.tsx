@@ -44,24 +44,33 @@ export function ThreadLine({
 }
 
 /**
- * What a thread row is about, in one line, bold with a dot while the thread holds a write the
- * reader has not read. A root its author deleted reads as the deleted line, and a root its
- * author edited carries ` · edited` after the line, outside the truncation that would cut it.
- * The deleted line here is its words alone (`deletedLineText`), in the deleted line's own italic,
- * with no time: the row already shows its own age, and that age is the one time a row holds, the
- * part of a short row that is neither the owner link nor a control, where the pointer selects
- * the row (`selectRow` in the browser suite).
+ * What a thread row is about, in one line, in three named groups in this order:
+ *
+ * - **Subject**: the thread's line - the root's subject, or the deleted line where its author
+ *   deleted the root - as the link `o` follows on the short row, or as plain text on the card.
+ *   It is the one group that shortens: at any width it ends in an ellipsis inside itself, its
+ *   whole text as its title, and never pushes the two groups after it out of the line.
+ * - **Edited**: ` · edited`, on a root its author edited, outside the cut so no ellipsis takes it.
+ * - **Unread**: the dot, while the thread holds a write the reader has not read; the line is
+ *   bold then.
+ *
+ * The three never wrap: Edited and Unread keep their width and stand right after the Subject.
+ * They are drawn as three items of the host's line (a fragment), so in the short row they are the
+ * run of its **Title** group between the kind's icon and the time, and on the card the run
+ * between the icon and the reply's time; the host sizes the Subject (`className`).
+ *
+ * The deleted line is its words alone (`deletedLineText`), in the deleted line's own italic, with
+ * no time: the row already shows its own age, and that age is the one time a row holds, the part
+ * of a short row that is neither the owner link nor a control, where the pointer selects the row
+ * (`selectRow` in the browser suite).
  *
  * The subject is the thread root's own markdown, so it is drawn by the one renderer
  * (`MarkdownPreview`, clamped to one line): a heading, a bold word and a reference read here as
  * they read in the thread itself. `fullTitle` gives a pointer reader the same line as plain
  * text, from the same reader; a deleted root's hover text is the deleted line's words.
  *
- * The short row draws it as the link `o` follows to the thread's own page at every width
- * (`data-inbox-owner`); below 1280 px a plain click on it opens the row in place instead
- * (`onOpen`). The drawer's card draws it as plain text, beside its **Open**. Each host sizes its
- * own line, as the three-site owner line does (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what
- * unread looks like is this one place.
+ * Below 1280 px a plain click on the short row's link opens the row in place instead of following
+ * it (`onOpen`). What unread looks like is this one place.
  */
 export function ThreadTitle({
   className,
@@ -95,9 +104,10 @@ export function ThreadTitle({
     thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
   }`;
   // Below 1280 px every link is an `inline-flex` touch target (styles.css), which makes the
-  // preview inside the title's link a flex item that draws in lines of its own: there it cuts
-  // its own line, with its own ellipsis (`truncate`). Drawn inline, as the host's text, the
-  // host's ellipsis cuts it and `truncate` does nothing.
+  // Subject inside the title's link a flex item that draws in lines of its own: there it cuts
+  // its own line, with its own ellipsis (`truncate`), the preview and the deleted line alike - a
+  // deleting actor's name has no cap. Drawn inline, as the host's text, the host's ellipsis cuts
+  // it and `truncate` does nothing.
   const line =
     deletedWords === undefined ? (
       <MarkdownPreview
@@ -110,7 +120,7 @@ export function ThreadTitle({
         tree={thread.subject_tree}
       />
     ) : (
-      <span className="italic" data-post-deleted="">
+      <span className="inline min-w-0 truncate italic" data-post-deleted="" title={deletedWords}>
         {deletedWords}
       </span>
     );

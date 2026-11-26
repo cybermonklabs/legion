@@ -1068,6 +1068,7 @@ export function Inbox({
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
     pane,
     presented,
+    rowsReady: threads.ready,
     snoozing,
   });
   // After the selection has settled on this render (`usePaneSelection`'s effect runs first), a
@@ -1764,9 +1765,13 @@ export function Inbox({
         {...agentSubject}
         className="flex items-center whitespace-pre"
         control={(name) => (
+          // Replace, as every narrowing of this list does (`changeFilter`), keeping what the
+          // entry says of the row it names: a push would stack a second entry over the one a
+          // row opened below 1280 px pushed, and the view's way back would land on it.
           <Link
             aria-label="Clear agent filter"
             className="inline-flex min-h-11 items-center rounded-full"
+            replace
             state={entryState}
             to={buildInboxPath({ assignees: filter.assignees, item: filter.item, q: filter.q })}
           >

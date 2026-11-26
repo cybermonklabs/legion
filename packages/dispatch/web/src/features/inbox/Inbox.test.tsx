@@ -47,6 +47,7 @@ import {
 import {
   address,
   headings,
+  holdThreadsRead,
   inboxIssue,
   mockIssueReads,
   movableReadingPaneWidth,
@@ -2544,9 +2545,11 @@ test("a snooze out when the control is drawn for another ask holds the row of th
 
 // ----------------------------------------------------------------------------------------
 // The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px:
-// those that drive a card in its row render the list of cards the drawer draws (`pane: false`),
-// since the page reads one row at a time at every width. The tests below widen the window to
-// the column; the reading view below its width is `Inbox.reading-view.test.tsx`'s.
+// those that drive a card in its row render the list of cards as the Peek drawer mounts it
+// (`renderInbox`'s `pane: false`: its own filter, `onFilterChange` and the dialog's key scope),
+// since that is the one screen that draws cards, and the page reads one row at a time at every
+// width. The tests below widen the window to the column; the reading view below its width is
+// `Inbox.reading-view.test.tsx`'s.
 // ----------------------------------------------------------------------------------------
 
 /** The width the Inbox shows its reading column from (`READING_PANE_QUERY`, 1280 px). happy-dom
@@ -2666,6 +2669,37 @@ test("?item= selects the row it names, and one the list does not hold falls back
   } finally {
     gone.unmount();
     narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("?item= naming a thread row whose read lands after the asks' selects that row, not the first", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const threads = holdThreadsRead();
+  const { unmount } = renderInbox("/?item=reply:c1");
+
+  try {
+    // The asks' read has landed; the threads' read, where the named row is, is still out, so
+    // the column takes no row of its own and the address keeps the reader's.
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    expect(selectedIds()).toEqual([]);
+    expect(address()).toBe("/?item=reply:c1");
+
+    await threads.land([replyRow("c1")]);
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]));
+    expect(address()).toBe("/?item=reply:c1");
+  } finally {
+    unmount();
+    narrow();
+    threads.restore();
+    listComments.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();

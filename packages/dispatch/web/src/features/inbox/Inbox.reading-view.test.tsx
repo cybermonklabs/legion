@@ -15,10 +15,12 @@ import { api } from "../../api/client";
 import type { InboxRow, Issue } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
+import { replyRow } from "../threads/replies-fixture";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import {
   address,
   headings,
+  holdThreadsRead,
   inboxIssue,
   mockIssueReads,
   movableReadingPaneWidth,
@@ -1081,6 +1083,90 @@ test("beside the column, Back over a row opened below 1280 px goes back past it"
     act(() => width.setWidth(1024));
     await waitFor(() => expect(address()).toBe("/"));
     expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    expect(address()).toBe("/agents");
+  } finally {
+    unmount();
+    width.restore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px a reload onto a thread row whose read lands after the asks' opens that row, with its way back", async () => {
+  const user = userEvent.setup();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const threads = holdThreadsRead();
+  // The history a reload keeps: the entry the open pushed over the list's own names the thread.
+  const { unmount } = renderInbox([
+    "/agents",
+    "/",
+    { pathname: "/", search: "?item=reply:c1", state: { inboxOverList: true } },
+  ]);
+
+  try {
+    // The asks' read has landed and the list draws its row; the threads' read is still out, so
+    // the row the address names is not listed yet - which is no row that left.
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    expect(address()).toBe("/?item=reply:c1");
+
+    await threads.land([replyRow("c1")]);
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c1");
+    expect(address()).toBe("/?item=reply:c1");
+
+    // And its way back is still the one step through the entry the open pushed.
+    await user.click(within(view).getByRole("button", { name: "Back to the Inbox list" }));
+    await waitFor(() => expect(address()).toBe("/"));
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    expect(address()).toBe("/agents");
+  } finally {
+    unmount();
+    threads.restore();
+    listComments.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px clearing the agent filter beside the column keeps a row's way back to one step", async () => {
+  const user = userEvent.setup();
+  const width = movableReadingPaneWidth(1024);
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox(["/agents", "/?agent=session-1"]);
+  const params = () => new URLSearchParams(address().split("?")[1] ?? "");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    await user.click(shortRow("ask-a"));
+    await screen.findByTestId("inbox-reading-view");
+
+    // Widened, the header shows again with the filter's chip; clearing it rewrites the entry the
+    // open pushed rather than stacking another over it.
+    act(() => width.setWidth(1440));
+    await screen.findByTestId("inbox-pane");
+    await user.click(screen.getByRole("link", { name: "Clear agent filter" }));
+    await waitFor(() => expect(params().get("agent")).toBeNull());
+    expect(params().get("item")).toBe("ask-a");
+
+    // Narrowed again, one press of the view's Inbox control is the list.
+    act(() => width.setWidth(1024));
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.click(within(view).getByRole("button", { name: "Back to the Inbox list" }));
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(params().get("item")).toBeNull();
     await user.click(screen.getByRole("button", { name: "History back" }));
     expect(address()).toBe("/agents");
   } finally {
