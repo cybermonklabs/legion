@@ -358,10 +358,11 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 	})
 
 	t.Run("an operator's suspension of a launching controller, held until its ready, is not undone by the start message", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateFailed, Session: old})
-		// The keeper retries the failed controller after its first wait, as a daemon-driven relaunch
-		// of a session older than its age, which spawns a fresh agent.
+		// A session younger than the age, so the keeper's retry resumes it on main and at this head
+		// alike, and the row reads the suspension alone.
+		young := sessionAged(now, time.Hour)
+		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateFailed, Session: young})
+		// The keeper retries the failed controller after its first wait, which resumes its session.
 		start := time.Now()
 		k.now = func() time.Time { return start }
 		keepOnce(t, k)
@@ -376,15 +377,14 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "an operator stops the controller", By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
 			t.Fatalf("the operator's suspension of a launching controller answered %v, want it held until ready", err)
 		}
-		// The fresh agent comes up, and its ready ends in the held suspension.
+		// The resumed agent comes up, and its ready ends in the held suspension.
 		conn := fake.NewConn()
 		sup.deps.Conns.(*fake.Conns).Register(token, conn)
-		fresh := sessionAged(now, 0)
 		for _, ev := range []supervise.Event{
 			supervise.StreamHello{Claim: token, Generation: m.Claim().Generation},
-			supervise.RequestRegister{Claim: token, Generation: m.Claim().Generation, Session: fresh, SessionFile: "/sessions/fresh.jsonl",
+			supervise.RequestRegister{Claim: token, Generation: m.Claim().Generation, Session: young, SessionFile: controllerSessionFile,
 				CapabilityHash: []byte("capability"), PluginContract: sup.deps.PluginContract},
-			supervise.RequestReady{Claim: token, Generation: m.Claim().Generation, Session: fresh},
+			supervise.RequestReady{Claim: token, Generation: m.Claim().Generation, Session: young},
 		} {
 			if err := m.Handle(context.Background(), ev); err != nil {
 				t.Fatalf("handle %T: %v", ev, err)
@@ -399,9 +399,9 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		m.Wait()
 
 		after := controllerOf(t, sup)
-		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != fresh || after.Pending != nil {
+		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != young || after.Pending != nil {
 			t.Fatalf("after the start message the controller is %s, suspended by %q, on %q, holding %+v; want it suspended by the operator on %s, holding nothing",
-				after.State, after.SuspendedBy, after.Session, after.Pending, fresh)
+				after.State, after.SuspendedBy, after.Session, after.Pending, young)
 		}
 		if got := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn")); got != launches {
 			t.Fatalf("the start message launched the controller %d times, want never", got-launches)
