@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Ask followers: the sessions an ask's answer, edits, resolution, and replies reach
@@ -33,13 +34,14 @@ func parseAskID(r *http.Request) (string, error) {
 	return id, nil
 }
 
-// loadAskOwner returns the owner of an ask (its issue or unlinked document) or
-// pgx.ErrNoRows when the ask does not exist.
-func (s *server) loadAskOwner(ctx context.Context, q queryer, askID string) (owner, error) {
+// loadAskOwner returns the owner of an ask (its issue or unlinked document) or pgx.ErrNoRows
+// when the ask does not exist or who may not read it (access.ItemOwnerClause).
+func (s *server) loadAskOwner(ctx context.Context, q queryer, who model.Actor, askID string) (owner, error) {
 	var issueKey, artifactID *string
 	if err := q.QueryRow(ctx, `
-		select issue_key, artifact_id::text from asks where id = $1
-	`, askID).Scan(&issueKey, &artifactID); err != nil {
+		select a.issue_key, a.artifact_id::text from asks a
+		where a.id = $1 and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+	`, askID, refs.VisibilityArg(who)).Scan(&issueKey, &artifactID); err != nil {
 		return owner{}, err
 	}
 	return ownerOf(issueKey, artifactID), nil
@@ -60,15 +62,20 @@ func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if _, err := s.loadAskOwner(r.Context(), s.deps.Store.Pool, askID); err != nil {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.loadAskOwner(r.Context(), s.deps.Store.Pool, who, askID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID)
+	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	seen := map[string][]model.AskFollower{askID: followers}
 	WriteJSON(w, http.StatusOK, askFollowersRead{Followers: followers})
 }
 
@@ -151,13 +158,19 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		}
 	}
 
+	// What the writer sees, resolved before the transaction holds a connection: the ask's owner
+	// is read as the writer may read it (loadAskOwner), and so is the session (the file comment).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	own, err := s.loadAskOwner(r.Context(), tx, askID)
+	own, err := s.loadAskOwner(r.Context(), tx, who, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

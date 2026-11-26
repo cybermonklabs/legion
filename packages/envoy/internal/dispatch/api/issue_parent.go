@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -327,7 +329,7 @@ func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...strin
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	return parent, nil
+	return locked, nil
 }
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
@@ -351,25 +353,21 @@ func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string
 // lockPatchOwnersAndParent is lockPatchOwners for a PATCH that appends an event to the issue's
 // current parent (a status change, a reparent), which it locks in the same lock order. The parent
 // can only be read before the lock, and a concurrent reparent of the issue, which holds the
-// issue's lock, can change it in between, so the lock reads it again. A parent that moved releases
-// every lock the attempt took (a savepoint, whose rollback gives back the advisory locks taken
-// under it) and the attempt starts over with the parent that stands, so no lock is ever taken out
-// of order. A parent that moves at every attempt is 409 PARENT_CONTENDED, with nothing applied.
+// issue's lock, can change it in between, so the lock reads it again (lockSeenIssues). A parent
+// that moved releases every lock the attempt took (a savepoint, whose rollback gives back the
+// advisory locks taken under it) and the attempt starts over with the parent that stands, so no
+// lock is ever taken out of order. A parent that moves at every attempt is 409 PARENT_CONTENDED,
+// with nothing applied.
+//
+// The issue is read as who reads it, first: an issue of a project who does not see is the key no
+// issue holds, which is answered as missing before any lock is taken, and so can never wait
+// behind that project's writers or answer PARENT_CONTENDED.
 //
 // It does not use resolveThenLock, whose resolve half runs with nothing held and whose write half
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
-func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
-	rows := make([]string, 0, len(named)+1)
+func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
 	for range parentLockAttempts {
-		var parent *string
-		if err := tx.QueryRow(ctx, `select parent_key from issues where key = $1`, key).Scan(&parent); err != nil {
-			return err
-		}
-		rows = append(rows[:0], named...)
-		if parent != nil {
-			rows = append(rows, *parent)
-		}
 		attempt, err := tx.Begin(ctx)
 		if err != nil {
 			return err
@@ -379,7 +377,7 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 			_ = attempt.Rollback(ctx)
 			return err
 		}
-		if stringPointersEqual(parent, locked) {
+		if stringPointersEqual(locked.parentBefore, locked.parent) {
 			return attempt.Commit(ctx)
 		}
 		if err := attempt.Rollback(ctx); err != nil {
@@ -519,12 +517,13 @@ func (e openForeignChildrenError) body() foreignChildOpenError {
 // The caller holds the deployment dependency lock (lockIssueDependencyWrite), which every create
 // with a parent and every reparent takes, so no child is filed under key, or moved under it,
 // between this read and the status the write sets.
-func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, key, project string) error {
+func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, who model.Actor, key, project string) error {
 	rows, err := tx.Query(ctx, `
 		select key, project_key, status from issues
 		where parent_key = $1 and project_key <> $2 and status not in ('done', 'icebox')
+		  and `+access.ProjectClause("project_key", "$3")+`
 		order by key
-	`, key, project)
+	`, key, project, refs.VisibilityArg(who))
 	if err != nil {
 		return err
 	}

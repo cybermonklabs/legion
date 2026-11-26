@@ -418,7 +418,11 @@ func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 // whose entry fixes its session, a run of a workflow whose entry fixes its session, and a dev box
 // session trading its machine login are each answered exactly the token they were before read
 // entries existed, holding no OAuth scope. TestAPodExchangesItsTokenForOneThatIntrospects holds
-// the named pod's answer the same way.
+// the named pod's answer the same way. The dev box's token, the one of them that acts as its
+// person by its own credential, also answers when its machine login was made
+// (CredentialCreatedAt, which Dispatch holds a token recording no account to): that is a time of
+// the broker's clock within this test, not a value the row can name, so it is read back and held
+// to the last minute.
 func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
@@ -430,6 +434,8 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 		name  string
 		token string
 		want  oauthwire.Introspection
+		// credentialMade is whether the token answers when its credential was made.
+		credentialMade bool
 	}{
 		{name: "a pod of a fixed-session account",
 			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
@@ -438,12 +444,20 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
 			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a dev box session",
-			token: f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
-			want:  oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			token:          f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
+			want:           oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)},
+			credentialMade: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := f.introspected(t, c.token)
 			c.want.ExpiresAt = answer.ExpiresAt
+			if c.credentialMade {
+				made := time.Unix(answer.CredentialCreatedAt, 0)
+				if since := time.Since(made); since < -time.Minute || since > time.Minute {
+					t.Errorf("the token answers its credential was made at %s, %s from now; want within a minute of now", made, since)
+				}
+				c.want.CredentialCreatedAt = answer.CredentialCreatedAt
+			}
 			if !reflect.DeepEqual(answer, c.want) {
 				t.Errorf("Introspect = %+v, want %+v", answer, c.want)
 			}
@@ -1523,7 +1537,8 @@ func TestAPersonTradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 }
 
 // TestARestrictedMembersEmptyListIsRefused: a restricted member sees only the projects that name
-// them, so their trade names which; one naming none is refused, saying how to name them.
+// them, so their machine's trade names the one it works on; one naming none is refused, saying
+// how to name it (exchange.ErrRestrictedOneProject).
 func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberRestricted
@@ -1531,7 +1546,7 @@ func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
 	key := newKey(t)
 	status, body := f.exchange(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request",
-		person+" is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.")
+		person+" is a restricted member, who sees only the projects that name them, and the trade asked for 0; set AGENT_SECRETS_PROJECTS to the one project this session works on.")
 }
 
 // TestAFullMembersEmptyListIsTaken: a full member's trade that names no project is answered as it
@@ -1559,20 +1574,24 @@ func TestAPersonWithNoDispatchRowIsTaken(t *testing.T) {
 	}
 }
 
-// TestAK3OutageMintsAnEmptyListAsToday: while Dispatch cannot be reached, a trade naming no
-// project is answered as it is today, and one naming a project is refused as a broker that cannot
-// check it — never minted unchecked — with a status a client asks again on.
-func TestAK3OutageMintsAnEmptyListAsToday(t *testing.T) {
+// TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt: while Dispatch cannot be reached, a machine
+// login's trade is refused, with a status a client asks again on, whatever it names: the broker
+// asks Dispatch what kind of member the login's approver is before it decides the token's scope,
+// and cannot tell a restricted member's machine from anyone else's without the answer, so it mints
+// no token acting as its person on a guess. The person here is one Dispatch holds no row for,
+// whose trade mints once Dispatch answers again.
+func TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt(t *testing.T) {
 	access := newFakeAccess()
 	access.down = true
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	machine := f.devBoxToken(t, key, person)
-	token := f.exchanged(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
-	f.introspectsProjects(t, token, oauthwire.ProjectScopePerson, nil)
-
-	status, body := f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV"), key)
-	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch")
+	for _, asked := range []string{"", "PRIV"} {
+		status, body := f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), asked), key)
+		refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked what kind of member")
+	}
+	access.set(func(a *fakeAccess) { a.down = false })
+	f.introspectsProjects(t, f.exchanged(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key), oauthwire.ProjectScopePerson, nil)
 }
 
 // TestASignInTradeAsksNoMemberKind: a person's sign-in was verified against the deployment's own
@@ -1862,9 +1881,10 @@ func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 }
 
 // TestAnUncheckedMintLogsItsEntry: while Dispatch cannot be reached, an operator entry's token
-// naming no project and a person's trade naming no project mint as they always have, and each such
-// mint logs one line naming what was minted unchecked: the entry's principal, or the person. An
-// entry's token naming a project is refused temporarily_unavailable instead, and logs no such line.
+// naming no project mints as it always has, and logs one line naming what was minted unchecked,
+// the entry's principal. An entry's token naming a project is refused temporarily_unavailable
+// instead, and logs no such line; so is a person's machine login's trade naming no project, which
+// waits on what kind of member Dispatch calls the person (TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt).
 func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	logs := capturedLog(t)
 	access := newFakeAccess()
@@ -1888,8 +1908,9 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 		t.Fatalf("the no-project entry's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), otherAccount, strings.Join(logs.lines(), "\n"))
 	}
 
-	f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
-	if got := logs.lines("unchecked", person, "ada-devbox"); len(got) != 1 {
-		t.Fatalf("the person's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), person, strings.Join(logs.lines(), "\n"))
+	status, body = f.exchange(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
+	if got := logs.lines("unchecked", person, "ada-devbox"); len(got) != 0 {
+		t.Fatalf("the person's refused machine trade logged %d lines of an unchecked mint naming %s, want none:\n%s", len(got), person, strings.Join(got, "\n"))
 	}
 }

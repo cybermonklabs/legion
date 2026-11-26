@@ -23,16 +23,18 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
-// wireSettings is GET /v1/settings's answer as the CLI reads it.
+// wireSettings is GET /v1/settings's answer as the CLI reads it, with approver_fields as Dispatch
+// reads it.
 type wireSettings struct {
-	Store         string `json:"store"`
-	SecretsPrefix string `json:"secrets_prefix"`
-	KMSKeyARN     string `json:"kms_key_arn"`
-	AWSAccountID  string `json:"aws_account_id"`
-	AWSRegion     string `json:"aws_region"`
-	KMSKeyName    string `json:"kms_key_name"`
-	GCPProject    string `json:"gcp_project"`
-	SecretTypeTag bool   `json:"secret_type_tag"`
+	Store          string `json:"store"`
+	SecretsPrefix  string `json:"secrets_prefix"`
+	KMSKeyARN      string `json:"kms_key_arn"`
+	AWSAccountID   string `json:"aws_account_id"`
+	AWSRegion      string `json:"aws_region"`
+	KMSKeyName     string `json:"kms_key_name"`
+	GCPProject     string `json:"gcp_project"`
+	SecretTypeTag  bool   `json:"secret_type_tag"`
+	ApproverFields bool   `json:"approver_fields"`
 }
 
 // wireReread is POST /v1/secrets/{name}/reread's answer.
@@ -44,9 +46,11 @@ type wireReread struct {
 }
 
 // TestSettingsAnswersTheNamespaceAndKey pins GET /v1/settings for a broker on AWS Secrets
-// Manager: the store, the prefix, the key ARN with its account and region, and secret_type_tag,
+// Manager: the store, the prefix, the key ARN with its account and region, secret_type_tag,
 // which says this broker reads a secret's type from the type tag, so agent-secrets writes a typed
-// secret through it (a broker from before the tag sends no such field).
+// secret through it (a broker from before the tag sends no such field), and approver_fields,
+// which says this broker takes the approver fields in a machine login's approve, so Dispatch sends
+// them to it (a broker from before them sends no such field and refuses them).
 func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
@@ -54,7 +58,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 		t.Fatalf("status %d: %s", status, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true}
+	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -66,7 +70,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 
 // TestSettingsAnswersTheGCPStore pins GET /v1/settings for a broker on Google Secret Manager: the
 // store's name, the prefix, the Cloud KMS key's name and the project number cut from the prefix,
-// with none of the AWS fields, and secret_type_tag, as on AWS.
+// with none of the AWS fields, and secret_type_tag and approver_fields, as on AWS.
 func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
 	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
@@ -88,7 +92,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true}
+	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -148,7 +147,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 			"scopes is required: it is the whole set the token is to hold")
 		return
 	}
-	scopes, ok := tokenScopes(w, actor, input.Scopes)
+	reader, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

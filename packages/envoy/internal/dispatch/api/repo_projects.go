@@ -5,22 +5,27 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// listRepoProjects answers the rows of repo_projects as the last release left them. Nothing
-// writes them now: a project's default repository is a column of the project, and the rename
-// pairs are read once at boot (store.ReadRepoRenames). The route stays for one release because
-// the Legion daemons of the last release read it at boot.
+// listRepoProjects answers the rows of repo_projects as the last release left them, of the
+// projects the caller sees: a mapping to a project it does not see is one the list does not hold
+// (access.ProjectClause). Nothing writes them now: a project's default repository is a column of
+// the project, and the rename pairs are read once at boot (store.ReadRepoRenames). The route stays
+// for one release because the Legion daemons of the last release read it at boot.
 func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+repoProjectColumns+`
 		from repo_projects
+		where `+access.ProjectClause("project", "$1")+`
 		order by repo
-	`)
+	`, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

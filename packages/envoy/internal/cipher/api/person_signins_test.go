@@ -37,8 +37,15 @@ type wirePersonSignIn struct {
 }
 
 // signIn writes one sign-in straight into the store, as the token exchange does in its own
-// transaction: these routes read and revoke, and nothing they serve creates one.
+// transaction, as person's own account (accountOf): these routes read and revoke, and nothing
+// they serve creates one.
 func (ts *testServer) signIn(t *testing.T, person, thumbprint, machine string) {
+	t.Helper()
+	ts.signInAs(t, person, thumbprint, machine, accountOf(person))
+}
+
+// signInAs is signIn as the account account.
+func (ts *testServer) signInAs(t *testing.T, person, thumbprint, machine string, account store.IssuerSubject) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := ts.Store.Pool.Begin(ctx)
@@ -46,7 +53,9 @@ func (ts *testServer) signIn(t *testing.T, person, thumbprint, machine string) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := store.RecordPersonSignIn(ctx, tx, person, thumbprint, machine); err != nil {
+	if _, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account,
+	}); err != nil {
 		t.Fatalf("record the sign-in of %s on %s: %v", person, machine, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

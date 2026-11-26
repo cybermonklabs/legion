@@ -55,7 +55,7 @@ func TestClosedVersionBlocksCountsOnlyTheFirstHolderOfAnID(t *testing.T) {
 func heldBlocksOf(t *testing.T, service *Service, artifactID string) (string, []model.ArtifactBlock) {
 	t.Helper()
 	ctx := context.Background()
-	live, liveBlocks, err := service.TextWithBlocks(ctx, artifactID)
+	live, liveBlocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the live document %s: %v", artifactID, err)
 	}
@@ -135,7 +135,7 @@ func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *te
 		t.Fatalf("the sweep marked %+v, want %+v", marked, want)
 	}
 	closeDocumentRoom(t, service, spec)
-	live, liveBlocks, err := service.TextWithBlocks(ctx, spec)
+	live, liveBlocks, err := service.TextWithBlocks(ctx, serverReader, spec)
 	if err != nil {
 		t.Fatalf("read the live document: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestHeldVersionBlocksGivesIdenticalParagraphsTheirOwnRows(t *testing.T) {
 	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 || tick.OwedDocuments != 0 {
 		t.Fatalf("indexing version 1: tick = %#v", tick)
 	}
-	first, firstBlocks, err := service.TextWithBlocks(ctx, spec)
+	first, firstBlocks, err := service.TextWithBlocks(ctx, serverReader, spec)
 	if err != nil {
 		t.Fatalf("read the live document: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestHeldVersionBlocksGivesIdenticalParagraphsTheirOwnRows(t *testing.T) {
 	})
 	waitForLandedAppends(t, service, spec)
 	closeDocumentRoom(t, service, spec)
-	live, liveBlocks, err := service.TextWithBlocks(ctx, spec)
+	live, liveBlocks, err := service.TextWithBlocks(ctx, serverReader, spec)
 	if err != nil {
 		t.Fatalf("read the live document: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestHeldVersionBlocksMatchesAVersionAcrossCrossedEdits(t *testing.T) {
 			if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 || tick.OwedDocuments != 0 {
 				t.Fatalf("indexing version 1: tick = %#v", tick)
 			}
-			first, firstBlocks, err := service.TextWithBlocks(ctx, spec)
+			first, firstBlocks, err := service.TextWithBlocks(ctx, serverReader, spec)
 			if err != nil {
 				t.Fatalf("read the live document: %v", err)
 			}
@@ -388,7 +388,7 @@ func TestHeldVersionBlocksMatchesAVersionAcrossCrossedEdits(t *testing.T) {
 					}
 				}
 			}
-			live, liveBlocks, err := service.TextWithBlocks(ctx, spec)
+			live, liveBlocks, err := service.TextWithBlocks(ctx, serverReader, spec)
 			if err != nil {
 				t.Fatalf("read the live document: %v", err)
 			}

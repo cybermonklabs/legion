@@ -13,7 +13,6 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )

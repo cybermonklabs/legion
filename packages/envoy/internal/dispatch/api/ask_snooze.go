@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -46,6 +45,10 @@ type askSnoozeInput struct {
 // PUT /api/v1/me/asks/{id}/snooze
 func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -121,6 +124,10 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/v1/me/asks/{id}/snooze
 func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

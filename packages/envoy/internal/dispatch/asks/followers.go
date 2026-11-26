@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -169,9 +170,31 @@ func Unfollow(ctx context.Context, db Execer, askID, sessionID string) (bool, er
 	return tag.RowsAffected() == 1, nil
 }
 
-// Followers lists askID's followers in the order they joined.
-func Followers(ctx context.Context, db Queryer, askID string) ([]model.AskFollower, error) {
+// Followers lists askID's followers in the order they joined, as the reader whose visibility
+// argument viewer binds (refs.VisibilityArg) may read them: the followers of an ask of a project
+// that reader does not see, or of a file of a conversation it may not read, are none, as are an
+// id no ask holds (access.ItemOwnerClause, the rule a read of the ask itself binds). The read holds
+// on its own, so an ask made hidden after the caller's own read of it answers no follower.
+func Followers(ctx context.Context, db Queryer, askID string, viewer any) ([]model.AskFollower, error) {
 	rows, err := db.Query(ctx, `
+		select f.session_id, f.since from ask_followers f
+		join asks a on a.id = f.ask_id
+		where f.ask_id = $1 and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+		order by f.since, f.session_id
+	`, askID, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("load followers of ask %q: %w", askID, err)
+	}
+	return scanFollowers(rows, askID)
+}
+
+// PayloadFollowers lists askID's followers in the order they joined, for the payload of an event a
+// write appends in askID's thread (api's askSessions). It binds no reader: the write holds the
+// ask's owner and read the ask under it before this, and every read of the event it appends is
+// held to its owner's project there (the event log's and the live socket's own clauses). A
+// response reads Followers instead.
+func PayloadFollowers(ctx context.Context, tx pgx.Tx, askID string) ([]model.AskFollower, error) {
+	rows, err := tx.Query(ctx, `
 		select session_id, since from ask_followers
 		where ask_id = $1
 		order by since, session_id
@@ -179,6 +202,11 @@ func Followers(ctx context.Context, db Queryer, askID string) ([]model.AskFollow
 	if err != nil {
 		return nil, fmt.Errorf("load followers of ask %q: %w", askID, err)
 	}
+	return scanFollowers(rows, askID)
+}
+
+// scanFollowers reads the rows of a followers statement, a session and the time it joined each.
+func scanFollowers(rows pgx.Rows, askID string) ([]model.AskFollower, error) {
 	defer rows.Close()
 	followers := []model.AskFollower{}
 	for rows.Next() {

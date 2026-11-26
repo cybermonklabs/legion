@@ -270,12 +270,12 @@ func (side *equivalenceSide) run(t *testing.T, document *equivalenceDocument, fl
 
 	observed.Rows = side.rowEffects(t, document, ids.artifact, versions, client, history)
 	observed.Anchors = side.anchors(t, ids)
-	if markdown, token, err := side.service.TextWithToken(ctx, ids.artifact); err != nil {
+	if markdown, token, err := side.service.TextWithToken(ctx, serverReader, ids.artifact); err != nil {
 		observed.Text = "error: " + err.Error()
 	} else {
 		observed.Text = token + "\n" + markdown
 	}
-	if blocks, err := side.service.Blocks(ctx, ids.artifact); err != nil {
+	if blocks, err := side.service.Blocks(ctx, serverReader, ids.artifact); err != nil {
 		observed.Blocks = "error: " + err.Error()
 	} else {
 		observed.Blocks = encodeObserved(blocks)

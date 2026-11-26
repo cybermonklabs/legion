@@ -68,7 +68,7 @@ func requireIndexedWithoutLongIDs(t *testing.T, database *store.Store, service *
 	if indexed := blockIndexAt(t, database, artifactID); indexed == nil || *indexed != version {
 		t.Fatalf("blocks indexed at %v, want version %d", indexed, version)
 	}
-	_, blocks, err := service.TextWithBlocks(ctx, artifactID)
+	_, blocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestAnAskBlockWhoseIDIsPastTheBoundSettles(t *testing.T) {
 		t.Fatalf("the long-id block's ask asks %q after the edit, want the block's new question", ask.Question)
 	}
 
-	markdown, err := service.Text(context.Background(), original)
+	markdown, err := service.Text(context.Background(), serverReader, original)
 	if err != nil {
 		t.Fatalf("read the original: %v", err)
 	}

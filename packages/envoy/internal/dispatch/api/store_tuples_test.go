@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -153,8 +152,9 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 		{graphstore.KindSession, session},
 		{graphstore.KindPage, graphstore.RolePageID(role)},
 	} {
-		read, found, err := refs.Node(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"},
+		read, found, err := refs.Node(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer},
 			named.kind, named.id, false)
+
 		if err != nil || !found {
 			t.Fatalf("the one reader answers no %s node for %q: found=%t err=%v",
 				named.kind, named.id, found, err)

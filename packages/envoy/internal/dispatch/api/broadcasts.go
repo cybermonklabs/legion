@@ -14,14 +14,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"golang.org/x/sync/errgroup"
 )
 
 // A broadcast is one human's message to many sessions. It is a grouping over the targeted
@@ -300,7 +299,7 @@ type broadcastRecovery struct {
 // own exclusions, under the send's own 201 - answered at once, as the send was, while
 // sendOwedBroadcastRecipients puts every recipient it still owes on its way behind the answer.
 func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point broadcastRecovery, _ []byte) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -636,6 +635,10 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select b.id::text, b.author, b.body, b.delivery, b.created_at,
 		       count(distinct m.id),
@@ -692,7 +695,13 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 // `urn:uuid:<uuid>` on the uuid column, and the raw value would answer 500 where the canonical
 // one answers this route's own 404.
 func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingPerson(w, r)
+	// The reply blocks are read for the person the request acts for, as they always were, with
+	// the viewer of the request's credential (readerAs), so they show only what the caller sees.
+	person, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerAs(w, r, person)
 	if !ok {
 		return
 	}
@@ -772,11 +781,11 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, b
 	for index, message := range messages {
 		ids[index] = message.ID
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, ids)
+	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, who, ids)
 	if err != nil {
 		return nil, err
 	}
-	replies, err := s.loadMessageReplyChains(ctx, s.deps.Store.Pool, ids)
+	replies, err := s.loadMessageReplyChains(ctx, s.deps.Store.Pool, who, ids)
 	if err != nil {
 		return nil, err
 	}

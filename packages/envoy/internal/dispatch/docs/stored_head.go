@@ -2,12 +2,18 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The stored head - the greatest version a document's stored history holds - is what this
@@ -45,31 +51,72 @@ func (s *Service) flushOtherRooms(ctx context.Context, tx Queryer, artifactID st
 
 // readStoredHead is the stored head a read of artifactID compares a resident room's cursor
 // against (roomHoldsHead): the greatest stored version, as the gate and a version capture read it
-// (currentUpdateCursor). It reads through the caller's transaction when there is one, since a
-// second connection of the shared pool taken under it is what deadlocks the pool
-// (store.ErrNestedAcquire), and otherwise on the pool that owns loads, as a cold read reads the
-// store's stamp (PgVersioned.DocumentStamp), so a caller holding a pooled connection it did not
-// join, settlement's transaction, takes no second one either. It takes no lock and waits for
-// nothing. It is the one place a read learns the head.
-func (s *Service) readStoredHead(ctx context.Context, artifactID string) (int64, error) {
-	var q Queryer
-	if tx, joined := txFromContext(ctx); joined {
-		q = tx
-	} else {
-		rooms, err := s.store.Pool.Rooms()
-		if err != nil {
-			return 0, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+// (currentUpdateCursor), read for who (storedHeadSQL): a document who may not read is
+// pgx.ErrNoRows, as a document no row holds is, so the read holds the reader's rule in the
+// statement that reads the document's history and not only in the route's earlier read of its
+// row. It reads where writerStoredHead reads (headReader), takes no lock and waits for nothing. It
+// is the one place a read learns the head.
+func (s *Service) readStoredHead(ctx context.Context, who model.Actor, artifactID string) (int64, error) {
+	q, err := s.headReader(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var head int64
+	if err := q.QueryRow(ctx, storedHeadSQL, artifactID, refs.VisibilityArg(who)).Scan(&head); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, pgx.ErrNoRows
 		}
-		q = rooms
+		return 0, headError(ctx, err)
+	}
+	return head, nil
+}
+
+// storedHeadSQL is currentUpdateCursor's head of the document $1 names, for the reader whose viewer
+// $2 binds (refs.VisibilityArg): read only where that reader may read the document
+// (access.DocumentClause over its own row), so a document it may not read is a row the statement
+// does not find.
+var storedHeadSQL = `select coalesce((select max(u.version) from doc_updates u where u.artifact_id = a.id), 0)
+		from artifacts a where a.id = $1 and ` + access.DocumentClause("a", "$2")
+
+// writerStoredHead is the stored head a write's read of artifactID (docTree) compares a resident
+// room's cursor against, as readStoredHead does for a read: currentUpdateCursor with no reader,
+// since every caller is a write that has judged its writer's sight of the document itself,
+// under the document owner's lock where it holds a transaction.
+func (s *Service) writerStoredHead(ctx context.Context, artifactID string) (int64, error) {
+	q, err := s.headReader(ctx)
+	if err != nil {
+		return 0, err
 	}
 	head, err := currentUpdateCursor(ctx, q, artifactID)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return 0, ctxErr
-		}
-		return 0, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+		return 0, headError(ctx, err)
 	}
 	return head, nil
+}
+
+// headReader is where a read of the stored head reads: through the caller's transaction when there
+// is one, since a second connection of the shared pool taken under it is what deadlocks the pool
+// (store.ErrNestedAcquire), and otherwise on the pool that owns loads, as a cold read reads the
+// store's stamp (PgVersioned.DocumentStamp), so a caller holding a pooled connection it did not
+// join, settlement's transaction, takes no second one either.
+func (s *Service) headReader(ctx context.Context) (Queryer, error) {
+	if tx, joined := txFromContext(ctx); joined {
+		return tx, nil
+	}
+	rooms, err := s.store.Pool.Rooms()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+	}
+	return rooms, nil
+}
+
+// headError is a failed head read as its caller answers it: the request's own end, else
+// ErrServiceUnavailable.
+func headError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 }
 
 // roomHoldsHead reports whether live, a resident room, holds every stored update through head:

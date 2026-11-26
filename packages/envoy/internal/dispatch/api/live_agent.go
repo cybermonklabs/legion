@@ -82,6 +82,11 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 // relayAgentConversation is one agent subscription's whole life: it returns once the subscription
 // has ended, on its own or because ctx did.
 func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer, sub, sessionID string) {
+	reader, err := s.readerFor(ctx, stream.Caller())
+	if err != nil {
+		endAgentAfterFailure(ctx, stream, sub, "resolve what the caller sees", err)
+		return
+	}
 	source := s.deps.AgentStream
 	queue := newAgentStreamQueue()
 	// queue.overflow closes once a frame would take the view past its budget; dropped once the
@@ -207,6 +212,20 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		}
 		queue.release(size)
 	}
+}
+
+// agentViewReadsWhatever reports whether the content rule (access.SessionContentClause) answers
+// reader's view of session the same whatever the database holds, so the re-ask before a batch of
+// its frames reads nothing:
+//
+//   - the server's viewer (All), which the rule passes first;
+//   - the viewer's own session, which the rule passes next.
+//
+// An open viewer resolved while no project was private is not one of them: the rule passes it
+// only while that still holds, which the re-ask reads (anyProjectPrivateNow).
+func agentViewReadsWhatever(reader model.Actor, session string) bool {
+	viewer := reader.Viewer
+	return viewer != nil && (viewer.All || (viewer.Session != "" && viewer.Session == session))
 }
 
 // endAgentAfterFailure ends a view whose relay call failed with an ended frame (dropped), so its

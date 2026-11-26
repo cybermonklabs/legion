@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -29,6 +28,10 @@ type userState map[string]userIssueState
 
 func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -108,6 +111,10 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	// is made with it.
 	if input.LastReadSeq != nil && (*input.LastReadSeq < 0 || !fitsIntegerColumn(*input.LastReadSeq)) {
 		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE", "last_read_seq must be from 0 to %d", maxIntegerColumn))
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
@@ -305,7 +312,11 @@ func (s *server) getUserAgentState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	states, err := s.loadUserAgentStates(r.Context(), actor.ID, nil)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	states, err := s.loadUserAgentStates(r.Context(), who, actor.ID, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -360,6 +371,10 @@ func userAgentStateEvent(actor model.Actor, sessionID string) model.Event {
 // session's whole state.
 func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -550,7 +565,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 		s.publish(r.Context(), event)
 	}
-	states, err := s.loadUserAgentStates(r.Context(), actor.ID, &sessionID)
+	states, err := s.loadUserAgentStates(r.Context(), who, actor.ID, &sessionID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

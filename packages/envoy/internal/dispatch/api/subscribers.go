@@ -5,15 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/routing"
 )
 
@@ -98,6 +100,11 @@ func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	viewer := refs.VisibilityArg(who)
 	s.writeSubscribers(w, r, issueSubscriberBase(r.PathValue("key")))
 }
 
@@ -105,7 +112,11 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -160,6 +171,20 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		}
 		result = append(result, entry)
 	}
+	// A reader that sees every object passes SessionClause on every id, so the read would cut
+	// nothing (R9).
+	if !seesEveryObject(who) {
+		ids := make([]string, len(result))
+		for index, entry := range result {
+			ids[index] = entry.SessionID
+		}
+		seen, err := s.seenSessions(r.Context(), refs.VisibilityArg(who), ids)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		result = slices.DeleteFunc(result, func(entry subscriber) bool { return !seen[entry.SessionID] })
+	}
 	sort.SliceStable(result, func(left, right int) bool {
 		if result[left].LastSeen != result[right].LastSeen {
 			return result[left].LastSeen > result[right].LastSeen
@@ -169,12 +194,68 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 	WriteJSON(w, http.StatusOK, result)
 }
 
+// seenSessions is which of the sessions ids names the viewer may see (access.SessionClause), in one
+// statement: its own and those that have acted in a project it sees, and, for an open viewer, every
+// session but one that acted in a project it does not see. With no id it reads nothing.
+func (s *server) seenSessions(ctx context.Context, viewer any, ids []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	if len(ids) == 0 {
+		return seen, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select named.id from unnest($1::text[]) as named(id)
+		where `+access.SessionClause("named.id", "$2"), ids, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("read which sessions the caller sees: %w", err)
+	}
+	visible, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which sessions the caller sees: %w", err)
+	}
+	for _, id := range visible {
+		seen[id] = true
+	}
+	return seen, nil
+}
+
+// sessionsHiddenFromReader reports which of ids the request's reader may not see
+// (access.SessionClause), read in one statement (seenSessions): sessionHiddenFromReader's rule over a
+// list of sessions. A context with no reader hides every session, failing closed, as
+// sessionHiddenFromReader does. A reader that sees every object - among them an open reader of a
+// deployment that holds no private project (R9) - sees every session and costs no read.
+func (s *server) sessionsHiddenFromReader(ctx context.Context, ids []string) (func(string) bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok {
+		return func(string) bool { return true }, nil
+	}
+	if seesEveryObject(reader) {
+		return func(string) bool { return false }, nil
+	}
+	seen, err := s.seenSessions(ctx, refs.VisibilityArg(reader), ids)
+	if err != nil {
+		return nil, err
+	}
+	return func(sessionID string) bool { return !seen[sessionID] }, nil
+}
+
+// unsubscribeIssueSession removes a session from an issue's topics. The issue is read first as
+// the caller reads it, as unsubscribeArtifactSession reads its document: an issue of a project the
+// caller does not see is a key no issue holds, before the listener is asked anything. The session
+// is then read as the caller sees it (unsubscribeSession).
 func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
+	if _, _, err := issueStatus(r.Context(), who, key, pooledOwnerRead(s.deps.Store.Pool)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	s.unsubscribeSession(w, r, actor, issueOwner(key), issueSubscriberBase(key))
 }
 
@@ -183,7 +264,11 @@ func (s *server) unsubscribeArtifactSession(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	artifact, own, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, own, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

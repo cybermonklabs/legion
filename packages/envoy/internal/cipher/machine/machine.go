@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 var (
@@ -51,11 +52,94 @@ var (
 	// already holds a live launcher credential under another record: a machine signed two logins
 	// with one key and the first was approved. The record stays pending.
 	ErrKeyHoldsLiveCredential = errors.New("this machine login's key already holds a live launcher credential")
+	// ErrApproverReplaced is ApplyDecision's refusal to approve a login as an account that no
+	// longer holds the approver's address: Dispatch gave the address to another account and named
+	// this one replaced (enroll.Service.RevokePersonSubject). Nothing is minted and the record
+	// stays pending, for the account that holds the address now.
+	ErrApproverReplaced = errors.New("the account approving this machine login no longer holds its approver's address: another account holds it now")
+	// ErrApprovalNamesNoAccount is ApplyDecision's refusal to approve, naming no account and
+	// carrying no session generation, a login whose approver's address Dispatch has named an
+	// account replaced at within ApprovalInFlightWindow: the broker cannot tell such an approval is
+	// not the replaced account's. Once Dispatch records an address's account, every approve it
+	// relays from a credential that still holds the address names an account, unless it read this
+	// broker's settings answering without approver_fields, which a broker of this release answers
+	// only through a pod of an older release during a roll, or within five seconds of replacing one
+	// (Dispatch keeps a settings answer that long); so one naming none may be an approval whose check
+	// passed before a replacement and lands after its revocation, which would otherwise mint a login
+	// recording none that the paid revocation no longer ends (or one relayed by an older Dispatch,
+	// which names no account at all). A current Dispatch's approve
+	// carries the generation its check read, and ErrApprovalCheckedBeforeReplacement decides it
+	// exactly instead. It is an ErrApproverReplaced, answered 403 APPROVER_REPLACED; nothing is
+	// minted and the record stays pending.
+	ErrApprovalNamesNoAccount = fmt.Errorf("%w: this approval names no account, and another account has held the address since, so approve it again from Dispatch, which names the account that holds it now", ErrApproverReplaced)
+	// ErrApprovalCheckedBeforeReplacement is ApplyDecision's refusal of an approval whose session
+	// generation, the one Dispatch's check of the approver read, is below the generation a revoke
+	// recorded a replacement of the approver's address at: Dispatch checked that approver before the
+	// address passed to another account, whichever account the approval names, and the revoke that
+	// ended what the replaced account and every credential recording no account held has already
+	// committed, so it would not end the login this approval mints. It is an ErrApproverReplaced,
+	// answered 403 APPROVER_REPLACED; nothing is minted and the record stays pending, for an
+	// approval checked again at Dispatch.
+	ErrApprovalCheckedBeforeReplacement = fmt.Errorf("%w: Dispatch checked this approval before another account took the address, so approve it again from Dispatch", ErrApproverReplaced)
 	// ErrNotLive is Refreshed's and Live's refusal for a launcher credential that is revoked or
 	// past its expiry: a refresh never revives a login that has ended. It is an
 	// oauth.ErrLoginEnded, so the token endpoint refuses it invalid_grant.
 	ErrNotLive = fmt.Errorf("%w: this machine login's credential is revoked or expired", oauth.ErrLoginEnded)
 )
+
+// ApprovalInFlightWindow is how long after Dispatch names an account replaced at an address an
+// approval is refused when no session generation places it against that replacement: one that
+// carries no generation (an older or rolled-back Dispatch's approve, or a current one's relayed
+// after it read the settings of a pod of an older release) and names no account
+// (ErrApprovalNamesNoAccount). It applies only to that one: every revoke carries a generation, so
+// an approval carrying one is decided by the two generations alone.
+//
+// It is the relay's own bound, the longest an approve can be in flight from its check at Dispatch
+// to the broker's decision, so the fallback refuses every approve whose check passed before the
+// replacement:
+//
+//   - Dispatch checks the approver (api.approverStanding), then reads this broker's settings
+//     (whether it takes the approver fields; an answer is kept five seconds, a failed read relays
+//     nothing) and relays the approve, the
+//     two under one deadline 5 s after the check, its client's window
+//     (packages/envoy/internal/dispatch/cipher/client.go:43, defaultTimeout, and
+//     api.relayDeadline): the approve reaches the broker within 5 s of the check or not at all;
+//   - the broker ends every request's context 45 s after it arrives
+//     (packages/envoy/cmd/cipherd/main.go:878, requestDeadline, which withRequestDeadline puts on
+//     the request), so the approval's transaction, whose now() the window is measured to, begins
+//     within 45 s of the approve's arrival or not at all.
+//
+// So such an approval's transaction begins less than 5 s + 45 s = 50 s after its check. The revoke
+// it is weighed against was sent only once the replacing sign-in had committed, after that check,
+// so its replaced_at (the revoke transaction's now()) is later than the check, and the approval's
+// now() is less than 50 s after it: the window refuses it. Both times the window compares are the
+// broker's own clock. The cost is that an approve from an older Dispatch naming no account is
+// refused for 50 s after a replacement at its address, and is approved again from Dispatch.
+//
+// For context only, the measured times are far inside that bound: on 2026-11-18, between 12:37Z
+// and 13:08Z, with go1.27.3, GOMAXPROCS=8 and -p 4 on a 288-core box at load averages from 207 to
+// 308, the longest time from Dispatch's handler being handed an approve to the test's broker
+// receiving its relay was 13.29 ms (internal/dispatch/api's tests, 20 relays; cmd/dispatch's
+// longest of 10 was 6.85 ms; `ENVOY_TIME_APPROVALS=1 go test -count=1 -v -timeout 40m` on each,
+// their APPROVE-RELAYED-IN lines), and the longest ApplyDecision of an approval, start to return,
+// lock waits included, was 43.08 ms (internal/cipher/machine's tests, 633 approvals, among them the
+// 600 of TestARevokeAndAnApprovalByTheReplacedAccountNeverLeaveItALiveLogin, timed by the tests'
+// applyDecision, their APPROVAL-DECIDED-IN lines).
+const ApprovalInFlightWindow = 50 * time.Second
+
+// NewApprovalsWithoutGeneration registers broker_machine_login_approvals_without_generation_total
+// on r and answers it, for Service.ApprovalsWithoutGeneration: each machine-login approve that
+// carries no approver_session_generation, which a Dispatch from before the field relays, and which
+// only ApprovalInFlightWindow decides against a replacement. A current Dispatch omits the field
+// only for a broker whose GET /v1/settings it read answering without approver_fields, as a broker
+// from before the field answers, since such a broker refuses it; it relays nothing when it cannot
+// read those settings. So against a broker of this release a current Dispatch omits it only while a
+// roll from an older release lasts, and five seconds after; once the counter stays at zero no
+// relaying Dispatch omits it, and the fallback can come out.
+func NewApprovalsWithoutGeneration(r *metrics.Registry) *metrics.Counter {
+	return r.NewCounter("broker_machine_login_approvals_without_generation_total",
+		"Machine-login approves that carried no approver_session_generation, from a Dispatch from before the field or one that read the settings of a broker from before it during a roll; the no-generation fallback (machine.ApprovalInFlightWindow) comes out once it stays at zero.")
+}
 
 type Service struct {
 	Store  *store.Store
@@ -90,6 +174,10 @@ type Service struct {
 	// and confirmation code — a confirmation-fatigue/notification-spam vector against the named
 	// operator.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)
+
+	// ApprovalsWithoutGeneration counts each approve ApplyDecision is handed that carries no
+	// session generation (NewApprovalsWithoutGeneration); nil counts nothing.
+	ApprovalsWithoutGeneration *metrics.Counter
 }
 
 // jtiRetentionMargin is how long past a request object's expiry its jti is remembered, mirroring
@@ -269,7 +357,34 @@ func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 // decision, so a crash between the two never orphans a credential no decision names. A key that
 // already holds a live credential under another record is ErrKeyHoldsLiveCredential, and the
 // record stays pending.
-func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string) (state, credentialID string, err error) {
+//
+// account is the identity provider's account the deciding human signed in to Dispatch as, which
+// Dispatch relays beside login (the zero value for an older Dispatch, which relays none). An
+// approval records it on the credential it mints, and is ErrApproverReplaced, minting nothing,
+// when that account no longer holds login's address (store.SubjectReplaced). It reads that after
+// taking login's lock (store.LockPerson), which the revoke of a replaced account takes too
+// (enroll.Service.RevokePersonSubject): an approval that took it first has committed its
+// credential before the revoke reads login's machine logins, and the revoke ends it; one that
+// waited reads what the revoke recorded, and is refused.
+//
+// generation is the session generation of login's address at Dispatch as Dispatch's check of the
+// approver read it, which a current Dispatch relays (approver_session_generation), and nil for an
+// approve that carries none (an older or rolled-back Dispatch). Every recording of an account at
+// Dispatch moves that generation in its own transaction, and the revoke records the generation its
+// replacement left. So an approval carrying a generation is ErrApprovalCheckedBeforeReplacement,
+// whatever account it names, when a replacement of login's address was recorded at a greater one
+// (store.SubjectReplacedAfter), read under the same lock: its check passed before the address
+// moved, and the revoke, having ended every credential of the address recording none, would no
+// longer end the login it mints. An approval carrying no generation that names no account is
+// ErrApprovalNamesNoAccount when Dispatch named any account replaced at login's address within
+// ApprovalInFlightWindow (store.SubjectReplacedWithin), read under the same lock, since nothing
+// else places it before or after the move; one carrying no generation that names an account is
+// held to that account alone, as above. A denial mints nothing and takes away nothing anyone
+// holds, so it is decided whatever the account and the generation.
+func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string, account store.IssuerSubject, generation *int64) (state, credentialID string, err error) {
+	if approve && generation == nil {
+		s.ApprovalsWithoutGeneration.Inc()
+	}
 	var denier serviceDenier
 	if !approve {
 		denier = s.readServiceDenier(ctx, recordID, login)
@@ -362,8 +477,36 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		if body.LifetimeSeconds == nil {
 			return "", "", fmt.Errorf("machine login record has no credential lifetime")
 		}
+		if err := store.LockPerson(ctx, tx, login); err != nil {
+			return "", "", err
+		}
+		replaced, err := store.SubjectReplaced(ctx, tx, login, account)
+		if err != nil {
+			return "", "", err
+		}
+		if replaced {
+			return "", "", ErrApproverReplaced
+		}
+		switch {
+		case generation != nil:
+			checkedBefore, err := store.SubjectReplacedAfter(ctx, tx, login, *generation)
+			if err != nil {
+				return "", "", err
+			}
+			if checkedBefore {
+				return "", "", ErrApprovalCheckedBeforeReplacement
+			}
+		case !account.Recorded():
+			recent, err := store.SubjectReplacedWithin(ctx, tx, login, ApprovalInFlightWindow)
+			if err != nil {
+				return "", "", err
+			}
+			if recent {
+				return "", "", ErrApprovalNamesNoAccount
+			}
+		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
-			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second))
+			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second), account)
 		if store.IsUniqueViolation(err) {
 			return "", "", ErrKeyHoldsLiveCredential
 		}

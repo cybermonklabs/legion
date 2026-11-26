@@ -694,10 +694,12 @@ test("a trade refused for its session or its projects is not refreshed and trade
         "belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last 30 days. Ask under a name of your own."
       ),
     ],
+    // A restricted member's machine login naming no project or several, which the broker's
+    // exchange policy holds to exactly one (`exchange.ErrRestrictedOneProject`).
     [
       "invalid_request",
       sentAs(
-        "is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on."
+        "is a restricted member, who sees only the projects that name them, and the trade asked for 2; set AGENT_SECRETS_PROJECTS to the one project this session works on."
       ),
     ],
     // A pod session no registration names yet, which a later trade cures, not a refresh.

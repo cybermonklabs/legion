@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -266,7 +267,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve main's repository for %s: %v", key, err)
 		}
-		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, key)
+		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, everyReader, key)
 		if err != nil {
 			t.Fatalf("read %s: %v", key, err)
 		}
@@ -300,7 +301,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read main's tree facts: %v", err)
 	}
-	tree, err := loadTreeIssues(ctx, pool, "LIST")
+	tree, err := loadTreeIssues(ctx, pool, refs.VisibilityArg(everyReader), "LIST")
 	if err != nil {
 		t.Fatalf("read the tree's issues: %v", err)
 	}

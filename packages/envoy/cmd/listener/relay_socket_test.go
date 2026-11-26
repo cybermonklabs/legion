@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -200,12 +201,13 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	}
 }
 
-// Rows 4, 5, 7 and 8, in one process, each on its own socket: the broker's answer for the
+// Rows 4, 5, 7, 8, 9 and 10, in one process, each on its own socket: the broker's answer for the
 // socket's token changes, and the socket closes with the code the wire gives that case within a
 // second of the first check that reads it (the rig's verifier clock moved past the five seconds a
-// live answer is reused for, so the next check asks the broker). The last case is the negative
-// control of all of them: an answer that has not changed keeps the socket open. Each row's own
-// control is the check of its case removed, and the socket stays open.
+// live answer is reused for, so the next check asks the broker). The last two cases are the
+// negative controls of all of them: an answer that has not changed, and one whose not-held
+// deadline is still ahead, keep the socket open. Each row's own control is the check of its case
+// removed, and the socket stays open.
 func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 	type outcome struct {
 		code int
@@ -242,12 +244,30 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.broker.Says(token, relaySocketAnswer("ses_another", rig.caller.JKT(), time.Hour, relaySocketProject))
 			}},
+		{name: "its person became held", life: time.Hour, want: &outcome{relaySocketCloseRefused, relaySocketReasonMembershipHeld},
+			later: func(rig *relaySocketRig, session, token string) {
+				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+				answer.Held = true
+				rig.broker.Says(token, answer)
+			}},
+		{name: "its not-held answer's deadline passed", life: time.Hour, want: &outcome{websocket.CloseTryAgainLater, relaySocketReasonDeadlinePassed},
+			later: func(rig *relaySocketRig, session, token string) {
+				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+				answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
+				rig.broker.Says(token, answer)
+			}},
 		{name: "the broker cannot be asked", life: time.Hour, want: &outcome{websocket.CloseTryAgainLater, relaySocketReasonBrokerUnavailable},
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.broker.Server.Close()
 			}},
 		{name: "its answer stands", life: time.Hour,
 			later: func(rig *relaySocketRig, session, token string) {}},
+		{name: "its not-held answer's deadline is ahead", life: time.Hour,
+			later: func(rig *relaySocketRig, session, token string) {
+				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+				answer.NotHeldUntil = rig.clock.now().Add(time.Hour).Unix()
+				rig.broker.Says(token, answer)
+			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newRelaySocketRig(t)

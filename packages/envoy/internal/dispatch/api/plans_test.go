@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -387,6 +386,11 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 		t.Fatalf("the refused writes left a plan of %s, want none", issue)
 	}
 
+	reader, err := served.readerFor(t.Context(), model.BrowserActor("alice"))
+	if err != nil {
+		t.Fatalf("resolve alice's reader: %v", err)
+	}
+	seen := httptest.NewRequestWithContext(withReader(t.Context(), reader), http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, nil)
 	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSessionOf("LEG"), 1))
 	putRatingOK(t, handler, issue, retro, withFields(rating, map[string]any{"actor": daemonSessionOf("LEG")}))
 }

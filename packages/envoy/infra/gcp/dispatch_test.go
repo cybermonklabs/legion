@@ -13,12 +13,11 @@ import (
 	tailscalesdk "github.com/pulumi/pulumi-tailscale/sdk/go/tailscale"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-	"github.com/stretchr/testify/require"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -836,6 +835,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
 		}},
+		{"a seed inside the project owner fallback", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = lower + "@example.com" }},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
@@ -2732,6 +2732,32 @@ func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
 	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
 	requireInputError(t, err, "oidcAudience")
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+}
+
+// requireOptionalEnv fails unless env carries name with want, or, with want "", carries no name at
+// all: an optional setting renders only when its input is set.
+func requireOptionalEnv(t *testing.T, env map[string]any, name, want string) {
+	t.Helper()
+	if want == "" {
+		require.NotContains(t, env, name)
+		return
+	}
+	require.Equal(t, want, env[name])
+}
+
+// projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
+// the owner of every project the migration left without one, and renders nothing when it is unset.
+func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
+	for _, owner := range []string{"", "owner@example.com"} {
+		t.Run(fmt.Sprintf("%q", owner), func(t *testing.T) {
+			args := dispatchArgs()
+			args.ProjectOwnerFallback = owner
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PROJECT_OWNER_FALLBACK", owner)
+		})
+	}
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so
