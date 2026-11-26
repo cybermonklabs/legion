@@ -88,7 +88,10 @@ The rules the legs keep:
   it: daemon-go runs in the merge queue and not on a pull request without its label, so a pull
   request that added a package and no line would otherwise pass its own run and fail every leg of
   the group, and the queue would rebuild every group behind it. An entry without `unlisted`, or
-  one naming no job whose last leg runs whole packages, fails every leg.
+  one naming no job whose last leg runs whole packages, fails every leg. The gate's Run for the
+  plain legs names the module's packages as `go list ./...` prints them, not as the file lists them
+  (`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only an unlisted package's
+  test files starts daemon-go too.
   `.github/scripts/go-legs.test.sh`, in the test job, holds those readings, and one case adds a
   package and finds it in exactly one leg. A leg sees only its own job's legs, so a package filed
   under a job key no matrix job runs would pass every leg and run in none:

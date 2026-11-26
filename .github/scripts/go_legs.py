@@ -218,9 +218,21 @@ def twice_problems(module: str, package: str, held: list, legs_path: str) -> lis
     return found
 
 
-def last_leg(legs: dict) -> str:
-    """A job's last leg, the highest number the file gives it, as the matrix names it."""
-    return max((str(number) for number in legs), key=lambda n: (len(n), n))
+def leg_numbers(legs: dict) -> list:
+    """A job's leg keys as the file writes them, in number order: a digit string's length first,
+    then its text, so leg 10 follows leg 9 and a key YAML read as a number sorts with the rest."""
+    return sorted(legs or {}, key=lambda number: (len(str(number)), str(number)))
+
+
+def leg_key(legs: dict, leg: str):
+    """The key the file gives a job's leg `leg` (the matrix's number, as text), or None."""
+    return next((number for number in leg_numbers(legs) if str(number) == leg), None)
+
+
+def last_leg(legs: dict):
+    """The key of a job's last leg, the highest number the file gives it, so `legs[last_leg(legs)]`
+    is that leg's list."""
+    return leg_numbers(legs)[-1]
 
 
 def unlisted(entry: dict, packages: list) -> list:
@@ -245,7 +257,7 @@ def unlisted_problems(entry: dict, legs_path: str) -> list:
         return [f"{legs_path}'s {UNLISTED} names {job!r}, which is no job of the entry: name the job whose last "
                 f"leg runs each package no place names, the module's plain job"]
     last = last_leg(legs)
-    listed = next(listed for number, listed in legs.items() if str(number) == last)
+    listed = legs[last]
     if any(item(written)[1] is not None for written in listed or []):
         return [f"{legs_path}'s {UNLISTED} names job {job}, whose last leg, {last}, runs a group of a package's "
                 f"tests, and the group's -run would choose the tests of the packages it placed there too: give "
@@ -383,8 +395,7 @@ def leg_problems(job: str, legs: dict, launched: int, legs_path: str = LEGS) -> 
     each listing at least one package, and a leg that runs a group of a package's tests from
     running anything else."""
     found = []
-    # The file's leg numbers in number order (a digit string's length first, then its text).
-    numbers = sorted((str(number) for number in legs), key=lambda n: (len(n), n))
+    numbers = [str(number) for number in leg_numbers(legs)]
     if numbers != [str(number) for number in range(1, launched + 1)]:
         found.append(f"{legs_path} gives job {job} legs {', '.join(numbers)}, and its matrix runs legs 1 to "
                      f"{launched}: a leg the file has and the matrix does not runs in no job, so make the two "
@@ -452,7 +463,8 @@ def main(argv: list) -> int:
         print(f"go_legs.py: {missing}", file=sys.stderr)
         return 2
     legs = entry.get(job) if job not in NOT_JOBS else None
-    mine = next((listed for number, listed in (legs or {}).items() if str(number) == leg), None)
+    key = leg_key(legs, leg)
+    mine = None if key is None else legs[key]
     if mine is None:
         print(f"go_legs.py: {LEGS} has no leg {leg} of job {job} under {module}", file=sys.stderr)
         return 2
@@ -471,9 +483,10 @@ def main(argv: list) -> int:
     # so, as a test no group names runs in the group `placed` gives it: the run stays whole while
     # the file is stale, and the warning says where to list the package.
     extra = unlisted(entry, packages)
-    home = (entry[UNLISTED], last_leg(entry[entry[UNLISTED]]))
+    home = (entry[UNLISTED], str(last_leg(entry[entry[UNLISTED]])))
     say([f"{module}/{package} is a package `go list ./...` prints that no place of {LEGS} names, so leg "
-         f"{home[1]} of {home[0]} ({UNLISTED}) runs it: add it to the leg its time fits" for package in extra],
+         f"{home[1]} of {home[0]} ({UNLISTED}) runs it: list it in {LEGS}, in the leg of the job that should run "
+         f"it, as its time fits" for package in extra],
         "warning", LEGS)
     mine = [item(written) for written in mine]
     split = [(package, group) for package, group in mine if group is not None]

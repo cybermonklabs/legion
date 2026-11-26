@@ -348,9 +348,6 @@ jobs:
       JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
-      # clean up, and its image would be one more registry pull a test could fail on.
-      TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -448,9 +445,6 @@ jobs:
       JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
-      # clean up, and its image would be one more registry pull a test could fail on.
-      TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

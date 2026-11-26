@@ -2603,7 +2603,13 @@ runs once, in one leg, which `.github/scripts/go_legs.py` holds against `go list
 a package the file names in no place runs in the last leg of the job `unlisted` names (here
 envoy-go, whose leg 5 is the rest of the module), with a warning in every leg, since envoy-go is
 held back on a pull request and a package added with no line would otherwise pass the pull
-request and fail every leg of both jobs in the merge group; each leg runs in its step's mode;
+request and fail every leg of both jobs in the merge group; the gate's Run for the plain legs is
+built from the module's `go list ./...` rather than from the file
+(`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only such a package's test
+files still starts envoy-go; a package added under one of the race lane's trees
+(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) is refused
+unlisted by `.github/scripts/ci_job_reads.py#hold_envoy_legs` in the changes job, since leg 5 would
+run it without the race detector that `./<tree>/...` gave it on main; each leg runs in its step's mode;
 the jobs envoy-go and envoy-go-race keep their check-run names, wait for the jobs their `needs:`
 names and pass only when every one passed, reading the results once, through
 `needs.*.result`, and writing the words
@@ -2625,7 +2631,8 @@ are rebalanced from their own times. Two more are envoy's own:
 What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
 a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
-and envoy-go-skips start no container and run no Bun, so they pull no image and install nothing.
+and envoy-go-skips start no test container and run no Bun, so they pull no test image (their
+Postgres service's image aside), install nothing and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 
@@ -2690,12 +2697,14 @@ shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits 
 envoy-go because -race runs these packages several times slower, and each job carries a
 package deadline of its own, since go test's ten-minute default is a whole package's.
 envoy-go runs none of these packages plain any more (INFRA-1408) but the NATS auth service,
-whose skips its unit legs count (`.github/go-legs.yaml#twice`): its unit legs leave out exactly
-what the lane runs, and the one other plain run it keeps of them is the step named "Test what
-the race build cannot run at all or at full size" (envoy-go-race-impossible) and, for the rows
-that measure time, the step "Test the xid window rows, the API's issue-list bound and the auth
-service's storm, alone" (envoy-go-alone), which run the handful of assertions the detector makes
-impossible or shrinks and nothing else.
+whose skips its unit legs count (`.github/go-legs.yaml#twice`): its unit legs leave out every
+package the lane runs, each package under a tree's directory among them, since
+`.github/scripts/ci_job_reads.py#hold_envoy_legs` refuses a package added under a tree that no
+race leg lists (`unlisted` would otherwise run it plain); and the one other plain run it keeps
+of them is the step named "Test what the race build cannot run at all or at full size"
+(envoy-go-race-impossible) and, for the rows that measure time, the step "Test the xid window
+rows, the API's issue-list bound and the auth service's storm, alone" (envoy-go-alone), which
+run the handful of assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
 the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
