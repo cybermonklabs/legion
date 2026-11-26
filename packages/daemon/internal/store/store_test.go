@@ -46,9 +46,17 @@ import (
 // that has not exited yet, is the one copy of that wait: internal/testpg/testdb imports no package
 // of this module except internal/testwait, which imports none, so this package's own tests can
 // take it where they cannot take internal/testpg.
+//
+// Under GITHUB_ACTIONS an unset LEGION_TEST_PG_DSN fails the test instead (the daemon's rule for a
+// test this machine cannot run, internal/launcher's skipOutsideCI): ci-job-daemon-go.yaml's
+// daemon-go-legs job names its Postgres service, so a run without one is a broken job, and a skip
+// there would pass every test of this package that needs a database unrun.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
+	if dsn == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal("LEGION_TEST_PG_DSN is unset on GitHub Actions: ci-job-daemon-go.yaml's daemon-go-legs job names its Postgres service")
+	}
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
 	}

@@ -1,8 +1,17 @@
 package store
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
@@ -287,4 +296,187 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
 		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
 	}
+}
+
+// migrationBaseEnv names the commit whose daemon migrated the database that
+// TestADatabaseMainMigratedTakesThisBranchsMigrationsLast upgrades. In CI it is the commit the run's
+// tree lands onto: ci-job-daemon-go.yaml's plain step sets it to what
+// .github/scripts/edited-migrations-base.sh prints. Anywhere else it can name any commit, for
+// example the commit of the release a production database runs.
+const migrationBaseEnv = "LEGION_TEST_MIGRATION_BASE"
+
+// A deployed database has recorded every migration of the release that migrated it, the later
+// ones included. The next release's daemon applies each embedded migration that database has not
+// recorded: Store.apply asks each migration whether its own version is recorded. So each migration
+// this tree adds runs after every migration of the base, also after those that sort above it. The
+// two tests above apply this tree's migrations in version order, before main's later ones. So
+// neither sees a later migration of main's that takes a name that one of this tree's adds.
+//
+// This test writes no list of versions. It reads the base's own migration files with git and
+// migrates an empty database with them, which gives the database the base's daemon left. Then
+// Store.Migrate applies every embedded version the base does not hold, after all of the base's. The
+// test fails when the upgrade fails, when it applies a number of migrations other than the ones
+// this tree adds, or when one of them is not recorded once. Where the tree adds no migration, the
+// upgrade applies none, and the log line says so.
+//
+// The base is the commit migrationBaseEnv names. Where it is unset, the base is the merge base of
+// HEAD with origin/main. Under GITHUB_ACTIONS an unset migrationBaseEnv fails the test, because the
+// merge base is not the base of a pull request's merge commit. Anywhere else, a checkout with no
+// origin/main skips the test and says why. A base that git cannot read fails the test everywhere.
+//
+// A pass does not show that an upgrade is safe. This test does not catch:
+//   - a conflict that raises no error, such as `create ... if not exists` over an object of
+//     another definition, or `add column if not exists` over a column of another type;
+//   - wrong data: the database holds no rows, so no row and no backfill is checked;
+//   - a partial state, such as a database that stopped between two migrations;
+//   - the way back, a rollback to the base after the upgrade;
+//   - Envoy's migrations, which internal/pgmigrate of packages/envoy applies;
+//   - a database that daemons of two releases share at the same time;
+//   - an upgrade from a commit other than the base: a production database of an older release
+//     applies more migrations, in another order.
+//
+// The control (the pull request records the run): a base that holds a migration which adds
+// issue_releases.turn_start with `if not exists`, and a tree that adds a migration which sorts
+// below it and adds that column. The two tests above pass, and this one fails with SQLSTATE 42701.
+func TestADatabaseMainMigratedTakesThisBranchsMigrationsLast(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base, source := deployedBase(t)
+	commit, deployed := baseMigrations(t, base)
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	recorded := map[int]bool{}
+	baseNewest := 0
+	for _, migration := range deployed {
+		recorded[migration.Version] = true
+		baseNewest = max(baseNewest, migration.Version)
+	}
+	var last []int
+	below, newest := 0, baseNewest
+	for _, migration := range all {
+		newest = max(newest, migration.Version)
+		if recorded[migration.Version] {
+			continue
+		}
+		last = append(last, migration.Version)
+		if migration.Version < baseNewest {
+			below++
+		}
+	}
+	t.Logf("the base is %s (%s). It holds %d migrations, the newest %d. This tree adds %d migrations %v, and %d of them sort below %d.",
+		commit, source, len(deployed), baseNewest, len(last), last, below, baseNewest)
+
+	if _, err := store.migrate(ctx, deployed); err != nil {
+		t.Fatalf("migrate the database as the daemon of %s did, with its own %d migrations: %v", commit, len(deployed), err)
+	}
+	applied, err := store.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("upgrade the database the daemon of %s migrated, which applies this tree's migrations %v after all %d of the base's: %v",
+			commit, last, len(deployed), err)
+	}
+	if applied != len(last) {
+		t.Errorf("the upgrade applied %d migrations, want the %d this tree adds over %s", applied, len(last), commit)
+	}
+	for _, version := range last {
+		var count int
+		if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, version).Scan(&count); err != nil {
+			t.Fatalf("read whether the upgrade recorded %d: %v", version, err)
+		}
+		if count != 1 {
+			t.Errorf("the upgrade recorded %d %d times, want once", version, count)
+		}
+	}
+	if got, err := store.SchemaVersion(ctx); err != nil || got != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest of the base and this tree, %d", got, err, newest)
+	}
+}
+
+// deployedBase is the commit whose daemon migrated the database the test upgrades, and what named
+// it (TestADatabaseMainMigratedTakesThisBranchsMigrationsLast says how it is chosen).
+func deployedBase(t *testing.T) (base, source string) {
+	t.Helper()
+	if base := os.Getenv(migrationBaseEnv); base != "" {
+		return base, migrationBaseEnv
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf("%s is unset on GitHub Actions: ci-job-daemon-go.yaml's plain step sets it to the commit .github/scripts/edited-migrations-base.sh prints",
+			migrationBaseEnv)
+	}
+	out, err := runGit("", "merge-base", "HEAD", "origin/main")
+	if err != nil {
+		t.Skipf("no base to upgrade from: %s is unset, and %v. Set %s to a commit whose daemon migrated a database.",
+			migrationBaseEnv, err, migrationBaseEnv)
+	}
+	return strings.TrimSpace(string(out)), "the merge base of HEAD with origin/main"
+}
+
+// baseMigrations reads the migrations of this package's migrations directory at base, with git,
+// and loads them as Store.Migrate loads the embedded set. It returns base's full commit id beside
+// them. A base that git cannot read, or one that holds no migration, fails the test: a set read
+// from nothing is no database any daemon left.
+func baseMigrations(t *testing.T, base string) (string, []migrations.Migration) {
+	t.Helper()
+	out, err := runGit("", "rev-parse", "--verify", base+"^{commit}")
+	if err != nil {
+		t.Fatalf("read the base %q: %v", base, err)
+	}
+	commit := strings.TrimSpace(string(out))
+	out, err = runGit("", "rev-parse", "--verify", commit+":./migrations")
+	if err != nil {
+		t.Fatalf("find this package's migrations directory at %s: %v", commit, err)
+	}
+	tree := strings.TrimSpace(string(out))
+	out, err = runGit("", "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("find the root of this checkout: %v", err)
+	}
+	// git archive limits the archive to the directory it runs in, so it runs at the root.
+	archive, err := runGit(strings.TrimSpace(string(out)), "archive", "--format=tar", tree)
+	if err != nil {
+		t.Fatalf("read the migrations of %s: %v", commit, err)
+	}
+	files := fstest.MapFS{}
+	entries := tar.NewReader(bytes.NewReader(archive))
+	for {
+		header, err := entries.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the archive of the migrations of %s: %v", commit, err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		data, err := io.ReadAll(entries)
+		if err != nil {
+			t.Fatalf("read %s of %s: %v", header.Name, commit, err)
+		}
+		files[header.Name] = &fstest.MapFile{Data: data}
+	}
+	set, err := migrations.Load(files)
+	if err != nil {
+		t.Fatalf("load the migrations of %s: %v", commit, err)
+	}
+	if len(set) == 0 {
+		t.Fatalf("%s holds no migration in this package's migrations directory, so no daemon of it migrated a database", commit)
+	}
+	return commit, set
+}
+
+// runGit runs git with args in dir, or in the test's own directory where dir is "", and returns
+// its standard output. Its error carries git's standard error.
+func runGit(dir string, args ...string) ([]byte, error) {
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	out, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
 }

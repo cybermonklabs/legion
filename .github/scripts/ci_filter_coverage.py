@@ -1750,6 +1750,11 @@ ENV_ALLOWED = frozenset({
     "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
+    # The commit daemon-go's plain step hands internal/store's deployed-order upgrade test
+    # (migration_upgrade_from_main_test.go's migrationBaseEnv), which
+    # .github/scripts/edited-migrations-base.sh picks. The test reads it at run time, so go
+    # compiles the same files and runs the same tests with it set as without.
+    "LEGION_TEST_MIGRATION_BASE",
     # The commit envoy-go-build's edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
     # it picks to the command as an argument, and go reads it nowhere.

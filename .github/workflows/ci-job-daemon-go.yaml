@@ -45,6 +45,9 @@ name: CI job daemon-go
 #     job runs (the comment on each step says which), and the NATS images those tests start;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, in
 #     daemon-go-race-legs, which runs them;
+#   * in daemon-go-legs, the commit the run's tree lands onto, fetched and handed to the plain
+#     step as LEGION_TEST_MIGRATION_BASE, which internal/store's deployed-order upgrade test
+#     migrates a database with (the `migration-base` input is that commit on a dispatch of main);
 #   * setup-go and the go-daemon cache restore in both, this module's build cache. The `test`
 #     job keeps a setup-go of its own — its held-port, CI-filter and build-tag-lister steps still
 #     run go — but no restore: the entry holds what compiling packages/daemon leaves behind, and
@@ -73,6 +76,15 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+      migration-base:
+        description: >-
+          On a workflow_dispatch run, the commit main pointed at before the push the run tests
+          (ci.yaml's input of the same name, which main-bypass-check.yaml passes): the base that
+          internal/store's deployed-order upgrade test migrates a database with. A dispatch on main
+          must name it; a dispatch on another branch that names none takes the branch's merge
+          base with main.
+        type: string
+        required: false
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -105,7 +117,10 @@ jobs:
     # on 2026-11-24), and its 1-minute -timeout. That is under 45 minutes. The forced-order step
     # adds its compile of a hooked nats-server under the detector, up to 5 minutes, and
     # forced-order.sh's 10-minute -timeout, so 60. A leg runs a share of the plain step, so no leg
-    # needs more.
+    # needs more. The step that finds the commit the run's tree lands onto adds a fetch, two commits
+    # deep on a pull request or a merge group, bounded by its own 3 minutes. It fits because the
+    # 15.0 above is the whole plain step's, and a leg's share is less (.github/go-legs.yaml: leg
+    # 1's longest package takes 501 s).
     timeout-minutes: 60
     services:
       postgres:
@@ -206,6 +221,22 @@ jobs:
         timeout-minutes: 2
         run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
+      # The commit this run's tree lands onto, for internal/store's deployed-order upgrade test
+      # (`packages/daemon/internal/store/migration_upgrade_from_main_test.go#migrationBaseEnv`): the
+      # test migrates a database with that commit's own migration files, then upgrades it to this
+      # tree. .github/scripts/edited-migrations-base.sh picks the commit as it does for
+      # envoy-go-build's edited-migrations check, fetches it into this checkout, which is one commit
+      # deep, and prints it. The plain step hands it to the test.
+      # why: .github/ci-notes/ci-job-daemon-go.md#why-the-plain-step-is-handed-the-commit-the-tree-lands-onto
+      - name: Find the commit this run's tree lands onto
+        id: migration-base
+        timeout-minutes: 3
+        env:
+          MIGRATION_BASE: ${{ inputs.migration-base }}
+        run: |
+          base=$(.github/scripts/edited-migrations-base.sh)
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+
       # Each leg runs the packages .github/go-legs.yaml lists for its number under daemon-go: every
       # package of the module but the five the race legs test and internal/textcheck, whose tests
       # are the text-check job's, so each of the five runs once per run of the router, under the
@@ -228,6 +259,8 @@ jobs:
           set -o pipefail
           python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
+        env:
+          LEGION_TEST_MIGRATION_BASE: ${{ steps.migration-base.outputs.sha }}
 
       # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
       # order (scripts/daemon-contract-order.sh), as every build of main that production runs is
@@ -236,9 +269,13 @@ jobs:
       # pull request the stamp is main's order with the branch's entries after it, the order main
       # takes if the branch merges next; in a merge group it is the order main takes. So the
       # order a production build numbers its entries in is tested before it reaches main. The
-      # checkout is one commit deep, and the order needs HEAD's history back to main's
-      # first-parent line and main's own, so the first step fetches both, with no blob (the script
-      # reads commits and trees alone), and hands the stamp to the second as its output. The second
+      # checkout is shallow, and the order needs HEAD's history back to main's first-parent line
+      # and main's own, so the first step fetches both, with no blob (the script reads commits and
+      # trees alone), and hands the stamp to the second as its output. The step "Find the commit
+      # this run's tree lands onto" has fetched before it: two commits deep on a pull request or a
+      # merge group, and on a dispatch of a branch as deep as the merge base needs, which can be
+      # the whole history. git refuses --unshallow on a whole repository, so it is passed only
+      # while the checkout is shallow. The second
       # is one go test line, which go-test-step-expansion.py's step reader reads: that reader
       # refuses a step whose $(…) call is not of go-tagged-tests.sh, and its test, which the
       # merge queue's test job runs, reads every go test step. The plain step compiled this test
@@ -250,7 +287,9 @@ jobs:
         id: contract-order
         run: |
           head=$(git rev-parse HEAD)
-          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          unshallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
+          git fetch --filter=blob:none "${unshallow[@]}" origin "$head" refs/heads/main:refs/remotes/origin/main
           stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
           echo "$stamp"
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
