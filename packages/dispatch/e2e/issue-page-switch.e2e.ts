@@ -102,7 +102,8 @@ function newPageHeading(page: Page): Locator {
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
  *  header, which draws the key and the title, the view row, the outline's one line for an issue
  *  that holds nothing, the Contents pane, the three sentences, which below 1024 px stand above
- *  the view's first row in place of the pane, and the Spec view, and nothing else. */
+ *  the view's first row in place of the pane, and the Spec view, and nothing else but what the
+ *  foot draws - the box to write in and the read mark - which `e2e/issue-page-l.e2e.ts` reads. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -115,9 +116,10 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // three sentences (`[data-testid="issue-three-things"]`) and the Spec view
   // (`[data-spec-body]`), whose own rows read them; the outline draws its one line for an issue
   // that holds nothing at the issue's own address, and each other slot drawn so far adds no text
-  // or control.
-  const filled =
-    '[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-testid="issue-three-things"], [data-spec-body]';
+  // or control. The box at the foot (`[data-testid="issue-composer"]`) and the read mark at the
+  // outline's end (`[data-outline-end]`) are left out of both counts.
+  const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
+  const filled = `[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-testid="issue-three-things"], [data-spec-body], ${footSlot}`;
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);
