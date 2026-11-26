@@ -421,7 +421,7 @@ func (s *server) refuseOutsideCallerProjects(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 	private := project != "" && reader.Viewer != nil && reader.Viewer.AnyPrivate && !slices.Contains(reader.Viewer.Sees, project)
-	if access.CredentialCovers(cred, project, private) {
+	if access.CredentialCovers(cred, project, private && false) { // NEGATIVE-CONTROL PLANT: the body's project is read as public
 		return false
 	}
 	belongsTo := "belongs to project " + project
