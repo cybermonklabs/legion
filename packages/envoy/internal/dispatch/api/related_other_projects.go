@@ -22,8 +22,8 @@ import (
 // joins them (meaning_ask_candidates in search.go), then issues and artifacts for the owner. A
 // row qualifies when the ask is a question, somebody answered it, the answer carries text, and
 // the ask belongs to another project than the one that asks. Whether somebody answered it and
-// what the answer says are the ask's node's (askNodeStateOf, askNodeAnswerTextOf), as every read
-// of an answer reads them (R3), and so is the answer the row carries (askNodeAnswerOf). The
+// what the answer says are the ask's node's (asks.NodeStateOf, asks.NodeAnswerTextOf), as every read
+// of an answer reads them (R3), and so is the answer the row carries (asks.NodeAnswerColumn). The
 // project test has two parts, and the `is not null` part is necessary: `null <> $2` is unknown,
 // so an ask that belongs to no project would drop out of the answer and nothing would say so.
 //
@@ -48,7 +48,7 @@ import (
 // whether it is the issue's primary document, which the href reads), the ask's id, the ask's
 // typed block while that block is a node of the reference graph (askBlockNodeSQL), the ask's
 // state and its answer as its row holds them, the ask's answer as its node holds it
-// (askNodeAnswerOf), and its cosine score.
+// (asks.NodeAnswerColumn), and its cosine score.
 var relatedOtherProjectsSQL = `with candidates as (
   select k.id, k.issue_key, k.state, k.answer, k.node_kind,
          case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) end as owner_artifact_id,
@@ -64,8 +64,8 @@ var relatedOtherProjectsSQL = `with candidates as (
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $3
-     and k.kind = 'question' and ` + askNodeStateOf("k") + ` = '` + asks.StateAnswered + `'
-     and btrim(coalesce(` + askNodeAnswerTextOf("k") + `, '')) <> ''
+     and k.kind = 'question' and ` + asks.NodeStateOf("k") + ` = '` + asks.StateAnswered + `'
+     and btrim(coalesce(` + asks.NodeAnswerTextOf("k") + `, '')) <> ''
      and coalesce(i.project_key, a.project_key) is not null
      and coalesce(i.project_key, a.project_key) <> $2
    order by e.embedding <=> $1::vector
@@ -78,7 +78,7 @@ best as (
 )
 select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.owner_slug, b.owner_name,
        b.project, ar.slug, ar.name, coalesce(ar.is_primary, false), b.id::text, b.block_id,
-       b.state, b.answer, ` + askNodeAnswerOf("b") + `, b.r
+       b.state, b.answer, ` + asks.NodeAnswerColumn("b") + `, b.r
   from best b
   left join artifacts ar on ar.id = b.artifact_id
  order by b.r desc, b.id
@@ -101,7 +101,7 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // row for every row, an issue's as well as a project document's, so that a reader of the item
 // knows which project answered the question; the shared scan (scanSearchRows) fills it for a
 // document owner alone, and the items of the asking project keep that shape. The row carries its
-// own state and answer, read off its node (askAnswerRead), so this leg reads no ask state a second
+// own state and answer, read off its node (asks.ReadAnswer), so this leg reads no ask state a second
 // time (attachAskStates).
 //
 // reader is the display tree reader each answer's text is registered with, which is the leg's
@@ -165,7 +165,7 @@ func (s *server) relatedOtherProjects(
 		if slug != nil {
 			result.Artifact = &model.SearchArtifact{Slug: *slug, Name: deref(name)}
 		}
-		ask, err := askAnswerRead(id, state, answer, nodeAnswer)
+		ask, err := asks.ReadAnswer(id, state, answer, nodeAnswer)
 		if err != nil {
 			return nil, fmt.Errorf("read the answer of an ask of another project: %w", err)
 		}

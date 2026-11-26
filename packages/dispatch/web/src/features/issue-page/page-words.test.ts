@@ -462,6 +462,10 @@ test("every gap line is one sentence that says what is absent", () => {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
   expect(GAP_LINES.no_check).toBe("No check serves this statement.");
+  expect([GAP_LINES.no_plan_task, GAP_WORDS.no_plan_task]).toEqual([
+    "No plan task serves this statement.",
+    "No plan task",
+  ]);
 });
 
 // A node is a row to the reader, the word the tree's own keys already use, and "node" is the

@@ -1,5 +1,5 @@
 import { isProposed } from "./issue-address";
-import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "./issue-tree";
+import type { TreeNode } from "./issue-tree";
 
 /**
  * How much of the issue's tree is drawn. Pure, over the model `issue-tree.ts` builds, so the
@@ -8,15 +8,17 @@ import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "./issue-tre
  * Every node is drawn, unfolded and whole, at every depth: the page folds no node itself (R11).
  * Two things leave a node's children out, and nothing else does:
  *
- * - **The reader's fold.** A node the reader folded, by its fold control, the left arrow or `o`,
- *   draws its first line and how many nodes it holds (`foldedLine`, `TreeRow.folded`), until
- *   they unfold it, and the fold lasts for the load (`OpenedBranches`' `closed`).
+ * - **The reader's fold.** A row the reader folded, by its fold control, the left arrow or `o`,
+ *   draws its node's first line (`node-line.tsx`'s `FirstLine`) and how many nodes it holds
+ *   (`TreeRow.folded`), until they unfold it, and the fold lasts for the load
+ *   (`OpenedBranches`' `closed`). A fold is the row's and not the node's: a node drawn under two
+ *   parents is two rows, and the reader folds each on its own (`placeOf`).
  * - **A node's page.** A node draws its first `CHILD_PAGE` children, in the read's order, and
- *   after them one row that says how many are left and draws the next `CHILD_PAGE`
- *   (`PageRow`), so no list the outline draws grows without bound (R15). A page is no fold:
- *   every row it draws is whole. A child that something names - the focus, an address, a write -
- *   is drawn with every child before it (`treeRows`' `named`), so a new row past the first page
- *   lands in view.
+ *   after them one row that says how many are left and draws the next `CHILD_PAGE` under that
+ *   row alone (`PageRow`), so no list the outline draws grows without bound (R15). A page is no
+ *   fold: every row it draws is whole. A child that something names - the focus, an address, a
+ *   write - is drawn with every child before it (`treeRows`' `named` and `placed`), so a new row
+ *   past the first page lands in view.
  *
  * Every level is drawn. Past `INDENT_LEVELS` levels a row's indent stops growing (`indentOf`), so
  * a node's words keep their width at 390 px.
@@ -32,14 +34,41 @@ export const CHILD_PAGE = 50;
  *  this level (R11, root R16's six levels). */
 const INDENT_LEVELS = 6;
 
-/** What the reader has done to the outline by hand: the nodes they folded, and the pages of
- *  children they drew. */
+/** What the reader has done to the outline by hand: the rows they folded, and the pages of
+ *  children they drew. Both are kept by the row's place (`placeOf`), so what the reader does to
+ *  one row of a node drawn under several parents is done to that row alone. */
 export interface OpenedBranches {
-  /** The nodes whose children the reader folded. */
+  /** The places of the rows whose children the reader folded. */
   readonly closed: ReadonlySet<string>;
-  /** How many of its children each node draws where the reader drew more than its first page,
-   *  by the node's id (`withNextPage`). */
+  /** How many of its children each row draws where the reader drew more than its first page,
+   *  by the row's place (`withNextPage`). */
   readonly pages: ReadonlyMap<string, number>;
+}
+
+/** What joins the ids of a place, from the issue down. */
+const PLACE_SEPARATOR = ">";
+
+/** Where a row stands: the path from the issue down to its node, `trail` and then the node's
+ *  own id. It tells the rows of one node drawn under two parents apart, and every row below
+ *  each of them, and it is the key the page knows each row by (`rowKeyOf`). */
+export function placeOf(trail: readonly string[], id: string): string {
+  return [...trail, id].join(PLACE_SEPARATOR);
+}
+
+/** The place of the row of node `id` drawn under the row at `place`: the one rule by which every
+ *  walk down the tree extends a place, so it gives the string `placeOf` gives that row. */
+function childPlace(place: string, id: string): string {
+  return `${place}${PLACE_SEPARATOR}${id}`;
+}
+
+/** The place of each node of `path`, a chain of node ids from the issue down, the outermost
+ *  first. */
+export function placesAlong(path: readonly string[]): string[] {
+  let place: string | undefined;
+  return path.map((id) => {
+    place = place === undefined ? id : childPlace(place, id);
+    return place;
+  });
 }
 
 /** One row of the tree as the fold leaves it: the node, how deep it sits, and what its own
@@ -99,28 +128,31 @@ export function outOfCounts(node: TreeNode): boolean {
 /**
  * Every row the tree draws over `root`, in reading order. The root is always unfolded, because
  * an issue drawn as one folded row would say nothing at all, and the node a zoom roots the tree
- * at is drawn open by definition; every node below it is unfolded unless the reader folded it.
+ * at is drawn open by definition; every row below it is unfolded unless the reader folded it.
  *
  * `above` is the path down to `root` itself, outermost first: the ids a reader who zoomed into
  * it left above the tree (`IssueTree.tsx`). It seeds the trails, so every row is keyed by its
- * path from the issue however much of the tree is drawn, and the editing and the tree's one tab
- * stop a key holds survive a zoom in both directions (`rowKeyOf`).
+ * path from the issue however much of the tree is drawn, and the folds, the pages, the editing
+ * and the tree's one tab stop a key holds survive a zoom in both directions (`placeOf`).
  *
- * `named` are the nodes the focus, an address or a write names: each is drawn with every child
- * before it, down the path to it from `root` (`pathTo`), past its parent's page where it stands
- * there.
+ * `named` are the nodes an address or a write names by their id alone: each is drawn with every
+ * child before it, down the path to it from `root` that `pathTo` finds, past its parent's page
+ * where it stands there. `placed` are the rows the page names by their place - the row the tab
+ * stop rests on - each drawn so at that place alone.
  */
 export function treeRows(
   root: TreeNode,
   opened: OpenedBranches = NOTHING_OPENED,
   above: readonly string[] = [],
-  named: readonly string[] = []
+  named: readonly string[] = [],
+  placed: readonly string[] = []
 ): DrawnRow[] {
-  const reached = reachedChildren(root, named);
+  const start = placeOf(above, root.id);
+  const reached = reachedChildren(root, start, named, placed);
   const rows: DrawnRow[] = [];
-  const walk = (node: TreeNode, level: number, trail: readonly string[]): void => {
+  const walk = (node: TreeNode, level: number, trail: readonly string[], place: string): void => {
     const holds = node.children.length > 0;
-    const unfolded = level === 1 || !opened.closed.has(node.id);
+    const unfolded = level === 1 || !opened.closed.has(place);
     rows.push({
       ...(holds ? { expanded: unfolded } : {}),
       ...(holds && !unfolded ? { folded: node.held } : {}),
@@ -130,67 +162,92 @@ export function treeRows(
       trail,
     });
     if (!holds || !unfolded) return;
-    const drawn = Math.max(opened.pages.get(node.id) ?? CHILD_PAGE, reached.get(node.id) ?? 0);
+    const drawn = Math.max(opened.pages.get(place) ?? CHILD_PAGE, reached.get(place) ?? 0);
     const below = [...trail, node.id];
-    for (const child of node.children.slice(0, drawn)) walk(child, level + 1, below);
+    for (const child of node.children.slice(0, drawn)) {
+      walk(child, level + 1, below, childPlace(place, child.id));
+    }
     const left = node.children.length - drawn;
     if (left > 0) rows.push({ kind: "page", left, level: level + 1, of: node, trail });
   };
-  walk(root, 1, above);
+  walk(root, 1, above, start);
   return rows;
 }
 
-/** How many children each node on the path down to a node of `named` draws at least, by the
- *  node's id: every child up to the one the path goes through. */
-function reachedChildren(root: TreeNode, named: readonly string[]): ReadonlyMap<string, number> {
+/** How many children each row on the path down to a named row draws at least, by the row's
+ *  place: every child up to the one the path goes through. A node of `named`, named by its id
+ *  alone, is found where `pathTo` finds it, its first placement in reading order; a row of
+ *  `placed` is found at its own place, so a row named under one of a node's placements draws
+ *  nothing more under another. `start` is the place of `root`. */
+function reachedChildren(
+  root: TreeNode,
+  start: string,
+  named: readonly string[],
+  placed: readonly string[]
+): ReadonlyMap<string, number> {
   const reached = new Map<string, number>();
-  const pending = new Set(named);
+  const ids = new Set(named);
+  const places = new Set(placed);
+  // A child is walked into while an id is still looked for anywhere, or where a place still
+  // looked for is the child's own or one below it.
+  const leadsOn = (place: string): boolean => {
+    if (ids.size > 0) return true;
+    const prefix = childPlace(place, "");
+    for (const one of places) if (one === place || one.startsWith(prefix)) return true;
+    return false;
+  };
   // Preorder finds the same first placement of each named id as pathTo.
-  const walk = (node: TreeNode): boolean => {
-    let found = pending.delete(node.id);
-    for (let at = 0; at < node.children.length && pending.size > 0; at += 1) {
+  const walk = (node: TreeNode, place: string): boolean => {
+    const byId = ids.delete(node.id);
+    let found = places.delete(place) || byId;
+    for (let at = 0; at < node.children.length && (ids.size > 0 || places.size > 0); at += 1) {
       const child = node.children[at];
-      if (child !== undefined && walk(child)) {
-        reached.set(node.id, Math.max(reached.get(node.id) ?? 0, at + 1));
+      if (child === undefined) continue;
+      const below = childPlace(place, child.id);
+      if (leadsOn(below) && walk(child, below)) {
+        reached.set(place, Math.max(reached.get(place) ?? 0, at + 1));
         found = true;
       }
     }
     return found;
   };
-  if (pending.size > 0) walk(root);
+  if (ids.size > 0 || places.size > 0) walk(root, start);
   return reached;
 }
 
-/** `opened` with `page`'s node drawing the next `CHILD_PAGE` of its children: what a press on
- *  the row that pages them does. */
+/** `opened` with `page`'s row drawing the next `CHILD_PAGE` of its node's children: what a press
+ *  on the row that pages them does, under that row alone. */
 export function withNextPage(opened: OpenedBranches, page: PageRow): OpenedBranches {
   const pages = new Map(opened.pages);
-  pages.set(page.of.id, page.of.children.length - page.left + CHILD_PAGE);
+  pages.set(placeOf(page.trail, page.of.id), page.of.children.length - page.left + CHILD_PAGE);
   return { closed: opened.closed, pages };
 }
 
-/** `opened` with the node `id` folded, or unfolded where `open` holds: what its fold control,
- *  the left and right arrows and `o` do (R11). */
-export function withFold(opened: OpenedBranches, id: string, open: boolean): OpenedBranches {
-  if (opened.closed.has(id) !== open) return opened;
+/** `opened` with the row at `place` folded, or unfolded where `open` holds: what its fold
+ *  control, the left and right arrows and `o` do (R11). Every other row of its node stays as it
+ *  was. */
+export function withFold(opened: OpenedBranches, place: string, open: boolean): OpenedBranches {
+  if (opened.closed.has(place) !== open) return opened;
   const closed = new Set(opened.closed);
-  if (open) closed.delete(id);
-  else closed.add(id);
+  if (open) closed.delete(place);
+  else closed.add(place);
   return { closed, pages: opened.pages };
 }
 
-/** `opened` with every node the reader folded unfolded, and the pages of children they drew
+/** `opened` with each row of `places` unfolded and the pages kept, and `opened` itself where the
+ *  reader folded none of them: what a path drawn open to send the reader to a row does. */
+export function withUnfolded(opened: OpenedBranches, places: readonly string[]): OpenedBranches {
+  if (!places.some((place) => opened.closed.has(place))) return opened;
+  return {
+    closed: new Set([...opened.closed].filter((place) => !places.includes(place))),
+    pages: opened.pages,
+  };
+}
+
+/** `opened` with every row the reader folded unfolded, and the pages of children they drew
  *  kept: what `z` does (R11). */
 export function withEveryFoldUndone(opened: OpenedBranches): OpenedBranches {
   return opened.closed.size === 0 ? opened : { closed: new Set(), pages: opened.pages };
-}
-
-/** A folded node's one line as plain words: its text to its first sentence end, or to the first
- *  line's limit, cut at a word (R11's first-line rule, `firstLineOf`), cut from the words its
- *  reading opens with (`lineWordsRaw`). The row draws the same line through the shared
- *  projection (`node-line.tsx`'s `FirstLine`), which also names each reference in it. */
-export function foldedLine(node: Pick<TreeNode, "text" | "tree">): string {
-  return drawnLine(firstLineOf(lineWordsRaw(node)));
 }
 
 /** How many levels a row at `level` is indented, the tree's first row at none: one a level up

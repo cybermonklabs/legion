@@ -154,6 +154,9 @@ func blockTypeSupertagReadsRow(t *testing.T, database *store.Store, name string)
 // blockTypeSupertagBoot boots this head's envoy-dispatch, stamped with blockTypeSupertagCommit,
 // over the database databaseURL names, on a loopback port the test holds until the process serves
 // on it, and answers once it logs that it serves. It inherits nothing from the test's environment.
+// The server reads its two test settings, which turn the embedder off and put the maintenance
+// sweep a day apart, only beside DISPATCH_TEST_HOOKS=1, and refuses to boot on either without it;
+// it sets no hold, so nothing holds the boot backfill or the step that follows it.
 func blockTypeSupertagBoot(t *testing.T, databaseURL string) *cmdtest.Process {
 	t.Helper()
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{
@@ -173,6 +176,7 @@ func blockTypeSupertagBoot(t *testing.T, databaseURL string) *cmdtest.Process {
 		"DISPATCH_WEB_DIST":                        home,
 		"DISPATCH_NATS_DISABLED":                   "1",
 		"DISPATCH_SIGNING_KEY":                     "block-type-supertag-signing-key",
+		"DISPATCH_TEST_HOOKS":                      "1",
 		"DISPATCH_TEST_EMBEDDER_OFF":               "1",
 		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "24h",
 	}
@@ -195,6 +199,52 @@ func blockTypeSupertagStop(t *testing.T, process *cmdtest.Process) string {
 	process.Terminate(t)
 	process.WaitExit(t, "SIGTERM")
 	return process.Output.String()
+}
+
+// blockTypeSupertagStepEnded are the lines the boot's typed block supertags step ends with
+// (graphcensus.RunTypedBlockSupertagsStep): it restated both functions, it leaves them reading the
+// rows and says why, or it failed, which cmd/dispatch's startBootBackfill logs. A step that finds
+// neither function reading the rows ends with no line, which a boot over a database the step has
+// not restated never meets.
+var blockTypeSupertagStepEnded = []string{
+	`msg="dispatch: the typed block supertags step restated `,
+	`msg="dispatch: the typed block supertags step leaves `,
+	`msg="dispatch: the typed block supertags step failed"`,
+}
+
+// blockTypeSupertagBackfillEnded are the lines with which the boot's run of the backfill ends
+// with no done line, skipped at its bound or failed (cmd/dispatch's runBootBackfill): a run that
+// logs no done line never reaches the step.
+var blockTypeSupertagBackfillEnded = []string{`msg="dispatch: boot backfill skipped`, `msg="dispatch: boot backfill failed`}
+
+// blockTypeSupertagWaitStep waits until the process, booted over a database whose two functions
+// still read the rows, logs how its boot's typed block supertags step ended, and fails t where the
+// boot's run of the backfill ended with no done line, so the step never ran, or where the process
+// exited first. The step logs each block it names while its transaction holds a connection of the
+// pool, and a stopping process exits only once its connections are back, so the log the stop then
+// answers holds every line the step wrote.
+func blockTypeSupertagWaitStep(t *testing.T, process *cmdtest.Process) {
+	t.Helper()
+	logged := func(output string, lines []string) bool {
+		return slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(output, line) })
+	}
+	exited := false
+	output := testwait.Until(t, "the boot's typed block supertags step to log how it ended", func() (string, bool) {
+		select {
+		case <-process.Exited:
+			exited = true
+		default:
+		}
+		output := process.Output.String()
+		return output, exited || logged(output, blockTypeSupertagStepEnded) || logged(output, blockTypeSupertagBackfillEnded)
+	})
+	switch {
+	case logged(output, blockTypeSupertagStepEnded):
+	case exited:
+		t.Fatalf("envoy-dispatch exited before its typed block supertags step ended:\n%s", output)
+	default:
+		t.Fatalf("the boot's run of the backfill ended with no done line, so the typed block supertags step never ran:\n%s", output)
+	}
 }
 
 // blockTypeSupertagAnnounce writes the announcement of another build than the one the test boots,
@@ -228,15 +278,33 @@ func blockTypeSupertagSetNode(t *testing.T, database *store.Store, address, supe
 
 // blockTypeSupertagPlan is the plan of the text of function name, prepared with its argument types
 // and run with arguments, as the planner plans it generically with sequential scans off, one line
-// a plan node.
+// a plan node. A prepared statement belongs to the session of the connection that prepared it, and
+// the transaction's rollback leaves it there, so the plan holds one connection of the pool from its
+// transaction to the deallocate of the statement on that connection, once the rollback has ended
+// the transaction and its settings: the connection goes back to the pool holding no statement the
+// next plan prepares under the same name.
 func blockTypeSupertagPlan(t *testing.T, database *store.Store, name, types, arguments string) string {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
+	connection, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("take a connection for the plan of %s: %v", name, err)
+	}
+	defer connection.Release()
+	tx, err := connection.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the plan of %s: %v", name, err)
 	}
-	defer tx.Rollback(ctx)
+	prepared := false
+	defer func() {
+		_ = tx.Rollback(ctx)
+		if !prepared {
+			return
+		}
+		if _, err := connection.Exec(ctx, `deallocate blocktype_supertag_plan`); err != nil {
+			t.Errorf("deallocate the plan of %s: %v", name, err)
+		}
+	}()
 	for _, statement := range []string{
 		`set local enable_seqscan = off`,
 		`set local plan_cache_mode = force_generic_plan`,
@@ -246,6 +314,7 @@ func blockTypeSupertagPlan(t *testing.T, database *store.Store, name, types, arg
 			t.Fatalf("plan %s: %s: %v", name, statement, err)
 		}
 	}
+	prepared = true
 	rows, err := tx.Query(ctx, `explain (costs off) execute blocktype_supertag_plan (`+arguments+`)`)
 	if err != nil {
 		t.Fatalf("explain %s: %v", name, err)
@@ -286,7 +355,9 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 			"block_node_listed":     blockTypeSupertagFunction(t, database, "block_node_listed"),
 		}
 		blockTypeSupertagAnnounce(t, database, []string{"part_of"})
-		boot := blockTypeSupertagStop(t, blockTypeSupertagBoot(t, database.Pool.Config().ConnString()))
+		process := blockTypeSupertagBoot(t, database.Pool.Config().ConnString())
+		blockTypeSupertagWaitStep(t, process)
+		boot := blockTypeSupertagStop(t, process)
 		for name, text := range before {
 			if after := blockTypeSupertagFunction(t, database, name); after != text {
 				t.Errorf("the boot step restated %s over a fleet that lists no %s:\n%s\nserver log:\n%s", name, blockTypeSupertagCapability, after, boot)
@@ -390,15 +461,17 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 		}
 	})
 
-	// The fourth database is like the third, but one check's node carries block. The step leaves
-	// both functions as they are, and the server log names that block.
+	// The fourth database is like the third, but one check's node carries block. Once the step has
+	// ended, it has left both functions as they are, and the server log names that block.
 	t.Run("a database where one check's node carries block", func(t *testing.T) {
 		database := storetest.Open(t)
 		handler, _, deps := newTestServer(t, testServerOptions{store: database})
 		issue := blockTypeSupertagSeed(t, handler, database, deps, "TYPED")
 		blockTypeSupertagSetNode(t, database, issue.check, "block")
 		blockTypeSupertagAnnounce(t, database, []string{blockTypeSupertagCapability})
-		boot := blockTypeSupertagStop(t, blockTypeSupertagBoot(t, database.Pool.Config().ConnString()))
+		process := blockTypeSupertagBoot(t, database.Pool.Config().ConnString())
+		blockTypeSupertagWaitStep(t, process)
+		boot := blockTypeSupertagStop(t, process)
 		for _, name := range []string{"block_pointer_targets", "block_node_listed"} {
 			if !blockTypeSupertagReadsRow(t, database, name) {
 				t.Errorf("the boot step restated %s over a database where the node of %s carries block", name, issue.check)

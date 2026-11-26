@@ -9,7 +9,7 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { ApiError, api } from "../../../api/client";
-import { conversationTreeKey, issueTreeKey } from "../../../api/queries";
+import { conversationTreeKey, issueAskThreadsQuery, issueTreeKey } from "../../../api/queries";
 import type { Actor, AuthenticatedUser, Comment, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
@@ -47,6 +47,12 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
+import {
+  accessibleNameOf,
+  rowControls,
+  tabStopsOf,
+  withMarginAfterWords,
+} from "../row-name-fixtures";
 import { ViewStage } from "../slots/stage";
 import { AppProviders, inDocument } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
@@ -59,7 +65,6 @@ import {
   viewKey,
   viewQuery,
 } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -4160,4 +4165,35 @@ test("an entry the view goes to on a later page draws the pages up to it", async
   }
   expect(rowsOfPart(counted, "open_questions")).toEqual(ids.questions.slice(0, 40));
   counted.unmount();
+});
+
+// A Decisions row holds the outline's margin - the kind's tag, who decided and when, how it
+// stands - first in the document, as the outline's row does, so that on a phone it floats beside
+// the words' first line (`NodeRow.tsx`). It is named by its words and what it draws under them,
+// then its margin: word for word the name its text gives a copy of the row with its margin after
+// its words, and with the kind after the words. Named by its text in the document's order, it
+// would read the kind first. Its controls stand in the order it reads in - the link to the
+// statement it informs, Keep, Change and the link to the entry in the conversation, all under its
+// words - and it takes no tab stop of its own.
+test("a Decisions row is named by its words before its kind, and its controls stand in its reading order", () => {
+  const view = renderBody(wholeIssue());
+  const row = rowOf(view, D("first"));
+  const ordered = withMarginAfterWords(row);
+  const words = "The decision first.";
+  try {
+    const name = accessibleNameOf(row);
+    expect(name.startsWith(words), name).toBe(true);
+    expect(name.indexOf(NODE_TYPE_NAMES.decision, words.length), name).toBeGreaterThan(0);
+    expect(name).toBe(accessibleNameOf(ordered));
+    expect(rowControls(row)).toEqual([
+      "The page draws s1.",
+      CONTROL_LABELS.keep_decision,
+      CONTROL_LABELS.change_decision,
+      `${DECISIONS_WORDS.in_conversation} ›`,
+    ]);
+    expect(tabStopsOf(row)).toEqual([]);
+  } finally {
+    ordered.remove();
+    view.unmount();
+  }
 });

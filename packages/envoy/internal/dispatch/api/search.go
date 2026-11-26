@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -156,9 +157,10 @@ const (
 // cast is store.CastableUUID's, which answers the document every spelling of an artifact_id
 // Postgres casts names.
 //
-// The document arm is a named piece of its own (searchDocumentKeywordLeg), so that it can be
-// ranked, read and measured apart from the four arms beside it.
-func searchKeywordLegs(rank func(searchColumn string) string) string {
+// The document arm is passed in as documentLeg: search passes searchDocumentKeywordLeg (block rows
+// of node_search, answering the block that matched), and the related-item check passes
+// relatedDocumentKeywordLegSQL (document rows of node_search, one vector per document, R17).
+func searchKeywordLegs(rank func(searchColumn string) string, documentLeg string) string {
 	return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
          null::text as window_id, null::text[] as covers,
@@ -177,7 +179,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
    where i.key = named.key and ($2 = '' or i.project_key = $2)` +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
-` + searchDocumentKeywordLeg(rank) + `
+` + documentLeg + `
   union all
   select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid), c.id::text, null::text,
          null::text, null::text[],
@@ -259,7 +261,32 @@ func searchRowFilters(status, author, written string) string {
 //
 // The join to artifacts decides the arm's project, kind and issue, as it did over
 // document_search: a block of an issue room's own fragment is the tree artifact's, no doc, and
-// answers nothing here, as the tree's row of document_search did not.
+// answers nothing here, as the tree's row of document_search did not. The outer join tests the
+// kind and the project again because a node of an issue room takes its document from the room
+// (refs.NodeSearchDocumentSQL), which the owners do not narrow.
+//
+// A node that is an ask block or stands in one matches nothing here: its words are the ask's,
+// which the ask arm finds, as search_document_text keeps them out of the document's version
+// vector. The set of those nodes is read once for the statement, walked down from the ask blocks
+// of the owners the matches name (graphstore.NodeSearchAskNodesSQL, whose comment says why it is
+// the set the climb from each node found), and each matched node is tested against it by one
+// hash probe. It reads the store as it holds it now, so a retype of an ancestor into or out of an
+// ask block moves this answer with no write of the node.
+//
+// Keep each step over a set: a common word can match tens of thousands of blocks.
+//
+//   - owners reads the artifacts a node can be a block of once, the docs the search names and every
+//     issue room (refs.NodeSearchOwnersSQL), materialized, so the planner joins the matches to it by
+//     hash rather than probing artifacts_ref_key_key once per node; issue_room_blocks is probed only
+//     for a node of an issue room. The query's tsquery is read once as a value of the statement,
+//     rather than by a join to q that every matched node passes through.
+//   - hits holds each node's document, address and scalar rank computed on the first read. This
+//     avoids a second heap lookup and keeps vectors out of the materialized rows and cover sort.
+//     The ask walk starts only at owners the matches name (hit_owners), not every eligible owner.
+//     The anti-join still filters the same nodes before they contribute to the covers.
+//
+// Each step is a filter of rows, and a document's covers are taken from the rows all of them keep,
+// so the order changes no row and no cover.
 //
 // The text carries no newline of its own at either end: searchKeywordLegs joins it to its
 // neighbours with the union the arms are separated by, and a caller running the arm by itself
@@ -271,30 +298,65 @@ func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
          coalesce(i.updated_at, v.created_at),
          false, ` + rank("v.search") + `
     from (
-      select held.document,
-             (array_agg(held.block order by held.r desc, held.block))[1:` + strconv.Itoa(searchKeywordBlocks) + `] as covers
-        from (
-          select ` + refs.NodeSearchDocumentSQL("s") + ` as document, ` + refs.NodeSearchBlockSQL("s") + ` as block,
-                 ts_rank_cd(s.search, q.tsq, 32) as r
-            from node_search s, q
-           where s.search @@ q.tsq
-        ) held
-       where held.document is not null
-       group by held.document
+      with recursive owners as materialized (` + refs.NodeSearchOwnersSQL(`($2 = '' or owner.project_key = $2)`) + `),
+      hits as materialized (
+        select ` + refs.NodeSearchDocumentSQL("s", "o") + ` as document, s.node_address,
+               ts_rank_cd(s.search, (select q.tsq from q), 32) as block_rank
+          from node_search s
+          join owners o on o.ref_key = ` + refs.NodeSearchOwnerSQL("s") + `
+         where s.node_kind = '` + refs.BlockNodeKind + `' and s.search @@ (select q.tsq from q)
+      ),
+      hit_owners as (select distinct ` + refs.NodeSearchOwnerSQL("hits") + ` as ref_key from hits),
+      ` + graphstore.NodeSearchAskNodesSQL("hit_owners") + `
+      select hit.document,
+             (array_agg(` + refs.NodeSearchBlockSQL("hit") + ` order by hit.block_rank desc, ` + refs.NodeSearchBlockSQL("hit") + `))[1:` + strconv.Itoa(searchKeywordBlocks) + `] as covers
+        from hits hit
+       where not exists (select 1 from ask_nodes ask where ask.id = hit.node_address)
+       group by hit.document
     ) matched
-    join artifacts a on a.id = matched.document
+    join artifacts a on a.id = matched.document and a.kind = 'doc' and ($2 = '' or a.project_key = $2)
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
     join lateral (` + documentLatestVersionSQL("a") + `) v on true, q
-   where a.kind = 'doc' and ($2 = '' or p.key = $2)` +
+   where true` +
 		searchRowFilters("i.status", "a.created_by", "v.created_at")
 }
 
+// relatedDocumentKeywordLegSQL is the related-item check's document arm (R17 of the issue-tree
+// spec): it reads node_search's document rows (node_kind = 'artifact', one row per live doc
+// artifact holding its whole-text vector under node_search_document_vector) rather than the rows of
+// its block nodes, and ranks each document directly from that row's vector, as main ranked from
+// document_search. For an issue document recency is the issue's updated_at; for an unlinked
+// document it reads the latest markdown version's time. That time advances even when an identical
+// vector leaves the search row untouched. The related-item check binds no search filters
+// (relatedQOpener sets status_filter, author_filter and updated_since empty), and no block covers
+// are read on this arm.
+//
+// Build the eligible artifact set before joining the vector matches. Without the boundary, a
+// common lexeme on the scratch corpus drove thousands of artifact probes and a scan of projects
+// per document. The small eligible set joins to the GIN matches by ref_key instead.
+func relatedDocumentKeywordLegSQL(rank func(searchColumn string) string) string {
+	return `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, a.project_key, a.slug, a.name,
+         coalesce(i.updated_at, (select v.created_at from artifact_versions v
+             where v.artifact_id = a.id and v.markdown is not null order by v.number desc limit 1)),
+         false, ` + rank("s.search") + `
+    from node_search s
+    join (select doc.id, doc.ref_key, doc.issue_key, doc.project_key, doc.slug, doc.name
+            from artifacts doc join projects eligible on eligible.key = doc.project_key
+           where doc.kind = 'doc' and ($2 = '' or doc.project_key = $2)
+           offset 0) a on a.ref_key = s.node_address
+    left join issues i on i.key = a.issue_key
+    cross join q
+   where s.node_kind = '` + graphstore.KindArtifact + `' and s.search @@ q.tsq`
+}
+
 // searchKeywordBlocks is how many of a document's matching nodes its keyword row names as covers,
-// best first by each node's own rank (searchDocumentKeywordLeg): the page ranks each covered
-// block's text again to name the one hit, so the arm hands it the ten its own ranking puts first,
-// past any the reader may not see, rather than every block of a long document that holds a common
-// word.
+// best first by each node's own rank (searchDocumentKeywordLeg): where a row covers more than one
+// block, the page ranks each covered block's text again to name the one hit, so the arm hands it
+// the ten its own ranking puts first, past any the reader may not see, rather than every block of
+// a long document that holds a common word.
 const searchKeywordBlocks = 10
 
 // documentLatestVersionSQL is a lateral's body over the artifacts row aliased alias answering its
@@ -311,17 +373,20 @@ func documentLatestVersionSQL(alias string) string {
 		order by v.number desc limit 1`
 }
 
-// searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
-// normalisation.
-var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
-	// 32 is ts_rank_cd's "divide the rank by itself plus one" normalisation flag: the raw rank
-	// grows with every further matching lexeme a text holds, and dividing it by itself plus one
-	// maps it onto [0, 1), so a long document no longer scores above a short issue merely by
-	// holding more of the query's lexemes, and the one score every kind is now ranked on
-	// (searchFusedSQL) can weigh a rank against a cosine similarity. The related-item check's own
-	// rank already passes it (relatedCoordinationRank).
+// searchKeywordRank is search's own keyword rank, ts_rank_cd with length normalisation.
+// 32 is ts_rank_cd's "divide the rank by itself plus one" normalisation flag: the raw rank grows
+// with every further matching lexeme a text holds, and dividing it by itself plus one maps it onto
+// [0, 1), so a long document no longer scores above a short issue merely by holding more of the
+// query's lexemes, and the one score every kind is now ranked on (searchFusedSQL) can weigh a rank
+// against a cosine similarity. The related-item check's own rank already passes it
+// (relatedCoordinationRank).
+func searchKeywordRank(searchColumn string) string {
 	return "ts_rank_cd(" + searchColumn + ", q.tsq, 32)"
-})
+}
+
+// searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
+// normalisation and its document arm reading the block rows of node_search.
+var searchKeywordLegsSQL = searchKeywordLegs(searchKeywordRank, searchDocumentKeywordLeg(searchKeywordRank))
 
 // askBlockNodeSQL is the block id of ask k's typed block while that block is a node of the
 // reference graph (a document_blocks row of the document holding it), and null otherwise: an id
@@ -411,6 +476,14 @@ var (
 // page and the few blocks each row covers, never over every candidate; any other keyword row and
 // an issue carry no covers, so the join answers nothing for them.
 //
+// A lone cover needs no rank. For a document's other covers, reuse the stored vector only
+// when the node text equals the projected block text byte for byte and contains no ask
+// opening that search_document_text can strip. For text whose full vector fits, search_vector
+// with an empty head then stores exactly the vector the page used to build. Keep the original
+// rank and ordinality tie-break, rather than taking the first cover: an ask nested inside a
+// block can change its rank, and a window's order is not a lexical rank at all. Where the
+// text differs, the node is missing, or an ask might be stripped, build the original vector.
+//
 // A covered block is named only where the acting person may see it, by the registry's own
 // predicate over the block's node (refs.VisibleEnd, bound at seen, the parameter the acting
 // credential is bound at): the hit is the best covered block the reader may see, and a window
@@ -469,35 +542,41 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
              else left(txt.text, 4000) end) as text
   ) src on true
-  -- The block of r.covers that matched, if the row carries a window. Each covered block's own
-  -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
-  -- block texts are kept per version or revision, the latest being the current text. A
-  -- document's are read where the block index keeps them, in the room the document is edited in
-  -- (refs.DocumentRoomTextsSQL): an issue born converted keeps its documents' text rows under its
-  -- tree artifact. A message records no revisions, so it keeps no text table
-  -- (refs/item_blocks.go's table map) and its block is ranked on the excerpt its row holds, the
-  -- block's head as refs.BlockExcerpt cuts it, which an edit of the message rewrites with the
-  -- block it changed.
+  -- Documents and revisioned items use their latest projected block text. Document text
+  -- may be keyed by the room tree, so look up a stored vector under the text row's owner.
+  -- A message has no revisions and uses the excerpt its block row holds, the block's head as
+  -- refs.BlockExcerpt cuts it, which an edit of the message rewrites with the block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
       cross join lateral (
         select case r.kind
-          when 'document' then (select x.text from document_block_texts x
-                                 where %[3]s and x.block_id = covered.block_id
-                                 order by x.version desc limit 1)
-          when 'comment' then (select x.text from comment_block_texts x
-                                 where x.comment_id = r.id::uuid and x.block_id = covered.block_id
-                                 order by x.revision desc limit 1)
-          when 'ask' then (select x.text from ask_block_texts x
-                                 where x.ask_id = r.id::uuid and x.block_id = covered.block_id
-                                 order by x.revision desc limit 1)
-          when 'message' then (select x.excerpt from message_blocks x
-                                 where x.message_id = r.id::uuid and x.block_id = covered.block_id)
-        end as text
+          when 'document' then coalesce((
+            select coalesce(
+                     case when s.text collate "C" = held.text collate "C" and strpos(held.text, ':::ask{') = 0 then s.search end,
+                     to_tsvector('english', search_text(coalesce(held.text, ''))))
+              from (select x.artifact_id, x.text from document_block_texts x
+                     where %[3]s and x.block_id = covered.block_id
+                     order by x.version desc limit 1) held
+              left join artifacts text_owner on text_owner.id = held.artifact_id
+              left join node_search s on s.node_kind = 'block' and s.node_address = text_owner.ref_key || '#' || covered.block_id
+          ), ''::tsvector)
+          else to_tsvector('english', search_text(coalesce(case r.kind
+            when 'comment' then (select x.text from comment_block_texts x
+                                   where x.comment_id = r.id::uuid and x.block_id = covered.block_id
+                                   order by x.revision desc limit 1)
+            when 'ask' then (select x.text from ask_block_texts x
+                               where x.ask_id = r.id::uuid and x.block_id = covered.block_id
+                               order by x.revision desc limit 1)
+            when 'message' then (select x.excerpt from message_blocks x
+                                   where x.message_id = r.id::uuid and x.block_id = covered.block_id)
+          end, '')))
+        end as vector
       ) block
      where %[2]s
-     order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
+     order by case when cardinality(r.covers) > 1
+                   then ts_rank_cd(block.vector, q.tsq) end desc,
+              covered.ord
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
@@ -582,24 +661,19 @@ with q as (select
 // (suggestionSearchDepth) and rows dropped after that page took places in it and hid the matches
 // the check exists to find.
 //
-// seen is the parameter the acting credential is bound at. This is the one choke point both
-// bodies pass through, and the related-item check's two shapes of each with them, so binding
-// the registry's predicate here (refs.VisibleEnd, over the arms' own kind and id) reaches
-// every keyword arm at once; a meaning arm binds its own besides, because its candidate CTE
-// cuts to its limit before this filter ever sees a row. A search row's kind is the reader's
-// word for it, and `document` is the node kind `artifact`. A row is an issue, a document, an ask,
-// a comment or a message (searchRowKinds), none of them a standing kind, so the predicate binds no
-// staleness test (refs.NodeKinds).
+// seen is the acting credential's parameter. The registry's visibility join applies to all
+// candidates before ranking and counting. Meaning arms retain their own tests before their
+// candidate limits, and the page retains its tests of individual covers.
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
 func searchKindsCTE(arms, exclude string, seen int) string {
-	visible := refs.VisibleEnd(searchRowKinds, `case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
+	source := "(" + arms + "\n)"
 	if exclude != "" {
-		visible = `not (` + exclude + `) and ` + visible
+		source = "(select * from " + source + " candidates where not (" + exclude + "))"
 	}
-	return `kinds as (select * from (` + arms + `
-) arms where ` + visible + `
+	return `kinds as (select arms.* from ` + source + ` arms` +
+		refs.SearchVisibilityJoin("arms.kind", "arms.id", searchParam(seen)) + ` where hidden.id is null
 ),
 `
 }
@@ -711,13 +785,9 @@ func searchParam(number int) string {
 	return "$" + strconv.Itoa(number)
 }
 
-// searchRowKinds is the node kind of every row a search arm answers, as the graph addresses it:
-// an issue, a document, an ask, a comment and a message. searchBlockKinds is the node kind of every
-// block a meaning hit can name: a document's block and each item kind's (refs.ItemKind.BlockKind).
-var (
-	searchRowKinds   = refs.KindsOf("issue", "artifact", string(refs.ItemAsk), string(refs.ItemComment), string(refs.ItemMessage))
-	searchBlockKinds = refs.KindsOf(refs.BlockNodeKind, refs.ItemAsk.BlockKind(), refs.ItemComment.BlockKind(), refs.ItemMessage.BlockKind())
-)
+// searchBlockKinds are the node kinds a hit can name as its block: a document's block and each
+// conversation item's own block kind.
+var searchBlockKinds = refs.KindsOf(refs.BlockNodeKind, refs.ItemAsk.BlockKind(), refs.ItemComment.BlockKind(), refs.ItemMessage.BlockKind())
 
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
 // "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or

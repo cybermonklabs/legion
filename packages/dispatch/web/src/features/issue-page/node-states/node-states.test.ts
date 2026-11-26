@@ -20,6 +20,7 @@ import type {
   IssueCheckResults,
   IssueDetails,
   IssueTreeParent,
+  RequirementCoverage,
 } from "../../../api/types";
 import { pageStateText } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
@@ -80,8 +81,8 @@ import {
 } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
-import { filterSignals, presetView } from "../presets";
-import { blockReads, Publisher, publishedNames, publishedTree } from "../projection-fixture";
+import { filterSignals, nodeReading, presetView } from "../presets";
+import { blockReads, Publisher, publishedChips, publishedTree } from "../projection-fixture";
 import { drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
@@ -699,8 +700,51 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
   });
 }
 
-/** The Verification view over `root`, with `checks` as the issue's results read, drawn as its
- *  slot draws it (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
+/** The coverage read's rows over `root`, as the server builds them (`coverage_tuples.go`'s
+ *  `coverTreeRequirements`): one row for each statement, with its own state, its coverage
+ *  `closed` where it is at or under an overtaken node and `proposed` where it is proposed, and
+ *  the checks that serve it - its count of checks where it carries one (`TreeNode.counts`), else
+ *  the checks under it but a proposed or an overtaken one, which serves nothing
+ *  (`readServingChecks`). No result is read for a proof here, so a row a check serves is
+ *  `unproven`. */
+function coverageRows(root: TreeNode): RequirementCoverage[] {
+  const rows = new Map<string, RequirementCoverage>();
+  const walk = (node: TreeNode): void => {
+    const ref = node.reference;
+    if (node.statement === true && ref !== undefined && !rows.has(ref)) {
+      const checks =
+        node.counts?.checks ??
+        node.children.filter(
+          (child) =>
+            child.type === "check" && child.life !== "proposed" && child.life !== "overtaken"
+        ).length;
+      rows.set(ref, {
+        block_id: ref.slice(ref.lastIndexOf("#b-") + "#b-".length),
+        checks,
+        coverage:
+          node.closed === true
+            ? "closed"
+            : node.life === "proposed"
+              ? "proposed"
+              : checks === 0
+                ? "gap"
+                : "unproven",
+        gaps: [],
+        plan_tasks: 0,
+        ref,
+        state: node.life ?? "live",
+        text: node.text,
+      });
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return [...rows.values()];
+}
+
+/** The Verification view over `root`, with `checks` as the issue's results read and the coverage
+ *  read's rows over it (`coverageRows`), drawn as its slot draws it
+ *  (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
  *  where a case types any, with the view under no query as `whole`, which is that view itself
  *  where no query is typed, on the page's `address`, which carries the words as the page's own
  *  does (`?q=`); with `addressed`, the nodes the address names and what the body tells the slot
@@ -740,6 +784,7 @@ function drawVerification(
               namesLine: NO_FAILED_READS,
               published,
               reads: { state: "answered" },
+              requirements: coverageRows(root),
               view: preset.root,
               whole: queryTyped(query)
                 ? presetView(root, "verification", "", new Set()).root
@@ -3178,13 +3223,12 @@ test("the Plan chart marks a proposed step, and what a step needs and serves", (
     reading: { words: "Task t1 is carried out." },
     ref: planRef("t1"),
   };
-  // What the page's batched read names the step's need and the statement it serves by.
-  const published = publishedNames(
-    new Map([
-      [needs.ref, "Task t1 is carried out."],
-      [serves.reference ?? "", serves.text],
-    ])
-  );
+  // What the page's batched read names the step's need by, and the reading the view names the
+  // statement it serves by (`presets.ts`' `nodeReading`, `PresetView.readings`).
+  const published = publishedChips([
+    needs,
+    { answered: true, gone: false, reading: nodeReading(serves), ref: serves.reference ?? "" },
+  ]);
   const view = drawPlan(
     stamped(
       node(KEY, "issue", [planTask("t1"), planTask("t2", { chips: [needs], parentLine: serves })]),

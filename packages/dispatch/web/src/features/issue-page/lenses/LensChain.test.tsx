@@ -1261,3 +1261,157 @@ test("a chain entry keeps an address in code as written and names it outside cod
     view.unmount();
   }
 });
+
+/** Draws `row` as its node row and waits until its words paragraph has painted, returning that
+ *  paragraph and a cleanup that unmounts the view. */
+async function drawnRowParagraph(
+  row: TreeNode,
+  renderRow: (page: ReactNode) => RenderResult = renderOnIssue
+): Promise<{ paragraph: HTMLParagraphElement; unmount: () => void }> {
+  const view = renderRow(<LensRow drawn={row} />);
+  try {
+    const paragraph = await waitFor(() => {
+      const found = view.container.querySelector<HTMLParagraphElement>(
+        "[data-node-words] [data-author-text] p"
+      );
+      if (found === null) throw new Error("the row drew no words paragraph");
+      return found;
+    });
+    return { paragraph, unmount: () => view.unmount() };
+  } catch (error) {
+    view.unmount();
+    throw error;
+  }
+}
+
+// A risk's heading carries a one-line reading that keeps code alone, so `__init__` in backticks
+// is drawn in a `code` element rather than parsed again in the page into bold "init".
+test("a risk row draws a code span in its heading as code and parses no underscores", async () => {
+  const { lens, risk } = WARNING_ROW;
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY),
+        treeNode(risk, "risk", lens, { attributes: { heading: "`__init__` runs twice" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children
+    .find((row) => row.id === lens)
+    ?.children.find((row) => row.id === risk);
+  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const { paragraph, unmount } = await drawnRowParagraph(drawn);
+  try {
+    expect(paragraph.textContent).toBe("__init__ runs twice");
+    expect([...paragraph.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
+      "__init__",
+    ]);
+    expect(paragraph.querySelector("strong, em")).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
+// A lens's verdict carries a one-line reading of its plain words, so escaped emphasis stays as
+// asterisks rather than being parsed again in the page into an `em` element.
+test("a lens row draws escaped emphasis in its verdict as plain words", async () => {
+  const { lens } = WARNING_ROW;
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY, { attributes: { verdict: "Retry \\*all\\* jobs" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children.find((row) => row.id === lens);
+  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
+  const { paragraph, unmount } = await drawnRowParagraph(drawn);
+  try {
+    expect(paragraph.textContent).toBe("Retry *all* jobs");
+    expect(paragraph.querySelector("em")).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
+// A constraint's standard carries a one-line reading that keeps code alone, so `<T>` in backticks
+// is drawn as text in a `code` element rather than parsed again in the page into an HTML node.
+test("a constraint row draws angle brackets in code as text in code with no HTML node", async () => {
+  const { constraint } = WARNING_ROW;
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(constraint, "constraint", KEY, { attributes: { standard: "`<T>` leaks" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children.find((row) => row.id === constraint);
+  if (drawn === undefined) throw new Error("the tree draws no row of the constraint");
+  const { paragraph, unmount } = await drawnRowParagraph(drawn);
+  try {
+    expect(paragraph.textContent).toBe("<T> leaks");
+    expect([...paragraph.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
+      "<T>",
+    ]);
+    expect([...paragraph.children].map((child) => child.tagName.toLowerCase())).toEqual(["code"]);
+    expect(paragraph.querySelector('[data-type="html"], t')).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
+// A citing verdict keeps a run's code mark alongside a name's link, so another `dispatch://`
+// address inside a code span stays as written in a `code` element while the cited risk is named
+// and linked to its row.
+test("a lens row keeps another dispatch:// address in code as written in a citing verdict", async () => {
+  const { lens, risk } = WARNING_ROW;
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY, {
+          attributes: {
+            verdict: `Run \`dispatch read ${CODE_ADDRESS}\` before dispatch://risk/${risk}.`,
+          },
+        }),
+        treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children.find((row) => row.id === lens);
+  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
+  const { paragraph, unmount } = await drawnRowParagraph(drawn, renderWithCodeName);
+  try {
+    await waitFor(() => {
+      expect(paragraph.textContent).toBe(
+        `Run dispatch read ${CODE_ADDRESS} before Failover takes minutes.`
+      );
+      expect([...paragraph.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
+        `dispatch read ${CODE_ADDRESS}`,
+      ]);
+      expect(
+        [...paragraph.querySelectorAll("a")].map((link) => [
+          link.textContent,
+          link.getAttribute("href"),
+        ])
+      ).toEqual([["Failover takes minutes", `/issues/${KEY}?node=${risk}`]]);
+    });
+  } finally {
+    unmount();
+  }
+});

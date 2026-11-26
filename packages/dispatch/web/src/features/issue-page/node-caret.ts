@@ -776,8 +776,9 @@ const NORMAL_LINE_HEIGHT = 1.2;
  * no lower than `least` px, and brings the row on screen: the whole row where it fits the room,
  * and the box alone where `least` makes the row taller than the room. What the row draws over
  * the box and under it is read from where the two stand, so it counts whatever the row draws
- * there: the body under the words, and on a phone the line of the tag, the author and the time
- * under them (`NodeRow.tsx`'s `NODE_ROW_LAYOUT`).
+ * there: the body under the words, and the margin's column beside them where it runs lower, as
+ * the tag, the author and the time stand beside the words at every width (`NodeRow.tsx`'s
+ * `NODE_ROW_LAYOUT`).
  */
 function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number): void {
   const published = getComputedStyle(document.documentElement);

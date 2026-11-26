@@ -10,9 +10,12 @@
 # the corpus through that server's API: a comment citing the second shape's ask block in the
 # decisions document as dispatch://<A>/artifact/decisions-md#b-q-doc-plain, a block of a third
 # document (notes.md) citing the same address, and a comment citing the old spec address of an ask
-# of the main shape, dispatch://<A>/spec#b-q-left-format. Through the same server it writes one
-# more citation of the second shape's address, a comment on issue C, whose closure is the one the
-# closure leg reads: an issue's closure leaves its own documents out.
+# of the main shape, dispatch://<A>/spec#b-q-left-format. Through the same server it writes three
+# more citations: a comment on issue C citing the second shape's address, whose closure is the one
+# the closure leg reads (an issue's closure leaves its own documents out); a comment citing the
+# colliding ask's address, dispatch://<A>/artifact/decisions-md#b-q-doc-collide, which the restore
+# moves under a new block id; and a comment citing dispatch://<A>/spec#b-r-never-written, an
+# address no document holds and no move names, in neither set of the dangling counter.
 #
 # BASELINE_SHA, the commit of the release this branch lands after, is required and has no
 # default: only the caller knows which release that is. Once the base server has booted, the
@@ -27,28 +30,37 @@
 # answers: GET /api/v1/references?to=<old address> (blockReferenceNode), GET
 # /api/v1/block-links?from=<notes.md>&to=<decisions.md> (refs.BlockLinks, whose block it reads
 # the text of through the first resolver), and GET /api/v1/issues/<C>/references (refs.Closure);
-# the citations of each set of the dangling counter, which the seed and this run wrote; and the
-# heading of every section of both decisions documents, from the base's Decisions read. It stops
-# that server and boots this head, HEAD_BINARY (default $TMPDIR/bin/envoy-dispatch), with the hold
-# setting, so the commands below and not the boot make the first move.
+# the text the references read answers for the colliding ask's address, which one citation names;
+# the unresolvable address answering 404 NOT_FOUND; the citations of each set of the dangling
+# counter, which the seed and this run wrote; and the heading of every section of both decisions
+# documents, from the base's Decisions read. It stops that server and boots this head, HEAD_BINARY
+# (default $TMPDIR/bin/envoy-dispatch), with the hold setting, so the commands below and not the
+# boot make the first move.
 #
 # Before one ask moves it reads the tuple kind (the census's store-only moved_to line), the
 # collision census, the three resolvers and the counter (the dangling_citations line of
 # `envoy-dispatch census --store --verbose`): moved=0, and returning equal to the captured
 # citations of the main shape's old spec address, which answers 404 NOT_FOUND. It reads the
+# comment's citation of the unresolvable address stored where the counter reads citations, and
+# every census of the run, here and below, counts no citation of it, in either set: the counter
+# does not count every citation that resolves to nothing. It reads the
 # restore's dry run listing the second shape's asks as about to move, and writing nothing: no
 # moved_to tuple, no version of a document of the project and no asks row's block. It runs the
 # restore (`envoy-dispatch restore-answered-asks --project SEED`) and reads the citation again
 # three ways: the references read and the block-links leg answer the restored ask's block at its
 # new address with the captured text, and the closure answers the spec as the member the citation
-# reaches. A text is held to the captured one character for character with two differences and no
-# other, each printed: the attributes R10 takes out of markdown, `selected` and `answer`, are
-# absent, and a block that took a new id carries it; its `state`, `answered_by` and `answered_at`,
-# which R10 keeps, written from the same ask node, equal the captured ones, each printed. A
-# `selected` or an `answer` still in the text fails. It reads one moved_to tuple for the move, with
-# its time, and no second row; one for the colliding ask, to its new id; none for an ask of the
-# main shape, whose old spec address now answers the restored ask block. The counter then reads
-# zero in both sets.
+# reaches; and it reads the colliding ask's old address answering its restored block under its new
+# block id. A text is held to the captured one character for character with two differences and
+# no other, each printed: the attributes R10 takes out of markdown, `selected` and `answer`, are
+# absent, and a block that took a new id carries it, which the colliding ask's text does in place
+# of q-doc-collide; its `state`, `answered_by` and `answered_at`, which R10 keeps, written from the
+# same ask node, equal the captured ones, each printed. A `selected` or an `answer` still in the
+# text fails. For each of the two moves it reads one moved_to tuple to the new address, and no
+# second row; the colliding ask's to its new id. Each such tuple is a row the restore appended -
+# past the newest graph_tuples row read before the command started and no later than the newest
+# read after it ended - and states a time between the database's now() read before the command
+# started and after it ended. None names an ask of the main shape, whose old spec address now
+# answers the restored ask block. The counter then reads zero in both sets.
 #
 # Then it plants one state, for one census. A healthy run never leaves a citation of the first set
 # dangling, so that set reads zero before the restore and after it, as a counter that watched no
@@ -62,7 +74,10 @@
 # dispatch://<A>/artifact/decisions-md resolving to the issue, and a citation of every section of
 # both decisions documents resolving through one moved_to tuple: a section that cites no ask to the
 # decision node that keeps its heading block id, a section that cites an ask, kept as a reading or
-# dropped by the plain-answer rule, and a section that held an ask block, to that ask's block.
+# dropped by the plain-answer rule, and a section that held an ask block, to that ask's block. Each
+# of those tuples is a row the restore or the conversion appended, as its place in the log says,
+# and states a time within that command's run, read as for the moves above. The unresolvable
+# address still answers 404 NOT_FOUND.
 #
 # Last it reads every migration this branch adds over BASELINE_SHA and the statement with which
 # the backfill marks asks rows (graphcensus/backfill*.go): no `create table` names block_moves, and
@@ -178,7 +193,9 @@ dispatch_command() {
 }
 
 # census SECTION NAME: `envoy-dispatch census --store --verbose` into $work/NAME.out, its lines of
-# the moves printed, and the counter's two sets in $moved and $returning.
+# the moves printed, and the counter's two sets in $moved and $returning. Every census also reads
+# the counter counting no citation of nowhere_node, an address no document holds and no move or
+# return names, in either set: an unresolvable citation outside both sets is none of its count.
 census() {
   dispatch_command "$2" census --store --verbose
   [[ "$command_code" -le 1 ]] || fail "$1" "run the store census" "exited $command_code: $(<"$work/$2.out")"
@@ -189,6 +206,13 @@ census() {
     fail "$1" "the counter prints its two sets" "${line:-no dangling_citations line}"
   moved="${BASH_REMATCH[1]//,/}"
   returning="${BASH_REMATCH[2]//,/}"
+  awk -v target=" to=$nowhere_node" '
+    index($0, "census: dangling_citation ") == 1 && substr($0, length($0) - length(target) + 1) == target { found = 1 }
+    END { exit found }
+  ' "$work/$2.out" ||
+    fail "$1" "the counter counts no citation of $nowhere_address, which resolves to nothing and is in neither set" \
+      "$(grep -F " to=$nowhere_node" "$work/$2.out")"
+  pass "$1" "the counter counts no citation of $nowhere_address, which resolves to nothing and is in neither set"
 }
 
 # counted SET NAME: the citations the counter counted in SET, `kind:id target` a line, sorted.
@@ -290,24 +314,57 @@ same_text() {
   pass "$section" "$what"
 }
 
-# moved_to_rows ADDRESS: every moved_to tuple from the block node ADDRESS, one `to_id|asserted|at`
-# line each, oldest first, into $work/moved.
+# moved_to_rows ADDRESS: every moved_to tuple from the block node ADDRESS, one
+# `to_id|asserted|at|seq` line each, oldest first, into $work/moved.
 moved_to_rows() {
   env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c \
-    "select to_id, asserted, at from graph_tuples where kind = 'moved_to' and from_kind = 'block' and from_id = '$1' order by seq" \
+    "select to_id, asserted, at, seq from graph_tuples where kind = 'moved_to' and from_kind = 'block' and from_id = '$1' order by seq" \
     >"$work/moved" 2>"$work/psql" || fail moved_to "read the moved_to tuples of $1" "psql: $(<"$work/psql")"
 }
 
-# one_move SECTION FROM TO: one moved_to tuple from the block node FROM, to TO, asserting, with its
-# time, and no second row for the same move.
+# What the store held around each command that states moved_to tuples, by the command's name
+# (restore, convert): the newest graph_tuples row and the database's now(), read just before the
+# command started (since_seq, since_at) and just after it ended (until_seq, until_at).
+declare -A since_seq=() since_at=() until_seq=() until_at=()
+# mark SECTION since|until OPERATION: reads them, before or after OPERATION.
+mark() {
+  query "$1" "read the newest tuple and the database's time, $2 the $3" \
+    "select coalesce(max(seq), 0)::text || '|' || now()::text from graph_tuples"
+  case "$2" in
+    since) since_seq["$3"]="${answer%%|*}" since_at["$3"]="${answer#*|}" ;;
+    until) until_seq["$3"]="${answer%%|*}" until_at["$3"]="${answer#*|}" ;;
+  esac
+}
+
+# one_move SECTION FROM TO OPERATION…: one moved_to tuple from the block node FROM, to TO,
+# asserting, and no second row for the same move. The row was appended while one of the commands
+# OPERATION… names ran: its seq is past the newest that command's start read and no later than the
+# newest its end read. And it states the time of the move: graph_tuples.at, which no row leaves
+# empty, lies between the database's time read before that command started and after it ended, so
+# a tuple stated with any other time fails.
 one_move() {
-  moved_to_rows "$2"
+  local section="$1" from="$2" target="$3" operation by="" to asserted at seq
+  shift 3
+  moved_to_rows "$from"
   [[ "$(wc -l <"$work/moved")" == 1 ]] ||
-    fail "$1" "one moved_to tuple from $2" "$(wc -l <"$work/moved") rows: $(tr '\n' ' ' <"$work/moved")"
-  IFS='|' read -r to asserted at <"$work/moved"
-  [[ "$to" == "$3" && "$asserted" == t && -n "$at" ]] ||
-    fail "$1" "the moved_to tuple from $2 reaches $3, with the time of the move" "$(<"$work/moved")"
-  pass "$1" "one moved_to tuple from $2 to $3, at $at, and no second row"
+    fail "$section" "one moved_to tuple from $from" "$(wc -l <"$work/moved") rows: $(tr '\n' ' ' <"$work/moved")"
+  IFS='|' read -r to asserted at seq <"$work/moved"
+  [[ "$to" == "$target" && "$asserted" == t ]] ||
+    fail "$section" "the moved_to tuple from $from reaches $target, asserting" "$(<"$work/moved")"
+  for operation in "$@"; do
+    if [[ "$seq" -gt "${since_seq[$operation]}" && "$seq" -le "${until_seq[$operation]}" ]]; then
+      by="$operation"
+    fi
+  done
+  [[ -n "$by" ]] ||
+    fail "$section" "the moved_to tuple from $from is a row appended while the $* ran" \
+      "it is row $seq; $(for operation in "$@"; do printf 'rows %s to %s were appended while the %s ran; ' "$((since_seq[$operation] + 1))" "${until_seq[$operation]}" "$operation"; done)"
+  query "$section" "compare the time of the moved_to tuple from $from with the $by's run" \
+    "select ('$at'::timestamptz between '${since_at[$by]}'::timestamptz and '${until_at[$by]}'::timestamptz)::text"
+  [[ "$answer" == true ]] ||
+    fail "$section" "the moved_to tuple from $from states the time of the move, within the $by's run" \
+      "it states $at, and the $by ran from ${since_at[$by]} to ${until_at[$by]}"
+  pass "$section" "one moved_to tuple from $from to $target, row $seq, appended while the $by ran, at $at, between ${since_at[$by]} and ${until_at[$by]}, and no second row"
 }
 
 # moved_to_naming ADDRESS: how many moved_to tuples name the block node ADDRESS at either end, in
@@ -347,14 +404,29 @@ readonly moved_address="dispatch://$issue_a/artifact/decisions-md#b-q-doc-plain"
 readonly moved_node="$issue_a/decisions-md#q-doc-plain"
 readonly returning_address="dispatch://$issue_a/spec#b-q-left-format"
 readonly returning_node="$issue_a/spec#q-left-format"
+# The second shape's colliding ask, which the restore moves under a new block id.
+readonly collide_address="dispatch://$issue_a/artifact/decisions-md#b-q-doc-collide"
+readonly collide_node="$issue_a/decisions-md#q-doc-collide"
+# An address no document holds and no move or return names: the spec never held a block r-never-written.
+readonly nowhere_address="dispatch://$issue_a/spec#b-r-never-written"
+readonly nowhere_node="$issue_a/spec#r-never-written"
 
-# One more citation of the moved address, from another issue, whose closure the third leg reads.
+# One more citation of the moved address, from another issue, whose closure the third leg reads; a
+# citation of the colliding ask's address; and one of the address no document holds.
 send agent POST "/api/v1/issues/$issue_c/comments" \
   "$(jq -cn --arg b "Issue C reads the answer of $moved_address." --argjson a "$(seed_actor)" '{body: $b, actor: $a}')"
 want_status 201 capture "a comment on $issue_c cites $moved_address through the base release"
 field capture "the comment's id" '.id'
 readonly comment_c="$value"
-seed_wait_settled "the comment on $issue_c settles"
+send agent POST "/api/v1/issues/$issue_a/comments" \
+  "$(jq -cn --arg b "The line that names a moved block is settled in $collide_address." --argjson a "$(seed_actor)" '{body: $b, actor: $a}')"
+want_status 201 capture "a comment on $issue_a cites $collide_address through the base release"
+send agent POST "/api/v1/issues/$issue_a/comments" \
+  "$(jq -cn --arg b "No block was ever written at $nowhere_address." --argjson a "$(seed_actor)" '{body: $b, actor: $a}')"
+want_status 201 capture "a comment on $issue_a cites $nowhere_address through the base release"
+field capture "the comment's id" '.id'
+readonly comment_nowhere="$value"
+seed_wait_settled "the comments on $issue_c and $issue_a settle"
 
 # The citations of each set, as the base release wrote them.
 printf '%s\n' "comment:${seed_ids[comment_decisions_block]} $moved_node" "artifact:$notes_a $moved_node" \
@@ -380,6 +452,14 @@ expect capture "the closure of $issue_c answers the decisions document as the me
   "[{\"ref_key\":\"$issue_a/decisions-md\",\"via\":\"comment:$comment_c\"}]" "$closure_filter"
 send agent GET "/api/v1/references?to=$(q "$returning_address")"
 want_status 404 capture "the old spec address of the main shape answers 404 before the restore"
+# The colliding ask's address, as the base release answers it to the comment that cites it.
+resolve capture "$collide_address"
+expect capture "the references read answers the colliding ask's block in the decisions document" "\"$collide_node\"" '.node.id'
+expect capture "the references read lists the one comment citing it" 1 '[.edges[] | select(.kind == "mentions")] | length'
+jq -j '.node.text' "$work/body" >"$work/capture/collide-text"
+# The address no document holds resolves to nothing.
+send agent GET "/api/v1/references?to=$(q "$nowhere_address")"
+want_status 404 capture "$nowhere_address, which no document holds, answers 404"
 
 # Every section of both decisions documents, by its heading block, from the base's Decisions read.
 : >"$work/capture/sections"
@@ -423,6 +503,18 @@ pass before "the tuple kind answers and the collision census lists both collidin
 same_set before "the second set reads the captured citations of the old spec addresses" \
   returning census-before "$work/capture/returning-set"
 pass before "the counter reads moved=0 and returning=$returning, the captured citation of $returning_address"
+# The comment's citation of the address no document holds is stored where the counter reads
+# citations, so a counter of every unresolvable citation would count it; census reads it counted in
+# neither set.
+query before "read the stored citation of $nowhere_address" \
+  "select (select count(*) from refs where from_kind = 'comment' and from_id::text = '$comment_nowhere' and to_kind = 'block' and to_id = '$nowhere_node')
+     + (select count(*) from comment_block_refs where comment_id::text = '$comment_nowhere' and to_kind = 'block' and to_id = '$nowhere_node')"
+[[ "$answer" -gt 0 ]] ||
+  fail before "the comment $comment_nowhere's citation of $nowhere_address stands where the counter reads citations" "refs and comment_block_refs hold none"
+send agent GET "/api/v1/references?to=$(q "$nowhere_address")"
+want_status 404 before "$nowhere_address answers 404"
+expect before "$nowhere_address answers NOT_FOUND" '"NOT_FOUND"' '.code'
+pass before "the comment $comment_nowhere cites $nowhere_address, which resolves to nothing, as the store holds it ($answer rows), and the counter counts it in neither set"
 resolve before "$moved_address"
 expect before "the references read answers the block in the decisions document" "\"$moved_node\"" '.node.id'
 send agent GET "/api/v1/block-links?from=$(q "dispatch://$issue_a/artifact/notes-md")&to=$(q "dispatch://$issue_a/artifact/decisions-md")"
@@ -462,10 +554,12 @@ pass before "the dry run lists the second shape's two asks as about to move, and
 # ---------------------------------------------------------------------------------------------
 # The restore, and the citation read again.
 # ---------------------------------------------------------------------------------------------
+mark restore since restore
 dispatch_command restore restore-answered-asks --project "$project"
+mark restore until restore
 grep '^restore-answered-asks: ' "$work/restore.out" | sed 's/^/  /' || true
 [[ "$command_code" == 0 ]] || fail restore "envoy-dispatch restore-answered-asks --project $project" "exited $command_code: $(<"$work/restore.out")"
-pass restore "envoy-dispatch restore-answered-asks --project $project"
+pass restore "envoy-dispatch restore-answered-asks --project $project ran from ${since_at[restore]} to ${until_at[restore]}, the newest graph_tuples row going from ${since_seq[restore]} to ${until_seq[restore]}"
 wait_settled restore
 
 query restore "read the new block of the colliding ask" "select block_id from asks where id = '${seed_ids[ask_doc_collide]}'"
@@ -489,9 +583,15 @@ send agent GET "/api/v1/issues/$issue_c/references"
 want_status 200 after "read the closure of $issue_c"
 expect after "the closure answers the spec as the member the citation reaches" \
   "[{\"ref_key\":\"$issue_a/spec\",\"via\":\"comment:$comment_c\"}]" "$closure_filter"
+# The colliding ask's old address answers its restored block, under the new block id.
+resolve after "$collide_address"
+expect after "the references read reaches the colliding ask at its new block id" "\"$issue_a/spec#$collide_id\"" '.node.id'
+jq -j '.node.text' "$work/body" >"$work/text.got"
+same_text after "the references read of $collide_address answers the captured text under the new block id $collide_id" \
+  "$work/capture/collide-text" "$work/text.got" q-doc-collide "$collide_id"
 
-one_move moved_to "$moved_node" "$restored_node"
-one_move moved_to "$issue_a/decisions-md#q-doc-collide" "$issue_a/spec#$collide_id"
+one_move moved_to "$moved_node" "$restored_node" restore
+one_move moved_to "$collide_node" "$issue_a/spec#$collide_id" restore
 for block in q-left-format q-left-store; do
   moved_to_naming "$issue_a/spec#$block"
   [[ "$answer" == 0 ]] || fail moved_to "no moved_to tuple names $issue_a/spec#$block, an ask of the main shape" "$answer do"
@@ -536,10 +636,12 @@ pass planted "the first set reads zero again once the moved_to tuple from $moved
 # ---------------------------------------------------------------------------------------------
 # The conversion: the document and every section of it resolve.
 # ---------------------------------------------------------------------------------------------
+mark convert since convert
 dispatch_command convert convert-decisions --project "$project"
+mark convert until convert
 grep '^convert-decisions: ' "$work/convert.out" | sed 's/^/  /' || true
 [[ "$command_code" == 0 ]] || fail convert "envoy-dispatch convert-decisions --project $project" "exited $command_code: $(<"$work/convert.out")"
-pass convert "envoy-dispatch convert-decisions --project $project"
+pass convert "envoy-dispatch convert-decisions --project $project ran from ${since_at[convert]} to ${until_at[convert]}, the newest graph_tuples row going from ${since_seq[convert]} to ${until_seq[convert]}"
 wait_settled convert
 
 resolve convert "dispatch://$issue_a/artifact/decisions-md"
@@ -559,18 +661,25 @@ declare -A target_of=(
   ["Which line names a moved block"]="$issue_a/spec#${block_of[${seed_ids[ask_doc_collide]}]}"
   ["The release before this one writes the corpus"]="$issue_b/spec#${block_of[${seed_ids[ask_b_left]}]}"
 )
+# A restore takes out a section whose body was only an ask block it moved, and writes that
+# section's moved_to (docs' writeFacts: "A section a restore alone took out writes its moved_to
+# too"); the conversion takes out every other. Each tuple is read against the run of whichever of
+# the two commands appended it, as its row's place in the log says.
 while read -r issue heading_id heading; do
   # A section that cites no ask becomes the decision node that keeps its heading block id.
   target="${target_of[$heading]:-$issue/spec#$heading_id}"
   resolve convert "dispatch://$issue/artifact/decisions-md#b-$heading_id"
   expect convert "the section \"$heading\" resolves to the node it became" "\"$target\"" '.node.id'
-  one_move convert "$issue/decisions-md#$heading_id" "$target"
+  one_move convert "$issue/decisions-md#$heading_id" "$target" restore convert
 done <"$work/capture/sections"
 pass convert "a citation of every section of both decisions documents resolves through one moved_to tuple"
 census convert census-convert
 [[ "$moved" == 0 && "$returning" == 0 ]] ||
   fail convert "the counter reads zero in both sets after the conversion" "moved=$moved returning=$returning"
 pass convert "the counter reads zero in both sets after the conversion"
+send agent GET "/api/v1/references?to=$(q "$nowhere_address")"
+want_status 404 convert "$nowhere_address still answers 404 after the conversion"
+expect convert "$nowhere_address still answers NOT_FOUND, uncounted by every census of this run" '"NOT_FOUND"' '.code'
 
 # ---------------------------------------------------------------------------------------------
 # No migration of this branch moves a citation, and neither does the backfill.

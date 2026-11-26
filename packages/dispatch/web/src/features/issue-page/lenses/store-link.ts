@@ -72,19 +72,33 @@ function placedMark(mark: TreeMark, page: PageAddress): TreeMark {
  * link to nothing whose title is the node's row path (`placedStorePath`), so the body's reference
  * pass, which would draw the address as its words or a link to the path as one to its issue,
  * leaves it to `RowText.tsx`'s link pass. `tree` itself, the same object, where it holds none: a
- * reading drawn again over the same words is painted once.
+ * reading drawn again over the same words is painted once, and a reading with no store link, as
+ * nearly every row's is, is copied nowhere.
  */
 export function placeStoreLinks(tree: DisplayTree, page: PageAddress): DisplayTree {
-  let placed = tree;
-  const marks = tree.marks as readonly TreeMark[] | undefined;
-  if (Array.isArray(marks)) {
-    const written = marks.map((mark) => placedMark(mark, page));
-    if (written.some((mark, at) => mark !== marks[at])) placed = { ...placed, marks: written };
-  }
-  const content = tree.content as readonly DisplayTree[] | undefined;
-  if (Array.isArray(content)) {
-    const inside = content.map((child) => placeStoreLinks(child, page));
-    if (inside.some((child, at) => child !== content[at])) placed = { ...placed, content: inside };
+  const marks = placedItems(tree.marks as readonly TreeMark[] | undefined, (mark) =>
+    placedMark(mark, page)
+  );
+  const content = placedItems(tree.content as readonly DisplayTree[] | undefined, (child) =>
+    placeStoreLinks(child, page)
+  );
+  if (marks === undefined && content === undefined) return tree;
+  return {
+    ...tree,
+    ...(marks === undefined ? {} : { marks }),
+    ...(content === undefined ? {} : { content }),
+  };
+}
+
+/** `items` with each item replaced by what `place` answers for it, copied from the first item
+ *  `place` changes; undefined where it changes none, or `items` is no array. */
+function placedItems<T>(items: readonly T[] | undefined, place: (item: T) => T): T[] | undefined {
+  if (!Array.isArray(items)) return undefined;
+  let placed: T[] | undefined;
+  for (const [at, item] of items.entries()) {
+    const now = place(item);
+    if (placed === undefined && now !== item) placed = items.slice(0, at);
+    placed?.push(now);
   }
   return placed;
 }

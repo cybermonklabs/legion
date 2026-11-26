@@ -165,8 +165,7 @@ function Named({
  *  `focused` whether it holds the tree's focus. It is drawn inside `NoTooltips`, as the page's
  *  slots draw every row, so an author is named as the page names one, and under the names
  *  store, with `published` published to it where it is given, as the page publishes its batched
- *  read. `redraw` draws the same row of another node, as a later read of the tree does;
- *  `publish` publishes another value, as a later answer of the batched read does. */
+ *  read. `publish` publishes another value, as a later answer of the batched read does. */
 function renderRow(
   drawn: TreeNode,
   {
@@ -220,19 +219,12 @@ function renderRow(
       </MemoryRouter>
     </QueryClientProvider>
   );
-  let shown = drawn;
-  let publishedNow = published;
   const view = render(row(drawn, published));
   return Object.assign(view, {
     publish: (next: PublishedReferences) => {
-      publishedNow = next;
-      view.rerender(row(shown, publishedNow));
+      view.rerender(row(drawn, next));
     },
     queryClient,
-    redraw: (next: TreeNode) => {
-      shown = next;
-      view.rerender(row(shown, publishedNow));
-    },
   });
 }
 
@@ -856,6 +848,32 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
   expect(drawn("check")).toMatchObject({ tag: NODE_TYPE_NAMES.check, token: "check" });
   expect(drawn("comment")).toMatchObject({ tag: null, time: "5 Nov" });
   expect(drawn("message")).toMatchObject({ tag: null });
+});
+
+// A criterion is what a person wants to be able to do, which the work is held to as it is to
+// the spec's statements: its bullet and its tag take a statement's colour, and never the ink of
+// a person's turn.
+test("a criterion row draws its bullet and its tag in a statement's colour", () => {
+  const view = renderRow(
+    node({ id: "criterion-1", text: "I can see what waits on me.", type: "criterion" })
+  );
+  try {
+    const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+    const dot = view.container.querySelector("[data-node-bullet] i");
+    expect(tag?.textContent, "the criterion's row draws no tag of its kind").toBe(
+      NODE_TYPE_NAMES.criterion
+    );
+    expect([...(dot?.classList ?? [])], "the criterion's bullet").toContain(
+      pageKindBullet.statement
+    );
+    expect([...(tag?.classList ?? [])], "the criterion's tag").toContain(pageKindTag.statement);
+    expect([...(dot?.classList ?? [])], "the criterion's bullet").not.toContain(
+      pageKindBullet.person
+    );
+    expect([...(tag?.classList ?? [])], "the criterion's tag").not.toContain(pageKindTag.person);
+  } finally {
+    view.unmount();
+  }
 });
 
 // Decision 246: a `requirement` block is a statement only in the issue's spec (`isStatement`).
@@ -1720,6 +1738,24 @@ test("a plan task nobody asked for says so, in words", () => {
     chip: "No reason given",
     line: "This task names no statement it serves and nothing a person asked for.",
   });
+});
+
+// R10: a statement no plan task serves, once the issue holds a plan task, says so on its row in
+// the gap's few words, marked with its kind, and in its sentence in its body.
+test("a statement no plan task serves draws the gap's words, marked with its kind", () => {
+  const gaps: GapKind[] = ["no_plan_task"];
+  const statement = node({ gaps, id: "spec#b-r1", statement: true, type: "requirement" });
+  const view = renderRow(statement);
+  try {
+    const gap = view.container.querySelector("[data-gap]");
+    expect([gap?.getAttribute("data-gap-kind"), gap?.textContent]).toEqual([
+      "no_plan_task",
+      "No plan task",
+    ]);
+  } finally {
+    view.unmount();
+  }
+  expect(drawnGap(statement).line).toBe("No plan task serves this statement.");
 });
 
 // While a document of the issue is still being indexed no statement is drawn as lacking a check:

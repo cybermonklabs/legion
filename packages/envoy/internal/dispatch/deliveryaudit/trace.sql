@@ -104,7 +104,7 @@ cross join lateral (
 
 -- thread: the thread the comment is in, oldest first - the ask and every reply under it for an ask
 -- thread, else the root comment and every reply to it. The ask's state is the one its node holds,
--- as every read of an ask shows it (api's askNodeStateOf): the answer_state value that stands on
+-- as every read of an ask shows it (asks.NodeStateOf): the answer_state value that stands on
 -- the node where the row names one, open where the node holds none, and the row's own state where
 -- the row names no node.
 with this as (

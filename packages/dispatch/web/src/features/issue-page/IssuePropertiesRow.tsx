@@ -2,7 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  projectsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -39,7 +44,7 @@ import { treeRead } from "./spec-filter/tree-read";
 import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueAskThreadsQuery, issueCommentsQuery } from "./useIssueTree";
+import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**

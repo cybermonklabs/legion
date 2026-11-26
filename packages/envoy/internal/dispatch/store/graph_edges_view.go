@@ -61,11 +61,27 @@ const (
 	// node's supertag once the fleet and the store allow it
 	// (graphcensus.RunTypedBlockSupertagsStep), which no statement of the view moves.
 	GraphEdgesBlockNodeListed
+	// GraphEdgesFourArmsDeleted is the set the boot step that deletes the four arms the graph-store
+	// spec moved states (graphcensus.RunViewArmsStep), and no migration states: it is
+	// GraphEdgesBlockNodeListed without the arm over document_blocks (a block's part_of its
+	// document), the arm over block_refs (a block's links) and the two arms over comments
+	// (anchored_to and owned_by), and without the tuple arm's join to those three tables. The tuple
+	// arm then answers a block's in_document, a block's link of a kind block_refs projects
+	// (BlockLinkKindsSQL) and a comment's anchored_to and owned_by from the tuples alone, so no
+	// row of the three tables decides an edge. The step states it only where every row of those
+	// tables carries its node and the store's census of their kinds reads no difference, so a
+	// database that holds a row of them naming no node when the step runs keeps
+	// GraphEdgesBlockNodeListed. A row written after the step that names no node, which only an
+	// address past the store's bound (graphstore.MaxAddressBytes) still makes, is answered by no arm
+	// of this set; the store census counts it as addresses_past_bound. The arms over asks,
+	// ask_followers, issues, issue_links, artifacts, components, component_depends,
+	// issue_component_members and refs stand as GraphEdgesBlockNodeListed has them.
+	GraphEdgesFourArmsDeleted
 )
 
-// GraphEdgesView is the statement that states graph_edges with the arms of set arms. A set no
-// migration states is the caller's mistake, and it panics naming it rather than stating a view
-// nobody declared.
+// GraphEdgesView is the statement that states graph_edges with the arms of set arms. A set that
+// neither a migration nor the boot step of GraphEdgesFourArmsDeleted states is the caller's mistake,
+// and it panics naming it rather than stating a view nobody declared.
 //
 // Every arm over a projected table that a writer of the store now writes answers only the rows of
 // that table that name no node (`node_kind is null`), and the store answers the rest: the tuple
@@ -110,6 +126,16 @@ const (
 // both columns the test reads, the tuple's from_kind and kind, are columns of the `distinct on`
 // key, so it keeps or drops a whole group and never changes which tuple of a kept group is the
 // newest, and a read keyed on one end of an edge sorts only that node's tuples of those kinds.
+//
+// From GraphEdgesFourArmsDeleted on, the view holds no arm over document_blocks, block_refs or
+// comments' anchored_to and owned_by, and the tuple arm joins none of those tables: a block's
+// in_document and a comment's anchored_to and owned_by are answered by their tuples while the
+// node they come from stands, and a block's link by its tuple of a kind a block_refs row projects
+// (BlockLinkKindsSQL), the one test that replaces the join to the row of the link. Without that test
+// the arm would answer every tuple out of a block - its text_parent, its authored_by, its kept_by -
+// as a link, none of which a block_refs row ever held. The step that states this set proves, before
+// it does, that every row of the three tables names its node, so the arms it drops answer nothing
+// then; a row written after it that names no node, past the store's address bound, has no edge.
 func GraphEdgesView(arms GraphEdgesArms) string {
 	components, stated := componentArms[arms]
 	if !stated {
@@ -134,8 +160,12 @@ func GraphEdgesView(arms GraphEdgesArms) string {
 	if arms >= GraphEdgesBlockNodeListed {
 		pointers = graphEdgesPointersByNode
 	}
-	return graphEdgesCreate + references + graphEdgesHead + components + graphEdgesBlocks + nodeColumn + graphEdgesTupleKinds +
-		projects + graphEdgesProjectsEnd + tuples + newest + nodes + tested + pointers + graphEdgesProbes + probes + graphEdgesTail
+	head, blocks, probesHead, tail := graphEdgesHead, graphEdgesBlocks, graphEdgesProbes, graphEdgesTail
+	if arms >= GraphEdgesFourArmsDeleted {
+		head, blocks, probesHead, tail = graphEdgesHeadWithoutComments, graphEdgesBlocksWithoutRows, graphEdgesProbesWithoutRows, graphEdgesTailWithoutRows
+	}
+	return graphEdgesCreate + references + head + components + blocks + nodeColumn + graphEdgesTupleKinds +
+		projects + graphEdgesProjectsEnd + tuples + newest + nodes + tested + pointers + probesHead + probes + tail
 }
 
 // tupleArmFilter is the tuple arm's test that a tuple's `projects` is not null, spelled over the
@@ -233,6 +263,9 @@ var componentArms = map[GraphEdgesArms]string{
 	GraphEdgesArtifactRefs:    unmarkedComponentArms,
 	GraphEdgesTupleArmFilter:  unmarkedComponentArms,
 	GraphEdgesBlockNodeListed: unmarkedComponentArms,
+	// kept as GraphEdgesBlockNodeListed has them: the three arms over a component's relations are
+	// the root's to delete.
+	GraphEdgesFourArmsDeleted: unmarkedComponentArms,
 }
 
 // unmarkedComponentArms are the arms over a component's three relations over the rows no writer
@@ -324,8 +357,17 @@ const artifactRefsArm = `  select r.from_kind, r.from_id, r.kind, r.to_kind, r.t
 `
 
 // graphEdgesHead is the view from the arm over refs to the arms over a component's relations,
-// which every set states as GraphEdgesView has them.
-const graphEdgesHead = `  union all
+// which every set before GraphEdgesFourArmsDeleted states as GraphEdgesView has them, and
+// graphEdgesHeadWithoutComments the same without the two arms over comments' anchored_to and
+// owned_by, which GraphEdgesFourArmsDeleted on does.
+const graphEdgesHead = graphEdgesHeadToCommentAnchoredTo + commentAnchoredToArm + graphEdgesHeadToCommentOwnedBy +
+	commentOwnedByArm + graphEdgesHeadRest
+
+const graphEdgesHeadWithoutComments = graphEdgesHeadToCommentAnchoredTo + graphEdgesHeadToCommentOwnedBy + graphEdgesHeadRest
+
+// graphEdgesHeadToCommentAnchoredTo is the head from the arm over refs's union to the arm over an
+// ask's anchored_to, which stands in every set.
+const graphEdgesHeadToCommentAnchoredTo = `  union all
   select 'issue', i.key, 'child_of', 'issue', i.parent_key, i.created_at, null
   from issues i
   where i.parent_key is not null
@@ -354,19 +396,34 @@ const graphEdgesHead = `  union all
   select 'ask', k.id::text, 'anchored_to', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
   where k.node_kind is null
-  union all
+`
+
+// commentAnchoredToArm is the arm over comments' anchored_to, over the rows that name no node: the
+// first of the four arms GraphEdgesFourArmsDeleted drops.
+const commentAnchoredToArm = `  union all
   select 'comment', c.id::text, 'anchored_to', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid
   where c.node_kind is null
-  union all
+`
+
+// graphEdgesHeadToCommentOwnedBy is the arm over an ask's owned_by, which stands in every set.
+const graphEdgesHeadToCommentOwnedBy = `  union all
   select 'ask', k.id::text, 'owned_by', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = k.artifact_id
   where k.node_kind is null
-  union all
+`
+
+// commentOwnedByArm is the arm over comments' owned_by, over the rows that name no node: the
+// second of the four arms GraphEdgesFourArmsDeleted drops.
+const commentOwnedByArm = `  union all
   select 'comment', c.id::text, 'owned_by', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = c.artifact_id
   where c.node_kind is null
-  union all
+`
+
+// graphEdgesHeadRest is the head from the arms over a reply to the end of the arms over asks'
+// followers, which stands in every set.
+const graphEdgesHeadRest = `  union all
   select 'comment', id::text, 'replies_to', 'comment', reply_to::text, created_at, null
   from comments where reply_to is not null
   union all
@@ -386,18 +443,36 @@ const graphEdgesHead = `  union all
 `
 
 // graphEdgesBlocks is the view from the arms over a block's links to the tuple arm's class of an
-// issue's wait, the last class every set states.
-const graphEdgesBlocks = `  union all
-  select 'block', from_node, kind, to_kind, to_id, created_at, source_seq
+// issue's wait, the last class every set before GraphEdgesFourArmsDeleted states, and
+// graphEdgesBlocksWithoutRows the same without the arm over block_refs and the arm over
+// document_blocks, which GraphEdgesFourArmsDeleted on does.
+const graphEdgesBlocks = graphEdgesBlocksHead + blockRefsArm + documentBlocksArm + graphEdgesBlocksRest
+
+const graphEdgesBlocksWithoutRows = graphEdgesBlocksHead + graphEdgesBlocksRest
+
+const graphEdgesBlocksHead = `  union all
+`
+
+// blockRefsArm is the arm over block_refs, over the rows that name no node: the third of the four
+// arms GraphEdgesFourArmsDeleted drops. It lists a pointer's row only while block_ref_listed holds.
+const blockRefsArm = `  select 'block', from_node, kind, to_kind, to_id, created_at, source_seq
   from block_refs
   where (to_types is null or block_ref_listed(to_types, to_id))
     and node_kind is null
   union all
-  select 'block', d.node_id, 'part_of', 'artifact', a.ref_key, d.created_at, null
+`
+
+// documentBlocksArm is the arm over document_blocks, over the rows that name no node: the fourth
+// of the four arms GraphEdgesFourArmsDeleted drops.
+const documentBlocksArm = `  select 'block', d.node_id, 'part_of', 'artifact', a.ref_key, d.created_at, null
   from document_blocks d join artifacts a on a.id = d.artifact_id
   where d.node_kind is null
   union all
-  select 'comment_block', b.node_id, 'part_of', 'comment', b.comment_id::text, b.created_at, null
+`
+
+// graphEdgesBlocksRest is the arms over the blocks of a comment, a message and an ask, which stand
+// in every set, to the head of the tuple arm.
+const graphEdgesBlocksRest = `  select 'comment_block', b.node_id, 'part_of', 'comment', b.comment_id::text, b.created_at, null
   from comment_blocks b where b.position is not null
   union all
   select 'message_block', b.node_id, 'part_of', 'message', b.message_id::text, b.created_at, null
@@ -589,14 +664,34 @@ const (
 )
 
 // graphEdgesProbes is the tuple arm from its test that a pointer is listed to the probe of an
-// issue's wait, the last probe every set states before a set's own.
-const graphEdgesProbes = `    and case edge.projects
+// issue's wait, the last probe every set states before a set's own, with the probe of a block's row
+// in every set before GraphEdgesFourArmsDeleted, and graphEdgesProbesWithoutRows the same with that
+// probe answering true for the class `block`, as GraphEdgesFourArmsDeleted on does: the tuple of a
+// block's in_document is answered while the block's node stands, which the join to the node and
+// the test of its state have made already.
+const graphEdgesProbes = graphEdgesProbesOpen + documentBlocksProbe + graphEdgesProbesIssues
+
+const graphEdgesProbesWithoutRows = graphEdgesProbesOpen + documentBlocksRowless + graphEdgesProbesIssues
+
+// graphEdgesProbesOpen opens the case that tests an edge by the class of its tuple.
+const graphEdgesProbesOpen = `    and case edge.projects
           when 'store' then true
-          when 'block' then exists (
+`
+
+// documentBlocksProbe is the class `block`'s test of its projection row, the document_blocks row
+// of the block that names its node.
+const documentBlocksProbe = `          when 'block' then exists (
             select 1 from document_blocks projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
             offset 0)
-          when 'issue_parent' then exists (
+`
+
+// documentBlocksRowless is the class `block`'s test from GraphEdgesFourArmsDeleted on: none.
+const documentBlocksRowless = `          when 'block' then true
+`
+
+// graphEdgesProbesIssues is the probes of an issue's parent and of an issue's wait.
+const graphEdgesProbesIssues = `          when 'issue_parent' then exists (
             select 1 from issues projected
             where projected.key = edge.from_id and projected.node_kind = edge.from_kind
               and projected.node_address = edge.from_id and projected.parent_key = edge.to_id
@@ -610,18 +705,61 @@ const graphEdgesProbes = `    and case edge.projects
 `
 
 // graphEdgesTail is the view after the probes of the tuple arm's classes of a set's own, from the
-// probe of a block's link on.
-const graphEdgesTail = `          when 'block_ref' then exists (
+// probe of a block's link on, with the probes of the block_refs row of a link and the comments row
+// of a comment in every set before GraphEdgesFourArmsDeleted, and graphEdgesTailWithoutRows the
+// same with neither: from that set on a block's link is answered while its kind is one a block_refs
+// row projects (BlockLinkKindsSQL), and a comment's anchored_to and owned_by while its node stands.
+const graphEdgesTail = blockRefsProbe + commentsProbe + graphEdgesTailRest
+
+const graphEdgesTailWithoutRows = blockLinksProbe + commentsRowless + graphEdgesTailRest
+
+// blockRefsProbe is the class `block_ref`'s test of its projection row, the block_refs row of the
+// block, kind and far end of the link.
+const blockRefsProbe = `          when 'block_ref' then exists (
             select 1 from block_refs projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
               and projected.kind = edge.stated and projected.to_kind = edge.to_kind
               and projected.to_id = edge.to_id
             offset 0)
-          when 'comment' then exists (
+`
+
+// commentsProbe is the class `comment`'s test of its projection row, the comments row that names
+// the comment's node.
+const commentsProbe = `          when 'comment' then exists (
             select 1 from comments projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
             offset 0)
-          when 'ask' then exists (
+`
+
+// BlockLinkKindsSQL is the select of every kind of link out of a block that a block_refs row
+// projects, one row each, which the class `block_ref` answers from GraphEdgesFourArmsDeleted on in
+// place of its join to a block_refs row: the tuples out of a block of any other kind - text_parent,
+// authored_by, kept_by, moved_to - are no link of the view, as no row of block_refs ever named one.
+// It is a mention, the name of every `block[]` attribute the store's type nodes declare at any
+// state (refs.BlockRefKindsSQL's own select) and a decision's three ties, shaped, from_ask and
+// decided_by (refs' typedKinds), so refs.BacklinkCounts, which reads a block's links as the view
+// does, takes the same select. The attribute's kind is pmdoc.BlockAttributeBlockList, written out
+// as text since this package imports no part of pmdoc. The select names no column of the tuple, so
+// Postgres reads it once for the statement.
+const BlockLinkKindsSQL = `select 'mentions'
+          union select 'shaped'
+          union select 'from_ask'
+          union select 'decided_by'
+          union select attribute.attributes->>'name' from graph_nodes attribute
+          where attribute.kind = 'attribute' and attribute.attributes->>'kind' = 'block[]'`
+
+// blockLinksProbe is the class `block_ref`'s test from GraphEdgesFourArmsDeleted on: the kind of
+// the tuple is one a block_refs row projects. The class holds a block's tuples of any kind but
+// its part_of and an ask's shaped, and a pointer's target is listed by the test that follows it.
+const blockLinksProbe = `          when 'block_ref' then (edge.stated in (` + BlockLinkKindsSQL + `))
+`
+
+// commentsRowless is the class `comment`'s test from GraphEdgesFourArmsDeleted on: none.
+const commentsRowless = `          when 'comment' then true
+`
+
+// graphEdgesTailRest is the view from the probe of an ask to its end, which stands in every set.
+const graphEdgesTailRest = `          when 'ask' then exists (
             select 1 from asks projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
             offset 0)

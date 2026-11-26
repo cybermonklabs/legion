@@ -42,14 +42,19 @@ type graphEdgesArm struct {
 	text     string
 }
 
-// movedArmsDeletedBy is the child that deletes the four arms over the kinds the child that built
-// the node store moved, once the store answers those kinds everywhere.
-const movedArmsDeletedBy = "the child that moves issues and their documents"
+// movedArmsDeletedBy is the fate of the four arms over the kinds the child that built the node
+// store moved - a block's part_of its document and its links, and a comment's anchored_to and
+// owned_by - with the tuple arm's joins to the three tables they read: the boot step of this
+// branch (graphcensus.RunViewArmsStep) deletes them, once every row of those tables names its node
+// and the newest announcement of another build lists their kinds.
+const movedArmsDeletedBy = "deleted by INFRA-1253's boot step"
 
-// askArmsDeletedBy is the pull request that deletes the three arms over the kinds this change
-// moved - an ask's anchored_to and owned_by over asks, and followed_by over ask_followers - with
-// the tuple arm's joins to those two tables.
-const askArmsDeletedBy = "the root's own pull request"
+// askArmsDeletedBy is the fate of every other arm the view holds over a column of a table: the
+// pull request at the root of the tree deletes them, the three over the kinds an earlier change
+// moved - an ask's anchored_to and owned_by over asks, and followed_by over ask_followers, with the
+// tuple arm's joins to those two tables - and the arms over an issue's parent and wait, a document's
+// attachment and a component's three relations, and the rows of the arm over refs a document makes.
+const askArmsDeletedBy = "deleted by INFRA-1098"
 
 // graphEdgesArms is every arm of graph_edges, in the order the view states them. An arm the view
 // gains or loses fails this test, whichever source column it reads: the store is to answer each
@@ -57,25 +62,25 @@ const askArmsDeletedBy = "the root's own pull request"
 // twice. The fate of each is printed with the list, so a reader sees which arms are left and who
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
-	{relation: "refs", fate: "a mention of any node from an item, and a document's while its row names no node or its far end is past the store's bound; the store answers a document's other mentions; no child has moved the rest"},
-	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "artifacts", fate: "attached_to over the rows that name no node; " + askArmsDeletedBy + " deletes this arm"},
+	{relation: "refs", fate: "a mention of any node from an item, and a document's while its row names no node or its far end is past the store's bound (the rows from an artifact: " + askArmsDeletedBy + "); the store answers a document's other mentions; no child has moved the rest"},
+	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
+	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs; " + askArmsDeletedBy},
+	{relation: "artifacts", fate: "attached_to over the rows that name no node; " + askArmsDeletedBy},
 	{relation: "artifacts", fate: "attached_to of the artifacts that carry their node, from each one's part_of tuple; it stays"},
-	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node; " + askArmsDeletedBy},
+	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node; " + movedArmsDeletedBy},
+	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node; " + askArmsDeletedBy},
+	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node; " + movedArmsDeletedBy},
 	{relation: "comments", fate: "a reply's replies_to its thread; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "comments", fate: "a reply's answers; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "messages", fate: "a message's replies_to; the child that moves the inbox, the messages and the read state writes it"},
-	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "components", fate: "a component's part_of over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "component_depends", fate: "depends_on over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "issue_component_members", fate: "affects over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node; " + askArmsDeletedBy},
+	{relation: "components", fate: "a component's part_of over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
+	{relation: "component_depends", fate: "depends_on over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
+	{relation: "issue_component_members", fate: "affects over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
+	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node; " + movedArmsDeletedBy},
+	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node; " + movedArmsDeletedBy},
 	{relation: "comment_blocks", fate: "a comment block's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},
 	{relation: "message_blocks", fate: "a message block's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},
 	{relation: "ask_blocks", fate: "an ask part's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},

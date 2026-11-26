@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"slices"
@@ -13,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -518,17 +522,51 @@ func insertNearCopyIssue(
 }
 
 // insertNearCopySpec adds one later version of an issue's primary document, as the server's own
-// write does; the document_search trigger keeps the latest version's vector.
+// write does, and in the same transaction the document's search row at that version
+// (writeStagedDocumentRows), which the gate scores the spec from.
 func insertNearCopySpec(t *testing.T, ctx context.Context, database *store.Store, key string, version nearCopyVersion) {
 	t.Helper()
-	execNearCopy(t, ctx, database, `
-		insert into artifact_versions (artifact_id, number, markdown, authors, created_at, doc_update_version)
-		select a.id, $2, $3, (select authors from artifact_versions where artifact_id = a.id and number = 1), $4,
-		       coalesce((select max(version) from doc_updates where artifact_id = a.id), 0)
-		  from artifacts a
-		 where a.issue_key = $1 and a.is_primary
-		on conflict (artifact_id, number) do update set markdown = excluded.markdown
-	`, key, version.Number, version.Markdown, version.CreatedAt)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors, created_at, doc_update_version)
+			select a.id, $2, $3, (select authors from artifact_versions where artifact_id = a.id and number = 1), $4,
+			       coalesce((select max(version) from doc_updates where artifact_id = a.id), 0)
+			  from artifacts a
+			 where a.issue_key = $1 and a.is_primary
+			on conflict (artifact_id, number) do update set markdown = excluded.markdown
+		`, key, version.Number, version.Markdown, version.CreatedAt); err != nil {
+			return err
+		}
+		return writeStagedDocumentRows(ctx, tx, key)
+	}); err != nil {
+		t.Fatalf("add version %d of %s's spec: %v", version.Number, key, err)
+	}
+}
+
+// writeStagedDocumentRows writes, in tx, the node_search document row of the primary document of
+// each issue of issueKeys as the versions tx holds state it, through the projection's own writer
+// (graphstore.QueueDocumentSearch, the statement the backfill's document pass runs). The
+// related-item check and the near-copy gate rank a document from that row (R17 of the issue-tree
+// spec), and a server's own version write keeps it through the head write of the nodes it states.
+// A fixture that stages a version by SQL states no node, so it calls this after the statements that
+// move a version's markdown or its vector. The fixture is its database's only writer, so it takes
+// none of the locks the backfill takes before the same statement (graphcensus'
+// writeDocumentSearchBatch).
+func writeStagedDocumentRows(ctx context.Context, tx pgx.Tx, issueKeys ...string) error {
+	rows, err := tx.Query(ctx, `
+		select ref_key from artifacts where issue_key = any($1::text[]) and is_primary order by ref_key
+	`, issueKeys)
+	if err != nil {
+		return fmt.Errorf("read the primary documents of %v: %w", issueKeys, err)
+	}
+	refKeys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the primary documents of %v: %w", issueKeys, err)
+	}
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueDocumentSearch(b, refKeys, nil)
+		return nil
+	})
 }
 
 func nearCopyNumber(t *testing.T, key string) int {

@@ -458,9 +458,10 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // no read of the tables answers for them. A `#id` naming a block of the very version being
 // written, or one whose ask the same transaction opens - settlement makes the ask of every new
 // question block of an edit in one transaction - resolves to the ask it will name once the write
-// phase has run. An ask of a block of an issue room is queued under the room's key, its
-// block_artifact_id, so the asks queued under the room doc is edited in are read beside doc's own
-// (pendingQuestionAsks).
+// phase has run, and so does a copy whose opening line in that version names its source: the
+// line comes before its node's copied_from tuple, which the same write phase claims after. An ask
+// of a block of an issue room is queued under the room's key, its block_artifact_id, so the asks
+// queued under the room doc is edited in are read beside doc's own (pendingQuestionAsks).
 //
 // It answers for who. A document who may not see has no question, as one no row holds has none,
 // so not even its block ids are answered, and an ask who may not see is no question of it, nor is
@@ -545,26 +546,39 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	}
 	copiedBy := map[string][]string{}
 	sources := []string{}
-	var unowned []string
+	// A copy names its source on its block node's copied_from tuple, which settlement states once
+	// the version's blocks are indexed (docs' claimCopies), and on its opening line, which every
+	// version this build writes keeps in step with that tuple (docs' keptAskState). A version this
+	// transaction has queued is read before its own claim is written, so where it names a source
+	// on the line, that line is the newer of the two, and the tuple is read only for a copy whose
+	// line names none (unread). A stored version's line may be one the release before wrote, so
+	// there the tuple is read first.
+	var unowned, unread []string
 	for _, block := range blocks {
-		if _, own := questions[block.id]; !own {
-			unowned = append(unowned, block.id)
+		if _, own := questions[block.id]; own {
+			continue
+		}
+		unowned = append(unowned, block.id)
+		if !queued || block.copiedFrom == "" {
+			unread = append(unread, block.id)
 		}
 	}
 	if len(unowned) == 0 {
 		return questions, nil
 	}
-	stated, err := copiedFromTuples(ctx, q, doc, unowned)
-	if err != nil {
-		return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
+	var stated map[string]BlockCopiedFrom
+	if len(unread) > 0 {
+		if stated, err = copiedFromTuples(ctx, q, doc, unread); err != nil {
+			return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
+		}
 	}
 	for _, block := range blocks {
 		if _, own := questions[block.id]; own {
 			continue
 		}
-		source, held := stated[block.id]
-		if !held {
-			source = block.copiedFrom
+		source := block.copiedFrom
+		if copied, held := stated[block.id]; held {
+			source = copied.Ask
 		}
 		if source == "" {
 			continue
@@ -624,33 +638,63 @@ func pendingQuestionAsks(ctx context.Context, q Queryer, pending Pending, doc st
 	return asks, nil
 }
 
-// copiedFromTuples is, for each of blocks, block ids of document doc, whose block node the
-// document's block index holds (document_blocks), the ask that node's copied_from tuple names as it
-// stands now (graphstore.TupleCopiedFrom, graphstore.CurrentTupleRead), keyed by block id. A node
-// that holds no standing copied_from is absent, so a version the release before wrote, whose copy
-// no settlement of this build has claimed, is read from its line instead (questionMap).
-func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []string) (map[string]string, error) {
+// BlockCopiedFrom is the copied_from a block's node holds as it stands now: the node the
+// document's block index names for the block (document_blocks.node_address), and the ask that
+// node's copied_from tuple names.
+type BlockCopiedFrom struct {
+	Node, Ask string
+}
+
+// copiedFromTuples is, for each of blocks, block ids of document doc, whose block node the block
+// index of the room doc is edited in holds (DocumentRoomSQL: doc itself, or the tree artifact of
+// the issue room that keys the rows of every fragment's blocks, whose ids are unique across the
+// room), the copied_from that node holds as it stands now (readCopiedFrom), keyed by block id. A
+// node that holds no standing copied_from is absent, so a version the release before wrote, whose
+// copy no settlement of this build has claimed, is read from its line instead (questionMap).
+func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []string) (map[string]BlockCopiedFrom, error) {
+	return readCopiedFrom(ctx, q, doc, DocumentRoomSQL("$1::uuid"), ` and d.block_id = any($2::text[])`, blocks)
+}
+
+// DocumentCopiedFrom is copiedFromTuples for every block of the room doc, a document that is its
+// own room or an issue room's tree artifact, whose row in the room's block index names a node,
+// whatever the block's type now: the copied_from each such node holds as it stands now, keyed by
+// block id, with the node the row names. Settlement reads it once, in its read phase, before its
+// own block index is written, to retract the copied_from of each block that is no longer an ask
+// block (docs' claimCopies): one a person retyped, or one the settlement's version drops, whose
+// row and node the read still names. A block of a retired document of an issue room is left out:
+// its fragment left the room, so no settlement claims it, and every pass over the room keeps its
+// row and its node as the retirement left them (BlockIndexing.retained).
+func DocumentCopiedFrom(ctx context.Context, q Queryer, doc string) (map[string]BlockCopiedFrom, error) {
+	return readCopiedFrom(ctx, q, doc, "$1::uuid", ` and not `+retiredDocumentSQL(graphstore.RoomBlockRowSQL("d.artifact_id", "d.block_id")))
+}
+
+// readCopiedFrom is the one read of copiedFromTuples and DocumentCopiedFrom: each document_blocks
+// row d keyed by keyed, the artifact SQL over doc at $1, that names a node, cut by narrow, a
+// further condition on d that binds args from $2 on, with the node it names and the ask that
+// node's newest copied_from tuple names while that tuple asserts (graphstore.TupleCopiedFrom,
+// graphstore.CurrentTupleRead), keyed by block id.
+func readCopiedFrom(ctx context.Context, q Queryer, doc, keyed, narrow string, args ...any) (map[string]BlockCopiedFrom, error) {
 	rows, err := q.Query(ctx, `
-		select d.block_id, c.to_id
+		select d.block_id, d.node_address, c.to_id
 		from document_blocks d
 		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
 		`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
 			  and t.to_kind = '`+graphstore.KindAsk+`'`)+`
 		) c
-		where d.artifact_id = $1::uuid and d.block_id = any($2::text[]) and d.node_address is not null and c.asserted
-	`, doc, blocks)
+		where d.artifact_id = `+keyed+` and d.node_address is not null and c.asserted`+narrow+`
+	`, append([]any{doc}, args...)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	stated := map[string]string{}
+	stated := map[string]BlockCopiedFrom{}
 	for rows.Next() {
-		var block, ask string
-		if err := rows.Scan(&block, &ask); err != nil {
+		var block, node, ask string
+		if err := rows.Scan(&block, &node, &ask); err != nil {
 			return nil, err
 		}
 		if parsed, err := uuid.Parse(ask); err == nil {
-			stated[block] = parsed.String()
+			stated[block] = BlockCopiedFrom{Node: node, Ask: parsed.String()}
 		}
 	}
 	return stated, rows.Err()

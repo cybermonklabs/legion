@@ -272,6 +272,12 @@ func settleVersionAsThePreviousRelease(t *testing.T, tx pgx.Tx, artifactID, mark
 // indexed and the document's blocks standing at it. It is what that release's request path runs
 // for its own version (indexAsThePreviousRelease) and what its block-index reconciliation runs
 // for a version some build left owed, which its pod may reach first during a roll.
+//
+// blocks is this build's render, which holds a block of each list item: R7 of the issue-tree spec
+// nests a moved block under a list item, so this build's renderer records each list item's offset
+// (renderer.list in pmdoc/render.go) and its pass gives the item a node. That release's renderer
+// records none, so its render holds no list item: the pass writes no row of one, and deletes a row
+// of one that this build wrote, as it deletes the row of any block its render drops.
 func indexVersionAsThePreviousRelease(t *testing.T, tx pgx.Tx, artifactID string, version int, versionAt time.Time, eventID int64, markdown string, blocks []model.ArtifactBlock, dropped, added []blockLinkRow) {
 	t.Helper()
 	ctx := context.Background()
@@ -292,7 +298,7 @@ func indexVersionAsThePreviousRelease(t *testing.T, tx pgx.Tx, artifactID string
 	}
 	seen := map[string]bool{}
 	for _, block := range blocks {
-		if seen[block.ID] {
+		if block.Type == "list_item" || seen[block.ID] {
 			continue
 		}
 		seen[block.ID] = true

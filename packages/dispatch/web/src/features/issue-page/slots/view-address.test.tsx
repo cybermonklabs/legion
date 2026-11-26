@@ -85,6 +85,20 @@ function verifiedIssue(): IssueDetails {
     artifacts: [...(issue.artifacts ?? []), PLAN_DOCUMENT, VERIFICATION_DOCUMENT],
     plan_artifact_id: PLAN_DOCUMENT.id,
     verification_artifact_id: VERIFICATION_DOCUMENT.id,
+    queries: [
+      {
+        query: "verification",
+        artifact_id: VERIFICATION_DOCUMENT.id,
+        takes: ["check", "result"],
+        subtree: `issue:${KEY}`,
+      },
+      {
+        query: "plan",
+        artifact_id: PLAN_DOCUMENT.id,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${KEY}`,
+      },
+    ],
   };
 }
 
@@ -164,7 +178,7 @@ function answerVerificationReads(): void {
   });
   answerVerifiedTree();
   spyOn(api, "getIssueResults").mockResolvedValue({
-    checks: [check({ block_id: CHECK })],
+    checks: [check({ block_id: CHECK, artifact_id: VERIFICATION_DOCUMENT.id })],
     issue: KEY,
     verification_artifact_id: VERIFICATION_DOCUMENT.id,
   });
@@ -976,7 +990,9 @@ test("with a chip pressed, a check the chip leaves out, named on a new address u
   answerVerificationReads();
   answerVerifiedTree([treeNode(LOOSE_CHECK, "check", KEY, inDocument(VERIFICATION_DOCUMENT, 1))]);
   spyOn(api, "getIssueResults").mockResolvedValue({
-    checks: [check({ block_id: CHECK }), check({ block_id: LOOSE_CHECK })],
+    checks: [CHECK, LOOSE_CHECK].map((block_id) =>
+      check({ block_id, artifact_id: VERIFICATION_DOCUMENT.id })
+    ),
     issue: KEY,
     verification_artifact_id: VERIFICATION_DOCUMENT.id,
   });

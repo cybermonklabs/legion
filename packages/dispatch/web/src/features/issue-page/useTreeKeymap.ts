@@ -60,7 +60,7 @@ export interface TreeKeyboard {
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
   readonly holdsEscape: boolean;
-  /** What `z` does: in the outline, unfolds every node the reader folded (R11); a view that
+  /** What `z` does: in the outline, unfolds every row the reader folded (R11); a view that
    *  draws more or less of itself by the key - the Decisions view's foot - draws it so. */
   readonly onCycle: () => void;
   /** Puts the caret in one node's own text, in the row the key was pressed on. */
@@ -68,8 +68,9 @@ export interface TreeKeyboard {
   /** Says the caret has left a node's text, so the row gives the document back and takes the
    *  focus back. */
   readonly onEditEnd: () => void;
-  /** Opens or closes one branch. */
-  readonly onFold: (id: string, open: boolean) => void;
+  /** Opens or closes one row's branch, the row named by its key (`rowKeyOf`): a node drawn under
+   *  two parents is two rows, and the key folds the one it was pressed on. */
+  readonly onFold: (row: string, open: boolean) => void;
   /** Reads the read's next page, as the control after the last row does, and puts the focus on
    *  the first row it drew: what `j` and Down on the last row do while that control is drawn and
    *  no row that pages a node's children follows that row. Undefined where it is not drawn. */
@@ -287,16 +288,29 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   /** What `f` steps through on the focused row: first the chips - the edges the row names, each
    *  a target of its own - then the links its words hold, which the row draws above its chips
    *  (`NodeRow.tsx`), then each other control of the row that no key here presses
-   *  (`pressedByAKey`). None of them is in the tab order, the tree being one tab stop, so this
-   *  key is how a reader reaches one; Enter on a link the key left the focus on follows it, and
-   *  Enter or Space on a button presses it. */
+   *  (`pressedByAKey`). Each kind is taken in the order the row reads in: its words and what it
+   *  draws under them, then its margin - the kind's tag, a child's key - which the row holds
+   *  first in the DOM so that on a phone it floats beside the words' first line. None of them is
+   *  in the tab order, the tree being one tab stop, so this key is how a reader reaches one;
+   *  Enter on a link the key left the focus on follows it, and Enter or Space on a button
+   *  presses it. */
   const rowStops = (): HTMLElement[] => {
     const row = rowElement();
     if (row === null) return [];
-    const chips = [...row.querySelectorAll<HTMLElement>("[data-node-chip] a[href]")];
-    const rest = [...row.querySelectorAll<HTMLElement>("a[href]")];
-    const controls = [...row.querySelectorAll<HTMLButtonElement>("button")].filter(
-      (control) => control.tabIndex < 0 && !control.disabled && !pressedByAKey(control)
+    const margin = row.querySelector("[data-node-margin]");
+    const inReadingOrder = <T extends HTMLElement>(found: Iterable<T>): T[] => {
+      const read: T[] = [];
+      const last: T[] = [];
+      for (const stop of found) (margin?.contains(stop) === true ? last : read).push(stop);
+      read.push(...last);
+      return read;
+    };
+    const chips = inReadingOrder(row.querySelectorAll<HTMLElement>("[data-node-chip] a[href]"));
+    const rest = inReadingOrder(row.querySelectorAll<HTMLElement>("a[href]"));
+    const controls = inReadingOrder(
+      [...row.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (control) => control.tabIndex < 0 && !control.disabled && !pressedByAKey(control)
+      )
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
   };
@@ -434,7 +448,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           return;
         }
         if (row.expanded === false) {
-          tree.onFold(row.node.id, true);
+          tree.onFold(rowKeyOf(row), true);
           return;
         }
         // Every level is drawn, so an open row's first child is the row below it.
@@ -460,7 +474,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           return;
         }
         if (row.expanded === true) {
-          tree.onFold(row.node.id, false);
+          tree.onFold(rowKeyOf(row), false);
           return;
         }
         for (let above = on - 1; above >= 0; above -= 1) {
@@ -505,7 +519,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           tree.onReport(KEY_REPORTS.already_zoomed);
           return;
         }
-        tree.onFold(row.node.id, row.expanded === false);
+        tree.onFold(rowKeyOf(row), row.expanded === false);
       },
       when: () => at(drawn().elements) !== -1,
     },

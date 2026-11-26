@@ -1,5 +1,6 @@
 import {
   type ComponentProps,
+  Fragment,
   memo,
   type ReactNode,
   useCallback,
@@ -38,25 +39,29 @@ import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
+import { ChildIssueTag } from "../IssueChildren";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
 import { isOvertaken } from "../issue-address";
-import { chipName, heldBy, type NodeChip, type TreeNode } from "../issue-tree";
+import { chipName, heldBy, type NodeChip, type NodeFact, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { lineOrKindWord, useNodeLine } from "../node-line";
 import { NodeMarks } from "../node-states/NodeMarks";
 import type { FailedRead, OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, PLAN_WORDS, PRESET_NAMES, STATE_LINES } from "../page-words";
+import { nodeReading } from "../presets";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
 import {
   needsChip,
+  type PlanAxis,
   type PlanBar,
   type PlanChartRow,
   type PlanCycle,
   type PlanEntry,
   planChart,
   planOrder,
+  sizeWords,
   taskDocumentIds,
   writtenOrder,
 } from "./plan-order";
@@ -122,21 +127,28 @@ export type PlanReads =
  *
  * ## What the reads give, and what they do not
  *
- * - **The plan's own order** is the order the tasks are written in (`plan-order.ts`'s
- *   `writtenOrder`), read from the blocks of the plan document the page already holds
- *   (`useIssueTree`'s `blocksOf("plan")`, so this costs no request): the filter's
+ * - **The order** is the page's own walk over the `needs` (`plan-order.ts`), from the order the
+ *   tasks are written in (`writtenOrder`), read from the blocks of the plan document the page
+ *   already holds (`useIssueTree`'s `blocksOf("plan")`, so this costs no request): the filter's
  *   view hands the tasks over grouped by the statement each serves, which is the spec's order
- *   and not the plan's.
- * - **A bar's place** is worked out here from the `needs` the plan document holds, since no read
- *   gives a task its place.
- * - **A bar's length** is the task's size, and the `plan_task` block declares none, so every
- *   bar is one unit long and its row says "No size". The points of work and the longest path
- *   the picture names need sizes, so the view draws neither; the axis draws its units as lines
- *   and no numbers, since a number would be a size nobody recorded.
+ *   and not the plan's. On an issue with issues under it the Plan read answers the tasks of
+ *   every issue under it beside the issue's own, and the same walk places them all, after the
+ *   issue's own tasks in the order each issue's document writes them (`plan-order.ts`). A task of
+ *   another issue carries that issue's key, a link to it (`ChildIssueTag`): on its bar's row in
+ *   the chart, and as a fact of its row under Steps. A task of the issue itself carries none.
+ * - **A bar's place** is worked out here from the `needs` its task's chips name: it starts where
+ *   every task it needs has ended.
+ * - **A bar's length** is the task's size, the whole number of minutes the Plan read answers
+ *   from the task's `size` attribute (`TreeNode.size`), drawn in words beside the bar and as a
+ *   fact of the task's row under Steps (`sizeWords`). A task that holds none is a short bar,
+ *   one line of the axis long and dashed, and says "No size" in both places. The axis draws a
+ *   line a whole number of minutes apart (`PlanAxis`), and the time at each line only where
+ *   every task of the chart holds a size; where none does, every bar is one unit long and the
+ *   axis draws one line per unit and no number. The points of work and the longest path the
+ *   picture names are drawn nowhere.
  * - **A step's state** is drawn nowhere: the model holds none, so the page draws none, and the
  *   states the pictures show are made up.
- * - **Who carries a step out**, and a parent's children's tasks in its own Plan filter, are
- *   drawn nowhere: no read gives them.
+ * - **Who carries a step out** is drawn nowhere: no read gives it.
  */
 export function PlanFilterBody({
   emptyLine,
@@ -217,13 +229,14 @@ export function PlanFilterBody({
   // tasks alone. Each row is its task as the filter's view gives it: its `needs` chips carry the
   // tree's names - the needed task's first line, and the page's word for its kind where that
   // task holds no words - which are the names the chart draws for the same needs (`needsChip`),
-  // so the switch changes the drawing alone.
+  // so the switch changes the drawing alone. Each row carries the facts the chart draws beside
+  // its bar (`stepFacts`): its issue's key where it is another issue's task, and its size.
   const ordered = useMemo(() => {
-    const rows = entries
+    const rows: TreeNode[] = entries
       .flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks))
       .flatMap((task) => {
         const node = inView.get(task.id);
-        return node === undefined ? [] : [node];
+        return node === undefined ? [] : [{ ...node, facts: [...node.facts, ...stepFacts(node)] }];
       });
     // The view's overtaken tasks have no place in the order (`planOrder`), so they stand after
     // every step, each once, and the tree draws each as a row there, marked.
@@ -388,7 +401,6 @@ export function PlanFilterBody({
           land={landing ? revealed : undefined}
           onLanded={setTaken}
           overtaken={overtaken}
-          readings={published.readings}
           reveal={revealed}
         />
       )}
@@ -417,6 +429,23 @@ function blockIdsOf(
 /** The key of a cycle's place: its tasks' ids, one space between two. */
 function cycleIds(tasks: readonly TreeNode[]): string {
   return tasks.map((one) => one.id).join(" ");
+}
+
+/** The facts a step's row draws in its body under Steps, which the chart draws beside its bar:
+ *  the key of the issue it is a task of, a link to that issue, where that is another issue under
+ *  this one, and its size in words (`sizeWords`), or "No size" where it holds none. A task of the
+ *  issue itself carries no key. */
+function stepFacts(task: TreeNode): NodeFact[] {
+  return [
+    ...(task.issue === undefined
+      ? []
+      : [{ draw: "issue", name: "issue", value: task.issue } satisfies NodeFact]),
+    {
+      draw: "word",
+      name: "size",
+      value: task.size === undefined ? PLAN_WORDS.no_size : sizeWords(task.size),
+    },
+  ];
 }
 
 /** One cycle, as one line that lists the tasks in it, each a link that lands on that task.
@@ -598,7 +627,6 @@ function PlanChart({
   land,
   onLanded,
   overtaken,
-  readings,
   reveal,
 }: {
   entries: readonly PlanEntry[];
@@ -616,16 +644,13 @@ function PlanChart({
   /** The view's overtaken tasks, which have no place in the order: each is a row after every
    *  bar and cycle. */
   overtaken: readonly TreeNode[];
-  /** How the page names each target its batched read answered (`PublishedReferences.readings`),
-   *  which a step's row names the statement it is drawn under by (`BarRow`). */
-  readings: PublishedReferences["readings"];
   /** The node the address names: the task a cycle's row stands for where it is one of its own. */
   reveal: string | undefined;
 }): ReactNode {
   const navigate = useNavigate();
   const setFocusedNode = useSetFocusedNode();
   const chart = useRef<HTMLDivElement | null>(null);
-  const { end, rows: places } = useMemo(() => planChart(entries), [entries]);
+  const { axis, rows: places } = useMemo(() => planChart(entries), [entries]);
   const rows = useMemo(
     () =>
       places.flatMap((row): DrawnPlace[] => {
@@ -951,7 +976,7 @@ function PlanChart({
           {PLAN_WORDS.steps}
         </span>
         <div className="relative min-w-0 self-stretch">
-          <Units end={end} />
+          <Units axis={axis} head />
         </div>
         <span className={`px-3.5 ${CAP}`} {...pageChrome}>
           {PLAN_WORDS.serves}
@@ -973,11 +998,10 @@ function PlanChart({
           ) : (
             <BarRow
               bar={place.row}
-              end={end}
+              axis={axis}
               focused={focused === place.key}
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
-              readings={readings}
               tabStop={tabStop === place.key}
               {...(overtakenStop === undefined ? {} : { tabStop: false })}
             />
@@ -996,7 +1020,7 @@ function PlanChart({
       {/* Decoration over the rows: the words on each row say what a step needs. The lines of
           the step the reader is on are drawn heavier in the step's colour, as the prototype's
           are, and the rest in the quiet grey: the prototype's ink marks its longest path, which
-          today's model holds no sizes to find. */}
+          the page does not draw. */}
       <svg
         aria-hidden="true"
         className="pointer-events-none absolute top-0 left-0 overflow-visible max-[761px]:hidden"
@@ -1133,25 +1157,46 @@ function OvertakenTask({
   );
 }
 
-/** The axis: one faint line per unit of the chart (the prototype's `.grid-l`). It draws no
- *  number: a unit is a size, and today's plan holds none. The last line is drawn against the
+/** The axis (the prototype's `.grid-l`): one faint line every `axis.step` units across the
+ *  chart's span, and in the head row (`head`), where every task of the chart holds a size
+ *  (`PlanAxis.numbered`), the time each line past the first stands at (`sizeWords`), ending at its
+ *  line, so two times stand apart wherever two lines do. The last line is drawn against the
  *  column's right edge, so every line stands inside the column that holds the axis: at
  *  `left: 100%` it would be one pixel past it. */
-const Units = memo(function Units({ end }: { end: number }): ReactNode {
-  const unit = 100 / end;
+const Units = memo(function Units({
+  axis,
+  head = false,
+}: {
+  axis: PlanAxis;
+  /** Whether this is the head row's axis, the one row that draws the times. */
+  head?: boolean;
+}): ReactNode {
+  const lines = Math.round(axis.span / axis.step);
+  const unit = 100 / lines;
   return (
     <span
       aria-hidden="true"
       className="absolute inset-0 block max-[761px]:hidden"
       data-plan-axis=""
     >
-      {Array.from({ length: end + 1 }, (_unused, tick) => (
-        <i
-          className="absolute inset-y-0 w-px bg-page-line"
-          // biome-ignore lint/suspicious/noArrayIndexKey: a line is its unit and nothing else.
-          key={tick}
-          style={tick === end ? { right: 0 } : { left: `${tick * unit}%` }}
-        />
+      {Array.from({ length: lines + 1 }, (_unused, tick) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: a line is its unit and nothing else.
+        <Fragment key={tick}>
+          <i
+            className="absolute inset-y-0 w-px bg-page-line"
+            style={tick === lines ? { right: 0 } : { left: `${tick * unit}%` }}
+          />
+          {head && axis.numbered && tick > 0 ? (
+            <span
+              className={`absolute bottom-0.5 pr-1 text-[11px] leading-4 whitespace-nowrap ${pageQuietText}`}
+              data-plan-axis-time=""
+              style={{ right: `${100 - tick * unit}%` }}
+              {...pageChrome}
+            >
+              {sizeWords(tick * axis.step)}
+            </span>
+          ) : null}
+        </Fragment>
       ))}
     </span>
   );
@@ -1159,11 +1204,13 @@ const Units = memo(function Units({ end }: { end: number }): ReactNode {
 
 /**
  * One step of the chart (the prototype's `.prow`, and its `.pitem` card at 760 px and below):
- * its first line, that the model holds no size for it and the steps it needs; its bar; and the
+ * its first line, the key of its issue where it is another issue's task (`ChildIssueTag`, a link
+ * to that issue), its size in words or "No size", and the steps it needs; its bar; and the
  * statements it serves. The row's name is what it draws, which begins with the task's first
- * line, so each bar is labelled with it. The bar is the step's plain tint inside a dashed
- * border: the prototype's hatch is its legend's "Not started", a state today's model holds
- * none of, and the dash says the length is no size anybody wrote.
+ * line, so each bar is labelled with it. The bar is the step's plain tint inside a border, as
+ * long as the task's size on the chart's one scale (`PlanAxis`): the prototype's hatch is its
+ * legend's "Not started", a state today's model holds none of. A task with no size is one line
+ * of the axis long and its border is dashed, which says the length is no size anybody wrote.
  *
  * A need is named by the task's own `needs` chip for it (`needsChip`), as the tree names it and
  * the steps' row draws it, in the needed task's marks: the author's words, or the page's own
@@ -1174,13 +1221,14 @@ const Units = memo(function Units({ end }: { end: number }): ReactNode {
  *
  * At 761 px and above the row is the chart's three columns. At 760 px and below it is one card
  * that draws, from the top, the task's first line, the track with the bar at its place and
- * length, and one line, wrapping where it must, with "No size", the needs and the statements.
- * Each part is drawn once, in the order the row's name reads them: the card is a wrapping flex
- * box, the columns' own boxes give their parts to it (`display: contents`), and the first line
- * and the track each take a line of their own ahead of the rest (`order`), so the track, which
- * says nothing to a screen reader, is the one part drawn out of the document's order. The track
- * stands 8 px under the first line and over the line under it: 3 px of its own margin and the
- * card's 5 px between two lines, which is also what parts the chips' lines where they wrap.
+ * length, and one line, wrapping where it must, with the issue's key, the size, the needs and the
+ * statements. Each part is drawn once, in the order the row's name reads them: the card is a
+ * wrapping flex box, the columns' own boxes give their parts to it (`display: contents`), and
+ * the first line and the track each take a line of their own ahead of the rest (`order`), so the
+ * track, which says nothing to a screen reader, is the one part drawn out of the document's
+ * order. The track stands 8 px under the first line and over the line under it: 3 px of its own
+ * margin and the card's 5 px between two lines, which is also what parts the chips' lines where
+ * they wrap.
  *
  * A focus inside the row, on one of its statement links as well as on the row, takes the focus
  * for it (`PlanChart`). The focused row places itself on screen, clear of the band that stays at
@@ -1188,29 +1236,24 @@ const Units = memo(function Units({ end }: { end: number }): ReactNode {
  * (`useRowOnScreen`).
  */
 function BarRow({
+  axis,
   bar,
-  end,
   focused,
   onFocus,
-  readings,
   tabStop,
 }: {
+  /** The chart's one scale, which the bar's place and length are drawn on. */
+  axis: PlanAxis;
   bar: PlanBar;
-  /** How many units the chart's axis spans. */
-  end: number;
   focused: boolean;
   onFocus: () => void;
-  /** How the page names each target its batched read answered (`PublishedReferences.readings`):
-   *  the reading the statement the row is drawn under is named by, as the tree's chip of it would
-   *  carry it (`issue-tree.ts`'s `targetNaming`). */
-  readings: PublishedReferences["readings"];
   tabStop: boolean;
 }): ReactNode {
   const task = bar.task;
   const known = useKnownReferences();
   const line = useTaskLine(task);
   // How wide one unit of the chart is, as a percentage of its column.
-  const unit = 100 / end;
+  const unit = 100 / axis.span;
   const ref = useRef<HTMLDivElement | null>(null);
   const press = useRowOnScreen(ref, focused);
   // The statements the task serves, each a chip: the parent the filter draws as no row, where it
@@ -1218,13 +1261,13 @@ function BarRow({
   // beside those, not as a row's text line, so it is named as they are and not through
   // `node-line.tsx`'s `NodeParentLine`, which draws a parent as the text line of a row: each as
   // the row's needs are named (`chipLine`), so as a tie's chip names it - by the line the names
-  // store projects from the reading the page published for it where that reading holds words,
-  // and by the page's word for its kind where it holds none - a reference inside the line read
-  // as its short form, since a name inside a name resolves nothing. The tree draws the parent no
-  // chip, so the parent is named by its address and the reading the page published for it
-  // (`readings`), which is the reading the tree's chip of it carries. One the store holds no
-  // name for yet, one the page published no reading for, and a parent the model gives no
-  // address, are named by nothing, as a chip draws nothing until its name comes.
+  // store projects from the reading published for it where that reading holds words, and by the
+  // page's word for its kind where it holds none - a reference inside the line read as its short
+  // form, since a name inside a name resolves nothing. The tree draws the parent no chip, so the
+  // parent is named by its address and the reading of its own words (`presets.ts`'
+  // `nodeReading`), which is the reading the view publishes for it (`PresetView.readings`). One
+  // the store holds no name for yet, and a parent the model gives no address, are named by
+  // nothing, as a chip draws nothing until its name comes.
   //
   // Each chip's React key, unique within the task and the same on every render. Two chips of one
   // task can carry the same reference: the server refuses a pointer named twice only by its raw
@@ -1234,10 +1277,19 @@ function BarRow({
   // takes another chip's key.
   const keyed = new Map<string, number>();
   const parent = task.parentLine;
+  // The parent's reading, worked out again only where the view hands the row another parent
+  // line, and not at each render of the chart as the focus moves through it.
+  const parentReading = useMemo(
+    () =>
+      parent?.type === "requirement" && parent.reference !== undefined
+        ? nodeReading(parent)
+        : undefined,
+    [parent]
+  );
   const serves = [
-    ...(parent?.type !== "requirement" || parent.reference === undefined
+    ...(parentReading === undefined || parent?.reference === undefined
       ? []
-      : [{ reading: readings.get(parent.reference), ref: parent.reference }]),
+      : [{ reading: parentReading, ref: parent.reference }]),
     ...task.alsoUnder,
   ]
     .flatMap((chip) => {
@@ -1293,9 +1345,21 @@ function BarRow({
           className={`mt-px flex min-w-0 flex-wrap gap-x-1.5 text-xs leading-[18px] ${pageQuietText} max-[761px]:contents`}
           data-plan-facts=""
         >
-          <span data-plan-no-size="" {...pageChrome}>
-            {PLAN_WORDS.no_size}
-          </span>
+          {task.issue === undefined ? null : (
+            <>
+              <ChildIssueTag child={{ key: task.issue }} />
+              <span {...pageChrome}>·</span>
+            </>
+          )}
+          {task.size === undefined ? (
+            <span data-plan-no-size="" {...pageChrome}>
+              {PLAN_WORDS.no_size}
+            </span>
+          ) : (
+            <span data-plan-size={task.size} {...pageChrome}>
+              {sizeWords(task.size)}
+            </span>
+          )}
           {needs.length === 0 ? null : (
             <>
               <span {...pageChrome}>· {PLAN_WORDS.needs}</span>
@@ -1312,12 +1376,14 @@ function BarRow({
         </p>
       </div>
       <div className="relative h-[54px] min-w-0 max-[761px]:-order-1 max-[761px]:my-[3px] max-[761px]:h-2.5 max-[761px]:basis-full max-[761px]:rounded-[5px] max-[761px]:bg-page-mark">
-        <Units end={end} />
+        <Units axis={axis} />
         <span
           aria-hidden="true"
-          className="absolute top-4 block h-[22px] rounded-[5px] border-[1.5px] border-dashed border-page-step bg-page-step-tint max-[761px]:top-0 max-[761px]:h-full"
+          className={`absolute top-4 block h-[22px] rounded-[5px] border-[1.5px] border-page-step bg-page-step-tint max-[761px]:top-0 max-[761px]:h-full ${
+            task.size === undefined ? "border-dashed" : "border-solid"
+          }`}
           data-plan-bar={task.id}
-          style={{ left: `${bar.start * unit}%`, width: `${unit}%` }}
+          style={{ left: `${bar.start * unit}%`, width: `${bar.length * unit}%` }}
         />
       </div>
       <div

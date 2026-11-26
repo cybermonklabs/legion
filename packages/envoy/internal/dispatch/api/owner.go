@@ -75,8 +75,9 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 
 // loadProject reads the project row, every column model.Project carries but the open-ask count,
 // which only the project list reads. A project.updated event carries what this answers, so its
-// payload is the whole row a reader of the project list sees. An unknown key is 404
-// PROJECT_NOT_FOUND.
+// payload is the whole row a reader of the project list sees, and a stored list of gated steps is
+// read without the retired `decisions` step here as the list reads it (scanListedProject). An
+// unknown key is 404 PROJECT_NOT_FOUND.
 func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
@@ -94,6 +95,10 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		}
 		return model.Project{}, err
 	}
+	// A stored list may hold the retired `decisions` step until the decisions step rewrites it,
+	// and the database's check still admits it.
+	// kept for one release: check-narrowings
+	project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 	return project, nil
 }
 
