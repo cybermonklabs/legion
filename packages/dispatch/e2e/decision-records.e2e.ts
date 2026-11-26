@@ -192,8 +192,10 @@ test("a decision written as a list keeps its link and its key, and anchors its C
 // block is drawn once, with its own text and nothing else. The reading this row refuses is the
 // one two rounds of this change got wrong: a body handed a text that is not its own draws that
 // whole text in every slot.
-// @pr: The Decisions tab of an answer with no reading draws each block once, with its own text.
-test("a decision whose answer carries no reading is drawn block by block @pr", async ({ page }) => {
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the two rows above keep the Decisions tab on the
+// lane. The full lane runs this one.
+test("a decision whose answer carries no reading is drawn block by block", async ({ page }) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({

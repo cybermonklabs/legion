@@ -470,8 +470,10 @@ test("the Pipeline page updates live", async ({ browser, delivery }) => {
   }
 });
 
-// @pr: Live delivery: the freshness row is how a reader knows the page is live, and it must say Reconnecting while it is not.
-test("the freshness row says Live with the last change, and Reconnecting while dropped @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the merge and reconnect rows above keep the
+// delivery page's live updates on the lane. The full lane runs this one.
+test("the freshness row says Live with the last change, and Reconnecting while dropped", async ({
   browser,
   delivery,
 }) => {

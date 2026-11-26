@@ -29,7 +29,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { expansionStorageKey, placeChild, splitWork } from "./architecture-model";
+import { expansionStorageKey, placeChild, splitWork } from "./logic/architecture-model";
 
 function readExpansion(storageKey: string): string[] {
   try {

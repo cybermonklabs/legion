@@ -12,7 +12,12 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 
 import { type AccessibilityExclusion, accessibilityExclusions } from "./accessibility-exclusions";
-import { type ReviewedRoute, type ReviewSeed, waitForRouteSettled } from "./review-routes";
+import {
+  type InFlightRequests,
+  type ReviewedRoute,
+  type ReviewSeed,
+  waitForRouteSettled,
+} from "./review-routes";
 
 /** WCAG 2.0 and 2.1, levels A and AA: the tags the plan names, and the ones a reviewer of this
  *  dashboard is held to. Axe's best-practice rules are not in it, since a best practice is not a
@@ -62,12 +67,16 @@ const excludedKeys = new Set(accessibilityExclusions.map(exclusionKey));
 
 /** Opens `route` against `seed` on `page`, which is signed in, and scans it in both schemes:
  *  each scheme's counts are printed and its axe result attached to `testInfo`, and the row
- *  fails on any serious or critical finding no exclusion entry covers. */
+ *  fails on any serious or critical finding no exclusion entry covers. `inFlight` is where the
+ *  settle wait reads the requests still waiting for their answer: `listedRequests(page)` for a
+ *  page a real server answers, and for a page answered from routes `trackDocumentRequests(page)`,
+ *  which must be called before this opens the page (`waitForRouteSettled` says why). */
 export async function scanRoute(
   page: Page,
   route: ReviewedRoute,
   seed: ReviewSeed,
-  testInfo: TestInfo
+  testInfo: TestInfo,
+  inFlight: InFlightRequests
 ): Promise<void> {
   await page.goto(route.path(seed));
   // `styles.css` eases `color`, `background-color` and `border-color` over 150ms on every
@@ -93,7 +102,7 @@ export async function scanRoute(
     // a 404 or a page still resolving itself: the first two would pass with no findings at
     // all, and the third would report findings about a state no reader sees
     // (`waitForRouteSettled`).
-    await waitForRouteSettled(page, route);
+    await waitForRouteSettled(page, route, inFlight);
     const results = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
     await testInfo.attach(`axe ${route.name} ${colorScheme}.json`, {
       body: JSON.stringify(results, null, 2),

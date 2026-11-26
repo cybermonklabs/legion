@@ -13,7 +13,7 @@
  *  Every row reads one review corpus (e2e/review-seed.ts), which the worker seeds once and hands
  *  each row as its `reviewSeed` (e2e/test.ts): the rows read it alike, so none seeds it again. */
 import { expectNoStaleExclusion, scanRoute } from "./accessibility-scan";
-import { realStackScannedRoutes } from "./review-routes";
+import { listedRequests, realStackScannedRoutes } from "./review-routes";
 import { test } from "./test";
 import { withAlice } from "./users";
 
@@ -24,7 +24,10 @@ for (const route of realStackScannedRoutes) {
     browser,
     reviewSeed,
   }, testInfo) => {
-    await withAlice(browser, (page) => scanRoute(page, route, reviewSeed, testInfo));
+    // A real server answers the page, so the settle wait reads the requests Playwright lists.
+    await withAlice(browser, (page) =>
+      scanRoute(page, route, reviewSeed, testInfo, listedRequests(page))
+    );
   });
 }
 

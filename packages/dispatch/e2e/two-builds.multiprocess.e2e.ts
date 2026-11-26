@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { type Result, routePath } from "../web/src/api/paths";
+import type { Result } from "../web/src/api/paths";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -19,7 +19,7 @@ import {
   publishAgentStreamFrame,
   putArchitectureSource,
   syncArchitectureSource,
-  userHeaders,
+  uploadAgentPicture,
 } from "./api";
 import { type DeliveryPlace, seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
@@ -185,34 +185,6 @@ const messageAuthor = {
   as: "agent" as const,
 };
 
-/** The 1x1 PNG e2e/artifacts.e2e.ts uploads. */
-const tinyPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-
-/** Uploads a picture to the session's conversation as alice, as a paste on the Agents page
- *  does, and answers its slug. */
-async function uploadAgentPicture(sessionID: string): Promise<string> {
-  const form = new FormData();
-  form.append("name", "shot.png");
-  form.append("file", new Blob([Buffer.from(tinyPng, "base64")], { type: "image/png" }));
-  const response = await fetch(
-    new URL(
-      routePath("post", "/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }),
-      baseUrl
-    ),
-    { body: form, headers: await userHeaders("alice"), method: "POST" }
-  );
-  if (!response.ok) {
-    throw new Error(`agent picture upload: ${response.status} ${await response.text()}`);
-  }
-  // The server's own upload answer, as e2e/api.ts reads every JSON answer.
-  const uploaded = (await response.json()) as Result<
-    "/api/v1/agents/{session_id}/artifacts",
-    "post"
-  >;
-  return uploaded.artifact.slug;
-}
-
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
@@ -321,7 +293,7 @@ async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
     },
     "replay"
   );
-  const agentArtifact = await uploadAgentPicture(session.session_id);
+  const agentArtifact = await uploadAgentPicture(session.session_id, "shot.png");
   await seedDeliveryFixture(delivery);
   return {
     agentArtifact,

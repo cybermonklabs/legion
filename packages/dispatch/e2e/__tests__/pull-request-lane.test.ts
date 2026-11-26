@@ -14,10 +14,8 @@
  *  real stack whatever their tags say, so they count toward both numbers, read from the command
  *  that script runs (`embedderCommand` of `./playwright-listing`).
  *
- *  Why 330 and not the 350 dispatch://INFRA-1407's R1 names: dispatch://INFRA-1410 and
- *  dispatch://INFRA-1511 land after this head and will each want rows on this lane, and the
- *  parent's own check reads the 350 at the root's last round rather than here. Twenty rows is
- *  the margin left for them.
+ *  The budget is dispatch://INFRA-1407's R1: 350. It was 330 for a while, twenty rows held for
+ *  dispatch://INFRA-1410 and dispatch://INFRA-1511, and both of those are done.
  *
  *  Why at most 150 outside the stubbed projects: a real-stack row pays a Go server, a Postgres,
  *  three fakes, a reset of the fakes and a sign-in, and R1 holds the lane to 150 of them. The
@@ -58,8 +56,8 @@ const embedderRows = retained(
 );
 const defaultSelection = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 
-/** The number of rows the pull-request lane may schedule. */
-const laneBudget = 330;
+/** The number of rows the pull-request lane may schedule (dispatch://INFRA-1407's R1). */
+const laneBudget = 350;
 /** Of those, the number that may drive the real stack. */
 const realStackBudget = 150;
 
@@ -70,9 +68,8 @@ test(
     const realStack = rows.filter((row) => !stubProjectNames.includes(row.project));
     expect(
       rows.length,
-      `The pull-request lane schedules ${rows.length} rows, and its budget is ${laneBudget}. ` +
-        "It is 330 rather than R1's 350 because INFRA-1410 and INFRA-1511 land after this head " +
-        "and need rows of their own on this lane. Take the `@pr` tag off the rows this lane " +
+      `The pull-request lane schedules ${rows.length} rows, and its budget is ${laneBudget}, ` +
+        "dispatch://INFRA-1407's R1. Take the `@pr` tag off the rows this lane " +
         "answers least, which leaves them running on the full lane at the merge queue and the " +
         "nightly."
     ).toBeLessThanOrEqual(laneBudget);

@@ -87,8 +87,11 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   await context.close();
 });
 
-// @pr: An idempotent repeat: a double-clicked Submit posts exactly one comment.
-test("double-clicking Submit posts exactly one comment @pr", async ({ browser }) => {
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the idempotent-repeat rows of
+// `keyed-writes.e2e.ts`, `keyed-send.e2e.ts` and `broadcast.e2e.ts` keep that claim on the lane.
+// The full lane runs this one.
+test("double-clicking Submit posts exactly one comment", async ({ browser }) => {
   const wr = rowKey("WR");
   await createProject({ key: wr, name: "Writes" });
   const issue = await createIssue({

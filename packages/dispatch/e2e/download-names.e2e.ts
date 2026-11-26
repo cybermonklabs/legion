@@ -17,7 +17,7 @@ import {
   getArtifactVersion,
 } from "./api";
 import { connectedDot, documentEditor } from "./editor";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 
 // Every "Download version N" link goes to the download address,

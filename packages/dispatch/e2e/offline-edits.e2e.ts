@@ -192,10 +192,11 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
 });
 
 // SLOW(>=2s): three document loads, two status writes and two admissions decided at socket open.
-// @pr: The live document's admission: a read-only admission keeps the reader's edits until a later read-write reload.
-test("read-only admission preserves edits until a later read-write reload @pr", async ({
-  browser,
-}) => {
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the row above keeps the live document's offline
+// edits on the lane, beside `doc-reload-line.e2e.ts`'s row on its admission. The full lane runs
+// this one.
+test("read-only admission preserves edits until a later read-write reload", async ({ browser }) => {
   const issue = await makeIssue();
   const alice = await asUser(browser, "alice");
   const paragraph = "survives a read-only admission";

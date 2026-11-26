@@ -368,7 +368,7 @@ When a row may be added to the browser suite:
 - A row joins the pull-request lane only with the `@pr` tag, and a real-stack row carries that tag
   only when a pull request must see its failure first, with a `// @pr: ` line above it that says
   why. Every stubbed row carries the tag. `e2e/__tests__/pull-request-lane.test.ts` holds the lane
-  to at most 330 rows, at most 150 of them outside the stubbed projects, and counts in both the two
+  to at most 350 rows, dispatch://INFRA-1407's R1, at most 150 of them outside the stubbed projects, and counts in both the two
   rows the `embedder` job of `.github/workflows/dispatch-browser.yaml` runs on every pull request.
   A row without the tag runs in the full lane: the merge queue, a pull request with the `full-ci`
   label, and the nightly run.
@@ -926,6 +926,20 @@ helper process that exits the test binary (`TestIdleRigRoleProcess`); or it hold
 bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
 
 ## Go's package deadline
 

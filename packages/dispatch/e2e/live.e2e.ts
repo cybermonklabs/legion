@@ -393,8 +393,10 @@ test("live: new events on the open issue appear in Conversation and mark it read
   await alice.close();
 });
 
-// @pr: The live socket: the stream has to recover after the connection drops.
-test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the forced-disconnect row below keeps the live
+// stream's reconnect on the lane. The full lane runs this one.
+test("live: the stream recovers after the connection drops", async ({ browser }, testInfo) => {
   const core = rowKey("CORE");
   // "Nothing needs you" is said of the reader's whole list: a person of the row's own, whose
   // issue it is, so the question asked on it during the outage waits on them and their list

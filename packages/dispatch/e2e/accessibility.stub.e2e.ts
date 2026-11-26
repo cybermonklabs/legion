@@ -14,7 +14,7 @@
  *  a page the recording never saw. */
 import { expectNoStaleExclusion, scanRoute } from "./accessibility-scan";
 import { expectTimeout } from "./expect-timeout";
-import { stubScannedRoutes, type VisualSeed } from "./review-routes";
+import { stubScannedRoutes, trackDocumentRequests, type VisualSeed } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { stubbed } from "./stub/stub-test";
 
@@ -32,7 +32,9 @@ for (const route of stubScannedRoutes) {
     scene,
   }, testInfo) => {
     await page.clock.install({ time: new Date(scene.seededAt) });
-    await scanRoute(page, route, scene, testInfo);
+    // A recording answers the page from routes, so the settle wait reads its requests by the
+    // document that sent them (`trackDocumentRequests` says why), from before the first load.
+    await scanRoute(page, route, scene, testInfo, await trackDocumentRequests(page));
   });
 }
 

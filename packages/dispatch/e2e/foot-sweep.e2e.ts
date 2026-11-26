@@ -82,7 +82,12 @@ import { APPROVAL_FOOT, inboxAt, seedApprovalPlace } from "./inbox-pane-scroll";
 import { withIssuePage } from "./issue-page-option";
 import { pendingWrites } from "./keyed-writes";
 import { expectConversationInFront } from "./live-view-cost";
-import { type ReviewedRoute, reviewRoutes, waitForRouteSettled } from "./review-routes";
+import {
+  listedRequests,
+  type ReviewedRoute,
+  reviewRoutes,
+  waitForRouteSettled,
+} from "./review-routes";
 import { type Browser, expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
@@ -273,7 +278,7 @@ for (const routes of routeRows()) {
         await openWithFloats(page, refused.key, route.path(reviewSeed));
         for (const size of ROUTE_SIZES) {
           await page.setViewportSize(size);
-          await waitForRouteSettled(page, route);
+          await waitForRouteSettled(page, route, listedRequests(page));
           await expectFootClear(page, cellName(route.name, size, ["pending", "banner"]));
         }
         await dismissBanner(page);
