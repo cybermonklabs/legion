@@ -194,29 +194,21 @@ function FiledItemLine({
   const deleted = gone ? null : postDeletion(target);
   const agentText = useAgentText();
   const { names } = useKnownReferences();
-  // A deleted post by the deleted line, its actor named from the delete as the chip names it, and
-  // never by the store's name for it, which names the actor as no registry knows it.
-  const deletedLine =
-    deleted === null ? undefined : deletedLineText(deleted, { label: agentText.author });
   const name = target === undefined || gone || deleted !== null ? undefined : names.get(target.ref);
   const line = name === undefined ? "" : drawnLine(firstLineOf(name));
-  const named = line !== "" || deletedLine !== undefined;
+  const named = line !== "" || deleted !== null;
   // The way to the item: its first line or its deleted line, which are its author's words, or the
-  // page's word alone. The deleted line's opening is the page's own words, and its actor is not
-  // (INFRA-1523, R3).
+  // page's word alone.
   const marks = named ? authorText : pageChrome;
-  const opening =
-    deleted !== null && deleted.by === null
-      ? CONTROL_LABELS.post_deleted
-      : CONTROL_LABELS.post_deleted_by;
-  const shown =
-    deletedLine === undefined ? (
-      line === "" ? (
-        word
-      ) : (
-        line
-      )
-    ) : (
+  let shown: ReactNode = line === "" ? word : line;
+  if (deleted !== null) {
+    // A deleted post by the deleted line, its actor named from the delete as the chip names it,
+    // and never by the store's name for it, which names the actor as no registry knows it. The
+    // line's opening is the page's own words, and its actor is not (INFRA-1523, R3).
+    const deletedLine = deletedLineText(deleted, { label: agentText.author });
+    const opening =
+      deleted.by === null ? CONTROL_LABELS.post_deleted : CONTROL_LABELS.post_deleted_by;
+    shown = (
       <span className="italic" data-post-deleted="" {...pageChrome}>
         {opening}
         {deletedLine === opening ? null : (
@@ -224,6 +216,7 @@ function FiledItemLine({
         )}
       </span>
     );
+  }
   return (
     <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
       {named || gone ? (
@@ -564,13 +557,16 @@ export function IssueMarginPanel({
   // names read (`useIssueTree.ts`) and a filter's view the parents only its tree holds
   // (`slots/view-parents.ts`): the page's read is asked only for what its outline cites. It is
   // named by the rule a chip naming it is named by (`targetNaming`), so the row, a link and a chip
-  // read the item alike, and published only once this read has answered for it.
+  // read the item alike, and published only once this read has answered for it, and only while it
+  // is made: a closed Development leaves the read off, so events no longer keep its answer fresh,
+  // and the store keeps the reading its last publisher gave, which would then put an edited or
+  // deleted post's old words back on the outline's chips and links at the issue's next event.
   const filedNaming = useMemo<PublishedReferences | undefined>(
     () =>
-      filedTarget === undefined
+      filedTarget === undefined || !readingDevelopment
         ? undefined
         : { ...targetNaming({ issue, targets: [filedTarget] }), asked: new Set([filedTarget.ref]) },
-    [filedTarget, issue]
+    [filedTarget, issue, readingDevelopment]
   );
   usePublishReferenceNames(filedNaming);
   // The read's failure is said in each relation row it feeds: the duplicate's in the words of the

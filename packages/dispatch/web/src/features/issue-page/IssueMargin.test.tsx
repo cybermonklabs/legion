@@ -63,6 +63,7 @@ import {
   IssuePriorityLine,
   priorityTriggerName,
 } from "../priorities/IssuePriorityLine";
+import type { BlockItemKind } from "../refs/block-reference";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
@@ -8758,14 +8759,7 @@ const FORM_ID = "2b9c7e41-5d3a-4f68-8e1b-0c6d4a9f3e27";
 /** Each form INFRA-1253's contract gives `filed_from` (`dispatch-api-issues.ts`): what it names,
  *  the reference, the kind of node the names read answers for it, that node's words, their first
  *  line, and the page the reference opens. */
-const FILED_FORMS: readonly (readonly [
-  string,
-  string,
-  "ask" | "comment" | "message",
-  string,
-  string,
-  string,
-])[] = [
+const FILED_FORMS: readonly (readonly [string, string, BlockItemKind, string, string, string])[] = [
   [
     "a message of an issue",
     `dispatch://CORE-2/message/${FORM_ID}`,
@@ -8938,5 +8932,59 @@ test("Filed from draws a first line holding a mention and an address as projecte
   } finally {
     unmount();
     restore();
+  }
+});
+
+// The panel publishes the filed item's names to the names store only while its names read is made,
+// so while Development is open. A closed Development leaves that read off, and no event refreshes
+// its answer then; published still, that answer stands over a newer name another read gives the
+// item, the store keeping the reading its last publisher gave, and the issue's next answer, which
+// publishes the panel's value again, would put the post's old words back on every chip and link
+// that names it. The Filed from row draws the store's name for the item, so it shows which stands.
+test("a closed Development publishes the filed item's names no more, so a newer name for it stands through the issue's next answer", async () => {
+  const user = userEvent.setup();
+  const newerLine = "Keep the notes in the release.";
+  const newer = publishedNames(new Map([[FILED_MESSAGE, `${newerLine} Nothing else moves.`]]));
+  let renamed = false;
+  const { getIssue, restore } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
+  const { queryClient, redraw, unmount } = renderDetails(
+    () => (renamed ? <Publisher published={newer} /> : null),
+    OPEN_DRAWER
+  );
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE)
+    );
+    const development = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
+    await user.click(development);
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+
+    // Another read gives the message a newer name, published after Development closed.
+    renamed = true;
+    redraw(OPEN_DRAWER);
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.filed_from),
+        "the store does not name the message by the newer name another read gave it"
+      ).toHaveTextContent(newerLine)
+    );
+
+    // The issue's next answer draws the panel again.
+    drawIssue(getIssue, queryClient, { ...relatedIssue, last_seq: 251, priority: 2 });
+    await waitFor(() => expect(detailsRow(PROPERTY_LABELS.priority)).toHaveTextContent("P2"));
+    await act(async () => {});
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from),
+      "a closed Development published the message's old words over its newer name"
+    ).toHaveTextContent(newerLine);
+    expect(detailsRow(PROPERTY_LABELS.filed_from)).not.toHaveTextContent(FILED_LINE);
+  } finally {
+    unmount();
+    restore();
+    window.localStorage.removeItem(kept);
   }
 });
