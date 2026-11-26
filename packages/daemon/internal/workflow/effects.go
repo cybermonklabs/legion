@@ -507,11 +507,16 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	// The task's working copy moves to the head a fix left it behind (copyMoveAfterFix), read
-	// before enter writes this start; the way after a fix names its own (moveToOf).
-	moveTo := moveToOf(ctx)
-	if moveTo == "" {
-		if moveTo, err = e.copyMoveAfterFix(ctx, tx, issue, w); err != nil {
+	// The task's working copy moves to the head a fix left it behind once, at the start that carries
+	// that fix's move (copyMoveAfterFix): the way after the fix names its own head (moveToOf), and the
+	// fix is marked carried in this start's transaction, read before enter writes this start.
+	moveTo, carried, err := e.copyMoveAfterFix(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	if carried != nil {
+		carried.MoveCarried = true
+		if err := e.store.UpdateFix(ctx, tx, *carried); err != nil {
 			return err
 		}
 	}
