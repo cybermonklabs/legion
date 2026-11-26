@@ -48,9 +48,8 @@ import (
 // dashboard's assets of other builds are read through a cache that keeps them, one read in flight
 // for each. The test hooks never run in production.
 //
-// Work that finds every place held waits for one as a request waits in its class's queue and a
-// heavy read in its lane's - first in, first out while the queue absorbs a burst, and newest first
-// once it has stood non-empty for its whole wait (fifoGate) - in a queue of at most
+// Work that finds every place held waits for one as a heavy read waits in its lane's queue - first
+// in, first out, however long the queue has stood non-empty (fifoGate) - in a queue of at most
 // OutsideQueueLimit, for at most a second counted from when it asked (Limits.OutsideWait). It was
 // refused at once before, and on INFRA-592's stress step (ten times the load, 1,000 editors, a
 // restart) that refused 47,962 of the 48,580 refused document sockets, skipped 4,136 heartbeat
@@ -68,6 +67,20 @@ import (
 // the renewal's own reads and writes and for what it reads next (GiveBack, Away.TakeBack: the one
 // mechanism that gives an admitted request's units back for the same waits), so an issuer slow to
 // answer holds none of the places, as a broker slow to answer holds none.
+//
+// The queue serves the work that has waited longest first for the reason a lane's does (fifoGate):
+// a place is held for one to three short reads, so the 8 turn over many times within the second,
+// and while a place's work takes under 45 ms on average the whole queue of 176 drains within it
+// (176 times 45 ms over 8 places is 0.99 s). A queue that arrivals keep non-empty past a second -
+// a restart's reconnect of every editor, the heartbeat checks of a thousand sockets at 67 a second
+// - then serves every waiter within its second first in, first out, where newest first handed each
+// place to the work that had just come and left the oldest to be refused at their second while the
+// places turned over beside them: a skipped check, which counts toward the heartbeat's ceiling of
+// three in a row and closes a sound socket there, and a refused socket, which its browser sends
+// again. What newest first saves a class's queue, the time the requests it serves have waited
+// under a standing overload, matters least here: a heartbeat check has no client waiting on it, a
+// socket's admission is one handshake, and a DPoP decision's request waits next in its class's
+// queue, which keeps newest first (gate.next).
 
 // OutsideLimit is how many places the work outside admission may hold at once: the request
 // pool's connections admission does not hand out, unadmittedConnections, 8 of the 48. Admission's
@@ -128,10 +141,10 @@ func (r *OutsideRefusal) Error() string {
 }
 
 // Outside is a Limiter's places for the request-pool work outside admission (OutsideLimit), and
-// the queue the work waits in for one: a fifoGate, as a heavy read's lane is, with its own wait -
-// the one each work waits, counted from when it asks (Take), and the one its queue stands after -
-// and its refusals counted by user. A nil Outside limits nothing, so a server a test builds
-// without a Limiter takes every place it asks for.
+// the queue the work waits in for one: a fifoGate, as a heavy read's lane is, with its own wait,
+// the one each work waits, counted from when it asks (Take), and its refusals counted by user. A
+// nil Outside limits nothing, so a server a test builds without a Limiter takes every place it
+// asks for.
 type Outside struct {
 	// fifoGate's limit is OutsideLimit and its wait Limits.OutsideWait, set once by New.
 	fifoGate
@@ -290,9 +303,6 @@ type OutsideStats struct {
 	// Limit is OutsideLimit, InUse the places held now, Queued the work waiting for one now and
 	// MaxQueued the most that has waited at once since the Limiter was made.
 	Limit, InUse, Queued, MaxQueued int
-	// NewestFirst counts the work the queue gave a place newest first, its queue standing
-	// (fifoGate), since the Limiter was made.
-	NewestFirst uint64
 	// Refused counts, by user, the work refused a place since the Limiter was made: a DPoP
 	// decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket answered 503.
 	Refused [outsideUserCount]OutsideRefusals
@@ -303,12 +313,12 @@ type OutsideRefusals struct {
 	QueueFull, WaitExceeded uint64
 }
 
-// Stats reads the counts: the places, the queue, its longest length and its newest-first grants
-// together, and each refusal count on its own, so a scrape that races a refusal may see it in one
-// count and not yet in another.
+// Stats reads the counts: the places, the queue and its longest length together, and each refusal
+// count on its own, so a scrape that races a refusal may see it in one count and not yet in
+// another.
 func (o *Outside) Stats() OutsideStats {
-	used, queued, maxQueued, newestFirst := o.counts()
-	stats := OutsideStats{Limit: o.limit, InUse: used, Queued: queued, MaxQueued: maxQueued, NewestFirst: newestFirst}
+	used, queued, maxQueued := o.counts()
+	stats := OutsideStats{Limit: o.limit, InUse: used, Queued: queued, MaxQueued: maxQueued}
 	for user := range outsideUserCount {
 		stats.Refused[user] = OutsideRefusals{
 			QueueFull: o.refused[user].queueFull.Load(), WaitExceeded: o.refused[user].waitExceeded.Load(),

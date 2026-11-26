@@ -630,10 +630,9 @@ func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
 // arrive one after another while eight of them hold every place.
 //
 //   - In the order it asked: the eight holding are held at gates of the test's, and twelve more
-//     wait; each place given back, one at a time, goes to the work that has waited longest. Their
-//     wait is past any run here: the order is the proof, and a queue that has stood a whole wait
-//     serves its newest first instead (admission's fifoGate), which a loaded machine reaches with
-//     a second's wait before the last place is given back.
+//     wait; each place given back, one at a time, goes to the work that has waited longest, however
+//     long the queue has stood (admission's fifoGate). Their wait is past any run here: the order is
+//     the proof.
 //   - On a held pool freed within the wait: every connection of the request pool is held, so the
 //     eight holding wait on it, and 176 more wait for a place, the most the queue holds; four more
 //     are refused at once for the full queue, the checks skipped and the sockets refused. The
