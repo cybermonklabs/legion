@@ -83,10 +83,10 @@ func storedCauses(t *testing.T, store *Store, token string) []string {
 
 // A claim held for OpenAI's cyber-policy refusal reads back as held (supervise.CauseCyberPolicy
 // in FailureCause or PendingCause), while its two cause columns hold `provider_error`, a word the
-// release before knows, and held_for holds `cyber_policy` (the claim store's storedCause, heldFor
-// and readCause). The release before reads the same row with the statement it ships and decodes
-// `provider_error`; the claim failed under `provider_error` alone, with held_for empty, is the
-// control that reads `provider_error` back on this release too.
+// release before knows, and held_for holds `cyber_policy` (the claim store's storedCause and
+// heldFor, and supervise.DecodeCause). The release before reads the same row with the statement
+// it ships and decodes `provider_error`; the claim failed under `provider_error` alone, with
+// held_for empty, is the control that reads `provider_error` back on this release too.
 func TestAClaimHeldForCyberPolicyStoresOnlyWordsTheReleaseBeforeKnows(t *testing.T) {
 	const token = "legion-LEGION-209-implementer"
 	held := func() supervise.Claim {

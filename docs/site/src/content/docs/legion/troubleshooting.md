@@ -628,12 +628,15 @@ content`. Where that start is of the issue's working phase, by the role that wor
 child set to `todo` comes back at `admitted` and starts its phase, as an architect's `backlog` then
 `rerun_child` does — the daemon applies the claim's stored failure to that phase: the issue is held
 again, and its architect gets the `worker-died` notice, which its `retry` answers. Any other such
-start ends at that log line, and the notice the claim's failure sent stands: the three notices that
-would promise such a start (a child's own architect's, a role's that failed outside its issue's
-phase, and a production check's checking role's) say no such start comes, and name `legion claims
-retry --claim <token>`. The daemon's own controller is not retried by its keeper, which logs
-`controller: the daemon's controller is held for OpenAI's cyber_policy refusal of its session's
-content` once.
+start ends at that log line, and the notice the claim's failure sent stands. The three notices
+that would promise such a start (a child's own architect's, a role's that failed outside its
+issue's phase, and a production check's checking role's) say instead `it does not start again by
+itself`, and nothing more: no notice names the cause's handling or a command, since an agent acts
+on every failure the same way. The operator's command is in the daemon's logs: the outbox's line
+above carries it in its `error`, as `legion claims retry --claim <token>`. The daemon's own
+controller is not retried by its keeper, which logs `controller: the daemon's controller is held
+for OpenAI's cyber_policy refusal of its session's content` once, with that command in its
+`reason`, and the controller liveness line names it each time it repeats.
 
 Five decisions launch such an agent again: the architect's `retry_or_escalate` of the held phase;
 a `todo` on a held root, which retries that phase as well; a `todo` that puts a root back in the

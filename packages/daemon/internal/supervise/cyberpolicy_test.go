@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // The cases of this file hold the daemon to one rule: after OpenAI refuses a session's content
@@ -245,5 +246,118 @@ func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
 				t.Fatalf("the retried controller is %+v, want it the keeper's again", c)
 			}
 		})
+	}
+}
+
+// A retry that leaves the recorded session behind does so only once the claim is admitted
+// (retry, revive's admitted): an admission the tree lifecycle refuses — its cleanup is reserved —
+// leaves the claim exactly as it was, its session, its file, its run of provider-error turns and
+// its failure record kept on the live machine, which `legion claims list` reads, and nothing
+// abandoned or logged as a retry in a new session. Every decided retry of a claim held for a
+// cyber-policy refusal takes that road, and so does the operator's --fresh-session retry of any
+// claim. Once the reservation is gone, the same retry leaves the session behind and launches the
+// agent in a new one, which is the control: the claim is one the retry does reach.
+func TestARefusedAdmissionLeavesTheSessionARetryInANewSessionWouldLeaveBehind(t *testing.T) {
+	held := func() Claim {
+		c := retiredOfEpoch(1)
+		c.State, c.FailureCause, c.ProviderErrorRun = StateFailed, CauseCyberPolicy, 3
+		c.Failure = "a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content"
+		return c
+	}
+	stopped := retiredOfEpoch(1)
+	stopped.ProviderErrorRun = 3
+	for _, tc := range []struct {
+		name  string
+		claim Claim
+		retry func(claim.Token) Event
+	}{
+		{"the held phase's retry of a claim held for cyber policy", held(),
+			func(token claim.Token) Event { return RequestRetry{Claim: token, Decided: true} }},
+		{"the operator's retry of a claim held for cyber policy", held(),
+			func(token claim.Token) Event { return RequestOperatorRetry{Claim: token} }},
+		{"the operator's --fresh-session retry of a stopped claim", stopped,
+			func(token claim.Token) Event { return RequestOperatorRetry{Claim: token, FreshSession: true} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &epochStore{epoch: 1, reserved: true}
+			h := lifecycleHarness(t, store, tc.claim)
+			before := h.m.Claim()
+			lines := len(h.records.of("supervise: retrying in a new session"))
+
+			if err := h.handle(tc.retry(h.token)); !errors.Is(err, treelifecycle.ErrCleanupReserved) {
+				t.Fatalf("the retry during a reserved cleanup = %v, want the reservation's wait", err)
+			}
+			after := h.m.Claim()
+			if after.Session != before.Session || after.SessionFile != before.SessionFile || after.Abandoned.Session != "" ||
+				after.ProviderErrorRun != before.ProviderErrorRun || after.FailureCause != before.FailureCause || after.State != before.State {
+				t.Fatalf("the refused retry left the live claim %s with session %q (%s), abandoned %q, %d provider-error turns and cause %q; want it as it was: %s, %q (%s), nothing abandoned, %d, %q",
+					after.State, after.Session, after.SessionFile, after.Abandoned.Session, after.ProviderErrorRun, after.FailureCause,
+					before.State, before.Session, before.SessionFile, before.ProviderErrorRun, before.FailureCause)
+			}
+			if got := h.records.of("supervise: retrying in a new session"); len(got) != lines {
+				t.Errorf("the refused retry logged %d lines of a retry in a new session, want none", len(got)-lines)
+			}
+			if calls := len(h.rt.CallsOf("Resume")) + len(h.rt.CallsOf("Spawn")); calls != 0 {
+				t.Fatalf("the refused retry started %d launches, want none", calls)
+			}
+
+			store.reserved = false
+			h.must(tc.retry(h.token))
+			if c := h.m.Claim(); c.State != StateLaunching || c.Session != "" || c.Abandoned.Session != before.Session || c.ProviderErrorRun != 0 {
+				t.Fatalf("the admitted retry left the claim %s with session %q, abandoned %q and %d provider-error turns; want it launching in a new session, %q abandoned, the run at 0",
+					c.State, c.Session, c.Abandoned.Session, c.ProviderErrorRun, before.Session)
+			}
+			if spawns := len(h.rt.CallsOf("Spawn")); spawns != 1 || len(h.rt.CallsOf("Resume")) != 0 {
+				t.Fatalf("the admitted retry made %d spawns and %d resumes, want one spawn", spawns, len(h.rt.CallsOf("Resume")))
+			}
+		})
+	}
+}
+
+// The one decoder of a stored cause and its held_for (DecodeCause), which the claim store and the
+// record store's role-claim read both use: held_for counts only beside the `provider_error` it was
+// written with, so a cause a release before migration 20261125223008_claim_held_for rewrote after
+// a rollback reads as that release wrote it, and an empty held_for leaves every word as it is.
+func TestAStoredCauseReadsAsCyberPolicyOnlyBesideItsProviderError(t *testing.T) {
+	for _, tc := range []struct {
+		column, heldFor string
+		want            FailureCause
+	}{
+		{"provider_error", "cyber_policy", CauseCyberPolicy},
+		{"provider_error", "", CauseProviderError},
+		{"died", "cyber_policy", CauseDied},
+		{"", "cyber_policy", ""},
+		{"never_registered", "", CauseNeverRegistered},
+	} {
+		if got := DecodeCause(tc.column, tc.heldFor); got != tc.want {
+			t.Errorf("DecodeCause(%q, %q) = %q, want %q", tc.column, tc.heldFor, got, tc.want)
+		}
+	}
+}
+
+// One classification decides both what a provider error is called and whether it fails the claim
+// (classifyProviderError), so the two cannot drift for a class. A cyber-policy refusal fails under
+// its own word whatever its status; a client error that is none of 401, 403, 408 and 429 fails
+// under provider_error, a cost cap among them, and every other error clears.
+func TestOneClassificationNamesAProviderErrorAndDecidesItsFailure(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   string
+		cause  string
+		fails  FailureCause
+	}{
+		{0, codeCyberPolicy, "OpenAI's cyber_policy refusal of this session's content", CauseCyberPolicy},
+		{503, codeCyberPolicy, "OpenAI's cyber_policy refusal of this session's content (HTTP 503)", CauseCyberPolicy},
+		{0, codeCostCap, "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", ""},
+		{400, codeCostCap, "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)", CauseProviderError},
+		{400, "", "a provider error (HTTP 400)", CauseProviderError},
+		{429, "", "a provider error (HTTP 429)", ""},
+		{401, "", "a provider error (HTTP 401)", ""},
+		{529, "", "a provider error (HTTP 529)", ""},
+		{0, "", "a provider error", ""},
+	} {
+		if got := classifyProviderError(tc.status, tc.code); got != (providerErrorClass{cause: tc.cause, fails: tc.fails}) {
+			t.Errorf("classifyProviderError(%d, %q) = %+v, want cause %q failing under %q", tc.status, tc.code, got, tc.cause, tc.fails)
+		}
 	}
 }

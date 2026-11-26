@@ -2837,10 +2837,10 @@ type QueuedSupervise struct {
 type RoleClaim struct {
 	State supervise.ClaimState
 	// FailureCause is the word for what failed the claim as its machine holds it
-	// (supervise.Claim.FailureCause; failure_cause read beside held_for, readRoleClaims), "" for a
-	// claim no failure is recorded on, which a retry's admission clears (supervise's retry). Its
-	// reader is the admission pass's repair, which passes over a claim held for OpenAI's
-	// cyber-policy refusal (HeldForCyberPolicy).
+	// (supervise.Claim.FailureCause; failure_cause and held_for read by supervise.DecodeCause),
+	// "" for a claim no failure is recorded on, which a retry's admission clears (supervise's
+	// retry). Its reader is the admission pass's repair, which passes over a claim held for
+	// OpenAI's cyber-policy refusal (HeldForCyberPolicy).
 	FailureCause supervise.FailureCause
 	Tree         string
 	SuspendedBy  supervise.SuspendSource

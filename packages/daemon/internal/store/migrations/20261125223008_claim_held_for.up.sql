@@ -6,7 +6,7 @@
 -- plugin from before the cyber-policy contract entry reads them with a closed list of the seven
 -- words before it and refuses the whole state body for an eighth. So this release never writes
 -- `cyber_policy` into either column. claims.held_for holds it instead, and the claim store maps the
--- two (the claim store's storedCause, heldFor and readCause):
+-- two (the claim store's storedCause and heldFor, and supervise.DecodeCause):
 --
 --   * Write: a cause that is `cyber_policy` in memory is written as `provider_error`, the word the
 --     release before chose for the same refusal, and held_for is `cyber_policy` where

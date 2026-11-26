@@ -2030,7 +2030,7 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 // this report failed the claim, which only the report of a turn that ran no prompt of the
 // daemon's does, refused with a status that cannot clear or with the class of OpenAI's
 // cyber-policy refusal (RequestTurnOutcome.Code), whatever its status (unpromptedTurnEnded,
-// holdsTheIssue).
+// classifyProviderError).
 type TurnOutcomeAnswer struct {
 	RefusedRun int
 	Failed     bool

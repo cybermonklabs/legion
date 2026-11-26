@@ -49,7 +49,7 @@ type CompactResponse struct {
 // daemon did not write: Oh My Pi's for a compaction it refused or skipped, and through that a
 // summarizer model's own explanation of a refusal. It reaches the controller's tool result and
 // so its next prompt, where no text the daemon did not write belongs
-// (dispatch://INFRA-956 R2, supervise's providerErrorCause). The known refusals are one short
+// (dispatch://INFRA-956 R2, supervise's classifyProviderError). The known refusals are one short
 // sentence each ("Nothing to compact (session too small)" is 37 bytes), and a transport
 // failure's is of the same order, so 200 bytes carries every reason the operation has and no
 // model's essay.

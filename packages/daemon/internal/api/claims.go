@@ -281,10 +281,10 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	status := req.HTTPStatus
 	if status != 0 && (status < 100 || status > 599) {
 		// A number outside the HTTP range is no status a provider answered, and the status decides
-		// whether the claim fails (supervise's holdsTheIssue), so the report is taken as one whose
-		// status cannot be read, which fails nothing. The rollout is warn-first: the report is not
-		// refused (the refusal would be `400 httpStatus <n> is no HTTP status`), so a producer that
-		// sends such a number still has its turn counted, and the warning names it.
+		// whether the claim fails (supervise's classifyProviderError), so the report is taken as
+		// one whose status cannot be read, which fails nothing. The rollout is warn-first: the
+		// report is not refused (the refusal would be `400 httpStatus <n> is no HTTP status`), so
+		// a producer that sends such a number still has its turn counted, and the warning names it.
 		s.log.Warn("api: a turn outcome named an HTTP status outside 100 to 599; it is taken as no status",
 			"claim", token, "generation", req.Generation, "sequence", req.Sequence, "httpStatus", status)
 		status = 0

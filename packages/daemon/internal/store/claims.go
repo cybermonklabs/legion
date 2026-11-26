@@ -48,8 +48,8 @@ var _ supervise.Store = (*Store)(nil)
 // are read beside both (carried_news and carried_ran, design_news_told.go).
 //
 // The two cause columns are read beside held_for, which says whether a `provider_error` either of
-// them holds stands for `cyber_policy` (readCause); upsertClaim writes the three together
-// (storedCause, heldFor).
+// them holds stands for `cyber_policy` (supervise.DecodeCause); upsertClaim writes the three
+// together (storedCause, heldFor).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.held_for, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -963,7 +963,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		c.DeliveredRows = nil
 	}
 	c.Token, c.Role, c.State, c.SuspendedBy = claim.Token(token), claim.Role(role), supervise.ClaimState(state), supervise.SuspendSource(by)
-	c.FailureCause, c.PendingCause = readCause(cause, held), readCause(pendingCause, held)
+	c.FailureCause, c.PendingCause = supervise.DecodeCause(cause, held), supervise.DecodeCause(pendingCause, held)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
 	c.AgentResumeGeneration = uint64(agentResumeGeneration)
@@ -1132,7 +1132,8 @@ func causeDigest(cause string, at time.Time) []byte {
 // word for, and every other cause as it is. That release serves the two columns as they stand, and
 // every plugin from before the cyber-policy contract entry refuses the whole state body for a word
 // it does not know; `provider_error` is the word that release chose for the same refusal.
-// claims.held_for keeps what the column does not (heldFor), and readCause reads the two back.
+// claims.held_for keeps what the column does not (heldFor), and supervise.DecodeCause reads the
+// two back.
 func storedCause(cause supervise.FailureCause) string {
 	if cause == supervise.CauseCyberPolicy {
 		return string(supervise.CauseProviderError)
@@ -1143,26 +1144,12 @@ func storedCause(cause supervise.FailureCause) string {
 // heldFor is claims.held_for for c: `cyber_policy` where its FailureCause or its PendingCause is
 // `cyber_policy`, else "". The two causes share the one word, so a claim whose one cause is
 // `cyber_policy` and whose other is `provider_error` would read back with both `cyber_policy`
-// (readCause). No path makes that pair: supervise's fail, the one writer of FailureCause, clears
-// PendingCause in the same write, and PendingCause takes only died, stale_plugin and
-// never_registered (supervise's relaunchAfterFailure).
+// (supervise.DecodeCause). No path makes that pair: supervise's fail, the one writer of
+// FailureCause, clears PendingCause in the same write, and PendingCause takes only died,
+// stale_plugin and never_registered (supervise's relaunchAfterFailure).
 func heldFor(c supervise.Claim) string {
 	if c.FailureCause == supervise.CauseCyberPolicy || c.PendingCause == supervise.CauseCyberPolicy {
 		return string(supervise.CauseCyberPolicy)
 	}
 	return ""
-}
-
-// readCause is the cause a row's cause column holds, read beside its held_for: `cyber_policy`
-// where the column holds `provider_error` and held_for is `cyber_policy` (storedCause, heldFor),
-// and the column's word as it stands otherwise. The column's word decides too, not held_for
-// alone: after a rollback the release before migration 20261125223008_claim_held_for rewrites the
-// cause columns and leaves held_for as it was, so a cause it cleared or wrote under another word
-// reads as that release wrote it. The record store's readRoleClaims reads failure_cause by the
-// same rule, in SQL.
-func readCause(stored, heldFor string) supervise.FailureCause {
-	if heldFor == string(supervise.CauseCyberPolicy) && stored == string(supervise.CauseProviderError) {
-		return supervise.CauseCyberPolicy
-	}
-	return supervise.FailureCause(stored)
 }

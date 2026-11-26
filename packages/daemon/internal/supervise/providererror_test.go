@@ -121,7 +121,7 @@ func TestThePromptRetryLadderStopsGrowingAtTenMinutes(t *testing.T) {
 // costs the claim a prompt failure: chargePrompt retires and then fails a claim past
 // Limits.PromptFailures, which would fail every claim of a project at once in a provider outage
 // — and a credential is the fleet's, so a 401 or a 403 reaches every claim of the project at
-// once (holdsTheIssue).
+// once (classifyProviderError).
 func TestAStatusThatClearsChargesNoPromptBudgetHoweverOftenItHappens(t *testing.T) {
 	for _, status := range []int{401, 403, 408, 429, 529} {
 		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
@@ -347,7 +347,7 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 // that daemon took the ask back unconfirmed, and its wait for the next send was that daemon's
 // timer, which went with it.
 func olderDaemonsLadderStep(d *Delivery) {
-	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529, ""))
+	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(classifyProviderError(529, "").cause)
 }
 
 // A question an older daemon queued as a task and kept on the provider-error ladder is dropped
@@ -718,7 +718,7 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 // The same task at the other end of a claim's life. A failure keeps the pending delivery for
 // whoever decides what happens next, and the task the ladder kept is that delivery. The failure
 // here is the one every provider error can end in: the turn the ladder's own send started ended
-// in a malformed request, which holds the issue (holdsTheIssue).
+// in a malformed request, which holds the issue (classifyProviderError).
 func TestAFailureKeepsTheTaskTheLadderKept(t *testing.T) {
 	h := workingClaim(t)
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})

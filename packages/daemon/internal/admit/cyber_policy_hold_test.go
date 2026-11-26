@@ -51,19 +51,25 @@ func TestTheRepairWritesNoStartForAWorkerHeldForCyberPolicy(t *testing.T) {
 		failWorkerClaim(t, pool, member, claim.RoleTester, heldFor)
 		return pool
 	}
-	// A todo of an issue nobody handed to Legion drives the pass and promotes nothing, so the
-	// repair is the one thing the pass can write for the member.
+	// A todo of an issue nobody handed to Legion drives the pass and promotes nothing, applied
+	// through the mirror as the daemon applies it, whose write of the issue's row is the record the
+	// pass runs for (a fact that writes nothing runs none). So the repair is the one thing the pass
+	// can write for the member.
 	elsewhere := intake.DispatchIssue{Key: "LEGION-900", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated",
 		Status: "todo", Title: "an issue of another team", Rank: "Z"}
+	pass := func(pool *pgxpool.Pool) {
+		admission := quiet(t, 1)
+		applyMirrored(t, pool, admission, "dispatch-1", elsewhere, admission.engine)
+	}
 
 	held := failed(t, "cyber_policy")
-	applyFact(t, held, quiet(t, 1), "dispatch-1", elsewhere)
+	pass(held)
 	if got := startsOf(t, held, member); len(got) != 0 {
 		t.Fatalf("the tester of %s held for cyber policy has the start rows %+v, want none", member, got)
 	}
 
 	other := failed(t, "")
-	applyFact(t, other, quiet(t, 1), "dispatch-1", elsewhere)
+	pass(other)
 	if got := startsOf(t, other, member); len(got) != 1 {
 		t.Fatalf("the tester of %s failed for another provider error has the start rows %+v, want the repair's one: the fixture must be one the repair reaches", member, got)
 	}

@@ -139,8 +139,8 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 //
 // A turn that ran no prompt of the daemon's — a phase reminder the plugin sent (pi.sendMessage),
 // an Envoy message, a background job's result — is held to dispatch://INFRA-4508's R1 as a
-// prompt's turn is. A refusal whose status cannot clear (holdsTheIssue) fails the claim at once
-// with CauseProviderError, and one the producer classed as OpenAI's cyber-policy refusal
+// prompt's turn is. A refusal whose status cannot clear (classifyProviderError) fails the claim at
+// once with CauseProviderError, and one the producer classed as OpenAI's cyber-policy refusal
 // (RequestTurnOutcome.Code) with CauseCyberPolicy whatever its status, so the workflow holds the
 // issue for its architect, and the plugin's reminders end: their record check drops every
 // reminder of a failed claim. A refusal that can

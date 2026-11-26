@@ -105,8 +105,8 @@ type StreamAnswered struct {
 // refusal does), the provider and the model that request went to, and Oh My Pi's class of the
 // failure (shimwire.PromptError.Code; empty when it gives none). The message is prose of the
 // provider's and is never parsed; HTTPStatus and Code decide what such a failure means
-// (providerErrored, holdsTheIssue); Retryable and the provider are logged, and the model is named
-// in the controller's notice.
+// (providerErrored, classifyProviderError); Retryable and the provider are logged, and the model
+// is named in the controller's notice.
 type StreamPromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
@@ -2856,10 +2856,13 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
 // — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
 // refused relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of
-// the failure it still carries, which is what `legion claims list` reads off the live machine and
-// what the next persist writes. A launch check that refuses after the admission — launchAfter's
-// own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
-// live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
+// the failure it still carries and the session it records, which is what `legion claims list`
+// reads off the live machine and what the next persist writes. So a retry in a new session asks
+// whether the session may be left behind before the admission (mayForget), which changes nothing,
+// and leaves it behind only once the claim is admitted (forgetSession), beside the record's clear.
+// A launch check that refuses after the admission — launchAfter's own, or a parked wake's recheck
+// when its turn comes — finds both already cleared on the live machine, while the store still
+// holds them as AdmitClaim wrote them, until the next persist.
 //
 // The agent of a claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy) is
 // launched again by a retry someone decided alone: the held phase's retry (RequestRetry.Decided)
@@ -2870,21 +2873,14 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if r, own := ev.(RequestRetry); own && m.claim.RetryHeld(r) {
 		return m.claim.CyberPolicyRefusal()
 	}
-	if fresh, why := freshSession(m.claim, ev); fresh {
+	fresh, why := freshSession(m.claim, ev)
+	if fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
 		if err := m.mayForget(ctx, "retry"); err != nil {
 			return err
 		}
-		// lastRefusal is the provider's words for the newest refused turn, which the claim stores
-		// for the reason LastRefusal gives.
-		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
-			"refusedRun", m.claim.RefusedRun(), "lastRefusal", m.claim.LastRefusal())
-		// The failure the claim carries is the fuller answer where it has one — a provider error
-		// that cannot clear names its status, a death its cause — and the retry's own reason
-		// answers for a claim that failed nothing, an operator's retry of a worker it stopped.
-		m.forgetSession(cmp.Or(m.claim.Failure, why))
 	} else if err := m.resumeRefusal(ctx, "retry"); err != nil {
 		// A retry that relaunches the recorded session is refused it the way a resume is
 		// (resumeRefusal), before the budgets start over.
@@ -2895,6 +2891,17 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		oneAttemptLeft = r.OneAttemptLeft
 	}
 	return m.revive(ctx, exemptWake(ev), time.Time{}, func() {
+		if fresh {
+			// lastRefusal is the provider's words for the newest refused turn, which the claim
+			// stores for the reason LastRefusal gives.
+			m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
+				"refusedRun", m.claim.RefusedRun(), "lastRefusal", m.claim.LastRefusal())
+			// The failure the claim carries is the fuller answer where it has one — a provider
+			// error that cannot clear names its status, a death its cause — and the retry's own
+			// reason answers for a claim that failed nothing, an operator's retry of a worker it
+			// stopped. It is read here, before the record below is cleared.
+			m.forgetSession(cmp.Or(m.claim.Failure, why))
+		}
 		budgets := Budgets{}
 		if oneAttemptLeft {
 			budgets = m.claim.Budgets.OneAttemptLeft(m.deps.Limits)
