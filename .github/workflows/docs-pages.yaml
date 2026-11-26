@@ -124,6 +124,7 @@ on:
       - 'packages/daemon/internal/stream/**'
       - 'packages/daemon/internal/supervise/*'
       - 'packages/daemon/internal/termsafe/**'
+      - 'packages/daemon/internal/texts/*'
       - 'packages/daemon/internal/tlsalert/**'
       - 'packages/daemon/internal/treelifecycle/**'
       - 'packages/daemon/internal/volumestat/**'
