@@ -258,9 +258,9 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 }
 
 // wantsHeldForTheArchitect holds what a failure that holds the issue leaves: the issue held from
-// implementing, and the architect's and the controller's held notices and the worker-died notice,
-// each carrying the failure's sentence in its failure record's `detail`, where every reader of the
-// notice finds it beside the cause word, so each names the status the provider answered.
+// implementing, and the architect's held notice and the worker-died notice, each carrying the
+// failure's sentence in its failure record's `detail`, where every reader of the notice finds it
+// beside the cause word, so each names the status the provider answered.
 func (r *freshSessionRig) wantsHeldForTheArchitect() {
 	r.t.Helper()
 	current, from := r.recordedPhase()
@@ -274,7 +274,7 @@ func (r *freshSessionRig) wantsHeldForTheArchitect() {
 			r.t.Errorf("the %s notice's failure detail says %q, want the status the provider answered in it", notice.kind, notice.detail)
 		}
 	}
-	if want := []string{"held", "held (controller)", "worker-died"}; !slices.Equal(kinds, want) {
+	if want := []string{"held", "worker-died"}; !slices.Equal(kinds, want) {
 		r.t.Fatalf("the failure queued %v, want %v", kinds, want)
 	}
 }

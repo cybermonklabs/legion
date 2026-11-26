@@ -159,8 +159,8 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // fails one at once for a refusal whose status cannot clear, or that Oh My Pi classes as
       // OpenAI's cyber-policy refusal (`cyber_policy`, whatever the status), judged from the
       // turn-outcome report for a task's turn and a reminder's own alike, and never for any other
-      // refusal, however long the run: that run is told to the project's controller once, at six
-      // in a row (dispatch://INFRA-4508).
+      // refusal, however long the run: at six in a row the daemon sends the `provider-errors`
+      // notice once (dispatch://INFRA-4508; `providerErrorRunReached` in the daemon says to whom).
       return { state };
     case "reminded":
       return state.state === "closed"

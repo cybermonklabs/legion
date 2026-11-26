@@ -33,11 +33,11 @@ export interface HostModel {
  * selector and by the key of the model it resolves to, so an extension stepping down the same
  * chain can skip the entries the host suppresses. The host also passes over a route the OpenAI
  * `cyber_policy` closure holds closed until a person's next prompt (`isRetryFallbackEntrySuppressed`,
- * `session/turn-recovery.ts:2487-2496` at the pinned tag), and this registry does not expose that
+ * `session/turn-recovery.ts:2535-2544` at the pinned tag), and this registry does not expose that
  * closure: such an extension can pick a closed route. Before the next model call the host moves
  * the session off it to an open fallback where its chain has one, and holds the call otherwise
- * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3966-3972` and
- * `:4628-4631`).
+ * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3998-4004` and
+ * `:4660-4663`).
  * Each is a method of the live registry, which reads private state of its own, so a caller calls
  * it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
@@ -284,7 +284,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261125-164517, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261126-110039, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
@@ -366,7 +366,7 @@ export interface AgentEndMessage {
   /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
    * one, and the provider and model the request went to (`AssistantMessage`,
    * `packages/ai/src/types.ts:1524-1525` of cybermonklabs/oh-my-pi at the pinned tag
-   * `v18.18.6-sami.20261125-164517`): the fields Oh My Pi's own `prompt_result` error carries as
+   * `v18.18.6-sami.20261126-110039`): the fields Oh My Pi's own `prompt_result` error carries as
    * `httpStatus`, `provider` and `model` (the host copies `errorStatus` there,
    * `packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag). The turn-outcome
    * report carries them in its `providerError` (`packages/pi-legion/src/turn-outcome.ts`). */
@@ -389,7 +389,7 @@ export interface AgentEndEvent {
    * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:6454-6457` at the pinned tag), which OMP reaches only after
+   * be delivered (`agent-session.ts:6486-6489` at the pinned tag), which OMP reaches only after
    * each of its retries and continuations has declined the turn: the pane is idle until the job's
    * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
@@ -805,8 +805,8 @@ export interface PiApi {
       readonly deliverAs?: "aside" | "followUp";
       /** `"outside"` when the text is a person's own turn the extension relays: the host's
        *  `sendUserMessage` then ends the session's cyber-policy hold, as a prompt typed at its
-       *  terminal does (`session/agent-session.ts:12979`, the option at
-       *  `session/agent-session-types.ts:693-694`, at v18.18.6-sami.20261125-164517). Unset, the
+       *  terminal does (`session/agent-session.ts:13035`, the option at
+       *  `session/agent-session-types.ts:698-699`, at v18.18.6-sami.20261126-110039). Unset, the
        *  text counts as made inside the session and the hold stays; a host without the option
        *  ignores it. */
       readonly origin?: "outside" | "inside";
@@ -830,7 +830,7 @@ export interface PiApi {
        *  or skill so marked ends the session's cyber-policy hold as a prompt typed at the terminal
        *  does (`extensibility/extensions/send-user-input-handler.ts:89-142` and
        *  `SendUserInputOptions` at `extensibility/extensions/types.ts:2503-2508`, at
-       *  v18.18.6-sami.20261125-164517). Unset, the input counts as made inside the session and the
+       *  v18.18.6-sami.20261126-110039). Unset, the input counts as made inside the session and the
        *  hold stays. */
       readonly origin?: "outside" | "inside";
     }

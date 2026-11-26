@@ -93,8 +93,8 @@ func refusedUntilA400(t *testing.T) (*harness, int) {
 // producer's end report names the task and carries a 529, an error that can clear. Twenty-five
 // such turns in a row, far past the launch failure limit at which the run used to fail the claim,
 // leave the claim working in the session it had: the task goes to that session again after every
-// turn, on the ladder's waits and with no attempt limit, and the project's controller is told
-// once, at the sixth turn (providerErrorRunTold).
+// turn, on the ladder's waits and with no attempt limit, and the run is handed on once
+// (Deps.ProviderErrorRunReached), at the sixth turn (providerErrorRunTold).
 func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
 	notices := 0
 	h := workingClaim(t, func(d *Deps) {
@@ -113,7 +113,7 @@ func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
 			told = 1
 		}
 		if notices != told {
-			t.Fatalf("after refused turn %d the controller was told %d times, want %d: once, at the sixth", turn, notices, told)
+			t.Fatalf("after refused turn %d the run was handed on %d times, want %d: once, at the sixth", turn, notices, told)
 		}
 		if sent := h.climbs(turn, promptRetryDelay(turn)); !strings.HasSuffix(sent, providerErrorTaskText) {
 			t.Fatalf("after refused turn %d the ladder sent %q, want the task again", turn, sent)
@@ -493,7 +493,9 @@ func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
 		return func(token claim.Token) Event { return RequestRetry{Claim: token, FreshSession: fresh} }
 	}
 	byOperator := func(fresh bool) func(claim.Token) Event {
-		return func(token claim.Token) Event { return RequestOperatorRetry{Claim: token, FreshSession: fresh} }
+		return func(token claim.Token) Event {
+			return RequestAskedRetry{Claim: token, FreshSession: fresh, By: SuspendedByOperator}
+		}
 	}
 
 	for _, tc := range []struct {

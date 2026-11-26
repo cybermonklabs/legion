@@ -20,8 +20,8 @@ const providerErrorTaskText = "implement the plan"
 
 // workingClaim is a ready implementer in the turn of its implementing task: where a turn that
 // ends in a provider error ends. set, when it is given, changes the dependencies before the
-// machine is built, which is the only way a case gives the machine the controller's notice
-// path.
+// machine is built, which is the only way a case gives the machine the notice path
+// (Deps.ProviderErrorRunReached).
 func workingClaim(t *testing.T, set ...func(*Deps)) *harness {
 	t.Helper()
 	return workingClaimOf(t, queuedClaim(), set...)
@@ -193,8 +193,8 @@ func TestAMalformedRequestFailsTheClaim(t *testing.T) {
 // issue; every other error — 5xx, the four exceptions, and the statusless turn every
 // content-filter refusal ends in — keeps the task, which is taken again. 401 and 403 are a
 // credential, which is the fleet's and not this claim's work: failing every claim whose turn
-// hits one is worse than having the task taken again, and the controller is told at six such turns
-// in a row (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3).
+// hits one is worse than having the task taken again, and the notice at providerErrorRunTold comes
+// at six such turns in a row (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3).
 func TestOnlyAClientErrorThatIsNoCredentialNoTimeoutAndNoRateLimitHoldsTheIssue(t *testing.T) {
 	for _, tc := range []struct {
 		status int
@@ -442,9 +442,9 @@ func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 
-	h.must(RequestStop{Claim: testToken})
+	h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 	h.wantState(StateRetired)
-	h.must(RequestOperatorRetry{Claim: testToken})
+	h.must(RequestAskedRetry{Claim: testToken, By: SuspendedByOperator})
 
 	err := h.handle(RequestDeliver{Claim: testToken, Task: "Continue the issue whose provider is overloaded.",
 		Phase: phase.Implementing, Generation: 8, Entry: 2})
@@ -548,9 +548,9 @@ func TestATurnThatEndsWithNoProviderErrorEndsTheRun(t *testing.T) {
 
 // A new session starts the run of provider errors again: the run counts the turns one session
 // had refused in a row, and the session the claim is about to start has had none. Without the
-// reset a claim the controller was told of once could never be told of again until a turn of it
-// ended with no error at all — and the fresh session the controller starts for it
-// (api's freshSession) is what makes the second notice worth having.
+// reset a claim whose run was handed on once (Deps.ProviderErrorRunReached) could never be handed
+// on again until a turn of it ended with no error at all — and the fresh session the controller
+// starts for it (api's freshSession) is what makes the second notice worth having.
 func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	h := workingClaim(t)
 	for turn := range providerErrorRunTold {
@@ -558,14 +558,14 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 		h.climbs(turn+1, promptRetryDelay(turn+1))
 	}
 	if got := h.claim().ProviderErrorRun; got != providerErrorRunTold {
-		t.Fatalf("the run of provider errors is %d, want the %d the controller is told at", got, providerErrorRunTold)
+		t.Fatalf("the run of provider errors is %d, want the %d at which it is handed on", got, providerErrorRunTold)
 	}
 	// The claim is in the turn the last take started, as a claim climbing the ladder is; the
 	// fresh session the controller asks for comes between turns, which is where this one is.
 	h.mustQuiet(StreamTurnEnd{Claim: testToken})
 	h.must(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for", By: SuspendedByOperator})
 
-	h.must(RequestForgetSession{Claim: testToken, Session: session})
+	h.must(RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator})
 
 	if got := h.claim().ProviderErrorRun; got != 0 {
 		t.Errorf("the run of provider errors is %d after the session was forgotten, want 0", got)
@@ -575,9 +575,10 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	}
 }
 
-// The one exit from a run of provider errors is the project's controller, told once. There is no
-// hold and no attempt limit behind it.
-func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
+// At providerErrorRunTold the run of provider errors is handed to Deps.ProviderErrorRunReached
+// once, and the run goes on past it: a seventh refused turn counts 7. There is no hold and no
+// attempt limit behind the notice.
+func TestTheSixthProviderErrorTurnInARowHandsTheRunOnOnce(t *testing.T) {
 	type told struct {
 		claim  Claim
 		reason string
@@ -591,14 +592,14 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	for turn := range 7 {
 		h.errorTurn(ProviderError{Message: "Refusal (reasoning_extraction): no.", Model: "claude-opus-4-8"})
 		if turn == 5 && len(notices) != 1 {
-			t.Fatalf("the controller was told %d times at the sixth turn, want once", len(notices))
+			t.Fatalf("the run was handed on %d times at the sixth turn, want once", len(notices))
 		}
 		h.climbs(takes, promptRetryDelay(turn+1))
 		takes++
 	}
 
 	if len(notices) != 1 {
-		t.Fatalf("the controller was told %d times over seven turns, want once", len(notices))
+		t.Fatalf("the run was handed on %d times over seven turns, want once", len(notices))
 	}
 	notice := notices[0]
 	if notice.claim.Issue != "LEGION-209" || notice.claim.Role != claim.RoleImplementer {
@@ -628,7 +629,7 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndItIsTakenAfterTheRetry(t *t
 	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 
 	h.wantState(StateRetired)
 	p := h.pending()
@@ -643,7 +644,7 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndItIsTakenAfterTheRetry(t *t
 	}
 	h.wantPrompts(1)
 
-	h.must(RequestOperatorRetry{Claim: h.token})
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 
 	again := h.wantPrompts(2)[1]
@@ -676,7 +677,7 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 		t.Fatalf("pending %+v, want the round's question untaken and waiting on the ladder", p)
 	}
 
-	h.must(RequestStop{Claim: testToken})
+	h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 
 	h.wantState(StateRetired)
 	if p := h.claim().Pending; p != nil {

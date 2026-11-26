@@ -147,12 +147,12 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 			cause: endStopped,
 			letGo: func(h *harness) string {
 				h.t.Helper()
-				h.must(RequestStop{Claim: h.token})
+				h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 				h.wantState(StateRetired)
 				if p := h.claim().Pending; p != nil {
 					h.t.Fatalf("the stopped claim holds %+v, want the task whose take's turn ran finished", p)
 				}
-				h.must(RequestOperatorRetry{Claim: h.token})
+				h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 				h.must(RequestDeliver{Claim: h.token, Task: next, Generation: 5})
 				h.relaunched()
 				return next
@@ -345,7 +345,7 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 	c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true}
 	h := newHarnessOf(t, c)
-	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old"})
+	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old", By: SuspendedByOperator})
 	h.wantEndedTold(true, "", "at the forget")
 	h.reach(StateReady)
 	h.wantPrompts(0)
@@ -498,7 +498,7 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 			h.must(RequestRetry{Claim: testToken, FreshSession: true})
 			h.wantState(StateLaunching)
 			h.registerFresh()
@@ -1038,7 +1038,7 @@ func TestARelaunchSentenceIsToldOnceWhenASuspensionTakesBackATakeAwaitingItsTurn
 		t.Fatalf("the suspension recorded %+v, want an untold record of launch %d under %q joined with launch 1's subagent", ended, stopped, cause)
 	}
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.relaunched()
 
 	again := h.wantPrompts(2)[1]

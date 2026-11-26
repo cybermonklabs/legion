@@ -130,7 +130,7 @@ type Runtime interface {
 	// place (ReplacePod) once every asked role has answered, no turn runs, no take whose turn ended
 	// still owes its report and no claim's activity report holds it (internal/daemon's
 	// roundEnd.holding), or at the round's bound (pod_update_grace_minutes) whatever the roles
-	// answered and whatever runs, an operator's suspension excepted.
+	// answered and whatever runs, a holding suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:

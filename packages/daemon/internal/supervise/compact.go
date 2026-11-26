@@ -65,9 +65,11 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 //
 // What happens to the claim next is its own path's, and that path is not always a relaunch. A
 // claim whose death the daemon relaunches has its new process take the owed task once its agent
-// is ready again (CurrentTask, claimHold), but a claim its death failed and one a held suspension
-// stopped each run again only when an operator retries or resumes them, and the task waits for
-// that.
+// is ready again (CurrentTask, claimHold). An agent whose death failed its claim runs again only
+// on a retry, the workflow's or one the operator or the controller asks (retry, askedRetry), and
+// an agent a held suspension stopped runs again only on a resume that may lift it: the operator's
+// lifts every one, and the controller's every one but the operator's own (Claim.HeldAgainst). The
+// task waits for that.
 var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not offered")
 
 // ErrCompactSuspended is a compaction whose end found a suspension held over the claim: one
@@ -82,8 +84,8 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // offered.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
-// a source that resumes this same claim in the same phase — an operator's hold, and a
-// released claim's — keeps the task through the suspension, and it goes when the claim runs
+// a source whose resume restarts this same agent in the same phase — one that holds, and a
+// release — keeps the task through the suspension, and it goes when the agent runs
 // again (SuspendSource.RetiresPhaseTask, settle). The daemon's own suspension ends the
 // claim's phase, so settle retires the task queued for that phase with it and nothing writes its
 // value again; the claim's next phase brings a task of its own. A hold of the daemon's that a
@@ -430,13 +432,13 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // was of is settled, and otherwise at that task's finish by the end-frame bound or by the report
 // of the take's turn, as at the end of the turn.
 //
-// A compaction that ran puts the claim's run of provider-error turns back to zero, so the
-// project's controller can be told a second time if the compacted session's turns go the same
-// way; without it the controller would be told once and never again until a turn ended with no
-// error at all. It is this action's own reset and this action's own write: forgetSession's reset
-// belongs to a claim that is losing its session, and a compaction keeps it. A compaction that
-// was refused or skipped resets nothing — the session is as it was, so the run of refused turns
-// it carried still stands.
+// A compaction that ran puts the claim's run of provider-error turns back to zero, so the notice
+// at providerErrorRunTold can go a second time if the compacted session's turns go the same way;
+// without it the notice would go once and not again until another of the run's ends
+// (Claim.ProviderErrorRun) came. It is this action's own reset and this action's own write:
+// forgetSession's reset belongs to a claim that is losing its session, and a compaction keeps it.
+// A compaction that was refused or skipped resets nothing — the session is as it was, so the run
+// of refused turns it carried still stands.
 //
 // The ladder's wait goes whatever the compaction did (TimerPromptRetry), so the owed task is
 // offered from here rather than at the end of a wait that was counted against the transcript this

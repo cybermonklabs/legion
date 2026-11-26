@@ -281,7 +281,7 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 		h.observe(runtime.Gone)
 		h.wantState(StateFailed)
 
-		h.must(RequestStop{Claim: h.token})
+		h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 
 		h.wantState(StateRetired)
 		h.wantFailure(CauseDied, "deaths with work outstanding ran out", at)

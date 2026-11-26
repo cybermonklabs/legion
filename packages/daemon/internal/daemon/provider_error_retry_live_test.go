@@ -106,7 +106,7 @@ const (
 
 // ladderTakes is how many times the planner takes the ladder's task: the first take and five more
 // after the daemon gives it again, so the sixth turn's error is the one that reaches
-// providerErrorRunTold and tells the controller.
+// providerErrorRunTold and tells the issue's architect and the project's controller.
 const ladderTakes = 6
 
 // ladderWaitedOut is how many of the ladder's rungs the proof waits out where they are real: its
@@ -227,11 +227,11 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 }
 
 // registerController registers a controller session for the project. The daemon tells a
-// controller nothing while none is registered (admit's wakeController), and the notice a run of
-// provider errors earns is the one thing step 2 reads, so a session is registered here as `legion
-// controller start` registers the operator's own (ControllerLaunchOperator). No controller process
-// runs: the proof reads what the daemon published to the listener for it, never what an agent did
-// with it.
+// controller nothing while none is registered (admit's wakeController), and the controller's copy
+// of the notice a run of provider errors earns is the one thing step 2 reads, so a session is
+// registered here as `legion controller start` registers the operator's own
+// (ControllerLaunchOperator). No controller process runs: the proof reads what the daemon published
+// to the listener for it, never what an agent did with it.
 func (r *providerErrorLive) registerController() {
 	t := r.t
 	t.Helper()
@@ -450,8 +450,9 @@ func (r *providerErrorLive) ladderWalks() {
 		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
 }
 
-// controllerIsTold reads the one notice the run of provider errors earns: at the sixth turn in a
-// row, the project's controller is told, once, and nothing is held.
+// controllerIsTold reads the controller's copy of the notice a run of provider errors earns, one
+// of two, since the issue's architect and the project's controller are each told: at the sixth
+// turn in a row the controller is told, once, and nothing is held.
 func (r *providerErrorLive) controllerIsTold() {
 	t := r.t
 	topic := notify.ControllerTopic(r.project)
@@ -480,7 +481,7 @@ func (r *providerErrorLive) controllerIsTold() {
 	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
 		t.Fatalf("%s was held by the run of provider errors: %+v", r.ladder, issue)
 	}
-	r.note("%s is still %s: the notice is the one exit from a run, and no attempt limit holds the issue",
+	r.note("%s is still %s: the notice holds nothing, and no attempt limit holds the issue",
 		r.ladder, r.issue(r.ladder).Phase)
 }
 

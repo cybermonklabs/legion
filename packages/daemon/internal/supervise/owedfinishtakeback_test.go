@@ -222,7 +222,7 @@ func TestTakeBackOverAnOwedFinishFinishesOnEveryPath(t *testing.T) {
 			h.wantCalls("Resume", 1)
 		}},
 		{name: "a retirement", run: func(t *testing.T, h *harness, number uint64) {
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 		}},
 		{name: "a suspension", run: func(t *testing.T, h *harness, number uint64) {
@@ -441,13 +441,13 @@ func TestTakeOfANumberWhoseFinishIsOwedIsRefusedNotOwed(t *testing.T) {
 			t.Fatal("the suspension whose finish the store refused answered no failure")
 		}
 		h.wantState(StateSuspended)
-		if err := h.handle(RequestResume{Claim: h.token}); err == nil {
+		if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator}); err == nil {
 			t.Fatal("the resume while the store refuses the finish answered no failure")
 		}
 		h.wantState(StateSuspended)
 		h.store.fail("RetireDelivery", nil)
 
-		h.must(RequestResume{Claim: h.token})
+		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 		h.relaunched()
 
 		h.wantOwedFinishMade(number)

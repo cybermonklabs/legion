@@ -32,7 +32,7 @@ import (
 // operatorStop is the operator's stop of one claim, as the operator's stop route posts it (api's
 // stopEvent): the one stop that asks for the hold.
 func operatorStop(token claim.Token) RequestStop {
-	return RequestStop{Claim: token, WaitForReport: true}
+	return RequestStop{Claim: token, By: SuspendedByOperator, WaitForReport: true}
 }
 
 // overATakesEndedTurn is claim c on the current plugin with R5's bounds set, every take of it
@@ -251,7 +251,7 @@ func TestTakeWhoseTurnEndedIsStoppedAtOnceByEveryOtherStop(t *testing.T) {
 	}{
 		{"the operator's close of the claim", rootClaim(), false, func(token claim.Token) Event { return RequestOperatorClose{Claim: token} }},
 		{"the workflow's close of the tree", queuedClaim(), false, func(token claim.Token) Event { return RequestTreeClose{Claim: token} }},
-		{"the controller's stop at a boot", controllerClaim(), true, func(token claim.Token) Event { return RequestStop{Claim: token} }},
+		{"the controller's stop at a boot", controllerClaim(), true, func(token claim.Token) Event { return RequestStop{Claim: token, By: SuspendedByOperator} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			control, controlNumber := overATakesEndedTurn(t, queuedClaim())

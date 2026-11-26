@@ -1640,6 +1640,35 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	}
 }
 
+// `legion config check` names the ServiceAccount the controller's pod runs as when the file names
+// runtime.kubernetes.pod.controller_service_account, beside the one every other pod runs as — the
+// namespace's default where service_account is unset — just before the repository cache's line,
+// and exits 0. A file that names no controller account prints no such line
+// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as every other
+// pod does.
+func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
+	legionState(t)
+	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	for _, tc := range []struct{ name, extra, want string }{
+		{"beside the pods' own account", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as legion-worker (runtime.kubernetes.pod.service_account)\n"},
+		{"beside no pods' account", "    pod: {controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as the namespace's default (runtime.kubernetes.pod.service_account is unset)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.extra)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			if want := demoCheckConfigOK + secretsGap + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
 // `legion config check` (`legion start --check-config` before the CLI moved onto cobra, which this
 // test's name, cited by dispatch://INFRA-4425's check K1, keeps) takes dispatch_token_broker from
 // the file alone (dispatch://INFRA-4425 R1): with none of the identity variables the daemon's own

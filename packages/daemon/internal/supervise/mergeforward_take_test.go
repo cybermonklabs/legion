@@ -310,9 +310,9 @@ func TestTakeOfARelaunchedProcessIsHeldWhileTheMergeForwardIsOwedAndTakenOnceAtT
 			h.must(StreamTurnStart{Claim: testToken})
 			h.must(StreamTurnEnd{Claim: testToken})
 			h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 			h.wantState(StateRetired)
-			h.must(RequestOperatorRetry{Claim: testToken})
+			h.must(RequestAskedRetry{Claim: testToken, By: SuspendedByOperator})
 			h.relaunched()
 		}},
 	} {

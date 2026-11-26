@@ -240,10 +240,10 @@ func relaunchesOntoTheCurrentPlugin(c *letGoCell) {
 
 // stopsForTheOperator is the operator's stop (stop, end, retire), which records what it ended
 // under its own cause (endStopped) and puts the claim where the operator's retry reaches it:
-// retired (RequestOperatorRetry's row, operatorRetry).
+// retired (RequestAskedRetry's row, askedRetry).
 func stopsForTheOperator(c *letGoCell) {
 	c.h.t.Helper()
-	c.h.must(RequestStop{Claim: c.h.token})
+	c.h.must(RequestStop{Claim: c.h.token, By: SuspendedByOperator})
 }
 
 // backstopsTheStall is the daemon's stall backstop once the claim's last step is past its role's
@@ -335,15 +335,15 @@ func relaunchedToReady(h *harness) {
 // (resume, revive).
 func resumedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 
 // retriedByTheOperator is the operator's retry of the stopped claim, brought up to ready
-// (operatorRetry, retry, revive).
+// (askedRetry, retry, revive).
 func retriedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestOperatorRetry{Claim: h.token})
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 
@@ -596,7 +596,7 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		deathInATurn      = letGoKind{name: "a death in a turn", drive: dies, next: relaunchedToReady}
 		repoint           = letGoKind{name: "a repoint", drive: repoints, next: relaunchedToReady}
 		stalePlugin       = letGoKind{name: "a stale-plugin relaunch", drive: relaunchesOntoTheCurrentPlugin, next: relaunchedToReady}
-		operatorRetry     = letGoKind{name: "an operator's retry", drive: stopsForTheOperator, next: retriedByTheOperator}
+		operatorsRetry    = letGoKind{name: "an operator's retry", drive: stopsForTheOperator, next: retriedByTheOperator}
 		stallBackstop     = letGoKind{name: "a stall backstop", drive: backstopsTheStall, next: relaunchedToReady}
 		suspensionAtOnce  = letGoKind{name: "a suspension landing at once", drive: suspendsAtOnce, next: resumedByTheOperator}
 	)
@@ -659,13 +659,13 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		{kind: stalePlugin, state: compaction, keeps: StateWorking},
 		{kind: stalePlugin, state: turnUnderCompaction, keeps: StateWorking},
 
-		{kind: operatorRetry, state: noTurn, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
-		{kind: operatorRetry, state: inATurn, record: recorded{cause: endStopped, turn: true, taskTurn: true}, sent: sentRecordAlone, says: saysTurnCut},
-		{kind: operatorRetry, state: reportToCome, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
-		{kind: operatorRetry, state: reportToComeQuiet, sent: sentNothing},
-		{kind: operatorRetry, state: awaitingTurn, record: recorded{cause: endStopped}, sent: sentTask, says: saysNoTurn},
-		{kind: operatorRetry, state: compaction, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
-		{kind: operatorRetry, state: turnUnderCompaction, record: recorded{cause: endStopped, turn: true}, sent: sentRecordAlone, says: saysTurnCut},
+		{kind: operatorsRetry, state: noTurn, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorsRetry, state: inATurn, record: recorded{cause: endStopped, turn: true, taskTurn: true}, sent: sentRecordAlone, says: saysTurnCut},
+		{kind: operatorsRetry, state: reportToCome, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorsRetry, state: reportToComeQuiet, sent: sentNothing},
+		{kind: operatorsRetry, state: awaitingTurn, record: recorded{cause: endStopped}, sent: sentTask, says: saysNoTurn},
+		{kind: operatorsRetry, state: compaction, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorsRetry, state: turnUnderCompaction, record: recorded{cause: endStopped, turn: true}, sent: sentRecordAlone, says: saysTurnCut},
 
 		{kind: stallBackstop, state: noTurn, keeps: StateIdle},
 		{kind: stallBackstop, state: inATurn, record: recorded{cause: stalledTurn, turn: true, taskTurn: true}, sent: sentTaskTakenBack, says: saysTaskTurn},

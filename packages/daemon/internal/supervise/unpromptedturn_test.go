@@ -35,7 +35,8 @@ func (h *harness) pluginTurn(sequence uint64, refused bool, status int) {
 
 // idleClaim is an implementer that has finished its task's turn and owes nothing, which is where a
 // phase worker is when its plugin's reminder fires. set changes the dependencies before the
-// machine is built, as workingClaim's does, which is how a case hears the controller's notice.
+// machine is built, as workingClaim's does, which is how a case hears the notice at
+// providerErrorRunTold (Deps.ProviderErrorRunReached).
 func idleClaim(t *testing.T, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
@@ -52,17 +53,18 @@ func idleClaim(t *testing.T, set ...func(*Deps)) *harness {
 	return h
 }
 
-// countNotices is a dependency change that counts the controller's notices of a run of
-// provider-error turns into told.
+// countNotices is a dependency change that counts the calls of Deps.ProviderErrorRunReached,
+// each the notice of a run of provider-error turns, into told.
 func countNotices(told *int) func(*Deps) {
 	return func(d *Deps) { d.ProviderErrorRunReached = func(Claim, string) { *told++ } }
 }
 
-// wantNotices fails the case unless the controller has been told want times after turn.
+// wantNotices fails the case unless the run has been handed on want times after turn: told counts
+// the calls of Deps.ProviderErrorRunReached (countNotices).
 func wantNotices(t *testing.T, turn, told, want int) {
 	t.Helper()
 	if told != want {
-		t.Fatalf("after turn %d the controller was told %d times, want %d", turn, told, want)
+		t.Fatalf("after turn %d the run was handed on %d times, want %d", turn, told, want)
 	}
 }
 
@@ -98,10 +100,10 @@ func TestAPluginTurnRefusedWithA400FailsTheClaimAtOnce(t *testing.T) {
 
 // Plugin turns refused with a status that can clear — a 529, the provider overloaded, or a 429, a
 // rate limit — fail nothing, however many: twenty-five in a row leave the claim idle in the
-// session it had, and the project's controller is told once, at the sixth, because each counts in
-// the claim's run of provider-error turns (ProviderErrorRun). Without R4 the controller is told
-// nothing.
-func TestPluginTurnsRefusedWithAStatusThatCanClearFailNothingAndTellTheControllerOnce(t *testing.T) {
+// session it had, and the run is handed on once (Deps.ProviderErrorRunReached), at the sixth,
+// because each counts in the claim's run of provider-error turns (ProviderErrorRun). Without R4
+// the run is never handed on.
+func TestPluginTurnsRefusedWithAStatusThatCanClearFailNothingAndHandTheRunOnOnce(t *testing.T) {
 	for _, status := range []int{529, 429} {
 		t.Run("HTTP "+strconv.Itoa(status), func(t *testing.T) {
 			told := 0
@@ -132,9 +134,9 @@ func TestPluginTurnsRefusedWithAStatusThatCanClearFailNothingAndTellTheControlle
 
 // A plugin turn whose report carries no status — a content filter's refusal, or a provider
 // library that named none — is one whose status cannot be read: it fails nothing, and it counts in
-// the run, so the controller is told once at the sixth such turn. Without R4 the controller is
-// told nothing.
-func TestPluginTurnsRefusedWithNoStatusFailNothingAndTellTheControllerOnce(t *testing.T) {
+// the run, which is handed on once (Deps.ProviderErrorRunReached) at the sixth such turn. Without
+// R4 it is never handed on.
+func TestPluginTurnsRefusedWithNoStatusFailNothingAndHandTheRunOnOnce(t *testing.T) {
 	told := 0
 	h := idleClaim(t, countNotices(&told))
 
@@ -150,12 +152,12 @@ func TestPluginTurnsRefusedWithNoStatusFailNothingAndTellTheControllerOnce(t *te
 }
 
 // Refused takes' turns and refused plugin turns make one run: a worker whose task's turns are
-// refused with a 529 and whose reminders in between are refused too has its controller told
-// exactly once, at the sixth turn of the run, whichever kind that turn is. A clean plugin turn ends
-// the run, as a clean report of the take's turn does, so six more refusals after it tell the
-// controller a second time. Without R4 only the takes' turns count, and the run reaches six at the
-// eleventh turn.
-func TestARunOfRefusedPromptsAndPluginTurnsTellsTheControllerOnceAtItsSixth(t *testing.T) {
+// refused with a 529 and whose reminders in between are refused too has its run handed on exactly
+// once, at the sixth turn of the run, whichever kind that turn is. A clean plugin turn ends the
+// run, as a clean report of the take's turn does, so six more refusals after it hand a run on a
+// second time. Without R4 only the takes' turns count, and the run reaches six at the eleventh
+// turn.
+func TestARunOfRefusedPromptsAndPluginTurnsIsHandedOnOnceAtItsSixth(t *testing.T) {
 	told := 0
 	h := workingClaim(t, countNotices(&told))
 	var sequence uint64
@@ -185,7 +187,7 @@ func TestARunOfRefusedPromptsAndPluginTurnsTellsTheControllerOnceAtItsSixth(t *t
 		h.pluginTurn(next(), true, 529)
 	}
 	if told != 2 {
-		t.Fatalf("the controller was told %d times, want twice: once for each run that reached %d", told, providerErrorRunTold)
+		t.Fatalf("the runs were handed on %d times, want 2: once for each of the two runs that reached %d", told, providerErrorRunTold)
 	}
 }
 
@@ -210,8 +212,8 @@ func TestACleanPluginTurnEndsTheRunOfRefusedPrompts(t *testing.T) {
 
 // A clean report that names no task and is not marked unprompted ends the run too: the provider
 // took that turn, whoever ran it. So five refusals, that clean turn and one more refusal make a
-// run of one, and the controller hears nothing; counted across the clean turn, the run would reach
-// six and tell it.
+// run of one, and nothing is handed on; counted across the clean turn, the run would reach six and
+// be handed to Deps.ProviderErrorRunReached.
 //
 // A clean report ends the run only when no later turn has reported before it: a clean report that
 // reaches the daemon after a later turn's refused report is of a turn before that refusal, so the
@@ -234,7 +236,7 @@ func TestACleanReportMarkedPromptedEndsTheRunWithNoPromptResultOfItsOwn(t *testi
 		t.Fatalf("the run of provider errors is %d after a clean prompted report and one refusal, want 1", got)
 	}
 	if told != 0 {
-		t.Fatalf("the controller was told %d times, want never: the run never reached %d", told, providerErrorRunTold)
+		t.Fatalf("the run was handed on %d times, want never: the run never reached %d", told, providerErrorRunTold)
 	}
 
 	// The refused report of turn 9 arrives before the clean report of turn 8, prompted.
@@ -316,10 +318,10 @@ func TestAPluginTurnReportOfAGenerationTheClaimLeftIsNotJudged(t *testing.T) {
 	h.wantRefusedRun(1)
 }
 
-// The controller's notice says what the daemon does about the turn that reached the count. A run
-// of refused reminders on an idle claim owes no task, so nothing is sent again, and the notice
-// says that; a run that a refused take's turn reaches six at keeps that take's task and writes it
-// again, and its notice says that (TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce
+// The notice at providerErrorRunTold says what the daemon does about the turn that reached the
+// count. A run of refused reminders on an idle claim owes no task, so nothing is sent again, and
+// the notice says that; a run that a refused take's turn reaches six at keeps that take's task and
+// writes it again, and its notice says that (TestTheSixthProviderErrorTurnInARowHandsTheRunOnOnce
 // holds the model it names).
 func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 	var reasons []string
@@ -332,7 +334,7 @@ func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 		h.pluginTurn(uint64(turn), true, 529)
 	}
 	if len(reasons) != 1 {
-		t.Fatalf("the controller was told %d times, want once", len(reasons))
+		t.Fatalf("the run was handed on %d times, want once", len(reasons))
 	}
 	for _, want := range []string{"6 turns in a row", "HTTP 529", "none of the daemon's tasks", "writes no task again"} {
 		if !strings.Contains(reasons[0], want) {

@@ -1389,7 +1389,7 @@ const (
 // park takes the root out of the workflow — set back to backlog, or left lingering after its
 // close or beside a child one merge from landing — releases the slot its run held, as admission's
 // own pass does for an issue that needs none (releaseSlots), and writes the architect's suspend as
-// the workflow writes one (workflow's suspend). A park that leaves no linger is the tree once its
+// the workflow writes one (workflow's everyClaim). A park that leaves no linger is the tree once its
 // close has run, so its lifecycle is confirmed closed here: the lifecycle, and no longer the slot,
 // is what says a tree runs (record.TreeLive), and under one still open a labelled todo on a member
 // would be a re-entry into a running tree rather than the orphan's admission this park makes it.

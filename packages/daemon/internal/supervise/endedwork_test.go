@@ -919,7 +919,7 @@ func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(cause)
 			sent := len(h.prompts())
-			h.must(RequestResume{Claim: h.token})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 			h.reach(StateReady)
 			told := h.wantPrompts(sent + 1)[sent]
 			if !strings.Contains(told.Message, tc.says) {

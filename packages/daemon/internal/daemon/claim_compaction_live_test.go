@@ -560,8 +560,9 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 // controllerCompactsAndIsToldTwice drives the controller's own door — a controller grant minted
 // from its registration, then `POST /legion/v1/claims/compact` naming the issue and the role —
 // and the one thing only a compaction that ran makes possible: a second notice. The run of
-// provider-error turns reaches six, the project's controller is told once, the compaction puts
-// that run back to zero, and six more such turns tell it again.
+// provider-error turns reaches six, the issue's architect and the project's controller are each
+// told once, the compaction puts that run back to zero, and six more such turns tell them again.
+// This step reads the controller's copies (controllerNotices).
 func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	t := r.t
 	token := r.token(r.notice, claim.RoleImplementer)
@@ -586,7 +587,7 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 		t.Fatalf("the controller's compaction answered %+v, want a session compacted", answer)
 	}
 	door := r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller compacted a claim's session" && record.Attrs["claim"] == string(token)
+		return record.Message == "api: the controller compacted an agent's session" && record.Attrs["claim"] == string(token)
 	})
 	r.note("the daemon holds that the controller asked: %q (issue %v, role %v, compacted %v)",
 		door.Message, door.Attrs["issue"], door.Attrs["role"], door.Attrs["compacted"])
@@ -648,7 +649,7 @@ func (r *claimCompactionLive) architectIsSentNothing() {
 		t.Fatalf("the second compaction answered %+v, want it not compacted with Oh My Pi's own reason", second)
 	}
 	r.awaitLogFrom("the daemon's record that the controller asked", asked, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller compacted a claim's session" &&
+		return record.Message == "api: the controller compacted an agent's session" &&
 			record.Attrs["claim"] == string(token) && record.Attrs["compacted"] == false
 	})
 	r.note("the controller's compaction of the same session answered 200 with compacted=false, reason %q", second.Reason)
@@ -914,7 +915,7 @@ func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 		t.Fatalf("the controller's fresh session of %s = %d %s, want 200", architect, status, body)
 	}
 	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(architect)
+		return record.Message == "api: the controller started an agent in a fresh session" && record.Attrs["claim"] == string(architect)
 	})
 	r.note("the daemon holds that the controller asked for %s's fresh session", architect)
 	started := r.awaitFreshPane(architect, was.Session)
@@ -1051,7 +1052,7 @@ func (r *claimCompactionLive) architectComesBackThroughTheControllersDoor() {
 	r.note("the controller's `fresh_session` of %s, asked of a claim stored %s over its dead process, answered %d %s",
 		token, dead.State, status, strings.TrimSpace(string(body)))
 	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(token)
+		return record.Message == "api: the controller started an agent in a fresh session" && record.Attrs["claim"] == string(token)
 	})
 	started := r.awaitFreshPane(token, dead.Session)
 	told := r.waitArchitectNotices(r.root, "catch-up", caughtUp+1)

@@ -369,7 +369,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = n
 // task's number sends (claim.TurnOutcomeRequest), and is read as one naming no task whatever its
 // Task says: its refusal is of the second kind, and it finishes nothing. Either way the turn counts
 // in the claim's one run of provider-error turns (ProviderErrorRun), whose providerErrorRunTold-th
-// tells the project's controller once, and a refusal that cannot clear (classifyProviderError) —
+// is handed to Deps.ProviderErrorRunReached once, and a refusal that cannot clear (classifyProviderError) —
 // a status that cannot clear, or one the producer classed as OpenAI's cyber-policy refusal
 // (RequestTurnOutcome.Code), whatever its status — fails the claim at once, under
 // CauseProviderError or CauseCyberPolicy, so the workflow holds the issue for its architect, and
@@ -735,7 +735,7 @@ func freshSession(c Claim, ev Event) (bool, string) {
 	switch ev := ev.(type) {
 	case RequestRetry:
 		asked = ev.FreshSession
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		asked = ev.FreshSession
 	}
 	switch {

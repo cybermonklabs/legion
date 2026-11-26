@@ -110,7 +110,7 @@ func takeLaunchComesUp(machine *supervise.Machine, ready bool) error {
 // applies it.
 func takeRelaunched(machine *supervise.Machine) error {
 	ended := machine.Claim()
-	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: ended.Token}); err != nil {
+	if err := machine.Handle(context.Background(), supervise.RequestAskedRetry{Claim: ended.Token, By: supervise.SuspendedByOperator}); err != nil {
 		return fmt.Errorf("the operator's retry of the %s: %w", ended.Role, err)
 	}
 	machine.Wait()
@@ -353,7 +353,7 @@ func TestTakeAskDeliveredWhileItsRoleIsRelaunchedIsSentToTheNewLaunch(t *testing
 	var ended error
 	runner.notices = &takePublishedThen{holderPublisher: publisher, then: func() {
 		told := machine.Claim()
-		if err := machine.Handle(context.Background(), supervise.RequestStop{Claim: told.Token}); err != nil {
+		if err := machine.Handle(context.Background(), supervise.RequestStop{Claim: told.Token, By: supervise.SuspendedByOperator}); err != nil {
 			ended = fmt.Errorf("the operator's stop of the %s's launch %d: %w", told.Role, told.Generation, err)
 			return
 		}
@@ -610,8 +610,8 @@ func TestTakeOfARelaunchedAskedRoleIsHeldAskedAgainAndTakenOnceAtTheLanding(t *t
 				supervise.StreamTurnEnd{Claim: r.implementer},
 				supervise.RequestTurnOutcome{Claim: r.implementer, Generation: 1, Sequence: turnSequence.Add(1), Task: number,
 					ProviderError: &supervise.ProviderError{Message: "overloaded_error", Status: 529}},
-				supervise.RequestStop{Claim: r.implementer},
-				supervise.RequestOperatorRetry{Claim: r.implementer},
+				supervise.RequestStop{Claim: r.implementer, By: supervise.SuspendedByOperator},
+				supervise.RequestAskedRetry{Claim: r.implementer, By: supervise.SuspendedByOperator},
 			} {
 				if err := r.machine.Handle(r.ctx, ev); err != nil {
 					t.Fatalf("handle %T: %v", ev, err)

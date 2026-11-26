@@ -25,7 +25,7 @@ func TestTakeBackByAnOperatorStopTimeoutKeepsTheNumber(t *testing.T) {
 	if !pending.Interrupted || pending.taken() || pending.ID != "outbox:7" || pending.Number != number {
 		t.Fatalf("after the forced stop pending %+v, want the task interrupted and taken back under number %d", pending, number)
 	}
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.reach(StateReady)
 	if pending = h.pending(); !pending.Interrupted || pending.Task != "Continue testing." || pending.Number != number {
 		t.Fatalf("after the operator resume pending %+v, want the interrupted phase task", pending)

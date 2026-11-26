@@ -29,10 +29,10 @@ var (
 // (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the pod once
 // every asked role has answered, no turn runs, no take whose turn ended still owes its report and
 // no claim's activity report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
-// suspension excepted. PodDrift is what the round is opened on, and ReplacePod what ends the
-// round, or ReplaceIssuePod where no role process is left in the pod to name it through; the round
-// itself, its ask and its sweep are the daemon's (internal/daemon).
+// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding suspension
+// excepted. PodDrift is what the round is opened on, and ReplacePod what ends the round, or
+// ReplaceIssuePod where no role process is left in the pod to name it through; the round itself,
+// its ask and its sweep are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
 // roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is

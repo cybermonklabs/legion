@@ -501,7 +501,7 @@ func TestResumeRelaunchesTheSameSessionAfterTheSuspendedIncarnation(t *testing.T
 	suspended := h.locator()
 	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Previous == nil || *resume.Previous != suspended || resume.Spec.ResumeSessionFile != sessionFile || resume.Spec.Generation != 2 {
@@ -520,7 +520,7 @@ func TestResumeAfterARestartHasNoIncarnationToWaitOut(t *testing.T) {
 	h.reach(StateSuspended)
 	h.restart()
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Previous != nil || resume.Spec.ResumeSessionFile != sessionFile {
@@ -557,7 +557,7 @@ func TestStopReleasesAndRetiresTheClaim(t *testing.T) {
 			h.reach(state)
 			loc := h.locator()
 
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 
 			wantReleasedAt(t, h, testToken, loc)
 			h.wantState(StateRetired)
@@ -570,7 +570,7 @@ func TestStopReleasesAndRetiresTheClaim(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(state)
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 			wantReleasedWithNoLocator(t, h, testToken)
 			h.wantState(StateRetired)
 		})
@@ -582,14 +582,14 @@ func TestStopReleasesAndRetiresTheClaim(t *testing.T) {
 			t.Fatalf("spawn returned %v", err)
 		}
 		h.wantState(StateFailed)
-		h.must(RequestStop{Claim: testToken})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 		wantReleasedWithNoLocator(t, h, testToken)
 		h.wantState(StateRetired)
 	})
 	t.Run("retired", func(t *testing.T) {
 		h := newHarness(t)
-		h.must(RequestStop{Claim: testToken})
-		h.must(RequestStop{Claim: testToken})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 		h.wantCalls("Release", 1)
 		h.wantState(StateRetired)
 	})
@@ -617,7 +617,7 @@ func TestAStopThatFailsChangesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.rt.FailRelease(errBoom)
-	if err := h.handle(RequestStop{Claim: testToken}); !errors.Is(err, errBoom) {
+	if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, errBoom) {
 		t.Fatalf("stop returned %v, want the runtime's error", err)
 	}
 	h.wantState(StateReady)
@@ -691,7 +691,7 @@ func TestASuspensionWhoseTaskCannotBeRetiredStillRevokesTheCapability(t *testing
 			if tc.restart {
 				h.restart()
 			}
-			h.must(RequestResume{Claim: h.token})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 			if d, ok := h.store.delivery(h.token); ok {
 				t.Errorf("stored delivery %+v after the resume, want the finished phase's task retired", d)
 			}
@@ -728,7 +728,7 @@ func TestAnExitAfterTheDaemonEndedTheProcessIsAccepted(t *testing.T) {
 		ended func(*harness)
 	}{
 		{StateSuspended, func(h *harness) { h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator}) }},
-		{StateRetired, func(h *harness) { h.must(RequestStop{Claim: testToken}) }},
+		{StateRetired, func(h *harness) { h.must(RequestStop{Claim: testToken, By: SuspendedByOperator}) }},
 		{StateFailed, func(h *harness) {
 			for range 3 {
 				h.observe(runtime.Gone)
@@ -937,7 +937,7 @@ func TestAstraAFailedClaimStaysFailedAcrossARestart(t *testing.T) {
 	}
 	for _, ev := range []Event{
 		RequestSpawn{Claim: testToken},
-		RequestResume{Claim: testToken},
+		RequestResume{Claim: testToken, By: SuspendedByOperator},
 		RequestDeliver{Claim: testToken, Task: "try again"},
 		RequestRegister{Claim: testToken, Generation: h.generation(), Session: session, SessionFile: sessionFile},
 	} {

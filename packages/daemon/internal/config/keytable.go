@@ -252,7 +252,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
@@ -444,7 +444,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "probe_interval_seconds", RequiredBy: "no",
-			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline, and, at that deadline, a relaunch or an operator's stop held for a take's report that the store or the runtime refused.",
+			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline, and, at that deadline, a relaunch or a stop held for a take's report, the operator's or the controller's, that the store or the runtime refused.",
 			Positive:    &positiveKey{Value: 30, Duration: func(c *Config) *time.Duration { return &c.ProbeInterval }},
 		},
 	}
@@ -628,8 +628,8 @@ var nestedKeys = []memberGroup{
 			Description: "The kubeconfig the daemon reaches the cluster with, as a path resolved against this file's directory."},
 		{Name: "context", Default: "the kubeconfig's own current context", RequiredBy: "when the kubeconfig sets no current context",
 			Description: "Which context of that kubeconfig the daemon uses; naming one requires `kubeconfig`."},
-		{Name: "scheduling", Default: "a pod selects the Legion pool and tolerates nothing else", RequiredBy: "no",
-			Description: "Where the pods may run beyond the pool the runtime selects itself: the node labels they also select, the taints they tolerate and their priority class."},
+		{Name: "scheduling", Default: "a pod selects no node label and tolerates no taint, so it runs on any of the cluster's general nodes", RequiredBy: "no",
+			Description: "Where the pods may run on the cluster's general nodes, which they share: the node labels they select, the taints they tolerate and their priority class, and nothing else but a microVM pod's ComputeClass label and toleration."},
 		{Name: "resources", Default: "both pods take the daemon's own reservations", RequiredBy: "no",
 			Description: "What each of the two pods the daemon builds reserves and is bounded by: `issue`, every issue pod's, and `controller`, the daemon-launched controller's."},
 		{Name: "gateway", Default: "", RequiredBy: "no",
@@ -666,8 +666,8 @@ var nestedKeys = []memberGroup{
 			Description: "The sandbox the project's issue pods and its controller's pod run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod follows `type` alone, and the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
 	{Path: kubernetesKey + ".scheduling", Members: []member{
-		{Name: "node_selector", Default: "a pod selects the Legion pool alone", RequiredBy: "no",
-			Description: "The node labels every pod selects as well, merged over the pool label the runtime sets itself and which this key may not name, since the cluster's admission policy requires the pool's own value."},
+		{Name: "node_selector", Default: "a pod selects no node label but a microVM pod's ComputeClass", RequiredBy: "no",
+			Description: "The node labels every pod selects, as written, which may not name `legion.dev/pool`: Legion's pods share the cluster's general nodes, and that label would set them apart on nodes of their own."},
 		{Name: "tolerations", Default: "a pod tolerates no taint, so a tainted pool needs its toleration named here", RequiredBy: "no",
 			Description: "The node taints every pod tolerates, each a key, an operator and an effect."},
 		{Name: "priority_class", Default: "a pod runs at the namespace's own default priority", RequiredBy: "no",
@@ -746,6 +746,8 @@ var nestedKeys = []memberGroup{
 			Description: "Where each of those volumes is mounted in every pod, read-only unless the mount says otherwise."},
 		{Name: "service_account", Default: "the namespace's `default` ServiceAccount", RequiredBy: "no",
 			Description: "The ServiceAccount the agents' pods run as; it needs no permission of its own, and its projected token can be the model route's credential."},
+		{Name: "controller_service_account", Default: "the controller's pod runs as `service_account`", RequiredBy: "no",
+			Description: "The ServiceAccount the daemon-launched controller's pod runs as in place of `service_account`, so that pod presents a cloud identity of its own; only `controller: daemon` may set it, since `controller: operator` launches no controller pod."},
 	}},
 	{Path: podKey + ".volumes[]", Members: []member{
 		{Name: "name", Default: "none: a volume that names no name is refused", RequiredBy: "yes",

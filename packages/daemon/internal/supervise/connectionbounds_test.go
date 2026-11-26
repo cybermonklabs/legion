@@ -195,7 +195,7 @@ func TestTakeOfAClaimRestoredBeforeItsReadyArmsNoBoundBeforeItsHello(t *testing.
 // retiredByTheOperator is the operator's stop of the claim, which retires it (retire).
 func retiredByTheOperator(t *testing.T, h *harness) {
 	t.Helper()
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 	h.wantState(StateRetired)
 }
 
@@ -203,7 +203,7 @@ func retiredByTheOperator(t *testing.T, h *harness) {
 // brought up to ready and its take accepted.
 func retriedAfterRetirement(h *harness) {
 	h.t.Helper()
-	h.must(RequestOperatorRetry{Claim: h.token})
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 	relaunchedAndTaken(h)
 }
 
@@ -294,7 +294,7 @@ func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T)
 		h.wantState(StateSuspended)
 		h.wantTakenBackWithItsNote(number)
 		h.wantTakenOnceMore(number, func(h *harness) {
-			h.must(RequestResume{Claim: h.token})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 			relaunchedAndTaken(h)
 		})
 	})

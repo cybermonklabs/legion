@@ -59,14 +59,16 @@ const reasonBound = 200
 
 // The refusals the compaction writes itself, which both doors give word for word (compact).
 const (
-	// claimNotRunning: the claim runs no agent, so there is no session to compact, and what
-	// starts it again is what reaches it — fresh_session for a workflow role, the daemon's
-	// controller keeper for the project's own controller (startsAgain, startsAgainName). Two
-	// claims take it: one that is suspended, failed or retired, and one stored working that
-	// the read of its process at the request finds nothing behind, which runs no agent either
-	// however the record reads (refuseState, refuseWorkingClaim). The project's own controller
-	// in that second window is named the operator's suspend and resume instead, since its
-	// keeper does nothing for a controller stored working (refuseDeadController).
+	// claimNotRunning: no agent runs behind the claim, so there is no session to compact, and
+	// what starts the agent again is what reaches it — fresh_session for a workflow role, the
+	// daemon's controller keeper for the project's own controller (startsAgain, startsAgainName),
+	// and the holder's resume for an agent a suspension outranking the caller holds
+	// (holdSentences). Two claims take it: one that is suspended, failed or retired, and one
+	// stored working that the read of its process at the request finds nothing behind, which
+	// runs no agent either however the record reads (refuseState, refuseWorkingClaim). The
+	// project's own controller in that second window is named the operator's suspend and
+	// resume instead, since its keeper does nothing for a controller stored working
+	// (refuseDeadController).
 	claimNotRunning = "CLAIM_NOT_RUNNING"
 	// claimNotOnOmp: the role runs on Claude Code, which has no Oh My Pi session at all.
 	claimNotOnOmp = "CLAIM_NOT_ON_OMP"
@@ -101,29 +103,38 @@ const compactInstructions = "Write the summary as text. " +
 // turn, in which Oh My Pi refuses the handoff a compaction asks for, and the states a compaction
 // does reach (refuseState). Those states are the two the machine itself takes a compaction in,
 // which is all a compaction reaches live, so reaches and liveStates name the same pair here where
-// the fresh session's differ (supervise.TakesCompaction, controllerOp). The type is the two
-// recoveries' own (controllerOp, freshsession.go).
-var compactOp = controllerOp{
-	name:             "a compaction",
-	notTheController: "the controller does not compact its own session",
-	cutsTheTurn:      "Oh My Pi refuses a compaction's handoff in that turn",
-	reaches:          "A compaction reaches a claim whose agent is ready or idle",
-	liveStates:       "ready or idle",
+// the fresh session's differ (supervise.TakesCompaction, agentAction). The type is every agent
+// action's own (agentAction, freshsession.go).
+//
+// It is the one action the agent door lets the controller past a suspension that outranks
+// it (controllerPassesHold): a compaction stops, takes over and lifts no suspension, so the
+// operator's suspension is no refusal of it. An agent that suspension holds is answered by the
+// compaction's own refusals of its claim as it stands: a landed one runs no session to compact,
+// and a held one is the held suspension's refusal (refuseState, refuseHeldSuspension). Each of
+// them names the operator's resume as what starts that agent again, since the controller's
+// fresh session would be refused that suspension at the door (holdSentences).
+var compactOp = agentAction{
+	name:                 "a compaction",
+	invalidRole:          "the controller does not compact its own session",
+	controllerPassesHold: true,
+	cutsTheTurn:          "Oh My Pi refuses a compaction's handoff in that turn",
+	reaches:              "A compaction reaches an agent that is ready or idle",
+	liveStates:           "ready or idle",
 }
 
-// claimCompact is the controller's door onto the compaction (compact). The effect is the
-// operator's own, and so are its refusals and its answer; only the authentication differs
-// (controllerClaim).
+// claimCompact is the agent door's compaction (compact). The effect is the operator's own, and so
+// are its refusals and its answer; only the authentication differs (agentDoor), which lets the
+// controller past the operator's suspension (compactOp).
 func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
-	target, ok := s.controllerClaim(w, r, compactOp)
+	target, ok := s.agentDoor(w, r, compactOp)
 	if !ok {
 		return
 	}
-	answer, ok := s.compact(w, r, target.machine, target.token)
+	answer, ok := s.compact(w, r, target.machine, target.token, target.by)
 	if !ok {
 		return
 	}
-	s.log.Info("api: the controller compacted a claim's session", "claim", target.token, "issue", target.issue,
+	s.log.Info("api: "+callerName(target.by)+" compacted an agent's session", "claim", target.token, "issue", target.issue,
 		"role", target.role, "compacted", answer.Compacted, "reason", answer.Reason)
 	s.writeAnswer(w, r, AnswerCompact, http.StatusOK, answer)
 }
@@ -143,7 +154,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
-	answer, ok := s.compact(w, r, m, token)
+	answer, ok := s.compact(w, r, m, token, supervise.SuspendedByOperator)
 	if !ok {
 		return
 	}
@@ -222,8 +233,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // So what the refusals of this door name as starting a controller claim again is never the fresh
 // session: it is that keeper for a controller suspended, failed or retired, the operator's retry
 // of the claim for one held for a cyber-policy refusal (startsAgainOf), and the operator's own
-// suspend and resume for one stored working over a dead process, which the keeper does nothing
-// for (startsAgainName, refuseState, refuseHeldSuspension, refuseDeadController).
+// suspend and resume for one whose claim is stored working over a dead process, which the keeper
+// does nothing for (startsAgainName, refuseState, refuseHeldSuspension, refuseDeadController). For
+// the same reason an agent the operator's suspension holds is named the operator's resume as what
+// starts it under the controller's compaction (by, whose resume that suspension refuses:
+// supervise.Claim.HeldAgainst), rather than the fresh session the agent door would refuse the
+// controller (holdSentences).
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, and the
 // ladder's wait goes with it, so the owed task goes now rather than at the end of a wait
@@ -238,8 +253,10 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //
 // While the project is paused, a claim that is not the project's controller is refused
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
-// (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
-func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (CompactResponse, bool) {
+// (refusedWhilePaused). The controller's compaction passes the agent door's hold check
+// (agentAction.controllerPassesHold) and meets the pause here.
+func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	by supervise.SuspendSource) (CompactResponse, bool) {
 	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {
 		s.writeFailure(w, r, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
 			"%s runs on %s, which has no Oh My Pi session to compact; %s is what starts it again",
@@ -318,7 +335,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			// one whose agent is not running, one between states. The answer is written from
 			// that state, the published view, and for a claim stored working a read of its
 			// process made now (refuseState).
-			return CompactResponse{}, s.refuseState(w, r, m, token, refused.State, m.View())
+			return CompactResponse{}, s.refuseState(w, r, m, token, refused.State, m.View(), by)
 		}
 		// Oh My Pi refused the handoff or made no document, the wait for it ran out, or the transport
 		// failed. The claim is back and whatever task it owes is written again, unless its take was
@@ -352,10 +369,13 @@ func boundReason(text string) string {
 // the claim (supervise.Claim.SuspensionHeld, refuseHeldSuspension), whether a working claim is
 // working because its session is being compacted rather than because a turn is
 // (supervise.Claim.Compacting), and the claim's role, which decides what a refusal may name as
-// starting it again (startsAgainName). A claim stored working is read once more, at the
-// runtime and now, because what stands behind it is the one thing neither the state nor the
-// view says: that read is this door's as much as the fresh session's, and it is a decision of
-// the claim, which is why this is a method (refuseWorkingClaim).
+// starting it again (startsAgainName). by is the caller: the operator's suspension refuses the
+// controller's resume_agent (supervise.Claim.HeldAgainst), and an agent that suspension holds,
+// held or landed, is named the operator's resume as what starts it (refuseHeldSuspension,
+// refuseNotRunning). A claim stored working is read once more, at the runtime and now, because
+// what stands behind it is the one thing neither the state nor the view says: that read is this
+// door's as much as the fresh session's, and it is a decision of the claim, which is why this is
+// a method (refuseWorkingClaim).
 //
 // The hold is read first and without the state, because a hold outlives the state it arrived
 // in: it is held over a launch that has not registered and still stands when that launch
@@ -382,10 +402,11 @@ func boundReason(text string) string {
 // a claim nothing is bringing back. It always reports false, so a caller returns it as its own
 // answer.
 func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
-	state supervise.ClaimState, view supervise.ClaimView) bool {
+	state supervise.ClaimState, view supervise.ClaimView, by supervise.SuspendSource) bool {
+	hold := view.HeldAgainst(by)
 	switch {
 	case view.SuspensionHeld:
-		return s.refuseHeldSuspension(w, r, token, state, view.Role, compactOp)
+		return s.refuseHeldSuspension(w, r, token, state, view.Role, compactOp, hold)
 	case state == supervise.StateWorking && view.State != supervise.StateWorking:
 		s.refuseMovedClaim(w, r, token, compactOp)
 	case state == supervise.StateWorking && view.Compacting:
@@ -399,9 +420,9 @@ func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervis
 			s.refuseDeadController(w, r, token)
 			return false
 		}
-		s.refuseNotRunning(w, r, token, overADeadProcess, view.Claim)
+		s.refuseNotRunning(w, r, token, overADeadProcess, view.Claim, hold)
 	case startsAgain(state):
-		s.refuseNotRunning(w, r, token, string(state), view.Claim)
+		s.refuseNotRunning(w, r, token, string(state), view.Claim, hold)
 	default:
 		s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s. %s. %s", token, state, compactOp.reaches, askAgainLater))
@@ -420,11 +441,22 @@ const overADeadProcess = "stored working over a process that is no longer runnin
 // stored working that the read of its process found nothing behind (refuseState). doing is
 // what that claim is, in the words the sentence reads it as — the state for the first, and
 // what the read found for the second (overADeadProcess). There is no session to compact either
-// way, so both are named what starts the claim again, which the claim's role decides, and for
-// the project's own controller whether it is held for a cyber-policy refusal (claimNotRunning,
+// way, so both are named what starts the claim again, which the claim's role decides, and for the
+// project's own controller whether it is held for a cyber-policy refusal (claimNotRunning,
 // startsAgainOf). The one claim of the second window it is not given to is the project's own
 // controller, which has a sentence of its own (refuseDeadController).
-func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token claim.Token, doing string, c supervise.Claim) {
+//
+// hold is the refusal the caller's resume meets (supervise.Claim.HeldAgainst), nil where there is
+// none. The operator's suspension refuses the controller's fresh session too, so an agent it holds
+// is named the operator's resume instead under the controller's compaction, in the words every
+// refusal of a hold gives it (holdSentences).
+func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token claim.Token, doing string, c supervise.Claim,
+	hold error) {
+	if _, heldBy, lifts, held := holdSentences(token, hold); held {
+		s.writeFailure(w, r, http.StatusConflict, claimNotRunning, fmt.Sprintf(
+			"%s is %s, so it runs no Oh My Pi session to compact; it is %s. %s", token, doing, heldBy, lifts))
+		return
+	}
 	s.writeFailure(w, r, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 		"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
 		token, doing, startsAgainOf(c)))

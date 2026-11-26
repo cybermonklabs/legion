@@ -507,7 +507,7 @@ func TestWhatLetsAWaitingRelaunchsClaimGoDropsTheRelaunchWithItsTimer(t *testing
 		t.Fatalf("the unchecked relaunch armed %v with relaunch %t, want its retry waiting", h.m.timers, h.m.relaunch != nil)
 	}
 
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 
 	h.wantState(StateRetired)
 	if _, ok := h.m.timers[TimerRelaunch]; ok || h.m.relaunch != nil {

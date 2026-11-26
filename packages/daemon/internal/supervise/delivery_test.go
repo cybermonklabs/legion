@@ -516,7 +516,7 @@ func TestAnOperatorsTaskSurvivesASuspensionAndGoesOnResume(t *testing.T) {
 		t.Fatalf("stored delivery across the suspension = %+v (%v), want the operator's task kept", stored, ok)
 	}
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.reach(StateReady)
 
 	if sent := h.wantPrompts(1)[0]; sent.Message != "look at the tree" {
