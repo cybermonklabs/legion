@@ -120,14 +120,18 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
 }
 
-/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line, on that line: right of
- *  it where the atom runs left to right, and left of it where it runs right to left. Where the
- *  browser names the atom neither direction, the point is past no end of it. Read only for a place
- *  the browser answered inside an atom, so no other press lays the words out. */
+/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of it where the
+ *  atom runs left to right, and left of it where it runs right to left. The browser put the point
+ *  on one of the atom's lines, and an atom's box is as tall as its font, not as its line, so `y`
+ *  only tells the last line from an earlier one: a point at or above the foot of the line before
+ *  the last is on no last line. Where the browser names the atom neither direction, the point is
+ *  past no end of it. Read only for a place the browser answered inside an atom, so no other
+ *  press lays the words out. */
 function pastAtomEnd(atom: Element, x: number, y: number): boolean {
   const lines = atom.getClientRects();
   const last = lines[lines.length - 1];
-  if (last === undefined || y < last.top || y > last.bottom) return false;
+  const earlier = lines[lines.length - 2];
+  if (last === undefined || (earlier !== undefined && y <= earlier.bottom)) return false;
   const direction = atom.ownerDocument.defaultView?.getComputedStyle(atom).direction;
   return direction === "rtl" ? x < last.left : direction === "ltr" && x > last.right;
 }
