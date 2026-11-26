@@ -1728,17 +1728,46 @@ async function expectQuestionReached(page: Page, read: SeededPage): Promise<void
   await expectFocusedOnScreen(page, read, overtaken, "the overtaken question's /asks/<id> address");
 }
 
-/** `q` from the open question that stands before the overtaken one focuses it, as it focuses any
- *  open question: from a question `q` goes to the next one in the tree's order, and from any other
- *  row to the first, so the press is made on the question before the overtaken one, whatever rows
- *  the page draws between them. */
+/** `q` focuses the overtaken question as it does any open question: from a question it goes to the
+ *  next one in the tree's order, and from any other row to the first. The press is made on the
+ *  open question the page draws right before the overtaken one, read from the drawn rows, because
+ *  the read orders two questions made in one edit by their ids, which the seed does not choose;
+ *  where none is drawn before it, the press is made on a row that is no question. */
 async function expectQReaches(page: Page, read: SeededPage): Promise<void> {
-  const { answer, plain, seeded, traffic, treeId } = read;
+  const { answer, plain, seeded, traffic } = read;
   const overtaken = questionReadId(answer, seeded, "overtakenQuestion");
   await gotoSettled(page, traffic, plain);
-  await drawnRowId(page, overtaken, "the overtaken question");
-  const start = nodeRow(page, treeId(questionReadId(answer, seeded, "openQuestion"))).first();
-  await expect(start, "the open question is no row of the outline").toHaveCount(1);
+  const overtakenId = await drawnRowId(page, overtaken, "the overtaken question");
+  const openId = await drawnRowId(
+    page,
+    questionReadId(answer, seeded, "openQuestion"),
+    "the open question"
+  );
+  const proposedId = await drawnRowId(
+    page,
+    questionReadId(answer, seeded, "proposedQuestion"),
+    "the proposed question"
+  );
+  const drawnIds = (
+    await nodeRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute("data-node-id")))
+  ).filter((id): id is string => id !== null && id.length > 0);
+  const overtakenAt = drawnIds.indexOf(overtakenId);
+  expect(overtakenAt, "the overtaken question is not among the drawn rows").toBeGreaterThanOrEqual(
+    0
+  );
+  const otherQuestions = new Set([openId, proposedId]);
+  const allQuestions = new Set([openId, proposedId, overtakenId]);
+  const startId =
+    drawnIds
+      .slice(0, overtakenAt)
+      .filter((id) => otherQuestions.has(id))
+      .at(-1) ?? drawnIds.find((id) => !allQuestions.has(id));
+  const noStart =
+    "the outline draws neither an open question before the overtaken one nor a row that is no open question";
+  expect(startId, noStart).toBeDefined();
+  if (startId === undefined) throw new Error(noStart);
+  const start = nodeRow(page, startId).first();
+  await expect(start, `the start row ${startId} is no row of the outline`).toHaveCount(1);
   await start.focus();
   await expect(start).toBeFocused();
   await page.keyboard.press("q");
