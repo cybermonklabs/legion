@@ -211,7 +211,7 @@ export function IssuePropertiesRow({
           no room left the two actions take the line under it together. */}
       {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : approval === undefined ||
         approval.state === "draft" ? (
-        <span className={approvalPillClassName("draft", "compact")} {...pageChrome}>
+        <span className={approvalPillClassName("draft", "compact", true)} {...pageChrome}>
           {CONTROL_LABELS.not_requested}
         </span>
       ) : (

@@ -245,7 +245,7 @@ export function DocumentsList({
       {/* The chooser Upload opens: Upload is the way to it, so it takes no stop of Tab's. */}
       <input
         aria-label={CONTROL_LABELS.upload_file}
-        className="sr-only left-0"
+        className={`sr-only left-0 ${pageInkText}`}
         disabled={upload.refusal !== null}
         onChange={upload.selectFile}
         ref={upload.fileInputRef}
