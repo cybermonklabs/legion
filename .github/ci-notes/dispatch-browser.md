@@ -150,7 +150,7 @@ every row of the selection it read, and the rows Playwright gave it to run (DISP
 The merge job's reading one holds the four legs' lists against each other and fails by name on a row of the selection that no leg ran or that two ran.
 Its row count cannot see either: a planted reporter that put the selection's last file on no leg ran 1,616 of the 1,617 rows, and the legs' count and the merged report both read 1,616.
 
-The image this repository builds and publishes for every CI job that can launch WebKit or Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml, tag browser-e07980de):
+The image this repository builds and publishes for every CI job that can launch WebKit or Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml, tag browser-398fb2e8):
 Playwright's own browser host, which bakes Chromium, WebKit and Firefox and every host package they need under /ms-playwright - where its PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed` binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row of .github/ci-tools.yaml, in the second-source step of ./.github/actions/setup-bun, which runs before any browser step here - flock, a C/C++ toolchain for the dependency whose install falls back to a source build, and a DejaVu core font added.
 So this job downloads no browser and installs no browser host package from Ubuntu's mirror pool at run time (dispatch://INFRA-1443).
 The digest is written out as a literal rather than through an expression because .github/scripts/check-ci-images.sh reads a `container:` image out of the parsed YAML and refuses one holding a `${{ }}`, which it cannot resolve to a row.
