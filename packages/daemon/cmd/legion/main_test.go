@@ -1630,10 +1630,11 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 
 // `legion config check` names the ServiceAccount the controller's pod runs as when the file names
 // runtime.kubernetes.pod.controller_service_account, beside the one every other pod runs as — the
-// namespace's default where service_account is unset — just before the repository cache's line,
-// and exits 0. A file that names no controller account prints no such line
-// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as every other
-// pod does.
+// namespace's default where service_account is unset — and, while the repository cache's bucket is
+// set, the one a repository cache's pod runs as, just before the repository cache's line, and exits
+// 0. A file that names no controller account prints no such line
+// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as
+// runtime.kubernetes.pod.service_account.
 func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
 	legionState(t)
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1643,6 +1644,8 @@ func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
 			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as legion-worker (runtime.kubernetes.pod.service_account)\n"},
 		{"beside no pods' account", "    pod: {controller_service_account: legion-controller}\ncontroller: daemon\n",
 			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as the namespace's default (runtime.kubernetes.pod.service_account is unset)\n"},
+		{"beside the pods' own account and the cache's", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-cache}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod but a repository cache's runs as legion-worker (runtime.kubernetes.pod.service_account); a repository cache's pod runs as legion-cache (runtime.kubernetes.repository_cache.service_account)\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.extra)
@@ -2313,16 +2316,16 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // daemon does not build, and every root at all against a daemon below contract 58, which
 // serves no place. 0 is the true answer for a caller that cannot see the line.
 //
-// The operator's guide prints this line as its sample and says what the count is, so the sample
-// is built here from the state the guide describes and read back out of awaiting_summary_extract.txt,
-// the copy of those lines committed beside this package. It is read there and never in the guide
-// itself: a test that reads the guide puts the guide in this job's filter — a declared read
-// applies to every compiled source file of a run — and a documentation edit would then start the
-// whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
-// TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
-// file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
-// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
-// out of the source that declares it. (INFRA-1100.)
+// The operator's guide prints this line as its sample, with the `P0:` line under `admission:`, and
+// says what the count is, so the sample is built here from the state the guide describes and read
+// back out of awaiting_summary_extract.txt, the copy of those lines committed beside this package.
+// It is read there and never in the guide itself: a test that reads the guide puts the guide in
+// this job's filter — a declared read applies to every compiled source file of a run — and a
+// documentation edit would then start the whole daemon Go lane. What holds the copy to the guide
+// is internal/textcheck's TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job
+// whose subject is a file's words (INFRA-1413). That the guide also names the words of the wait
+// itself is one rule held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand,
+// which reads each out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	t.Parallel()
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
@@ -2374,6 +2377,15 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	if !strings.Contains(quoted, sample) {
 		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for a "+
 			"state with one unanswered root", extract, sample)
+	}
+	// The `P0:` line the sample prints under `admission:` for the same state: three issues hold a
+	// slot under a cap of 4, none of them P0, and no P0 bound stands in legion.yaml or was set
+	// while the daemon runs.
+	p0Line := p0AdmissionLine(api.Admission{Cap: 4, Active: []string{"WIDGETS-11", "WIDGETS-12", "WIDGETS-13"},
+		P0Holders: new(0), P0Bound: &api.P0BoundView{}})
+	if !strings.Contains(quoted, p0Line) {
+		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for three "+
+			"holders of a slot, none of them P0, and no P0 bound", extract, p0Line)
 	}
 }
 

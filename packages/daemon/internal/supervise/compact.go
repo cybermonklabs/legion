@@ -352,7 +352,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		m.log.Info("supervise: the compaction leaves the task's prompt to its turn; a handoff aborts no turn",
 			"delivery", m.claim.Pending.ID)
 	}
-	was, held := m.claim.State, m.heldSend
+	was, ended, held := m.claim.State, m.claim.LastTurnEnd, m.heldSend
 	if m.send != nil {
 		// Oh My Pi holds this send's prompt until the handoff ends, so the send's wait may run out
 		// before its acknowledgement can come (heldSend, refused).
@@ -360,11 +360,20 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.compacting = &compacting{conn: conn, generation: m.claim.Generation, back: was}
 	m.claim.State = StateWorking
+	// A ready or idle claim runs no turn, but its times can still show one open: every path that
+	// ends a turn without dating its end leaves them that way (Claim.LastTurnEnd's doc says which
+	// date it). The compaction closes that turn in its own write, so a daemon restarted during the
+	// compaction, which knows nothing of it, reads the claim stored working as in no turn rather
+	// than in the turn that was cut off, and ends nothing for it (the controller keeper's
+	// TurnPastBound, dispatch://INFRA-2045 R2).
+	if _, open := m.claim.OpenTurn(); open {
+		m.claim.LastTurnEnd = m.deps.Clock.Now()
+	}
 	m.log.Info("supervise: the claim's session is being compacted; it is busy until the compaction ends",
 		"generation", m.claim.Generation, "session", m.claim.Session)
 	if err := m.persist(ctx); err != nil {
 		m.compacting, m.heldSend = nil, held
-		m.claim.State = was
+		m.claim.State, m.claim.LastTurnEnd = was, ended
 		return err
 	}
 	return nil
