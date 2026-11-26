@@ -198,7 +198,8 @@ export interface ViewSlotProps extends SlotProps {
    * call it on every render once its reads have settled, by the rule `StageSlot` gives. Given
    * true first, the stage keeps the view, with the focus on the view's tab stop or the row it
    * lands on, which it takes once it is told - at once where its tab stop is the row of the node
-   * the address names - and not where the reader acted first (decision 413); given false first,
+   * the address names (decision 413) - and, where the reader acted first, only a focus held by
+   * nothing, on rows the view first draws as it tells it (`ViewStage`); given false first,
    * it draws the body in the view's place for the rest of that
    * following, as under a view whose part has not filled its slot, and the body lands on the node
    * or says in the outline's place that the issue holds none of it, and takes the focus unless
@@ -278,8 +279,12 @@ const SLOT_TREE = '[role="tree"]';
  * the stage nothing. Once the mark is gone the take waits one frame more, the frame in which a
  * view's own landing on the row the address names takes the focus (`landOnRow`), and then takes
  * it where that left it held by nothing: on the view's tab stop, which is the named row where
- * the view starts its tab stop there. Marked `acted`, the reader acted first, and the take
- * places nothing: the landing moves no focus.
+ * the view starts its tab stop there. Marked `acted`, the reader acted first, and the landing
+ * yields to their act (decision 375): a row the view drew while the landing stood undecided
+ * stood on the page without the focus after that act, and the take gives it none later; where
+ * the view first draws its rows in the render that marks the box `acted`, the take gives a focus
+ * held by nothing to the view's tab stop as it does under any view whose rows are drawn, and a
+ * focus the reader moved stays where they put it.
  */
 export function ViewStage({
   box: given,
@@ -310,6 +315,9 @@ export function ViewStage({
     // Whether the take waits for the address's landing, as the stage marks the box: from the
     // mark the box holds as the view is drawn, until the mark changes (`decided`, below).
     let waits = stage.getAttribute(ADDRESS_LANDING) === LANDING_MARKS.undecided;
+    // Whether a row stood on the page without the focus while the landing was undecided: the take
+    // held it off with the box still marked so once the render that drew it was laid out.
+    let held = false;
     // The frame the take waits for once the landing is decided.
     let landing = 0;
     // Puts the focus on `to`, and brings it on screen too once `bring`.
@@ -335,8 +343,12 @@ export function ViewStage({
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
       // While the landing is undecided no row takes the focus but the row of the node the address
-      // names, whose focus is the landing; a Retry drawn with no row does.
-      if (waits && to?.matches(TAB_STOP_ROW) === true && !isAddressedRow(stage, to)) return false;
+      // names, whose focus is the landing; a Retry drawn with no row does. A row the take finds
+      // once the render that drew it has marked the box decided was never on the page undecided.
+      if (waits && to?.matches(TAB_STOP_ROW) === true && !isAddressedRow(stage, to)) {
+        if (stage.getAttribute(ADDRESS_LANDING) === LANDING_MARKS.undecided) held = true;
+        return false;
+      }
       if (to === null) return false;
       place(to);
       placed = to;
@@ -357,11 +369,14 @@ export function ViewStage({
     };
     watch();
     // The mark's changes: undecided again, for a new following of the address, which the take
-    // waits on; decided, after which the take runs in the next frame, unless the reader acted
-    // first: it then places nothing, and runs again only for a focus on the tree itself (below).
+    // waits on; decided, after which the take runs in the next frame. Where the reader acted
+    // first it runs at once, as the rows are drawn, unless a row stood without the focus while
+    // the landing was undecided: it then places nothing, and runs again only for a focus on the
+    // tree itself (below).
     const decided = new MutationObserver(() => {
       const mark = stage.getAttribute(ADDRESS_LANDING);
       if (mark === LANDING_MARKS.undecided) {
+        if (!waits) held = false;
         waits = true;
         return;
       }
@@ -369,6 +384,7 @@ export function ViewStage({
       waits = false;
       drawn.disconnect();
       if (mark === null) landing = requestAnimationFrame(watch);
+      else if (!held) watch();
     });
     decided.observe(stage, { attributeFilter: [ADDRESS_LANDING] });
     // A focus on the tree itself, where it draws no tab-stop row, starts the take again,

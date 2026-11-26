@@ -252,8 +252,9 @@ export function VerificationFilterBody({
   reveal?: string;
   /** The nodes the address names (`useAddressTarget`'s `named`): where the view draws a row of
    *  one, that row holds the tree's tab stop from the render that first draws it, in place of
-   *  the issue's row, so the address lands with the focus on it (part N's R14, decision 368).
-   *  Without it the stop starts on the issue's row. */
+   *  the issue's row, so the address lands with the focus on it (part N's R14, decision 368),
+   *  unless the reader has acted since they followed the address (`addressActs`). Without it
+   *  the stop starts on the issue's row. */
   startsOn?: ReadonlySet<string>;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
@@ -398,13 +399,17 @@ export function VerificationFilterBody({
   const tree = useRef<HTMLDivElement>(null);
   useAddressLanding({ acts: addressActs, drawn: rows.join(" "), id: addressRow, tree });
   // The row of a node the address names takes the stop once for each node named, in the render
-  // that first draws it, as the stop is handed back above; the reader's own moves keep it after.
+  // that first draws it, as the stop is handed back above, and only where the reader has not
+  // acted since they followed the address, read in that render alone as the address's row reads
+  // it above; the reader's own moves keep it after.
   const [startedOn, setStartedOn] = useState<string | undefined>(undefined);
   const startRow = startsOn === undefined ? undefined : namedRow(startsOn, shown, loose, others);
   const startKey = startsOn === undefined ? undefined : [...startsOn].join(" ");
   if (startRow !== undefined && startedOn !== startKey && rows.includes(startRow)) {
     setStartedOn(startKey);
-    setRovingId(startRow);
+    const acted =
+      actsFollowing.current === following && addressActs?.current?.signal.aborted === true;
+    if (!acted) setRovingId(startRow);
   }
   // The row the reader's focus is on is F's focused node, as the outline's row is, so Details'
   // facts of the row they are on follow it (part N's R14): a statement, a check, a result or
