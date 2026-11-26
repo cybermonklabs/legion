@@ -14,9 +14,14 @@ import "fmt"
 // statements (search.go) on its own.
 
 var (
+	// relatedDocumentKeywordLeg is the document arm shared by relatedKeywordQuery and
+	// relatedMeaningQuery: document rows of node_search (node_kind = 'artifact'), ranked by the
+	// chosen lexemes' weights (relatedCoordinationRank).
+	relatedDocumentKeywordLeg = relatedDocumentKeywordLegSQL(relatedCoordinationRank)
 	// relatedKeywordLegs is search's keyword legs (searchKeywordLegs) ranked by the chosen
-	// lexemes' weights (relatedCoordinationRank).
-	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank)
+	// lexemes' weights (relatedCoordinationRank), with its document arm reading document rows of
+	// node_search alone (relatedDocumentKeywordLeg).
+	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank, relatedDocumentKeywordLeg)
 	// relatedKeywordQuery is the check's stage 1: search's keyword query (searchQueryBody) over the
 	// chosen lexemes, with relatedKeywordLegs and relatedFusedSQL. Parameters: searchQueryBody's
 	// $1-$8, then $9 the lexemes, $10 their idf and $11 the acting credential

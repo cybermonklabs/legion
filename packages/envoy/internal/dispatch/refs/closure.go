@@ -387,15 +387,16 @@ var linksOutQuery = sync.OnceValue(func() string {
 // (oneRowPerNode).
 //
 // A target is read only where the acting person, whose credential is bound at $2 (closureSeen),
-// may see it and the node it counts as: a document or an item of the issue they may see, and a
-// block of one they may see that they may see too, as refs.Edges' in read holds the node read and
-// the blocks it reads at. A link a block holds is read only from a block they may see; the node at
-// its near end, the source, is answered only where they may see it by resolveNodes, which binds
-// that node kind's predicate. The statement is rendered at its first use, as linksOutQuery is.
+// may see it and the node it counts as: the issue itself where they may see it, a document or an
+// item of the issue they may see, and a block of one they may see that they may see too, as
+// refs.Edges' in read holds the node read and the blocks it reads at. A link a block holds is read
+// only from a block they may see; the node at its near end, the source, is answered only where
+// they may see it by resolveNodes, which binds that node kind's predicate. The statement is
+// rendered at its first use, as linksOutQuery is.
 var linksInQuery = sync.OnceValue(func() string {
 	visibleDocument := VisibleKind("artifact", `o.ref_key`, closureSeen)
 	targets := []string{
-		`select 'issue', $1::text`,
+		`select 'issue', $1::text where ` + VisibleKind("issue", `$1::text`, closureSeen),
 		`select 'artifact', o.ref_key from own_documents o where ` + visibleDocument,
 		`select 'block', b.node_id from own_blocks b`,
 		`select 'block', a.address from room_addresses a`,
@@ -536,8 +537,8 @@ type linkRow struct {
 // lens at the lens's address, with the retired document's ref_key. A link to a block of that
 // document is no link to its address, and still reaches the document itself, so one document can
 // stand for two members, the lens and itself. A retired document whose address moved to no lens
-// the reader may see names its issue (loadArtifactNodes), which Links lists in its place, so it
-// is no member.
+// the reader may see names its issue (loadArtifactNodes), which each list holds in its place, once
+// however many of its rows name it (related), so it is no member.
 //
 // It answers for who: a link whose source, or the block it is read at, who may not see is no
 // link of the read, and a node who may not see is neither listed nor named as a via, so a node
@@ -607,15 +608,33 @@ func readLinkRows(ctx context.Context, q Queryer, statement string, args []any) 
 	})
 }
 
-// related is each of rows whose node nodes names, in the order of the node's kind, then its id,
-// each named as resolvedNode.name names it under serverURL. It is never nil.
+// related is one link for each node of rows that nodes names, in the order of the node's kind,
+// then its id, each named as resolvedNode.name names it under serverURL. Two rows can name one
+// node: a retired document's address names its issue (loadArtifactNodes), so content that links
+// both the issue and that document, or two retired documents of one issue, reads as a row for each
+// address, which the statement grouped by (oneRowPerNode). Such rows are one link, holding the
+// kinds of both, each once and in order, and the lower of their vias, by kind and then id. It is
+// never nil.
 func related(rows []linkRow, nodes map[[2]string]resolvedNode, serverURL string) []model.ReferenceLink {
 	list := make([]model.ReferenceLink, 0, len(rows))
+	listed := make(map[[2]string]int, len(rows))
 	for _, row := range rows {
 		node, found := nodes[[2]string{row.kind, row.id}]
 		if !found {
 			continue
 		}
+		key := [2]string{node.Kind, node.ID}
+		if at, seen := listed[key]; seen {
+			link := &list[at]
+			kinds := slices.Concat(link.Kinds, row.kinds)
+			slices.Sort(kinds)
+			link.Kinds = slices.Compact(kinds)
+			if cmp.Or(strings.Compare(row.via.Kind, link.Via.Kind), strings.Compare(row.via.ID, link.Via.ID)) < 0 {
+				link.Via = row.via
+			}
+			continue
+		}
+		listed[key] = len(list)
 		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(serverURL), Kinds: row.kinds, Via: row.via})
 	}
 	slices.SortFunc(list, func(left, right model.ReferenceLink) int {

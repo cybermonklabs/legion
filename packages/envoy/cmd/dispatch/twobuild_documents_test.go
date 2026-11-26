@@ -742,8 +742,9 @@ func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string)
 // and the links of its href table.
 type referenceTables struct {
 	texts []struct {
-		Body   string `json:"body"`
-		Origin string `json:"origin"`
+		Body   string   `json:"body"`
+		Origin string   `json:"origin"`
+		Refs   []string `json:"refs"`
 	}
 	hrefs []hrefRow
 }
@@ -761,7 +762,7 @@ func readReferenceTables(t *testing.T, fixtures string) referenceTables {
 // the dashboard writes it and as its dispatch:// form, a paragraph each. shared holds the forms the
 // reader's own tables hold too - a text row whose body the reader's text table holds, a link whose
 // href its href table holds - and writerOnly the rest, the forms only the writer reads, or nothing
-// where the reader's tables hold every one. Two kinds of text row are left out, each logged:
+// where the reader's tables hold every one. Three kinds of text row are left out, each logged:
 //   - A row that names an origin of its own: its links are references only to a server at that
 //     origin, and both builds serve referenceServerURL here.
 //   - A row that opens a typed block (a line that starts with `:::`): the table holds the opening
@@ -769,6 +770,16 @@ func readReferenceTables(t *testing.T, fixtures string) referenceTables {
 //     the block, and the writer's manifest must declare the attribute. The row carries neither,
 //     so the writer refuses it as a document (`typed block "callout" is unclosed at document
 //     level`).
+//   - A row the writer's table lists with no reference (a negative) and the reader's text table
+//     does not hold. A negative both tables hold stays in shared, where each build must read it as
+//     no reference. One only the writer holds is no form only the writer reads, which is what
+//     writerOnly is for: the writer writes no edge for it, so a rewrite has none to drop and the
+//     writer's index none to write back, and a reader whose grammar is a later one can read a
+//     reference in it. The previous build's `No tab` row ends with `dispatch://CORE-49/decisions`,
+//     a negative there, which this build reads as the issue (D10, text.parseDispatch), and this
+//     build's own row stands in its place with the other negatives alone. Only a negative is left
+//     out on this account: every row that names a reference stays in writerOnly, so the check of
+//     the forms only the writer reads is as strict for them as it was.
 //
 // Every other row must stand alone. A writer that refuses one fails the row, so a refused row is
 // never dropped without a trace.
@@ -795,6 +806,8 @@ func referencesMarkdown(t *testing.T, writer, reader string) (shared, writerOnly
 			t.Logf("left out the text row %q: it nests blocks past the bound a document is held to", row.Body)
 		case bodies[row.Body]:
 			both = append(both, row.Body)
+		case len(row.Refs) == 0:
+			t.Logf("left out the text row %q: it is a negative of the writer's table, which the reader's table does not hold, so it is no reference form only the writer reads: the writer writes no edge for it that a rewrite could drop, and a reader of a later grammar may read a reference in it", row.Body)
 		default:
 			only = append(only, row.Body)
 		}

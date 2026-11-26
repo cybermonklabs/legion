@@ -201,6 +201,9 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 	}
 	agentEdit(":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich order first?\n\n- Urgency: The most urgent first\n- Age: The oldest first\n:::\n", "the ask a1")
 	agentEdit(":::decision{#d1 uncertainty=\"medium\" uncertainty_reason=\"No load was measured yet.\"}\nWe sort the asks on the server.\n:::\n", "the decision d1")
+	// The edit versions the spec in its own transaction, and the spec's settlement opens a1's ask
+	// after it: the test reads the ask once settlement has indexed it.
+	awaitIndexedAskBlock(t, handler, spec.id, "a1", "Which order first?")
 	asked := blockAskID(t, handler, key, "a1")
 	answerDecisionBlock(t, handler, asked, "alice", []string{"Urgency"}, "Urgency, then age.", nil)
 	agentUploadAs(t, handler, key, "spec.md", withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g1", "The session reads the answer as urgency before age."), nil)

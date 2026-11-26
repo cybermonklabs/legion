@@ -336,9 +336,10 @@ func orderNamed(t *testing.T, answer TreeOrder, name OrderNode) OrderedNode {
 }
 
 // orderOf orders nodes as the ordered read orders the tree it read (waitGraph), each waiting on
-// what needs answers of it, and answers the order and the cycles by name.
-func orderOf(nodes []OrderedNode, needs func(OrderedNode) []OrderNode) ([]OrderNode, [][]OrderNode) {
-	graph := newWaitGraph(namesOf(nodes))
+// what needs answers of it, over the base order base, and answers the order and the cycles by
+// name.
+func orderOf(nodes []OrderedNode, base []OrderNode, needs func(OrderedNode) []OrderNode) ([]OrderNode, [][]OrderNode) {
+	graph := newWaitGraph(namesOf(nodes), base)
 	for _, node := range nodes {
 		for _, need := range needs(node) {
 			graph.wait(node.OrderNode, need)
@@ -424,13 +425,15 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		p := func(id string) OrderNode { return f.task("CORE-1", id) }
 		a := func(id string) OrderNode { return f.task("CORE-2", id) }
 		b1 := f.task("CORE-3", "b1")
+		// v245's R11: the walk "starts from the nodes that no node needs, in the base order": p2,
+		// the first, takes CORE-2 whole before it, which it needs, and p1's chain comes after.
 		want := []OrderNode{
-			issueStart("CORE-1"), p("p1"), p("p3"), p("p4"), p("p5"),
-			issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"), p("p2"),
+			issueStart("CORE-1"), issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"), p("p2"),
+			p("p1"), p("p3"), p("p4"), p("p5"),
 			issueStart("CORE-3"), b1, issueDone("CORE-3"), issueDone("CORE-1"),
 		}
 		if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the tree of CORE-1 runs in the order\n%v\nwant every issue's two halves and every plan node once, ties by node id:\n%v", got, want)
+			t.Fatalf("the tree of CORE-1 runs in the order\n%v\nwant every issue's two halves and every plan node once, in R11's needs-first walk:\n%v", got, want)
 		}
 		if len(answer.Cycles) != 0 {
 			t.Errorf("the tree with a diamond and no cycle reports the cycles %v, want none", answer.Cycles)
@@ -497,8 +500,15 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		}
 
 		// The control: with CORE-2's start half taken for p2's need of the issue CORE-2, p2 comes
-		// back before CORE-2's plan nodes, so it is the done half that holds it after them.
-		startHalf, _ := orderOf(answer.Order, func(node OrderedNode) []OrderNode {
+		// back before CORE-2's plan nodes, so it is the done half that holds it after them. The
+		// walk runs over the read's base order: each issue's start, its plan nodes, its children
+		// and its done.
+		base := []OrderNode{
+			issueStart("CORE-1"), p("p1"), p("p2"), p("p3"), p("p4"), p("p5"),
+			issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"),
+			issueStart("CORE-3"), b1, issueDone("CORE-3"), issueDone("CORE-1"),
+		}
+		startHalf, _ := orderOf(answer.Order, base, func(node OrderedNode) []OrderNode {
 			if node.Kind != BlockNodeKind {
 				return node.Needs
 			}
@@ -606,7 +616,9 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		if got := cycleNames(answer); !reflect.DeepEqual(got, wantCycles) {
 			t.Fatalf("the read reports the cycles\n%v\nwant each with its nodes:\n%v", got, wantCycles)
 		}
-		want := []OrderNode{issueStart("ACME-1"), q("q6"), q("q7"), issueStart("ACME-2"), f.task("ACME-2", "d2"), issueStart("ACME-4"), issueDone("ACME-1")}
+		// v245's R11: the walk "starts from the nodes that no node needs, in the base order": the
+		// cycle through q3 comes first and places ACME-2's start and d2, which ACME-2's done waits on.
+		want := []OrderNode{issueStart("ACME-1"), issueStart("ACME-2"), f.task("ACME-2", "d2"), issueStart("ACME-4"), q("q6"), q("q7"), issueDone("ACME-1")}
 		if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
 			t.Errorf("with the cycles the order is\n%v\nwant every node in no cycle kept at a position:\n%v", got, want)
 		}
@@ -627,13 +639,72 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 				own = append(own, node)
 			}
 		}
-		_, alone := orderOf(own, func(node OrderedNode) []OrderNode { return node.Needs })
+		_, alone := orderOf(own, nil, func(node OrderedNode) []OrderNode { return node.Needs })
 		if wantAlone := [][]OrderNode{{q("q1"), q("q2")}, {q("q5")}}; !reflect.DeepEqual(alone, wantAlone) {
 			t.Fatalf("the walk of ACME-1's plan nodes alone reports the cycles %v, want only the two inside ACME-1, %v", alone, wantAlone)
 		}
 		t.Logf("the control: the walk of ACME-1's plan nodes alone reports the cycles %v and answers q3 and q4 an order, where the walk of the tree reports %v",
 			alone, wantCycles)
 	})
+}
+
+// The ordered read keeps each chain of steps together (R11 of the spec this branch builds, at its
+// version 245, and c-ordered-read of its Verification document): the position is a needs-first
+// depth-first walk from the nodes that no node needs, in the base order, which places each node's
+// unplaced needs before it, so each need stands just before the first node that needs it.
+// CHAIN-1's plan writes the tasks a, b and c in that order, and c needs a: the read answers b, a,
+// c, as the issue page's Plan chart draws them. CHAIN-2 writes two tasks, p1 and p2, and its child
+// CHAIN-3 two, c1 and c2, where p1 needs c2: the base order is CHAIN-2's own tasks in their
+// document's order, then CHAIN-3 with its tasks in theirs, and the read answers c2, p1, p2, c1, so
+// c2 stands just before p1. CHAIN-4's task p needs its child CHAIN-5, whose tasks are a, b and c, c
+// needing a: the read answers CHAIN-5 whole before p, its tasks in the order CHAIN-5's own read
+// answers them, b, a, c, since a done half places first the steps that no node needs. In each tree
+// an issue's start stands before its plan nodes and its children, and its done after them. The
+// control, a read that places the nodes as Kahn's algorithm frees them with a tie broken by id,
+// answers a, b, c for CHAIN-1, and the test fails, printing the order it read and the order it
+// wants.
+func TestTheOrderedReadKeepsEachChainOfStepsTogether(t *testing.T) {
+	database := storetest.Open(t)
+	f := newOrderFixture(t, database, "CHAIN")
+	f.issue("CHAIN-1", "")
+	f.issue("CHAIN-2", "")
+	f.issue("CHAIN-3", "CHAIN-2")
+	f.issue("CHAIN-4", "")
+	f.issue("CHAIN-5", "CHAIN-4")
+	f.plan("CHAIN-1", orderTask("a", ""), orderTask("b", ""), orderTask("c", "", "CHAIN-1#a"))
+	f.plan("CHAIN-3", orderTask("c1", ""), orderTask("c2", ""))
+	f.plan("CHAIN-2", orderTask("p1", "", "CHAIN-3#c2"), orderTask("p2", ""))
+	f.plan("CHAIN-5", orderTask("a", ""), orderTask("b", ""), orderTask("c", "", "CHAIN-5#a"))
+	f.plan("CHAIN-4", orderTask("p", "", "CHAIN-5"))
+
+	task := f.task
+	for _, tree := range []struct {
+		root string
+		want []OrderNode
+		why  string
+	}{
+		{"CHAIN-1", []OrderNode{issueStart("CHAIN-1"), task("CHAIN-1", "b"), task("CHAIN-1", "a"), task("CHAIN-1", "c"), issueDone("CHAIN-1")},
+			"b, which no node needs, first, then a just before c, the first node that needs it"},
+		{"CHAIN-2", []OrderNode{
+			issueStart("CHAIN-2"), issueStart("CHAIN-3"), task("CHAIN-3", "c2"), task("CHAIN-2", "p1"), task("CHAIN-2", "p2"),
+			task("CHAIN-3", "c1"), issueDone("CHAIN-3"), issueDone("CHAIN-2"),
+		}, "CHAIN-2's own tasks first in their document's order, CHAIN-3's after in theirs, and c2 just before p1, the first node that needs it"},
+		{"CHAIN-4", []OrderNode{
+			issueStart("CHAIN-4"), issueStart("CHAIN-5"), task("CHAIN-5", "b"), task("CHAIN-5", "a"), task("CHAIN-5", "c"),
+			issueDone("CHAIN-5"), task("CHAIN-4", "p"), issueDone("CHAIN-4"),
+		}, "CHAIN-5 whole just before p, which needs it, with its tasks in the order CHAIN-5's own read answers them"},
+		{"CHAIN-5", []OrderNode{issueStart("CHAIN-5"), task("CHAIN-5", "b"), task("CHAIN-5", "a"), task("CHAIN-5", "c"), issueDone("CHAIN-5")},
+			"the three tasks in the order they stand in inside CHAIN-4's read"},
+	} {
+		answer := f.read(orderAuthor, tree.root)
+		requireOrderStands(t, answer)
+		if len(answer.Cycles) != 0 {
+			t.Errorf("the tree of %s reports the cycles %v, want none", tree.root, cycleNames(answer))
+		}
+		if got := namesOf(answer.Order); !reflect.DeepEqual(got, tree.want) {
+			t.Errorf("the ordered read of %s answers the order\n%v\nwant R11's needs-first walk, %s:\n%v", tree.root, got, tree.why, tree.want)
+		}
+	}
 }
 
 // cycleNames is the name of each node of each cycle answer reports.

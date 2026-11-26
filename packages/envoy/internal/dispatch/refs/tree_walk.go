@@ -80,6 +80,17 @@ func HeadCut(ctx context.Context, q Queryer) (TreeCut, error) {
 	return cut, nil
 }
 
+// QueueHeadCut queues the read of the head's cut (HeadCut) on b, for a caller that reads it in a
+// batch it sends anyway, and fills cut once b has run.
+func QueueHeadCut(b *pgx.Batch, cut *TreeCut) {
+	b.Queue(headCutStatement).QueryRow(func(row pgx.Row) error {
+		if err := row.Scan(&cut.ReadSeq, &cut.At); err != nil {
+			return fmt.Errorf("read the head's cut of the tuple log: %w", err)
+		}
+		return nil
+	})
+}
+
 // jitOffStatement turns Postgres' JIT compiler off for the rest of the transaction it is sent in,
 // and is allowed in a read-only one. The walk's reads probe the tuple table once a node, and
 // Postgres costs a custom plan of such a read over a tree of thousands of nodes in the millions -

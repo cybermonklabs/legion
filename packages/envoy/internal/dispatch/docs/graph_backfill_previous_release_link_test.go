@@ -78,7 +78,7 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 	// The inner paragraph the previous release's version dropped reads gone, and its link is
 	// retracted, once this build drained the mark.
 	requireDroppedBlockGone(t, database, link.innerAddress, link.dropped)
-	requireNoCensusDifference(t, database, "after this build drained the backfill's mark over a link the previous release added and a block it dropped")
+	requireStoreCensusZero(t, database, "after this build drained the backfill's mark over a link the previous release added and a block it dropped")
 }
 
 // A version write of this build that drains the mark gives the previous release's version its node
@@ -109,7 +109,7 @@ func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t 
 
 	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build's version write drained the backfill's mark")
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
-	requireNoCensusDifference(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
+	requireStoreCensusZero(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
 }
 
 // A version write of this build that drains the mark writes no more of the previous release's
@@ -174,7 +174,7 @@ func TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick(t *test
 		t.Errorf("after the tick versions %v hold no node, want the tick to write every one", held)
 	}
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
-	requireNoCensusDifference(t, database, "after the tick wrote the previous release's version nodes")
+	requireStoreCensusZero(t, database, "after the tick wrote the previous release's version nodes")
 }
 
 // A version the release before writes of a document of an issue room, with no version node, has
@@ -312,20 +312,21 @@ func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer
 	if !written.Wrote || written.Version.Number != want {
 		t.Fatalf("the version write wrote %t at version %d, want version %d", written.Wrote, written.Version.Number, want)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"bob"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'linked.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-		returning id
-	`, document, want).Scan(&event); err != nil {
+	// The version's event takes its seq off the issue's own counter, as the route's append does
+	// (recordIssueEvent), so a later event of the issue, such as a tick's artifact.indexed, does not
+	// take the same seq.
+	event, err := recordIssueEvent(ctx, tx, "CORE-1", "artifact.version", []byte(`{"kind":"user","id":"bob"}`),
+		versionEventPayload(t, document, "linked.md", want))
+	if err != nil {
 		t.Fatalf("append version %d's event: %v", want, err)
 	}
 	// The version write queues its writes on the ledger, its node's among them, so what it stated
-	// is caused in the same write phase, after them, as a route queues it.
+	// is caused in the same write phase, after them, and the head write of the nodes it stated
+	// follows, which writes their node_search rows, as the route queues both
+	// (commitArtifactVersionEvent).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, written.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(written.Blocks))
 		return nil
 	}); err != nil {
 		t.Fatalf("queue what version %d's write stated: %v", want, err)
@@ -477,9 +478,10 @@ func requirePresentVersionNode(t *testing.T, database *store.Store, refKey strin
 	return node
 }
 
-// requireNoCensusDifference takes the store census and fails the test on each difference it
-// reads, and on its refusal.
-func requireNoCensusDifference(t *testing.T, database *store.Store, when string) {
+// requireStoreCensusZero takes the store census and fails the test on each difference it
+// reads, and on its refusal (requireNoCensusDifference, ask_block_node_test.go, checks named kinds
+// of a census its caller took).
+func requireStoreCensusZero(t *testing.T, database *store.Store, when string) {
 	t.Helper()
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {

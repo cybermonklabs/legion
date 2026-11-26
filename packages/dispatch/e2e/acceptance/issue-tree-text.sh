@@ -37,22 +37,23 @@
 #   list       a list item moves under the item above it in its list, and stands one level deeper;
 #   order      a paragraph moves after its sibling, and the text holds it there;
 #   callout    a paragraph moves under a callout X, which does not open the spec: the text holds it
-#              as X's last block, and the tree read answers it under X;
+#              as X's last block, and its stored part_of names X;
 #   list paragraph  a paragraph moves under a list item that holds one paragraph: the text holds it
-#              in the item after its first paragraph, and the tree read answers it under the item.
+#              in the item after its first paragraph, and its stored part_of names the item.
 #
 # The cases that write no version:
 #
 #   decision   alice keeps D, her decision, with the text_sha256 the decisions read answers, and
 #              the agent moves a paragraph under it: the move is taken, the text stays flat - the
-#              paragraph outside D, which holds what it held - the tree read answers it under D, and
+#              paragraph outside D, which holds what it held - its stored part_of names D, and
 #              D reads the same text_sha256, kept by alice, waiting on no review;
 #   table      one row for each of a requirement, a criterion, an ask block and a reading of the
 #              spec, a check of the Verification document, a plan task of the plan and a callout C
 #              inside a decision D2: a paragraph of the block's document moves under the block, the
 #              move is taken, writes no version and leaves the head render byte for byte as read
-#              before, the tree read answers the paragraph under the block, the block's token is the
+#              before, the paragraph's stored part_of names the block, the block's token is the
 #              one read before, and for C, D2's text_sha256 is too;
+# The tree read returns none of these moved prose paragraphs of role documents (R2, R8).
 #   emptied    the only paragraph of a top-level callout Y, the only paragraph of a callout Y2 in a
 #              list item, and the first paragraph of a list item M, each moved under the issue after
 #              a top-level block before them, are each 409 CONTAINER_WOULD_EMPTY naming the
@@ -406,6 +407,18 @@ tt_tree_parent() {
   tree_read person "$key" "$2"
   tree_want 200 "$1" "read the tree of $key${2:+ ?view=$2}"
   answer="$(jq -r --arg n "$3" '[.nodes[] | select(.id == $n) | (.parent.id // "")][0] // ""' "$work/body")"
+}
+
+# tt_stored_prose SECTION VIEW NODE PARENT: NODE stands under PARENT in the store, but the tree
+# read omits it because it is prose of a role document (R2, R8).
+tt_stored_prose() {
+  tt_far "$1" "$3" part_of
+  [[ "$answer" == "$4" ]] ||
+    fail "$1" "the moved paragraph's placement" "$3 holds a stored part_of naming $answer, want $4"
+  tree_read person "$key" "$2"
+  tree_want 200 "$1" "read the tree of $key${2:+ ?view=$2}"
+  jq -e --arg n "$3" 'all(.nodes[]; .id != $n)' "$work/body" >/dev/null ||
+    fail "$1" "the tree read leaves out role-document prose" "the tree read answers $3, want no node"
 }
 
 # tt_decision SECTION NODE: the decisions read of the issue's entry for the decision NODE: its
@@ -772,11 +785,10 @@ for file in "$work/new.md" "$work/head.md"; do
   [[ "$last" == *"The paragraph that moves into the callout"* ]] ||
     fail "$section" "the text nests $callout_paragraph in $callout" "the new version of $key holds $callout_paragraph outside $callout, want inside it"
 done
-tt_tree_parent "$section" spec "$callout_paragraph"
-[[ "$answer" == "$callout" ]] || fail "$section" "the tree read answers $callout_paragraph under $callout" "it stands under '$answer'"
+tt_stored_prose "$section" spec "$callout_paragraph" "$callout"
 tt_far "$section" "$callout_paragraph" text_parent
 [[ "$answer" == "$callout" ]] || fail "$section" "the text_parent of $callout_paragraph is $callout" "it names '$answer'"
-pass "$section" "the text holds $callout_paragraph as the last block of $callout, the tree read and its text_parent name $callout"
+pass "$section" "the text holds $callout_paragraph as the last block of $callout; both part_of and text_parent name $callout"
 cases=$((cases + 1))
 
 # --- decision: under a decision, whose content is its own words, the text stays flat -----------------
@@ -810,8 +822,7 @@ for render in version head; do
   cmp -s "$work/decision-$render-before" "$work/decision-after" ||
     fail "$section" "$decision holds the blocks it held, in the $render render" "it reads $(head -c 300 "$work/decision-after")"
 done
-tt_tree_parent "$section" spec "$decision_paragraph"
-[[ "$answer" == "$decision" ]] || fail "$section" "the tree read answers $decision_paragraph under $decision" "it stands under '$answer'"
+tt_stored_prose "$section" spec "$decision_paragraph" "$decision"
 tt_decision "$section" "$decision"
 [[ "$tt_sum" == "$decision_sum" && "$tt_kept" == "$person_login" && "$tt_waiting" == false ]] ||
   fail "$section" "$decision reads the text it was kept at" "the decision $decision reads text_sha256 $tt_sum after the move, want $decision_sum, kept by '$tt_kept', waiting_review $tt_waiting"
@@ -833,11 +844,10 @@ for file in "$work/new.md" "$work/head.md"; do
   [[ "$text" == *"- The list item that holds one paragraph."$'\n\n'"  The paragraph that moves into the list item."* ]] ||
     fail "$section" "the text nests $list_paragraph in $list_item" "the new version of $key holds $list_paragraph outside $list_item, want inside it after its first paragraph"
 done
-tt_tree_parent "$section" spec "$list_paragraph"
-[[ "$answer" == "$list_item" ]] || fail "$section" "the tree read answers $list_paragraph under $list_item" "it stands under '$answer'"
+tt_stored_prose "$section" spec "$list_paragraph" "$list_item"
 tt_far "$section" "$list_paragraph" text_parent
 [[ "$answer" == "$list_item" ]] || fail "$section" "the text_parent of $list_paragraph is $list_item" "it names '$answer'"
-pass "$section" "the text holds $list_paragraph in $list_item after its first paragraph, and the tree read and its text_parent name $list_item"
+pass "$section" "the text holds $list_paragraph in $list_item after its first paragraph; both part_of and text_parent name $list_item"
 cases=$((cases + 1))
 
 # --- table: under a block whose content is its own words, the text stays flat --------------------------
@@ -878,9 +888,7 @@ for row in \
   tt_head "$section" "$doc"
   cmp -s "$work/row-head" "$work/head.md" ||
     fail "$section" "row $row_type leaves the head render as it was" "row $row_type: the move of $paragraph changed the head render of $doc"
-  tt_tree_parent "$section" "$view" "$paragraph"
-  [[ "$answer" == "$block_node" ]] ||
-    fail "$section" "row $row_type: the tree read answers the paragraph under the block" "row $row_type: $paragraph stands under $answer in the tree read, want $block_node"
+  tt_stored_prose "$section (row $row_type)" "$view" "$paragraph" "$block_node"
   tt_token "$section" "$doc" "$block"
   [[ "$answer" == "$row_token" ]] || fail "$section" "row $row_type: the block's token stands" "row $row_type: $block_node reads token $answer, want $row_token"
   if [[ -n "$row_sum" ]]; then

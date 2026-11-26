@@ -15,7 +15,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
 
-- Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
+- Before you end a turn that waits on a person, make sure their question is open: an ask block, a `dispatch ask` or `dispatch request-approval`.
   A root's questions go on the root: one on a child starts no wait, and the tree stands still.
   A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
 

@@ -638,14 +638,14 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
 }
 
-// SettlingForms is the index settling what the forms queue holds for the item (RefsFormsOwed)
-// in the statement that records it indexed (queueRecordIndexed), so the settle costs the write no
-// statement of its own. A writer asks for it where this index is the last of the writes that index
-// the item's whole text, queued after the reconciliation of the item's own references: an ask's
-// parts after its question's (Replacement.SettlingForms is the other order). That statement is
-// the index's last, so the settle follows every delete of its block edges and the references'
-// delete before it, each of which owes that queue the item (migrations
-// 20261117025906-20261117025910).
+// SettlingForms is the index settling what the forms queues hold for the item (RefsFormsOwed,
+// RefsDecisionsFormsOwed) in the statement that records it indexed (queueRecordIndexed) and the
+// one after it, so the settle costs the write one statement beyond its own. A writer asks for it
+// where this index is the last of the writes that index the item's whole text, queued after the
+// reconciliation of the item's own references: an ask's parts after its question's
+// (Replacement.SettlingForms is the other order). That statement is the index's last, so the
+// settle follows every delete of its block edges and the references' delete before it, each of
+// which owes the first queue the item (migrations 20261117025906-20261117025910).
 func (i ItemIndexing) SettlingForms() ItemIndexing {
 	i.settleForms = true
 	return i
@@ -656,10 +656,27 @@ func (i ItemIndexing) SettlingForms() ItemIndexing {
 // head rows of a comment's blocks it wrote, moved or removed (queueBlockHeads), the links its
 // blocks hold, and last the statement that records the item indexed (queueRecordIndexed).
 func (i ItemIndexing) Queue(b *store.WriteBatch) {
+	i.queue(b, true)
+}
+
+// QueueKeepingNoHeadRows is Queue without the head rows of a comment's blocks (queueBlockHeads),
+// for a writer that fills a database holding none of the head projection this build writes
+// (graphstore.QueueHeads), as a database migrated from the release before this one holds none,
+// whose server writes no head row. Its one writer is the seed on such a database
+// (cmd/dispatch-seed's seedRun.noHeadRows), which marks no issue's head rows whole, so no mark
+// stands for the rows it leaves unwritten. Every writer of this build's server runs Queue.
+func (i ItemIndexing) QueueKeepingNoHeadRows(b *store.WriteBatch) {
+	i.queue(b, false)
+}
+
+// queue is Queue, with the head rows of a comment's blocks where heads holds.
+func (i ItemIndexing) queue(b *store.WriteBatch, heads bool) {
 	i.queueStateLock(b)
 	if i.changed {
 		i.queueBlocks(b)
-		i.queueBlockHeads(b)
+		if heads {
+			i.queueBlockHeads(b)
+		}
 	}
 	i.queueBlockRefs(b)
 	i.queueRecordIndexed(b)
@@ -690,7 +707,10 @@ func (i ItemIndexing) queueBlockHeads(b *store.WriteBatch) {
 // revisions, clears the block index's marker and leaves the window arm's standing. With
 // settleForms it also deletes the item's row of refs_forms_owed, in the same statement
 // (SettlingForms): the statement is the index's last, so the delete follows every delete of its
-// block edges.
+// block edges. The item's row of refs_decisions_forms_owed, which that delete relays
+// (migration 20261126040100) at the end of its statement, and its row of the bootstrap queue
+// beside it are deleted by a statement after it (settleDecisionsFormsStatement), never by the one
+// that relays it.
 //
 // The windows of these blocks are not written by this index. The block-index tick's window arm
 // writes them in a transaction of its own (docs.windowItem, WriteItemWindows), so a write holds
@@ -744,6 +764,10 @@ func (i ItemIndexing) queueRecordIndexed(b *store.WriteBatch) {
 		statement = fmt.Sprintf(`with settled as (delete from refs_forms_owed where kind = $%d and id = $1::uuid) `, len(args)) + statement
 	}
 	b.Queue(what, statement, args...)
+	if i.settleForms {
+		b.Queue(fmt.Sprintf("settle the decisions index owed by %s %s", i.kind, i.itemID),
+			settleDecisionsFormsStatement, string(i.kind), i.itemID)
+	}
 }
 
 // itemWindowBlocks is the item's blocks as the windows that embed them hold them: each block's

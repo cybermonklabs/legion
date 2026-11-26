@@ -74,27 +74,65 @@ func ReadingHolders(tree *pmdoc.Node) map[string]ReadingHolder {
 // keys it by (asks.block_artifact_id, the SQL text artifact, and block_id, the SQL text block,
 // through asks_block_id_unique), or, for a copy of an ask of another document, the ask its node's
 // current copied_from names (graphstore.TupleCopiedFrom, read from the node at the address SQL text
-// address); and of either, whether its node's newest answer_state value is answered, as docs'
-// askAnswers reads it, where a node that holds none reads as open. Each probe stands behind an
-// offset 0, so a statement over many blocks probes each one's ask by its key.
+// address); and of either, whether its node holds an answer (askAnsweredSQL). Each probe stands
+// behind an offset 0, so a statement over many blocks probes each one's ask by its key.
 func AskBlockAnsweredSQL(artifact, block, address string) string {
-	answered := func(ask string) string {
-		return `coalesce((select answer.asserted and answer.to_id = ` + store.QuoteLiteral(asks.StateAnswered) + ` from graph_tuples answer
-			where answer.from_kind = '` + graphstore.KindAsk + `' and answer.from_id = ` + ask + `
-			  and answer.kind = '` + graphstore.TupleAnswerState + `' and answer.to_kind = '` + graphstore.KindValue + `'
-			order by answer.seq desc limit 1), false)`
-	}
 	return `(exists (
 			select 1 from asks shown
 			where shown.block_artifact_id = ` + artifact + ` and shown.block_id = ` + block + `
-			  and ` + answered("shown.id::text") + `
+			  and ` + askAnsweredSQL("shown.id::text") + `
 			offset 0)
 		or exists (
 			select 1 from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = `+address+` and t.kind = '`+graphstore.TupleCopiedFrom+`'
 				  and t.to_kind = '`+graphstore.KindAsk+`'`) + `) copied
-			where copied.asserted and ` + answered("copied.to_id") + `
+			where copied.asserted and ` + askAnsweredSQL("copied.to_id") + `
 			offset 0))`
+}
+
+// askAnsweredSQL is true while the node of the ask whose id is the SQL text ask holds an answer:
+// its newest answer_state value is answered, as docs' askAnswers reads it, where a node that holds
+// none reads as open.
+func askAnsweredSQL(ask string) string {
+	return `coalesce((select answer.asserted and answer.to_id = ` + store.QuoteLiteral(asks.StateAnswered) + ` from graph_tuples answer
+			where answer.from_kind = '` + graphstore.KindAsk + `' and answer.from_id = ` + ask + `
+			  and answer.kind = '` + graphstore.TupleAnswerState + `' and answer.to_kind = '` + graphstore.KindValue + `'
+			order by answer.seq desc limit 1), false)`
+}
+
+// copiedAskShownSQL is true while the reading whose document_blocks row is aliased row stands in
+// the ask block its parent_block_id names (the SQL text holder) as a copy of an answered ask of
+// another document, before a settlement states the block's copied_from (AskBlockAnsweredSQL). The
+// typed-node pass matched the block to that ask in the version's own transaction (docs'
+// readCopiedAskSources, through TypedSources.Shown), on the block's wording, which only the
+// version's tree holds, and it records the match as the reading's part_of to the ask's node
+// (askParents). So the census takes the ask that the reading's current part_of names, the marked
+// row of that node, and holds it to the rest of that read: no ask of the reading's own document
+// indexes the holder, since the pass looks for a source only then; the ask's block is the holder's
+// id; and the ask is keyed by another document than the artifact the row is keyed by (the
+// document, or its issue room, whose asks are its own: refs.DocumentRoomSQL), of that artifact's
+// owner (docs' ownerDocuments: the same issue, or, for an artifact of no issue, a document of the
+// same project that is of no issue and no agent conversation). A part_of to an ask of another
+// issue or project, or to one under another id, is none a copy shows and reads as no answer.
+// It holds while that ask's node holds an answer (askAnsweredSQL).
+func copiedAskShownSQL(row, holder string) string {
+	return `exists (
+			select 1 from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = `+row+`.node_address and t.kind = '`+graphstore.TuplePartOf+`'
+				  and t.to_kind = '`+graphstore.KindAsk+`'`) + `) placed
+			join asks source on source.node_kind = '` + graphstore.KindAsk + `' and source.node_address = placed.to_id
+			join artifacts source_document on source_document.id = source.block_artifact_id
+			join artifacts copy_document on copy_document.id = ` + row + `.artifact_id
+			where placed.asserted and source.block_id = ` + holder + ` and source_document.id <> copy_document.id
+			  and case when copy_document.issue_key is not null then source_document.issue_key = copy_document.issue_key
+				else source_document.issue_key is null and source_document.session_id is null
+				  and source_document.project_key = coalesce(copy_document.project_key, '') end
+			  and not exists (
+				select 1 from asks own_ask
+				where own_ask.block_artifact_id = ` + row + `.artifact_id and own_ask.block_id = ` + holder + `
+				offset 0)
+			  and ` + askAnsweredSQL("source.id::text") + `
+			offset 0)`
 }
 
 // BlockTypeSupertagSQL is the supertag the node of the document_blocks row aliased row carries
@@ -103,9 +141,12 @@ func AskBlockAnsweredSQL(artifact, block, address string) string {
 // installed schema is read from (pmdoc.IsTypedBlock, TypeSupertag), probed by graph_nodes' primary
 // key - and BlockSupertag for every other block; but for a reading, which carries its type only
 // where the typed-node pass takes it for one - in a decision, or in an ask block whose ask holds an
-// answer (AskBlockAnsweredSQL) - read off the block its row's parent_block_id names, which for a
-// reading in an answered ask is still the ask block holding it, and BlockSupertag otherwise. It is
-// the census's reading of the supertag a row's node must carry (graphcensus's block_type).
+// answer - read off the block its row's parent_block_id names, which for a reading in an answered
+// ask is still the ask block holding it, and BlockSupertag otherwise. The ask an ask block shows
+// is its own document's, else, for a copy, the source a settlement claimed (AskBlockAnsweredSQL),
+// or, before any settlement claims it, the source the typed-node pass matched it to
+// (copiedAskShownSQL). It is the census's reading of the supertag a row's node must carry
+// (graphcensus's block_type).
 func BlockTypeSupertagSQL(row string) string {
 	holder := row + `.parent_block_id`
 	holderAddress := `left(` + row + `.node_address, length(` + row + `.node_address) - length(` + row + `.block_id)) || ` + holder
@@ -121,7 +162,7 @@ func BlockTypeSupertagSQL(row string) string {
 					where reading_holder.artifact_id = ` + row + `.artifact_id and reading_holder.block_id = ` + holder + `
 					  and reading_holder.type = '` + askType + `'
 					offset 0)
-				and ` + AskBlockAnsweredSQL(row+`.artifact_id`, holder, holderAddress) + `)
+				and (` + AskBlockAnsweredSQL(row+`.artifact_id`, holder, holderAddress) + ` or ` + copiedAskShownSQL(row, holder) + `))
 			then '` + readingType + `' else '` + BlockSupertag + `' end
 		when exists (
 			select 1 from graph_nodes typed

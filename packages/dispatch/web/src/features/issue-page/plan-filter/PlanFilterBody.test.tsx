@@ -8,7 +8,12 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
-import { issueCoverageQuery, issueResultsQuery, whoAmIQuery } from "../../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
 import type { Artifact, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
@@ -55,7 +60,6 @@ import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswerNode, viewQuery } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -1026,6 +1030,24 @@ function issueRead(verification?: Artifact): IssueDetails {
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
     verification_artifact_id: verification?.id ?? "",
+    queries: [
+      ...(verification === undefined
+        ? []
+        : [
+            {
+              query: "verification" as const,
+              artifact_id: verification.id,
+              takes: ["check", "result"],
+              subtree: `issue:${KEY}`,
+            },
+          ]),
+      {
+        query: "plan",
+        artifact_id: PLAN_ARTIFACT,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${KEY}`,
+      },
+    ],
   };
 }
 

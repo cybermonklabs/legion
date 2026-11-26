@@ -8,9 +8,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -747,6 +749,38 @@ func TestTheChangeSetAnswersAMissingVersionNotFound(t *testing.T) {
 	unknown := dispatchRequest(t, handler, http.MethodGet, changesPath("00000000-0000-0000-0000-00000000c0de", 1, 2), nil, "alice")
 	if unknown.Code != http.StatusNotFound || decodeBody[refusedAnswer](t, unknown).Code != "ARTIFACT_NOT_FOUND" {
 		t.Fatalf("an id that names no artifact: status=%d body=%s, want 404 ARTIFACT_NOT_FOUND", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestTheChangeSetRefusesAnUnreadableVersion(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	artifactID := uploadDocumentVersions(t, handler, "notes.md", "One.\n", "Two.\n")
+	before := readChanges(t, handler, artifactID, 1, 2)
+
+	_, parseErr := pmdoc.ParseRendering(settlementReadsBackRefused)
+	if parseErr == nil {
+		t.Fatal("the legacy version reads back; the refusal check would prove nothing")
+	}
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1, 3, $2, '[]'), ($1, 4, $2, '[]'), ($1, 5, $3, '[]')
+	`, artifactID, settlementReadsBackRefused, "Five.\n"); err != nil {
+		t.Fatalf("store legacy history: %v", err)
+	}
+
+	for _, pair := range [][2]int{{1, 3}, {3, 5}, {3, 4}} {
+		response := dispatchRequest(t, handler, http.MethodGet, changesPath(artifactID, pair[0], pair[1]), nil, "alice")
+		if response.Code != http.StatusConflict {
+			t.Fatalf("changes %v: status=%d body=%s, want 409 DOC_SCHEMA", pair, response.Code, response.Body.String())
+		}
+		refusal := decodeBody[refusedAnswer](t, response)
+		if refusal.Code != "DOC_SCHEMA" || !strings.Contains(refusal.Error, "version 3") || !strings.Contains(refusal.Error, parseErr.Error()) {
+			t.Fatalf("changes %v: refusal=%+v, want DOC_SCHEMA naming version 3 and its parser error", pair, refusal)
+		}
+	}
+	if after := readChanges(t, handler, artifactID, 1, 2); !reflect.DeepEqual(after, before) {
+		t.Fatalf("new unreadable versions changed the result for versions 1 and 2: before=%+v after=%+v", before, after)
 	}
 }
 

@@ -9,7 +9,7 @@ import { type HeldNotifications, holdNotifications } from "../../../__tests__/co
 import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
-import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type {
   Actor,
   CheckBlock,
@@ -75,7 +75,6 @@ import {
   wholeTreeOnly,
 } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {

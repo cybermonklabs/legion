@@ -6,13 +6,13 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { specArtifact } from "../margin/margin-fixture";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
-import { issueAskThreadsQuery } from "./useIssueTree";
 import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
 
 const OWNER: MarginOwner = { key: "CORE-1", kind: "issue" };

@@ -14,7 +14,9 @@ import (
 
 // ErrAnotherBuildLive refuses the decisions step's third phase while processes.Live lists a
 // process of a commit other than the caller's (DecisionStep.anotherBuildLive): any other build can
-// write a row without its node, so the phase waits until the fleet is one build.
+// write a row without its node, and reads the documents the phase moves, so the phase waits until
+// the fleet is one build. It refuses the phase before it starts, and stops a pass at the issue
+// whose transaction finds such a process live, which it rolls back (restoreIssue).
 //
 // kept for one release: decisions-step
 var ErrAnotherBuildLive = errors.New("docs: a process of another build is live, so the decisions step's third phase waits")
@@ -38,14 +40,19 @@ type DecisionIssueFailure struct {
 // Without convert it restores the asks alone, for each issue the restore owes. dryRun does all of
 // it and rolls each transaction back. It answers each issue it touched and each issue that failed,
 // whose transaction rolled back and which the next pass tries again; its error is one that stops
-// the whole phase. It writes through the document service the step was given (UseDocuments).
+// the whole phase. An issue a document of which owes its block index is neither: it is left, with
+// nothing written, for a later pass (errBlockIndexOwed). A process of another build that goes live
+// during the pass stops it at the next issue's transaction, which reads the fleet again
+// (restoreIssue): it answers the issues it touched before that one with ErrAnotherBuildLive, and
+// converts nothing more until a later pass finds the fleet one build. It writes through the
+// document service the step was given (UseDocuments).
 //
 // kept for one release: decisions-step
 func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
 	if s.documents == nil {
 		return nil, nil, errors.New("docs: the decisions step's third phase has no document service to write through")
 	}
-	other, err := s.anotherBuildLive(ctx)
+	other, err := s.anotherBuildLive(ctx, s.database.Pool)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -103,6 +110,15 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 			return done, failed, err
 		}
 		result, err := s.restoreIssue(ctx, issue, byIssue[issue], convert, dryRun)
+		if errors.Is(err, ErrAnotherBuildLive) {
+			s.logger.Info("dispatch: decisions step stopped its third phase: a process of another build went live during the pass",
+				"issue", issue, "touched", len(done), "dry_run", dryRun)
+			return done, failed, err
+		}
+		if errors.Is(err, errBlockIndexOwed) {
+			s.logger.Info("dispatch: decisions step left an issue for a later pass", "issue", issue, "reason", err, "dry_run", dryRun)
+			continue
+		}
 		if err != nil {
 			failed = append(failed, DecisionIssueFailure{Issue: issue, Err: err})
 			continue
@@ -131,11 +147,14 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 
 // restoreIssue runs the third phase on one issue in a transaction of its own, which it commits,
 // or, under dryRun, rolls back. The transaction is that one issue's restore and no more: it begins
-// and ends here, and no other issue's work and no request runs in it. Its writes run at once, in
-// the order the restore makes them (joinAtOnce), since the restore reads what it wrote earlier in
-// the same transaction: the ask rows it pointed at the spec, the versions it wrote before the
-// events that name them, the nodes it stated. It logs how long the transaction stood open, from
-// its begin to its commit, or to its rollback, which bounds how long it held a transaction id.
+// and ends here, and no other issue's work and no request runs in it. It first reads the fleet
+// (anotherBuildLive) and answers ErrAnotherBuildLive, with nothing written, where a process of
+// another build has gone live since the pass began: no write of the phase meets a build that reads
+// the documents it moves. Its writes run at once, in the order the restore makes them
+// (joinAtOnce), since the restore reads what it wrote earlier in the same transaction: the ask
+// rows it pointed at the spec, the versions it wrote before the events that name them, the nodes
+// it stated. It logs how long the transaction stood open, from its begin to its commit, or to its
+// rollback, which bounds how long it held a transaction id.
 //
 // kept for one release: decisions-step
 func (s *DecisionStep) restoreIssue(ctx context.Context, issue string, work []graphcensus.RestoreWork, convert, dryRun bool) (DecisionIssue, error) {
@@ -145,6 +164,12 @@ func (s *DecisionStep) restoreIssue(ctx context.Context, issue string, work []gr
 		return DecisionIssue{Issue: issue}, fmt.Errorf("begin the restore of %s: %w", issue, err)
 	}
 	defer tx.Rollback(context.Background())
+	if other, err := s.anotherBuildLive(ctx, tx); err != nil || other {
+		if err == nil {
+			err = ErrAnotherBuildLive
+		}
+		return DecisionIssue{Issue: issue}, err
+	}
 	joined, ledger := s.documents.joinAtOnce(ctx, tx)
 	defer ledger.Discard()
 	result, err := s.documents.restoreIssueDecisions(joined, tx, issue, work, convert)

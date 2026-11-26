@@ -12,12 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// RefsFormsLease names the lease one pass of the forms drain runs under
-// (RunRefsFormsReconciliation). A lease of its own rather than BlockIndexLease: a period one
-// process has served is skipped by the others (duty.Exclusive), and during a rolling update the
-// process that wins the block index's period may be one of the release before this one, which
-// knows nothing of refs_forms_owed and would drain none of it.
-const RefsFormsLease = "refs-forms"
+// RefsFormsLease names the lease one pass of the forms duty runs under
+// (RunRefsFormsReconciliation), which drains its three queues, refs_forms_owed,
+// refs_decisions_forms_owed and refs_decisions_forms_seed_owed. A previous build can hold the
+// block index lease without draining these queues. It can also settle refs_forms_owed under
+// its own refs-forms lease, and thereby enqueue work it cannot finish in the live queue.
+// The new lease lets this build drain that work without sharing a period with the old duty.
+const RefsFormsLease = "refs-forms-decisions"
 
 // RefsFormsTick is what one pass of the forms drain did (ReconcileRefsForms).
 type RefsFormsTick struct {
@@ -39,7 +40,7 @@ type RefsFormsTick struct {
 	LiveAhead  int
 	Unreadable int
 	Unindexed  int
-	// OwedTexts is what refs_forms_owed holds after the pass.
+	// OwedTexts is what the pass's queue holds after the pass.
 	OwedTexts int
 	// Cursor is the row the next pass lists after (refs.ListOwedAfter): the last row this pass
 	// took while its listing was full or it left documents for the next pass, and the start
@@ -53,82 +54,134 @@ type RefsFormsTick struct {
 // RunRefsFormsReconciliation drains refs_forms_owed (refs.RefsFormsOwed, migrations
 // 20261117025900-20261117025910): every comment, ask, issue message and document an older build
 // indexed without the reference forms this build reads - an issue's tab addresses and a
-// document's dashboard URLs - which that build's index deleted the edges of. A row stays owed
-// until a build that reads those forms has indexed that text itself.
+// document's dashboard URLs - which that build's index deleted the edges of; and the two queues of
+// the reading of an issue's Decisions page (migrations 20261126040000-20261126040600): the live
+// queue, refs_decisions_forms_owed (refs.RefsDecisionsFormsOwed), of every source the release
+// before this one indexed, and settled its row of the first queue for, without that reading, which
+// that build's index deleted the edges of or wrote the retired decisions document's edge beside,
+// and the bootstrap queue, refs_decisions_forms_seed_owed (refs.RefsDecisionsFormsSeedOwed), of
+// every text already stored when the seed ran. A row stays owed until a build that reads those
+// forms has indexed that text itself.
 //
 // A duty of its own, under its own lease (RefsFormsLease), rather than a batch of the block-index
 // pass (RunBlockIndexReconciliation), which drains refs_grammar_owed: during a rolling update a
-// period the older process served there would drain nothing of this queue. One pass at start,
-// then every blockIndexStep while a batch is full and every BlockIndexReconcileInterval once none
-// is, until ctx ends, as the block-index pass is paced (duty.RunLeasedAfterEachPass). The loop
-// keeps the block index's two pieces of state across its passes: the keyset cursor each pass
-// starts from, and the documents its passes found live ahead (formsLiveAhead).
+// period the older process served there would drain nothing of these queues. One tick at start,
+// then every blockIndexStep while a batch of any queue is full and every
+// BlockIndexReconcileInterval once none is, until ctx ends, as the block-index pass is paced
+// (duty.RunLeasedAfterEachPass). A tick is one pass of each queue, the forms queue first and the
+// bootstrap queue last, so a row the older release relays while the first pass runs is listed by
+// the second. Each queue keeps the block index's two pieces of state across its passes: the keyset
+// cursor each pass starts from, and the documents its passes found live ahead (formsLiveAhead),
+// apart from the others', since a cursor is a row of one queue's order. The passes run on the one
+// connection of the lease pool the loop reserves ("refs forms", cmd/dispatch's main), whichever of
+// them was full or failed.
 func (s *Service) RunRefsFormsReconciliation(ctx context.Context, leases duty.Leases) {
 	ctx = store.WithTransactionTracking(ctx)
-	var cursor refs.Owed
-	// logged is the last pass this loop logged: a pass that drained nothing and leaves the same
-	// counts (a document whose live text stays ahead, left owed every pass) logs nothing.
-	var logged RefsFormsTick
-	liveAhead := newFormsLiveAhead()
+	drains := newFormsDrains()
 	duty.RunLeasedAfterEachPass(ctx, leases, RefsFormsLease, BlockIndexReconcileInterval, func(ctx context.Context, _ time.Duration) time.Duration {
-		var wait time.Duration
-		wait, cursor = s.refsFormsTick(ctx, cursor, liveAhead, &logged)
-		return wait
+		return s.refsFormsTick(ctx, drains)
 	})
 }
 
-// refsFormsTick runs one pass from cursor, logs what it did unless it drained nothing and left the
-// counts *logged holds, and returns how long to wait before the next pass and the cursor it
-// starts from.
-func (s *Service) refsFormsTick(ctx context.Context, cursor refs.Owed, liveAhead formsLiveAhead, logged *RefsFormsTick) (time.Duration, refs.Owed) {
-	tick, err := s.ReconcileRefsForms(ctx, cursor, liveAhead)
-	if ctx.Err() != nil {
-		return BlockIndexReconcileInterval, cursor
-	}
-	if err != nil {
-		slog.Error("dispatch: refs forms reconciliation", "error", err)
-	}
-	if tick.Texts > 0 || tick.Documents > 0 || tick.Gone > 0 || tick.LiveAhead != logged.LiveAhead ||
-		tick.Unreadable != logged.Unreadable || tick.Unindexed != logged.Unindexed || tick.OwedTexts != logged.OwedTexts {
-		slog.Info("dispatch: refs forms index", "texts", tick.Texts, "documents", tick.Documents,
-			"gone", tick.Gone, "live_ahead", tick.LiveAhead, "unreadable", tick.Unreadable,
-			"unindexed", tick.Unindexed, "owed_texts", tick.OwedTexts)
-		*logged = tick
-	}
-	if tick.Full {
-		return blockIndexStep, tick.Cursor
-	}
-	return BlockIndexReconcileInterval, tick.Cursor
+// formsDrain is one queue's state across the passes of the forms duty: the queue, the cursor its
+// next pass lists after, the documents its passes found live ahead, and the last pass it logged.
+type formsDrain struct {
+	queue     refs.OwedQueue
+	cursor    refs.Owed
+	liveAhead formsLiveAhead
+	// logged is the last pass this drain logged: a pass that drained nothing and leaves the same
+	// counts (a document whose live text stays ahead, left owed every pass) logs nothing.
+	logged RefsFormsTick
+	// oneShot says nothing writes the queue after its migration, so a pass that finds it empty is
+	// the last: done is then set, and the tick reads the queue no more.
+	oneShot bool
+	done    bool
 }
 
-// ReconcileRefsForms runs one pass: it lists at most blockIndexItemBatch rows of refs_forms_owed
-// past after, in the queue's order, oldest first (refs.ListOwedAfter), and drains each in a
-// transaction of its own. A comment, an ask or an issue message goes through refs.ReindexOwed,
-// which re-indexes its text with this build's grammar and settles its row in the same
-// transaction. A document is indexed here, at its latest version, by the block index's own writer
-// (drainFormsDocument), and a document of an issue room by that writer's pass over its room, once a
-// pass whichever of the room's documents' rows it lists (drainFormsRoomDocument), at most
-// blockIndexDocumentBatch of them a pass, the bound the block index reads documents under; the
-// pass ends at the first document past that bound, and the next pass, which comes after
-// blockIndexStep, starts there.
+func newFormsDrain(queue refs.OwedQueue) *formsDrain {
+	return &formsDrain{queue: queue, liveAhead: newFormsLiveAhead()}
+}
+
+// newFormsDrains is the drains of the forms duty, in the order a tick runs them: the forms queue,
+// the live queue of the Decisions page's reading, and its bootstrap queue, which only the seed
+// migration writes and which the duty stops reading once a pass finds it empty.
+func newFormsDrains() []*formsDrain {
+	seed := newFormsDrain(refs.RefsDecisionsFormsSeedOwed)
+	seed.oneShot = true
+	return []*formsDrain{newFormsDrain(refs.RefsFormsOwed), newFormsDrain(refs.RefsDecisionsFormsOwed), seed}
+}
+
+// refsFormsTick runs one pass of each drain that is not done, in order, and returns how long to
+// wait before the next tick: blockIndexStep when any pass reported a full batch,
+// BlockIndexReconcileInterval otherwise. A pass that fails or is full never keeps the passes after
+// it from running; only the end of ctx does.
+func (s *Service) refsFormsTick(ctx context.Context, drains []*formsDrain) time.Duration {
+	wait := BlockIndexReconcileInterval
+	for _, drain := range drains {
+		if drain.done {
+			continue
+		}
+		if s.formsDrainPass(ctx, drain) {
+			wait = blockIndexStep
+		}
+		if ctx.Err() != nil {
+			return BlockIndexReconcileInterval
+		}
+	}
+	return wait
+}
+
+// formsDrainPass runs one pass of drain from its cursor, logs what it did unless it drained
+// nothing and left the counts drain.logged holds, moves the drain's cursor, and reports whether
+// the pass left more waiting (RefsFormsTick.Full). A one-shot drain whose pass ran without an error
+// and left its queue empty is done, and logs that once.
+func (s *Service) formsDrainPass(ctx context.Context, drain *formsDrain) bool {
+	tick, err := s.ReconcileRefsForms(ctx, drain.queue, drain.cursor, drain.liveAhead)
+	if ctx.Err() != nil {
+		return false
+	}
+	if err != nil {
+		slog.Error("dispatch: refs forms reconciliation", "queue", drain.queue.Table(), "error", err)
+	}
+	if tick.Texts > 0 || tick.Documents > 0 || tick.Gone > 0 || tick.LiveAhead != drain.logged.LiveAhead ||
+		tick.Unreadable != drain.logged.Unreadable || tick.Unindexed != drain.logged.Unindexed || tick.OwedTexts != drain.logged.OwedTexts {
+		slog.Info("dispatch: refs forms index", "queue", drain.queue.Table(), "texts", tick.Texts,
+			"documents", tick.Documents, "gone", tick.Gone, "live_ahead", tick.LiveAhead,
+			"unreadable", tick.Unreadable, "unindexed", tick.Unindexed, "owed_texts", tick.OwedTexts)
+		drain.logged = tick
+	}
+	drain.cursor = tick.Cursor
+	if drain.oneShot && err == nil && tick.OwedTexts == 0 && !tick.Full {
+		drain.done = true
+		slog.Info("dispatch: refs forms index found its bootstrap queue empty, which only its migration writes, and reads it no more",
+			"queue", drain.queue.Table())
+	}
+	return tick.Full
+}
+
+// ReconcileRefsForms lists at most blockIndexItemBatch rows of one forms queue past after, oldest
+// first (refs.ListOwedAfter). A comment, an ask or an issue message goes through refs.ReindexOwed.
+// A document is indexed at its latest version (drainFormsDocument), or as part of its issue room,
+// once per room per pass (drainFormsRoomDocument). A complete index reads every form and settles
+// the rows it indexed in all forms queues in its own transaction; a settle without indexing is
+// confined to the row listed by this queue. The pass stops at the document batch bound; the next
+// pass starts there after blockIndexStep.
 //
 // The rows are listed by keyset, as the block index lists its documents, so a row this drain
 // leaves owed never holds back the rows past it: a document whose live text is ahead, one whose
 // issue room holds a fragment that does not read back, one holding an element this build does not
-// know (ErrDocNewerContent), a row that fails for a reason of its own, each logged and left owed.
-// The pass's Cursor moves past every row it takes, drained or not, and goes back to the start once
-// a listing is not full, so the next walk of the queue reads each such row again, once. liveAhead
-// is the documents the calling loop's earlier passes found live ahead or unreadable, which this
-// pass counts again without reading or owing them an index while their version and their
-// settlement's mark stand as found, and keeps up to date.
-func (s *Service) ReconcileRefsForms(ctx context.Context, after refs.Owed, liveAhead formsLiveAhead) (RefsFormsTick, error) {
+// know (ErrDocNewerContent), or a row that fails for a reason of its own. The cursor moves past
+// every row it takes, drained or not, then goes back to the start once a listing is not full.
+// liveAhead remembers the documents earlier passes over this queue found live ahead or unreadable,
+// so they are counted again without indexing while their version and settlement mark stand.
+func (s *Service) ReconcileRefsForms(ctx context.Context, queue refs.OwedQueue, after refs.Owed, liveAhead formsLiveAhead) (RefsFormsTick, error) {
 	// A caller outside the loop can pass a zero memo, as the block index's can pass none: a
 	// throwaway one costs no more than reading again the documents this one pass finds live ahead.
 	if liveAhead.documents == nil {
 		liveAhead = newFormsLiveAhead()
 	}
 	tick := RefsFormsTick{Cursor: after}
-	owed, err := refs.ListOwedAfter(ctx, s.store.Pool, refs.RefsFormsOwed, after, blockIndexItemBatch)
+	owed, err := refs.ListOwedAfter(ctx, s.store.Pool, queue, after, blockIndexItemBatch)
 	if err != nil {
 		return tick, err
 	}
@@ -158,7 +211,7 @@ rows:
 				return tick, ctx.Err()
 			case err != nil:
 				slog.Error("dispatch: refs forms index skipped text it could not index",
-					"kind", source.Kind, "id", source.ID, "error", err)
+					"queue", queue.Table(), "kind", source.Kind, "id", source.ID, "error", err)
 			case indexed:
 				tick.Texts++
 			}
@@ -170,7 +223,7 @@ rows:
 				return tick, ctx.Err()
 			case err != nil:
 				slog.Error("dispatch: refs forms index skipped a document it could not index",
-					"artifact", source.ID, "error", err)
+					"queue", queue.Table(), "artifact", source.ID, "error", err)
 			case still:
 				switch {
 				case !counts(document):
@@ -194,17 +247,17 @@ rows:
 					// Another build wrote an element this build does not know, during a release;
 					// a build that reads it indexes the document, which stays owed until then.
 					slog.Warn("dispatch: refs forms index skipped a document holding an element this build cannot read",
-						"artifact", source.ID, "error", err)
+						"queue", queue.Table(), "artifact", source.ID, "error", err)
 				case err != nil:
 					slog.Error("dispatch: refs forms index skipped a document it could not index",
-						"artifact", source.ID, "error", err)
+						"queue", queue.Table(), "artifact", source.ID, "error", err)
 				case counts(document):
 					drained.count(&tick)
 				}
 			}
 		default:
 			slog.Error("dispatch: refs forms index skipped a row of a kind it does not drain",
-				"kind", source.Kind, "id", source.ID)
+				"queue", queue.Table(), "kind", source.Kind, "id", source.ID)
 		}
 		tick.Cursor = source
 	}
@@ -212,8 +265,8 @@ rows:
 	if !tick.Full {
 		tick.Cursor = refs.Owed{}
 	}
-	if err := s.store.Pool.QueryRow(ctx, `select count(*) from refs_forms_owed`).Scan(&tick.OwedTexts); err != nil {
-		return tick, fmt.Errorf("count what is owed an index with the reference forms: %w", err)
+	if tick.OwedTexts, err = queue.Count(ctx, s.store.Pool); err != nil {
+		return tick, err
 	}
 	return tick, nil
 }
@@ -306,35 +359,33 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 	}
 }
 
-// drainFormsDocument drains one `artifact` row of refs_forms_owed, source, by indexing the
-// document itself, at document's latest version (latestDocumentVersion), through the index the
-// block index writes a document with (indexOwedDocument, indexRenderedVersion): its own mentions,
-// the mentions its blocks hold and the excerpt each shows, read with this build's grammar.
+// drainFormsDocument drains one `artifact` row of a forms queue, source, by indexing the
+// document at its latest version (latestDocumentVersion) through the block index's own writer
+// (indexOwedDocument, indexRenderedVersion).
 //
-// The row is settled by this drain only through its own index of the document, in that index's
-// transaction (indexOwedDocument's settle), and only while it holds the enqueued_at it was listed
-// with. It is not settled by owing the document a block index, as refs_grammar_owed's drain settles
-// its own (drainOwedDocument): any build's block-index pass may take a document owed one, and a
-// build that predates these forms would index it without them and leave nothing owed. So the
-// document is owed a block index here (oweDocumentIndex), which indexOwedDocument requires of what
-// it indexes, and indexed in the same pass. Whoever indexes it between the two leaves
-// indexOwedDocument finding it no longer owed: an older build's block index leaves the row owed
-// until this build's own index of the document commits, in a later pass, and a process of this
-// build settles the row with its own index (refs.replaceRefs). A document whose live text is ahead
-// of its latest version is left owed as the block index leaves it, for the settlement that writes
-// its next version, and remembered in liveAhead as the block index remembers one; a version an
-// older build writes then owes the row again (migration 20261117025904), and one this build
-// writes indexes the document and settles it.
+// The index runs only while the row holds the enqueued_at it was listed with. A complete
+// index settles the rows of every forms queue for the text it indexed. A row is not settled
+// merely by owing a block index, as refs_grammar_owed's drain settles its own (drainOwedDocument):
+// any build's block-index pass may take a document owed one, and a build that predates these forms would
+// index it without them and leave nothing owed. So the document is owed a block index here
+// (oweDocumentIndex), which indexOwedDocument requires of what it indexes, and indexed in the
+// same pass. Whoever indexes it between the two leaves indexOwedDocument finding it no longer
+// owed: an older build's block index leaves the row owed until this build's own index of the
+// document commits, in a later pass, and a process of this build settles the row with its own
+// index (refs.replaceRefs). A document whose live text is ahead of its latest version is left
+// owed as the block index leaves it, for the settlement that writes its next version, and
+// remembered in liveAhead as the block index remembers one; a version an older build writes then
+// owes the row again (migration 20261117025904, and the relay of migration 20261126040100 once
+// that build settles it), and one this build writes indexes the document and settles it.
 //
-// A document that is gone, or holds no markdown version, owes no text and is owed no block index:
-// its row is settled while it holds the enqueued_at it was listed with. An older build's removal
-// of a document deletes its edges, which owes this queue the document (migration
-// 20261117025906), and settles only refs_grammar_owed. So is a document of an issue room that no
-// pass over its room reads, one retired from it (latestDocumentVersion).
+// A document that is gone, holds no markdown version, is retired from its issue room, or is a
+// Decisions query node (R15) owes no text. Without an index, this drain settles only source and
+// only while it holds the enqueued_at it was listed with. A deletion from refs_forms_owed can
+// relay a row while the document still exists (migration 20261126040100); the Decisions pass then
+// settles that row the same way if it too finds no text to index.
 //
 // A document of an issue room is drained through its room's pass (drainFormsRoomDocument), since
-// no pass indexes one fragment of a room alone. rooms holds what each room this drain's pass
-// indexed did.
+// no pass indexes one fragment of a room alone. rooms holds what each room this drain's pass did.
 func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, document owedDocument, liveAhead formsLiveAhead, rooms map[string]owedOutcome) (formsDocumentDrain, error) {
 	liveAhead.forget(document.id)
 	if document.version == 0 {
@@ -366,10 +417,9 @@ func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, docu
 	return formsDocumentUnindexed, nil
 }
 
-// drainFormsRoomDocument drains the `artifact` row source of refs_forms_owed held by a document of
-// the issue room document.room, its tree artifact or a document its document_rooms rows hold,
-// through the block index's pass over the whole room (indexOwed, indexOwedRoom), at the room's
-// revision (latestDocumentVersion), which reads every fragment of the room with this build's
+// drainFormsRoomDocument drains the `artifact` row source of one forms queue, for a document of
+// the issue room document.room, through the block index's pass over the whole room (indexOwedRoom),
+// at the room's revision (latestDocumentVersion). It reads every fragment with this build's
 // grammar: the room's references under its tree artifact, each fragment's blocks, the mentions
 // they hold and the excerpt each shows.
 //
@@ -380,14 +430,11 @@ func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, docu
 // at no version. So the debt is document's own where the pass covers it, as it covers every other
 // document latestDocumentVersion reads with its room, and for a tree artifact holding no markdown
 // version, which the pass does not cover, the debt of a document the pass covers (roomPassDebt). A
-// room whose pass covers no document has no text to index, and the tree artifact's row is settled
-// as a gone document's is. The pass settles the forms rows of the room where it settles their rows
-// of the whole grammar's queue, in its own transaction and only where its block pass won the fence:
-// the tree artifact's with the room's references (replaceVersionRefs' blocksIndexed), and each
-// other document's it covers beside them (settleRoomDocumentsOwed). It settles them whatever
-// enqueued_at each holds, since it indexes every fragment at the newest version under the owner
-// lock every version write takes first. So it settles source's row and the row of every other
-// document of the room the queue holds.
+// room whose pass covers no document has no text to index; the tree artifact's listed row alone
+// is settled as a gone document's is. A complete pass settles forms rows only where the block
+// pass won its fence: the tree artifact's with the room's references (replaceVersionRefs), and
+// each other document it covered beside them (settleRoomDocumentsOwed). It has indexed all that
+// text with every form under the owner lock, so those rows can be settled in all the forms queues.
 //
 // A room is indexed once a pass, whichever of its documents' rows the pass lists: rooms holds how
 // each room the pass indexed fared, and a later row of the same room takes that outcome with no
@@ -415,7 +462,7 @@ func (s *Service) drainFormsRoomDocument(ctx context.Context, source refs.Owed, 
 		if err := oweDocumentIndex(ctx, s.store.Pool, debt, s.markingRule); err != nil {
 			return formsDocumentUnindexed, err
 		}
-		outcome = s.indexOwed(ctx, document)
+		outcome = s.indexOwed(ctx, document, &source)
 		rooms[document.room] = outcome
 	}
 	switch {
@@ -472,8 +519,10 @@ func (s *Service) roomPassDebt(ctx context.Context, room string) (string, error)
 // version and the room's pending settlement's marked_at, which indexOwedRoom reads again under the
 // tree artifact's owner lock. A document of a room that no pass over the room reads, since it is
 // retired from the room (roomLayoutSQL) or holds no markdown version, reads as no room's, at
-// version 0: it has no text to index. The tree artifact is read with its room whatever it holds,
-// since the room's references are written under it.
+// version 0: it has no text to index. So does an issue's decisions query node
+// (refs.DecisionsQuerySQL): it holds no fragment of a room and no block (R15), and its stored
+// rendering is never indexed. The tree artifact is read with its room whatever it holds, since the
+// room's references are written under it.
 func (s *Service) latestDocumentVersion(ctx context.Context, artifactID string) (owedDocument, error) {
 	document := owedDocument{id: artifactID}
 	var markedAt *time.Time
@@ -481,6 +530,7 @@ func (s *Service) latestDocumentVersion(ctx context.Context, artifactID string) 
 		select coalesce(placed.room::text, ''),
 		       case when placed.room is not null then `+roomRevisionSQL("placed.room")+`
 		            when placed.member is not null then 0
+		            when exists (select 1 from artifacts a where a.id = $1::uuid and `+refs.DecisionsQuerySQL("a")+`) then 0
 		            else coalesce((select max(v.number) from artifact_versions v
 		                           where v.artifact_id = $1::uuid and v.markdown is not null), 0) end,
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = coalesce(placed.room, $1::uuid))

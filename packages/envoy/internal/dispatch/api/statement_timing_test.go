@@ -12,6 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -36,20 +38,25 @@ const (
 // Which protocol each statement is under, and why:
 //
 //   - Protocol 1 pairs, whose two sides one schema runs: the issue list unpaged and paged, the
-//     project list, agentLastActivity, the issue's children, and the five statements of
-//     search's document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery,
-//     relatedMeaningQuery and relatedProbeSQL. The listing and the project list add no
+//     project list, agentLastActivity and the issue's children take benchtime.Pair (the after
+//     median strictly below the before median). The listing and the project list add no
 //     migration, agentLastActivity reads events_session_actor_created_at_idx, which migration
-//     0026 built, the children read walks issues_parent_key, and the document arm's older text
-//     reads artifact_versions, a table this release's schema still holds; so on a database at
-//     this release's schema both texts of each are measurable, and the pair is the committed
-//     regression check. The two related statements are gated on the document arm they share
-//     and reported whole beside it, for the reason given where that pair is measured.
+//     0026 built, and the children read walks issues_parent_key.
+//
+//   - Moved-read pairs (root R22, benchtime.PairMovedRead): the four gated statements whose
+//     document arm moved onto node_search (R17) - searchQuery, searchQueryMeaning over main's
+//     document arm, the document arm relatedKeywordQuery and relatedMeaningQuery share, and
+//     relatedProbeSQL. Their before text reads artifact_versions, a table this release's schema
+//     still holds, so both sides run on one schema; each is held to root R22's rule for a moved
+//     read (after median at most 2 times before, or at most 1 ms more where after is under 2 ms),
+//     and logs both medians and their ratio. The two related statements are gated on the document
+//     arm they share (relatedDocumentKeywordLeg, reading node_search's document rows) and reported
+//     whole beside it, for the reason given where that pair is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
 //     listArtifactAsksQueryOpen. This release edits the two ask statements only to read each
-//     ask's answer state off its node (askNodeAnswerColumn), and listArtifactAsksQueryOpen also to
-//     pick its open asks by that state (askNodeStateOf); their gain is
+//     ask's answer state off its node (asks.NodeAnswerColumn), and listArtifactAsksQueryOpen also to
+//     pick its open asks by that state (asks.NodeStateOf); their gain is
 //     asks_issue_key (20261101182426) and messages_issue_roots (20261101182433), and for the
 //     artifact list the drop of asks_open_artifact (20261101182440), whose before side needs
 //     that index present. No one schema holds both sides of those, so each is measured alone,
@@ -156,18 +163,28 @@ func TestStatementTimings(t *testing.T) {
 		text: word, project: subjects.Project, limit: searchDefaultLimit,
 	})
 	afterSearchMeaningArguments := slices.Concat(afterSearchArguments[:8], meaning, afterSearchArguments[8:])
+	// Main's two texts of the check bind these lists and nothing after them (mainRelatedKeywordQuery,
+	// mainRelatedMeaningQuery). This release's texts bind one more value last of all, the acting
+	// credential every predicate of the registry they render reads (searchKindsCTE,
+	// refs.VisibilityArg), and so does relatedMeaningQueryOverMainsDocumentArm, which is this
+	// release's meaning body over main's keyword legs. The credential is the zero actor's, the one
+	// the check itself binds (relatedSearch): the check runs off a write and has no reader of its
+	// own.
 	relatedKeywordArguments := slices.Concat(relatedArguments, []any{lexemes, weights})
 	relatedMeaningArguments := slices.Concat(relatedArguments, meaning, []any{lexemes, weights})
+	credential := []any{refs.VisibilityArg(model.Actor{})}
+	relatedMeaningOverMainsArguments := slices.Concat(relatedMeaningArguments, credential)
 	// The check's two statements each have a second shape, the one whose kinds CTE drops the
 	// owners the check leaves out (relatedExcludedOwners), and that shape is the one every
 	// write runs: relatedSearch runs it whenever the check excludes anything, and every
 	// recording source names an owner (INFRA-1160). It is measured with the subject issue
 	// excluded, as a create excludes the issue it is filing, and the owners are a non-empty
 	// list of their own rather than nil: over a NULL array the filter is null of every row, and
-	// `where not` would then drop the lot and measure a statement that reads nothing.
+	// `where not` would then drop the lot and measure a statement that reads nothing. The owners
+	// come before the credential, as relatedSearch binds them.
 	excludedOwners := []any{[]string{"issue:" + subjects.Issue}}
-	relatedKeywordExcludingArguments := slices.Concat(relatedKeywordArguments, excludedOwners)
-	relatedMeaningExcludingArguments := slices.Concat(relatedMeaningArguments, excludedOwners)
+	relatedKeywordExcludingArguments := slices.Concat(relatedKeywordArguments, excludedOwners, credential)
+	relatedMeaningExcludingArguments := slices.Concat(relatedMeaningArguments, excludedOwners, credential)
 	// The probe is measured on a subject of its own, subjects.ProbeLexemes, the project's twenty
 	// rarest words rather than the three the other statements are measured on. Twenty is the
 	// list a question of a paragraph or two hands the picker, and rare is what it hands it: of
@@ -184,16 +201,12 @@ func TestStatementTimings(t *testing.T) {
 	// the first row it meets, which is not the statement production runs.
 	probeArguments := []any{subjects.Project, subjects.ProbeLexemes, subjects.Issue, (*string)(nil)}
 
-	// The five statements of search's document arm are measured as pairs on a database at this
-	// release's schema: this release's text of the arm reads document_search, the release
-	// before's reads a lateral over artifact_versions, and that schema holds both, so the two
-	// texts run alternately on one connection and the runner fails a pair whose after median is
-	// not below its before. A database migrated from the release before holds no
-	// document_search (migration 20261101182447), so this release's text cannot run there at
-	// all: each before text is measured alone instead, under the name it carries here, and the
-	// reading to compare it with is this schema's own reading of the same before text, which
-	// every pair below logs beside its after text. The two-commit run is therefore this one
-	// test against two databases rather than a second harness. The two meaning statements are
+	// The pair database has node_search for this build's document arm (block rows for search,
+	// document rows for the related check and probe) and artifact_versions for the before arm.
+	// document_search is the historical schema marker, not a source for either arm. The rewrites
+	// use the same bound parameters as before. The runner alternates texts on one connection and
+	// holds these four moved-read pairs to root R22 (PairMovedRead). The older database, without
+	// the marker, runs only the before texts under the same names. The two meaning statements are
 	// the exception, and their names say so: this release deletes the whole-text rows four of
 	// main's five meaning arms read, so main's meaning text measures a statement whose arms
 	// find nothing here, and the pair and report below take a before side of their own under a
@@ -217,7 +230,7 @@ func TestStatementTimings(t *testing.T) {
 		return
 	}
 
-	runner.Pair(t, "searchQuery, keywords only",
+	runner.PairMovedRead(t, "searchQuery, keywords only",
 		benchtime.Statement{SQL: mainSearchQuery, Args: searchArguments},
 		benchtime.Statement{SQL: searchQuery, Args: afterSearchArguments})
 	// The before side is this release's own meaning body over main's document arm
@@ -231,7 +244,7 @@ func TestStatementTimings(t *testing.T) {
 	//
 	// Both sides are the scoped shape: afterSearchMeaningArguments binds the subject's project,
 	// and that is the statement search sends for one (runMeaningSearch, meaningProjectScope).
-	runner.Pair(t, "searchQueryMeaning, over main's document arm",
+	runner.PairMovedRead(t, "searchQueryMeaning, over main's document arm",
 		benchtime.Statement{SQL: searchQueryMeaningOverMainsDocumentArm, Args: afterSearchMeaningArguments},
 		benchtime.Statement{SQL: searchQueryMeaningScoped, Args: afterSearchMeaningArguments})
 	// relatedKeywordQuery and relatedMeaningQuery are gated on the document arm they share
@@ -253,7 +266,7 @@ func TestStatementTimings(t *testing.T) {
 	// write runs; each report's name is its before text's, which is what a reader lines up
 	// against the Before branch's reading on the older schema.
 	documentLegArguments := []any{lexemeQuery, subjects.Project, lexemes, weights}
-	runner.Pair(t, "the document arm relatedKeywordQuery and relatedMeaningQuery share",
+	runner.PairMovedRead(t, "the document arm relatedKeywordQuery and relatedMeaningQuery share",
 		benchtime.Statement{
 			SQL:  documentLegStatement(mainRelatedDocumentKeywordLeg, mainRelatedTermWeights),
 			Args: documentLegArguments,
@@ -268,10 +281,10 @@ func TestStatementTimings(t *testing.T) {
 	// The after side is the scoped excluding shape: relatedArguments binds the subject's
 	// project, which is what the check sends such a call (relatedMeaningStatementFor).
 	runner.Report(t, "relatedMeaningQuery, the whole statement, over main's document arm",
-		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
+		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningOverMainsArguments, Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
-	runner.Pair(t, "relatedProbeSQL",
+	runner.PairMovedRead(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
 		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
 }
@@ -297,22 +310,20 @@ func TestStatementTimings(t *testing.T) {
 // have a gap, having no type for the one nothing reads. q.term is a literal for the same
 // reason, no arm reading it.
 //
+// q's other columns are relatedQOpener's: no issue named by key and none of search's three
+// filters. This release's arm reads the filters (searchRowFilters) and main's reads none of them,
+// so both sides run under the q that answers no filter at all, as the check's own q does.
+//
 // Parameters: $1 the tsquery, $2 the project, $3 the chosen lexemes, $4 their idf.
 func documentLegStatement(documentLeg string, termWeights func(lexemes int) string) string {
 	return `
-with q as materialized (select $1::tsquery as tsq, ''::text as term, ''::text as own_key),
+with q as materialized (select $1::tsquery as tsq, ''::text as term, '{}'::text[] as own_keys,
+                               ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
 ` + termWeights(3) + `document_arm as (
 ` + documentLeg + `
 )
 select count(*) from document_arm`
 }
-
-// relatedDocumentKeywordLeg is the document arm of the related-item check's keyword legs alone:
-// searchDocumentKeywordLeg under relatedCoordinationRank, the rank relatedKeywordQuery and
-// relatedMeaningQuery rank their arms by, which makes it the after side of that arm's pair. It
-// is built here rather than beside those two statements because this measurement is its only
-// reader, and a server would otherwise build it at start for nothing.
-var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank)
 
 // databaseHoldsDocumentSearch answers whether the database under measurement holds
 // document_search (migration 20261101182447), which is what decides how the five document-arm

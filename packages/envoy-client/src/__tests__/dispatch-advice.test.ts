@@ -708,6 +708,46 @@ describe("the related-item check", () => {
     expect(result.details.advice).toEqual(advice({ suggestions }));
   });
 
+  test("dispatch_issue lists graph neighbours after the text results", async () => {
+    const result = await createIssue({
+      outcome: "found",
+      related: [issueItem("DSP-7", "Existing issue", "triage")],
+      neighbourhood: { outcome: "made" },
+      neighbours: [
+        {
+          key: "DSP-8",
+          status: "triage",
+          title: "Other work",
+          shares: ["dispatch://DSP/component/api", "dispatch://DSP-2"],
+          href: "/issues/DSP-8",
+        },
+      ],
+    });
+
+    expect(result.text).toBe(
+      [
+        createdLine,
+        "Related items:",
+        "- DSP-7 [triage] Existing issue → http://dispatch.test/issues/DSP-7",
+        "Graph neighbours (shared targets):",
+        "- DSP-8 [triage] Other work · shares dispatch://DSP/component/api, dispatch://DSP-2 → http://dispatch.test/issues/DSP-8",
+      ].join("\n")
+    );
+  });
+
+  test.each([
+    [{ outcome: "none" }, "Graph neighbourhood check found no issue that shares a target."],
+    [
+      { outcome: "not_made", missing: "the graph read did not answer within 5s" },
+      "No graph neighbourhood check was made: the graph read did not answer within 5s.",
+    ],
+  ] as const)("dispatch_issue reports a graph check with no neighbours: %p", async (neighbourhood, line) => {
+    const result = await createIssue({ outcome: "none", related: [], neighbourhood });
+    expect(result.text).toBe(
+      [createdLine, "Related-item check searched and found nothing.", line].join("\n")
+    );
+  });
+
   test("a keywords-only search names why in its header", async () => {
     const result = await createIssue({
       outcome: "found",

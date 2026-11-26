@@ -17,9 +17,9 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { withEntries } from "../../issue/decision-entries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionChanges, decisionNodeChanges } from "../decision-review";
+import { decisionsRead } from "../decisions-filter/decisions-fixtures";
 import {
   assemble,
   buildIssueTree,
@@ -1010,13 +1010,12 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   ]);
 });
 
-// R3: a decision of a decisions read of the release before - a section of `decisions.md`, which
-// no node of the answer holds, read as its entry (`withEntries`) - finds its Change by its words,
-// with no block of the decisions document read: the change is the first decision whose words
-// hold the anchor's quote. The read hangs the comment under the issue, since no node holds the
-// decision, and the outline draws it under the decision it changes, which reads Change
-// requested; a comment quoting words no decision holds is no change and stays where the read
-// hangs it.
+// R3: a decision no node of the answer holds - a block of `decisions.md`, as the decisions read
+// answers its entry (`decisionsRead`) - finds its Change by its words, with no block of the
+// decisions document read: the change is the first decision whose words hold the anchor's quote.
+// The read hangs the comment under the issue, since no node holds the decision, and the outline
+// draws it under the decision it changes, which reads Change requested; a comment quoting words
+// no decision holds is no change and stays where the read hangs it.
 test("a decisions.md section finds its Change by its words", () => {
   const anchored = (id: string, quote: string): Comment => ({
     anchor: {
@@ -1054,14 +1053,7 @@ test("a decisions.md section finds its Change by its words", () => {
     anchored("c-change", "Draw it once."),
     anchored("c-stray", "Words no decision holds."),
   ];
-  const decisions = withEntries(
-    {
-      decisions: [keep, draw],
-      document: `dispatch://${KEY}/artifact/decisions-md`,
-      open_questions: [],
-    },
-    KEY
-  );
+  const decisions = decisionsRead([keep, draw], DECISIONS);
 
   const changes = decisionChanges(decisions, comments, issueDetails(), undefined);
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
@@ -1082,22 +1074,15 @@ test("a decisions.md section finds its Change by its words", () => {
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
 
-// A decision of a decisions read of the release before is drafted beside the tree read's nodes,
-// and a re-read of the same reads hands its row the words and the source it handed it before, as
-// a node of the tree read's does.
+// A decision of the decisions read that no node of the answer holds is drafted beside the tree
+// read's nodes, and a re-read of the same reads hands its row the words and the source it handed
+// it before, as a node of the tree read's does.
 test("drawing the same decisions read twice hands a section's row the same words and source", () => {
   const section = decisionsSection("d1", "Keep it", "Keep the model pure.", {
     text_tree: typedReading("decision", { blockId: "d1" }, "Keep the model pure."),
   });
   const reads = {
-    decisions: withEntries(
-      {
-        decisions: [section],
-        document: `dispatch://${KEY}/artifact/decisions-md`,
-        open_questions: [],
-      },
-      KEY
-    ),
+    decisions: decisionsRead([section], DECISIONS),
     issue: issueDetails(),
     tree: answer([]),
   };
@@ -2206,7 +2191,14 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
 // view draws it as a row in the walk's order after the issue's own task, with its size and its
 // issue. The outline's answer, which carries no `plan`, drafts no task of another issue.
 test("a plan task's size and issue come from the plan view's answer", () => {
-  const place = (size: string | null) => ({ cycle: false, needs: [], position: 0, size });
+  const place = (size: string | null) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position: 0,
+    size,
+    skills: null,
+  });
   const childPlan = { artifact_id: "artifact-child-plan", slug: "plan-md" };
   const child = (id: string, position: number, size: string | null) =>
     node(id, "plan_task", "CORE-2", {

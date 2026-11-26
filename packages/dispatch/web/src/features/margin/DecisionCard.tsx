@@ -13,12 +13,12 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { entryTextSource } from "../issue/decision-entries";
 import { decisionHeading, useDecisionHeadingWords } from "../issue/decision-heading";
 import { holdsUnsureParagraph, plainParagraph, unsureWords } from "../issue/decision-text";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
-import { textSourceOf } from "../refs/text-references";
 import { useCardStack } from "./card-stack";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
@@ -51,7 +51,8 @@ function previewOf(decision: DecisionEntry): {
  *  card lights up the block, as selecting an anchored comment lights up its text. The name
  *  names the card and words a link, neither of which holds markup, so there it is read as its
  *  plain words (`useDecisionHeadingWords`); with no page to link to it is drawn by the renderer,
- *  as the passage is. Both are the record of the document the decision is written in. */
+ *  as the passage is. Both are the record the decision's words are (`entryTextSource`): a
+ *  person's decision is the ask's own, and an agent's the document it is written in. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -72,8 +73,8 @@ export function DecisionCard({
   const unsure = decision.uncertainty === "high";
   // Read once per decision, so a repaint of the card repaints no preview it already drew.
   const preview = useMemo(() => previewOf(decision), [decision]);
-  const source = textSourceOf(
-    "artifact",
+  const source = entryTextSource(
+    decision,
     item.documentId,
     route !== undefined && "key" in route ? route.key : undefined
   );

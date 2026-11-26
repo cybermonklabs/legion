@@ -17,9 +17,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -82,12 +84,27 @@ func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) 
 }
 
 // latestReviewsStatement reads the newest review of every document in $1, one row each
-// (model.ReviewOrder decides which); scanLatestReviews reads its rows.
+// (model.ReviewOrder decides which, in the subquery that picks it), with what the gate compares of
+// it (docs.ReviewStandJoin, docs.ReviewStandColumns), which the join reads for those rows alone:
+// for a document that is no query node of a converted issue it reads no digest, so the approval
+// read of an upload, a project's document or an unconverted issue's costs what it always cost.
+// scanLatestReviews reads its rows.
 const latestReviewsStatement = `
-		select distinct on (artifact_id) ` + docs.ReviewReadColumns + `
-		from artifact_reviews where artifact_id = any($1::uuid[])
-		order by artifact_id, ` + model.ReviewOrder + `
+		select ` + docs.ReviewReadColumns + `, ` + docs.ReviewStandColumns + `
+		from artifact_reviews` + docs.ReviewStandJoin + `
+		where artifact_reviews.id in (
+			select distinct on (artifact_id) id
+			from artifact_reviews where artifact_id = any($1::uuid[])
+			order by artifact_id, ` + model.ReviewOrder + `
+		)
 	`
+
+// latestReview is a document's newest review as latestReviewsStatement reads it, with what the
+// gate compares of it (docs.ApprovalStand).
+type latestReview struct {
+	review model.ArtifactReview
+	stand  docs.ApprovalStand
+}
 
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
@@ -133,16 +150,16 @@ func approvalTargets(artifacts []*model.Artifact) ([]string, map[string]*model.A
 // document id. Its rows always come from a batch (queueApprovals queues the statement), whose own
 // execution error comes out of the last rows.Err(), unwrapped; the leading check names the read
 // for an error pgx recorded before this callback ran.
-func scanLatestReviews(rows pgx.Rows, latestReviews map[string]model.ArtifactReview) error {
+func scanLatestReviews(rows pgx.Rows, latestReviews map[string]latestReview) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("load latest reviews: %w", err)
 	}
 	for rows.Next() {
-		review, err := docs.ScanReviewWithCarry(rows)
+		review, stand, err := docs.ScanReviewStand(rows)
 		if err != nil {
 			return err
 		}
-		latestReviews[review.ArtifactID] = review
+		latestReviews[review.ArtifactID] = latestReview{review: review, stand: stand}
 	}
 	return rows.Err()
 }
@@ -181,13 +198,17 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 }
 
 // applyApprovals fills each document's Approval from its latest review and its open request, the
-// rule queueApprovals's apply runs once both statements have been read. A retired document's
-// approval is superseded by its retirement (docs.RetireDocument), which writes no version, so it
-// reads stale at its latest version as an approval a later version left behind reads: a gate or
-// a reader that asks whether the document stands approved hears that it does not.
+// rule queueApprovals's apply runs once both statements have been read. Whether an approval stands
+// is docs.ApprovalStand.Approves: for a query node of a converted issue, while the review's pin is
+// the digest of the current query, whatever version it names (R14), so the approval keeps the
+// version the person approved and reads approved at a later version whose record did not move;
+// for every other document, at its latest version alone. A retired document's approval is
+// superseded by its retirement (docs.RetireDocument), which writes no version, so it reads stale
+// at its latest version as an approval a later version left behind reads: a gate or a reader that
+// asks whether the document stands approved hears that it does not.
 func applyApprovals(
 	byID map[string]*model.Artifact,
-	latestReviews map[string]model.ArtifactReview,
+	latestReviews map[string]latestReview,
 	requests map[string]openApprovalRequest,
 ) {
 	for _, artifact := range byID {
@@ -198,7 +219,8 @@ func applyApprovals(
 			}
 		}
 		approval := &model.ArtifactApproval{State: "draft", LatestVersion: latest}
-		if review, ok := latestReviews[artifact.ID]; ok {
+		if held, ok := latestReviews[artifact.ID]; ok {
+			review := held.review
 			version := review.Version
 			at := review.CreatedAt.UTC().Format(time.RFC3339Nano)
 			actor := review.Actor
@@ -215,7 +237,7 @@ func applyApprovals(
 			switch {
 			case review.State == "changes_requested":
 				approval.State = "changes_requested"
-			case review.Version == latest && !artifact.Retired:
+			case !artifact.Retired && held.stand.Approves(review.Version, latest):
 				approval.State = "approved"
 			default:
 				approval.State = "stale"
@@ -244,7 +266,7 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 	if len(ids) == 0 {
 		return func() {}
 	}
-	latestReviews := map[string]model.ArtifactReview{}
+	latestReviews := map[string]latestReview{}
 	requests := map[string]openApprovalRequest{}
 	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
@@ -660,13 +682,18 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	documents := []model.AskApprovalDocument{
 		{ArtifactID: artifact.ID, Name: artifact.Name, Version: version, RequestedVersion: version},
 	}
+	// The ref_key of each document the request names, which spells the version node each approves
+	// tuple of a new request goes to (graphstore.VersionID): read with each document's row, so it
+	// costs no read of its own.
+	refKeys := map[string]string{artifact.ID: artifact.RefKey}
 	if input.IncludeVerification {
-		verification, err := s.verificationDocumentFor(r.Context(), tx, *artifact.IssueKey)
+		verification, refKey, err := s.verificationDocumentFor(r.Context(), tx, *artifact.IssueKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		documents = append(documents, verification)
+		refKeys[verification.ArtifactID] = refKey
 	}
 	// A supplied summary is validated even when this request opens no row.
 	question, err := approvalQuestion(documents, summary)
@@ -675,16 +702,19 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	// The approval before this request, and the transaction's now() beside it in the same batch:
-	// a request that opens an approval ask dates its node and its row by that now(), the row's
-	// created_at column default, which its insert writes explicitly (openApprovalAsk), and reading
-	// it here costs that request no round trip of its own. A request that renews the open one
-	// dates its requester's follow by it (renewApprovalAsk), and one that does neither reads it
-	// for nothing.
+	// The approval before this request, and the transaction's now() and the head's cut of the
+	// tuple log beside it in the same batch: a request that opens an approval ask dates its node
+	// and its row by that now(), the row's created_at column default, which its insert writes
+	// explicitly, and pins the cut's seq on its node as the store revision it was taken at
+	// (openApprovalAsk), and reading them here costs that request no round trip of its own. A
+	// request that renews the open one dates its requester's follow by the now()
+	// (renewApprovalAsk), and one that does neither reads both for nothing.
 	var now time.Time
+	var cut refs.TreeCut
 	batch := &pgx.Batch{}
 	applyApproval := queueApprovals(batch, []*model.Artifact{&artifact})
 	batch.Queue(`select now()`).QueryRow(func(row pgx.Row) error { return row.Scan(&now) })
+	refs.QueueHeadCut(batch, &cut)
 	if err := tx.SendBatch(r.Context(), batch).Close(); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -699,6 +729,31 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if settled {
+		// A document of a converted issue stands approved by its digest, at whatever version its
+		// approval names. Where that version is before the latest one and the latest version's
+		// record digest is the one the approval stands on, the approval is carried to the latest
+		// version in the approver's name (docs.CarryApprovalToLatest), so the Legion daemon, which
+		// reads an approval at latest_version alone, reads it approved too; the carry answers an
+		// open request that names that version. Each named document is carried on its own.
+		carried := false
+		for _, document := range documents {
+			if err := docs.CarryApprovalToLatest(documentCtx, tx, s.deps.Events, document.ArtifactID, s.deps.ServerURL); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			_, queued := ledger.PendingReview(document.ArtifactID)
+			carried = carried || queued
+		}
+		if carried {
+			if err := ledger.Commit(r.Context()); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if err := s.attachApprovals(r.Context(), pool, []*model.Artifact{&artifact}); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
 		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
@@ -745,7 +800,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	} else {
-		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question, now); err != nil {
+		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, refKeys, question, now, cut.ReadSeq); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -825,7 +880,9 @@ func approvalAfterRequest(approval model.ArtifactApproval, ask model.Ask) model.
 // document a human approved before carries that approval's version, time and approver on the
 // request (approval.approved), so the human reads what the re-approval follows; a first request
 // carries none. The approval named is the first document's, the one the request was opened on.
-// createdAt is the transaction's now(), which the caller read with the approval before the write.
+// createdAt is the transaction's now(), and readSeq the head's seq of the tuple log, which the
+// caller read with the approval before the write; refKeys is the ref_key of each document, which
+// the caller read with its row.
 // The event is filled in once Commit has run the write phase (queueLoggedEvent), and so is the
 // ask's OpenedEventID, which its caller takes from the event then.
 func (s *server) openApprovalAsk(
@@ -836,8 +893,10 @@ func (s *server) openApprovalAsk(
 	artifact model.Artifact,
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
+	refKeys map[string]string,
 	question string,
 	createdAt time.Time,
+	readSeq int64,
 ) (*model.Ask, *model.Event, error) {
 	// The request's id, drawn here as createAskBlock draws an ask block's, because the node goes
 	// in before the row; the node, its relations and the row are dated by createdAt, the
@@ -893,8 +952,20 @@ func (s *server) openApprovalAsk(
 	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
 	// The approval request's ask is the node this write makes, first of the nodes AskFacts
-	// answers (graphstore.Created).
+	// answers (graphstore.Created). It pins the store revision it was taken at, readSeq, as a
+	// value of its own and states one approves tuple to each version node the request names (R14).
 	nodes[0] = graphstore.Created(nodes[0])
+	nodes[0].Attributes = map[string]any{graphcensus.AttributeRequestReadSeq: readSeq}
+	facts = graphstore.AttributeFacts(facts, nodes[0])
+	if marked {
+		for _, document := range documents {
+			if refKey, ok := refKeys[document.ArtifactID]; ok {
+				if tuple, fits := graphcensus.ApprovesTuple(ask.ID, refKey, document.Version, actor, ask.CreatedAt, true); fits {
+					facts = append(facts, tuple)
+				}
+			}
+		}
+	}
 	askNode := graphstore.PlanUncaused(nodes, facts)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, askNode)
@@ -1155,30 +1226,31 @@ func artifactMetadata(ctx context.Context, q queryer, id string) (model.Artifact
 
 // verificationDocumentFor is the Verification document of the issue issueKey names, at its
 // current settled version, for a request that asks a human to approve it and the issue's spec at
-// once. An issue with no Verification document, and one whose Verification document has no
-// settled version, each refuse the request, since there is nothing to name beside the spec. The
-// one caller is behind the NOT_SPEC_DOCUMENT guard, which already refuses a document that is no
-// issue's spec (isSpecDocument), so a document with no issue never reaches here.
-func (s *server) verificationDocumentFor(ctx context.Context, q queryer, issueKey string) (model.AskApprovalDocument, error) {
+// once, and that document's ref_key, read with its row. An issue with no Verification document,
+// and one whose Verification document has no settled version, each refuse the request, since
+// there is nothing to name beside the spec. The one caller is behind the NOT_SPEC_DOCUMENT guard,
+// which already refuses a document that is no issue's spec (isSpecDocument), so a document with
+// no issue never reaches here.
+func (s *server) verificationDocumentFor(ctx context.Context, q queryer, issueKey string) (model.AskApprovalDocument, string, error) {
 	const noVerification = "the issue has no Verification document to approve beside this one; write verification.md first, or request approval of this document alone"
 	verification, held, err := s.verificationDocument(ctx, q, issueKey, "")
 	if err != nil {
-		return model.AskApprovalDocument{}, fmt.Errorf("read the issue's Verification document: %w", err)
+		return model.AskApprovalDocument{}, "", fmt.Errorf("read the issue's Verification document: %w", err)
 	}
 	if !held {
-		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
+		return model.AskApprovalDocument{}, "", errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
 	}
 	version, err := settledVersionNumber(ctx, q, verification.ID)
 	if err != nil {
-		return model.AskApprovalDocument{}, err
+		return model.AskApprovalDocument{}, "", err
 	}
 	if version == 0 {
-		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERSION",
+		return model.AskApprovalDocument{}, "", errorf(http.StatusConflict, "NO_VERSION",
 			"%s has no settled version to approve yet", verification.Name)
 	}
 	return model.AskApprovalDocument{
 		ArtifactID: verification.ID, Name: verification.Name, Version: version, RequestedVersion: version,
-	}, nil
+	}, verification.RefKey, nil
 }
 
 // createPlanReviewInput is the body of POST /api/v1/artifacts/{id}/plan-reviews.
