@@ -186,7 +186,7 @@ type whoamiAgent struct {
 // machine's fleet, a read entry's service, the account an operator's entry lists, which its
 // writes are recorded under, or a job's identity; null for every other credential), the session
 // its credential proved (null for a credential that proves none, which every one but a
-// broker-issued token is), the one project that credential lets it write (null where it names
+// broker-issued token is), the project key that credential's token names (null where it names
 // none, a person-scoped token and a job's public token included), a broker-issued token's project
 // scope (left out for every other credential), and whether Dispatch refuses its every write until
 // a person signs in (sign_in_required), which tells a job's token and an account entry's token

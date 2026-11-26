@@ -45,7 +45,7 @@ package main
 // withholds (edgeFrameVerdict, edge_frames.go): one the relay's Envoy-Subject header and its
 // envelope give no project of the token the socket was opened with, whatever published it. Such
 // a frame is answered done on its receipt subject, so the relay that sent it acknowledges its
-// message undelivered, and counted in envoy_edge_github_withheld_total{reason="project_not_held"}.
+// message undelivered, and counted in envoy_edge_github_withheld_total under the verdict's reason.
 // A GitHub frame this replica has no fresh repository answer to judge by is answered nak instead,
 // so the relay sends it again after the nak delay and, when its own answer is no fresher, withholds
 // it itself with the gap mark (sessionRelays.edgeWithholds).
