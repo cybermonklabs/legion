@@ -331,17 +331,16 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     write: "comment-edit",
   },
   // Its criterion line writes a criterion into the issue's own text, which tells nobody, and says
-  // so in words of its own rather than the document editor's. No row offers Write a criterion
-  // until the page reads the issue's tree, so no control reaches the line yet.
+  // so in words of its own rather than the document editor's. A focused comment, question or
+  // message offers Write a criterion once the page has read the issue's tree, and that act aims
+  // the line at it.
   {
     box: "issue-page-composer",
-    covered: false,
+    covered: true,
     delivers: false,
     files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
     issueRows: true,
     reach: "[data-issue-composer]",
-    reason:
-      "No control reaches it yet: Write a criterion is offered only once the page reads the issue's tree.",
     write: "criterion",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.

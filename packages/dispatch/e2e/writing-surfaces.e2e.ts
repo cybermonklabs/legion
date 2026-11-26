@@ -29,6 +29,7 @@ import { replyRowId } from "./inbox-threads";
 import { expectIssuePageDrawn, focusRow } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
+import { criterionAct, criterionLine } from "./issue-page-y";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -511,9 +512,11 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   // The new issue page's one box, at the foot of its outline, which a
   // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
   // what it writes, so it is reached by the attribute its form carries. It answers no ask
-  // (`OutlineWriter.answer`), so it draws no answer field. An edit of the reader's own comment is
-  // opened only by an Edit of that comment, which the page does not draw yet, so the list leaves
-  // `comment-edit` uncovered until such an Edit is under the box.
+  // (`OutlineWriter.answer`), so it draws no answer field. A row's Write a criterion opens its
+  // criterion line, a form of its own beside the write line, which it keeps mounted and hidden.
+  // An edit of the reader's own comment is opened only by an Edit of that comment, which the
+  // page does not draw yet, so the list leaves `comment-edit` uncovered until such an Edit is
+  // under the box.
   "issue-page-composer": {
     drive: async (page, world) => {
       await withIssuePage(page.context(), "alice");
@@ -544,6 +547,16 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await page.keyboard.press("r");
       await expect(field).toBeFocused();
       await expectRow(page, field, "issue-page-composer", "message-reply");
+      // Write a criterion on the reader's own comment aims the criterion line at it: a focused
+      // comment offers the act once the issue's tree read is cached. Each Enter of the line's walk
+      // takes a picker's row, so no criterion is sent.
+      const comment = await focusRow(page, world.comment);
+      await criterionAct(comment).click();
+      await expect(criterionLine(page)).toHaveAttribute("data-criterion-under", world.comment);
+      const criterion = criterionLine(page).locator("textarea");
+      await expect(criterion).toBeVisible();
+      await walkBox(criterion, world);
+      await expectRow(page, criterion, "issue-page-composer", "criterion");
     },
   },
   "margin-comment-edit": {

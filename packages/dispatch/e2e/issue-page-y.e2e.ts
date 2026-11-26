@@ -3,6 +3,7 @@
 import type { Locator, Page } from "@playwright/test";
 
 import { agentRoleWord } from "../web/src/features/issue-page/agent-role";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
@@ -15,14 +16,19 @@ import {
   NODE_TYPE_NAMES,
   PRESET_NAMES,
   type Preset,
+  ROW_MARK_WORDS,
   VERIFICATION_WORDS,
 } from "../web/src/features/issue-page/page-words";
-import { parseDispatchReference, shortForm } from "../web/src/features/refs/routes";
-import { getArtifact } from "./api";
+import {
+  buildDispatchReference,
+  parseDispatchReference,
+  shortForm,
+} from "../web/src/features/refs/routes";
+import { editArtifact, getArtifact, getIssueCoverage } from "./api";
 import { countDocumentSockets } from "./editor";
 import { nextFrames } from "./frames";
 import { seedWholeIssue } from "./issue-layout-seed";
-import { PLANNER_TITLE } from "./issue-layout-seed-support";
+import { asPlanner, PLANNER_TITLE, readTree } from "./issue-layout-seed-support";
 import { gotoIssue, issuePage, issueRead, phase, presetChooser, presetCount } from "./issue-page";
 import {
   blockNode,
@@ -45,16 +51,31 @@ import {
 } from "./issue-page-g";
 import {
   caretInNode,
+  expectActivePreset,
   focusedNodeId,
   onScreen,
   openPreset,
   pickPreset,
+  rowGaps,
   rowReference,
 } from "./issue-page-i";
 import { planChart, planView } from "./issue-page-k";
 import { composerField, composerTarget } from "./issue-page-l";
 import { decisionsFoot } from "./issue-page-q";
 import { verificationCard, verificationCheck } from "./issue-page-v";
+import {
+  childItems,
+  type DrawnMark,
+  filterCount,
+  type HeldRow,
+  heldUnder,
+  marginComments,
+  type NodeStateSeed,
+  ownMarks,
+  seedNodeStates,
+  treeItemsDrawn,
+  writeNodeState,
+} from "./issue-page-x";
 import {
   artifactRoomOf,
   criterionAct,
@@ -70,18 +91,26 @@ import {
 } from "./issue-page-y";
 import { settledState } from "./settled";
 import { expect, test } from "./test";
-import { type ApiRequest, expectLoadSettled, type RouteCount, watchApiRequests } from "./traffic";
+import {
+  type ApiRequest,
+  type ApiRequests,
+  expectLoadSettled,
+  type RouteCount,
+  watchApiRequests,
+} from "./traffic";
 
 /**
- * Five browser rows read the new issue page. The first writes a criterion under a comment;
- * the second checks where readings and a child's check are drawn, with a separate owed row
- * for the child's check's standing. The third edits nodes on the outline and the fourth
+ * Six browser rows read the new issue page. The first writes a criterion under a comment;
+ * the second checks where readings and a child's check are drawn, with a row of its own beside
+ * it for the child's check's standing. The third edits nodes on the outline and the fourth
  * edits in place in the filters, both through the issue's one room. The fifth checks that
- * Verification draws a long statement and a long check whole on desktop and phone.
+ * Verification draws a long statement and a long check whole on desktop and phone. The sixth
+ * reads part X's marks, open branches and fold counts on criteria.
  *
  * `phase` opens the real stack as alice with the new issue page on. The first four rows and
- * the standing row use `seedModelRows` and skip when the server does not serve the issue's
- * tree read. The last uses `seedLongWords`, which waits on coverage and results instead.
+ * the standing row use `seedModelRows`, and the sixth part X's `seedNodeStates` with criteria
+ * written over it (`seedCriterionStates`); each skips when the server does not serve the issue's
+ * tree read. The fifth uses `seedLongWords`, which waits on coverage and results instead.
  */
 
 /** What a failure says where the issue's tree read does not answer `converted: true`. */
@@ -101,7 +130,11 @@ const WRITTEN = {
   edited: "Lanternby",
   escaped: "Ivyhollow",
   first: "Heronsedge",
+  liveCriterion: "Quillmoor",
+  overtakenCriterion: "Rookhaven",
+  proposedCriterion: "Penhallow",
   refused: "Jasperfell",
+  underOvertaken: "Thornwick",
 } as const;
 
 /** One word each rows 3 and 4 type at the start of a node's words. */
@@ -629,8 +662,7 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 // key as a link, and none under the child's own row; that statement draws no "No check" on the
 // outline or under Verification. Under Decisions the decision's reading is a row under it and the
 // question's is not drawn; and no element but a kind tag reads a model's word whole, nor any text
-// a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's,
-// owed until the tree read answers it.
+// a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's.
 //
 // The steps are asserted in the order (1), (3), (2), (4). On a page without the reading rows, no
 // step drafts a reading, so the row fails there on (1)'s first assertion.
@@ -757,31 +789,21 @@ test("a reading stands under what it reads and a child's check under the stateme
   });
 });
 
-// A reading c-readings owes, in a row of its own beside row 2: the child's check under statement
-// 7 stands as its passing result gives it, "passed". The page reads that standing from the tree
-// read: a result node's `verdict`, `retracted` and `check_sha256`, and the check node's
-// `text_sha256`, which the page's tree read asks of the server; until the server answers them the
-// check draws no standing word, and the row is skipped. Its `@owed` tag is what c-readings' run
-// leaves out (`--grep-invert @owed`), since a pass counts no skipped case; the change that makes
-// the server answer them takes the tag off, and c-readings' `-g` then selects the row.
+// c-readings, in a row of its own beside row 2: the child's check under statement 7 stands as its
+// passing result gives it, "passed". The page reads that standing from the tree read alone: the
+// check node's `check.text_sha256` and its result node's `result` (`verdict`, `retracted`,
+// `check_sha256`), read by F's one reading of a check (`model-rows/model-drafts.ts`'
+// `borrowedStanding`). c-readings' `-g` selects it with row 2.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, then loaded and unfolded.
-test("a reading stands under what it reads, and a child's check draws the standing its results give @owed", async ({
+test("a reading stands under what it reads, and a child's check draws the standing its results give", async ({
   browser,
 }) => {
   test.skip(!(await treeReadServed()), TREE_READ_OWED);
   test.setTimeout(240_000);
   await phase(browser, seedModelRows, async (page, seeded) => {
-    const answer = await treeAnswerOf(seeded.key);
-    expect(answer.converted, NOT_CONVERTED).toBe(true);
+    expect((await treeAnswerOf(seeded.key)).converted, NOT_CONVERTED).toBe(true);
     const { child } = seeded;
-    const result = answer.nodes.find((node) => node.id === child.result);
-    const check = answer.nodes.find((node) => node.id === child.check.id);
-    test.skip(
-      result?.verdict == null || result.check_sha256 == null || check?.text_sha256 == null,
-      "owed: the child's check's standing needs a result node's verdict, retracted and check_sha256 and a check node's text_sha256 in the tree read"
-    );
-
     await openOutline(page, seeded.key);
     await expect(
       nodeRow(page, child.check.row).first(),
@@ -1127,5 +1149,468 @@ test("the Verification view draws a long statement and a long check whole @phone
         useInnerText: true,
       });
     }
+  });
+});
+
+/** A proposed node's mark and an overtaken one's, as part X's rows read them (`NodeMarks.tsx`):
+ *  its token, the token of its shape, the shape drawn, and its word. */
+const PROPOSED: DrawnMark = {
+  mark: "proposed",
+  shape: GLYPH_TOKENS.marks.proposed,
+  shown: true,
+  word: ROW_MARK_WORDS.proposed,
+};
+const OVERTAKEN: DrawnMark = {
+  mark: "overtaken",
+  shape: GLYPH_TOKENS.marks.overtaken,
+  shown: true,
+  word: ROW_MARK_WORDS.overtaken,
+};
+
+/** How long row 6 waits for the page to draw what the read holds, and for a write of its seed to
+ *  stand in a read: part X's own bounds. */
+const DRAWN_MS = 30_000;
+const SEED_READ_MS = 20_000;
+
+/** The block id of the statement row 6 writes into the spec under its overtaken criterion. */
+const UNDER_CRITERION_BLOCK = "r-under-criterion";
+
+/** The kinds the Spec control counts (`presets.ts`' `COUNTED_KINDS`): statements and criteria. */
+const SPEC_COUNTED: readonly string[] = ["requirement", "criterion"];
+
+/** What row 6 reads, each node by its read id: part X's seed, the issue's first comment thread
+ *  (a comment's read id is its own id), the three criteria written under it, and the statement
+ *  written under the overtaken one. */
+interface CriterionStates {
+  readonly comment: string;
+  readonly criteria: Readonly<Record<"live" | "overtaken" | "proposed", string>>;
+  readonly states: NodeStateSeed;
+  readonly statement: string;
+}
+
+/**
+ * Part X's `seedNodeStates` on a `seedWholeIssue` issue - whose criterion and statement stand
+ * under the open question made overtaken by its ask's address - and over it, as alice, three
+ * criteria written under the issue's first comment thread with the page's own write
+ * (`writeCriterionApi`), in this order: one made proposed, one made overtaken, and one left live
+ * whose words hold the word "proposed"; and a statement written into the spec under the
+ * overtaken one, as the planner, as X writes the statement under its question. The statement is
+ * waited on in the tree read under that criterion, and in the coverage read with no check serving
+ * it, before the states are written, so live it would draw "No check". Each criterion is written
+ * into the issue's tree artifact and carries no `document`, so its address is built from that
+ * artifact's slug and the block id the read answers. The seed asserts the read answers each
+ * criterion's state and its place under the comment, and waits, as X's seed does, until no
+ * document of the issue owes its block index, so the coverage read holds every gap.
+ */
+async function seedCriterionStates(): Promise<CriterionStates> {
+  const whole = await seedWholeIssue();
+  const states = await seedNodeStates(whole);
+  const { key } = whole;
+  const tree = states.answer.tree;
+  if (tree === null) throw new Error(`the tree read of ${key} names no tree artifact`);
+  const comment = whole.comments.threads[0];
+  if (comment === undefined) throw new Error(`${key} holds no comment thread`);
+  const under = `dispatch://${key}/comment/${comment}`;
+  const proposed = await writeCriterionApi(
+    key,
+    tree,
+    under,
+    `${WRITTEN.proposedCriterion}: a reader tells a criterion put forward from one that stands.`
+  );
+  const overtaken = await writeCriterionApi(
+    key,
+    tree,
+    under,
+    `${WRITTEN.overtakenCriterion}: a reader finds each criterion a later one replaced.`
+  );
+  const live = await writeCriterionApi(
+    key,
+    tree,
+    under,
+    `${WRITTEN.liveCriterion}: this criterion is proposed in its words alone, and its state is live.`
+  );
+  const { slug } = await getArtifact(tree);
+  const written = (await readTree(key, null)).nodes ?? [];
+  const addressOf = (id: string): string => {
+    const block = written.find((node) => node.id === id)?.block_id;
+    if (block === undefined) throw new Error(`the tree read of ${key} names no block id for ${id}`);
+    return buildDispatchReference({ block: { id: block }, key, kind: "artifact", slug });
+  };
+
+  const statementWritten = await editArtifact(
+    whole.specArtifactId,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: `:::requirement{#${UNDER_CRITERION_BLOCK} parent="${addressOf(overtaken)}"}\n${WRITTEN.underOvertaken}: the list keeps each criterion a later one replaced.\n:::`,
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  expect(
+    statementWritten.applied,
+    "the spec does not take the statement under the overtaken criterion"
+  ).toBe(1);
+  let statement = "";
+  await expect
+    .poll(
+      async () => {
+        const node = ((await readTree(key, null)).nodes ?? []).find(
+          (one) =>
+            one.supertag === "requirement" &&
+            one.block_id === UNDER_CRITERION_BLOCK &&
+            (one.issue === undefined || one.issue === key)
+        );
+        statement = node?.id ?? "";
+        return node?.parent?.id ?? null;
+      },
+      {
+        message: "the tree read never stands the statement under the overtaken criterion",
+        timeout: SEED_READ_MS,
+      }
+    )
+    .toBe(overtaken);
+  await expect
+    .poll(
+      async () =>
+        (await getIssueCoverage(key)).requirements?.find(
+          (requirement) => requirement.block_id === UNDER_CRITERION_BLOCK
+        )?.checks ?? null,
+      {
+        message:
+          "the coverage read never holds the statement under the overtaken criterion with no check serving it",
+        timeout: SEED_READ_MS,
+      }
+    )
+    .toBe(0);
+
+  await writeNodeState(key, addressOf(proposed), "proposed");
+  await writeNodeState(key, addressOf(overtaken), "overtaken");
+  const answer = await readTree(key, null);
+  for (const [id, state, what] of [
+    [proposed, "proposed", "the proposed criterion"],
+    [overtaken, "overtaken", "the overtaken criterion"],
+    [live, "live", "the live criterion"],
+  ] as const) {
+    const node = answer.nodes?.find((one) => one.id === id);
+    expect(node?.state, `the tree read does not answer ${what} ${state}`).toBe(state);
+    expect(node?.parent?.id, `the tree read does not stand ${what} under the comment`).toBe(
+      comment
+    );
+  }
+  await expect
+    .poll(async () => (await getIssueCoverage(key)).owed_documents ?? [], {
+      message: "a document of the seeded issue still owes its block index",
+      timeout: 90_000,
+    })
+    .toEqual([]);
+  return { comment, criteria: { live, overtaken, proposed }, states, statement };
+}
+
+/** The first row the page draws for the node `readId` names (`data-node-read-id`). */
+function rowOfRead(page: Page, readId: string): Locator {
+  return issuePage(page).locator(`[data-node-row][data-node-read-id="${readId}"]`).first();
+}
+
+/** Loads `path` with `traffic`, the page's one watcher, and waits until the page has gone
+ *  quiet. */
+async function loadSettled(page: Page, traffic: ApiRequests, path: string): Promise<void> {
+  traffic.reset();
+  await gotoIssue(page, path);
+  await expectLoadSettled(traffic);
+}
+
+/** Turns the view `name` on and waits until the page has gone quiet: a view sends its own read,
+ *  and the outline lands its opening focus once that read settles. */
+async function pickSettled(page: Page, traffic: ApiRequests, name: string): Promise<void> {
+  await pickPreset(page, name);
+  await expectActivePreset(page, name);
+  await expectLoadSettled(traffic);
+}
+
+/** Waits until the row of the node `readId` is drawn open with a row right under it for each of
+ *  `under`, as part X reads a branch the page holds open, and fails with `message`. */
+async function expectOpenWith(
+  page: Page,
+  readId: string,
+  under: readonly string[],
+  message: string
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const items = await treeItemsDrawn(page);
+        const row = items.find((item) => item.readId === readId);
+        const below = childItems(items, row).map((item) => item.readId);
+        return { expanded: row?.expanded ?? null, held: under.every((id) => below.includes(id)) };
+      },
+      { message, timeout: DRAWN_MS }
+    )
+    .toEqual({ expanded: "true", held: true });
+}
+
+/** Folds `row` with its fold control, answers the count it draws folded (`data-folded-count`),
+ *  and opens it again, naming it `what` where a press does not. */
+async function foldedCount(row: Locator, what: string): Promise<number> {
+  await row.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+  await expect(row, `the fold of ${what} does not fold it`).toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  const count = Number(await row.getAttribute("data-folded-count"));
+  await row.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+  await expect(row, `the fold of ${what} does not open it again`).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  return count;
+}
+
+/** Where `row` draws its marks (`[data-node-mark]`): how many stand in its margin's state line
+ *  (`[data-node-margin]`) and how many in the column its words open (`[data-node-content]`), and
+ *  whether that column draws its words first, so nothing stands between the bullet and them. */
+function marksPlace(row: Locator): Promise<{
+  readonly inContent: number;
+  readonly inMargin: number;
+  readonly wordsFirst: boolean;
+}> {
+  return row.evaluate((element) => {
+    const content = element.querySelector("[data-node-content]");
+    return {
+      inContent: content?.querySelectorAll("[data-node-mark]").length ?? 0,
+      inMargin: element.querySelectorAll("[data-node-margin] [data-node-mark]").length,
+      wordsFirst: content?.firstElementChild?.matches("[data-node-words]") === true,
+    };
+  });
+}
+
+/** The proposed criterion carries "Proposed" and its shape in its row's state line, never between
+ *  its bullet and its words, and draws no gap, read `where`. */
+async function expectProposedCriterion(page: Page, id: string, where: string): Promise<void> {
+  const row = nodeRow(page, id).first();
+  await expect
+    .poll(() => ownMarks(row), {
+      message: `the proposed criterion does not carry Proposed ${where}`,
+    })
+    .toEqual([PROPOSED]);
+  expect(
+    await marksPlace(row),
+    `the proposed criterion draws its mark other than in its row's state line ${where}, or between its bullet and its words`
+  ).toEqual({ inContent: 0, inMargin: 1, wordsFirst: true });
+  await expect(rowGaps(row), `the proposed criterion draws a gap ${where}`).toHaveCount(0);
+}
+
+// c-write, row 6: part X's R2, R3 and R5 (a proposed node marked, every node counted, an
+// overtaken node drawn open at its place) read on criteria, which X draws no row for (decision
+// 510 (1)). (1) On the first load, with no address, the question overtaken by its ask's address is
+// drawn open with its criterion and its statement under it; (2) after the load it carries
+// "Overtaken" and its shape, open with both, and its criterion draws no gap; (3) the same in
+// Graph. (4) Each branch the page draws open, folded one at a time, counts what the tree read
+// holds under it that Conversation draws, the overtaken question's criterion included. (5) The
+// proposed criterion carries "Proposed" and its shape in its row's state line, in the outline and
+// in Graph, with no gap, and under Spec it is a row carrying "Proposed", in the Spec control's
+// count; the live criterion whose words hold "proposed" carries no mark. (6) The overtaken
+// criterion is a row at its place among the comment's children, carrying "Overtaken" and its
+// shape, open with the statement under it, which draws no gap; its own fold control folds it and
+// opens it again, and the comment, folded, counts it and its statement. No criterion is reserved
+// for its author: a criterion is a block, and `refs/visibility.go`'s `nodeRegistry` gives a block
+// no author rule. At 1440 px.
+//
+// The criteria stand under the issue's first comment thread, a post the outline draws as a row,
+// and not under the comment `seedWholeIssue` anchors to statement 2: that one is on a node's text,
+// drawn in the margin and as no row (`tree-read/tree-nodes.ts`' `onNodeText`), so no row of it
+// could hold the criteria or count them. (5)'s reading of the live criterion is made right after
+// (1), before any other mark is read, so a page that reads a node's life from a word of its text
+// fails there first; (1) reads the page as it first opened, before any press.
+// SLOW(>=2s): a whole seeded issue with part X's ten node states, two questions with the two nodes
+// under one and a lens written, three criteria and a statement written and waited on in the tree
+// and coverage reads, then every branch of the outline folded and opened again, Graph and Spec
+// turned on, and three loads.
+test("a criterion is marked, drawn open and counted as part X draws every node", async ({
+  browser,
+}) => {
+  test.skip(!(await treeReadServed()), TREE_READ_OWED);
+  test.setTimeout(480_000);
+  await phase(browser, seedCriterionStates, async (page, seeded) => {
+    const { comment, criteria, states, statement } = seeded;
+    const { ids } = states;
+    const key = states.whole.key;
+    expect((await treeAnswerOf(key)).converted, NOT_CONVERTED).toBe(true);
+    const plain = presetPath(key, "conversation");
+    const underQuestion = [ids.questionCriterion, ids.questionStatement];
+    const traffic = watchApiRequests(page);
+
+    // (1) The page as it first opened, before any press: the overtaken question open with its
+    // criterion and its statement.
+    await gotoIssue(page, plain);
+    await expectOpenWith(
+      page,
+      ids.overtakenQuestion,
+      underQuestion,
+      "the overtaken question is drawn open with its criterion on the first load"
+    );
+    // (5)'s live criterion, the first mark read: its words hold "proposed", its state is live.
+    const live = nodeRow(page, criteria.live).first();
+    await expect(live, "the live criterion is no row of the outline").toBeVisible();
+    expect(await ownMarks(live), "the live criterion carries no Proposed mark").toEqual([]);
+
+    // (2) Once the load settled: the question's mark, open with both, and no gap on its criterion.
+    await expectLoadSettled(traffic);
+    await expect
+      .poll(() => ownMarks(rowOfRead(page, ids.overtakenQuestion)), {
+        message: "after the load the overtaken question does not carry Overtaken",
+      })
+      .toEqual([OVERTAKEN]);
+    await expectOpenWith(
+      page,
+      ids.overtakenQuestion,
+      underQuestion,
+      "after the load the overtaken question is not drawn open with its criterion and its statement"
+    );
+    await expect(
+      rowGaps(rowOfRead(page, ids.questionCriterion)),
+      "the criterion under the overtaken question draws a gap"
+    ).toHaveCount(0);
+
+    // (3) The same in Graph.
+    await pickSettled(page, traffic, PRESET_NAMES.graph);
+    await expectOpenWith(
+      page,
+      ids.overtakenQuestion,
+      underQuestion,
+      "the overtaken question is drawn open with its criterion and its statement in Graph"
+    );
+    await expect
+      .poll(() => ownMarks(rowOfRead(page, ids.overtakenQuestion)), {
+        message: "the overtaken question does not carry Overtaken in Graph",
+      })
+      .toEqual([OVERTAKEN]);
+    await expect(
+      rowGaps(rowOfRead(page, ids.questionCriterion)),
+      "the criterion under the overtaken question draws a gap in Graph"
+    ).toHaveCount(0);
+
+    // (4) Each branch folded once on a fresh load, the overtaken question first, beside what
+    // alice's tree read holds under it: a question indexed from a block stands for its ask too,
+    // and a comment on a node's text and its thread count in no branch (`HeldRow`).
+    await loadSettled(page, traffic, plain);
+    const answer = await readTree(key, null);
+    const margin = await marginComments(key);
+    const asks = new Map([
+      [ids.openQuestion, [states.whole.openQuestion.askId]],
+      [ids.overtakenQuestion, [states.overtakenAskId]],
+      [ids.proposedQuestion, [states.proposedAskId]],
+    ]);
+    const held = (readId: string): HeldRow => ({ alike: asks.get(readId), margin });
+    expect(
+      await foldedCount(rowOfRead(page, ids.overtakenQuestion), "the overtaken question"),
+      "the folded overtaken question counts its criterion"
+    ).toBe(heldUnder(answer, key, ids.overtakenQuestion, held(ids.overtakenQuestion)));
+    const branches = (await treeItemsDrawn(page)).filter(
+      (item) =>
+        item.expanded === "true" && item.readId !== null && item.readId !== ids.overtakenQuestion
+    );
+    for (const branch of branches) {
+      const readId = branch.readId ?? "";
+      expect(
+        await foldedCount(nodeRow(page, branch.id).first(), branch.id),
+        `the fold of ${branch.id} does not count what the tree read holds under it, the criteria and what stands under them included`
+      ).toBe(heldUnder(answer, key, readId, held(readId)));
+    }
+
+    // (5) The proposed criterion in the outline, in Graph, and under Spec, in its count.
+    await expectProposedCriterion(page, criteria.proposed, "in the outline");
+    await pickSettled(page, traffic, PRESET_NAMES.graph);
+    await expectProposedCriterion(page, criteria.proposed, "in Graph");
+    await pickSettled(page, traffic, PRESET_NAMES.spec);
+    await expect
+      .poll(() => ownMarks(nodeRow(page, criteria.proposed).first()), {
+        message: "the proposed criterion does not carry Proposed under Spec",
+      })
+      .toEqual([PROPOSED]);
+    const specCounted = new Set(
+      ((await readTree(key, "spec")).nodes ?? []).flatMap((node) =>
+        node.role === "query" && SPEC_COUNTED.includes(node.supertag) ? [node.id] : []
+      )
+    );
+    expect(
+      specCounted.has(criteria.proposed),
+      "the Spec view read does not take the proposed criterion"
+    ).toBe(true);
+    await expect
+      .poll(() => filterCount(page, "spec"), {
+        message: "the Spec control's count is not every statement and criterion of its view",
+      })
+      .toBe(specCounted.size);
+
+    // (6) The overtaken criterion among the comment's children, in the read's order, marked and
+    // open with the statement under it, which draws no gap.
+    await loadSettled(page, traffic, plain);
+    const siblings = (answer.nodes ?? [])
+      .filter((node) => node.parent?.id === comment)
+      .map((node) => node.id);
+    let drawn: readonly (string | null)[] = [];
+    await expect
+      .poll(
+        async () => {
+          const items = await treeItemsDrawn(page);
+          drawn = childItems(
+            items,
+            items.find((item) => item.readId === comment)
+          ).map((item) => item.readId);
+          return drawn.includes(criteria.overtaken);
+        },
+        {
+          message: "the overtaken criterion is no row among the comment's children",
+          timeout: DRAWN_MS,
+        }
+      )
+      .toBe(true);
+    expect(
+      drawn.filter((id) => id !== null && siblings.includes(id)),
+      "the overtaken criterion does not stand at its place among the comment's children"
+    ).toEqual(siblings.filter((id) => drawn.includes(id)));
+    const overtaken = nodeRow(page, criteria.overtaken).first();
+    await expect
+      .poll(() => ownMarks(overtaken), {
+        message: "the overtaken criterion does not carry Overtaken",
+      })
+      .toEqual([OVERTAKEN]);
+    await expectOpenWith(
+      page,
+      criteria.overtaken,
+      [statement],
+      "the overtaken criterion is not drawn open with the statement under it"
+    );
+    await expect(
+      rowGaps(rowOfRead(page, statement)),
+      "the statement under the overtaken criterion draws no gap"
+    ).toHaveCount(0);
+
+    // Its own fold control folds it and opens it again, and the comment, folded, counts it and
+    // the statement under it.
+    await overtaken.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+    await expect(
+      overtaken,
+      "the overtaken criterion's fold control does not fold it"
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      (await treeItemsDrawn(page)).some((item) => item.readId === statement),
+      "the statement under the overtaken criterion is drawn while the criterion is folded"
+    ).toBe(false);
+    await overtaken.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+    await expectOpenWith(
+      page,
+      criteria.overtaken,
+      [statement],
+      "the overtaken criterion's fold control does not open it again with the statement under it"
+    );
+    expect(
+      await foldedCount(rowOfRead(page, comment), "the comment"),
+      "the folded comment does not count the overtaken criterion and its statement"
+    ).toBe(heldUnder(answer, key, comment, { margin }));
   });
 });

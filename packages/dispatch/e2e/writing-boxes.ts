@@ -224,6 +224,8 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
   "ask-decline": "The note goes to whoever asked.",
   broadcast: "The message goes to each agent you selected.",
   "comment-edit": "A new comment, not an edit, tells a picked agent or role.",
+  criterion:
+    "The criterion goes under the comment, question or message it answers. A comment on the issue tells a picked agent or role.",
   "document-text": "A comment on the document tells a picked agent or role.",
   "issue-spec": "A comment on the new issue tells a picked agent or role.",
   "message-reply": "Your reply goes to whoever the thread is with.",

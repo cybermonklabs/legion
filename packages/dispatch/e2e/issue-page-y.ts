@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import type { IssueTreeParent } from "../web/src/api/types";
 import {
   criterionEdits,
   criterionMarkdown,
@@ -94,19 +95,14 @@ const MODEL_WORDS = {
 // The tree read and the artifact read.
 // ---------------------------------------------------------------------------------------------
 
-/** One node of the tree read, by the members these rows read. A result node's `verdict` and
- *  `check_sha256`, the sum of its check's words it was recorded against, and a check node's
- *  `text_sha256`, the sum of its current words, are absent until the server's tree read answers
- *  them. */
+/** One node of the tree read, by the members these rows read. Its `parent` is the read's own
+ *  `IssueTreeParent`: the node it stands under, named by its `id`. */
 export interface TreeReadNode {
-  readonly check_sha256?: string | null;
   readonly id: string;
-  /** The id of the node it stands under, or null for a node at the top. */
-  readonly parent: string | null;
+  /** The node it stands under, or null for a node at the top. */
+  readonly parent: IssueTreeParent | null;
   readonly supertag: string;
   readonly text: string;
-  readonly text_sha256?: string | null;
-  readonly verdict?: string | null;
 }
 
 /** One issue's tree read, its pages merged. */
@@ -216,7 +212,7 @@ async function awaitPlaced(key: string, wanted: readonly Wanted[]): Promise<Plac
         (one) =>
           one.supertag === want.supertag &&
           (want.words === undefined || one.text.includes(want.words)) &&
-          (want.under === undefined || one.parent === parent)
+          (want.under === undefined || (one.parent !== null && one.parent.id === parent))
       );
       if (node !== undefined) ids.set(want.name, node.id);
       return node === undefined;
