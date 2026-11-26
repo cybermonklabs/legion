@@ -773,9 +773,10 @@ func (f LineFacts) Queued(issue Issue) bool {
 }
 
 // HeldWhereItStands says whether issue's chain holds it where it stands, so that the line starts
-// nothing of it by any path, its queued promotion (Queued) or its first phase (Waiting): its chain
-// is unknown (R16 of dispatch://INFRA-3320), which says neither whether it is a root nor what
-// stands above it; or it stands under a parent in one of R19's three holds — its parent is out of
+// nothing of it by any path — its returning work (Waiting), its queued promotion (Queued) or its
+// first phase (Waiting): its chain is unknown (R16 of dispatch://INFRA-3320), which says neither
+// whether it is a root nor what stands above it; or it stands under a parent in one of R19's three
+// holds — its parent is out of
 // Legion's work and an issue above that parent is in it (ancestry), its top issue waits on a person
 // (root_awaiting_person), or an issue above it stands in its retro or its merge
 // (HeldUnderAccepted). It is the one statement of those holds that the line reads; which of them
@@ -1226,9 +1227,10 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // three cases that the chain alone decides (R19): its parent is not in Legion's work and an issue
 // above the parent is (ancestry), its top issue waits on a person (root_awaiting_person), or an
 // issue above it stands in its retro or its merge (HeldUnderAccepted). The unknown chain and the
-// three cases are one rule (LineFacts.HeldWhereItStands), which both the queued roots (Queued) and
-// the first phases read, so a gate holder past its first run under a parent, whose run starts as a
-// root's, meets them too. The other hold, on Dispatch blocked-by links, takes an issue out of here
+// three cases are one rule (LineFacts.HeldWhereItStands), which the returning work, the queued
+// roots (Queued) and the first phases all read, so a returning issue and a gate holder past its
+// first run under a parent, whose run starts as a root's, meet them too. The other hold, on
+// Dispatch blocked-by links, takes an issue out of here
 // only where it holds it where it stands: an issue whose first phase would start waits at admitted
 // until the last issue it names is done (LineFacts.Held, blockers.Holds), so the line never offers
 // it a slot. A root's links are read at its promotion instead, which passes it over and keeps its
@@ -1325,6 +1327,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// whose row the repair pass finishes (admit's finishFencedStarts) — waits for nothing
 		// and must not take a slot from an issue that does.
 		if !NeedsSlot(issue) {
+			hold(issue)
+			continue
+		}
+		// An issue its chain holds where it stands starts nothing here (HeldWhereItStands): one
+		// whose chain is unknown (R16), or an issue under a parent in one of R19's holds — its
+		// parent out of Legion's work under an issue in it (ancestry), its top issue waiting on a
+		// person (root_awaiting_person), or, at admitted, an accepted ancestor. A returning issue
+		// takes no slot while the hold stands and enters the line once the hold ends.
+		if facts.HeldWhereItStands(issue) {
 			hold(issue)
 			continue
 		}

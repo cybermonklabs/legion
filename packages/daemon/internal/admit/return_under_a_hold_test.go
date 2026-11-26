@@ -44,7 +44,6 @@ func TestAReturnUnderAHoldStartsNothing(t *testing.T) {
 				putIssue(t, pool, quietRootRecord(top, top, phase.AwaitingPerson))
 				takeSlot(t, pool, top)
 				seedLifecycle(t, pool, top)
-				seedApprovedGate(t, pool, top, 1, 1)
 			}
 			stopped := chainRecord(child, parent, phase.Implementing, "backlog")
 			stopped.Tree, stopped.LastDispatchSeq = top, 1

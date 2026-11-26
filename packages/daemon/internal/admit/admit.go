@@ -2175,7 +2175,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.engine.ResumeAwaitedRoot(ctx, tx, issue, *awaiting); err != nil {
 					return admitted, released, fmt.Errorf("resume %s after a person's answer: %w", issue.Key, err)
 				}
-				opened = opened || facts.GatesOpen(issue.Key)
+				// Leaving awaiting_person ends the root_awaiting_person hold on every issue under
+				// this top issue — returning work in a working phase as well as first phases when
+				// its design gate stands open — so rebuild the line in this pass so they can take
+				// slots without waiting for another fact.
+				resumed = true
 			case record.LineQueuedRoot:
 				issue.Status = "in_progress"
 				// The hand-over mark goes at a root's first start: it says a root arrived from
