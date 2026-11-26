@@ -92,6 +92,9 @@ concurrency:
 permissions: {}
 
 env:
+  # The prefix of this release line's tags. A fork sets the repository variable
+  # ENVOY_RELEASE_TAG_PREFIX to cut a line of its own, whose numbers never take upstream's.
+  ENVOY_RELEASE_TAG_PREFIX: ${{ vars.ENVOY_RELEASE_TAG_PREFIX || 'legion-envoy-v' }}
   # The arguments of the one version computation, shared by release_build (which decides the
   # version) and release_publish (which confirms it, --expect, inside the concurrency group):
   # every notices script changes an artifact this release publishes, and the target lists decide
@@ -533,7 +536,7 @@ jobs:
         id: version
         run: |
           # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose
-          .github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
+          .github/scripts/release-push.sh version "$ENVOY_RELEASE_TAG_PREFIX" $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
       # This release's own changelog entries, which release_publish writes into the GitHub
@@ -549,7 +552,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           .github/scripts/release-push.sh fold-notes "$VERSION" \
-            "$RUNNER_TEMP/release-notes.md" packages/envoy legion-envoy-v >> "$GITHUB_OUTPUT"
+            "$RUNNER_TEMP/release-notes.md" packages/envoy "$ENVOY_RELEASE_TAG_PREFIX" >> "$GITHUB_OUTPUT"
       # The entries, exactly as rendered, for release_publish; a release with none uploads
       # nothing at all. The name must not start with `legion-envoy-`, as the image digests' must
       # not (image_index above): release_publish downloads `pattern: legion-envoy-*` into the
@@ -892,7 +895,7 @@ jobs:
         run: |
           status=0
           # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose
-          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" version "$ENVOY_RELEASE_TAG_PREFIX" --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
           case $status in
             0) echo "release=true" >> "$GITHUB_OUTPUT" ;;
             3) ;;
@@ -945,7 +948,7 @@ jobs:
             subjects+=("agent-secrets-$os-$arch.tar.gz")
           done
           archives+=("${subjects[@]}")
-          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed legion-envoy-v "$VERSION" assets "${archives[@]}")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed "$ENVOY_RELEASE_TAG_PREFIX" "$VERSION" assets "${archives[@]}")
           (cd assets && sha256sum -- "${archives[@]}" > SHA256SUMS)
           {
             echo "tag=$tag"
