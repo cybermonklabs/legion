@@ -52,6 +52,9 @@ type snapshots struct {
 	keys    map[string]struct{}
 	working map[string]bool
 	byIssue map[string][]supervise.Claim
+	// holders is each slot of the newest view held by an issue of the project, read once for each
+	// view (idleHolders); nil until a reading asks for it.
+	holders []heldSlot
 }
 
 // standingWait is a wait of an issue on other issues that stands: when it began, and the blockers
@@ -86,7 +89,7 @@ func (s *snapshots) seeded(issues []record.Issue) {
 // pass is the admission pass's observer (admit.Admission.UsePassObserver): the view of a pass
 // whose fact committed.
 func (s *snapshots) pass(view admit.PassView) {
-	s.view, s.fresh = &view, true
+	s.view, s.fresh, s.holders = &view, true, nil
 	s.given = append(s.given, view.Given...)
 }
 
@@ -222,7 +225,7 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 		slot, holds := s.slotOf[key]
 		state := IssueState{InFlight: inFlight[key], Holds: holds, InTurn: working[key]}
 		if holds {
-			state.Holder = s.holderState(issue, slot, byIssue[key])
+			state.Holder, _ = s.holderState(issue, slot, byIssue[key])
 		}
 		if recorded && (state.InFlight || holds) {
 			state.PastReview = record.InSlotlessPhase(issue)
@@ -251,11 +254,64 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 
 // holderState is the state of the slots reading issue, holding slot, stands in, read by the slots
 // reading's own reading of a holder (blockers.SlotHolderState) over the view and claims, the stub's
-// claims of its issue. The stub's claims are none that nothing will wake, since a replay's worker is
-// never stranded.
-func (s *snapshots) holderState(issue record.Issue, slot record.Slot, claims []supervise.Claim) record.HolderState {
-	state, _ := blockers.SlotHolderState(issue, slot, record.HolderClaimsOf(claims), nil, s.view.Rows, s.view.Facts)
-	return state
+// claims of its issue, and the moment it has stood in that state since, nil where the reading gives
+// none. The stub's claims are none that nothing will wake, since a replay's worker is never
+// stranded.
+func (s *snapshots) holderState(issue record.Issue, slot record.Slot, claims []supervise.Claim) (record.HolderState, *time.Time) {
+	return blockers.SlotHolderState(issue, slot, record.HolderClaimsOf(claims), nil, s.view.Rows, s.view.Facts)
+}
+
+// idleHolders is how many of the project's issues hold a slot as the newest pass left them, and the
+// moment each of them whose state is idle has stood idle since (holderState), the claims being the
+// stub's as they stand: the replay's own holders, which the idle signal reads. Before the window's
+// start the replay's course is the record's, so a holder's idle time begins no earlier than the
+// newest end of a turn of its issue that the record shows before the start (endedBefore), as the
+// record's own reading of the signal dates it (SignalRecord.idleHolders); the stub's claims hold
+// such an end only for a turn under way at the start. None before the first pass's view.
+func (s *snapshots) idleHolders(claims map[claim.Token]supervise.Claim, endedBefore map[string]time.Time) (int, []time.Time) {
+	if s.view == nil {
+		return 0, nil
+	}
+	if s.holders == nil {
+		issues := make(map[string]record.Issue, len(s.view.Issues))
+		for _, issue := range s.view.Issues {
+			issues[issue.Key] = issue
+		}
+		s.holders = []heldSlot{}
+		for _, slot := range s.view.Slots {
+			if issue, ours := issues[slot.Issue]; ours {
+				s.holders = append(s.holders, heldSlot{issue: issue, slot: slot})
+			}
+		}
+	}
+	byIssue := make(map[string][]supervise.Claim, len(s.holders))
+	for _, held := range s.holders {
+		byIssue[held.issue.Key] = nil
+	}
+	for _, c := range claims {
+		if held, holds := byIssue[c.Issue]; holds {
+			byIssue[c.Issue] = append(held, c)
+		}
+	}
+	var idle []time.Time
+	for _, held := range s.holders {
+		state, since := s.holderState(held.issue, held.slot, byIssue[held.issue.Key])
+		if state != record.HolderIdle || since == nil {
+			continue
+		}
+		if ended, ok := endedBefore[held.issue.Key]; ok && ended.After(*since) {
+			since = &ended
+		}
+		idle = append(idle, *since)
+	}
+	return len(s.holders), idle
+}
+
+// heldSlot is a slot of the newest pass's view and the record of the issue of the project that
+// holds it.
+type heldSlot struct {
+	issue record.Issue
+	slot  record.Slot
 }
 
 // waitAt begins, carries or ends key's wait on other issues at at: an issue in flight that stands

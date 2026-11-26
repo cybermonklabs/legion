@@ -15,3 +15,16 @@ The two grants have zero wait. In-flight and slot time in turns are each 55 + 50
 As said above, both orders give the same pairs, so `priorityTakenBanded` is also 20/60. The wait of urgent work holds the two P0 issues, its waits cut at 10:00 (the window has no run-out). ACME-2 is `todo` at 09:10 and takes its slot then, a wait of 0, and is not done: 50 minutes, cut. ACME-3 is `todo` at 09:30 and has neither: 30 and 30 minutes, each cut. The first-slot waits 0 and 30 give a median of 15 and a 90th percentile of 30, one cut; the waits to `done`, 30 and 50, a median of 40 and a 90th percentile of 50, two cut.
 
 The run names assumptions 1 (always), 8 (ACME-3 and ACME-4 are handed to Legion and the record never starts either), 9 (the run gives out slots) and 15 (work is left in flight at 10:00).
+
+## The signals, worked by hand
+
+The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
+So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
+Each run limits all six signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
+
+- `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
+- `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+- `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+- `refusals`: no minute of the provider's record before 09:00.
+- `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
+- `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

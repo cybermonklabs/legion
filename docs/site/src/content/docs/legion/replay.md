@@ -818,6 +818,9 @@ Nothing that moves an issue's work reads what a holder took, but the merger's st
 | `--seed <n>` | The seed of every draw (1 by default). |
 | `--slowdown <f>` | The factor f for each 42 issues in flight above the record's number (1 by default). |
 | `--cap <n>` | The admission cap that the replay serves under from the window's start to its end, in place of the caps that its record shows (0, the default, keeps the record's), which `run.json` names as `cap`. |
+| `--limit <signal>=<value>` | A signal's limit, given once for each signal that has one: `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, each in the range that its limit takes ([The signals](#the-signals)), under which `signals` and `signals-backoff` start an issue below P0 only while each signal that has a limit reads under it. |
+| `--idle-after <duration>` | d, how long a slot holder has been idle before the idle signal counts it (1h by default). |
+| `--probe <time>` | A moment, in RFC 3339, at which `run.json` gives the value of each signal that `--limit` names, given once for each moment. |
 | `--keep-db` | Keep the run's database after the run. |
 | `--trace-segments` | Write each work segment's issue, phase, start, n, m, recorded length and replayed length to `segments.jsonl`. |
 
@@ -827,6 +830,8 @@ It counts the issues that the replay admitted with no work, recorded or drawn, a
 Under `neverStarted=drawn` or `drawn-done` it counts how many issues drew their work from issues of their own tree, from issues of their priority and repository, and from the whole window, which `run.json` gives as `divergence.drawnWork`.
 It prints the scenario of the work of an issue that never started, the conflict model with the window that it was fitted on and its intervals, and the widest gap between the run's two scorecards.
 Last, it prints each assumption that the run rests on, with the number of outbox rows that it finished under each.
+It names each signal that `--limit` names whose load model gives no limit, which then has none in the run.
+Under `signals` or `signals-backoff` it counts the deadlines that the run set, moved, dropped and fired, and says so where no signal has a limit, since then no signal binds.
 
 `--out` receives these files:
 
@@ -835,8 +840,22 @@ Last, it prints each assumption that the run rests on, with the number of outbox
 | `log.jsonl` | The daemon's lines on the simulated clock and the replay's lines for conflict draws and Git reads. |
 | `scorecard.json` | The measures read from the states that the daemon's own admission passes left, the snapshot timeline. |
 | `scorecard-line.json` | The same measures read back from `log.jsonl` and the replay's Dispatch events, as the measures of a record are read, the line timeline. |
-| `run.json` | What ran, what it counted, the gap of each measure between the two timelines, the conflict model, and the read counts (`gitReads`) and conflict hours (`gitLoopHours`) by repository. |
+| `run.json` | What ran, what it counted, the gap of each measure between the two timelines, the conflict model, the read counts (`gitReads`) and conflict hours (`gitLoopHours`) by repository, and what the run read of the signals. |
 | `segments.jsonl` | Each work segment, with `--trace-segments` alone. |
+
+`run.json` gives what the run read of R11's signals, for every run:
+
+- `limits` is the limits that `--limit` gave, and `{}` for none; `idleAfter` is d.
+
+- `unlimited` is each signal of `limits` whose load model gives no limit, with the model.
+
+- `ceiling` is the cap that the run serves under as a ceiling: `--cap` where it gives one, else the one cap that the window's record serves over its span, and `null` where that cap changes in the span, which `caps` of `window.json` then gives.
+
+- `slotPasses` is each slot that a pass took back (`take`) or gave out (`give`), in order, with the issue, the moment and the kind of the pass (`event`, `tick` or `deadline`), and `[]` for none.
+
+- `deadlines` is each change of the project's deadline under a rule that admits by signals: each `set`, `moved` (with the moment it was due before, `previous`), `dropped` and `fired`, with the moment it happened, the moment it is due and the signal whose crossing it is, or `allowance` for the back-off's rise.
+
+- `signalValues` is, at each moment that `--probe` gives, the value of each signal of `limits` once every act at or before that moment has run, and `null` for a signal with no record there.
 
 `run.json` names the code that made the run, and the time at which the run started:
 
@@ -969,8 +988,11 @@ They are the tokens for each minute of an issue in flight, a minute in the range
 With `--against`, a last section gives each rate on each record, their ratio, the test, and each repository that has no test.
 `--json` prints the same as JSON (`LoadModels` in `internal/replay/models.go`), which the limit test reads.
 
-A replay reads each model's signal through `LoadModels.Replay` (`internal/replay/model_replay.go`), from the replay's own timeline: its issues in flight at each moment, the stretches in flight of each issue whose work the record never ran, its start of each recorded work segment, and each pull request of work that the record never ran entering the queue.
+A replay reads each model's signal from the replay's own timeline: its issues in flight at each moment, the stretches in flight of each issue whose work the record never ran, its start of each recorded work segment, and each pull request of work that the record never ran entering the queue.
 It gives the provider's headroom and refusals, the kills of the hour before and the queue's wait at a moment, each by the signal's own definition ([The signals](#the-signals)), and `LoadModels.RecordTimeline` gives the record's own timeline, at which the daily test reads the models.
+`LoadModels.Replay` (`internal/replay/model_replay.go`) reads a whole timeline at once.
+A run reads it as it goes through `LoadModels.Reader` (`internal/replay/model_reader.go`), which models each minute once it ends, each kill once its segment or its drawn issue's own hours bring it, and each pull request once it enters, and gives at each moment what `LoadModels.Replay` gives over the whole timeline.
+Each modelled value at a moment reads only the course up to that moment, so nothing that the reader has given changes later.
 
 | Flag | What it gives |
 | --- | --- |
@@ -1889,7 +1911,26 @@ The daemon's own rule admits by signals in the same way once its caller supplies
 The kind of the pass is an event for every fact but two: the controller's tick, and the signal deadline, `intake.SignalDeadline`, which is the moment at which a signal would cross its limit with no event.
 At the pass of a tick, the rule gives back each slot that `main` gives back, applies the P0 bound and starts each P0 issue that R10 starts, and starts no issue below P0 and returns none to a slot.
 At the pass of an event or of a deadline, it starts the next issue below P0 as the paragraph above says.
-No daemon emits the deadline fact in this version, and a replay emits none until it supplies the signals to its passes: a replay of this version supplies none, so a run under either rule reads no signal and admits as `p0-at-once`.
+No daemon emits the deadline fact in this version.
+A replay supplies the signals to the passes of a run under either rule (`legion replay run --limit`), from its own course and never from the record.
+The idle share comes from the replay's own slot holders: the states that its pass observer reads over the newest pass's view and the stub's claims, with the moment each holder has stood idle since.
+The replay's course up to the window's start is the record's, so a holder stands idle no earlier than the newest end of a turn of its issue that the record shows before the start.
+The approvals come from the replay's copy of Dispatch: each ask event, each comment on an ask and each change of an issue's assignee that it applies, and each move of the project's default assignee at its recorded moment.
+The provider's headroom and refusals, the kills and the merge queue come from the load models at the replay's own issues in flight, its starts of each recorded work segment and the pull requests of its drawn work ([`legion replay models`](#legion-replay-models)).
+The models read the course as the run goes: each minute when it ends, each kill once its segment or its drawn issue's own hours bring it, and each pull request once it enters, so the cost of a pass does not grow with the window.
+A model that gives no limit for its signal leaves that signal with none in the run, and `run.json` names it under `unlimited`.
+A signal with no record at a moment holds no start there (assumption 47).
+Under `signals-backoff` the pass also folds the setbacks: the project's own refusals of each minute, at the minute's end, and each kill, in time order, of a model that gives a limit.
+
+After every pass, the run computes the project's deadline: the earliest crossing of each signal that has a limit, with no event, and under `signals-backoff` the allowance's next rise (`signals.Earliest`).
+It does so again at each moment that a modelled input changes with no pass: a kill, a pull request entering or leaving the merge queue, and the end of a minute that may hold a refusal.
+It also does so at each turn that starts or ends with no pass, where the idle share has a limit.
+A kill runs no pass: the replay leaves the kill's fact out (assumption 31), and only computes the deadline again.
+The run keeps one deadline, as the daemon keeps one timer.
+A new moment replaces the deadline that stands (`moved`), a deadline no longer due is `dropped`, and at its moment the deadline applies `intake.SignalDeadline`, whose pass is a deadline's (`fired`).
+The timer is the daemon's memory, so a deadline that falls while the daemon is down does not fire.
+A boot drops the deadline that stands, and the boot's first pass computes it again.
+`run.json` gives each change of the deadline under `deadlines`, and each slot each pass gave out or took back, with the kind of its pass, under `slotPasses`.
 
 `signals-backoff` replaces the ceiling by an allowance.
 The allowance starts at the ceiling.
@@ -1994,6 +2035,8 @@ A holder leaves `idle` only at an event, so the share falls at no moment with no
 Live, the same share comes from each slot's `state` and `since` in `legion state --json`, which a test of the tool holds to the window's reading of the same slot.
 
 **Source**: the replay itself.
+A replay reads its own slot holders and the stub's claims.
+Its course up to the window's start is the record's, so a holder's idle time begins no earlier than the newest end of a turn of its issue that the record shows before the start, as this definition reads the record there.
 
 ### Signal `queue`
 
@@ -3118,6 +3161,8 @@ It also leaves out a silent worker, a stalled background job, an entry sweep, a 
 It enters each recorded `supervise: claim failed` line at its offset in the segment of its issue.
 The trace also keeps the logged cause and time of each process death or refused start it can read.
 These observations do not apply a fact, spend a launch budget, or change the schedule.
+The replay leaves each memory kill's fact out under every rule, the rules that admit by signals among them.
+At the moment of each kill that the kill model gives, a run under such a rule computes the project's deadline again and runs no pass, so a kill holds back a start only through the kills signal that a later pass reads, and never moves an issue.
 
 **If it is wrong.**
 If faults come more often when more issues run at once, the replay moves the measures so for a rule that runs more issues at once.
@@ -3645,6 +3690,8 @@ Check the minutes whose refusals the record does not split against a record of t
 
 A signal that the window holds no record of at a moment is unrecorded, never zero, and a rule that admits by the signals lets it hold back nothing there.
 The provider's headroom has no record before the first observation of the project's limit and where the project had no limit (assumption 48), the kills none where the deployment gave no launcher's lines, and the approvals none before the project's default assignee is known.
+The replay reads the idle share from its own slot holders and the approvals from its own copy of Dispatch, but each of them is recorded only where the window holds a record of it, so a window that names no span of a signal reads that signal unrecorded at every moment, whatever the replay's own state.
+A load model gives a recorded value only where the window holds its signal's record, and a model that gives no limit for its signal leaves the signal with none in a run.
 
 **Evidence in a recorded window.** _A window with no limit of the project's._
 In one deployment's first window, the project's own limit on the provider's tokens was taken away at 2026-11-16T22:07Z, so the headroom has no record from then on.

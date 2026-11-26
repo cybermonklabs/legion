@@ -162,6 +162,10 @@ func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) D
 			candidates, count = kind, &drawn.Window
 		}
 		s.pieces[key] = clonePieces(s.pieces[candidates[source.IntN(len(candidates))]], key)
+		if s.drawnWork == nil {
+			s.drawnWork = map[string]bool{}
+		}
+		s.drawnWork[key] = true
 		*count++
 	}
 	return drawn

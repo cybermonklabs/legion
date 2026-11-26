@@ -399,22 +399,41 @@ func (r *modelRecord) replayTokens(flight stretchCount) (map[int64]signals.Minut
 	for _, key := range slices.Sorted(maps.Keys(r.minutes)) {
 		line := r.minutes[key]
 		start, end := line.Minute, line.Minute.Add(time.Minute)
-		tokens := float64(line.Uncached)
-		if recorded := r.flight.hours(start, end); recorded > 0 {
-			tokens *= flight.hours(start, end) / recorded
-		}
-		minute := signals.Minute{Uncached: int64(math.Round(tokens)), Own: line.Own, Provider: line.Provider}
-		if limit, limited := r.headroomLimit(line); limited {
-			minute.Limit, minute.Own = limit, 0
-			if tokens > float64(limit) {
-				count++
-				minute.Own = int64(math.Round(float64(count)*r.rho)) - int64(math.Round(float64(count-1)*r.rho))
-				refused[key] = true
-			}
+		minute, refuses := r.modelMinute(line, r.flight.hours(start, end), flight.hours(start, end), count)
+		if refuses {
+			count++
+			refused[key] = true
 		}
 		minutes[key] = minute
 	}
 	return minutes, refused
+}
+
+// modelMinute is line's minute as the tokens model gives it (tokensForm), recorded and replayed
+// being the issue-hours in flight over the minute in the record and in the replay, and count the
+// refused minutes before it, and whether the project's own limit refuses it: its recorded tokens
+// scaled by replayed over recorded, kept as recorded where recorded is none; where the window
+// holds a record of the headroom in it, the limit in force, and, where the tokens pass that limit,
+// a refused minute whose own refusals the record's own per refused minute give, rounded so that the
+// first n refused minutes count round(n × rho) together. A minute with no record of the headroom
+// keeps its recorded refusals.
+func (r *modelRecord) modelMinute(line ProviderMinute, recorded, replayed float64, count int) (signals.Minute, bool) {
+	tokens := float64(line.Uncached)
+	if recorded > 0 {
+		tokens *= replayed / recorded
+	}
+	minute := signals.Minute{Uncached: int64(math.Round(tokens)), Own: line.Own, Provider: line.Provider}
+	limit, limited := r.headroomLimit(line)
+	if !limited {
+		return minute, false
+	}
+	minute.Limit, minute.Own = limit, 0
+	if tokens <= float64(limit) {
+		return minute, false
+	}
+	count++
+	minute.Own = int64(math.Round(float64(count)*r.rho)) - int64(math.Round(float64(count-1)*r.rho))
+	return minute, true
 }
 
 // replayKills is each modelled kill of the replay, in time order (memoryForm), and how many the
@@ -454,32 +473,67 @@ func (r *modelRecord) replayKills(starts map[segmentKey]time.Time, drawn []Drawn
 func (r *modelRecord) drawnKills(stretches []DrawnFlight) []time.Time {
 	var kills []time.Time
 	sum := 0.0
+	parts := r.ratedParts()
 	for _, stretch := range stretches {
 		to := stretch.To
 		if to.IsZero() {
 			to = r.w.To
 		}
-		for _, day := range r.dayRates {
-			rate, rated := day.rate()
-			if !rated || rate <= 0 {
-				continue
-			}
-			for _, part := range day.parts {
-				from, until := maxTime(stretch.From, part.From), minTime(to, part.To)
-				for from.Before(until) {
-					whole := math.Floor(sum) + 1
-					need := (whole - sum) / rate
-					if left := until.Sub(from).Hours(); need > left {
-						sum += rate * left
-						break
-					}
-					from = from.Add(time.Duration(need * float64(time.Hour)))
-					kills, sum = append(kills, from), whole
-				}
-			}
+		for _, part := range parts {
+			sum = part.accrue(maxTime(stretch.From, part.span.From), minTime(to, part.span.To), sum, func(kill time.Time) { kills = append(kills, kill) })
 		}
 	}
 	return kills
+}
+
+// ratedPart is one part of a day of the window's span in which the window holds the record of the
+// kills, on a day whose kills for each hour of an issue in flight are above zero (rate), which
+// work the record never ran takes there.
+type ratedPart struct {
+	span Span
+	rate float64
+}
+
+// ratedParts is each ratedPart of the window's span, in time order.
+func (r *modelRecord) ratedParts() []ratedPart {
+	var parts []ratedPart
+	for _, day := range r.dayRates {
+		rate, rated := day.rate()
+		if !rated || rate <= 0 {
+			continue
+		}
+		for _, part := range day.parts {
+			parts = append(parts, ratedPart{span: part, rate: rate})
+		}
+	}
+	return parts
+}
+
+// accrue adds a drawn issue's hours in flight in p from from to until to its accumulator, which
+// stands at sum at from, and answers the sum at until: kill is told of each moment the sum passes a
+// whole number, in order (drawnKills).
+func (p ratedPart) accrue(from, until time.Time, sum float64, kill func(time.Time)) float64 {
+	for from.Before(until) {
+		at, next, killed := p.step(from, until, sum)
+		if sum = next; !killed {
+			break
+		}
+		from = at
+		kill(at)
+	}
+	return sum
+}
+
+// step is one step of a drawn issue's accumulator in p from from, where it stands at sum, to
+// until: the moment by until at which the sum passes the next whole number, and that whole number;
+// or, where it passes none by until, until and the sum there, and false.
+func (p ratedPart) step(from, until time.Time, sum float64) (time.Time, float64, bool) {
+	whole := math.Floor(sum) + 1
+	need := (whole - sum) / p.rate
+	if left := until.Sub(from).Hours(); need > left {
+		return until, sum + p.rate*left, false
+	}
+	return from.Add(time.Duration(need * float64(time.Hour))), whole, true
 }
 
 // recordedQueue is one repository's merge queue as the record shows it: its name in lower case and
@@ -729,30 +783,50 @@ func (q *recordedQueue) replay(starts map[segmentKey]time.Time, drawn []time.Tim
 	}
 	head = append(head, drawn...)
 	slices.SortStableFunc(head, time.Time.Compare)
-	used, unserved := 0, 0
-	var prev time.Time
-	stalled := false
+	unserved := 0
+	var service queueService
 	for _, entry := range head {
-		if stalled {
-			waits, unserved = append(waits, signals.Wait{Added: entry}), unserved+1
-			continue
+		wait, served := service.serve(q, entry, end)
+		if !served {
+			unserved++
 		}
-		ready := maxTime(entry, prev)
-		next := max(used, sort.Search(len(q.exits), func(i int) bool { return !q.exits[i].Before(ready) }))
-		served, by := q.service(ready, end)
-		switch {
-		case next < len(q.exits) && (!served || !by.Before(q.exits[next])):
-			prev, used = q.exits[next], next+1
-		case served:
-			prev = by
-		default:
-			stalled = true
-			waits, unserved = append(waits, signals.Wait{Added: entry}), unserved+1
-			continue
-		}
-		waits = append(waits, signals.Wait{Added: entry, Left: prev})
+		waits = append(waits, wait)
 	}
 	return waits, apart, unserved
+}
+
+// queueService is how far a queue's service of the pull requests that reach its head has come, in
+// their order of entry (recordedQueue.replay): the exit of the last one served, how many of the
+// record's exits from the head the service has taken, and whether a pull request stands unserved,
+// behind which every later one stands too.
+type queueService struct {
+	prev    time.Time
+	used    int
+	stalled bool
+}
+
+// serve is the wait in q's queue of the next pull request in its order of entry, which enters at
+// entry, end being the end of the queue's record, and whether it is served: it leaves after the one
+// before it, at the record's first exit from the head after both that no one before it took, or by
+// the queue's own rate where that comes first (service); one that neither serves stands, with no
+// exit, and so does each after it.
+func (s *queueService) serve(q *recordedQueue, entry, end time.Time) (signals.Wait, bool) {
+	if s.stalled {
+		return signals.Wait{Added: entry}, false
+	}
+	ready := maxTime(entry, s.prev)
+	next := max(s.used, sort.Search(len(q.exits), func(i int) bool { return !q.exits[i].Before(ready) }))
+	served, by := q.service(ready, end)
+	switch {
+	case next < len(q.exits) && (!served || !by.Before(q.exits[next])):
+		s.prev, s.used = q.exits[next], next+1
+	case served:
+		s.prev = by
+	default:
+		s.stalled = true
+		return signals.Wait{Added: entry}, false
+	}
+	return signals.Wait{Added: entry, Left: s.prev}, true
 }
 
 // service is the moment a pull request that reaches the head of q's queue at ready leaves by the

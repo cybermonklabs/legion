@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -107,7 +108,11 @@ type fixtureExpect struct {
 	Branches map[string]map[string]Scorecard `json:"branches,omitempty"`
 	Moves    map[string][]fixtureMove        `json:"moves,omitempty"`
 	// Checks supplements the scorecard with fields from run.json and structured log lines.
-	// Keys are rule names. In a log line only the named attributes have to match.
+	// Keys are rule names. In a log line only the named attributes have to match. A rule's run.json
+	// checks are its run's inputs too: the run of each window under that rule takes the limits
+	// its limits give (RunConfig.Limits), and the moment of each value its signalValues give as its
+	// probes (RunConfig.Probes), and run.json echoes both, so the check holds the echo as well as
+	// the values (fixtureChecks.inputs).
 	Checks map[string]fixtureChecks `json:"checks,omitempty"`
 	// Refused is, by rule, the text that Run's refusal of a replay of the window under that rule
 	// must hold, on the window's branch: a run R10 makes no comparison on, such as one whose rule
@@ -120,6 +125,32 @@ type fixtureExpect struct {
 type fixtureChecks struct {
 	Run map[string]json.RawMessage `json:"run,omitempty"`
 	Log []map[string]any           `json:"log,omitempty"`
+}
+
+// inputs is what c gives its run as inputs (fixtureExpect.Checks): the limits its run.json limits
+// name, nil for none, and the moment of each value its signalValues name, each an RFC 3339 time.
+func (c fixtureChecks) inputs() (map[string]float64, []time.Time, error) {
+	var limits map[string]float64
+	if raw, given := c.Run["limits"]; given {
+		if err := json.Unmarshal(raw, &limits); err != nil {
+			return nil, nil, fmt.Errorf("the limits of run.json's checks: %w", err)
+		}
+	}
+	var values map[string]json.RawMessage
+	if raw, given := c.Run["signalValues"]; given {
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil, nil, fmt.Errorf("the signalValues of run.json's checks: %w", err)
+		}
+	}
+	var probes []time.Time
+	for _, key := range slices.Sorted(maps.Keys(values)) {
+		at, err := time.Parse(time.RFC3339, key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("the signalValues of run.json's checks name %q, no RFC 3339 time", key)
+		}
+		probes = append(probes, at)
+	}
+	return limits, probes, nil
 }
 
 // fixtureMove is one recorded move of an issue's phase, as a `workflow: phase changed` line names
@@ -188,8 +219,12 @@ func TestFixtureWindows(t *testing.T) {
 					t.Parallel()
 					skipUntilBuilt(t)
 					out := t.TempDir()
+					limits, probes, err := expect.Checks[run.rule].inputs()
+					if err != nil {
+						t.Fatalf("window %s, rule %s: %v", name, run.rule, err)
+					}
 					result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, run.rule), Branch: run.branch,
-						Seed: cmp.Or(run.want.Seed, 1), Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out})
+						Seed: cmp.Or(run.want.Seed, 1), Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out, Limits: limits, Probes: probes})
 					if run.refusal != "" {
 						switch {
 						case err == nil:
@@ -307,6 +342,44 @@ func TestTheFixtureWindowsCoverK1(t *testing.T) {
 		}
 		if _, err := expect.runs(); err != nil {
 			t.Errorf("k1's fact %s: %v", fact, err)
+		}
+	}
+}
+
+// Each fixture window names each of R11's signals at a moment, once or more (check k1, the plan's
+// t33): under a rule its expect.json names, its run.json checks give a signalValues whose moments
+// name the signal, so that the replay's own reading of each signal at a moment, worked out by
+// hand in the window's README, is checked on each window. A window with no record of a signal
+// names it unrecorded (null). It fails naming each window and each signal that no moment names.
+func TestEveryWindowHasEachSignalAtAMoment(t *testing.T) {
+	t.Parallel()
+	for _, name := range allFixtureWindowNames(t) {
+		expect, err := readFixtureExpect(filepath.Join(fixtureWindowsDir, name))
+		if err != nil {
+			t.Errorf("window %s: %v", name, err)
+			continue
+		}
+		named := map[string]bool{}
+		for _, rule := range slices.Sorted(maps.Keys(expect.Checks)) {
+			raw, given := expect.Checks[rule].Run["signalValues"]
+			if !given {
+				continue
+			}
+			var values map[string]map[string]*float64
+			if err := json.Unmarshal(raw, &values); err != nil {
+				t.Errorf("window %s, rule %s: the signalValues of run.json's checks: %v", name, rule, err)
+				continue
+			}
+			for _, moment := range values {
+				for signal := range moment {
+					named[signal] = true
+				}
+			}
+		}
+		for _, signal := range signals.Names() {
+			if !named[signal] {
+				t.Errorf("window %s names the signal %s at no moment (checks.<rule>.run.signalValues)", name, signal)
+			}
 		}
 	}
 }

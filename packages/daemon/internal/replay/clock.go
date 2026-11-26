@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 )
@@ -22,13 +23,28 @@ import (
 type simClock struct {
 	mu sync.Mutex
 	// at is the instant the driver last moved the clock to, and last the newest moment Now
-	// answered.
+	// answered. instants is each instant the clock has stood at, in order (instantOf).
 	at, last time.Time
+	instants []time.Time
 }
 
 // newSimClock is a clock standing at at.
 func newSimClock(at time.Time) *simClock {
-	return &simClock{at: at.UTC()}
+	return &simClock{at: at.UTC(), instants: []time.Time{at.UTC()}}
+}
+
+// instantOf is the instant the clock stood at when it answered t, a moment Now answered: the
+// latest instant at or before t, t itself where none is. A replay's signals read a moment its daemon
+// or its stub wrote, such as the end of a turn, at the instant of the fact that wrote it, as the
+// record's lines give it, never a microsecond of the clock's drift after it.
+func (c *simClock) instantOf(t time.Time) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i := sort.Search(len(c.instants), func(i int) bool { return c.instants[i].After(t) })
+	if i == 0 {
+		return t
+	}
+	return c.instants[i-1]
 }
 
 // Now is the clock's next moment: the instant it stands at, or one microsecond after the moment it
@@ -60,6 +76,7 @@ func (c *simClock) advance(at time.Time) {
 	defer c.mu.Unlock()
 	if at.After(c.at) {
 		c.at = at.UTC()
+		c.instants = append(c.instants, c.at)
 	}
 }
 

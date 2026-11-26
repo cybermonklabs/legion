@@ -263,9 +263,6 @@ var FactSources = map[string]FactSource{
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
 	"TaskStopped": {Way: FactUnrecorded, From: "the API act stop_task, an owner's stop of a task " +
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
-	"SignalDeadline": {Way: FactUnrecorded, From: "the moment a signal that a rule admits by would cross its limit with no event " +
-		"(intake.SignalDeadline, admission's own timer fact): no daemon release emits it and no recorded window holds a line of it, " +
-		"so the replay injects none until it supplies the signals to the pass and emits the fact at each deadline of a signal rule"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},
@@ -277,6 +274,9 @@ var FactSources = map[string]FactSource{
 	"GateAboveDispatch":        {Way: FactProduced, From: "the stub's execution of a gate_seed row that reads the document below the version it was queued at in the shadow"},
 	"PullRequestMergeability":  {Way: FactProduced, From: "a conflict a stretch draws (spec R2): the replay's own pull request record read as conflicting at its head, the conflict confirmed"},
 	"PullRequestSynchronized":  {Way: FactProduced, From: "the end of a drawn conflict's merge-forward segment: the head the merge forward left, on the replay's own pull request record"},
+	"SignalDeadline": {Way: FactProduced, From: "the replay's own timer under a rule that admits by signals: at each deadline of its signals, the earliest " +
+		"moment a signal with a limit, or the back-off's allowance, would cross with no event, computed after every pass and at each change of a " +
+		"modelled signal's input; a deadline that falls while the daemon is down is dropped, and the boot's first pass computes it again"},
 
 	// Left out, each under the assumption it rests on.
 	"HandoffComplete":           {Way: FactLeftOut, Assumption: assumeCompletionPassed},

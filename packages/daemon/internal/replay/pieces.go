@@ -112,6 +112,7 @@ func (d *driver) runningPiece(key string, role claim.Role) *piece {
 func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 	p.state, p.at, p.turns = pieceRunning, at, map[claim.Role]bool{}
 	d.noteGitPieceStart(p, at)
+	d.noteSegment(p)
 	if seeded {
 		d.sizePiece(p, at, p.m, true)
 		return
@@ -135,6 +136,7 @@ func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 func (d *driver) openPieceFrom(p *piece, from time.Time) {
 	p.state, p.at, p.turns = pieceRunning, from, map[claim.Role]bool{}
 	d.noteGitPieceStart(p, from)
+	d.noteSegment(p)
 	for _, a := range p.acts {
 		if a.offset <= 0 {
 			d.queueAct(p, a, from)

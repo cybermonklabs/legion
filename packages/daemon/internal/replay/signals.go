@@ -138,8 +138,13 @@ func (r *SignalRecord) IdleAfter() time.Duration { return r.idleAfter }
 
 // spanEdges is each moment after at at which the window's record of signal begins or ends.
 func (r *SignalRecord) spanEdges(signal string, at time.Time) []time.Time {
+	return r.window.signalEdges(signal, at)
+}
+
+// signalEdges is each moment after at at which w's record of signal begins or ends.
+func (w Window) signalEdges(signal string, at time.Time) []time.Time {
 	var edges []time.Time
-	for _, span := range r.window.Signals[signal] {
+	for _, span := range w.Signals[signal] {
 		for _, edge := range []time.Time{span.From, span.To} {
 			if edge.After(at) {
 				edges = append(edges, edge)
@@ -147,6 +152,12 @@ func (r *SignalRecord) spanEdges(signal string, at time.Time) []time.Time {
 		}
 	}
 	return edges
+}
+
+// coverageOf is where w's record holds signal, as the definitions read it, with each edge of that
+// record after at, for a definition of the next crossing.
+func (w Window) coverageOf(signal string, at time.Time) signals.Coverage {
+	return signals.Coverage{Held: func(t time.Time) bool { return w.Recorded(signal, t) }, Edges: w.signalEdges(signal, at)}
 }
 
 // held is where the window's record holds signal, as the definitions read it.
@@ -492,7 +503,7 @@ func (r *SignalRecord) readAsks() error {
 
 // readAskEvent reads one Dispatch event of key's issue into its ask's course or the issue's
 // assignee, as readAsks says: the event's payload decoded into the normalized event package signals
-// turns an ask by (signals.NextAsk), whose result is the ask's next change.
+// turns an ask by (approvalEventOf, signals.NextAsk), whose result is the ask's next change.
 func (r *SignalRecord) readAskEvent(key string, raw json.RawMessage, byID map[string]*askCourse) error {
 	var event struct {
 		Type      string          `json:"type"`
@@ -502,37 +513,75 @@ func (r *SignalRecord) readAskEvent(key string, raw json.RawMessage, byID map[st
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return err
 	}
-	switch event.Type {
-	case "issue.created", "issue.updated", "issue.closed":
-		var payload map[string]json.RawMessage
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return err
-		}
-		if member, named := payload["assignee"]; named {
-			var assignee *string
-			if err := json.Unmarshal(member, &assignee); err != nil {
-				return err
-			}
-			r.assignees[key] = append(r.assignees[key], personAt{at: event.CreatedAt, person: personOf(assignee)})
-		}
-	case "comment.created", "comment.answered":
-		var payload struct {
-			Ask       string `json:"ask_id"`
-			WaitingOn string `json:"ask_waiting_on"`
-		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return err
-		}
-		course, known := byID[payload.Ask]
+	read, err := approvalEventOf(event.Type, key, event.Payload)
+	switch {
+	case err != nil:
+		return err
+	case read.assigns:
+		r.assignees[key] = append(r.assignees[key], personAt{at: event.CreatedAt, person: read.assignee})
+	case read.asks && read.ask.Kind == signals.AskCommented:
+		course, known := byID[read.ask.Ask]
 		if !known {
 			return nil
 		}
-		comment := signals.AskEvent{Kind: signals.AskCommented, Ask: payload.Ask, WaitingOn: signals.AskWaiting(payload.WaitingOn)}
-		if next, changed := signals.NextAsk(course.last(), true, comment); changed {
+		if next, changed := signals.NextAsk(course.last(), true, read.ask); changed {
 			course.changes = append(course.changes, askChangeAt(event.CreatedAt, next))
 		}
+	case read.asks:
+		course, known := byID[read.ask.Ask]
+		if !known {
+			course = &askCourse{id: read.ask.Ask, issue: key}
+			byID[read.ask.Ask] = course
+		}
+		next, _ := signals.NextAsk(course.last(), known, read.ask)
+		course.changes = append(course.changes, askChangeAt(event.CreatedAt, next))
+	}
+	return nil
+}
+
+// approvalEvent is what one Dispatch event of an issue says to the approvals signal
+// (approvalEventOf): the event of an ask it makes, where asks says it makes one, and the issue's
+// assignee it names, "" for null, where assigns says it names one.
+type approvalEvent struct {
+	ask      signals.AskEvent
+	asks     bool
+	assignee string
+	assigns  bool
+}
+
+// approvalEventOf reads the Dispatch event of kind on key's issue, with its payload, as readAsks
+// says: an issue event's assignee where its payload names one; a comment on an ask, with its
+// ask_waiting_on; and an ask's event, with what its payload says of the ask's state, of an
+// approval request's versions and of asked_of, null naming nobody. It refuses a payload that does
+// not read, and an ask's event that names no ask.
+func approvalEventOf(kind, key string, payload json.RawMessage) (approvalEvent, error) {
+	switch kind {
+	case "issue.created", "issue.updated", "issue.closed":
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			return approvalEvent{}, err
+		}
+		member, named := fields["assignee"]
+		if !named {
+			return approvalEvent{}, nil
+		}
+		var assignee *string
+		if err := json.Unmarshal(member, &assignee); err != nil {
+			return approvalEvent{}, err
+		}
+		return approvalEvent{assignee: personOf(assignee), assigns: true}, nil
+	case "comment.created", "comment.answered":
+		var comment struct {
+			Ask       string `json:"ask_id"`
+			WaitingOn string `json:"ask_waiting_on"`
+		}
+		if err := json.Unmarshal(payload, &comment); err != nil {
+			return approvalEvent{}, err
+		}
+		return approvalEvent{ask: signals.AskEvent{Kind: signals.AskCommented, Ask: comment.Ask, WaitingOn: signals.AskWaiting(comment.WaitingOn)},
+			asks: comment.Ask != ""}, nil
 	case "ask.opened", "ask.asked_of", "ask.edited", "ask.handed_back", "ask.answered", "ask.resolved":
-		var payload struct {
+		var ask struct {
 			ID       string          `json:"id"`
 			Kind     string          `json:"kind"`
 			State    *string         `json:"state"`
@@ -542,38 +591,32 @@ func (r *SignalRecord) readAskEvent(key string, raw json.RawMessage, byID map[st
 				RequestedVersion *int `json:"requested_version"`
 			} `json:"approval"`
 		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return err
+		if err := json.Unmarshal(payload, &ask); err != nil {
+			return approvalEvent{}, err
 		}
-		if payload.ID == "" {
-			return fmt.Errorf("the %s event names no ask", event.Type)
+		if ask.ID == "" {
+			return approvalEvent{}, fmt.Errorf("the %s event names no ask", kind)
 		}
-		course, known := byID[payload.ID]
-		if !known {
-			course = &askCourse{id: payload.ID, issue: key}
-			byID[payload.ID] = course
-		}
-		turn := signals.AskEvent{Kind: signals.AskEventKind(strings.TrimPrefix(event.Type, "ask.")), Ask: payload.ID, Issue: key}
-		if payload.State != nil {
+		turn := signals.AskEvent{Kind: signals.AskEventKind(strings.TrimPrefix(kind, "ask.")), Ask: ask.ID, Issue: key}
+		if ask.State != nil {
 			turn.State = signals.ReportsClosed
-			if *payload.State == "open" {
+			if *ask.State == "open" {
 				turn.State = signals.ReportsOpen
 			}
 		}
-		if moved := payload.Approval; payload.Kind == record.AskApproval && moved != nil {
+		if moved := ask.Approval; ask.Kind == record.AskApproval && moved != nil {
 			turn.Approval = &signals.AskApproval{Version: moved.Version, RequestedVersion: moved.RequestedVersion}
 		}
-		if payload.AskedOf != nil {
+		if ask.AskedOf != nil {
 			var person *string
-			if err := json.Unmarshal(payload.AskedOf, &person); err != nil {
-				return err
+			if err := json.Unmarshal(ask.AskedOf, &person); err != nil {
+				return approvalEvent{}, err
 			}
 			turn.AskedOfSet, turn.AskedOf = true, personOf(person)
 		}
-		next, _ := signals.NextAsk(course.last(), known, turn)
-		course.changes = append(course.changes, askChangeAt(event.CreatedAt, next))
+		return approvalEvent{ask: turn, asks: true}, nil
 	}
-	return nil
+	return approvalEvent{}, nil
 }
 
 // last is the ask as its newest change leaves it, the zero ask where it has none.

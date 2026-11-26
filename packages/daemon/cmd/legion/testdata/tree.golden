@@ -54,7 +54,7 @@ legion replay forecast	--after string	--before string	--from-runs stringArray	--
 legion replay models	--against string	--json bool	--kills-from string	--window string
 legion replay neutralize	--deny stringArray	--in string	--map string	--out string	--project string
 legion replay rules	--json bool
-legion replay run	--branch string	--cap int	--keep-db bool	--out string	--pg-dsn string	--rule string	--seed int64	--slowdown float64	--trace-segments bool	--window string
+legion replay run	--branch string	--cap int	--idle-after duration	--keep-db bool	--limit stringArray	--out string	--pg-dsn string	--probe stringArray	--rule string	--seed int64	--slowdown float64	--trace-segments bool	--window string
 legion replay scorecard	--json bool	--window string
 legion replay signals	--at stringArray	--idle-after duration	--limit stringArray	--window string
 legion replay validate	--cap int	--cap-backtest bool	--from-runs stringArray	--json bool	--keep-logs bool	--main-only bool	--out string	--parallel int	--pg-dsn string	--rule string	--window string

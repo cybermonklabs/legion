@@ -198,6 +198,11 @@ func FitLoadModels(w Window) (LoadModels, error) {
 	if err != nil {
 		return LoadModels{}, err
 	}
+	return fitLoadModels(w, t)
+}
+
+// fitLoadModels is FitLoadModels on w's trace t.
+func fitLoadModels(w Window, t Trace) (LoadModels, error) {
 	kills, err := launcherKills(w.Launcher)
 	if err != nil {
 		return LoadModels{}, err

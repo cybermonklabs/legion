@@ -92,6 +92,10 @@ The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "T
     A missing field fails even if its expected value is zero or an empty array.
     `log` lists structured lines, comparing each named attribute.
     These assertions cover the bound refusal, deadline history, slot pass kinds, timed signal values, the reads of the branch that asks git and the draws of a stretch's conflict.
+    `run`'s `limits` and the moments of its `signalValues` are the run's inputs too: `TestFixtureWindows` replays the window under that rule with those limits (`RunConfig.Limits`) and a probe at each of those moments (`RunConfig.Probes`), and `run.json` echoes both.
+    `signalValues` gives, at each moment, each signal that `limits` names, `null` where the window holds no record of it then.
+    Every window names each of R11's six signals at a moment at least once (`TestEveryWindowHasEachSignalAtAMoment`), its values worked out by hand in its README, under "The signals, worked by hand".
+    A window that holds no record of a signal names it unrecorded, and the rules that admit by no signal decide nothing by its limit.
 
   - `refused` (optional): `{"<rule>": "<text>"}`, each rule under which `legion replay run` must refuse the window, on the window's branch, with an error that holds the text, in place of a `Scorecard` in `rules` and of `checks`.
     `p0-inherited-ancestor-missing` names `p0-at-once`, whose refusal must name `ACMEAUX-1`, the ancestor whose history the window lacks.

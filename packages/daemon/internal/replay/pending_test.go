@@ -21,8 +21,6 @@ var pendingUntilBuilt = map[string]string{
 	"TestFixtureWindows/p0-at-a-full-cap/main":          d16Main,
 	"TestFixtureWindows/p0-at-its-bound/main":           d16Main,
 	"TestFixtureWindows/urgent-work-waits/main":         d16Main,
-	"TestFixtureWindows/signal-crosses-with-no-event":   "t32 replay integration (the replay's signals and deadlines under a rule; the rule values, the deadline fact and the shared definitions are built)",
-	"TestFixtureWindows/no-crossing-due":                "t32 replay integration (the replay's signals and deadlines under a rule; the rule values, the deadline fact and the shared definitions are built)",
 	"TestFixtureWindows/p0-inherited-across-projects":   t39Resolved + "; under p0-at-once ACME-2 and ACME-4 wait at the cap",
 	"TestFixtureWindows/p0-inherited-ancestor-missing":  t39Resolved + "; p0-at-once replays the window rather than refuse it",
 	"TestFixtureWindows/p0-recorded-descendant-update":  t39Resolved + "; under p0-at-once ACME-2 waits at the cap",

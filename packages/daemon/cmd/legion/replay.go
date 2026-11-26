@@ -506,14 +506,24 @@ run-out, so the work the record shows after --to runs where the replay moves it;
 reads the window's own span alone. --cap replays the window at one admission cap from its start to
 its end in place of the caps its record shows (0, the default, keeps the record's), and run.json
 names it.
+--limit <signal>=<value>, given once for each signal, sets that signal's limit (legion replay
+signals names them); under a rule that admits below P0 by signals (signals, signals-backoff) a
+pass then starts an issue below P0 only while each signal with a limit reads under it, and the
+run keeps the project's one deadline, the next moment a signal would cross its limit with no
+event, whose pass is a deadline's. A signal whose load model gives no limit has none in the run,
+which says so, and a signal rule's run with no limit is one in which no signal binds. --idle-after
+is d, how long a slot holder has been idle before the idle signal counts it. --probe, given once
+for each moment, has run.json give each limited signal's value there.
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
 measures read from the states the daemon's own admission passes left), scorecard-line.json (the
 same measures read back from log.jsonl and the replay's Dispatch events, as a record's are),
 run.json (what ran, the commit this binary was built from, or unknown, and the run's start on
-the wall clock, what it counted, the gap of each measure between the two scorecards and the
-conflict model) and, with --trace-segments, segments.jsonl. The output names the branch, each
+the wall clock, what it counted, the gap of each measure between the two scorecards, the
+conflict model, the limits, d, the ceiling, each slot each pass gave out or took back with the
+pass's kind, each change of the deadline and each probe's values) and, with --trace-segments,
+segments.jsonl. The output names the branch, each
 assumption the run rests on and the scenario it gave the work of an issue that never started,
 and counts the issues admitted with no work with the slot-hours they hold and, under a drawn
 scenario, how many issues drew their work from their own tree, from their priority and
@@ -522,7 +532,7 @@ repository, or from the whole window.`
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--cap <n>] [--keep-db] [--trace-segments]",
+		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--cap <n>] [--limit <signal>=<value>]... [--idle-after <duration>] [--probe <time>]... [--keep-db] [--trace-segments]",
 		Short: "replay a recorded window under a slot rule, in a database of its own, and write what it ran and counted",
 		Long:  replayRunLong,
 		Args:  noArguments,
@@ -538,6 +548,9 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	keepDB := flags.Bool("keep-db", false, "keep the replay's database after the run")
 	traceSegments := flags.Bool("trace-segments", false, "write each work segment's n, m and length to segments.jsonl")
 	capOverride := flags.Int("cap", 0, "the admission cap the replay serves under for the whole window, in place of the record's (0 keeps the record's)")
+	limitTexts := flags.StringArray("limit", nil, "a signal's limit as <signal>=<value>, the signal one of "+strings.Join(signals.Names(), ", ")+", given once for each signal")
+	idleAfter := flags.Duration("idle-after", signals.DefaultIdleAfter, "d, how long a slot holder has been idle before the idle signal counts it")
+	probeTexts := flags.StringArray("probe", nil, "a moment, in RFC 3339, at which run.json gives each limited signal's value, given once for each")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -556,13 +569,42 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		if *capOverride < 0 {
 			return refuse(cmd, "--cap %d: the cap must be zero, which keeps the record's, or above it", *capOverride)
 		}
+		limits := make(map[string]float64, len(*limitTexts))
+		for _, text := range *limitTexts {
+			name, value, named := strings.Cut(text, "=")
+			limit, err := strconv.ParseFloat(value, 64)
+			switch _, twice := limits[name]; {
+			case !named || !slices.Contains(signals.Names(), name):
+				return refuse(cmd, "--limit %q names no signal: give <signal>=<value>, the signal one of %s", text, strings.Join(signals.Names(), ", "))
+			case err != nil:
+				return refuse(cmd, "--limit %q: the value is no number", text)
+			case twice:
+				return refuse(cmd, "--limit %q: the signal %s has a limit already; give each signal one", text, name)
+			}
+			if err := signals.CheckLimit(name, limit); err != nil {
+				return refuse(cmd, "--limit %q: %v", text, err)
+			}
+			limits[name] = limit
+		}
+		if *idleAfter < 0 {
+			return refuse(cmd, "--idle-after %s is below zero", *idleAfter)
+		}
+		probes := make([]time.Time, 0, len(*probeTexts))
+		for _, text := range *probeTexts {
+			at, err := time.Parse(time.RFC3339, text)
+			if err != nil {
+				return refuse(cmd, "--probe %q is no RFC 3339 time", text)
+			}
+			probes = append(probes, at)
+		}
 		window, err := replay.ReadWindow(*windowDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
 		}
 		result, err := replay.Run(ctx, replay.RunConfig{Window: window, Rule: rule, Branch: branch, Seed: *seed, Slowdown: *slowdown,
-			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit(), Cap: *capOverride})
+			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit(), Cap: *capOverride,
+			Limits: limits, IdleAfter: *idleAfter, Probes: probes})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
@@ -583,6 +625,20 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 				window.End().Format(time.RFC3339), time.Duration(window.After), window.From.Format(time.RFC3339), window.To.Format(time.RFC3339))
 		}
 		fmt.Fprintf(stdout, "legion replay run: %s\n", result.Counts())
+		for _, name := range slices.Sorted(maps.Keys(result.Unlimited)) {
+			fmt.Fprintf(stdout, "legion replay run: the %s model gives no limit for its signal, so %s has no limit in this run\n", result.Unlimited[name], name)
+		}
+		if rule.Signals != signals.Off {
+			if len(limits) == len(result.Unlimited) {
+				fmt.Fprintf(stdout, "legion replay run: the rule %s admits below P0 by signals, and no signal has a limit in this run, so no signal binds\n", rule.Name)
+			}
+			byAction := map[string]int{}
+			for _, entry := range result.Deadlines {
+				byAction[entry.Action]++
+			}
+			fmt.Fprintf(stdout, "legion replay run: the deadlines of its signals: %d set, %d moved, %d dropped, %d fired\n",
+				byAction["set"], byAction["moved"], byAction["dropped"], byAction["fired"])
+		}
 		for _, refused := range counted.Refused {
 			fmt.Fprintf(stdout, "legion replay run: refused %s %s→%s by %s at %s: %s\n", refused.Issue, refused.From, refused.To, refused.Trigger,
 				refused.At.Format(time.RFC3339), refused.Reason)

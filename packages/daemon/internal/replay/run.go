@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -66,6 +67,18 @@ type RunConfig struct {
 	// backtest asks (CapBacktest). Zero keeps the record's caps, which a validation and every run
 	// of a comparison of rules read.
 	Cap int
+	// Limits is each signal's limit (spec R11), by its name (signals.Names), each one that
+	// signals.CheckLimit allows: under a rule that admits by signals, a pass starts an issue below
+	// P0 while each signal that has a limit reads under it. A signal whose load model gives no limit
+	// has none in the run, which says so (RunResult.Unlimited). A run of a signal rule with no limit
+	// is one in which no signal binds.
+	Limits map[string]float64
+	// IdleAfter is d, how long a slot holder has been idle before the idle signal counts it;
+	// zero for signals.DefaultIdleAfter.
+	IdleAfter time.Duration
+	// Probes is each moment at which the run writes each limited signal's value, as it stands once
+	// every act at or before the moment has run (run.json's signalValues).
+	Probes []time.Time
 
 	// afterFact, where set, runs after each fact the replay applies, with the replay's pool and
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
@@ -85,15 +98,21 @@ type RunConfig struct {
 	// onDraw, where set, is told of each draw of a stretch's conflict as the run makes it: a test's
 	// look at the draws two runs at one seed share (TestTwoRulesAtOneSeedShareEachStretchsDraw).
 	onDraw func(conflictDraw)
+	// onSnapshot, where set, is told of each snapshot of the signals a pass reads as the run reads
+	// it (driver.readSignals): a test's look at what a pass admits by
+	// (TestAPassSnapshotReadsTheReplaysSignals).
+	onSnapshot func(signals.Snapshot)
 }
 
 // windowInputs is what every run of one window reads of it alike, read once for all of them
 // (runWindow): the window's trace (BuildTrace); the lines of the record a run's script reads
 // beside it (recordLines) and the window's Dispatch events, both in the order the trace read them
 // (readTrace); the commits of the base branches a stretch's M is counted from and the conflict
-// model fitted on them (newBaseMerges, windowConflicts); the record's ranks (ranksOf); and the
+// model fitted on them (newBaseMerges, windowConflicts); the record's ranks (ranksOf); the
 // record's lines and events from before the window's start, which each run's line timeline reads
-// (recordBefore), read the first time a run asks for them. No run writes into any of it.
+// (recordBefore); and the load models fitted on the window's record (FitLoadModels), which a run
+// that reads a modelled signal reads its own course from (ModelReader); each of the last two read
+// the first time a run asks for it. No run writes into any of it.
 type windowInputs struct {
 	trace     Trace
 	lines     recordLines
@@ -102,6 +121,7 @@ type windowInputs struct {
 	conflicts ConflictModel
 	ranks     rankFunc
 	before    func() (recordBefore, error)
+	models    func() (LoadModels, error)
 }
 
 // newWindowInputs reads w's inputs (windowInputs).
@@ -113,7 +133,8 @@ func newWindowInputs(w Window) (*windowInputs, error) {
 	merges := newBaseMerges(w, trace)
 	return &windowInputs{trace: trace, lines: recordLinesOf(lines), events: events, merges: merges,
 		conflicts: windowConflicts(trace, merges), ranks: ranksOf(trace),
-		before: sync.OnceValues(func() (recordBefore, error) { return readRecordBefore(w) })}, nil
+		before: sync.OnceValues(func() (recordBefore, error) { return readRecordBefore(w) }),
+		models: sync.OnceValues(func() (LoadModels, error) { return fitLoadModels(w, trace) })}, nil
 }
 
 // readInputs is the window's inputs cfg runs on: the ones its window's runs share where it names
@@ -201,6 +222,15 @@ type RunResult struct {
 	GitReads     map[string]GitReadCounts
 	GitLoopHours map[string]GitLoopHours
 	GitReadTable map[string]GitReadTable
+	// Unlimited is each signal the run's limits name whose load model gives no limit, with the
+	// model, which the run admits by with no limit on it (spec R11). SlotPasses is each slot each pass
+	// gave out or took back, Deadlines each change of the project's deadline under a rule that admits
+	// by signals, and SignalValues each limited signal's value at each of the run's probes, by the
+	// probe's moment, nil where the signal is unrecorded (run.json's fields of the same names).
+	Unlimited    map[string]string
+	SlotPasses   []SlotPass
+	Deadlines    []DeadlineEntry
+	SignalValues map[string]map[string]*float64
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
 	snapshot Timeline
@@ -278,6 +308,14 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.Out == "" {
 		return RunResult{}, errors.New("replay: no directory to write the run's output to")
 	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Limits)) {
+		if err := signals.CheckLimit(name, cfg.Limits[name]); err != nil {
+			return RunResult{}, fmt.Errorf("replay: the run's limit: %w", err)
+		}
+	}
+	if cfg.IdleAfter < 0 {
+		return RunResult{}, fmt.Errorf("replay: a holder idle for %s: d is below zero", cfg.IdleAfter)
+	}
 	in, err := cfg.readInputs()
 	if err != nil {
 		return RunResult{}, err
@@ -350,6 +388,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	d.noWork, d.drawSource = map[string]bool{}, rand.NewPCG(0, 0)
 	d.draws, d.numbers = rand.New(d.drawSource), newPullRequestNumbers(trace)
 	d.setupGit()
+	if err := d.setupSignals(); err != nil {
+		return result, errors.Join(err, written.Flush(), closeDB())
+	}
 	runErr := d.run()
 	flushErr := written.Flush()
 	if err := errors.Join(runErr, flushErr); err != nil {
@@ -370,6 +411,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	}
 	result.Unplaced, result.Assumptions = d.unplaced, d.assumptionsUsed(len(Assumptions))
 	result.Conflicts = d.conflicts
+	result.Unlimited, result.SlotPasses, result.Deadlines, result.SignalValues = d.sig.unlimited, d.sig.passes, d.sig.deadlines, d.sig.values
 	result.GitReads, result.GitLoopHours, result.GitReadTable = d.git.reads, d.gitLoopHours(), d.git.tables
 	if cfg.TraceSegments {
 		result.Segments = d.segments
@@ -561,34 +603,46 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 // counted: the facts it applied and the passes they ran, the mean time of a pass, the run's wall
 // time and peak memory, the issues the start state could not place, the segments it ran, its
 // divergence counters, the gap of each measure between its snapshot and line timelines, and the
-// conflict model it drew by. It holds numbers and names alone, never an assumption's text.
+// conflict model it drew by. Of R11's signals it holds what the run admitted by and recorded:
+// its limits as given ({} for none), d, each signal whose model gives no limit with the model, the
+// ceiling (driver.ceiling), each slot each pass gave out or took back with the pass's kind, each
+// change of the deadline, and each limited signal's value at each probe; never under the key
+// signals, which a comparison's made-up runs use. It holds numbers and names alone, never an
+// assumption's text.
 type runRecord struct {
-	Rule            string                   `json:"rule"`
-	RuleCommit      string                   `json:"ruleCommit"`
-	BuildCommit     string                   `json:"buildCommit"`
-	Branch          Branch                   `json:"branch"`
-	Seed            int64                    `json:"seed"`
-	Slowdown        float64                  `json:"slowdown"`
-	Cap             int                      `json:"cap,omitempty"`
-	Scenario        string                   `json:"scenario"`
-	Assumptions     []int                    `json:"assumptions"`
-	After           Duration                 `json:"after"`
-	Database        string                   `json:"database"`
-	KeptDatabase    bool                     `json:"keptDatabase"`
-	Facts           int                      `json:"facts"`
-	Passes          int                      `json:"passes"`
-	MeanPassMillis  float64                  `json:"meanPassMillis"`
-	StartedAt       time.Time                `json:"startedAt"`
-	WallSeconds     float64                  `json:"wallSeconds"`
-	PeakMemoryBytes uint64                   `json:"peakMemoryBytes"`
-	Unplaced        int                      `json:"unplaced"`
-	Segments        int                      `json:"segments"`
-	Divergence      Divergence               `json:"divergence"`
-	Gaps            []MeasureGap             `json:"gaps"`
-	Conflicts       ConflictModel            `json:"conflicts"`
-	GitReads        map[string]GitReadCounts `json:"gitReads,omitempty"`
-	GitLoopHours    map[string]GitLoopHours  `json:"gitLoopHours,omitempty"`
-	GitReadTable    map[string]GitReadTable  `json:"gitReadTable,omitempty"`
+	Rule            string                         `json:"rule"`
+	RuleCommit      string                         `json:"ruleCommit"`
+	BuildCommit     string                         `json:"buildCommit"`
+	Branch          Branch                         `json:"branch"`
+	Seed            int64                          `json:"seed"`
+	Slowdown        float64                        `json:"slowdown"`
+	Cap             int                            `json:"cap,omitempty"`
+	Scenario        string                         `json:"scenario"`
+	Assumptions     []int                          `json:"assumptions"`
+	After           Duration                       `json:"after"`
+	Database        string                         `json:"database"`
+	KeptDatabase    bool                           `json:"keptDatabase"`
+	Facts           int                            `json:"facts"`
+	Passes          int                            `json:"passes"`
+	MeanPassMillis  float64                        `json:"meanPassMillis"`
+	StartedAt       time.Time                      `json:"startedAt"`
+	WallSeconds     float64                        `json:"wallSeconds"`
+	PeakMemoryBytes uint64                         `json:"peakMemoryBytes"`
+	Unplaced        int                            `json:"unplaced"`
+	Segments        int                            `json:"segments"`
+	Divergence      Divergence                     `json:"divergence"`
+	Gaps            []MeasureGap                   `json:"gaps"`
+	Conflicts       ConflictModel                  `json:"conflicts"`
+	GitReads        map[string]GitReadCounts       `json:"gitReads,omitempty"`
+	GitLoopHours    map[string]GitLoopHours        `json:"gitLoopHours,omitempty"`
+	GitReadTable    map[string]GitReadTable        `json:"gitReadTable,omitempty"`
+	Limits          map[string]float64             `json:"limits"`
+	IdleAfter       Duration                       `json:"idleAfter"`
+	Unlimited       map[string]string              `json:"unlimited"`
+	Ceiling         *int                           `json:"ceiling"`
+	SlotPasses      []SlotPass                     `json:"slotPasses"`
+	Deadlines       []DeadlineEntry                `json:"deadlines"`
+	SignalValues    map[string]map[string]*float64 `json:"signalValues"`
 }
 
 // writeOutputs writes the run's scorecard.json (its snapshot timeline's), scorecard-line.json (its
@@ -605,7 +659,9 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		Database: result.Database, KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
 		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts,
-		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable}
+		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable,
+		Limits: d.sig.limits, IdleAfter: Duration(d.sig.idleAfter), Unlimited: d.sig.unlimited, Ceiling: d.ceiling(), SlotPasses: d.sig.passes,
+		Deadlines: d.sig.deadlines, SignalValues: d.sig.values}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {
