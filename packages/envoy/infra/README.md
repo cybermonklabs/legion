@@ -1737,10 +1737,15 @@ NATS seed a second time by its uid,
 that only the account its cluster's API server gave that uid holds, where the member by name is
 held by an account of that namespace and name in any cluster of the project's pool. Each takes its
 account's `metadata.uid`, so it registers after that account, and an account made again under a
-new uid replaces it. This release keeps the grants by name beside them, so a running pod mounts
-the seed through either while a consumer moves; a later release drops the grants by name. The app
-and the listener, which mount the seed, each wait for their own account's grants to be written,
-as the app waits for the Azure key's and the chat token's. IAM can take minutes to apply
+new uid replaces it. An update in which an account has no uid fails, naming the account. A preview
+that cannot dry-run an account's create (a namespace the same update creates, as when Dispatch is
+turned on after `clusterOnly`, on the move onto `existingCluster` without `existingNamespace` and
+on a change of `namespace`; a cluster the preview cannot reach; server-side apply's
+`AlreadyExists`) shows that grant's member as unknown. This release keeps the grants by name
+beside them, so a running pod mounts the seed through either while a consumer moves; a later
+release drops the grants by name. The app and the listener, which mount the seed, each wait for
+their own account's grants to be written, as the app waits for the Azure key's and the chat
+token's. IAM can take minutes to apply
 a new binding (Google cites typically two, sometimes seven or more), and a pod restarts until it
 can mount. Each pod runs as an account of its own: the app as `<hostname>`, the listener as
 `<hostname>-listener` and the front door as `<hostname>-tailnet`, so only the app's pods can
@@ -1767,10 +1772,14 @@ The component writes nothing in Azure: the consumer's Azure program
 declares the credential and the role from these two outputs.
 
 The `serviceAccountUid` output is the `metadata.uid` of the app's ServiceAccount `<hostname>`, as
-the cluster's API server gave it. A consumer that grants the app's pods a role of its own names
-them by it, in the uid form above, rather than by `principal`, which an account of the same
-namespace and name in another cluster of the project's pool holds too. It is unknown in a preview
-that creates the account.
+the cluster's API server gave it: in the uid form above it names the app's pods and no account of
+the same namespace and name in another cluster of the project's pool, which `principal` names
+too. Like every output of the component it resolves only once every child has registered, the
+app Deployment's readiness wait included. So a consumer grants by it only a role the app does not
+need to become ready; `roles/cloudsql.client`, which that wait needs, stays on the principal's
+known form, as above. In a preview that creates the account it is the uid the API server's dry
+run of the create answers, which the create replaces, or unknown where no dry run can be made.
+With `clusterOnly` it is `""`.
 
 ### The pods
 

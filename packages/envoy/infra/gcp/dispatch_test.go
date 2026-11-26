@@ -1086,7 +1086,7 @@ func TestDispatchSeedMountingDeploymentsWaitForTheSeedAccessor(t *testing.T) {
 				"%s mounts the seed, so it registers after the grant %s that lets it", deployment, grant)
 		}
 	}
-	for _, grant := range []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-nats-seed-uid-accessor", "example-dispatch-listener-nats-seed-uid-accessor"} {
+	for _, grant := range dispatchSeedAccessors {
 		require.NotContains(t, m.Named(t, "kubernetes:apps/v1:Deployment", "example-dispatch-tailnet").RPC.GetDependencies(), accessor(grant))
 	}
 }

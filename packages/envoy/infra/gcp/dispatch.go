@@ -747,10 +747,14 @@ type Dispatch struct {
 	ServiceAccountIssuer  pulumi.StringOutput `pulumi:"serviceAccountIssuer"`
 	ServiceAccountSubject pulumi.StringOutput `pulumi:"serviceAccountSubject"`
 	// ServiceAccountUid is the metadata.uid of the app's ServiceAccount <hostname>, as the
-	// cluster's API server gave it, so a consumer grants the app's pods by uid,
+	// cluster's API server gave it: the uid form of the app's pods,
 	// principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>/kubernetes.serviceaccount.uid/<uid>,
-	// a member no ServiceAccount of the same name in another cluster of the pool holds. It is
-	// unknown in a preview that creates the account.
+	// is a member no ServiceAccount of the same name in another cluster of the pool holds. Like
+	// every output it resolves only once every child has registered, the app Deployment's
+	// readiness wait included, so a consumer grants by it only a role the app does not need to
+	// become ready; roles/cloudsql.client stays on principal's known form. In a preview that
+	// creates the account it is the uid the API server's dry run answers, which the create
+	// replaces, or unknown where no dry run can be made (dispatchServiceAccountUID).
 	ServiceAccountUid pulumi.StringOutput `pulumi:"serviceAccountUid"`
 }
 
@@ -2492,12 +2496,13 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err != nil {
 		return nil, err
 	}
-	// newDispatchKubernetes sets serviceAccountUid, since it registers the app's ServiceAccount.
-	if err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database); err != nil {
+	appUID, err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database)
+	if err != nil {
 		return nil, err
 	}
 	comp.DatabaseInstance = database.connectionName
 	comp.Principal = database.principal
+	comp.ServiceAccountUid = appUID
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()
 	// The app's pods run as ServiceAccount <hostname> in the component's namespace, the account
