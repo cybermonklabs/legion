@@ -66,7 +66,7 @@ import {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath, buildRunPath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -265,12 +265,13 @@ function detailsQueryClient(): QueryClient {
  *  the drawer it is handed, as a drawer that opens or closes does. `queryClient` is the client
  *  every read goes through, by default a new `detailsQueryClient()`. `heldTree` is the tree
  *  read's answer the page holds as Details draws, by default `EMPTY_TREE`; with null the page
- *  holds none. */
+ *  holds none. `address` is the router address the page starts at, by default `"/issues/CORE-1"`. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
   queryClient = detailsQueryClient(),
-  heldTree: TreeAnswer | null = EMPTY_TREE
+  heldTree: TreeAnswer | null = EMPTY_TREE,
+  address = "/issues/CORE-1"
 ) {
   // The tree read with no view, as the page holds it once Graph has read it: Details' run rows
   // read it at the list's opening only where the page holds none (`useRunRows`), so a case that
@@ -278,7 +279,7 @@ function renderDetails(
   // in the client this returns.
   if (heldTree !== null) queryClient.setQueryData(issueTreeKey(issue.key), heldTree);
   const tree = (inDrawer: MarginDrawer | undefined) => (
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+    <MemoryRouter initialEntries={[address]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
           <ReferenceNamesProvider>
@@ -3165,6 +3166,37 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
   } finally {
     view.unmount();
     getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Decision 533: Details hands the page's router address (`useLocation`) to `useRunRows`, so on an
+// issue page that `?issue_page=new` opened, each run row in Referenced by links to its run's page
+// with `?issue_page=new` and the opening issue's key.
+test("on an issue page opened with ?issue_page=new, Referenced by links a run row with ?issue_page=new and the issue key", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const { unmount } = renderDetails(
+    undefined,
+    OPEN_DRAWER,
+    detailsQueryClient(),
+    treeWithRun(RUN, RUN_QUESTION),
+    "/issues/CORE-1?issue_page=new"
+  );
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    const runKind = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+    expect(await within(list).findByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `${buildRunPath(RUN)}?issue_page=new&issue=CORE-1`
+    );
+  } finally {
+    unmount();
     getReferences.mockRestore();
     restore();
   }

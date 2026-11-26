@@ -11,7 +11,6 @@ import {
 
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { GraphEdge, IssueDetails } from "../../../api/types";
-import { type AgentText, useAgentText } from "../../refs/AgentName";
 import { isPartyRoute } from "../../refs/party-references";
 import { useReferenceNames } from "../../refs/plain-text";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
@@ -33,10 +32,10 @@ import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
 import { targetNaming } from "../issue-tree";
 import { newPageIssue } from "../new-page-parameter";
-import { type LineNames, referenceStandIns } from "../one-line";
+import { type LineNames, referenceStandIns, useIssueNames } from "../one-line";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { withoutDirectiveLines } from "../RowText";
-import { citedReferences, knownIssueKeys, rowReferences } from "../row-references";
+import { citedReferences, rowReferences } from "../row-references";
 import { storedReading } from "../stored-reading";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -320,13 +319,10 @@ export function RunReferenceNames({
   return createElement(PublishedReferenceNames, props);
 }
 
-/** The names a run's one-line places are drawn with, as `RunReferenceNames` says, read as
- *  `RowText.tsx`'s `useRowNames` reads a row's: the page's published names, its rule for an
- *  author and the issue keys it named. This is `one-line.ts`'s `useIssueNames` with each party's
- *  own read added, written again here rather than called: that hook takes the key of the issue a
- *  page shows, and the run's page shows none, and changing it to take no issue, or exporting the
- *  `useDeletedActorsAuthor` it reads its author by, would change a line of that file, and R6
- *  admits none this round. */
+/** The names a run's one-line places are drawn with, as `RunReferenceNames` says: it calls
+ *  `one-line.ts`'s `useIssueNames` (passing `""` where the run page has no issue and restoring
+ *  `issue` on `LineNames`, since `useIssueNames` uses its argument only to put it in
+ *  `LineNames.issue`) and adds each party's own read. */
 function RunNameReader({
   draw,
   issue,
@@ -336,9 +332,7 @@ function RunNameReader({
   issue: string | undefined;
   parties: RunReferences["parties"];
 }): ReactNode {
-  const { ambiguous, deleted, edited, lines, names: published } = useKnownReferences();
-  const author = useDeletedActorsAuthor(deleted);
-  const issues = useMemo(() => knownIssueKeys(published), [published]);
+  const base = useIssueNames(issue ?? "");
   // Only a party is read here, as `RunReferenceNames` says, and one its read names nothing for
   // stays out of the names.
   const { names: read, reads } = useReferenceNames(parties, undefined);
@@ -347,34 +341,13 @@ function RunNameReader({
     for (const party of parties) {
       const name = read.get(party)?.name;
       if (name === undefined || name === "") continue;
-      named ??= new Map(published);
+      named ??= new Map(base.names);
       named.set(party, name);
     }
-    return named ?? published;
-  }, [parties, published, read]);
-  const lineNames = useMemo<LineNames>(
-    () => ({ ambiguous, author, deleted, edited, issue, issues, lines, names }),
-    [ambiguous, author, deleted, edited, issue, issues, lines, names]
-  );
+    return named ?? base.names;
+  }, [base.names, parties, read]);
+  const lineNames = useMemo<LineNames>(() => ({ ...base, issue, names }), [base, issue, names]);
   return createElement(Fragment, null, reads, draw(lineNames));
-}
-
-/** The page's rule for an author (`AgentText.author`), which a run's one-line place reads only
- *  through the deleted line of a post in `deleted`. The rule is made anew at every poll of the
- *  agent registry, and each new one would build `LineNames` and every run row anew, so the rule
- *  read before is kept while `deleted` stands and the new rule names every actor in it as the
- *  kept one does. This is `one-line.ts`'s `useDeletedActorsAuthor`, written again here rather
- *  than shared, since that file keeps it to itself: exporting it would change a line of that
- *  file, and R6 admits none this round. */
-function useDeletedActorsAuthor(deleted: LineNames["deleted"]): AgentText["author"] {
-  const { author } = useAgentText();
-  // Each deleted post's actor as `author` names it, the name its deleted line draws, and null
-  // for a post that names no actor, whose line names none (`deletedLineText`).
-  const actors = JSON.stringify(
-    [...deleted.values()].map(({ by }) => (by === null ? null : author(by)))
-  );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `author` is kept while `deleted` and `actors` stand, since `actors` is everything `author` is read for here
-  return useMemo(() => author, [actors, deleted]);
 }
 
 /** Draws Details' run rows (`draw`) with each question's references named, mounted only while
@@ -455,21 +428,6 @@ export function runRows(
   return runs.sort(newestFirst).map(({ run }) => runRow(run, newPage));
 }
 
-/** The rows of the tree read's one answer, which holds every page its walk read (`readTree`),
- *  each linking to its run's plain address: one function, so the rows keep their identity until
- *  the answer changes. */
-function answerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
-  return runRows([answer]);
-}
-
-/** `answerRows` with each row linking to its run's page by an address that carries
- *  `?issue_page=new` and the issue `key`, for a page at an address of that issue that carries
- *  it: one function for each key, made as the page comes to such an address (`useRunRows`), so
- *  the rows keep their identity until the answer or the issue changes. */
-function newPageAnswerRows(key: string): (answer: TreeAnswer) => readonly ExtraReferenceRow[] {
-  return (answer) => runRows([answer], key);
-}
-
 /** Where the page is: the address `useLocation` answers, as `useRunRows`' caller hands it. */
 type PageAddress = { readonly pathname: string; readonly search: string };
 
@@ -525,10 +483,7 @@ export function useRunRows(
   const tree = issueTreeQuery(issue.key);
   const newPage =
     location === undefined ? undefined : newPageIssue(location.pathname, location.search);
-  const select = useMemo(
-    () => (newPage === undefined ? answerRows : newPageAnswerRows(newPage)),
-    [newPage]
-  );
+  const select = useMemo(() => (answer: TreeAnswer) => runRows([answer], newPage), [newPage]);
   const read = useQuery({ ...tree, enabled: false, select });
   useQuery({ ...tree, subscribed: open });
   const { data: rows, errorUpdateCount, refetch } = read;

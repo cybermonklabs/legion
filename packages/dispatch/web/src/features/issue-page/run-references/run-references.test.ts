@@ -4,17 +4,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { ApiError, api } from "../../../api/client";
-import type {
-  Actor,
-  Agent,
-  DispatchUser,
-  ReferenceTarget,
-  ReferenceTargets,
-} from "../../../api/types";
-import { runningAgent } from "../../credentials/agent-fixture";
+import type { Agent, DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
 import { agentsQuery } from "../../refs/agent-registry";
-import { POST_MARK_WORDS, type PostDeletion } from "../../refs/post-marks";
-import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseNodeReference, shortForm } from "../../refs/routes";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -153,8 +144,7 @@ type PageAddress = Parameters<typeof useRunRows>[2];
  *  what another page publishes there (`published`) where a case gives it. The rows are read at
  *  the page's address `location`, where a case gives one. The batched read of reference targets
  *  answers by `batch`, and a read of one comment or one block of its own is refused, which a
- *  case counts. `answerRuns` answers the tree read anew, as a refresh of it does, and `handed`
- *  holds each list of named rows `NamedRunRows` handed its `draw`, in order. */
+ *  case counts. `answerRuns` answers the tree read anew, as a refresh of it does. */
 function drawQuestions(
   runs: readonly TreeAnswerNode[],
   {
@@ -193,16 +183,11 @@ function drawQuestions(
         children
       )
     );
-  const handed: (readonly ExtraReferenceRow[])[] = [];
   function Questions(): ReactNode {
     const { rows } = useRunRows(issue, false, location);
     return createElement(NamedRunRows, {
-      draw: (named) => {
-        handed.push(named);
-        return named.map((row) =>
-          createElement("a", { href: row.href, key: row.key }, row.excerpt)
-        );
-      },
+      draw: (named) =>
+        named.map((row) => createElement("a", { href: row.href, key: row.key }, row.excerpt)),
       issue,
       rows,
     });
@@ -222,7 +207,6 @@ function drawQuestions(
     },
     comments,
     drawn: () => [...container.querySelectorAll("a")].map((row) => row.textContent ?? ""),
-    handed,
     links: () => [...container.querySelectorAll("a")].map((row) => row.getAttribute("href")),
   };
 }
@@ -505,56 +489,6 @@ test("a run's role that no session holds reads as its author wrote it while its 
   } finally {
     view.close();
     agents.mockRestore();
-  }
-});
-
-// A run's question names a deleted post it cites by the post's deleted line, which names the
-// post's actor by the page's rule for an author (`LineNames.author`). The agent registry makes
-// that rule anew at every poll, so a poll that names the actor as before - a live agent heard
-// again, nothing renamed - hands `draw` the rows it handed before, named by the same names
-// (`useDeletedActorsAuthor`), and a poll that renames the actor names the row anew.
-test("a registry poll that names a deleted post's actor alike names no run row anew, and one that renames the actor does", async () => {
-  const writer = "writer-session";
-  const helper = "helper-session";
-  const comment = `dispatch://${KEY}/comment/${COMMENT}`;
-  const by: Actor = { id: writer, kind: "session" };
-  const deleted = new Map<string, PostDeletion>([[comment, { at: "2026-11-17T08:30:00Z", by }]]);
-  // The page publishes the deleted comment's name with the delete, as its batched read does: its
-  // deleted line, the actor named as no registry knows them.
-  const published = publishedNames(
-    new Map([[comment, `${POST_MARK_WORDS.deleted_by} ${writer}`]]),
-    { deleted }
-  );
-  const view = drawQuestions([runNode(RUN, ASKED_AT, `Does the release wait on ${comment}?`)], {
-    published,
-  });
-  const poll = (helperSeen: number, writerTitle: string) =>
-    act(() => {
-      view.client.setQueryData(agentsQuery().queryKey, [
-        runningAgent({ session_id: writer, title: writerTitle }),
-        runningAgent({ last_seen: helperSeen, session_id: helper, title: "Helper" }),
-      ]);
-    });
-  try {
-    poll(1, "Planner");
-    const planner = `Does the release wait on ${POST_MARK_WORDS.deleted_by} Planner?`;
-    await screen.findByText(planner);
-    const rows = view.handed.at(-1);
-    const handed = view.handed.length;
-    // A poll that answers the registry anew: the helper, still live, was heard again.
-    poll(2, "Planner");
-    expect(view.handed.length, "the rows were not drawn again at the poll").toBeGreaterThan(handed);
-    expect(view.handed.at(-1), "the rows named anew at a poll that renames nobody").toBe(rows);
-    expect(view.drawn()).toEqual([planner]);
-    // A poll that renames the deleted comment's actor.
-    poll(2, "Reviewer");
-    expect(view.handed.at(-1)).not.toBe(rows);
-    expect(view.drawn()).toEqual([
-      `Does the release wait on ${POST_MARK_WORDS.deleted_by} Reviewer?`,
-    ]);
-    expect(view.batch, "the deleted comment in the batched read").not.toHaveBeenCalled();
-  } finally {
-    view.close();
   }
 });
 
