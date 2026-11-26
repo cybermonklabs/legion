@@ -321,7 +321,7 @@ func TestARestartKeepsTheMessageMark(t *testing.T) {
 	message := r.seed(supervise.StateSuspended)
 	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, _, err := store.RecordPodWakeTx(ctx, tx, store.PodResume{Project: "legion", Issue: message.Issue,
-			Role: string(message.Role), Kind: pods.WakeRoleMessage, At: r.clock.Now()})
+			Role: string(message.Role), Claim: string(message.Token), Kind: pods.WakeRoleMessage, At: r.clock.Now()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
