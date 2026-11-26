@@ -640,8 +640,9 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 // that read found (goingCondition.ExpectVersion), and names the token of the version it replaces
 // where the read answered one, so it lands as that artifact's next version or not at all. The
 // create of a new-issue run carries the route its row's approval names (newIssueRoute), which no
-// argument of the tool holds. A read tool sends one request (goingReadSends). Any other name is
-// refused UNKNOWN_TOOL.
+// argument of the tool holds. A read tool sends one request (goingReadSends), an item the call
+// names none of the run's page's where its tool reads the page's (goingPageArguments). Any other
+// name is refused UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
 	resumed func(first []goingSend) []*goingLandedRequest, row goingPlanRowStored,
 ) ([]goingSend, bool, *agentwire.Error) {
@@ -674,7 +675,11 @@ func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRe
 		return specs, true, nil
 	}
 	if _, reads := goingReadTools[request.Tool]; reads {
-		specs, err := goingReadSends(ctx, request.Tool, arguments, goingReader{doer: doer}, a.s.deps.ServerURL)
+		named, err := a.s.goingPageArguments(ctx, request.Run, request.Tool, arguments)
+		if err != nil {
+			return nil, false, goingAgentFailed(agentwire.CallCall, err)
+		}
+		specs, err := goingReadSends(ctx, request.Tool, named, goingReader{doer: doer}, a.s.deps.ServerURL)
 		if err != nil {
 			return nil, false, goingCallRefusal(request.Tool, err)
 		}
@@ -810,8 +815,10 @@ func goingPickedRoute(tool string, routes []GoingRoute, row string) (GoingRoute,
 // made and nothing sent. A tool whose row hangs on what its item is names the row its Pick picks:
 // dispatch_doc_read names the row of a document, where the server sends a read of an uploaded
 // file to one of its versions once it has read the file's record (goingChooseDocRead). serverURL
-// is the server's own address, under which a dashboard URL names an item. It is false for a tool
-// that is no read tool of the server, and for a call the server refuses before it picks a row.
+// is the server's own address, under which a dashboard URL names an item. The arguments are read
+// as they are written, with no run's page to name an item they leave out (goingPageArguments). It
+// is false for a tool that is no read tool of the server, and for a call the server refuses before
+// it picks a row.
 func GoingReadRoute(tool string, arguments map[string]any, serverURL string) (string, bool) {
 	if _, reads := goingReadTools[tool]; !reads {
 		return "", false
@@ -828,8 +835,8 @@ func GoingReadRoute(tool string, arguments map[string]any, serverURL string) (st
 }
 
 // goingReadToolRoutes is the rows of read tool name: the rows its entry names, or the routes its
-// spec binds, each with its translation. A row whose pattern holds a placeholder its bindings do
-// not name - one of the answer run's own reads, which it makes in process - is left out.
+// spec binds, each with its translation. A row that binds no argument of a call (its Path is nil)
+// takes no call, and is left out.
 func goingReadToolRoutes(name string) ([]GoingRoute, error) {
 	tool := goingReadTools[name]
 	named := tool.Routes
@@ -843,20 +850,14 @@ func goingReadToolRoutes(name string) ([]GoingRoute, error) {
 	}
 	routes := make([]GoingRoute, 0, len(named))
 	for _, row := range named {
-		bound := true
-		for _, placeholder := range goingPlaceholders(row.Pattern) {
-			if _, named := row.Path[placeholder]; !named {
-				bound = false
-			}
-		}
-		if !bound {
+		if row.Path == nil {
 			continue
 		}
 		routes = append(routes, GoingRoute{Method: row.Method, Pattern: row.Pattern, path: row.Path,
 			whenArgument: row.WhenArgument, whenValue: row.WhenValue, translate: row.Translate})
 	}
 	if len(routes) == 0 {
-		return nil, GoingArgumentError{Action: name, Reason: "this read is made in process by the answer run, and takes no call"}
+		return nil, GoingArgumentError{Action: name, Reason: "no row of this read binds a call's arguments, so it takes no call"}
 	}
 	return routes, nil
 }

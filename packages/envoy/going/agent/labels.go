@@ -198,10 +198,11 @@ const noneFoundWords = " · none found"
 
 // ended is the end of a call of label with arguments that answered result, refused where the call
 // failed: its past form filled, followed by the count of the list it answered where the label
-// counts one ("· 3 hits"), or, for a call that failed, why in words (failedWords). A read Dispatch
-// answered 404 - the item or record it reads does not exist - is no failure the person can act
-// on: it reads as its past form with noneFoundWords, and is marked noneFound, so its frame carries
-// no error. A 403, a 5xx and every other refusal stay failures.
+// counts one ("· 3 hits"), of the total the answer states where that is more than the list holds
+// ("· 50 of 73 sessions", listWords), or, for a call that failed, why in words (failedWords). A
+// read Dispatch answered 404 - the item or record it reads does not exist - is no failure the
+// person can act on: it reads as its past form with noneFoundWords, and is marked noneFound, so
+// its frame carries no error. A 403, a 5xx and every other refusal stay failures.
 func ended(label contracts.ToolLabel, arguments map[string]any, result string, refused bool) endedStep {
 	answer, answered := parseResult(result)
 	step := endedStep{items: argumentItems(arguments)}
@@ -216,9 +217,9 @@ func ended(label contracts.ToolLabel, arguments map[string]any, result string, r
 	}
 	words := fillLabel(label.Past, arguments)
 	if label.Count != "" && answered && !answer.Shortened && !answer.Cut {
-		if list, listed := resultList(answer.Body, label.Count); listed {
+		if list, total, listed := resultList(answer.Body, label.Count); listed {
 			step.count = len(list)
-			words += " · " + countWords(len(list), label.Count)
+			words += " · " + listWords(len(list), total, label.Count)
 			step.items = appendItems(step.items, listKeys(list)...)
 		}
 	}
@@ -522,13 +523,20 @@ func appendItems(items []string, more ...string) []string {
 	return items
 }
 
-// resultList is the list a call's answer holds, the rows its label counts by noun (answerList).
-func resultList(body []byte, noun string) ([]any, bool) {
+// resultList is the list a call's answer holds, the rows its label counts by noun (answerList),
+// and how many items the answer states there are in all (answerTotal), the list's own length where
+// it states none.
+func resultList(body []byte, noun string) ([]any, int, bool) {
 	var answer any
 	if json.Unmarshal(body, &answer) != nil {
-		return nil, false
+		return nil, 0, false
 	}
-	return answerList(answer, noun)
+	list, listed := answerList(answer, noun)
+	total, stated := answerTotal(answer)
+	if !stated {
+		total = len(list)
+	}
+	return list, total, listed
 }
 
 // answerList is the list answer, a call's answer as its JSON decodes, holds, the rows its label
@@ -625,6 +633,16 @@ func countWords(n int, noun string) string {
 		return "1 " + noun
 	}
 	return fmt.Sprintf("%d %s", n, plural(noun))
+}
+
+// listWords is a list of n of noun in words, out of total, the items its answer states there are
+// in all: "50 of 73 sessions" where total is more than n, so a label never says more was read than
+// was, and countWords of n otherwise.
+func listWords(n, total int, noun string) string {
+	if total > n {
+		return fmt.Sprintf("%d of %s", n, countWords(total, noun))
+	}
+	return countWords(n, noun)
 }
 
 // cutWords is words at most limit runes long: cut at the last word that fits, with "…".

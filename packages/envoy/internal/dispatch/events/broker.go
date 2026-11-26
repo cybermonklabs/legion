@@ -107,7 +107,7 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     through the row's (kind, id) key and then finds written, and the update of a rename, a
 //     rank move or a delete, which holds the row locked until the transaction ends. A
 //     command-bar plan's event (api/going_run_stream.go, appendGoingPlanEvent) appends
-//     `going_plan.updated` after writing the going_runs row of the run whose plan it names, which
+//     `going_plan.updated` after writing the going_runs row of the run whose plan changed, which
 //     the update holds until the transaction ends. A per-session, per-priority or per-person lock
 //     would add no order these row locks do not give, only deadlock cycles: the accept path would
 //     take it before the message row and a pending delivery after, and a broadcast one per
@@ -469,11 +469,13 @@ func Quiet(e model.Event) bool {
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
 		// and nobody is asked anything by. A command-bar plan's change is the person's own
-		// bookkeeping, which their pages read again on and which wakes no agent. A change of a
-		// project's access list, owner or visibility, or of a group, is who may see what: every
-		// reader resolves its viewer again on it, and nobody is asked anything by it. This build
-		// writes no settings.repo_project.updated; the case stays for the events and outbox rows
-		// an earlier build wrote (outbox/publisher.go).
+		// bookkeeping, which their pages read again on and which wakes no agent; the feed carries
+		// it to every reader, so it names the person alone, in its payload and its actor, and no
+		// run (api/going_run_stream.go, goingPlanActor). A change of a project's access list,
+		// owner or visibility, or of a group, is who may see what: every reader resolves its viewer
+		// again on it, and nobody is asked anything by it. This build writes no
+		// settings.repo_project.updated; the case stays for the events and outbox rows an earlier
+		// build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

@@ -870,7 +870,6 @@ const (
 	goingNoCallPicks   = "no call of the bar reads it: dispatch_read's command reads it to find an item, and goingPickRead picks no call of it"
 	goingDocumentText  = "a document's own text and blocks, never a comment's: the words an accepted suggestion made document text are the document's (INFRA-1523 census row 1.37)"
 	goingNoIssuePost   = "messages on no issue, which nobody edits or deletes (NOT_AN_ISSUE_MESSAGE)"
-	goingAnswerRunRead = "no call of the bar reads it: it is the short answer's own read, made in process, and a call of its tool is refused (going_request_posts withdraws that answer)"
 	goingSessionFiles  = "an agent session's files and their versions"
 	goingFirstRowAlone = "its tool reads its first row for every call, whose guard and placeholders it fills (goingReadRow), and never this one"
 )
@@ -907,7 +906,7 @@ var goingPostlessReads = map[string]goingPostlessRead{
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {reason: "GitHub's answer on the App's installation"},
 	"GET /api/v1/handoffs/{id}":                          {reason: "one phase handoff with its body: a handoff is no comment or message"},
 	"GET /api/v1/issues":                                 {reason: "issue lists: keys, titles, statuses and labels"},
-	"GET /api/v1/projects/{key}/activity":                {reason: goingAnswerRunRead},
+	"GET /api/v1/projects/{key}/activity":                {reason: "a project's events counted by type per ISO week, which name no post", tool: "read_project_activity", arguments: func(withdrawnRouteFixture) map[string]any { return map[string]any{"project": "DEMO"} }},
 	"GET /api/v1/issues/resolve":                         {reason: "the issue an external reference names"},
 	"GET /api/v1/issues/{key}/artifacts":                 {reason: "an issue's documents by name, which prints no version name (census C.15)"},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   {reason: goingDocumentText},

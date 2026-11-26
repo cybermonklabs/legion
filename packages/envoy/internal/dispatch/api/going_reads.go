@@ -40,9 +40,10 @@ import (
 
 // The answer run's read tools are the entries of goingReadTools (going_tools.go) that no tool
 // spec states, by going's names for them: each names the rows of the route table it reads
-// through. A caller is offered a tool only where its credential may call every row the tool
-// reads (goingReadsFor), as a caller is offered an action only where it may call the action's
-// rows, and register refuses a table that does not serve every row goingReadTools names.
+// through, which bind the arguments of going's spec of the read, as the bar's agent reads them. A
+// caller is offered a tool only where its credential may call every row the tool reads
+// (goingReadsFor), as a caller is offered an action only where it may call the action's rows, and
+// register refuses a table that does not serve every row goingReadTools names.
 
 // goingDeploymentReads are the reads that are no one project's: the roster names every
 // project's sessions and the delivery reads every project's pull requests and issues. A
@@ -73,10 +74,10 @@ const (
 
 // goingReadRoutesOf is the answer run's read tools' rows as the table mounts them, and an error
 // naming everything goingReadTools holds that the table and the specs refuse: a row the table
-// does not serve, a row of a tool spec that binds a placeholder to no argument of the tool or
-// leaves one unbound (goingBindingProblems), a dispatch tool no spec states, and a tool whose
-// entry and spec disagree on its rows (goingToolRows). The answer run's own reads, which no
-// spec states, name rows with no binding: the server reads them in process.
+// does not serve, a row that binds a placeholder to no argument of its tool or leaves one unbound
+// (goingBindingProblems), a dispatch tool no spec states, a read of the answer run's that going
+// names none of (going.ReadSpecs), whose arguments its rows bind, and a tool whose entry and spec
+// disagree on its rows (goingToolRows).
 func goingReadRoutesOf(routes []apiRoute) (map[string][]GoingRoute, error) {
 	served := make(map[string]apiRoute, len(routes))
 	for _, route := range routes {
@@ -86,11 +87,30 @@ func goingReadRoutesOf(routes []apiRoute) (map[string][]GoingRoute, error) {
 	for _, spec := range contracts.DispatchTools {
 		specs[spec.Name] = spec
 	}
+	// The arguments of each of the answer run's reads: the properties of its schema.
+	readArguments := map[string]map[string]bool{}
+	for _, read := range going.ReadSpecs() {
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(read.Schema, &schema); err != nil {
+			return nil, fmt.Errorf("the schema of going's read %s: %w", read.Name, err)
+		}
+		takes := make(map[string]bool, len(schema.Properties))
+		for name := range schema.Properties {
+			takes[name] = true
+		}
+		readArguments[read.Name] = takes
+	}
 	reads := make(map[string][]GoingRoute, len(goingReadTools))
 	var refusals []string
 	for tool, entry := range goingReadTools {
 		spec, stated := specs[tool]
 		rows := entry.Routes
+		takes := make(map[string]bool, len(spec.Arguments))
+		for _, argument := range spec.Arguments {
+			takes[argument.Name] = true
+		}
 		switch {
 		case stated:
 			var agree bool
@@ -99,10 +119,12 @@ func goingReadRoutesOf(routes []apiRoute) (map[string][]GoingRoute, error) {
 			}
 		case strings.HasPrefix(tool, "dispatch_"):
 			refusals = append(refusals, tool+": no dispatch tool of that name (packages/contracts/src/dispatch-tools.ts)")
-		}
-		takes := make(map[string]bool, len(spec.Arguments))
-		for _, argument := range spec.Arguments {
-			takes[argument.Name] = true
+		default:
+			read, named := readArguments[tool]
+			if !named {
+				refusals = append(refusals, tool+": no read of going's of that name (going/reads.go)")
+			}
+			takes = read
 		}
 		for _, row := range rows {
 			name := row.Method + " " + row.Pattern
@@ -111,12 +133,9 @@ func goingReadRoutesOf(routes []apiRoute) (map[string][]GoingRoute, error) {
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no row of the route table", tool, name))
 				continue
 			}
+			refusals = append(refusals, goingBindingProblems(tool, row, takes)...)
 			if stated {
-				refusals = append(refusals, goingBindingProblems(tool, row, takes)...)
 				continue
-			}
-			if row.Path != nil {
-				refusals = append(refusals, fmt.Sprintf("%s: %s binds a call's arguments, and the answer run reads it in process", tool, name))
 			}
 			reads[tool] = append(reads[tool], GoingRoute{Method: mounted.Method, Pattern: mounted.Pattern, auth: mounted.Auth, scopes: mounted.OAuthScopes})
 		}
@@ -215,6 +234,50 @@ func (g *goingReadRun) project(named string) (string, error) {
 		return "", going.Refuse("this question was asked of project %s, and reads that project alone", g.asked)
 	}
 	return project, nil
+}
+
+// goingPageArguments is arguments, a call of the bar's agent to tool, with the issue or the project
+// the run's page names (going_runs.context, the bar's context chip) where the call names neither,
+// as the answer run's reads read them (readProgress, goingReadRun.project): read_progress reads
+// the page's issue, else its project, and read_architecture and read_project_activity its project.
+// A call that names its item, a call of any other tool, and a run whose page names nothing keep
+// their arguments, and the row such a call reads refuses what still names nothing.
+func (s *server) goingPageArguments(ctx context.Context, run, tool string, arguments map[string]any) (map[string]any, error) {
+	named := func(argument string) bool {
+		text, _ := arguments[argument].(string)
+		return strings.TrimSpace(text) != ""
+	}
+	switch tool {
+	case going.ReadProgress:
+		if named("issue") || named("project") {
+			return arguments, nil
+		}
+	case going.ReadArchitecture, going.ReadProjectActivity:
+		if named("project") {
+			return arguments, nil
+		}
+	default:
+		return arguments, nil
+	}
+	var chip []byte
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select context from going_runs where id = $1::uuid`, run).Scan(&chip); err != nil {
+		return nil, fmt.Errorf("read the page of run %s: %w", run, err)
+	}
+	var page goingContext
+	if len(chip) > 0 {
+		if err := json.Unmarshal(chip, &page); err != nil {
+			return nil, fmt.Errorf("read the page of run %s: %w", run, err)
+		}
+	}
+	filled := make(map[string]any, len(arguments)+1)
+	maps.Copy(filled, arguments)
+	switch {
+	case tool == going.ReadProgress && page.Issue != "":
+		filled["issue"] = page.Issue
+	case page.Project != "":
+		filled["project"] = page.Project
+	}
+	return filled, nil
 }
 
 // decodeGoingArguments decodes a read's arguments into value, refusing a field it does not take.
@@ -405,13 +468,25 @@ func goingRosterCut(rows []goingRosterRow, gone, most int) []goingRosterRow {
 	return slices.Concat(rows[:min(listed, most-goneKept)], rows[listed:listed+goneKept])
 }
 
-// goingRosterTold is the bar agent's roster read as the model is told it: the answer of GET
-// /api/v1/agents of the goingReadSessionMax sessions seen last (goingTranslateRoster), each row
-// with the claims its session holds on the issues login, the run's person, may read, then the gone
-// sessions that hold one (goingRosterClaims), judged against Dispatch's copy of the listener's list
-// that answer was read from, at most goingReadSessionMax rows in all, the gone ones kept first
-// (goingRosterCut). The route's own answer stays as every other caller reads it. Any answer but a
-// whole 200 is told as the route answered it.
+// goingRosterAnswer is the bar agent's roster read as the model is told it: how many sessions the
+// roster holds - every one the listener lists and each gone one that holds a claim - and the rows
+// of at most goingReadSessionMax of them, so the total its result states (the agent's resultCount)
+// is the roster's whole count, as the answer run's read counts it (readRoster's totals), and not
+// the rows the bound left.
+type goingRosterAnswer struct {
+	Total    int              `json:"total"`
+	Sessions []goingRosterRow `json:"sessions"`
+}
+
+// goingRosterTold is the bar agent's roster read as the model is told it (goingRosterAnswer): the
+// answer of GET /api/v1/agents of the goingReadSessionMax sessions seen last
+// (goingTranslateRoster), each row with the claims its session holds on the issues login, the run's
+// person, may read, then the gone sessions that hold one (goingRosterClaims), judged against
+// Dispatch's copy of the listener's list that answer was read from, at most goingReadSessionMax
+// rows in all, the gone ones kept first (goingRosterCut), and the total of every session that copy
+// lists and every gone one. The route's own answer stays as every other caller reads it. Any
+// answer but a whole 200 is told as the route answered it, and a copy that answers no list once
+// the route answered fails the read, since no count of every session then stands.
 func (s *server) goingRosterTold(ctx context.Context, login string, answer agentwire.CallAnswer) (agentwire.CallAnswer, error) {
 	if answer.Status != http.StatusOK || answer.Cut {
 		return answer, nil
@@ -424,15 +499,18 @@ func (s *server) goingRosterTold(ctx context.Context, login string, answer agent
 	if err != nil {
 		return agentwire.CallAnswer{}, err
 	}
-	var lists func(string) bool
-	if roster.answered {
-		lists = func(sessionID string) bool { return roster.state(sessionID) != envoy.StateGone }
+	if !roster.answered {
+		return agentwire.CallAnswer{}, errors.New("the listener's session list answered the agents list and then answered none, so no count of every session stands")
 	}
+	lists := func(sessionID string) bool { return roster.state(sessionID) != envoy.StateGone }
 	rows, gone, err := s.goingRosterClaims(ctx, model.Actor{Kind: "user", ID: login}, listed, lists)
 	if err != nil {
 		return agentwire.CallAnswer{}, err
 	}
-	body, err := json.Marshal(goingRosterCut(rows, gone, goingReadSessionMax))
+	// The copy read here may be a newer one than the route read, so the total is never fewer than
+	// the sessions the route listed.
+	total := max(len(roster.sessions), len(listed)) + gone
+	body, err := json.Marshal(goingRosterAnswer{Total: total, Sessions: goingRosterCut(rows, gone, goingReadSessionMax)})
 	if err != nil {
 		return agentwire.CallAnswer{}, err
 	}

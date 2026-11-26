@@ -130,8 +130,10 @@ func TestEachStepReadsAsWords(t *testing.T) {
 }
 
 // TestAStepThatEndedNamesItsCountAndItems: a call that answered a list reads with how many rows it
-// holds, and its items are the keys and references its arguments name, then the keys of its rows;
-// a call that failed reads as one sentence that says, in words, why it could not.
+// holds, and, where its answer states a total larger than that, how many there are in all (50 of
+// 73 sessions), never more than it read; its items are the keys and references its arguments
+// name, then the keys of its rows; a call that failed reads as one sentence that says, in words,
+// why it could not.
 func TestAStepThatEndedNamesItsCountAndItems(t *testing.T) {
 	answered := func(status int, body string) string {
 		return resultText(agentwire.CallRequest{Step: 2, Call: 1}, agentwire.CallAnswer{Status: status, Body: []byte(body)})
@@ -152,6 +154,13 @@ func TestAStepThatEndedNamesItsCountAndItems(t *testing.T) {
 			false, "Listed the issues of DEMO · 2 issues", 2, []string{"DEMO-1", "DEMO-2"}},
 		{toolCallTool, `{"tool":"read_roster","arguments":{}}`, answered(http.StatusOK, `{"facts":{"source":"live"},"tables":{"sessions":[{"id":"s1"}]}}`),
 			false, "Read the agent sessions · 1 session", 1, []string{}},
+		{toolCallTool, `{"tool":"read_roster","arguments":{}}`, answered(http.StatusOK, `{"total":73,"sessions":[{"session_id":"s1"},{"session_id":"s2"}]}`),
+			false, "Read the agent sessions · 2 of 73 sessions", 2, []string{}},
+		{toolCallTool, `{"tool":"read_roster","arguments":{}}`, answered(http.StatusOK, `{"total":2,"sessions":[{"session_id":"s1"},{"session_id":"s2"}]}`),
+			false, "Read the agent sessions · 2 sessions", 2, []string{}},
+		{toolCallTool, `{"tool":"dispatch_issues","arguments":{"project":"DEMO"}}`,
+			answered(http.StatusOK, `{"issues":[{"key":"DEMO-1"},{"key":"DEMO-2"}],"total":500,"limit":2,"offset":0}`),
+			false, "Listed the issues of DEMO · 2 of 500 issues", 2, []string{"DEMO-1", "DEMO-2"}},
 		{toolCallTool, `{"tool":"dispatch_list_issue_messages","arguments":{"issue":"DEMO-7"}}`, answered(http.StatusOK, `[{"id":"m1"},{"id":"m2"}]`),
 			false, "Read the messages of DEMO-7 · 2 messages", 2, []string{"DEMO-7"}},
 		{toolRead, `{"issue":"DEMO-15"}`, answered(http.StatusOK, `{"key":"DEMO-15"}`), false, "Read DEMO-15", 0, []string{"DEMO-15"}},

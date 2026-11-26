@@ -690,18 +690,21 @@ func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, page)
 }
 
-// goingPlanActor is the actor of a going_plan.updated of login's run: the person, through the
-// command bar, for that run.
-func goingPlanActor(login, run string) model.Actor {
-	return model.Actor{Kind: "user", ID: login, Act: &model.ActorAct{Agent: model.ActAgentCommandBar, Run: run}}
+// goingPlanActor is the actor of a going_plan.updated of login's: the person, through the command
+// bar. It names no run: the event feed carries the event to every reader, and the event names the
+// person alone (model.GoingPlanEventPayload), whose pages read their plans again as themselves.
+func goingPlanActor(login string) model.Actor {
+	return model.Actor{Kind: "user", ID: login, Act: &model.ActorAct{Agent: model.ActAgentCommandBar}}
 }
 
 // appendGoingPlanEvent appends going_plan.updated naming login in tx, the transaction that changed
 // what login's plans wait on - a run of theirs began to wait, or a waiting run was answered or
-// stopped - after it wrote the run's row. The caller publishes the event once tx commits.
-func (s *server) appendGoingPlanEvent(ctx context.Context, tx pgx.Tx, login, run string) (model.Event, error) {
+// stopped - after it wrote the run's row. The event names login alone: the run its callers pass
+// is named neither in its payload nor in its actor (goingPlanActor). The caller publishes the
+// event once tx commits.
+func (s *server) appendGoingPlanEvent(ctx context.Context, tx pgx.Tx, login, _ string) (model.Event, error) {
 	event, err := s.appendEvent(ctx, tx, model.Event{
-		Type: "going_plan.updated", Actor: goingPlanActor(login, run), Payload: model.GoingPlanEventPayload{Login: login},
+		Type: "going_plan.updated", Actor: goingPlanActor(login), Payload: model.GoingPlanEventPayload{Login: login},
 	})
 	if err != nil {
 		return model.Event{}, fmt.Errorf("append the plan's event: %w", err)

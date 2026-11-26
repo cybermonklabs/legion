@@ -390,8 +390,8 @@ func TestGoingStatusReadsStayInsideTheAuthorsProject(t *testing.T) {
 // the claims nor the gone session. A claim on an issue the run's person may not read (R12) adds
 // nothing: neither the claim of a listed session, which then reads as one that holds none, nor a
 // gone session whose one claim it is. The bar agent's read_roster, which reads that route
-// (goingRosterTold), and the answer run's read (readRoster), whose totals count the gone session,
-// list the same.
+// (goingRosterTold), and the answer run's read (readRoster), list the same, and each counts the
+// gone session in its total.
 func TestTheRosterReadNamesEverySessionThatHoldsAClaim(t *testing.T) {
 	t.Parallel()
 	listener := newStatusListener(t, func(_ int, w http.ResponseWriter) { _, _ = w.Write([]byte(statusSessions)) })
@@ -488,14 +488,19 @@ func TestTheRosterReadNamesEverySessionThatHoldsAClaim(t *testing.T) {
 			t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
 		}
 		results := rig.toolResults(t, run)
-		// The list's total stands before its body, in the label's noun (the agent's resultCount).
-		_, body, read := strings.Cut(strings.Join(results, ""), ": status 200\n[Total: 3 sessions in the list below.]\n")
-		var told []map[string]any
-		if len(results) != 1 || !read || json.Unmarshal([]byte(body), &told) != nil {
+		// The total of every session stands before the list, in the label's noun (the agent's
+		// resultCount): the listener's two sessions and ses-gone.
+		_, body, read := strings.Cut(strings.Join(results, ""), ": status 200\n[Total: 3 matching sessions; the list below holds 3 of them.]\n")
+		var roster struct {
+			Total    int              `json:"total"`
+			Sessions []map[string]any `json:"sessions"`
+		}
+		if len(results) != 1 || !read || json.Unmarshal([]byte(body), &roster) != nil {
 			t.Fatalf("the run saved the tool results %q, want the roster read whole", results)
 		}
-		if len(told) != 3 {
-			t.Fatalf("the model was told %v, want the listener's two sessions, then ses-gone", told)
+		told := roster.Sessions
+		if roster.Total != 3 || len(told) != 3 {
+			t.Fatalf("the model was told a total of %d and %v, want 3: the listener's two sessions, then ses-gone", roster.Total, told)
 		}
 		for index, row := range listed {
 			id, _ := row[going.FieldSessionID].(string)

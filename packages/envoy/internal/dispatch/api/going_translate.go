@@ -701,9 +701,10 @@ func goingArgumentsAsBody(_ context.Context, _ goingReader, call goingCallInput)
 	return goingCall{path: call.path, body: body}, nil
 }
 
-// goingTranslateNoBody sends no body: a follow and its unfollow, and an architecture sync of every
-// source take everything from their path and the caller's credential. This is the every-source
-// sync row, chosen when the call names no `repo`; a sync that names one takes the one-source row
+// goingTranslateNoBody sends no body: a follow and its unfollow, an architecture sync of every
+// source, and read_progress of an issue, which reads the issue its path names whatever else the
+// call names, take everything from their path and the caller's credential. The every-source sync
+// row is chosen when the call names no `repo`; a sync that names one takes the one-source row
 // (goingTranslateArchitectureSyncRepo).
 func goingTranslateNoBody(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path}, nil
@@ -724,9 +725,57 @@ func goingTranslateResolveComment(ctx context.Context, read goingReader, call go
 // goingReadSessionMax sessions seen last, the most the answer run's own roster read lists
 // (going_reads.go), so the route reads the open asks and activity of those alone and loads no more
 // rows of a roster of any size than it answers. The model is told that answer with the claims of
-// each session and the gone sessions that hold one (goingRosterTold).
+// each session, the gone sessions that hold one and the total of every session (goingRosterTold).
 func goingTranslateRoster(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path, query: url.Values{"limit": {strconv.Itoa(goingReadSessionMax)}}, roster: true}, nil
+}
+
+// goingTranslateProjectIssues sends read_progress of a project, a call that names no issue, as GET
+// /api/v1/issues of that project: every issue of it, each with its status and its progress, as the
+// project's page lists them. A call that names no project either, on a run whose page names
+// neither (goingPageArguments), is refused as the answer run's read refuses it
+// (goingReadRun.project): the listing of every project's issues is no one project's progress.
+func goingTranslateProjectIssues(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	project := strings.TrimSpace(goingText(call.arguments, "project"))
+	if project == "" {
+		return goingCall{}, goingUntranslatable("name the issue or the project to read: the call names neither and none is on the page")
+	}
+	return goingCall{path: call.path, query: url.Values{"project": {project}}}, nil
+}
+
+// goingTranslateDeliveryWindow sends read_delivery of the measures or the timeline as its view's
+// route over the window from and to name, each under its own name; the view only picks the row.
+func goingTranslateDeliveryWindow(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	query, err := goingDeliveryQuery(call.arguments, map[string]string{"from": "from", "to": "to"})
+	return goingCall{path: call.path, query: query}, err
+}
+
+// goingTranslateDeliveryPipeline sends read_delivery of the pipeline as GET
+// /api/v1/delivery/pipeline of the seven days ending on the call's to, the route's at, as the
+// answer run reads it (goingReadRun.readDelivery), which reads no from of a pipeline either.
+func goingTranslateDeliveryPipeline(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	query, err := goingDeliveryQuery(call.arguments, map[string]string{"to": "at"})
+	return goingCall{path: call.path, query: query}, err
+}
+
+// goingDeliveryQuery is the query of a delivery read: each argument of keys the call names, under
+// the key keys names for it, a blank one left out as the answer run's read leaves it out.
+func goingDeliveryQuery(arguments map[string]any, keys map[string]string) (url.Values, error) {
+	query := url.Values{}
+	for argument, key := range keys {
+		value, named := arguments[argument]
+		if !named || value == nil {
+			continue
+		}
+		text, isText := value.(string)
+		if !isText {
+			return nil, goingUntranslatable(fmt.Sprintf("%s is a time in RFC 3339, and the call sends a %T", argument, value))
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			query.Set(key, text)
+		}
+	}
+	return query, nil
 }
 
 // goingTranslateSearch sends dispatch_search's words as the search route's q, and its project,

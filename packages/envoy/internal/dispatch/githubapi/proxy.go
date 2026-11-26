@@ -25,8 +25,11 @@ const Prefix = "/api/github/rest/"
 // readable are the GitHub API paths the web app reads, and the only ones the proxy forwards: a
 // pull request, an issue (which also answers for a pull request), the check runs of a commit, and
 // the workflow runs (`actions/runs`, the group named runs) whose query names one commit, held to
-// workflowRunsQuery. The App can read more of a repository than that, and none of the rest is
-// shown anywhere.
+// workflowRunsQuery. The App can read more of a repository than that. For a person, the command
+// bar's agent reads some of the rest through the server (api/going_agent_reads.go,
+// goingGitHubReadable): a pull request, its reviews, files and commits; a commit, its checks and
+// statuses; a compare; and contents. No other part of a repository - its hooks, its
+// collaborators, its settings - is read for a person or shown anywhere.
 var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|(?<runs>actions/runs))$`)
 
 // runsGroup is the index of readable's group that a workflow-runs read fills.

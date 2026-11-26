@@ -1,13 +1,14 @@
 package api
 
 // going_agent_reads.go is the agent's two reads outside Dispatch, which the server makes for it,
-// since the agent holds no secret and reads nothing but its socket: a GitHub read, of a
-// repository that is the default repository of a project the run's person can read, through the
-// server's GitHub App; and a web read, of an address the person's words or a tool result of the
-// run names, which must resolve to a public address, checked on every connection the read makes -
-// after the DNS answer and on each redirect - through its dialer's Control hook, so a name that
-// resolves to a public address once and a private one the next time cannot pass. A read stops at
-// agentwire.CallBodyLimit or goingWebReadTime and says it was cut.
+// since the agent holds no secret and reads nothing but its socket: a GitHub read, of one of the
+// reads the bar answers from (goingGitHubReadable) in a repository that is the default repository
+// of a project the run's person can read, through the server's GitHub App; and a web read, of an
+// address the person's words or a tool result of the run names, which must resolve to a public
+// address, checked on every connection the read makes - after the DNS answer and on each redirect
+// - through its dialer's Control hook, so a name that resolves to a public address once and a
+// private one the next time cannot pass. A read stops at agentwire.CallBodyLimit or
+// goingWebReadTime and says it was cut.
 
 import (
 	"context"
@@ -40,13 +41,25 @@ const (
 // goingRepositoryPart is an owner or a repository name as GitHub spells one.
 var goingRepositoryPart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// githubRead reads a repository through the server's GitHub App: the repository must be the
-// default repository of a project (projects.default_repo), under its new name where a rename pair
-// renames it away, and one such project one the run's person can read, as the route table answers
-// the person's own read of the project's architecture sources, a small read any credential of the
-// project may make, which the project scope check judges. Dispatch finds no project from a
-// repository in any other way. The read is GET of the path under the repository's API path, with
-// an installation token of the App, its body cut at agentwire.CallBodyLimit.
+// goingGitHubReadable is every path under a repository a GitHub read reads, the reads the bar
+// answers from: a pull request, its reviews, its files and its commits; a commit, by its sha or
+// another ref of one segment, its check runs, its combined status and its statuses; a compare of
+// two refs; and contents, the repository's root or a path under it. The App can read far more of
+// a repository than that - its hooks, its collaborators, its settings - and a GitHub read reads
+// none of it.
+var goingGitHubReadable = regexp.MustCompile(`^(?:pulls/[0-9]+(?:/(?:reviews|files|commits))?` +
+	`|commits/[A-Za-z0-9_.-]+(?:/(?:check-runs|status|statuses))?` +
+	`|compare/[^/].*\.\.\..*[^/]` +
+	`|contents(?:/.*)?)$`)
+
+// githubRead reads a repository through the server's GitHub App: the path must be one the bar
+// answers from (goingGitHubReadable), and the repository the default repository of a project
+// (projects.default_repo), under its new name where a rename pair renames it away, and one such
+// project one the run's person can read, as the route table answers the person's own read of the
+// project's architecture sources, a small read any credential of the project may make, which the
+// project scope check judges. Dispatch finds no project from a repository in any other way. The
+// read is GET of the path under the repository's API path, with an installation token of the App,
+// its body cut at agentwire.CallBodyLimit.
 func (a *AgentListener) githubRead(ctx context.Context, request agentwire.CallRequest, doer goingInProcess) (agentwire.CallAnswer, *agentwire.Error) {
 	owner, name, split := strings.Cut(request.Repository, "/")
 	if !split || !goingRepositoryPart.MatchString(owner) || !goingRepositoryPart.MatchString(name) || owner == ".." || name == ".." {
@@ -99,7 +112,8 @@ func (a *AgentListener) githubRead(ctx context.Context, request agentwire.CallRe
 }
 
 // goingRepositoryPath is a GitHub read's path under its repository, with its query, as the API
-// path it appends ("/pulls/12"): relative, with no segment that leaves the repository.
+// path it appends ("/pulls/12"): relative, with no segment that leaves the repository, and one of
+// the reads goingGitHubReadable names, any other refused before anything is read.
 func goingRepositoryPath(path string) (string, *agentwire.Error) {
 	parsed, err := url.Parse(path)
 	if err != nil || parsed.Scheme != "" || parsed.Host != "" || strings.HasPrefix(path, "/") {
@@ -110,8 +124,10 @@ func goingRepositoryPath(path string) (string, *agentwire.Error) {
 			return "", goingAgentRefusal(agentwire.CodeBadRequest, "%q leaves its repository", path)
 		}
 	}
-	if parsed.Path == "" {
-		return parsed.String(), nil
+	if !goingGitHubReadable.MatchString(parsed.Path) {
+		return "", goingAgentRefusal(agentwire.CodeCallRefused, "a GitHub read reads a pull request (pulls/N), its reviews, files or commits "+
+			"(pulls/N/reviews, pulls/N/files, pulls/N/commits), a commit (commits/SHA), its checks or statuses (commits/SHA/check-runs, "+
+			"commits/SHA/status, commits/SHA/statuses), a compare (compare/BASE...HEAD) or contents (contents/PATH), and %q is none of them", parsed.Path)
 	}
 	return "/" + parsed.String(), nil
 }

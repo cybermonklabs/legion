@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -196,8 +195,9 @@ type goingWriteTool struct {
 }
 
 // goingReadTool is one tool that changes nothing: the rows it reads. A tool whose spec binds its
-// routes names none, and its rows are those bindings (goingToolRows). A row whose Path is nil is
-// one the tool reads in process rather than by a call's arguments: the answer run's own reads.
+// routes names none, and its rows are those bindings (goingToolRows). Every row binds a call's
+// arguments to its path (Path), the answer run's own reads among them, which the bar's agent reads
+// through their rows as the person does and the answer run reads in process.
 type goingReadTool struct {
 	Routes []goingToolRoute
 	// Pick is the row of Routes a call reads, by "<METHOD> <pattern>", and what that row's route
@@ -800,20 +800,40 @@ var goingWriteTools = map[string]goingWriteTool{
 
 // goingReadTools is every dispatch tool that changes nothing, by the tool's own name, and the
 // answer run's own reads, by going's names for them (going/reads.go), which no tool spec states:
-// the server makes those in process, through the same functions the rows they name answer with
+// the answer run makes those in process, through the same functions the rows they name answer with
 // (going_reads.go), and a caller is offered one only where its credential may call every row it
-// names (goingReadsFor).
+// names (goingReadsFor). The bar's agent reads each of those through its rows, as the person reads
+// them, each row binding the arguments going's spec of the read names (goingReadRoutesOf), and a
+// call that names no issue or project reads the run's page's, as the answer run's read does
+// (goingPageArguments).
 var goingReadTools = map[string]goingReadTool{
 	// A run's roster read names how many sessions it lists (goingTranslateRoster), so the agents
 	// list reads no more of a roster than it answers.
 	going.ReadRoster: {Routes: []goingToolRoute{
-		{Method: http.MethodGet, Pattern: "/api/v1/agents", Translate: goingTranslateRoster},
+		{Method: http.MethodGet, Pattern: "/api/v1/agents", Path: map[string]string{}, Translate: goingTranslateRoster},
 	}},
-	going.ReadProgress:        {Routes: goingReadRows("GET /api/v1/issues", "GET /api/v1/issues/{key}")},
-	going.ReadArchitecture:    {Routes: goingReadRows("GET /api/v1/projects/{key}/architecture")},
-	going.ReadProjectActivity: {Routes: goingReadRows("GET /api/v1/projects/{key}/activity")},
-	going.ReadDelivery: {Routes: goingReadRows(
-		"GET /api/v1/delivery/measures", "GET /api/v1/delivery/timeline", "GET /api/v1/delivery/pipeline")},
+	// A progress read of an issue is the issue's read, which carries its progress and its
+	// children; one of a project is the listing of its issues (goingTranslateProjectIssues).
+	going.ReadProgress: {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}", Path: map[string]string{"key": "issue"}, Translate: goingTranslateNoBody},
+		{Method: http.MethodGet, Pattern: "/api/v1/issues", Path: map[string]string{}, Translate: goingTranslateProjectIssues},
+	}},
+	going.ReadArchitecture: {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/projects/{key}/architecture", Path: map[string]string{"key": "project"}},
+	}},
+	going.ReadProjectActivity: {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/projects/{key}/activity", Path: map[string]string{"key": "project"}},
+	}},
+	// A delivery read's view picks its row, and its window is the route's query
+	// (goingTranslateDeliveryWindow, goingTranslateDeliveryPipeline).
+	going.ReadDelivery: {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/delivery/measures", Path: map[string]string{},
+			WhenArgument: "view", WhenValue: goingDeliveryMeasures, Translate: goingTranslateDeliveryWindow},
+		{Method: http.MethodGet, Pattern: "/api/v1/delivery/timeline", Path: map[string]string{},
+			WhenArgument: "view", WhenValue: goingDeliveryTimeline, Translate: goingTranslateDeliveryWindow},
+		{Method: http.MethodGet, Pattern: "/api/v1/delivery/pipeline", Path: map[string]string{},
+			WhenArgument: "view", WhenValue: goingDeliveryPipeline, Translate: goingTranslateDeliveryPipeline},
+	}},
 
 	// The tools whose command is written by hand, each with the rows its command reads and the
 	// argument that fills each of their placeholders.
@@ -964,17 +984,6 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_my_agent_state":               {},
 	"dispatch_read_document_read_mark":           {},
 	"dispatch_read_event_log":                    {},
-}
-
-// goingReadRows is rows the answer run reads in process, each "<METHOD> <pattern>": no call's
-// arguments fill them, so none carries a Path.
-func goingReadRows(names ...string) []goingToolRoute {
-	rows := make([]goingToolRoute, 0, len(names))
-	for _, name := range names {
-		method, pattern, _ := strings.Cut(name, " ")
-		rows = append(rows, goingToolRoute{Method: method, Pattern: pattern})
-	}
-	return rows
 }
 
 // The reasons a route a person may call has no tool: the routes the command bar's spec leaves out.

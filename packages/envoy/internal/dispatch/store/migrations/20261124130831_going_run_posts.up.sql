@@ -5,7 +5,7 @@
 -- (api.recordGoingRunPosts), and each post of an earlier run of its conversation whose notes the
 -- run's claim handed it (api.claimGoingRun). Once one of them no longer stands - its author
 -- deleted it, or its row is gone - every read of the run gives none of what the run stored that
--- may quote it (api.goingRunWithdrawnSQL), as going_request_posts (20261110224508) does for the
+-- may quote it (api.goingRunWithdrawnOf), as going_request_posts (20261110224508) does for the
 -- short answer of a pause in typing. A row is written before the answer it names reaches the
 -- run's agent, so before any step or frame that holds the post's words.
 --

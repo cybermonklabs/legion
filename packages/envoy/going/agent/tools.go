@@ -75,8 +75,10 @@ var outsideReads = []contracts.DispatchTool{
 	{
 		Name:  toolGitHubRead,
 		Label: contracts.ToolLabel{Kind: kindRead, Verb: "read", Present: "Reading {path} in {repository} on GitHub", Past: "Read {path} in {repository} on GitHub"},
-		Description: "Read GitHub through Dispatch's GitHub App: a GET of a path under one repository's API path, such as pulls/12, " +
-			"issues/7/comments or contents/README.md. Only a repository that is the default repository of a project the person can read is read.",
+		Description: "Read GitHub through Dispatch's GitHub App: a GET under one repository's API path of a pull request (pulls/12), its reviews, files or commits " +
+			"(pulls/12/reviews, pulls/12/files, pulls/12/commits), a commit (commits/<sha>), its checks or statuses (commits/<sha>/check-runs, commits/<sha>/status, " +
+			"commits/<sha>/statuses), a compare (compare/<base>...<head>) or contents (contents/README.md); any other path is refused. " +
+			"Only a repository that is the default repository of a project the person can read is read.",
 		Arguments: []contracts.ToolField{
 			{Name: "repository", Kind: contracts.ToolFieldString, Required: true, Description: "The repository as owner/name."},
 			{Name: "path", Kind: contracts.ToolFieldString, Required: true, Description: "The path under the repository's API path, with its query, such as pulls/12/files?per_page=50."},
@@ -327,7 +329,9 @@ var findableTools = sync.OnceValue(func() []findable {
 // findablesOf is each of dispatchTools as the bar's model is given it (barTool), with
 // dispatch_read's form that lists an issue's comments (issueCommentsRead); the reads the server
 // makes by going's names for them (going.ReadSpecs: the roster of agent sessions and the rest,
-// which no spec of Dispatch states); and the two reads outside Dispatch and draw_block.
+// which no spec of Dispatch states, each read through the routes the person reads it by), told as
+// barReadDescriptions tells the ones the bar reads otherwise than the answer run; and the two
+// reads outside Dispatch and draw_block.
 func findablesOf(dispatchTools []contracts.DispatchTool) []findable {
 	tools := slices.Concat(dispatchTools, []contracts.DispatchTool{issueCommentsRead}, outsideReads, []contracts.DispatchTool{drawBlockTool})
 	reads := going.ReadSpecs()
@@ -341,9 +345,34 @@ func findablesOf(dispatchTools []contracts.DispatchTool) []findable {
 		add(tool.Name, tool.Description, schemaOf(tool.Arguments))
 	}
 	for _, read := range reads {
-		add(read.Name, read.Description, read.Schema)
+		description := read.Description
+		if told, own := barReadDescriptions[read.Name]; own {
+			description = told
+		}
+		add(read.Name, description, read.Schema)
 	}
 	return out
+}
+
+// barReadDescriptions are what the bar's model is told of the reads of going's whose answer the
+// server gives the bar otherwise than going's description of it says, by the read's name. The
+// bar's read_progress of a project is the listing of the project's issues (GET /api/v1/issues of
+// the project, internal/dispatch/api going_tools.go), each with its status and progress, which
+// the answer run's read counts by status instead. The bar's read_roster is the agents list of the
+// 50 sessions seen last (internal/dispatch/api goingReadSessionMax), with their claims and the
+// gone sessions that hold one, and the total of every session (goingRosterTold): it names no
+// source and no age, which the answer run's read names, and a listener that cannot answer
+// answers 503 rather than the sessions Dispatch's own rows name.
+var barReadDescriptions = map[string]string{
+	going.ReadProgress: "Read progress: for an issue, its task and child counts and its children; for a project, every issue of it with its status and its progress. " +
+		"Name issue, or project; with neither, the page's issue or project is read.",
+	// No longer than going's own description of the read, so find_tools ranks it where it did
+	// (fitting: of two tools that hold as many of a need's words, the shorter first).
+	going.ReadRoster: "Read the agent sessions Dispatch knows of, at most 50 in all: each session's title, state, roles, the delivery modes it takes " +
+		"(capabilities: btw, aside or steer), last_seen, open asks and last activity - when it was, and where: the issue and the event type of its newest event " +
+		"(last_activity_issue, last_activity_type), where to read what it last wrote - and the claims it holds (claims: each open issue it works on and since when, at), " +
+		"the newest seen first; then each gone session that still holds a claim, with state gone and its claims, kept before those seen longest ago; " +
+		"and total, how many sessions there are in all, those the 50 leave out among them. It answers 503 while the live roster is unavailable. It takes no arguments.",
 }
 
 // needFillers are words of a need that name no tool's work - "list the agent sessions and which
@@ -818,12 +847,13 @@ func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 // body is a list: a list itself, as GET /api/v1/issues answers all of a project's issues, or an
 // object whose list the label of call's tool counts its rows in (answerList by the label's noun).
 // It gives how many items the list holds (listTotal), and, where the object also gives a whole
-// total, as a page does (model.IssueSummaryPage), how many items match and how many of them the
-// list holds (pageTotal), in the label's noun, "item" for a tool whose label counts none. A model
-// that counted the rows of a list it was given miscounted them (at 8a3e562b a chart answer said
-// 41 issues of a list of 42, given whole), and a list past modelResultLimit reaches the model as
-// its first bytes alone, so the total stands before the body, where no cut reaches it. Any other
-// body has no such line, nor does an answer the server cut, whose body does not parse.
+// total (answerTotal), as a page does (model.IssueSummaryPage), how many items match and how many
+// of them the list holds (pageTotal), in the label's noun, "item" for a tool whose label counts
+// none; a step's label counts them so too (ended). A model that counted the rows of a list it was
+// given miscounted them (at 8a3e562b a chart answer said 41 issues of a list of 42, given whole),
+// and a list past modelResultLimit reaches the model as its first bytes alone, so the total stands
+// before the body, where no cut reaches it. Any other body has no such line, nor does an answer
+// the server cut, whose body does not parse.
 func resultCount(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 	// Only a list, or an object of a tool whose label counts a list, is decoded; a list's rows are
 	// counted unread.
@@ -847,10 +877,26 @@ func resultCount(call agentwire.CallRequest, answer agentwire.CallAnswer) string
 	if !listed {
 		return ""
 	}
-	if total, numeric := object["total"].(float64); numeric && total >= 0 && total == float64(int(total)) {
-		return fmt.Sprintf(pageTotal, int(total), countNoun(int(total), noun), len(list))
+	if total, stated := answerTotal(object); stated {
+		return fmt.Sprintf(pageTotal, total, countNoun(total, noun), len(list))
 	}
 	return fmt.Sprintf(listTotal, len(list), countNoun(len(list), noun))
+}
+
+// answerTotal is how many items answer, a call's answer as its JSON decodes, states there are in
+// all: its total, a whole number of zero or more, as a page states it (model.IssueSummaryPage)
+// and the bar's roster read does; false for an answer that states none. The total line the model
+// is told (resultCount) and the step's label the person reads (ended) both count by it.
+func answerTotal(answer any) (int, bool) {
+	object, isObject := answer.(map[string]any)
+	if !isObject {
+		return 0, false
+	}
+	total, numeric := object["total"].(float64)
+	if !numeric || total < 0 || total != float64(int(total)) {
+		return 0, false
+	}
+	return int(total), true
 }
 
 // countNoun is noun as a count of n writes it: singular for one, plural for any other, and item
