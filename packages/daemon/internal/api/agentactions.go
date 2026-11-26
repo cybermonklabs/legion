@@ -60,13 +60,16 @@ const suspendedByOperator = "SUSPENDED_BY_OPERATOR"
 const heldByWorkHold = "HELD_BY_WORK_HOLD"
 
 // What a refusal of a hold says the request did to the agent (refuseHold): nothing, for a request
-// the hold refused before it did anything, which is every such refusal but two; its own
+// the hold refused before it did anything, which is every such refusal but three; its own
 // suspension of the agent and nothing more, for the fresh session whose forget a suspension above
 // the caller refused after taking the agent over from that suspension, after which the claim's
 // state is suspended, by the holder, with the session it recorded; and the agent's session left
 // behind and nothing more, for the fresh session of an agent it found suspended whose resume such
 // a suspension refused after the forget had dropped that session, after which the claim's state
-// is suspended, by the holder, with no session to resume (freshSession). Each reads after
+// is suspended, by the holder, with no session to resume (freshSession), and for the fresh session
+// of a failed or retired phase worker whose start the work hold of its tree refused after the
+// forget had dropped that session, the gate having closed after the agent door's read, after which
+// the claim stands as it stood with no session (retryStart). Each reads after
 // "so <operation> by <caller>", or after "so it" in the daemon's sentence.
 const (
 	nothingChanged         = "is refused and nothing of the claim changed"
@@ -177,11 +180,13 @@ func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 // (supervise.Machine.retire writes the claim's state alone), so an agent the operator stopped is
 // retried here as one the controller stopped is. An agent the operator's suspension holds, landed
 // or held for its turn, is refused by the door before anything is asked, as every action of the
-// door but the compaction is (agentDoor). A claim stored working is refused as a claim in a turn
-// (refuseClaimInATurn); every other refusal is the effect's own, in the words the operator's door
-// gives it. While the project is paused it is refused PROJECT_PAUSED before the read of the
-// claim's state, and nothing of the claim changes (refusedWhilePaused), as the operator's retry
-// is.
+// door but the compaction is (agentDoor), and so is a phase worker of a tree whose work hold
+// stands (HELD_BY_WORK_HOLD); a gate that closed after the door's read refuses the retry where it
+// lands, in the same code, with nothing of the claim changed (retryStart). A claim stored working
+// is refused as a claim in a turn (refuseClaimInATurn); every other refusal is the effect's own,
+// in the words the operator's door gives it. While the project is paused it is refused
+// PROJECT_PAUSED before the read of the claim's state, and nothing of the claim changes
+// (refusedWhilePaused), as the operator's retry is.
 func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.agentDoor(w, r, retryOp)
 	if !ok {
@@ -194,7 +199,7 @@ func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 		s.refuseClaimInATurn(w, r, target.token, retryOp)
 		return
 	}
-	status, ok := s.retryStart(w, r, target.machine, target.token, false, target.by)
+	status, ok := s.retryStart(w, r, target.machine, target.token, false, target.by, retryOp, nothingChanged)
 	if !ok {
 		return
 	}
