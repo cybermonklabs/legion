@@ -35,7 +35,9 @@ type keptRoleMessage struct {
 	// who names the role in the end's clauses: "the implementer", "the role".
 	who string
 	// after names the moment the message's hour runs from: "the hook fired", "the phase ended".
-	after   string
+	after string
+	// took names the message in the hour's clause: "it", "the message".
+	took    string
 	role    claim.Role
 	message string
 	// kept is the Info line logged, with fields, when a listener keeps the message for the role's
@@ -62,11 +64,21 @@ func (e *keptRoleMessageUndelivered) Error() string {
 func (e *keptRoleMessageUndelivered) Unwrap() error { return e.cause }
 
 // errKeptRoleMessagePastItsHour and errKeptRoleMessageRoleNotComing are the causes
-// keptRoleMessageEnded gives a message it ends before any attempt to publish it.
+// keptRoleMessageEnded gives a message it ends before any attempt to publish it. A message past
+// its hour carries pastItsHour, worded with the executor's moment, which is
+// errKeptRoleMessagePastItsHour (errors.Is).
 var (
 	errKeptRoleMessagePastItsHour   = errors.New("the message's hour has passed")
 	errKeptRoleMessageRoleNotComing = errors.New("the role's claim failed or was retired")
 )
+
+// pastItsHour is the cause of a kept role message whose hour has passed, after naming the moment
+// the hour ran from: "the hour after the hook fired has passed".
+type pastItsHour struct{ after string }
+
+func (e pastItsHour) Error() string { return "the hour after " + e.after + " has passed" }
+
+func (pastItsHour) Is(target error) bool { return target == errKeptRoleMessagePastItsHour }
 
 // keptRoleMessageEnded is the end of a kept role message's row that no attempt to publish it can
 // change, and nil while the message may still be delivered, read from wake, the claim's one read
@@ -97,8 +109,8 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 		}
 	}
 	if r.now().Sub(start) >= keptRoleMessageHoldBound {
-		return &keptRoleMessageUndelivered{what: m.what, cause: errKeptRoleMessagePastItsHour,
-			why: fmt.Sprintf("the hour after %s passed and no session of %s took it", m.after, m.who)}, nil
+		return &keptRoleMessageUndelivered{what: m.what, cause: pastItsHour{after: m.after},
+			why: fmt.Sprintf("the hour after %s passed and no session of %s took %s", m.after, m.who, m.took)}, nil
 	}
 	return nil, nil
 }

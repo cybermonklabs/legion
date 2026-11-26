@@ -2279,7 +2279,7 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	fields := []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To}
 	ended, err := r.publishKeptToRole(ctx, row, token, keptRoleMessage{
 		what: "the phase-ended message", subject: "the end of " + row.Issue + "'s " + string(payload.From) + " phase",
-		who: "the role", after: "the phase ended", role: payload.Role, message: payload.Message(row.Issue),
+		who: "the role", after: "the phase ended", took: "the message", role: payload.Role, message: payload.Message(row.Issue),
 		kept: "outbox phase-ended message finished: the listener keeps it for the role's next holder", fields: fields,
 	})
 	if ended != nil {
@@ -2371,7 +2371,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	}
 	ended, err := r.publishKeptToRole(ctx, row, token, keptRoleMessage{
 		what: "the hook prompt", subject: "the " + payload.Hook + " hook's prompt for " + row.Issue,
-		who: "the " + string(payload.Role), after: "the hook fired", role: payload.Role, message: payload.Message(row.Issue),
+		who: "the " + string(payload.Role), after: "the hook fired", took: "it", role: payload.Role, message: payload.Message(row.Issue),
 		kept:   "outbox hook prompt finished: the listener keeps it for the role's next holder",
 		fields: []any{"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count},
 	})

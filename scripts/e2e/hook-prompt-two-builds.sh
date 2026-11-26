@@ -142,7 +142,7 @@ run_subtest() {
 begin prerequisites
 [ "$base_given" = true ] && [ -n "$base_commit" ] ||
   refuse "--base-commit is required: it names the commit of the earlier daemon, such as legion-v23.21.0"
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   refuse "LEGION_TEST_PG_DSN is unset: it names the loopback PostgreSQL the test creates its databases on"
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 db_host=''
