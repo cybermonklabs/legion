@@ -936,7 +936,8 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	}
 	u, err := url.Parse(loopTestPG(t))
 	if err != nil {
-		t.Fatalf("parse the loop test's DSN: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the loop test's DSN does not parse")
 	}
 	u.Path = "/" + name
 	dsn := u.String()

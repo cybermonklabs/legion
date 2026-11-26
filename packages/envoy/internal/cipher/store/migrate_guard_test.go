@@ -366,7 +366,8 @@ func migrateAFreshSchema(t *testing.T, databaseURL string) schemaMigration {
 	t.Cleanup(func() { adminExec(t, databaseURL, "drop schema "+schema+" cascade") })
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's URL does not parse")
 	}
 	query := parsed.Query()
 	query.Set("search_path", schema)
@@ -565,7 +566,8 @@ func emptySchemaStore(t *testing.T, params ...string) *Store {
 	adminExec(t, databaseURL, "create schema "+schema)
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's URL does not parse")
 	}
 	query := parsed.Query()
 	query.Set("search_path", schema)

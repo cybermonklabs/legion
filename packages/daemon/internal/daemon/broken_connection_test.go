@@ -132,7 +132,8 @@ func daemonDSN(t *testing.T, pool *store.Pool, application string) string {
 	t.Helper()
 	dsn, err := url.Parse(pool.Config().ConnString())
 	if err != nil {
-		t.Fatalf("parse the test database's DSN: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's DSN does not parse")
 	}
 	query := dsn.Query()
 	query.Set("application_name", application)

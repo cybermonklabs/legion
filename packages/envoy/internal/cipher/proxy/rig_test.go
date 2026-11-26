@@ -810,7 +810,8 @@ func (r *rig) clientAt(addr, password string) *http.Client {
 	r.t.Helper()
 	proxyURL, err := url.Parse("http://agent:" + password + "@" + addr)
 	if err != nil {
-		r.t.Fatalf("the proxy URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		r.t.Fatal("the proxy URL, which holds the grant's password, does not parse")
 	}
 	transport := &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),

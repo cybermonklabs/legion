@@ -1162,7 +1162,8 @@ func startDatabaseRelay(t *testing.T, databaseURL string) *databaseRelay {
 	t.Helper()
 	target, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the database URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the database URL does not parse")
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

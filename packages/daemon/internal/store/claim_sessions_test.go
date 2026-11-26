@@ -685,7 +685,8 @@ func secondStore(t *testing.T, store *Store, configure func(*pgxpool.Config)) *S
 	}
 	u, err := url.Parse(testDSN(t))
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("LEGION_TEST_PG_DSN does not parse")
 	}
 	u.Path = "/" + name
 	config, err := pgxpool.ParseConfig(u.String())

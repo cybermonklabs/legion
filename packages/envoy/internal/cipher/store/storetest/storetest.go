@@ -41,7 +41,6 @@ package storetest
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -128,9 +127,8 @@ func makeTemplate(raw string) (string, error) {
 	name := "broker_template_" + digest[:16]
 	server, err := url.Parse(raw)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, password and all, so only the error it
-		// wraps is printed.
-		return "", fmt.Errorf("parse %s: %w", DatabaseURLEnv, errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		return "", fmt.Errorf("%s does not parse", DatabaseURLEnv)
 	}
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, testdb.DatabaseURL(*server, lockDatabase))

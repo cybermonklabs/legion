@@ -363,7 +363,8 @@ func sessionDatabaseAt(t *testing.T, dsn string) (ompsessions.Database, *session
 	t.Helper()
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatalf("parse the test database's DSN: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's DSN does not parse")
 	}
 	password, _ := parsed.User.Password()
 	t.Setenv("PGPASSWORD", password)

@@ -1287,7 +1287,8 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
-		t.Fatalf("parse the test database URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	var blackholed atomic.Bool
 	dsn.Host = blackholePostgres(t, dsn.Host, &blackholed)
@@ -1350,7 +1351,8 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
-		t.Fatalf("parse the test database URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	var blackholed atomic.Bool
 	dsn.Host = blackholePostgres(t, dsn.Host, &blackholed)

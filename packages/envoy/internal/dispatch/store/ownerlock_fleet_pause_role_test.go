@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"testing"
@@ -23,7 +22,8 @@ func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *t
 	ctx := context.Background()
 	server, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	server.Path = "/postgres"
 	var role string

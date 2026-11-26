@@ -220,7 +220,8 @@ func (r *airlockRereadRig) grant(name string) proxied {
 	}
 	proxyURL, err := url.Parse("http://agent:" + password + "@" + r.proxyAddr)
 	if err != nil {
-		r.t.Fatal(err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		r.t.Fatal("the proxy URL, which holds the grant's password, does not parse")
 	}
 	return proxied{grantID: *granted.GrantID, placeholder: placeholder, client: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),

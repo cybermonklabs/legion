@@ -68,7 +68,8 @@ func Start(t testing.TB) *Broker {
 	dsn := storetest.URL(t)
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatalf("holdrecordtest: parse the test schema's DSN: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("holdrecordtest: the test schema's DSN does not parse")
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {

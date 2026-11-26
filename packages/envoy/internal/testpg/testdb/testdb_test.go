@@ -2,13 +2,69 @@ package testdb
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// plantedPart is the first part of a password that holds an unescaped '#'. url.Parse ends the
+// URL's authority at the '#', reads the user, a colon and this part as host:port, and refuses the
+// port, quoting this part, in the error it wraps too.
+const plantedPart = "plantedfirstpart"
+
+// unparsableDSN is a DSN whose password is plantedPart, a '#' and more, unescaped.
+const unparsableDSN = "postgres://u:" + plantedPart + "#rest@db.example:5432/postgres"
+
+// fatalRecorder is a testing.TB whose Fatal and Fatalf record what they were given and end the
+// goroutine that called them, as testing.T's do; every other method is the test's own.
+type fatalRecorder struct {
+	testing.TB
+	messages []string
+}
+
+func (r *fatalRecorder) Helper() {}
+
+func (r *fatalRecorder) Fatal(args ...any) {
+	r.messages = append(r.messages, fmt.Sprint(args...))
+	runtime.Goexit()
+}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.messages = append(r.messages, fmt.Sprintf(format, args...))
+	runtime.Goexit()
+}
+
+// A server URL that does not parse fails DatabaseOn with no part of the URL in the message: not
+// the password's first part, which even the error url.Parse wraps quotes. Control: that wrapped
+// error does quote it, so a DatabaseOn that printed it would fail this test.
+func TestAServerURLThatDoesNotParseIsNeverPrinted(t *testing.T) {
+	t.Parallel()
+	_, err := url.Parse(unparsableDSN)
+	if err == nil || !strings.Contains(errors.Unwrap(err).Error(), plantedPart) {
+		t.Fatalf("control: url.Parse of the planted DSN answers %v; want an error whose wrapped error quotes the password's first part, or this test proves nothing", err)
+	}
+	recorder := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		DatabaseOn(recorder, unparsableDSN, "", "never_made")
+	}()
+	<-done
+	if len(recorder.messages) != 1 || !strings.Contains(recorder.messages[0], "does not parse") {
+		t.Fatalf("DatabaseOn of a URL that does not parse failed with %d messages, want one saying it does not parse", len(recorder.messages))
+	}
+	for _, part := range []string{plantedPart, "rest", "db.example"} {
+		if strings.Contains(recorder.messages[0], part) {
+			t.Errorf("DatabaseOn's failure prints %q of the URL it could not parse; want no part of it", part)
+		}
+	}
+}
 
 // testServer is the BROKER_TEST_DATABASE_URL server, skipping t when the variable is unset.
 func testServer(t *testing.T) string {

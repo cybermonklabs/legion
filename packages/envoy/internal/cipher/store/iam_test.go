@@ -3,7 +3,6 @@ package store
 import (
 	"cmp"
 	"context"
-	"errors"
 	"net"
 	"net/url"
 	"strconv"
@@ -73,7 +72,8 @@ func passwordRole(t *testing.T, password string) (role, adminURL, databaseURL st
 	adminExec(t, adminURL, "grant create on schema public to "+role)
 	parsed, err := url.Parse(adminURL)
 	if err != nil {
-		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's URL does not parse")
 	}
 	parsed.User = url.User(role)
 	return role, adminURL, parsed.String()
@@ -84,7 +84,8 @@ func endpointOf(t *testing.T, databaseURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's URL does not parse")
 	}
 	return net.JoinHostPort(parsed.Hostname(), cmp.Or(parsed.Port(), "5432"))
 }

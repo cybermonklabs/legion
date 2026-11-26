@@ -53,7 +53,8 @@ func openEmptyTestStore(t *testing.T) *Store {
 	ctx := context.Background()
 	baseURL, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
@@ -85,7 +86,8 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	base := testDatabaseURL(t)
 	withPoolSize, err := url.Parse(base)
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	query := withPoolSize.Query()
 	query.Set(poolSizeParam, "4")
@@ -719,7 +721,8 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	ctx := context.Background()
 	baseURL, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
@@ -1106,7 +1109,8 @@ func adminDatabaseURL(t *testing.T) url.URL {
 	t.Helper()
 	admin, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	admin.Path = "/postgres"
 	return *admin

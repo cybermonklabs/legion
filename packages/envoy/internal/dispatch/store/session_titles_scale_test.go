@@ -99,7 +99,8 @@ func TestSessionTitlesBootScale(t *testing.T) {
 	}
 	admin, err := url.Parse(server)
 	if err != nil {
-		t.Fatalf("parse %s: %v", sessionTitlesScaleURLEnv, err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatalf("%s does not parse", sessionTitlesScaleURLEnv)
 	}
 	admin.Path = "/postgres"
 	for _, field := range strings.Fields(cmp.Or(os.Getenv(sessionTitlesScaleSessionsEnv), sessionTitlesScaleSessionsDefault)) {

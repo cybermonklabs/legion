@@ -138,7 +138,8 @@ func runReplaySeed(args []string) error {
 func withDatabase(pgURL, db string) (string, error) {
 	u, err := url.Parse(pgURL)
 	if err != nil {
-		return "", fmt.Errorf("postgres url: %w", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		return "", errors.New("postgres url: does not parse")
 	}
 	u.Path = "/" + db
 	return u.String(), nil

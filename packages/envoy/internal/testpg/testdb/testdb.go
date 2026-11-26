@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -29,7 +28,7 @@ import (
 //
 // Both statements run on adminURL itself, which is exact for every caller because a caller passes
 // the URL its own statements run on, and that URL and the result differ only in the database they
-// select. Each opens a connection of its own, so no pool outlives the test.
+// select and the pairs set adds. Each opens a connection of its own, so no pool outlives the test.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
@@ -39,8 +38,10 @@ func DatabaseOn(t testing.TB, adminURL, template, prefix string, set ...string) 
 	t.Helper()
 	server, err := url.Parse(adminURL)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
+		// url.Parse's error quotes the URL, and even the error it wraps can: an invalid port's quotes
+		// what follows the authority's last colon, which for a password holding an unescaped '#',
+		// '/' or '?' is the user and the password's first part. So no part of it is printed.
+		t.Fatal("the admin URL of the Postgres server does not parse")
 	}
 	name, err := NewDatabaseName(prefix)
 	if err != nil {

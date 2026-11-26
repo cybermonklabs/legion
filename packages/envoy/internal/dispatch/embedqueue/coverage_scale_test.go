@@ -380,7 +380,8 @@ func serverDatabaseURL(t *testing.T, raw, database string) string {
 	t.Helper()
 	server, err := url.Parse(raw)
 	if err != nil {
-		t.Fatalf("parse %s: %v", coverageScaleURLEnv, errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatalf("%s does not parse", coverageScaleURLEnv)
 	}
 	server.Path = "/" + database
 	return server.String()

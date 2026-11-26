@@ -14,6 +14,28 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// A server URL that does not parse fails the template's build with no part of the URL in its
+// error: not the first part of a password holding an unescaped '#', which even the error url.Parse
+// wraps quotes. Control: that wrapped error does quote it, so a build that printed it would fail
+// this test.
+func TestATemplateServerURLThatDoesNotParseIsNeverPrinted(t *testing.T) {
+	t.Parallel()
+	const planted = "plantedfirstpart"
+	raw := "postgres://u:" + planted + "#rest@db.example:5432/postgres"
+	if _, err := url.Parse(raw); err == nil || !strings.Contains(errors.Unwrap(err).Error(), planted) {
+		t.Fatalf("control: url.Parse of the planted URL answers %v; want an error whose wrapped error quotes the password's first part, or this test proves nothing", err)
+	}
+	_, err := makeTemplate(raw)
+	if err == nil {
+		t.Fatal("makeTemplate of a URL that does not parse answered no error")
+	}
+	for _, part := range []string{planted, "rest", "db.example"} {
+		if strings.Contains(err.Error(), part) {
+			t.Errorf("makeTemplate's error %q prints %q of the URL it could not parse; want no part of it", err, part)
+		}
+	}
+}
+
 // The template lock is the server's whatever database a builder's URL names: a builder that names
 // the server through a database of its own waits for a holder of the lock on the server's postgres
 // database, and a holder on the builder's own database holds it up not at all. Postgres keeps an
@@ -27,7 +49,8 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 	raw := serverURL(t)
 	server, err := url.Parse(raw)
 	if err != nil {
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatalf("%s does not parse", DatabaseURLEnv)
 	}
 	// builder is a URL naming a database of the test's own on the server, whose connections carry
 	// an application_name of their own, so the waiters read are this builder's and no other

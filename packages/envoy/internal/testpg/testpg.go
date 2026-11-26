@@ -9,7 +9,6 @@ package testpg
 
 import (
 	"context"
-	"errors"
 	"net/url"
 	"os"
 	"testing"
@@ -64,8 +63,8 @@ func databaseOn(t testing.TB, raw string) string {
 	t.Helper()
 	server, err := url.Parse(raw)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse %s: %v", databaseURLEnv, errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatalf("%s does not parse", databaseURLEnv)
 	}
 	server.Path = "/postgres"
 	return testdb.DatabaseOn(t, server.String(), "", "testpg")

@@ -305,7 +305,8 @@ func withExecMode(t *testing.T, mode string) string {
 	t.Helper()
 	dsn, err := url.Parse(testDSN(t))
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("LEGION_TEST_PG_DSN does not parse")
 	}
 	values := dsn.Query()
 	values.Set("default_query_exec_mode", mode)
