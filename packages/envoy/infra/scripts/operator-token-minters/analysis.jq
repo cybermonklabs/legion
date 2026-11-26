@@ -1,7 +1,8 @@
 # operator-token-minters/analysis.jq: analyze's records (iam-analysis.sh) from Policy Analyzer's answer,
 # with impersonation: a `row` per binding and identity, a `chain` per impersonator of a service
 # account holder through any number of service accounts, and one `error` for an answer that cannot
-# be read as complete. $wi, $gsa, $bwi and $broker name the designed links, as analyze says.
+# be read as complete. $wi, $gsa, $bwi, $broker and $bp (the broker's Workload Identity principal)
+# name the designed links, as analyze says.
 include "rec";
       def sa_email: if test("^serviceAccount:[^@\\[]+@") then sub("^serviceAccount:"; "") else empty end;
       if (.mainAnalysis | type) != "object" then ["error", "the answer holds no mainAnalysis"] | rec
@@ -24,7 +25,8 @@ include "rec";
           else
             def designed($l): ($l.id == $wi and $l.target == $gsa)
               or ($bwi != "" and $l.id == $bwi and $l.target == $broker)
-              or ($broker != "" and $l.id == "serviceAccount:\($broker)" and $l.target == $gsa);
+              or ($broker != "" and $l.id == "serviceAccount:\($broker)" and $l.target == $gsa)
+              or ($bp != "" and $l.id == $bp and $l.target == $gsa);
             # chains(E; SEEN): each chain of impersonators of the service account E, innermost first,
             # never through a principal twice.
             def chains($email; $seen):

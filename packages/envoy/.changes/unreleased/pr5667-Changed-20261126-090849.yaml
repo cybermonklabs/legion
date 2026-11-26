@@ -1,12 +1,17 @@
 kind: Changed
 body: |-
   `infra/scripts/operator-token-minters.sh` reads guarded token-Secret declarations from rendered
-  Kubernetes objects instead of listing Kubernetes Secrets. A new step lists who can write the
-  renders bucket (`--renders-bucket`, `--renders-admin`, `--render-writer`): anyone but people, the
-  bucket's applier and each writer under its own object's condition is a finding. A structured
-  disabled GKE Hub API reads as an empty fleet, and the Kubernetes reads each live step makes are
-  listed in `reads.json`. The minter auditor image runs the check from a no-argument entrypoint
-  with Job-pinned `MINTERS_AUDITOR_*` environment variables.
+  Kubernetes objects instead of listing Kubernetes Secrets, and reads the operator's secret's
+  admin and tier tags from its Secret Manager annotations (`--secrets-prefix`) instead of through
+  the broker. A new step lists who can write the renders bucket (`--renders-bucket`,
+  `--renders-project`, `--renders-admin`, `--render-writer`), managed folders' policies included:
+  anyone but people, the bucket's applier, each writer under its own object's condition and the
+  bucket project's own Google service agents is a finding. Another step makes a finding of each GKE
+  cluster of the pool that no `--audited-cluster` names. A structured disabled GKE Hub API reads
+  as an empty fleet, and the Kubernetes reads each live step makes are listed in `reads.json`. The
+  minter auditor image runs the check from a no-argument entrypoint with Job-pinned
+  `MINTERS_AUDITOR_*` environment variables, and is published and attested from main as the
+  worker image is.
 time: 2026-11-26T09:08:49Z
 custom:
     Issue: pr5667

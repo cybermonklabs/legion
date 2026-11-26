@@ -184,9 +184,11 @@ FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update gkehub.na
   gkehub.membershipbindings.update gkehub.scopes.create gkehub.scopes.update gkehub.scopes.setIamPolicy
   gkehub.features.create gkehub.features.update)
 # Who could have written a render: write or delete an object, rewrite its metadata (the commit and
-# run id the report quotes), or change the bucket's policy or access model.
+# run id the report quotes), change the bucket's policy or access model, or set a managed folder's
+# policy, which grants object writes under its prefix and is on neither the bucket's policy nor its
+# ancestors'.
 RENDER_PERMISSIONS=(storage.objects.create storage.objects.delete storage.objects.update storage.buckets.setIamPolicy
-  storage.buckets.update)
+  storage.buckets.update storage.managedFolders.setIamPolicy)
 # granting_role sets GRANTING_ROLE to the predefined role whose includedPermissions must hold a
 # checked permission.
 granting_role() {

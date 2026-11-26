@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests the no-argument minter-auditor entrypoint against fake gcloud, kubectl, curl, agent-secrets,
+# Tests the no-argument minter-auditor entrypoint against fake gcloud, kubectl, curl,
 # gke-gcloud-auth-plugin and minter check: no cloud, no cluster. The rows:
 #   - each scalar variable unset or empty, and each array variable malformed, exits 2 naming it and
 #     makes no gcloud call; so do an empty or duplicate cluster list, a writer list of another
@@ -46,7 +46,7 @@ case "$1 $2 $3" in
   *) echo "fake gcloud: unexpected call: gcloud $*" >&2; exit 2 ;;
 esac
 EOF
-for tool in kubectl curl agent-secrets gke-gcloud-auth-plugin; do
+for tool in kubectl curl gke-gcloud-auth-plugin; do
   printf '#!/usr/bin/env bash\necho "fake %s: unexpected call" >&2\nexit 2\n' "$tool" >"$tmp/bin/$tool"
 done
 # The fake check: records its arguments, one a line, and writes the --report it was given.
@@ -61,7 +61,8 @@ EOF
 chmod +x "$tmp/bin/"*
 
 scalars=(
-  MINTERS_AUDITOR_RENDERS_BUCKET MINTERS_AUDITOR_RENDERS_ADMIN MINTERS_AUDITOR_PROJECT MINTERS_AUDITOR_ANALYSIS_SCOPE
+  MINTERS_AUDITOR_RENDERS_BUCKET MINTERS_AUDITOR_RENDERS_PROJECT MINTERS_AUDITOR_RENDERS_ADMIN MINTERS_AUDITOR_PROJECT
+  MINTERS_AUDITOR_ANALYSIS_SCOPE MINTERS_AUDITOR_SECRETS_PREFIX
   MINTERS_AUDITOR_NAMESPACE MINTERS_AUDITOR_SERVICE_ACCOUNT MINTERS_AUDITOR_GSA
   MINTERS_AUDITOR_BROKER_ACCOUNT MINTERS_AUDITOR_BROKER_WORKLOAD MINTERS_AUDITOR_SQL_INSTANCE
   MINTERS_AUDITOR_DB_SECRET MINTERS_AUDITOR_BROKER_STATE MINTERS_AUDITOR_SIGNING_SECRET
@@ -78,7 +79,8 @@ run() {
   status=0
   rm -f "$tmp/calls" "$tmp/args" "$tmp/report.json"
   output="$(env PATH="$tmp/bin:$PATH" MINTERS_AUDITOR_TEST_CALLS="$tmp/calls" MINTERS_AUDITOR_TEST_ARGS="$tmp/args" TMPDIR="$tmp" \
-    MINTERS_AUDITOR_RENDERS_BUCKET=gs://example-renders \
+    MINTERS_AUDITOR_RENDERS_BUCKET=gs://example-renders MINTERS_AUDITOR_RENDERS_PROJECT=example-root \
+    MINTERS_AUDITOR_SECRETS_PREFIX=projects/000000000000/secrets/agent-secrets- \
     MINTERS_AUDITOR_RENDERS_ADMIN=renders-admin@example-project.iam.gserviceaccount.com MINTERS_AUDITOR_PROJECT=example-project \
     MINTERS_AUDITOR_ANALYSIS_SCOPE=organizations/100 MINTERS_AUDITOR_NAMESPACE=example-namespace \
     MINTERS_AUDITOR_SERVICE_ACCOUNT=example-service-account MINTERS_AUDITOR_GSA=example@example-project.iam.gserviceaccount.com \
@@ -136,8 +138,9 @@ want_args="$tmp/want-args"
     --namespace example-namespace --service-account example-service-account --gsa example@example-project.iam.gserviceaccount.com \
     --broker-account broker@example-project.iam.gserviceaccount.com --broker-workload example-broker/example-broker \
     --sql-instance example-instance --db-secret example-secrets/example-db --broker-state gs://example-state \
-    --signing-secret EXAMPLE_SIGNING --secret EXAMPLE_OPERATOR --analysis-scope organizations/100 --fleet none \
-    --renders-bucket gs://example-renders --renders-admin renders-admin@example-project.iam.gserviceaccount.com
+    --signing-secret EXAMPLE_SIGNING --secret EXAMPLE_OPERATOR --secrets-prefix projects/000000000000/secrets/agent-secrets- \
+    --analysis-scope organizations/100 --fleet none \
+    --renders-bucket gs://example-renders --renders-project example-root --renders-admin renders-admin@example-project.iam.gserviceaccount.com
   for object in rbac-cluster-grants secrets-dispatch secrets-broker iam-bootstrap iam-root; do
     case "$object" in rbac-*) printf '%s\n' --rbac-render ;; secrets-*) printf '%s\n' --secret-render ;; iam-*) printf '%s\n' --iam-preview ;; esac
     printf '%s\n' "WORK/$object.json"

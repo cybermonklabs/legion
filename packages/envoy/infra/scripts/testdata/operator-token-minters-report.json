@@ -2194,7 +2194,7 @@
   "unknown": [
     {
       "step": "admin tag of ENVOY_OPERATOR",
-      "reason": "agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012"
+      "reason": "gcloud secrets describe projects/123456789012/secrets/agent-secrets-envoy-operator was refused (it needs secretmanager.secrets.get on the secret): ERROR: (gcloud.secrets.describe) PERMISSION_DENIED: Permission 'secretmanager.secrets.get' denied for resource 'projects/123456789012/secrets/agent-secrets-envoy-operator' (or it may not exist)."
     }
   ],
   "allowances": [

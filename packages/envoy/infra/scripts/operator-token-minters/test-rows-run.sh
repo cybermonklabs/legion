@@ -14,9 +14,11 @@
 #        member, and an RBAC read whose cluster-admin binding does not answer, each read UNKNOWN;
 #   (k)  with no identity that may run the live steps, each prints UNKNOWN naming the permission it
 #        needs, and the run exits 2;
-#   (l)  the admin tag: ENVOY_OPERATOR shown without "admin": "true", no such secret, and the scratch
-#        secret ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field;
-#        a session that cannot show it reads UNKNOWN;
+#   (l)  the admin tag, read from the secret's Secret Manager annotations: ENVOY_OPERATOR without
+#        the admin annotation, at agent tier, no such secret, and the scratch secret
+#        ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field; admin
+#        held beside the annotations instead of in them is a finding too (the read's control); a
+#        refused describe, and a run with no --secrets-prefix, read UNKNOWN;
 #   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
 #        nothing; row fa holds their entries), unknown and allowances ([] for a run given none), with
 #        a stubbed UNKNOWN step listed under unknown;
@@ -143,51 +145,66 @@ if row k; then
   passed "(k) with no identity that may run them, the live steps print UNKNOWN naming the permission, and the run exits 2"
 fi
 
-# --- (l) The admin tag. ---
+# --- (l) The admin tag, from the secret's annotations. ---
+readonly secret_id="projects/$number/secrets/agent-secrets-envoy-operator"
+admin_tag_row() {
+  local args
+  base_world
+  case "$1" in
+    present)
+      run
+      want_line "PASS admin tag of ENVOY_OPERATOR: admin is \"true\" and tier is \"human\": each release waits on a person's approval" \
+        "ENVOY_OPERATOR with both annotations"
+      ;;
+    no-admin)
+      edit "$world/secrets/ENVOY_OPERATOR.json" '.admin = ""'
+      run
+      want_status 1 "ENVOY_OPERATOR without the admin annotation"
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" "no admin annotation"
+      ;;
+    admin-outside)
+      : >"$world/admin-outside-annotations"
+      run
+      want_status 1 "admin held beside the annotations"
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
+        "admin held beside the annotations"
+      ;;
+    agent-tier)
+      edit "$world/secrets/ENVOY_OPERATOR.json" '.tier = "agent"'
+      run
+      want_status 1 "ENVOY_OPERATOR at agent tier"
+      want_line "FINDING secret:ENVOY_OPERATOR: tier is \"agent\", not \"human\"" "agent tier"
+      ;;
+    missing)
+      rm "$world/secrets/ENVOY_OPERATOR.json"
+      run
+      want_status 1 "no ENVOY_OPERATOR"
+      want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret"
+      ;;
+    control-secret)
+      run --secret ENVOY_OPERATOR_CONTROL
+      want_status 1 "the scratch secret at human tier without --admin"
+      want_line "FINDING secret:ENVOY_OPERATOR_CONTROL: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
+        "the scratch secret"
+      ;;
+    refused)
+      : >"$world/refuse-secret-show"
+      run
+      want_status 2 "a refused describe"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: gcloud secrets describe $secret_id was refused (it needs secretmanager.secrets.get on the secret): ERROR: (gcloud.secrets.describe) PERMISSION_DENIED" \
+        "a refused describe"
+      ;;
+    no-prefix)
+      mapfile -t args < <(args_without --secrets-prefix)
+      run_only "${args[@]}"
+      want_status 2 "no --secrets-prefix"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no --secrets-prefix" "no --secrets-prefix"
+      ;;
+  esac
+}
 if row l; then
-  base_world
-  edit "$world/secrets/ENVOY_OPERATOR.json" '.admin = ""'
-  run
-  want_status 1 "ENVOY_OPERATOR without the admin tag"
-  want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" "no admin tag"
-  passed "(l) ENVOY_OPERATOR shown without \"admin\": \"true\" exits 1 naming admin"
-
-  base_world
-  edit "$world/secrets/ENVOY_OPERATOR.json" '.tier = "agent"'
-  run
-  want_status 1 "ENVOY_OPERATOR at agent tier"
-  want_line "FINDING secret:ENVOY_OPERATOR: tier is \"agent\", not \"human\"" "agent tier"
-  passed "(l) ENVOY_OPERATOR at agent tier exits 1 naming tier"
-
-  base_world
-  rm "$world/secrets/ENVOY_OPERATOR.json"
-  run
-  want_status 1 "no ENVOY_OPERATOR"
-  want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret"
-  passed "(l) no secret ENVOY_OPERATOR exits 1"
-
-  base_world
-  rm "$world/secrets/ENVOY_OPERATOR.json"
-  : >"$world/old-words"
-  run
-  want_status 1 "no ENVOY_OPERATOR, in the released agent-secrets' words"
-  want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret, in the released agent-secrets' words"
-  passed "(l) no secret ENVOY_OPERATOR exits 1 in gRPC's words too, as legion-envoy-v30.43.0 prints them"
-
-  base_world
-  run --secret ENVOY_OPERATOR_CONTROL
-  want_status 1 "the scratch secret at human tier without --admin"
-  want_line "FINDING secret:ENVOY_OPERATOR_CONTROL: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
-    "the scratch secret"
-  passed "(l) the scratch secret ENVOY_OPERATOR_CONTROL at human tier without --admin exits 1 naming admin (the plan's control)"
-
-  base_world
-  : >"$world/refuse-secret-show"
-  run
-  want_status 2 "a session that cannot show the secret"
-  want_text "UNKNOWN admin tag of ENVOY_OPERATOR: agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied" \
-    "a refused show"
-  passed "(l) a session that cannot show the secret's tags reads UNKNOWN naming the refusal"
+  each admin_tag_row present no-admin admin-outside agent-tier missing control-secret refused no-prefix
+  passed "(l) the admin tag is read from the secret's annotations: a missing admin annotation, admin outside them, agent tier, no secret and the scratch secret each exit 1 naming the field; a refused describe and no --secrets-prefix read UNKNOWN"
 fi
 
 # --- (m) The report. ---
@@ -206,7 +223,7 @@ if row m; then
   [ "$at" -ge "$((before - 1))" ] && [ "$at" -le "$(date -u +%s)" ] || fail "the report's run_at $run_at is not the run's"
   jq -e --arg p "serviceAccount:$ci_gsa" 'any(.findings[]; .principal == $p and (.right | startswith("container.serviceAccounts.createToken")))' "$report" >/dev/null ||
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
-  jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
+  jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PERMISSION_DENIED")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
   jq -e --argjson ra "$(renders_allowances)" 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == $ra and .credited == []
     and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])

@@ -4785,7 +4785,17 @@ IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the proje
 (`--project`, the pool project and each fleet member's project) are allowed; another project's
 agent is a finding naming its project number, and another Google service agent the deployment
 needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserviceaccount.com`,
-which takes no other address. Admission power
+which takes no other address. The broker's grant to mint the operator's token,
+`roles/iam.serviceAccountTokenCreator` on `--gsa`, is allowed to `--broker-account` and to the
+Workload Identity principal of `--broker-workload`,
+`principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<namespace>/sa/<name>`,
+which a deployment binds while the broker does not yet run as its account; another principal,
+or another role, is a finding. On another GKE cluster of the pool that
+`gcloud container clusters describe` reads as Standard (a refused describe is UNKNOWN), a
+privileged or hostPath pod reads every token on its node, so a system namespace's ServiceAccount
+that runs a pod on a node is a finding when it may make or patch namespaces, make or patch
+ServiceAccounts or pods in a guarded namespace, or mint a guarded pair's token; on Autopilot, and
+for one with no pod on a node, the system namespaces stay allowed. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster, or a Service of type ExternalName or with no
@@ -4835,7 +4845,7 @@ value of the flag's form that is not so shaped is used, and may be printed, as g
 `ghp_abc` is. A file flag's file is named by the flag and its place (`--rbac-render entry 2`), never
 its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
-`gcloud`, `curl` and `agent-secrets`.
+`gcloud` and `curl`.
 
 ### Minter-auditor render inputs
 
@@ -4861,25 +4871,44 @@ Each is UTF-8 JSON and is passed unmodified to the named flag.
 
 **Who could have written them.** The step `live: render writers of gs://<bucket>` asks Policy
 Analyzer, in one query on the bucket, for every holder of `storage.objects.create`,
-`storage.objects.delete`, `storage.objects.update`, `storage.buckets.setIamPolicy` and
-`storage.buckets.update`: each writes a render, rewrites the `commit` and `run_id` metadata the
-report quotes, or changes the bucket's policy or access model (with uniform access off, an ACL could
-grant a write Policy Analyzer does not list). It accepts:
+`storage.objects.delete`, `storage.objects.update`, `storage.buckets.setIamPolicy`,
+`storage.buckets.update` and `storage.managedFolders.setIamPolicy`: each writes a render, rewrites
+the `commit` and `run_id` metadata the report quotes, changes the bucket's policy or access model
+(with uniform access off, an ACL could grant a write Policy Analyzer does not list), or sets a
+managed folder's policy, which grants object writes under its prefix and is on neither the bucket's
+policy nor its ancestors'. It accepts:
 
 - people, a group judged by its expanded members, and Google's service agents, as every IAM step;
-- `--renders-admin EMAIL`, the account that applies the bucket, for any of the five; the answer
+- `--renders-admin EMAIL`, the account that applies the bucket, for any of them; the answer
   must list it, or the step is `UNKNOWN`;
 - each `--render-writer EMAIL=program/object`, only through a binding whose condition is exactly
   `resource.name == "projects/_/buckets/<bucket>/objects/<program/object>"` (single quotes also
-  match). The title is not read: only the expression limits the grant.
+  match). The title is not read: only the expression limits the grant;
+- for this step alone, the Google service agents of `--renders-project`, the bucket's project:
+  `service-<its number>@` at `gcp-sa-<product>`, `serverless-robot-prod`, `compute-system`,
+  `container-engine-robot` or `dataflow-service-producer-prod`, the number read with
+  `gcloud projects describe`. Its Cloud Run agent holds `roles/run.serviceAgent` there, which
+  carries four of the permissions. Each accepted agent is printed, `ACCEPTED <agent>: <role>,
+  granted at <resource>`. The same agent of another project, and an account of another project
+  whose name is `service-<that number>`, are findings.
 
 Any other holder, a writer's binding without its own object's condition, and a writer under
-another object's condition are each a finding naming it. An empty or refused answer is `UNKNOWN`.
-The step does not ask `resourcemanager.projects.setIamPolicy`. The code step `code: IAM` reads, by
-the same rule, every binding a preview declares on the bucket or on an organization or folder.
-A grant on the bucket's project is read by the live step alone: no flag names that project.
-Renders or previews given without `--renders-bucket` or `--renders-admin` make the step
-`UNKNOWN`; with none given, the step does not run.
+another object's condition are each a finding naming it. An empty or refused answer is `UNKNOWN`,
+and so is a project number that cannot be read. The step does not ask
+`resourcemanager.projects.setIamPolicy`. The code step `code: IAM` reads, by the same rule, every
+binding a preview declares on the bucket or on an organization or folder. A grant on the bucket's
+project is read by the live step alone. Renders or previews given without `--renders-bucket`,
+`--renders-project` or `--renders-admin` make the step `UNKNOWN`; with none given, the step does
+not run.
+
+**The admin tag.** The step `admin tag of <--secret>` reads the broker secret as Secret Manager
+holds it: `gcloud secrets describe <--secrets-prefix><slug> --format=json`, where
+`--secrets-prefix` is the broker's own `secrets_prefix` setting
+(`projects/<number>/secrets/<prefix>-`) and the slug is the name lowercased with each underscore a
+hyphen. The broker keeps a secret's tags as its annotations (`cmd/cipher/secret_gcp.go`, `show`),
+so the step requires the annotations `admin: "true"` and `tier: "human"`. The read needs
+`secretmanager.secrets.get` on the secret alone, and no broker. No such secret is a finding; a
+refused read, and a run with no `--secrets-prefix`, are `UNKNOWN`.
 
 The entrypoint does not check at run time that an object's `commit` is on a branch. The writers
 step is the provenance: each accepted writer applies its program from that program's main only.
@@ -4887,6 +4916,15 @@ The entrypoint reads each object's description with `gcloud storage objects desc
 API's `metadata` and `generation`; gcloud's default format renames them), fetches the object at
 that generation, and adds `{object, commit, run_id, generation}` for each of the five to the
 report's `renders`.
+
+The image is `ghcr.io/cybermonklabs/legion/minters-auditor`, published as the worker image is:
+`.github/workflows/release-minters-auditor.yaml` builds it on a push to `main`, pushes its
+`sha-<commit>` tag, and attests the pushed digest with GitHub's artifact attestation. Pin the
+digest, and check it with
+`gh attestation verify oci://ghcr.io/cybermonklabs/legion/minters-auditor@sha256:<digest> --repo cybermonklabs/legion --source-ref refs/heads/main --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-minters-auditor.yaml@refs/heads/main`.
+Pods pull it by digest with no pull secret, as they pull the worker image, so the package must be
+public; if the first push leaves it private, a package administrator sets it public in the
+package's settings on GitHub.
 
 The image entrypoint takes no argument.
 It builds an authenticated gcloud context for each audited cluster with
@@ -4909,8 +4947,9 @@ Any other Hub error, including `PERMISSION_DENIED` or `SERVICE_DISABLED` for ano
 project, is UNKNOWN.
 
 The Job supplies every deployment-specific value as a pinned environment variable.
-The required scalar variables are `MINTERS_AUDITOR_RENDERS_BUCKET`, `MINTERS_AUDITOR_RENDERS_ADMIN`,
-`MINTERS_AUDITOR_PROJECT`, `MINTERS_AUDITOR_ANALYSIS_SCOPE`,
+The required scalar variables are `MINTERS_AUDITOR_RENDERS_BUCKET`, `MINTERS_AUDITOR_RENDERS_PROJECT`,
+`MINTERS_AUDITOR_RENDERS_ADMIN`, `MINTERS_AUDITOR_PROJECT`, `MINTERS_AUDITOR_ANALYSIS_SCOPE`,
+`MINTERS_AUDITOR_SECRETS_PREFIX`,
 `MINTERS_AUDITOR_NAMESPACE`, `MINTERS_AUDITOR_SERVICE_ACCOUNT`,
 `MINTERS_AUDITOR_GSA`, `MINTERS_AUDITOR_BROKER_ACCOUNT`,
 `MINTERS_AUDITOR_BROKER_WORKLOAD`, `MINTERS_AUDITOR_SQL_INSTANCE`,
@@ -4936,7 +4975,9 @@ For example, a non-production Job uses values shaped like:
 
 ```text
 MINTERS_AUDITOR_RENDERS_BUCKET=gs://example-renders
+MINTERS_AUDITOR_RENDERS_PROJECT=example-root
 MINTERS_AUDITOR_RENDERS_ADMIN=renders-admin@example-project.iam.gserviceaccount.com
+MINTERS_AUDITOR_SECRETS_PREFIX=projects/000000000000/secrets/agent-secrets-
 MINTERS_AUDITOR_PROJECT=example-project
 MINTERS_AUDITOR_OPERATOR_CLUSTER=example-cluster-a
 MINTERS_AUDITOR_OPERATOR_LOCATION=example-region1

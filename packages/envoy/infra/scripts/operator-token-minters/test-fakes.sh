@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016,SC2034,SC2154 # fake_bin is the test's; each single-quoted $name is jq's or a fake's own, not this shell's
-# operator-token-minters/test-fakes.sh: the fake kubectl, gcloud, agent-secrets and curl that
+# operator-token-minters/test-fakes.sh: the fake kubectl, gcloud and curl that
 # operator-token-minters.test.sh puts first on PATH, each answering from the world directory a run
 # names. Sourced by the test, whose header says what each fake models.
 # fake writes the fake command $1 from the body on stdin, after the header every fake shares: the
@@ -47,6 +47,27 @@ case "${words[*]}" in
       { echo "ERROR: (gcloud.projects.describe) NOT_FOUND: Project $other not found or permission denied." >&2; exit 1; }
     jq -n --arg p "$other" --arg n "$(<"$world/numbers/$other")" \
       '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
+    ;;
+  "secrets describe "*)
+    # A broker secret, as Secret Manager holds it: projects/<number>/secrets/agent-secrets-<slug>,
+    # its broker tags as the secret's annotations, an empty tag as none (secrets/<NAME>.json holds
+    # the broker's view of it). Refused and missing secrets answer as gcloud 593.0.0 does (read on
+    # 2026-11-26). admin-outside-annotations puts admin beside the annotations instead, as a field
+    # Secret Manager does not have: the control that the check reads the annotations alone.
+    id="${words[2]}"
+    [ ! -e "$world/refuse-secret-show" ] ||
+      refuse secrets.describe "Permission 'secretmanager.secrets.get' denied for resource '$id' (or it may not exist)."
+    [[ "$id" =~ ^projects/$number/secrets/agent-secrets-([a-z0-9-]+)$ ]] ||
+      { echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [$id] not found." >&2; exit 1; }
+    name="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'a-z-' 'A-Z_')"
+    [ -e "$world/secrets/$name.json" ] ||
+      { echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [$id] not found." >&2; exit 1; }
+    jq --arg id "$id" --arg outside "$([ -e "$world/admin-outside-annotations" ] && echo true || echo false)" '
+      ({owner, tier, type, github_owners, requesters, scopes, admin, max_grant, default_grant}
+       | with_entries(select(.value != null and .value != ""))) as $tags
+      | {name: $id, createTime: .created, etag: "\"example\"", replication: {automatic: {}}}
+      + if $outside == "true" then {annotations: ($tags | del(.admin)), admin: .admin} else {annotations: $tags} end' \
+      "$world/secrets/$name.json"
     ;;
   "projects get-ancestors "*)
     # A project's own ancestors when the world holds them (ancestors/<project>.json), else the
@@ -231,8 +252,9 @@ record_read() {
       emit reviews.sh list rbac.authorization.k8s.io clusterroles
       ;;
     "get namespace "*" -o name") emit step-workload-identity.sh get "" namespaces ;;
+    "get pods --all-namespaces -o json") emit node-escape.sh list "" pods ;;
     "get pods -n "*" -o json") emit broker-fence.sh list "" pods ;;
-    "get service -n "*"-o json") emit admission-backends.sh get "" services ;;
+    "get service -n "*" -o json") emit admission-backends.sh get "" services ;;
     "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
       emit admission-backends.sh list admissionregistration.k8s.io mutatingwebhookconfigurations
       emit admission-backends.sh list admissionregistration.k8s.io validatingwebhookconfigurations
@@ -240,16 +262,26 @@ record_read() {
     "get customresourcedefinitions -o json") emit admission-backends.sh list apiextensions.k8s.io customresourcedefinitions ;;
     "get workloadallowlists.auto.gke.io -o json") emit admission-backends.sh list auto.gke.io workloadallowlists ;;
     "get validatingadmissionpolicies.admissionregistration.k8s.io,validatingadmissionpolicybindings.admissionregistration.k8s.io -o json")
+      # broker-fence.sh's read; param_rights (admission-backends.sh) makes the same call when the
+      # discovery lists these two alone, and the same two list rights serve both.
       emit broker-fence.sh list admissionregistration.k8s.io validatingadmissionpolicies
       emit broker-fence.sh list admissionregistration.k8s.io validatingadmissionpolicybindings
       ;;
+    "get "*"admissionpolicies"*" -o json")
+      local resource
+      for resource in ${args[1]//,/ }; do emit admission-backends.sh list admissionregistration.k8s.io "${resource%%.*}"; done
+      ;;
     "get --raw /metrics") emit reviews.sh get "" "" /metrics ;;
-    "get --raw "*) emit admission-backends.sh get "" "" "${args[2]}" ;;
+    # A discovery document, as a ClusterRole's nonResourceURLs grants it: /api/* or /apis/*.
+    "get --raw /apis/"*) emit admission-backends.sh get "" "" "/apis/*" ;;
+    "get --raw /api/"*) emit admission-backends.sh get "" "" "/api/*" ;;
     "api-resources --namespaced=true --verbs=create -o name" | "api-resources --namespaced=false -o name" | "api-resources --api-group=admissionregistration.k8s.io -o name")
       emit reviews.sh get "" "" /api
       emit reviews.sh get "" "" /apis
       emit reviews.sh get "" "" /apis/*
       ;;
+    # A call this recorder does not map is recorded as one, so no call goes unchecked.
+    *) emit UNMAPPED "${args[*]}" "" "" "" ;;
   esac
 }
 record_read
@@ -481,6 +513,12 @@ case "${args[*]}" in
     { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
       jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
     ;;
+  "get pods --all-namespaces -o json")
+    # Every pod of the cluster: the world's pods.json entries, or none.
+    shaped_answer pods
+    [ ! -e "$dir/refuse-pods" ] || forbidden pods 'list resource "pods" in API group ""' container.pods.list
+    { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
   "get --raw /metrics")
     # The API server's metrics, the seats of global-default among them: 40, as on the operator's
     # real cluster, or the world's global-default-seats. A world marked metrics-refused refuses the
@@ -582,28 +620,6 @@ case "${args[*]}" in
     exit 2
     ;;
 esac
-EOF
-
-# --- Fake agent-secrets: `secret show NAME --json`, as its failures print on stderr: a line naming
-# the sign-in first, then the refusal (read from legion-envoy-v30.43.0 on 2026-11-21, which words a
-# missing secret as gRPC's own `rpc error: code = NotFound` where the current source writes
-# `GetSecret answered NotFound`; old-words picks the first wording). ---
-fake agent-secrets <<'EOF'
-[ "$#" -eq 4 ] && [ "$1 $2 $4" = "secret show --json" ] || { echo "fake agent-secrets: unexpected call: agent-secrets $*" >&2; exit 2; }
-signed_in="agent-secrets secret show: using the active gcloud account (gcloud configuration example): reader@example-project.iam.gserviceaccount.com"
-if [ -e "$world/refuse-secret-show" ]; then
-  printf '%s\n' "$signed_in" "agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012" >&2
-  exit 1
-fi
-if [ ! -e "$world/secrets/$3.json" ]; then
-  if [ -e "$world/old-words" ]; then
-    printf '%s\n' "$signed_in" "agent-secrets secret show: rpc error: code = NotFound desc = Secret [projects/123456789012/secrets/agent-secrets-$3] not found.; looked in GCP Secret Manager project 123456789012" >&2
-  else
-    printf '%s\n' "$signed_in" "agent-secrets secret show: Secret Manager GetSecret answered NotFound (its message is not printed); looked in GCP Secret Manager project 123456789012" >&2
-  fi
-  exit 1
-fi
-cat "$world/secrets/$3.json"
 EOF
 
 # --- Fake curl: the GKE Hub API's GET projects/<p>/locations/-/memberships, as v1 answers it

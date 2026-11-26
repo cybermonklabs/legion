@@ -8,18 +8,19 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS]: on the cluster KUBE names, no guarded
-# pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount
-# outside the cluster's system namespaces, none of Kubernetes' own groups, and no binding subject
-# may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the cluster's
-# discovery, a write of a binding or a role in a namespace that holds a RoleBinding
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS [AUTOPILOT]]: on the cluster KUBE names, no
+# guarded pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no
+# ServiceAccount outside the cluster's system namespaces, none of Kubernetes' own groups, and no
+# binding subject may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the
+# cluster's discovery, a write of a binding or a role in a namespace that holds a RoleBinding
 # (binding_rights), or any of those limited by name (each a finding, its right followed by WHERE);
 # every binding of system:masters but the bootstrap one is a finding, and its other Group subjects
 # are judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
-# settings_verdict. The reviews carry the witness. PASS when it recorded neither a finding nor an
-# UNKNOWN.
+# settings_verdict. AUTOPILOT, the GKE cluster's autopilot_of mode ("" for no GKE cluster), judges
+# its system ServiceAccounts that run on its nodes (node_escape). The reviews carry the witness.
+# PASS when it recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" autopilot="${6:-}" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -87,6 +88,7 @@ read_other_cluster() {
     csr_chains "$where" "$principal"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     remember_cluster "$KUBE" "$cstep" "$where" "$principal"
+    node_escape "$cstep" "$where" "$principal" "$autopilot"
     ! unchanged ||
       pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
   fi
@@ -118,8 +120,9 @@ else
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
+    autopilot_of "$cluster" "$location" "$PROJECT"
     read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
-      "${CLUSTER_SETTINGS["$label"]:-}"
+      "${CLUSTER_SETTINGS["$label"]:-}" "$AUTOPILOT_MODE"
   done 5<"$WORK/clusters.tsv"
 fi
 
@@ -139,8 +142,9 @@ while IFS=$'\t' read -r -u 5 cluster location _; do
     continue
   fi
   member_project_iam "$POOL_PROJECT"
+  autopilot_of "$cluster" "$location" "$POOL_PROJECT"
   read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
-    "${CLUSTER_SETTINGS["$label"]:-}"
+    "${CLUSTER_SETTINGS["$label"]:-}" "$AUTOPILOT_MODE"
 done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
@@ -321,7 +325,8 @@ else
         groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
         # The member's own project's IAM first (its own step), then its cluster.
         [ -z "$member_project" ] || member_project_iam "$member_project"
-        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}"
+        autopilot_of "$gke_cluster" "$gke_location" "$gke_project"
+        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}" "$AUTOPILOT_MODE"
       else
         here=$((here + 1))
         label="$POOL_PROJECT/$location/$id"

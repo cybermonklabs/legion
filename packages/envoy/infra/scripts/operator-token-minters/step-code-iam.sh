@@ -43,6 +43,29 @@ else
   [ -n "$PROJECT_NUMBER" ] || PROJECT_NUMBER_ERROR="gcloud projects describe $PROJECT answered no projectNumber"
 fi
 CHECK_RESOURCE[signing]="$(resource_of signing)"
+# The renders bucket's project number, whose service agents the renders check accepts (checks.sh).
+# A number that cannot be read leaves those agents unknown, so the check is UNKNOWN, not clean.
+if [ -z "${CHECK_MISSING[renders]:-}" ]; then
+  if ! have gcloud ||
+    ! gcloud projects describe "$RENDERS_PROJECT" --format=json --quiet >"$WORK/renders-project.json" 2>"$WORK/renders-project.err" ||
+    ! RENDERS_PROJECT_NUMBER="$(jq -er '.projectNumber | select(type == "string" and test("^[0-9]+$"))' "$WORK/renders-project.json" 2>/dev/null)"; then
+    RENDERS_PROJECT_NUMBER=""
+    CHECK_MISSING[renders]="the number of the renders bucket's project $RENDERS_PROJECT cannot be read (gcloud projects describe needs resourcemanager.projects.get there): $(first_line "$WORK/renders-project.err" 2>/dev/null)"
+  fi
+fi
+# The broker's Workload Identity principal (principals.sh, BROKER_PRINCIPAL), from the pool project's
+# number: --project's when the pool is --project's, else the pool project's own. A number that
+# cannot be read leaves it unaccepted, so a binding to it reads as any other holder's.
+if [ -n "$BROKER_WORKLOAD" ]; then
+  pool_number=""
+  if [ "$POOL_PROJECT" = "$PROJECT" ]; then
+    pool_number="$PROJECT_NUMBER"
+  elif have gcloud && gcloud projects describe "$POOL_PROJECT" --format=json --quiet >"$WORK/pool-project.json" 2>/dev/null; then
+    pool_number="$(jq -r '.projectNumber // ""' "$WORK/pool-project.json" 2>/dev/null || true)"
+  fi
+  [[ ! "$pool_number" =~ ^[0-9]+$ ]] ||
+    BROKER_PRINCIPAL="principal://iam.googleapis.com/projects/$pool_number/locations/global/workloadIdentityPools/$POOL_PROJECT.svc.id.goog/subject/ns/${BROKER_WORKLOAD%%/*}/sa/${BROKER_WORKLOAD#*/}"
+fi
 
 step="code: IAM"
 if [ "${#IAM_PREVIEWS[@]}" -eq 0 ]; then

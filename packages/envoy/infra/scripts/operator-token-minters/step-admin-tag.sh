@@ -3,15 +3,24 @@
 # operator-token-minters/step-admin-tag.sh: the step "admin tag". Sourced by operator-token-minters.sh,
 # whose header says what each step checks.
 # --- admin tag ---
+# The broker keeps a secret's tags as its Secret Manager annotations (cmd/cipher/secret_gcp.go, show:
+# withTags(secret.GetAnnotations()); internal/cipher/policy/policy.go, TagAdmin "admin" and TagTier
+# "tier"), under the secret <secrets_prefix><slug>, the slug being the name lowercased with each
+# underscore a hyphen (policy.NameToSlug). So the step reads them with `gcloud secrets describe`,
+# which needs secretmanager.secrets.get alone and no broker.
 step="admin tag of $SECRET"
-if ! have agent-secrets; then
-  unknown "$step" "agent-secrets is not on PATH"
-elif agent-secrets secret show "$SECRET" --json >"$WORK/secret.json" 2>"$WORK/secret.err"; then
-  if ! jq -e 'type == "object"' "$WORK/secret.json" >/dev/null 2>&1; then
-    unknown "$step" "agent-secrets secret show $SECRET --json printed no JSON object"
+secret_slug="$(printf '%s' "$SECRET" | tr 'A-Z_' 'a-z-')"
+secret_id="$SECRETS_PREFIX$secret_slug"
+if [ -z "$SECRETS_PREFIX" ]; then
+  unknown "$step" "no --secrets-prefix: where the broker keeps $SECRET is not named"
+elif ! have gcloud; then
+  unknown "$step" "gcloud is not on PATH"
+elif gcloud secrets describe "$secret_id" --format=json --quiet >"$WORK/secret.json" 2>"$WORK/secret.err"; then
+  if ! jq -e 'type == "object" and (.annotations // {} | type == "object")' "$WORK/secret.json" >/dev/null 2>&1; then
+    unknown "$step" "gcloud secrets describe $secret_id printed no secret"
   else
-    admin="$(jq -r '.admin // ""' "$WORK/secret.json")"
-    tier="$(jq -r '.tier // ""' "$WORK/secret.json")"
+    admin="$(jq -r '.annotations.admin // ""' "$WORK/secret.json")"
+    tier="$(jq -r '.annotations.tier // ""' "$WORK/secret.json")"
     [ "$admin" = true ] || finding "secret:$SECRET" "admin is \"$admin\", not \"true\": without the administrator tag a model judge may decide its release" \
       admin "secret:$SECRET" "" ""
     [ "$tier" = human ] || finding "secret:$SECRET" "tier is \"$tier\", not \"human\"" tier "secret:$SECRET" "" ""
@@ -19,11 +28,8 @@ elif agent-secrets secret show "$SECRET" --json >"$WORK/secret.json" 2>"$WORK/se
       pass "$step" "admin is \"true\" and tier is \"human\": each release waits on a person's approval"
     fi
   fi
-# A missing secret is a finding, in each wording agent-secrets has had for it: gRPC's own
-# `rpc error: code = NotFound` (legion-envoy-v30.43.0, read on 2026-11-21), the store interceptor's
-# `GetSecret answered NotFound`, and AWS's ResourceNotFoundException from DescribeSecret.
-elif grep -Eq 'code = NotFound|GetSecret answered NotFound|DescribeSecret.*ResourceNotFoundException' "$WORK/secret.err"; then
+elif grep -q 'NOT_FOUND: Secret \[' "$WORK/secret.err"; then
   finding "secret:$SECRET" "no such secret: the operator's credential must be stored at human tier with --admin true" secret "secret:$SECRET" "" ""
 else
-  unknown "$step" "agent-secrets secret show $SECRET --json was refused: $(last_line "$WORK/secret.err")"
+  unknown "$step" "gcloud secrets describe $secret_id was refused (it needs secretmanager.secrets.get on the secret): $(first_line "$WORK/secret.err")"
 fi

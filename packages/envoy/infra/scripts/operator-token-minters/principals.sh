@@ -51,6 +51,11 @@ BROKER_PROJECT="$ACCOUNT_PROJECT"
 WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$NAMESPACE/$KSA]"
 BROKER_WI_MEMBER=""
 [ -z "$BROKER_WORKLOAD" ] || BROKER_WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$BROKER_WORKLOAD]"
+# BROKER_PRINCIPAL: the same ServiceAccount as Workload Identity Federation's principal,
+# principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/
+# <pool>.svc.id.goog/subject/ns/<namespace>/sa/<name>, which a deployment may bind in place of an
+# account; step-code-iam.sh sets it once the pool project's number is read, and "" leaves it unaccepted.
+BROKER_PRINCIPAL=""
 
 # k8s_subject KIND NAMESPACE NAME: sets SUBJECT, the principal's name in a finding, and SUBJECT_OK,
 # whether it is allowed (the header's "Group and User subjects"). Allowed: a person (a User that is

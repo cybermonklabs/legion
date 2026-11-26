@@ -57,6 +57,10 @@
 #        which a copy of the check without the step misses; a named cluster the pool lacks, a refused
 #        or incomplete cluster list and a refused fleet listing read UNKNOWN; a cluster named twice
 #        is a usage error; without the flag the step does not run.
+#   (ne) another cluster of the pool on GKE Standard: a system ServiceAccount with a running pod on
+#        a node, allowed create namespaces, is a finding naming it; the same account on Autopilot,
+#        with no pod, or with a pod bound to no node, is no finding (its controls); a refused
+#        describe, and a refused pods' list there, read UNKNOWN.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -665,4 +669,57 @@ audited_row() {
 if row cw; then
   each audited_row match missing fleet control extra refused incomplete fleet-refused twice absent
   passed "(cw) each GKE cluster of the pool must be an --audited-cluster: one left out is a finding, which a copy without the step misses; a named cluster the pool lacks, and a pool list not read whole, read UNKNOWN"
+fi
+
+# --- (ne) GKE Standard's node escape on another cluster of the pool. ---
+readonly ne_cluster="$project/us-east1/other-cluster"
+node_pod() {
+  jq -n --arg ns "$1" --arg sa "$2" --arg node "$3" --arg phase "$4" \
+    '{metadata: {namespace: $ns, name: "\($sa)-pod"}, spec: ({serviceAccountName: $sa} + (if $node != "" then {nodeName: $node} else {} end)), status: {phase: $phase}}'
+}
+node_escape_row() {
+  base_world
+  add_cluster other-cluster us-east1
+  local pods="$world/clusters/other-cluster/pods.json"
+  local want="FINDING system:serviceaccount:kube-system:namespace-controller: create namespaces cluster-wide on cluster $ne_cluster, and it runs a pod on a node of this GKE Standard cluster"
+  case "$1" in
+    standard)
+      node_pod kube-system namespace-controller node-1 Running | jq -s . >"$pods"
+      run
+      want_status 1 "a system ServiceAccount with a pod on a Standard cluster's node"
+      want_text "$want" "a system ServiceAccount with a pod on a Standard cluster's node"
+      ;;
+    autopilot)
+      node_pod kube-system namespace-controller node-1 Running | jq -s . >"$pods"
+      edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {autopilot: {enabled: true}} else . end)'
+      run
+      ! has_prefix "$want" || fail "an Autopilot cluster's system ServiceAccount was a node escape finding"
+      ;;
+    no-pod)
+      run
+      ! has_prefix "$want" || fail "a system ServiceAccount with no pod was a node escape finding"
+      ;;
+    unscheduled)
+      node_pod kube-system namespace-controller "" Pending | jq -s . >"$pods"
+      run
+      ! has_prefix "$want" || fail "a system ServiceAccount whose pod is on no node was a node escape finding"
+      ;;
+    describe-refused)
+      node_pod kube-system namespace-controller node-1 Running | jq -s . >"$pods"
+      : >"$world/refuse-describe-other-cluster"
+      run
+      want_status 2 "a refused describe"
+      want_text "UNKNOWN live: Workload Identity on $ne_cluster: whether the cluster is GKE Autopilot is unknown" "a refused describe"
+      ;;
+    pods-refused)
+      : >"$world/clusters/other-cluster/refuse-pods"
+      run
+      want_status 2 "a refused pods' list on a Standard cluster"
+      want_text "UNKNOWN live: Workload Identity on $ne_cluster: the cluster is GKE Standard, and the API server refused the pods' list" "a refused pods' list"
+      ;;
+  esac
+}
+if row ne; then
+  each node_escape_row standard autopilot no-pod unscheduled describe-refused pods-refused
+  passed "(ne) on another Standard cluster of the pool, a system ServiceAccount with a running pod on a node and a right over the guarded namespaces is a finding; on Autopilot, with no pod or a pod on no node it is none; a refused describe or pods' list reads UNKNOWN"
 fi

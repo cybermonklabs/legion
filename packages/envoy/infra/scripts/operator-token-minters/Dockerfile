@@ -1,7 +1,8 @@
 # The minter auditor extends the published worker image by digest. That image already carries bash,
-# jq, gcloud, kubectl, curl and agent-secrets; this image installs the GKE exec plugin and adds only
-# the auditor entrypoint and check.
+# jq, gcloud, kubectl, curl and agent-secrets (which the check no longer calls); this image installs
+# the GKE exec plugin and adds only the auditor entrypoint and check.
 FROM ghcr.io/cybermonklabs/legion-worker@sha256:83b5ad7293bff529d3b0a101e8fd0a7556c142f6681572fbe02a4d8db8278faf
+LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 
 USER root
 # The component lands in the SDK's own bin directory, which is not on PATH; kubectl's exec

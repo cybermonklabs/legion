@@ -64,12 +64,21 @@
 #        writer without its condition or with another object's, an expanded group holding a service
 #        account, and a writer the preview declares without its condition are each a finding naming
 #        it; an answer without the applier, an empty answer and a refused one read UNKNOWN, and so do
-#        renders given without --renders-bucket or without --renders-admin; no render, no step.
+#        renders given without --renders-bucket or without --renders-admin; no render, no step. The
+#        renders project's Cloud Run service agent holding roles/run.serviceAgent is accepted, for
+#        this step alone, and printed with its role; the same agent of another project, and an
+#        account of another project named service-<the renders project's number>, are findings (its
+#        controls); so is a holder of storage.managedFolders.setIamPolicy alone; a run without
+#        --renders-project, or whose project number cannot be read, reads UNKNOWN.
 #   (dm) Deployment Manager acts as the project's Google APIs service agent, which holds roles/editor:
 #        an agent's Google service account holding roles/deploymentmanager.editor on the project
 #        exits 1 naming it and the route, and a copy of the check without the step exits 0 in that
 #        world (the step's control); a role list without deploymentmanager.deployments.update reads
 #        UNKNOWN in the permission names, and a refused analysis UNKNOWN in the step.
+#   (wp) the broker's Workload Identity principal (principal://…/subject/ns/<ns>/sa/<name> of
+#        --broker-workload) holding roles/iam.serviceAccountTokenCreator on the operator's account is
+#        accepted, as the deployment binds it; another namespace's principal holding the same role,
+#        and the broker's principal holding another role there, are findings (its controls).
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -541,7 +550,7 @@ render_writer_row() {
       iam "$renders_res" roles/storage.admin "serviceAccount:$applier"
       run
       want_status 1 "another account with roles/storage.admin on the bucket"
-      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update on $renders_res through roles/storage.admin" \
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update, storage.managedFolders.setIamPolicy on $renders_res through roles/storage.admin" \
         "another account with roles/storage.admin on the bucket"
       ;;
     group)
@@ -549,7 +558,7 @@ render_writer_row() {
       iam "$renders_res" roles/storage.admin group:render-admins@example.com
       run
       want_status 1 "a group holding a service account"
-      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update on $renders_res" \
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update, storage.managedFolders.setIamPolicy on $renders_res" \
         "a group holding a service account"
       ;;
     unconditioned)
@@ -620,6 +629,46 @@ render_writer_row() {
       want_status 2 "renders given without --renders-admin"
       want_text "UNKNOWN $renders_step: no --renders-admin" "renders given without --renders-admin"
       ;;
+    cloud-run)
+      iam "$project_res" roles/run.serviceAgent "serviceAccount:service-$number@serverless-robot-prod.iam.gserviceaccount.com"
+      run
+      want_status 0 "the renders project's Cloud Run service agent"
+      want_line "ACCEPTED serviceAccount:service-$number@serverless-robot-prod.iam.gserviceaccount.com: roles/run.serviceAgent, granted at $project_res, a Google service agent of the renders bucket's project $project (number $number), accepted by $renders_step alone" \
+        "the renders project's Cloud Run service agent"
+      ;;
+    other-agent)
+      iam "$project_res" roles/run.serviceAgent "serviceAccount:service-999999999999@serverless-robot-prod.iam.gserviceaccount.com"
+      run
+      want_status 1 "another project's Cloud Run service agent"
+      want_text "FINDING serviceAccount:service-999999999999@serverless-robot-prod.iam.gserviceaccount.com: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.update on $renders_res" \
+        "another project's Cloud Run service agent"
+      ;;
+    lookalike)
+      iam "$project_res" roles/run.serviceAgent "serviceAccount:service-$number@example-other.iam.gserviceaccount.com"
+      run
+      want_status 1 "an account named service-<number> in another project"
+      want_text "FINDING serviceAccount:service-$number@example-other.iam.gserviceaccount.com: " "an account named service-<number> in another project"
+      ;;
+    managed-folder)
+      iam "$renders_res" roles/example.folderAdmin "serviceAccount:$applier"
+      run
+      want_status 1 "a holder of storage.managedFolders.setIamPolicy alone"
+      want_text "FINDING serviceAccount:$applier: storage.managedFolders.setIamPolicy on $renders_res through roles/example.folderAdmin" \
+        "a holder of storage.managedFolders.setIamPolicy alone"
+      ;;
+    no-project)
+      local args
+      mapfile -t args < <(args_without --renders-project)
+      run_only "${args[@]}"
+      want_status 2 "renders given without --renders-project"
+      want_text "UNKNOWN $renders_step: no --renders-project" "renders given without --renders-project"
+      ;;
+    project-unread)
+      run --renders-project example-unread
+      want_status 2 "a renders project whose number cannot be read"
+      want_text "UNKNOWN $renders_step: the number of the renders bucket's project example-unread cannot be read" \
+        "a renders project whose number cannot be read"
+      ;;
     no-renders)
       local args
       mapfile -t args < <(args_without --rbac-render --secret-render --iam-preview)
@@ -629,6 +678,39 @@ render_writer_row() {
   esac
 }
 if row rw; then
-  each render_writer_row clean stranger group unconditioned other-object single-quoted code no-witness empty refused no-bucket no-admin no-renders
-  passed "(rw) the renders bucket's writers are people, the applier and the four conditioned writers; any other holder, a writer off its condition and a declared stranger are findings; no applier, an empty or refused answer and a missing flag read UNKNOWN"
+  each render_writer_row clean stranger group unconditioned other-object single-quoted code no-witness empty refused no-bucket no-admin no-renders \
+    cloud-run other-agent lookalike managed-folder no-project project-unread
+  passed "(rw) the renders bucket's writers are people, the applier, the four conditioned writers and the bucket project's own service agents; any other holder, a writer off its condition, a declared stranger, another project's agent and a managed folder's policy writer are findings; no applier, an empty or refused answer and a missing flag or project number read UNKNOWN"
+fi
+
+# --- (wp) The broker's Workload Identity principal on the operator's account. ---
+broker_principal_of() {
+  printf 'principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s.svc.id.goog/subject/ns/%s/sa/%s' \
+    "$number" "$project" "$1" "$2"
+}
+broker_principal_row() {
+  base_world
+  case "$1" in
+    broker)
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$(broker_principal_of secrets-broker secrets-broker)"
+      run
+      want_status 0 "the broker's principal minting the operator's token"
+      ;;
+    other-namespace)
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$(broker_principal_of legion worker)"
+      run
+      want_status 1 "another namespace's principal minting the operator's token"
+      want_text "FINDING $(broker_principal_of legion worker): " "another namespace's principal minting the operator's token"
+      ;;
+    other-role)
+      iam "$gsa_res" roles/iam.serviceAccountKeyAdmin "$(broker_principal_of secrets-broker secrets-broker)"
+      run
+      want_status 1 "the broker's principal holding another role on the operator's account"
+      want_text "FINDING $(broker_principal_of secrets-broker secrets-broker): " "the broker's principal holding another role on the operator's account"
+      ;;
+  esac
+}
+if row wp; then
+  each broker_principal_row broker other-namespace other-role
+  passed "(wp) the broker's Workload Identity principal minting the operator's token is accepted; another namespace's principal, and the broker's holding another role, are findings"
 fi

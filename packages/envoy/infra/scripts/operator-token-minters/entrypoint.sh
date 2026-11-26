@@ -12,7 +12,8 @@ unknown() { printf 'UNKNOWN entrypoint: %s\n' "$*" >&2; exit 2; }
 command -v jq >/dev/null || unknown "jq is not on PATH"
 
 scalars=(
-  MINTERS_AUDITOR_RENDERS_BUCKET MINTERS_AUDITOR_RENDERS_ADMIN MINTERS_AUDITOR_PROJECT MINTERS_AUDITOR_ANALYSIS_SCOPE
+  MINTERS_AUDITOR_RENDERS_BUCKET MINTERS_AUDITOR_RENDERS_PROJECT MINTERS_AUDITOR_RENDERS_ADMIN MINTERS_AUDITOR_PROJECT
+  MINTERS_AUDITOR_ANALYSIS_SCOPE MINTERS_AUDITOR_SECRETS_PREFIX
   MINTERS_AUDITOR_NAMESPACE MINTERS_AUDITOR_SERVICE_ACCOUNT MINTERS_AUDITOR_GSA
   MINTERS_AUDITOR_BROKER_ACCOUNT MINTERS_AUDITOR_BROKER_WORKLOAD MINTERS_AUDITOR_SQL_INSTANCE
   MINTERS_AUDITOR_DB_SECRET MINTERS_AUDITOR_BROKER_STATE MINTERS_AUDITOR_SIGNING_SECRET
@@ -48,7 +49,7 @@ jq -e 'length > 0' <<<"$MINTERS_AUDITOR_AGENT_NAMESPACES" >/dev/null || unknown 
 jq -e 'length == 4' <<<"$MINTERS_AUDITOR_RENDER_WRITERS" >/dev/null || unknown "MINTERS_AUDITOR_RENDER_WRITERS must name four writers"
 bucket="${MINTERS_AUDITOR_RENDERS_BUCKET%/}"
 case "$bucket" in gs://*) ;; *) unknown "MINTERS_AUDITOR_RENDERS_BUCKET is not a gs:// URL" ;; esac
-for tool in gcloud kubectl curl agent-secrets gke-gcloud-auth-plugin; do
+for tool in gcloud kubectl curl gke-gcloud-auth-plugin; do
   command -v "$tool" >/dev/null || unknown "$tool is not on PATH"
 done
 
@@ -90,8 +91,10 @@ args=(
   --pool-project "$MINTERS_AUDITOR_POOL_PROJECT" --namespace "$MINTERS_AUDITOR_NAMESPACE" --service-account "$MINTERS_AUDITOR_SERVICE_ACCOUNT"
   --gsa "$MINTERS_AUDITOR_GSA" --broker-account "$MINTERS_AUDITOR_BROKER_ACCOUNT" --broker-workload "$MINTERS_AUDITOR_BROKER_WORKLOAD"
   --sql-instance "$MINTERS_AUDITOR_SQL_INSTANCE" --db-secret "$MINTERS_AUDITOR_DB_SECRET" --broker-state "$MINTERS_AUDITOR_BROKER_STATE"
-  --signing-secret "$MINTERS_AUDITOR_SIGNING_SECRET" --secret "$MINTERS_AUDITOR_SECRET" --analysis-scope "$MINTERS_AUDITOR_ANALYSIS_SCOPE"
-  --fleet "$MINTERS_AUDITOR_FLEET" --renders-bucket "$bucket" --renders-admin "$MINTERS_AUDITOR_RENDERS_ADMIN"
+  --signing-secret "$MINTERS_AUDITOR_SIGNING_SECRET" --secret "$MINTERS_AUDITOR_SECRET" --secrets-prefix "$MINTERS_AUDITOR_SECRETS_PREFIX"
+  --analysis-scope "$MINTERS_AUDITOR_ANALYSIS_SCOPE"
+  --fleet "$MINTERS_AUDITOR_FLEET" --renders-bucket "$bucket" --renders-project "$MINTERS_AUDITOR_RENDERS_PROJECT"
+  --renders-admin "$MINTERS_AUDITOR_RENDERS_ADMIN"
   --rbac-render "$work/rbac-cluster-grants.json"
   --secret-render "$work/secrets-dispatch.json" --secret-render "$work/secrets-broker.json"
   --iam-preview "$work/iam-bootstrap.json" --iam-preview "$work/iam-root.json" --report "$work/report.json"

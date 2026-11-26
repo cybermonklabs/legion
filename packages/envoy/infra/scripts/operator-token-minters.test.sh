@@ -25,8 +25,8 @@
 #   - curl answers the GKE Hub API's list of the fleet's memberships, one membership a page, the
 #     locations it could not reach on the first page, so a reader that stops at one page, or reads
 #     `unreachable` from another, misses what the world holds;
-#   - agent-secrets shows a secret's tags as `secret show NAME --json` prints them, or answers as
-#     Secret Manager's NotFound and PermissionDenied are printed.
+#   - gcloud's `secrets describe` answers a broker secret with its tags as its annotations, or as
+#     Secret Manager's NOT_FOUND and PERMISSION_DENIED are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
 # the run to its exit and to the line naming what it planted. The rows are in eight files of
@@ -409,11 +409,15 @@ build_world() {
   role roles/secretmanager.admin secretmanager.secrets.get secretmanager.secrets.getIamPolicy secretmanager.secrets.setIamPolicy \
     secretmanager.versions.access
   role roles/iam.roleAdmin iam.roles.create iam.roles.get iam.roles.list iam.roles.update
-  # Its storage names read with `gcloud iam roles describe roles/storage.admin` on 2026-11-26, cut to
-  # the names the renders step asks and a few beside them.
+  # Its storage names, and roles/run.serviceAgent's, read with `gcloud iam roles describe` on
+  # 2026-11-26, cut to the names the renders step asks and a few beside them.
   role roles/storage.admin storage.buckets.get storage.buckets.getIamPolicy storage.buckets.setIamPolicy storage.buckets.update \
-    storage.objects.create storage.objects.delete storage.objects.get storage.objects.list storage.objects.update
+    storage.managedFolders.setIamPolicy storage.objects.create storage.objects.delete storage.objects.get storage.objects.list \
+    storage.objects.update
+  role roles/run.serviceAgent run.services.get storage.buckets.update storage.objects.create storage.objects.delete \
+    storage.objects.update
   role roles/example.renderWrite storage.objects.create storage.objects.delete
+  role roles/example.folderAdmin storage.managedFolders.get storage.managedFolders.setIamPolicy
 
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
@@ -497,9 +501,9 @@ full_args() {
     --agent-namespace legion --agent-namespace agent-sessions --agent-namespace 'legion-*-sessions' \
     --broker-account "$broker" --broker-workload secrets-broker/secrets-broker \
     --sql-instance example-instance --db-secret example-db/broker-db-login --broker-state gs://example-state/broker \
-    --signing-secret hold-signing-example \
+    --signing-secret hold-signing-example --secrets-prefix "projects/$number/secrets/agent-secrets-" \
     --rbac-render "$world/render.json" --secret-render "$world/secret-render.json" --iam-preview "$world/preview.json" \
-    --renders-bucket "gs://$renders_bucket" --renders-admin "$renders_admin"
+    --renders-bucket "gs://$renders_bucket" --renders-project "$project" --renders-admin "$renders_admin"
   local writer
   for writer in "${render_writers[@]}"; do printf '%s\n' --render-writer "$writer"; done
 }
@@ -536,7 +540,9 @@ verify_kubectl_reads() {
     return 1
   }
   while IFS='|' read -r step verb group resource url; do
-    if [ -n "$url" ]; then
+    if [ "$step" = UNMAPPED ]; then
+      failure+="FAIL: the fake kubectl made a call its recorder maps to no verb and resource, so reads.json is not checked for it: kubectl $verb"$'\n'
+    elif [ -n "$url" ]; then
       jq -e --arg step "$step" --arg verb "$verb" --arg url "$url" \
         'any(.[]; .step == $step and .verb == $verb and .nonResourceURL == $url)' "$manifest" >/dev/null ||
         failure+="FAIL: recorded kubectl $verb $url is absent from reads.json for $step"$'\n'

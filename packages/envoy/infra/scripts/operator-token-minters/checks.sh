@@ -72,10 +72,14 @@ CHECK_PERMS[fleet]="${FLEET_PERMISSIONS[*]}"
 [ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || CHECK_PERMS[fleet]+=" resourcemanager.projects.setIamPolicy"
 # Who could have written the renders the code steps read: a holder of a permission that writes an
 # object, rewrites its metadata, or changes the bucket's policy or access model (uniform access off
-# lets an ACL grant a write Policy Analyzer does not list). --renders-admin holds them all by design
-# and is the witness; each --render-writer is allowed only under its own object's condition.
-RENDERS_BUCKET_NAME="${RENDERS_BUCKET#gs://}"
-declare -A RENDER_OBJECT=()
+# lets an ACL grant a write Policy Analyzer does not list), or a managed folder's policy.
+# --renders-admin holds them all by design and is the witness; each --render-writer is allowed only
+# under its own object's condition; and the Google service agents of --renders-project, which act
+# for their product in that project alone (its Cloud Run agent holds roles/run.serviceAgent there,
+# which carries four of the permissions), are allowed for this check alone, each printed with its
+# role. RENDERS_PROJECT_NUMBER is read by step-code-iam.sh, from the project, never written here.
+RENDERS_BUCKET_NAME="${RENDERS_BUCKET#gs://}" RENDERS_PROJECT_NUMBER=""
+declare -A RENDER_OBJECT=() RENDERS_AGENT_PRINTED=()
 for writer in ${RENDER_WRITERS[@]+"${RENDER_WRITERS[@]}"}; do RENDER_OBJECT["serviceAccount:${writer%%=*}"]="${writer#*=}"; done
 CHECK_STEP[renders]="live: render writers of ${RENDERS_BUCKET:-the renders bucket}"
 CHECK_RESOURCE[renders]="//storage.googleapis.com/projects/_/buckets/$RENDERS_BUCKET_NAME"
@@ -87,6 +91,8 @@ elif [ -z "$RENDERS_ADMIN" ]; then
   CHECK_MISSING[renders]="no --renders-admin: the bucket's applier, which the analysis must list, is not named"
 elif [ "${#RENDER_WRITERS[@]}" -eq 0 ]; then
   CHECK_MISSING[renders]="no --render-writer: the renders' writers are not named"
+elif [ -z "$RENDERS_PROJECT" ]; then
+  CHECK_MISSING[renders]="no --renders-project: the bucket's project, whose own service agents hold its permissions, is not named"
 fi
 if [ -z "$PROJECT" ]; then
   for check in "${CHECKS[@]}"; do CHECK_MISSING[$check]="no --project: the project that runs the operator's cluster is not named"; done
@@ -115,8 +121,12 @@ iam_verdict() {
   case "$check" in
     gsa)
       if [ "$member" = "$WI_MEMBER" ]; then VERDICT=ok; return; fi
-      if [ -n "$BROKER" ] && [ "$member" = "serviceAccount:$BROKER" ] && [ "$role" = roles/iam.serviceAccountTokenCreator ] &&
-        [[ "$attached" == */serviceAccounts/"$GSA" ]]; then
+      # The broker's minting grant: to its account, or, until the broker runs as that account, to
+      # its Workload Identity principal (BROKER_PRINCIPAL, from --broker-workload), each as
+      # roles/iam.serviceAccountTokenCreator on the operator's account alone.
+      if [ "$role" = roles/iam.serviceAccountTokenCreator ] && [[ "$attached" == */serviceAccounts/"$GSA" ]] &&
+        { { [ -n "$BROKER" ] && [ "$member" = "serviceAccount:$BROKER" ]; } ||
+          { [ -n "$BROKER_PRINCIPAL" ] && [ "$member" = "$BROKER_PRINCIPAL" ]; }; }; then
         VERDICT=ok
       fi
       ;;
@@ -126,6 +136,13 @@ iam_verdict() {
     renders)
       if [ "$member" = "serviceAccount:$RENDERS_ADMIN" ]; then
         VERDICT=ok
+      elif [ -n "$RENDERS_PROJECT_NUMBER" ] &&
+        [[ "$member" =~ ^serviceAccount:service-$RENDERS_PROJECT_NUMBER@(gcp-sa-[a-z0-9-]+|serverless-robot-prod|compute-system|container-engine-robot|dataflow-service-producer-prod)\.iam\.gserviceaccount\.com$ ]]; then
+        VERDICT=ok
+        if [ -z "${RENDERS_AGENT_PRINTED["$member $role $attached"]:-}" ]; then
+          RENDERS_AGENT_PRINTED["$member $role $attached"]=1
+          echo "ACCEPTED $member: $role, granted at $attached, a Google service agent of the renders bucket's project $RENDERS_PROJECT (number $RENDERS_PROJECT_NUMBER), accepted by ${CHECK_STEP[renders]} alone"
+        fi
       elif [ -n "${RENDER_OBJECT[$member]:-}" ]; then
         object="projects/_/buckets/$RENDERS_BUCKET_NAME/objects/${RENDER_OBJECT[$member]}"
         if [ "$condition" = "resource.name == \"$object\"" ] || [ "$condition" = "resource.name == '$object'" ]; then

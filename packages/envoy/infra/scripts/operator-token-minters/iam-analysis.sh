@@ -52,7 +52,8 @@ fi
 #
 # The designed links are a Workload Identity member acting as the account it is bound to (the
 # operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
-# token: its outermost principal is the account it acts as, already judged, so it is no finding.
+# token, as its account or as its Workload Identity principal (BROKER_PRINCIPAL): its outermost
+# principal is the account it acts as, already judged, so it is no finding.
 analyze() {
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
@@ -61,7 +62,8 @@ analyze() {
     ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $4): $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" -L "$LIB" -f "$LIB/analysis.jq" \
+  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" --arg bp "$BROKER_PRINCIPAL" \
+    -L "$LIB" -f "$LIB/analysis.jq" \
     "$WORK/analysis.json" >"$WORK/analysis.rec" 2>"$WORK/analysis.err"; then
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"
     return 1
