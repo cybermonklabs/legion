@@ -15,4 +15,4 @@ GATE = gate("contracts", "contracts", reads=reads(
     (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "`packages/contracts/scripts/gen-go.test.ts#makes --check fail, naming it`, `packages/contracts/scripts/gen-go.test.ts#generated` and `packages/contracts/scripts/gen-go.test.ts#blockSchemaOutput`: each hand-edit row reads every file of generated (this one as blockSchemaOutput), and gen-go.ts's outputs list holds it (the block schema's shape, generated from schemas/block-schema.schema.json)"),
     (f"{ENVOY}/internal/contracts/dispatch_frame_generated.go", "`packages/contracts/scripts/gen-go.test.ts#makes --check fail, naming it`, `packages/contracts/scripts/gen-go.test.ts#generated` and `packages/contracts/scripts/gen-go.test.ts#dispatchFrameOutputs`: each hand-edit row reads every file of generated (this one in dispatchFrameOutputs), and gen-go.ts's outputs list holds it (the Dispatch frame schema DispatchPayloadIsEvent checks, rendered by gen-go-dispatch-frame.ts)"),
     (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
-) + bun_job("contracts"))
+) + install_jj("contracts") + bun_job("contracts"))
