@@ -30,6 +30,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
   `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`.
   Under `runtime: kubernetes` it runs in a pod slot named for it, and where the pod has none, step 3 waits for the pod's update round or release.
+  The issue's one pod holds about one slot per step with no key of each role in its tasks that are not stopped, and one per key, and every slot shares the pod's reservation (2 CPU and 8Gi at the defaults).
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
 
 ## The roles and their order
@@ -64,7 +65,6 @@ A step of a role of this deployment runs and holds the checks only as its prompt
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.
-Among them, a role of this deployment of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 A step that names a role neither Legion nor this deployment defines is refused `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`, and no release takes it.
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
