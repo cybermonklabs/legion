@@ -272,6 +272,8 @@ const dashboardRepliesQuery = (key: string) =>
     queryFn: () => api.listMyReplies({ issue: key, state: "unread" }),
   });
 
+export { dashboardRepliesQuery, isDaemon };
+
 /** What waits on the reader, as `useWaitingItems` answers it. */
 export interface WaitingView {
   /** R4's items over the reads that have answered, newest first. */

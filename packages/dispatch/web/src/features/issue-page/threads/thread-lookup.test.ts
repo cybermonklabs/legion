@@ -1,0 +1,282 @@
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type RenderHookResult, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+
+import { jump, realClock, tick } from "../../../__tests__/fake-clock";
+import { ApiError, api, NetworkError } from "../../../api/client";
+import { routeUrl } from "../../../api/paths";
+import { queryRetry, queryRetryDelay } from "../../../api/query-client";
+import type { AskRead, CommentRead, MessageRead } from "../../../api/types";
+import askBody from "./fixtures/ask.json";
+import ask404Body from "./fixtures/ask-404.json";
+import comment404Body from "./fixtures/comment-404.json";
+import commentHeadBody from "./fixtures/comment-head.json";
+import commentQuoteReplyBody from "./fixtures/comment-quote-reply.json";
+import commentReplyToBody from "./fixtures/comment-reply-to.json";
+import message404Body from "./fixtures/message-404.json";
+import messageRootBody from "./fixtures/message-root.json";
+import { type ThreadLookup, useThreadLookup } from "./thread-lookup";
+
+// The answers the server gave at the stack base (fixtures/README.md), and the ids it read them
+// by.
+const KEY = "PDFD720CB-1";
+const SECOND_KEY = "PDFD720CB-2";
+const ASK = askBody as unknown as AskRead;
+const HEAD = commentHeadBody as unknown as CommentRead;
+const QUOTE_REPLY = commentQuoteReplyBody as unknown as CommentRead;
+const REPLY_TO = commentReplyToBody as unknown as CommentRead;
+const ROOT = messageRootBody as unknown as MessageRead;
+const ASK_ID = ASK.ask.id;
+const HEAD_ID = HEAD.comment.id;
+const QUOTE_REPLY_ID = QUOTE_REPLY.comment.id;
+const REPLY_TO_ID = QUOTE_REPLY.comment.reply_to ?? "";
+const ROOT_ID = ROOT.message.id;
+
+const ASK_404 = () => new ApiError(404, ask404Body);
+const COMMENT_404 = () => new ApiError(404, comment404Body);
+const MESSAGE_404 = () => new ApiError(404, message404Body);
+
+type Route = "ask" | "comment" | "message";
+
+/** The three routes' reads, each answered when the row says, and the ids each was asked. */
+interface Routes {
+  readonly asked: Readonly<Record<Route, string[]>>;
+  /** Has `route` answer with `body`, or refuse with `error`, then lets the page take it. */
+  readonly answer: (route: Route, outcome: { body?: unknown; error?: unknown }) => Promise<void>;
+  /** Holds `route`'s next read until the row answers it again. */
+  readonly again: (route: Route) => void;
+  readonly restore: () => void;
+}
+
+/** One route's read, held until the row answers it. */
+interface Held {
+  readonly promise: Promise<unknown>;
+  readonly resolve: (body: unknown) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+function routes(): Routes {
+  const held: Record<Route, Held> = {
+    ask: Promise.withResolvers(),
+    comment: Promise.withResolvers(),
+    message: Promise.withResolvers(),
+  };
+  const asked: Record<Route, string[]> = { ask: [], comment: [], message: [] };
+  const getAsk = spyOn(api, "getAsk").mockImplementation(((id: string) => {
+    asked.ask.push(id);
+    return held.ask.promise;
+  }) as unknown as typeof api.getAsk);
+  const getComment = spyOn(api, "getComment").mockImplementation(((id: string) => {
+    asked.comment.push(id);
+    return id === REPLY_TO_ID ? Promise.resolve(REPLY_TO) : held.comment.promise;
+  }) as unknown as typeof api.getComment);
+  const getMessageThread = spyOn(api, "getMessageThread").mockImplementation(((id: string) => {
+    asked.message.push(id);
+    return held.message.promise;
+  }) as unknown as typeof api.getMessageThread);
+  return {
+    again: (route) => {
+      held[route] = Promise.withResolvers();
+    },
+    answer: async (route, outcome) => {
+      if (outcome.error === undefined) held[route].resolve(outcome.body);
+      else held[route].reject(outcome.error);
+      await jump(0);
+    },
+    asked,
+    restore: () => {
+      getAsk.mockRestore();
+      getComment.mockRestore();
+      getMessageThread.mockRestore();
+    },
+  };
+}
+
+/** The lookup of `id` on `key`, over a query client with the app's own retry rules. */
+function lookUp(key: string, id: string, held = false): RenderHookResult<ThreadLookup, unknown> {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+  });
+  return renderHook(() => useThreadLookup(key, id, held), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children),
+  });
+}
+
+function recordOf(lookup: ThreadLookup): string | undefined {
+  return lookup.kind === "found" ? lookup.record.id : undefined;
+}
+
+let reads: Routes | undefined;
+let view: RenderHookResult<ThreadLookup, unknown> | undefined;
+
+afterEach(() => {
+  view?.unmount();
+  view = undefined;
+  reads?.restore();
+  reads = undefined;
+  realClock();
+});
+
+test("an id that is not a uuid is refused before any read", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, "not-a-record");
+  await jump(0);
+  expect(view.result.current.kind).toBe("missing");
+  expect(reads.asked).toEqual({ ask: [], comment: [], message: [] });
+});
+
+test("an id that a page the view holds has is read by no lookup", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID, true);
+  await jump(0);
+  expect(view.result.current.kind).toBe("held");
+  expect(reads.asked).toEqual({ ask: [], comment: [], message: [] });
+});
+
+describe("one route answers with a record of this issue and the other two answer 404", () => {
+  const answers: Record<Route, { id: string; body: unknown }> = {
+    ask: { body: ASK, id: ASK_ID },
+    comment: { body: HEAD, id: HEAD_ID },
+    message: { body: ROOT, id: ROOT_ID },
+  };
+  const refusals: Record<Route, () => ApiError> = {
+    ask: ASK_404,
+    comment: COMMENT_404,
+    message: MESSAGE_404,
+  };
+  const cases = (["ask", "comment", "message"] as const).flatMap((route) =>
+    [0, 1, 2].map((at): [string, Route, number] => [
+      `the ${route} route answers ${["first", "second", "last"][at]}`,
+      route,
+      at,
+    ])
+  );
+  test.each(cases)("%s", async (_, route, at) => {
+    jest.useFakeTimers();
+    reads = routes();
+    const { id, body } = answers[route];
+    view = lookUp(KEY, id);
+    await jump(0);
+    // Each route is read once, all three at once, before any answers.
+    expect(reads.asked).toEqual({ ask: [id], comment: [id], message: [id] });
+    const others = (["ask", "comment", "message"] as const).filter((one) => one !== route);
+    const order = [...others];
+    order.splice(at, 0, route);
+    // The lookup draws the record once its route answers, whatever is still out, and until then
+    // it is reading, the 404s that came before it included.
+    for (const [step, next] of order.entries()) {
+      expect(recordOf(view.result.current)).toBe(step > at ? id : undefined);
+      if (step <= at) expect(view.result.current.kind).toBe("reading");
+      await reads.answer(next, next === route ? { body } : { error: refusals[next]() });
+    }
+    expect(recordOf(view.result.current)).toBe(id);
+    await tick(5_000);
+    expect(reads.asked).toEqual({ ask: [id], comment: [id], message: [id] });
+  });
+});
+
+test("a comment reply with a quote is read once more by its reply_to, whose thread gives its record", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, QUOTE_REPLY_ID);
+  await jump(0);
+  await reads.answer("ask", { error: ASK_404() });
+  await reads.answer("message", { error: MESSAGE_404() });
+  await reads.answer("comment", { body: QUOTE_REPLY });
+  await jump(0);
+  const lookup = view.result.current;
+  expect(recordOf(lookup)).toBe(QUOTE_REPLY_ID);
+  expect(
+    lookup.kind === "found" ? lookup.record.replies.map((reply) => reply.id.slice(0, 8)) : []
+  ).toEqual(["fa70efe5"]);
+  expect(reads.asked.comment).toEqual([QUOTE_REPLY_ID, REPLY_TO_ID]);
+});
+
+test("a record whose issue_key is another issue's is no record of this page", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(SECOND_KEY, ASK_ID);
+  await jump(0);
+  await reads.answer("ask", { body: ASK });
+  await reads.answer("comment", { error: COMMENT_404() });
+  expect(view.result.current.kind).toBe("reading");
+  await reads.answer("message", { error: MESSAGE_404() });
+  expect(view.result.current.kind).toBe("missing");
+});
+
+test("three 404s draw the line for an address that names no record, and no route is read again", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await reads.answer("ask", { error: ASK_404() });
+  await reads.answer("comment", { error: COMMENT_404() });
+  await reads.answer("message", { error: MESSAGE_404() });
+  expect(view.result.current.kind).toBe("missing");
+  await tick(5_000);
+  expect(reads.asked).toEqual({ ask: [ASK_ID], comment: [ASK_ID], message: [ASK_ID] });
+});
+
+test("a 403 is not read again either", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  // The message route's refusal is its 404's body under the status 403.
+  await reads.answer("message", { error: new ApiError(403, message404Body) });
+  await reads.answer("ask", { error: ASK_404() });
+  await reads.answer("comment", { error: COMMENT_404() });
+  expect(view.result.current.kind).toBe("missing");
+  await tick(5_000);
+  expect(reads.asked.message).toEqual([ASK_ID]);
+});
+
+test("a route that fails with a 5xx draws the failed read with Retry, and Retry reads that route alone", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await reads.answer("comment", { error: COMMENT_404() });
+  await reads.answer("message", { error: MESSAGE_404() });
+  // The ask route's refusal is its 404's body under the status 503, which the app asks again
+  // twice before the read stands failed.
+  await reads.answer("ask", { error: new ApiError(503, ask404Body) });
+  await tick(2_000);
+  const failed = view.result.current;
+  expect(failed.kind).toBe("failed");
+  expect(reads.asked).toEqual({
+    ask: [ASK_ID, ASK_ID, ASK_ID],
+    comment: [ASK_ID],
+    message: [ASK_ID],
+  });
+  reads.again("ask");
+  await act(async () => {
+    if (failed.kind === "failed") failed.retry();
+  });
+  await jump(0);
+  await reads.answer("ask", { body: ASK });
+  expect(recordOf(view.result.current)).toBe(ASK_ID);
+  expect(reads.asked.comment).toEqual([ASK_ID]);
+  expect(reads.asked.message).toEqual([ASK_ID]);
+});
+
+test("a route that loses its connection draws the failed read with Retry", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await reads.answer("ask", { error: ASK_404() });
+  await reads.answer("comment", { error: COMMENT_404() });
+  await reads.answer("message", {
+    error: new NetworkError(
+      routeUrl("/api/v1/messages/{id}", { id: ASK_ID }),
+      new TypeError("lost")
+    ),
+  });
+  await tick(2_000);
+  expect(view.result.current.kind).toBe("failed");
+});

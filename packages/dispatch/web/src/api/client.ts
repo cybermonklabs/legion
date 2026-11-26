@@ -1669,6 +1669,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/messages/{id}", { id, key });
   }
 
+  /** `GET /api/v1/messages/{id}`: the whole conversation a message belongs to, read by any
+   *  message id in it, its root with every reply. Threads reads it for a record that no page it
+   *  holds has (dispatch://INFRA-5704/spec#b-r-addresses); nothing on today's page calls it. */
+  getMessageThread(id: string) {
+    return this.read("/api/v1/messages/{id}", { id });
+  }
+
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
   async listIssueMessages(key: string): Promise<MessageRead[]> {
