@@ -1862,11 +1862,14 @@ for (const refusal of [
     browser,
   }) => {
     const core = rowKey("CORE");
-    await createProject({ key: core, name: "Core" });
-    const issue = await createIssue({ project: core, title: "Deal with it later" });
+    // The reader is a person of the row's own (`rowPerson`), whose Inbox holds this row's
+    // question and nothing another row asked.
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Deal with it later" }, { login: me });
     const ask = await createAsk(issue.key, { question: "Which approach?" }, session);
 
-    const alice = await asUser(browser, "alice");
+    const alice = await asUser(browser, me);
     try {
       const page = await alice.newPage();
       const viewport = page.viewportSize()?.width ?? 0;
