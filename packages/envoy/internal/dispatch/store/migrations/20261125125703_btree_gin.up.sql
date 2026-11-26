@@ -3,10 +3,16 @@
 -- Creates the extension btree_gin, which gives GIN the operator classes of the btree types, such
 -- as timestamptz. A later migration builds a GIN index that holds a btree column beside an array,
 -- and GIN cannot index that column without these operator classes. The statement runs in the
--- runner's transaction, as 0072_embeddings_core.up.sql creates vector. Postgres marks btree_gin
--- trusted, so a login with CREATE on the database can create it, and the login that runs the
--- migrations needs no superuser. `if not exists` leaves an extension that was created by hand
--- before this migration ran as it is, at its version.
+-- runner's transaction, as 0072_embeddings_core.up.sql creates vector. `if not exists` leaves an
+-- extension that was created by hand before this migration ran as it is, at its version.
+--
+-- Who can create it depends on the server. On Cloud SQL, only a member of the role
+-- cloudsqlsuperuser can create an extension, trusted or not
+-- (https://cloud.google.com/sql/docs/postgres/extensions), so a grant of CREATE on the database
+-- is not enough there. The login dispatch is a member: infra/gcp/dispatch_cloud.go makes it with
+-- sql.NewUser and no database roles, and Cloud SQL puts such a login in cloudsqlsuperuser
+-- (https://cloud.google.com/sql/docs/postgres/users). On plain Postgres, such as the dev and test
+-- servers, Postgres marks btree_gin trusted, so a login with CREATE on the database can create it.
 --
 -- The migration holds this one statement and ships in a release before the index: a pending
 -- migration that creates an extension takes the census's size exemptions from every pending
