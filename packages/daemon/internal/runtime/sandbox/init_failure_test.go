@@ -17,9 +17,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// A pod whose workspace-init ended non-zero is Gone for every role, and says so: no launcher could
-// have started in it. The mapping classifies it a failed init, whatever the exit code, which is
-// what keeps it out of ends() and so out of the displaced reading.
+// A pod whose workspace-init ended non-zero past its restart grace (initRestartGrace) is Gone for
+// every role, and says so: no launcher could have started in it. The mapping classifies it a failed
+// init, whatever the exit code, which is what keeps it out of ends() and so out of the displaced
+// reading. An end inside the grace is the pod still provisioning
+// (TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure).
 func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 	t.Parallel()
 	for _, waiting := range []bool{false, true} {
@@ -29,7 +31,7 @@ func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 			g.update(g.pod(loc.Sandbox.Name), func(p *corev1.Pod) {
 				p.Status.Phase = corev1.PodPending
 				failed := &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}
-				status := corev1.ContainerStatus{Name: initContainer}
+				status := corev1.ContainerStatus{Name: initContainer, RestartCount: initRestartGrace + 1}
 				if waiting {
 					status.State.Waiting = &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}
 					status.LastTerminationState.Terminated = failed
@@ -53,6 +55,8 @@ func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 	}
 }
 
+// A relaunch replaces a pod whose workspace-init keeps failing past its restart grace
+// (initRestartGrace): no launcher can start in it.
 func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -62,7 +66,7 @@ func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
 	}
 	g.update(g.pod(old.Sandbox.Name), func(p *corev1.Pod) {
 		p.Status.Phase = corev1.PodPending
-		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer,
+		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer, RestartCount: initRestartGrace + 1,
 			State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
 			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
 		}}

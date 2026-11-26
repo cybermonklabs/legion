@@ -157,11 +157,13 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		p.DeletionTimestamp, p.Finalizers = &now, []string{"test/hold"}
 	}
 	// killedInit is a pod still inside its init containers whose running workspace-init the kubelet
-	// terminated non-zero: what the daemon's own delete of a pod it is replacing leaves behind, and
-	// what an init container failing on its own leaves too. The pod's DeletionTimestamp is the only
-	// thing that tells them apart (verdict).
+	// terminated non-zero past its restart grace (initRestartGrace), so the end is no restart the
+	// grace covers (startingAgain): what the daemon's own delete of a pod it is replacing leaves
+	// behind, and what workspace-init failing on its own leaves too. The pod's DeletionTimestamp is
+	// the only thing that tells them apart (verdict).
 	killedInit := corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
-		Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
+		Name: initContainer, RestartCount: initRestartGrace + 1,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
 	}}}
 	exited := &shimwire.LauncherState{LastExit: &shimwire.LauncherExit{Generation: 1, Code: 143, Signal: "terminated"}}
 	pending := corev1.PodStatus{Phase: corev1.PodPending}
