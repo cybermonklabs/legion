@@ -61,8 +61,10 @@ type probeRig struct {
 
 func newProbeRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *probeRig {
 	t.Helper()
-	g := &probeRig{rig: newRig(t, objects, options...), finishedUID: map[types.UID]bool{}}
-	g.autoStart.Store(false)
+	// The controller stand-in starts no pod from its first pass (withoutAutoStart): the probe rig
+	// finishes its pods itself, and an autoStart turned off once newRig had returned left a pass in
+	// that gap that could make a seeded Running Sandbox's pod scheduled and Running.
+	g := &probeRig{rig: newRig(t, objects, append([]rigOption{withoutAutoStart()}, options...)...), finishedUID: map[types.UID]bool{}}
 	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if action.GetSubresource() != "log" {
 			return false, nil, nil

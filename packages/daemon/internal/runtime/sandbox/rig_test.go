@@ -603,6 +603,12 @@ func withoutController() rigOption { return func(g *rig, _ *Options) { g.noContr
 // without its Sandbox, and the probe waited 10 s for it to go instead of refusing the Sandbox.
 func withHeld() rigOption { return func(g *rig, _ *Options) { g.hold.Store(true) } }
 
+// withoutAutoStart has the controller stand-in leave each pod it makes Pending and on no node from
+// its first pass (autoStart), for a rig that drives its pods' lifecycle itself, as newProbeRig's
+// does. Turned off once newRig had returned, a pass in that gap could already have made a seeded
+// Running Sandbox's pod scheduled and Running.
+func withoutAutoStart() rigOption { return func(g *rig, _ *Options) { g.autoStart.Store(false) } }
+
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
 // launcher holds it installed when installed is set, as one of a pod whose launcher already took
 // the check does after a reconnect.
