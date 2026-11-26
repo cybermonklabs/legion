@@ -307,8 +307,11 @@ func TestTheDriveAcceptsARolledBackWriteOnlyOnTheResultsRouteAndItsTables(t *tes
 		{"a rolled-back write of the same table on another route", http.MethodGet + " /api/v1/issues/{key}", rolledBack(heads), true},
 		{"a rolled-back write of another table on the results route", rolledBackRoute,
 			rolledBack("update issues set title = $2 where key = $1"), true},
+		// The string begins with the bare word begin, so a reading of control words alone takes it
+		// for the start of a transaction and hides its write; the guard at the top of
+		// transactionControl judges it by that write.
 		{"a write and its commit in one string on the results route", rolledBackRoute,
-			[]drivenStatement{statement("begin; " + heads + "; commit")}, true},
+			[]drivenStatement{statement("begin\n" + heads + ";\ncommit")}, true},
 	} {
 		recorder := &errorRecorder{TB: t}
 		requireReadsWrites(recorder, row.name, row.route, row.statements)
