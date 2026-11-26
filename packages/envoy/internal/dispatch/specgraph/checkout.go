@@ -70,11 +70,11 @@ func (c Checkout) Remove() error {
 // commit, a full index whatever index.sparse says, so a git ls-files of it lists each path of the
 // tree.
 //
-// The checkout is no git work tree, so Environ gives git its view of one: the process's own
-// environment with no variable GIT_* (withoutGitVariables), which would make git read another
-// clone or another index, then GIT_DIR the git directory of the clone, GIT_WORK_TREE the
-// checkout's tree and GIT_INDEX_FILE its index. A git ls-files run with Environ lists the
-// commit's files, and no file of the clone's own index or work tree.
+// The checkout is no git work tree, so Environ gives git its view of one: the environment of this
+// package's git command (command), which is the process's own with no variable GIT_*, since such a
+// variable would make git read another clone or another index; then GIT_DIR the git directory of
+// the clone, GIT_WORK_TREE the checkout's tree and GIT_INDEX_FILE its index. A git ls-files run
+// with Environ lists the commit's files, and no file of the clone's own index or work tree.
 func (g GitHistory) Checkout(commit string) (Checkout, error) {
 	if err := g.dirFault(); err != nil {
 		return Checkout{}, err
@@ -90,7 +90,7 @@ func (g GitHistory) Checkout(commit string) (Checkout, error) {
 	if err != nil {
 		return fault(err)
 	}
-	c := Checkout{Dir: dir, Environ: append(withoutGitVariables(os.Environ()), "GIT_DIR="+strings.TrimSuffix(string(gitDir), "\n"),
+	c := Checkout{Dir: dir, Environ: append(g.command().Env, "GIT_DIR="+strings.TrimSuffix(string(gitDir), "\n"),
 		"GIT_WORK_TREE="+filepath.Join(dir, "tree"), "GIT_INDEX_FILE="+filepath.Join(dir, "index"))}
 	if err := g.writeTree(commit, c.Tree()); err != nil {
 		c.Remove()
