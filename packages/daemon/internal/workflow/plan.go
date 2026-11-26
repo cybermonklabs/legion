@@ -266,11 +266,15 @@ func namedOnce(versions []record.PlanVersion) string {
 		// last first, as one copy's givers do. tellPassedOver passes part of one read, in its order.
 		// tellNotTaken joins two, the earlier owners' and then its owner's, which need not keep that
 		// order, but its issue's group takes no plan. That group is drawn in the transaction that
-		// records the issue (drawExperiments), and from then on every give is refused PLAN_NOT_TAKEN
-		// (versionRefusal) and every stop_task too (taskStopped). So an owner's plan of such an issue
-		// was given before the record, at generation 0, and nothing carries it: its first step passes
-		// it over before it carries anything (planFirstStep). The joined list holds at most one copy
-		// of one version.
+		// records the issue (drawExperiments). From then on versionRefusal takes only a version it
+		// stores with the source default (one that changes nothing but the text of the running task
+		// default, and that version given again, retakesDefault), refuses every other give
+		// PLAN_NOT_TAKEN, and taskStopped refuses every stop_task. Both lists are read from
+		// PlansInForce, which reads only versions of the source owner (record's inForce), so no
+		// version taken after the record is in them. So an owner's plan of such an issue was given
+		// before the record, at generation 0, and nothing carries it: its first step passes it over
+		// before it carries anything (planFirstStep). The joined list holds at most one copy of one
+		// version.
 		var givers []claim.Token
 		for _, copied := range slices.Backward(versions) {
 			if !sameDocumentVersion(copied, version) {

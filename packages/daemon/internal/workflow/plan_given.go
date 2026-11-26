@@ -98,6 +98,14 @@ func (g givenVersion) retextsAlone() bool {
 	return g.stored != nil && len(g.changed) == 0 && len(g.textOnly) > 0
 }
 
+// retakesDefault says whether the version is the version in force (taken) as an issue whose group
+// runs the project's default steps (takesNoPlan) stored it from its owner: one that changed
+// nothing but the text of its running task default (retextsAlone), which keeps the source default
+// (givenRows). An owner's version in force, one waiting at generation 0 among them, is not.
+func (g givenVersion) retakesDefault() bool {
+	return g.taken && g.stored.Version.Source == record.PlanSourceDefault
+}
+
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
 // A generation's first plan is taken where its task has not started: an issue the daemon has not
 // recorded, and one standing before its first step (beforeItsWork); each task waits at no act, and
@@ -132,8 +140,9 @@ func (g givenVersion) retextsAlone() bool {
 // task of the plan in force (retextsAlone), its task default. It is stored with the source
 // default, not owner: the issue still runs the project's default steps, which its plan node and
 // Dispatch's read of the project's plans say (planNode). A give of that version again is answered
-// taken, as for any issue. Every other version of it is answered PLAN_NOT_TAKEN once the
-// comparison is made, in place of what the comparison answered: a version whose block default
+// taken, as for any issue (retakesDefault), but a give of an owner's version in force, one waiting
+// at generation 0 among them, is not. Every other version of it is answered PLAN_NOT_TAKEN once
+// the comparison is made, in place of what the comparison answered: a version whose block default
 // names steps is PLAN_NOT_TAKEN, not PLAN_REFUSED. So is a first plan, one given at generation 0
 // for an issue the daemon recorded meanwhile among them, and no plan of it is stored. The group
 // never changes, and the refusal writes nothing, so the same registration sent again gets the
@@ -164,7 +173,7 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, nil, err
 		}
 		if takesNoPlan(group) {
-			if refusal != nil || !given.taken && !given.retextsAlone() {
+			if refusal != nil || !(given.retextsAlone() || given.retakesDefault()) {
 				return givenVersion{}, intake.PlanNotTaken(issue.Key, group), nil
 			}
 			given.source = record.PlanSourceDefault
@@ -355,7 +364,8 @@ func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue)
 // owner's (record.PlanSourceOwner), and a version of the default steps whose text an owner changed
 // (versionRefusal), which keeps the source default. Version 0 of the default steps names none, so
 // no give is it. A give of held is no later version: it is the version that runs or that the first
-// step will run, and versionRefusal answers it taken.
+// step will run, and versionRefusal answers it taken, but an owner's version of an issue whose
+// group runs the project's default steps (retakesDefault).
 func sameVersion(held record.PlanVersion, next plan.Plan) bool {
 	return held.ArtifactID != "" && held.ArtifactID == next.ArtifactID && held.Version == next.Version
 }
