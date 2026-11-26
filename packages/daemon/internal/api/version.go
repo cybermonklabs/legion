@@ -3817,29 +3817,4 @@ package api
 // above the base's 258, and moved to 298, the number the repository's allocator gave it, when main
 // reached 275 and the base moved to 297. Read main's own number and every open pull request again
 // before a push rather than from this history.
-//
-// 299: a task can name one role at two steps. `POST /legion/v1/plans/register` takes a task whose
-// steps name one role twice where at most one of their agents starts with it, as
-// `implementer:a reviewer implementer:a`, whose agent of key a works steps 1 and 3, or
-// `implementer:a reviewer:b implementer:b`, whose agent b starts as the reviewer and becomes the
-// implementer at step 3; it refuses a task in which two agents start with one role, with the
-// reason `step <n> of task <id> needs an agent of its own beside the agent of step <m>, and both
-// agents start with the role <role>, and this release runs one agent that starts with each role
-// for an issue.` (`PLAN_REFUSED`), where a release before it refused every task that named a
-// role twice. The daemon keeps a phases row and a report for each step of a role
-// (store migration 20261125114500_phase_step_key), so the task of each later step names the
-// report of every step before it. `POST /legion/v1/handoff/complete` holds a completion to the
-// run whose entry it serves: it refuses the report of the same agent's other step of the role
-// with `HANDOFF_STALE_ENTRY`, and a completion of another agent of the role, once the task stands
-// at a step of the role that agent does not work, with `HANDOFF_NOT_CURRENT_PHASE`, which names
-// that step's agent and says no task comes. A role that stands at two steps names the step's
-// place in its completion's key, so the completions of its two steps are two facts.
-// `GET /legion/v1/state`'s `workers.<role>` serves the role's row now, the one with the highest
-// entry, of the step of the role that started last. No answer changes its shape, so every
-// contract is served the same keys and values, and SupportedContracts names 299 as a number. From
-// this entry the last number of answers.go's SupportedContracts is 299, after
-// `api.strandedTokenContract`. (This entry took 284, which the contract allocator confirmed free
-// at the forward merge that brought the base's 259 into this change, and moved to 299, the number
-// the repository's allocator gave it, when main reached 275 and the base moved to 298; read main's
-// own number and every open pull request again before a push rather than from this history.)
-const DaemonAPIVersion = 299
+const DaemonAPIVersion = 298
