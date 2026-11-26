@@ -77,7 +77,8 @@ import {
 import { planChart, planView } from "./issue-page-k";
 import { composerField, composerTarget } from "./issue-page-l";
 import { decisionsFoot } from "./issue-page-q";
-import { outlineAnswerOf } from "./issue-page-t-tree";
+import { architectureSettled } from "./issue-page-t-rows";
+import { outlineAnswerOf, seedEventsLanded } from "./issue-page-t-tree";
 import { verificationCard, verificationCheck } from "./issue-page-v";
 import { heldTreeAnswer } from "./issue-page-w";
 import {
@@ -108,7 +109,7 @@ import {
   type WrittenCriterion,
   writeCriterionApi,
 } from "./issue-page-y";
-import { settledState } from "./settled";
+import { expandedState, settledState, settledValue } from "./settled";
 import { expect, test } from "./test";
 import {
   type ApiRequest,
@@ -178,9 +179,15 @@ async function openOutline(page: Page, key: string): Promise<void> {
 /** The first load of issue `key`, by route, read once the page has gone quiet. The server first
  *  settles every document the seed wrote (`quiesceDocuments`), while no page holds one open, so
  *  no settlement of the seed's lands during the load or after it: one that lands later can write
- *  a version of the spec, and move alice's approval with it. */
+ *  a version of the spec, and move alice's approval with it. The seed's architecture source is
+ *  imported first too, and the seed's events have landed, as part T's first-load row waits
+ *  (`architectureSettled`, `seedEventsLanded`): the server's own import pass would else send
+ *  its event in one of the two loads the row compares, and the page answers that event with a
+ *  second read of the project's architecture and of its sources. */
 async function firstLoad(page: Page, key: string): Promise<readonly RouteCount[]> {
   await quiesceDocuments();
+  await architectureSettled(page, key);
+  await seedEventsLanded(page);
   const traffic = watchApiRequests(page);
   await gotoIssue(page, `/issues/${key}`);
   await expectLoadSettled(traffic);
@@ -605,9 +612,13 @@ test("a person writes a criterion under the words they are reading @phone", asyn
       specBefore + 1
     );
     // The outline drawn again places its opening once its reads have answered, so its load
-    // settles here, before (5)'s unfolding leaves the focus for the page.
-    await pickSettled(page, watchApiRequests(page), PRESET_NAMES.conversation);
+    // settles here, before (5)'s unfolding leaves the focus for the page. The load is read
+    // without the view's pressed mark, which a phone's one control does not carry for
+    // Conversation (`expectActivePreset`).
+    const outline = watchApiRequests(page);
+    await pickPreset(page, PRESET_NAMES.conversation);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(outline);
 
     // (4) The header's chip reads the version alice's approval stood at just before the send
     // against the later one the criterion made.
@@ -1289,9 +1300,9 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     // The planner's decision shapes no statement, so the view draws it, its reading right after
     // it, in its foot. The foot is drawn unfolded as the view opens (part U's R2), and a press of
     // its control folds an unfolded foot, so the control is pressed only where the foot stands
-    // folded.
+    // folded, read once the page shows which (`expandedState`).
     const foot = decisionsFoot(page);
-    if ((await foot.getAttribute("aria-expanded")) !== "true") await foot.click();
+    if ((await expandedState("the Decisions foot", foot)) === "shut") await foot.click();
     await expect(foot, "Decisions does not unfold its foot").toHaveAttribute(
       "aria-expanded",
       "true"
@@ -1777,7 +1788,9 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       await foldedCount(rowOfRead(page, foldedQuestion), "the overtaken question"),
       "the folded overtaken question counts its criterion"
     ).toBe(heldUnder(answer, key, foldedQuestion, { margin }));
-    const branches = (await treeItemsDrawn(page)).filter(
+    // The branches the page holds open, read once two reads of the tree's rows agree.
+    const drawnOpen = await settledValue("the branches drawn open", () => treeItemsDrawn(page));
+    const branches = drawnOpen.filter(
       (item) => item.expanded === "true" && item.readId !== null && item.readId !== foldedQuestion
     );
     for (const branch of branches) {
