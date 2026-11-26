@@ -814,9 +814,13 @@ func (h *heldEvents) Stop() {
 	})
 }
 
-// newRig builds a runtime over its fakes. An event-wait rig's ordinary call context ends 30 s
-// before the test binary's deadline (testwait.Context); a finite-timeout row takes a cancellable
-// context with no earlier deadline so it can assert its own bound.
+// newRig builds a runtime over its fakes. It clears testOptions' boot timeout, applies the caller's
+// options, and only where none set a finite BootTimeout gives the runtime's waits the test binary's
+// deadline (withWaitsToTheDeadline). Its context parent is testwait.Context (30 s before that
+// deadline) unless withTestBootTimeout or withMeasuredBootTimeout cleared deadlineWaits, in which
+// case it is context.Background with no earlier deadline, so a finite-timeout row can assert its own
+// bound even under a short -timeout. A finite BootTimeout set through withOptions keeps
+// testwait.Context.
 func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *rig {
 	t.Helper()
 	var dynamicObjects []*unstructured.Unstructured

@@ -1849,7 +1849,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 
 	t.Run("unschedulable within the boot timeout waits to the budget", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
 		g.finishes(unschedulable(testOptions().BootTimeout / 2))
 		p := probeOptions(t)
 		p.Budget = unfinishedBudget

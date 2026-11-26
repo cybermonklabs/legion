@@ -888,7 +888,7 @@ func TestIssuePodIsThePodTheIssuesSandboxHoldsNow(t *testing.T) {
 // empty answer is this reading and nothing else.
 func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withTestBootTimeout())
+	g := newRig(t, nil)
 	// The pod of a suspended Sandbox stays terminating, which is the window every reading below
 	// is taken in: the suspension has landed and the pod has not ended.
 	g.suspendDelay.Store(int64(time.Minute))
