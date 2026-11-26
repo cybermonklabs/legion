@@ -134,12 +134,21 @@ func TestStateWriteMutations(t *testing.T) {
 			}
 		}
 		fmt.Printf("deeper=%d again=%d\n", *mutationDeeper, len(again))
+		unmeasured := make([]string, len(mutants))
 		runAll(again, *mutationDeeper, func(index int, r mutationResult) {
-			if r.Outcome == "caught" {
+			switch r.Outcome {
+			case "caught":
 				r.Catcher = fmt.Sprintf("depth %d: %s", *mutationDeeper, r.Catcher)
 				results[index] = r
+			case "timeout", "invalid":
+				unmeasured[index] = r.Outcome + ": " + r.Catcher
 			}
 		})
+		for index, why := range unmeasured {
+			if why != "" {
+				t.Errorf("UNKNOWN: %s gave no depth-%d result (%s)", mutants[index].ID, *mutationDeeper, why)
+			}
+		}
 	}
 
 	counts := map[string]int{}
@@ -175,6 +184,9 @@ func TestStateWriteMutations(t *testing.T) {
 	}
 	if counts["invalid"] != 0 {
 		t.Errorf("%d mutants did not compile: the generator is wrong", counts["invalid"])
+	}
+	if counts["timeout"] != 0 {
+		t.Errorf("UNKNOWN: %d mutants gave no depth-%d result in time", counts["timeout"], *mutationDepth)
 	}
 }
 
@@ -432,16 +444,22 @@ func runStateMutation(pkg, base string, m stateMutation, depth int) mutationResu
 		result.Outcome, result.Catcher = "invalid", err.Error()
 		return result
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	// A deeper search takes longer than go test's default 10 minutes. Its
+	// timeout is no catch: the mutant was not measured.
+	limit := 15 * time.Minute
+	if depth > 2 {
+		limit = 2 * time.Hour
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit+time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-vet=off", "-overlay", overlay,
+	cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-vet=off", "-overlay", overlay, "-timeout="+limit.String(),
 		"-run", "^(TestTheHoldStateMachine|TestPlants|TestCleanRestartSendPlant)$",
 		"./internal/supervise/holdmodel", "-hold-depth="+strconv.Itoa(depth))
 	cmd.Dir = filepath.Clean(filepath.Join(pkg, "..", "..", ".."))
 	out, err := cmd.CombinedOutput()
 	switch {
-	case ctx.Err() != nil:
-		result.Outcome, result.Catcher = "timeout", "no result in 15 minutes"
+	case ctx.Err() != nil || strings.Contains(string(out), "panic: test timed out after"):
+		result.Outcome, result.Catcher = "timeout", "no result in "+limit.String()
 	case err == nil:
 		result.Outcome, result.Catcher = "survived", ""
 	case strings.Contains(string(out), "[build failed]") || strings.Contains(string(out), "[setup failed]"):
