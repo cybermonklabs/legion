@@ -135,6 +135,11 @@ type specs struct {
 	// through the workflow); nil for a daemon with no workflow, whose launches work no repository.
 	hostWorkspaces  bool
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// provider is the project's model provider's keys (config.Project.Provider), of which every
+	// launch carries the two refusal patterns the project sets (runtime.RefusalEnvironment), so
+	// each host classes a refused request it reports as its project's file says; a test's literal
+	// that leaves it out launches with neither.
+	provider config.SignalProvider
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -164,7 +169,9 @@ func (s specs) ownersOf(role claim.Role) []string {
 // same way for both — the controller the daemon launches (`controller: daemon`) is covered like
 // any claim.
 // Env carries the stall limits the daemon's own environment holds, merged after the fork
-// (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
+// (stallLimitVariables), so the controller's launch is told them exactly as a worker's is, and the
+// project's two refusal patterns the same way: the controller's session reports its model
+// requests as a role's does, and its host classes their refusals by the same patterns.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
 	s.copies.refresh(ctx)
 	var spec runtime.SpawnSpec
@@ -181,6 +188,7 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	// replaces a worker's spec.Env rather than merging into it: the stall limits are merged into
 	// whatever map the launch holds by then (stallLimitVariables).
 	passthrough(spec.Env, stallLimitVariables...)
+	maps.Copy(spec.Env, runtime.RefusalEnvironment(s.provider.OwnRefusal, s.provider.ProviderRefusal))
 	var part string
 	if spec.Backend, part, err = s.launchBackend(c.Role); err != nil {
 		return runtime.SpawnSpec{}, err

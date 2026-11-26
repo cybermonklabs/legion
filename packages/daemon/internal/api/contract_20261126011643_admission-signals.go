@@ -29,10 +29,46 @@ package api
 // launcher is of this release. Both members are left out when false, so the controller pod's answer
 // and every report of a role's process are the bytes an earlier release writes.
 //
+// Each host of a session of the project reports its model requests, for the provider's headroom
+// and refusals, on a route of its own, `POST /legion/v1/claims/model-requests`
+// (claim.ModelRequestsRequest), answered `{"kept": [<id>, ...]}` (claim.ModelRequestsResponse,
+// AnswerModelRequests): every id of the batch the daemon now holds, new or held already, which the
+// host forgets, sending the rest again under the same ids. The body is the caller of a turn outcome
+// — `claimToken`, `sessionId` and `secret`, or `bootToken` — with `generation` and `requests`, 1 to
+// 200 of `{id, session, model, endedAt, uncachedInputTokens?, refusal?}`, refusal one of `own`,
+// `provider` and `unknown`; it is decoded strictly and names no project, which is the claim's. The
+// operator's controller, which holds no claim the daemon supervises, names its own token,
+// `legion-<project>-controller`, with its registration's session and secret, checked against the
+// controller record. A host before this entry reports none and still sends its turn outcome, whose
+// body and answer are unchanged; the provider's record holds no minute such a host's turn
+// overlaps (ModelRequestsContract, record.Postgres.ProviderMinutes).
+//
+// Every launch of a role's pane or pod, and of the controller's, the daemon's and the operator's,
+// carries the project's two refusal patterns by which its host classes each refused request:
+// `LEGION_SIGNAL_OWN_REFUSAL` (`signal_own_refusal_pattern`) and `LEGION_SIGNAL_PROVIDER_REFUSAL`
+// (`signal_provider_refusal_pattern`), each where the project sets it and neither where it does
+// not (runtime.RefusalEnvironment). A host tests the own pattern first, the provider's second, and
+// classes a refusal neither matches as unknown; it compiles each as Go's
+// `regexp.Compile("(?s)" + pattern)` and JavaScript's `new RegExp(pattern, "su")`, under which the
+// loader's subset reads alike (config.SharedPattern). A host of an earlier release reads neither
+// variable. An operator's `runtime.tmux.pane_env` and `runtime.kubernetes.pod.env` may not name
+// either.
+//
 // admissionSignalsContract is this entry's id, by which every row that admission by signals adds to
 // a table of this package names the entry.
 const admissionSignalsContract = 20261126011643
 
 func init() {
-	registerEntry(contractEntry{id: admissionSignalsContract, slug: "admission-signals"})
+	registerEntry(contractEntry{id: admissionSignalsContract, slug: "admission-signals",
+		// The report of model requests arrives with its answer, so no contract below this entry
+		// records either, and the answer is served whole to every contract that reads it.
+		answers:         []Answer{{ID: AnswerModelRequests, Routes: []string{"POST /legion/v1/claims/model-requests"}, Since: admissionSignalsContract}},
+		identityAnswers: []AnswerID{AnswerModelRequests},
+	})
 }
+
+// ModelRequestsContract is this build's number of the admission-signals entry: the first plugin
+// contract whose host reports each model request of its sessions (POST
+// /legion/v1/claims/model-requests). A claim registered below it runs a host that reports none, so
+// the provider's record holds no minute its turns overlap (record.Postgres.ProviderMinutes).
+func ModelRequestsContract() int { return entryNumber(admissionSignalsContract) }

@@ -557,6 +557,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/ready-for-update", s.readyForUpdate},
 		{"POST /legion/v1/claims/exit", s.exit},
 		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
+		{"POST /legion/v1/claims/model-requests", s.modelRequests},
 		{"POST /legion/v1/claims/activity", s.activity},
 		{"POST /legion/v1/claims/release-records", s.releaseRecords},
 		{"POST /legion/v1/grants", s.grant},

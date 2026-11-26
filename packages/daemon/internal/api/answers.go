@@ -86,6 +86,7 @@ const (
 	AnswerFreshSession       AnswerID = "fresh-session"
 	AnswerCompact            AnswerID = "compact"
 	AnswerTurnOutcome        AnswerID = "turn-outcome"
+	AnswerModelRequests      AnswerID = "model-requests"
 	AnswerWaveRelease        AnswerID = "wave-release"
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"

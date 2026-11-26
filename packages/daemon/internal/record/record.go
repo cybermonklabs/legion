@@ -2878,6 +2878,17 @@ type Store interface {
 	// ApprovalsOf is the approvals signal's input of project as the store holds it: the asks that
 	// wait on the project's default assignee, or why the signal cannot be computed.
 	ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (Approvals, error)
+	// KeepModelRequests keeps each of requests, one report of the host of claim's launch at
+	// generation, once by the claim, the generation and the request's id, each marked counted
+	// where counts takes its model, and deletes the project's requests of minutes no read reaches
+	// again before now.
+	KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, counts func(model string) bool, now time.Time) error
+	// KeepTokenLimit records limit (0 for none) as project's token limit a minute from at, where it
+	// differs from the limit in force then.
+	KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string, limit int64, at time.Time) error
+	// ModelRequestsHeld is each of ids the store holds a request of for claim's launch at
+	// generation of project, which a report's answer names kept.
+	ModelRequestsHeld(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, ids []string) ([]string, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

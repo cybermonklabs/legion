@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"regexp"
 
 	"github.com/jackc/pgx/v5"
 
@@ -51,11 +52,17 @@ import (
 //     assignee, each kept where no newer event of it was (record.Store.KeepApprovalsRead), and the
 //     read's outcome (record.Store.SetSignalInputReadError), so the approvals signal reads as not
 //     recorded with the reason where the read failed.
-//   - intake.DaemonBooted: each boot records that this daemon keeps the kills, the queue and the
-//     approvals from now on, where no earlier boot recorded it (record.Store.BeginSignalInput), so
-//     each signal that counts over a span is recorded from the first boot of the release that
-//     keeps its input plus that span (signals.KillSpan, signals.QueueExitSpan), and not before,
-//     where nothing was kept.
+//   - intake.DaemonBooted: each boot records that this daemon keeps the kills, the queue, the
+//     model requests and the approvals from now on, where no earlier boot recorded it
+//     (record.Store.BeginSignalInput), so each signal that counts over a span is recorded from the
+//     first boot of the release that keeps its input plus that span (signals.KillSpan,
+//     signals.QueueExitSpan), and not before, where nothing was kept. The model requests are one
+//     input of both of the provider's signals, its headroom and its refusals, so they take one
+//     row, under signals.Provider, which both read. The boot records the configured token limit
+//     too (record.Store.KeepTokenLimit), which each minute from then on is read against.
+//   - intake.ModelRequests: one report of a host's model requests, each kept once by the claim,
+//     its launch generation and the request's own id, marked counted where the configured model
+//     selector takes its model (record.Store.KeepModelRequests).
 func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if turn, seq, ok := intake.AskTurnOf(fact); ok {
 		return a.store.KeepAskEvent(ctx, tx, a.project, turn, seq)
@@ -89,15 +96,48 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 			}
 		}
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, fact.ReadError, a.now())
+	case intake.ModelRequests:
+		return a.store.KeepModelRequests(ctx, tx, a.project, fact.Claim, fact.Generation, fact.Requests, a.countsTokens, a.now())
 	case intake.DaemonBooted:
-		for _, input := range []string{signals.Kills, signals.Queue} {
+		for _, input := range []string{signals.Kills, signals.Queue, signals.Provider} {
 			if err := a.store.BeginSignalInput(ctx, tx, a.project, input, a.now()); err != nil {
 				return err
 			}
 		}
+		if err := a.store.KeepTokenLimit(ctx, tx, a.project, a.tokenLimit, a.now()); err != nil {
+			return err
+		}
 		return a.beginApprovals(ctx, tx)
 	}
 	return nil
+}
+
+// UseModelRequests registers the project's model provider as the daemon's configuration gives it
+// (config.Project.Provider): limit, the uncached input tokens a minute the project may spend (0
+// for none), which each boot records for the minutes from then on, and models, the models whose
+// tokens count against it, nil for every model, which decides whether each request a report
+// carries is counted as it is kept. It is a setter rather than a parameter of New for the reason
+// UseExperiments is.
+func (a *Admission) UseModelRequests(limit int64, models *regexp.Regexp) {
+	a.tokenLimit, a.tokenModels = limit, models
+}
+
+// countsTokens is whether a request of model counts its tokens against the project's limit: every
+// model where no selector is configured.
+func (a *Admission) countsTokens(model string) bool {
+	return a.tokenModels == nil || a.tokenModels.MatchString(model)
+}
+
+// signalFactRunsPass is whether fact, once its signal inputs are kept (keepSignalFacts), runs the
+// admission pass: the one function the architect's rule for a report of model requests is
+// decided by (design "The pass triggers", option (a)). A report always keeps its requests, and
+// runs the pass only where one of the six series changed its hold against the hold the last
+// committed pass recorded, or one of the five other than the provider's headroom qualifies for a
+// value entry against its last written value. The rule's inputs — the live readings, the last
+// committed holds and the last written values — are not kept yet, so no report can be shown to
+// change nothing, and every report runs the pass, as every other fact does.
+func (a *Admission) signalFactRunsPass(ctx context.Context, tx pgx.Tx, fact intake.Fact) (bool, error) {
+	return true, nil
 }
 
 // beginApprovals records, at the first boot of the release that keeps the approvals' inputs, that

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"sync"
@@ -810,6 +811,17 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// has stopped at: the loader gives six hours to a file that names no key, so the pass
 	// always runs under a number somebody chose.
 	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
+	// The project's token limit and model selector are what admission keeps each boot's limit and
+	// each reported model request by (config.Project.Provider); the loader held the selector to
+	// the shared pattern subset, so it compiles.
+	provider := cfg.Projects[cfg.Project].Provider
+	var models *regexp.Regexp
+	if provider.TokenModels != "" {
+		if models, err = config.SharedPattern(provider.TokenModels); err != nil {
+			return nil, fmt.Errorf("signal_token_model_pattern: %w", err)
+		}
+	}
+	w.admission.UseModelRequests(provider.TokenLimit, models)
 	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).

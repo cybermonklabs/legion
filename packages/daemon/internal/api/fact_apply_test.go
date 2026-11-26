@@ -119,6 +119,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
 	controller := "the controller's grant notes no requester (redeem): the controller runs no step"
+	hostReport := "a host's report, authenticated by the claim's secret or boot token, which redeems no grant and notes no requester (redeem); " +
+		"its fact (intake.ModelRequests) names no issue and ends no step, and apply waits for no stream of a request no grant made"
 	table := map[string]agentRoute{
 		"GET /legion/v1/state":                         {none: "a read of the daemon's state; " + noFact},
 		"GET /legion/v1/issues/{key}/record":           {none: "a read of one issue's record; " + noFact},
@@ -129,6 +131,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/claims/ready-for-update":      {none: "the claim's report to its own machine; " + noFact},
 		"POST /legion/v1/claims/exit":                  {none: "the claim's report to its own machine; " + noFact},
 		"POST /legion/v1/claims/turn-outcome":          {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/model-requests":        {none: hostReport},
 		"POST /legion/v1/claims/activity":              {none: "the claim's report to its own machine; " + noFact},
 		"POST /legion/v1/claims/release-records":       {none: "a read of the claim's release records; " + noFact},
 		"POST /legion/v1/grants":                       {none: "a grant's mint; " + noFact},

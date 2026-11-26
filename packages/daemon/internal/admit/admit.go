@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"sync"
 	"time"
@@ -141,6 +142,12 @@ type Admission struct {
 	// pass's own transaction: nil in the daemon until a person turns admission by signals on, when
 	// every pass admits under the cap.
 	signalRead func(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error)
+
+	// tokenLimit and tokenModels are the project's model provider as the daemon is configured
+	// (UseModelRequests): the token limit a minute each boot records (0 for none) and the models
+	// whose tokens count against it, nil for every model.
+	tokenLimit  int64
+	tokenModels *regexp.Regexp
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -274,6 +281,9 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // admission by signals are kept (keepSignalFacts), so the pass this fact runs reads them.
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	if err := a.keepSignalFacts(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
+	if run, err := a.signalFactRunsPass(ctx, tx, fact); err != nil || !run {
 		return intake.Result{}, err
 	}
 	released, refusal, err := a.applyFact(ctx, tx, fact)

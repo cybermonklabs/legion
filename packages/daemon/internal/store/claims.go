@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -313,13 +314,19 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // commit that queued it.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
-		return upsertClaim(ctx, tx, c, s.stamp())
+		if err := upsertClaim(ctx, tx, c, s.stamp()); err != nil {
+			return err
+		}
+		return keepClaimTurn(ctx, tx, c, s.stamp())
 	}
 	stored, err := storedRoleHolder(ctx, tx, c)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	if err := upsertClaim(ctx, tx, c, s.stamp()); err != nil {
+		return err
+	}
+	if err := keepClaimTurn(ctx, tx, c, s.stamp()); err != nil {
 		return err
 	}
 	if roleHolder(c.State, c.Session) == stored {
@@ -331,6 +338,47 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	}
 	if queued {
 		OnCommit(ctx, func() { s.wakeRoleHolders(c.Issue) })
+	}
+	return nil
+}
+
+// claimTurnsKept is how long a turn's row outlives its end: a new turn of the claim deletes the
+// claim's turns that ended longer ago than this before it began, since the provider's record is
+// read no further back than its refusals' hour and the minute before it (signals.RefusalSpan).
+const claimTurnsKept = signals.RefusalSpan + time.Minute
+
+// keepClaimTurn keeps c's turn edges, as this write carries them, in claim_turns, one row per
+// turn: a claim in a turn (working, its last turn's start after its last turn's end) has the row
+// of that turn, opened at its start with the plugin contract its host registered with, and every
+// other open row of the claim is closed, at the claim's last turn's end where that is at or after
+// the row's start, else at this write's stamp (Postgres's now() where the store has no clock of
+// its own). So a turn that ended, or a claim that stopped or died in one, leaves a row with both
+// edges, and one still running a row open to now. The provider's record reads them to tell where a
+// host that reports no model requests left a minute incomplete (record.Postgres's
+// ProviderMinutes). A new turn also deletes the claim's turns that ended longer than
+// claimTurnsKept before it began, which no read reaches again, so the rows stay bounded by each
+// claim's last hour.
+func keepClaimTurn(ctx context.Context, tx pgx.Tx, c supervise.Claim, stamp *time.Time) error {
+	var start, end, stale *time.Time
+	if c.State == supervise.StateWorking && !c.LastTurnStart.IsZero() && c.LastTurnStart.After(c.LastTurnEnd) {
+		start = &c.LastTurnStart
+		before := c.LastTurnStart.Add(-claimTurnsKept)
+		stale = &before
+	}
+	if !c.LastTurnEnd.IsZero() {
+		end = &c.LastTurnEnd
+	}
+	if _, err := tx.Exec(ctx, `with closed as (
+			update claim_turns set ended_at = greatest(started_at, case when $5::timestamptz >= started_at then $5::timestamptz else coalesce($6::timestamptz, now()) end)
+			where claim = $2 and ended_at is null and started_at is distinct from $4::timestamptz
+		), pruned as (
+			delete from claim_turns where claim = $2 and ended_at < $8::timestamptz
+		)
+		insert into claim_turns (project, claim, generation, plugin_contract, started_at)
+		select $1, $2, $3, $7, $4::timestamptz where $4::timestamptz is not null
+		on conflict (claim, started_at) do nothing`,
+		c.Project, string(c.Token), int64(c.Generation), start, end, stamp, c.PluginContract, stale); err != nil {
+		return fmt.Errorf("put claim %s: keep its turn: %w", c.Token, err)
 	}
 	return nil
 }

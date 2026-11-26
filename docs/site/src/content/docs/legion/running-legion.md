@@ -623,6 +623,28 @@ What each part is for:
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
   compared without case and through `repository_renames`, and a daemon that predates the key
   refuses it at boot, as it does any key it does not know.
+- **`projects.<KEY>.signal_token_limit_per_minute`, `signal_token_model_pattern`, `signal_own_refusal_pattern` and `signal_provider_refusal_pattern`** (optional) describe the project's model provider to the two provider signals of admission by signals, its headroom and its refusals:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      signal_token_limit_per_minute: 5500000
+      signal_token_model_pattern: '^claude-'
+      signal_own_refusal_pattern: 'project (token|request) limit'
+      signal_provider_refusal_pattern: '[Oo]verloaded'
+  ```
+
+  The limit is the uncached input tokens the project's sessions may spend in a minute: fresh input and cache writes, never cache reads.
+  Without it the headroom reads as not recorded, never as zero.
+  Each minute keeps the limit that was in force when it began, so a daemon restarted with another limit reads no earlier minute again.
+  The model pattern selects the models whose tokens count against the limit, and every model counts without it; a request of another model is still kept and its refusal still counted.
+  The two refusal patterns reach every host of the project's sessions, each role's pane or pod and the controller, as `LEGION_SIGNAL_OWN_REFUSAL` and `LEGION_SIGNAL_PROVIDER_REFUSAL`, and a pattern left unset sends no variable.
+  A host classes each refused model request by its text: the project's own limit where the own pattern matches, else the provider where the provider's pattern matches, else unknown, which counts as the project's own.
+  The text decides because a deployment's own limit and its provider can both answer 429 with nothing else that tells them apart, so each deployment writes its own patterns.
+  The operator's controller file, which `legion controller start` reads, takes the two refusal patterns under the same names; keep them equal to the project's.
+  Each pattern is a regular expression of the subset Go and JavaScript read alike, since a Claude Code host matches it with Go and an Oh My Pi host with JavaScript: characters, `\` before a metacharacter, `.`, `^`, `$`, `\b`, `\B`, `\d`, `\D`, `\w`, `\W`, `\t`, `\n`, `\r`, classes such as `[a-z]` and `[^0-9]`, groups `(…)` and `(?:…)`, `|`, and the repetitions `*`, `+`, `?` and `{n,m}` up to 1000.
+  The loader refuses every other construct, naming the key and why: lookarounds, back references, named groups, inline flags such as `(?i)`, `\p`, `\s` (ASCII's spaces in Go, Unicode's in JavaScript), POSIX classes, `\A`, `\Q`, `[]`, a lone `{` or `]`, and an empty pattern.
+  A refused file is refused whole, so none of its keys takes effect.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
   repository that moved: after a transfer GitHub's events name the new repository while every tree
   Legion has already recorded names the old one.

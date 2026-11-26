@@ -1686,6 +1686,25 @@ type ControllerMemoryGuardKill struct {
 
 func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false }
 
+// ModelRequests is one report of a host's model requests for one launch of a claim of the project
+// (claim.ModelRequestsRequest): the Oh My Pi plugin's or the Claude Code bridge's, of the role's own
+// session, of a subagent's session it starts, or of the controller's session. It is never decoded
+// from an event: the API's route applies one fact per report, after authenticating its caller as
+// a turn outcome's is, under an id that names the batch's claim, generation and ids, so a batch
+// sent again is a duplicate (api's modelRequests). Claim and Generation are the authenticated
+// launch's, never anything the body says; the project is the claim's, admission's own.
+//
+// Admission keeps each request once, by the claim, the generation and the request's own id, in
+// the fact's transaction before its pass (admit's keepSignalFacts), so a request two batches carry
+// is kept once. The workflow does nothing with it.
+type ModelRequests struct {
+	Claim      claim.Token
+	Generation uint64
+	Requests   []claim.ModelRequest
+}
+
+func (ModelRequests) namedIssue() (string, bool) { return "", false }
+
 // VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
 // trimmer in that pod's launcher process swept the cache roots and the volume was still above
 // its low mark when it stopped, or the trimmer has switched itself off after three faults. It is

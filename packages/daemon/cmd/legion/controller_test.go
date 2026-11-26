@@ -294,6 +294,8 @@ type operatorMachine struct {
 type controllerOptions struct {
 	// lines replace the default controller.yaml wholesale.
 	lines []string
+	// extra are lines the default controller.yaml carries after its own.
+	extra []string
 	// tokenMode is the operator token file's mode; tokenContents its contents.
 	tokenMode     os.FileMode
 	tokenContents string
@@ -360,6 +362,7 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 			"omp_launch_prefix: [env, LEGION_TEST_PREFIX_RAN=1]",
 		}
 	}
+	lines = append(lines, opts.extra...)
 	c.write("controller.yaml", strings.Join(lines, "\n")+"\n", 0o600)
 
 	// The Oh My Pi LEGION_OMP_PATH names. As the load probe (`models --extension <probe>`) it

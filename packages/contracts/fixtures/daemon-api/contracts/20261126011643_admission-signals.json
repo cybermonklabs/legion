@@ -1,6 +1,44 @@
 {
-  "answers": [],
-  "routes": [],
-  "answerRows": [],
+  "answers": [
+    {
+      "answer": "model-requests",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "kept",
+        "kept.*"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/claims/model-requests",
+      "change": "add",
+      "addFieldPaths": [
+        "bootToken",
+        "claimToken",
+        "generation",
+        "requests",
+        "requests.*",
+        "requests.*.endedAt",
+        "requests.*.id",
+        "requests.*.model",
+        "requests.*.refusal",
+        "requests.*.session",
+        "requests.*.uncachedInputTokens",
+        "secret",
+        "sessionId"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "model-requests",
+      "routes": [
+        "POST /legion/v1/claims/model-requests"
+      ],
+      "noBody": false
+    }
+  ],
   "enumeratedRows": []
 }

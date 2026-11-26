@@ -261,6 +261,9 @@ var FactSources = map[string]FactSource{
 	"ApprovalsBootRead": {Way: FactUnrecorded, From: "the boot's read of Dispatch's open asks, their issues' events and the project's default assignee " +
 		"(intake.ApprovalsBootRead), which no recorded window holds a line of: the replay reads a window's events and settings into its own " +
 		"approvals signal, and injects none until it supplies the signals to the pass"},
+	"ModelRequests": {Way: FactUnrecorded, From: "each report of a host's model requests (POST /legion/v1/claims/model-requests, intake.ModelRequests), " +
+		"which no recorded window holds a line of: the replay reads the provider's minutes from the deployment's record of the model provider " +
+		"(SignalRecord's minutes), and injects none until it supplies the signals to the pass"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},

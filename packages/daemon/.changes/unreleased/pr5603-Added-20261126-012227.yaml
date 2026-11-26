@@ -42,6 +42,24 @@ body: |-
   with none kept from an event, the signal reads as not recorded with its reason, never as a number.
   A migration adds `approval_asks`, `approval_assignees` and `approval_default_assignees`; its
   header carries the way back.
+
+  The daemon also keeps each model request its project's hosts report, for the provider's headroom
+  and refusals: `POST /legion/v1/claims/model-requests` takes a batch of 1 to 200 requests, each
+  with a stable id, its session (the role's own, a subagent's or the controller's), its model, when
+  it ended, its uncached input tokens where known and, for a refused one, `own`, `provider` or
+  `unknown`, and answers the ids it now holds. A host authenticates as for a turn outcome, by the
+  claim's secret or the launch's boot token, and the operator's controller by its controller
+  record; the project is the claim's. Each request counts once, in the minute it ended. The daemon
+  API entry `20261126011643` (`admission-signals`) adds the route and its answer; the turn-outcome
+  report and its answer are unchanged, and a minute a turn of a host before that entry overlaps reads
+  as not recorded, never as zero. Four optional project keys configure it:
+  `signal_token_limit_per_minute`, `signal_token_model_pattern`, `signal_own_refusal_pattern` and
+  `signal_provider_refusal_pattern`, each pattern held at load to a subset Go and JavaScript read
+  alike. Every role's pane and pod and the controller's launch, the daemon's and
+  `legion controller start`'s, carry the two refusal patterns as `LEGION_SIGNAL_OWN_REFUSAL` and
+  `LEGION_SIGNAL_PROVIDER_REFUSAL`, and `legion controller start`'s file takes them under the same
+  keys. A migration adds `model_requests`, `signal_token_limits` and `claim_turns`; its header
+  carries the way back.
 time: 2026-11-26T01:22:27Z
 custom:
     Issue: pr5603

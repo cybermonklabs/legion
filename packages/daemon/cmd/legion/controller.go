@@ -216,7 +216,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	// controller hears a project's mentions, and an inherited list is no project's word for this
 	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
 	// told: this controller resumes no recorded session, and an inherited value would stop it where
-	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
+	// Oh My Pi would otherwise move a held session to a new id. So are the project's two refusal
+	// patterns a Legion pane is told (runtime.OwnRefusalVariable, runtime.ProviderRefusalVariable):
+	// this controller's are its file's (controllerEnvironment), and one the file leaves unset is
+	// none, never a pane's. A machine that holds its Dispatch
 	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
 	// would be presented in place of the traded token as a bearer Dispatch refuses
 	// (controllerDispatchBroker). The drop is not the whole of it — the
@@ -240,6 +243,8 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	delete(env, runtime.RoleIdentitiesVariable)
 	delete(env, "LEGION_SLACK_CHANNELS")
 	delete(env, runtime.SessionExclusiveVariable)
+	delete(env, runtime.OwnRefusalVariable)
+	delete(env, runtime.ProviderRefusalVariable)
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
@@ -387,7 +392,9 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 // trade nothing turns Dispatch off saying so rather than falling back to a person's token. Under
 // every configuration PERSON_SIGNIN_TRADE=off (controllerPersonTradeVar) keeps every credential
 // the TypeScript client trades for the controller on this machine's identity and off the sign-in
-// the operator made, which the controller finds under the HOME it keeps. Later
+// the operator made, which the controller finds under the HOME it keeps. The project's two
+// refusal patterns ride beside them, each the file sets (runtime.RefusalEnvironment), so the
+// controller's host classes a refused request of its session as a role's host does. Later
 // pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
@@ -426,6 +433,10 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 	}
 	if cfg.NatsNkeySeedFile != "" {
 		env = append(env, [2]string{natsauth.SeedFileVariable, cfg.NatsNkeySeedFile})
+	}
+	refusals := runtime.RefusalEnvironment(cfg.OwnRefusalPattern, cfg.ProviderRefusalPattern)
+	for _, name := range slices.Sorted(maps.Keys(refusals)) {
+		env = append(env, [2]string{name, refusals[name]})
 	}
 	return env
 }
