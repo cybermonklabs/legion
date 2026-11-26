@@ -1033,6 +1033,7 @@ J, L, M, N, S, T, U, W, X, Y and Z. Dashboard keeps its words the same way in
 `page-words-dashboard.ts`, which also takes in the ask body's list
 (`web/src/features/ask-body/ask-body-words.ts`) and the decision card's
 (`web/src/features/decision-card/decision-card-words.ts`).
+Threads (dispatch://INFRA-5704) keeps its words the same way in `page-words-threads.ts`.
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
 from any pull request. TypeScript reads the keys of a table where the table is declared. The tables

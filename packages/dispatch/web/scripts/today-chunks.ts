@@ -26,6 +26,14 @@
  *     This set holds `page-words.ts` and `RowText.tsx`, and holds no `issue-tree.ts`,
  *     `useIssueTree.ts` or `tree-drafts.ts`.
  *
+ * (3) Neither set holds a module under `features/issue-page/threads/`, Threads' own folder
+ *     (dispatch://INFRA-5704/spec#b-r-today-unchanged). This rule holds in every run.
+ *
+ * `bun web/scripts/today-chunks.ts --modules <outDir>` (c-today-files of dispatch://INFRA-5704)
+ * prints the same two sets, and under each chunk every module its source map lists, by its path
+ * below the repository's root where it is under that root, as `git diff --numstat` names a file.
+ * A run with no option prints what it printed before the option was added.
+ *
  * It exits 1 naming the module and the chunk where a rule breaks.
  */
 import { readFileSync, statSync } from "node:fs";
@@ -60,6 +68,19 @@ const PAGE_WORDS_PART = /^page-words-[^/]+\.ts$/;
 const ON_DASHBOARD: readonly string[] = ["page-words.ts", "RowText.tsx"];
 const NOT_ON_DASHBOARD: readonly string[] = ["issue-tree.ts", "useIssueTree.ts", "tree-drafts.ts"];
 
+/** Rule (3): the folder of Threads' own modules, below `features/issue-page/`, which no chunk of
+ *  either set holds. */
+const THREADS_DIR = "threads/";
+
+/** The option, before the out dir, that prints under each chunk every module its map lists. */
+const MODULES_OPTION = "--modules";
+
+/** Whether this run prints each chunk's modules: the script run with `MODULES_OPTION` first. */
+const LISTS_MODULES = import.meta.main && process.argv[2] === MODULES_OPTION;
+
+/** The repository's root, which a module is printed below: `web/` is `packages/dispatch/web/`. */
+const REPO_DIR = resolve(WEB_DIR, "..", "..", "..");
+
 /** The fields of a manifest chunk this script reads. */
 interface ManifestChunk {
   file: string;
@@ -78,6 +99,8 @@ interface Chunk {
   bytes: number;
   /** Each module of `features/issue-page/` the chunk holds, as its path below that directory. */
   issuePageModules: string[];
+  /** Each module the chunk's source map lists, in its order, as `repoPath` prints it. */
+  modules: string[];
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -174,7 +197,9 @@ function readChunk(outDir: string, manifest: Map<string, ManifestChunk>, key: st
   const entry = manifest.get(key);
   if (entry === undefined) throw new Error(`the manifest holds no ${key}`);
   const issuePageModules: string[] = [];
+  const modules: string[] = [];
   for (const source of mapSources(outDir, entry.file)) {
+    modules.push(repoPath(source));
     const at = source.lastIndexOf(ISSUE_PAGE_DIR);
     if (at !== -1) issuePageModules.push(source.slice(at + ISSUE_PAGE_DIR.length));
   }
@@ -184,11 +209,18 @@ function readChunk(outDir: string, manifest: Map<string, ManifestChunk>, key: st
     src: entry.src,
     bytes: statSync(join(outDir, entry.file)).size,
     issuePageModules,
+    modules,
   };
 }
 
 function chunkName(chunk: Chunk): string {
   return chunk.src === null ? chunk.file : `${chunk.file} (${chunk.src})`;
+}
+
+/** `source` below the repository's root where it is under that root, and as the map resolves it
+ *  otherwise. */
+function repoPath(source: string): string {
+  return source.startsWith(`${REPO_DIR}/`) ? source.slice(REPO_DIR.length + 1) : source;
 }
 
 function printSet(title: string, chunks: Chunk[]): void {
@@ -197,6 +229,9 @@ function printSet(title: string, chunks: Chunk[]): void {
   const width = String(Math.max(0, ...chunks.map((chunk) => chunk.bytes))).length;
   for (const chunk of chunks) {
     console.log(`  ${String(chunk.bytes).padStart(width)}  ${chunkName(chunk)}`);
+    if (LISTS_MODULES) {
+      for (const module of chunk.modules) console.log(`  ${" ".repeat(width)}    ${module}`);
+    }
   }
 }
 
@@ -264,11 +299,28 @@ function main(outDir: string): number {
     }
   }
 
+  // Rule (3): no chunk of either set holds a module of Threads' own folder.
+  for (const [set, chunks] of [
+    ["a chunk of today's pages (1)", today],
+    ["a chunk of the Dashboard chunk's set (2)", dashboardSet],
+  ] as const) {
+    for (const chunk of chunks) {
+      for (const module of chunk.issuePageModules) {
+        if (module.startsWith(THREADS_DIR)) {
+          breaks.push(`features/issue-page/${module} is in ${chunkName(chunk)}, ${set}`);
+        }
+      }
+    }
+  }
+
   for (const line of breaks) console.error(`today-chunks: ${line}`);
   return breaks.length === 0 ? 0 : 1;
 }
 
 if (import.meta.main) {
+  // The option goes before the out dir, so it is taken off the arguments here and the out dir is
+  // read as a run with no option reads it.
+  if (LISTS_MODULES) process.argv.splice(2, 1);
   const outDir = process.argv[2];
   if (outDir === undefined) {
     console.error(

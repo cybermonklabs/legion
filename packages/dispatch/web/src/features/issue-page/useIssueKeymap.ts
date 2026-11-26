@@ -94,15 +94,16 @@ function toggled(key: string, view: Preset, active: Preset): string {
 }
 
 /**
- * The chords of the view row, which are the `t` table of the spec's Design section for the six
+ * The chords of the view row, which are the `t` table of the spec's Design section for its
  * views. Each one opens an address and puts the focus in what that address draws.
  *
- * `t w` toggles Dashboard (dispatch://INFRA-5702/spec#b-r-new-page), which draws no outline, so
- * it leaves the focus where it was. `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification,
- * Plan and Decisions views, and `t c` is the conversation, the page with every view off; each
- * leaves the focus in the outline. A label names what the chord does on this page, in the view
- * row's own names (`PRESET_NAMES`). The table is exported for the inventory of the places that
- * write Conversation's address (`issue-address.test.ts`).
+ * `t w` toggles Dashboard (dispatch://INFRA-5702/spec#b-r-new-page), and `t t` Threads
+ * (dispatch://INFRA-5704/spec#b-r-control); neither draws an outline, so each leaves the focus
+ * where it was. `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions
+ * views, and `t c` is the conversation, the page with every view off; each leaves the focus in
+ * the outline. A label names what the chord does on this page, in the view row's own names
+ * (`PRESET_NAMES`). The table is exported for the inventory of the places that write
+ * Conversation's address (`issue-address.test.ts`).
  */
 export const CHORDS: readonly {
   keys: string;
@@ -111,14 +112,21 @@ export const CHORDS: readonly {
   path: (key: string, active: Preset) => string;
   /** The part the chord puts the focus in, where the address draws one. */
   part?: keyof typeof PARTS;
-  /** What names the binding, which is the tab the address was that tab's. */
-  tab: IssueTab;
+  /** What names the binding: the tab the address was that tab's, or Threads, which no tab of
+   *  today's page is, so `IssueTab` and the tabs today's page binds stay as they are. */
+  tab: IssueTab | "threads";
 }[] = [
   {
     keys: "t w",
     label: `Turn ${PRESET_NAMES.dashboard} on or off`,
     path: (key, active) => toggled(key, "dashboard", active),
     tab: "dashboard",
+  },
+  {
+    keys: "t t",
+    label: `Turn ${PRESET_NAMES.threads} on or off`,
+    path: (key, active) => toggled(key, "threads", active),
+    tab: "threads",
   },
   {
     keys: "t s",

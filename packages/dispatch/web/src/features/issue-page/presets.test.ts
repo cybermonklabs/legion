@@ -462,3 +462,9 @@ test("Dashboard and Conversation are no filter, and the four views are", () => {
     expect(isFilter(filter), filter).toBe(true);
   }
 });
+
+// dispatch://INFRA-5704/spec#b-r-control (R1): Threads is a control of the row and no filter, so
+// the row's filter rule leaves it out as it leaves Dashboard out.
+test("Threads is no filter", () => {
+  expect(isFilter("threads")).toBe(false);
+});

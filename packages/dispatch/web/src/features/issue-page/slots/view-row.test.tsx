@@ -100,9 +100,13 @@ function answerReads() {
 }
 
 /** The view row of the fixtures' issue at `path`, its own address unless given, under the page's
- *  providers. Each case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is
- *  the row of five. */
-function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
+ *  providers, with the Threads control given `threadsCount`. Each case draws it at 1440 px
+ *  (`DESKTOP_WIDTH`), from 1280 px up, where the row is the row of five. */
+function renderViewRow(
+  client: QueryClient,
+  path = presetPath(KEY, "conversation"),
+  threadsCount?: number
+) {
   const issue = issueDetails();
   const route = { key: issue.key, kind: "conversation" } as const;
   return render(
@@ -110,7 +114,7 @@ function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <ProvidersSlot issue={issue} route={route}>
-            <ViewRowSlot issue={issue} route={route} />
+            <ViewRowSlot issue={issue} route={route} threadsCount={threadsCount} />
           </ProvidersSlot>
         </KeymapProvider>
       </QueryClientProvider>
@@ -171,6 +175,62 @@ test("the view row draws no count, unit word or flag while a read of the tree is
     ).toContain(FILTER_SIGNAL_WORDS.steps);
   } finally {
     view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+// dispatch://INFRA-5704/spec#b-r-control (R1): the Threads control carries the number of the rows
+// of Waiting on me in the words "N with new replies to you", and draws no count where that
+// number is 0 or not given, even once every other control draws its count. The number is read
+// off no tree, so the control carries it while a read of the tree is out, when no other control
+// draws a count.
+test("the Threads control carries its count in R1's words while a read of the tree is out, and none at 0 or with no number", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const reads = answerReads();
+  // The asks' read, held out until the case answers it.
+  const asks = Promise.withResolvers<never[]>();
+  reads.asks.mockReturnValue(asks.promise as never);
+  try {
+    const counted = renderViewRow(newClient(), presetPath(KEY, "conversation"), 3);
+    try {
+      await waitFor(() => expect(reads.asks, "the asks' read did not go out").toHaveBeenCalled());
+      expect(
+        drawnCounts(counted.container),
+        "the Threads control drew no count of 3 with the asks' read out"
+      ).toEqual({ threads: "3" });
+      expect(
+        counted.getByRole("button", { name: PRESET_NAMES.threads }),
+        "the Threads control is not described by its count in R1's words"
+      ).toHaveAccessibleDescription(`3 ${FILTER_SIGNAL_WORDS.new_replies}`);
+      await act(async () => asks.resolve([]));
+      await waitFor(() =>
+        expect(
+          drawnCounts(counted.container),
+          "the row did not draw the Threads count beside the others once every read had answered"
+        ).toEqual({ ...ANSWERED_COUNTS, threads: "3" })
+      );
+    } finally {
+      counted.unmount();
+    }
+    for (const count of [0, undefined]) {
+      const view = renderViewRow(newClient(), presetPath(KEY, "conversation"), count);
+      try {
+        await waitFor(() =>
+          expect(
+            drawnCounts(view.container),
+            `the row did not draw the other counts, and only them, with the Threads count ${count}`
+          ).toEqual(ANSWERED_COUNTS)
+        );
+        expect(
+          view.getByRole("toolbar").textContent,
+          `the Threads control drew its words with the count ${count}`
+        ).not.toContain(FILTER_SIGNAL_WORDS.new_replies);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
     restoreMatchMedia();
     for (const spy of Object.values(reads)) spy.mockRestore();
   }

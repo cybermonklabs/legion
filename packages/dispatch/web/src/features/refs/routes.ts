@@ -37,6 +37,7 @@ export type IssueRoute =
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
   | { key: string; kind: "dashboard" }
+  | { key: string; kind: "threads"; record?: string }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -515,6 +516,19 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "dashboard") {
     return { key, kind: "dashboard" };
   }
+  // Threads' list and each record of it are pages of the new issue page alone
+  // (dispatch://INFRA-5704/spec#b-r-addresses), out of `PLAIN_ISSUE_TABS` as Dashboard's tab is:
+  // no reader of text reads `dispatch://<KEY>/threads` or these paths as a reference
+  // (`pageRoutes`). `record` is the id the address writes, which the view reads; it is no `id`,
+  // so no reader of an ask's, a comment's or a message's route takes this route for one.
+  if (target === "threads") {
+    return { key, kind: "threads" };
+  }
+  const thread = target.match(/^threads\/([^/?#\s]+)$/);
+  if (thread !== null) {
+    const record = decodedSegment(thread[1] ?? "");
+    return record === undefined ? undefined : { key, kind: "threads", record };
+  }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
@@ -696,6 +710,10 @@ function pageRoutes(
   if (route.kind === "dashboard") {
     return undefined;
   }
+  // Nor does Threads' list or a record's page.
+  if (route.kind === "threads") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -776,6 +794,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   }
   // Dashboard's tab is the issue, as every other tab is, though no reference names the tab.
   if (route.kind === "dashboard") {
+    return issue;
+  }
+  // Threads' pages are the issue too, and no reference names them.
+  if (route.kind === "threads") {
     return issue;
   }
   if (route.kind === "decisions") {
@@ -1018,6 +1040,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} decisions`;
     case "dashboard":
       return `${route.key} dashboard`;
+    case "threads":
+      return `${route.key} threads`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":
@@ -1167,6 +1191,11 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "dashboard") {
     return `${issue}/dashboard`;
+  }
+  if (route.kind === "threads") {
+    return route.record === undefined
+      ? `${issue}/threads`
+      : `${issue}/threads/${encodeURIComponent(route.record)}`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;

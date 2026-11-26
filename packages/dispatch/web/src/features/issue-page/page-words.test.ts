@@ -413,6 +413,7 @@ test("the six controls are named in the order the row draws them, and none is ca
     "Verification",
     "Plan",
     "Decisions",
+    "Threads",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
@@ -925,9 +926,10 @@ test("the join adds each file's keys after the table's own, nested as the table 
 });
 
 // A part's file that the join does not read fails here. So does a part that has no file. The
-// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) is named.
+// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) and Threads' part
+// (dispatch://INFRA-5704) are named.
 test("each open part of the page has its own words file, which the join reads", () => {
-  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard"];
+  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard", "Threads"];
   const expected = parts.map((part) => `page-words-${part.toLowerCase()}.ts`);
   const read: readonly string[] = WORD_FILES.map(({ file }) => file);
   expect(read).toEqual(expected);

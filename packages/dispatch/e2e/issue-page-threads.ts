@@ -144,7 +144,7 @@ export const KIND_WORDS = {
 
 /** The words a row and an opened record draw in `[data-thread-gone]` for a record on a node that
  *  was deleted in Graph (R7, R8). Owed until dispatch://INFRA-1253's node anchor is on the base. */
-export const GONE_NODE = "On a node deleted in Graph";
+export const GONE_NODE = "On text deleted in Graph";
 
 /** From 1024 px up, with no record and no New thread open, the main column's one line (R2): a
  *  `p` inside `[data-thread-main]` holding exactly these words. */

@@ -55,8 +55,15 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
   // gone meanwhile.
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   const shown = useComposerShown(place);
+  // Threads draws neither the box nor the issue's read mark, at rest or with a held target
+  // (dispatch://INFRA-5704/spec#b-r-joins, R16): a record opened there has a box of its own, and
+  // the read mark would move the issue's last read while the reader reads the list, which clears
+  // the marks of its rows (R7). A view on keeps the read mark out already (`place.viewOn`), and a
+  // held target still draws the box under every other view (`useComposerShown`), so under
+  // Threads the slot mounts no box at all.
+  const threads = address.preset === "threads";
   const wrapper = useRef<HTMLDivElement>(null);
-  useFootInset(wrapper, shown, "page");
+  useFootInset(wrapper, shown && !threads, "page");
   return (
     <>
       {place.viewOn || place.documentOpen ? null : (
@@ -64,18 +71,20 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
           <IssueReadMark issueKey={issue.key} />
         </div>
       )}
-      <div
-        className="sticky bottom-0 z-[15] order-1 mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
-        ref={wrapper}
-      >
-        <IssueComposer
-          documentOpen={place.documentOpen}
-          isClosed={issue.closed_at !== null}
-          issueKey={issue.key}
-          tree={readsHeld && namesHeld ? root : undefined}
-          viewOn={place.viewOn}
-        />
-      </div>
+      {threads ? null : (
+        <div
+          className="sticky bottom-0 z-[15] order-1 mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
+          ref={wrapper}
+        >
+          <IssueComposer
+            documentOpen={place.documentOpen}
+            isClosed={issue.closed_at !== null}
+            issueKey={issue.key}
+            tree={readsHeld && namesHeld ? root : undefined}
+            viewOn={place.viewOn}
+          />
+        </div>
+      )}
     </>
   );
 }

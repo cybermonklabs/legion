@@ -59,8 +59,9 @@ The view row is one line at every width.
 `;
 
 /** What the seed below gives each control of the view row to count: no question and no thread
- *  of the reader's, two statements, one check, no plan and no decision. */
-const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard">, number>> = {
+ *  of the reader's, two statements, one check, no plan and no decision. Dashboard draws no count,
+ *  and neither does Threads, since no thread waits on the reader. */
+const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard" | "threads">, number>> = {
   conversation: 0,
   decisions: 0,
   plan: 0,
@@ -503,7 +504,7 @@ test("the six controls are toggles with an address each, one line at every width
     // The toolbar Filters: six toggles in R7's order, Dashboard first, each named by its view's
     // word alone and, but for Dashboard, described by its signal, whose count is the seed's.
     await expect(presetToolbar(page), "no toolbar named Filters holds the six").toHaveCount(1);
-    await expect(presetToggles(page)).toHaveCount(6);
+    await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
     expect(
       await presetToggles(page).evaluateAll((buttons) =>
         buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
@@ -518,6 +519,12 @@ test("the six controls are toggles with an address each, one line at every width
         preset === "conversation" ? "true" : "false"
       );
       if (preset === "dashboard") continue;
+      // Threads counts the rows of Waiting on me, and no thread of this seed waits on the reader,
+      // so it draws no count (dispatch://INFRA-5704/spec#b-r-control).
+      if (preset === "threads") {
+        await expect(presetCount(page, preset), "Threads draws a count").toHaveCount(0);
+        continue;
+      }
       await expect(presetCount(page, preset)).toHaveText(String(SEEDED_COUNTS[preset]));
       await expect(
         toggle,
@@ -560,11 +567,11 @@ test("the six controls are toggles with an address each, one line at every width
     await page.keyboard.press("ArrowRight");
     await expect(presetToggle(page, "spec")).toBeFocused();
     await page.keyboard.press("End");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
     await page.keyboard.press("Home");
-    await expect(presetToggle(page, "dashboard")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[0])).toBeFocused();
     await page.keyboard.press("ArrowLeft");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
 
     // Keys opens the list of keys, which names each view's chord; the five of Conversation and
     // the filters are read here.
@@ -616,7 +623,10 @@ test("the six controls are toggles with an address each, one line at every width
       ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.spec} ${SEEDED_COUNTS.spec}\\b`));
       await presetChooser(page).click();
       await expect(openMenu(page)).toHaveCount(1);
-      await expect(openMenu(page).getByRole("menuitemradio"), "the menu is not six").toHaveCount(6);
+      await expect(
+        openMenu(page).getByRole("menuitemradio"),
+        "the menu does not hold every view"
+      ).toHaveCount(PRESET_ORDER.length);
       for (const preset of PRESET_ORDER) {
         await expect(presetMenuItem(page, preset)).toHaveAttribute(
           "aria-checked",

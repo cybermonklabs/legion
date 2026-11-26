@@ -12,6 +12,7 @@ const REASONS = {
   3: "3. `activatedTabs` only ever gains a tab: the Conversation is drawn the first time its tab is active and stays drawn, so this conditional starts the mount and never ends one.",
   4: "4. `state`, which `IssueDetail` hands the Conversation, is the reader's read mark and pins for the issue (`stateForIssue`), which only the unread boundary, the read mark's dwell and each card's pin read, so it moves no composer's address and draws or ends no composer.",
   5: "5. An address under `/issues/` that parses as no issue draws the not-found page in place of `IssueDetail` (`route === undefined`), so no composer is drawn there, and going there from an issue is leaving the issue, the issue-left row.",
+  6: "6. Threads' addresses (`/threads`, `/threads/<id>`) are the new issue page's alone (dispatch://INFRA-5704 R18), so today's page draws its not-found page there in place of `IssueDetail`: no composer is drawn there, and going there from an issue is leaving the issue, the issue-left row.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -66,6 +67,9 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("IssuePage | IssueDetail | early return | if (route === undefined) return …", {
     reason: REASONS[5],
+  }),
+  ...answers('IssuePage | IssueDetail | early return | if (route.kind === "threads") return …', {
+    reason: REASONS[6],
   }),
   ...answers(
     "IssuePage | IssueDetail | address prop | route={route}",
