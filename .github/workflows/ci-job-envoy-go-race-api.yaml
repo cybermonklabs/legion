@@ -32,8 +32,10 @@ env:
 jobs:
   # The Dispatch API's tests run in three legs, all at the same time, each over the group of the
   # package's tests .github/go-legs/packages/envoy/internal/dispatch/api.yaml gives it;
-  # .github/scripts/go_legs.py prints that group as an anchored -run before the package, and
-  # fails the leg while a test of the package is in no group or in two. The job
+  # .github/scripts/go_legs.py prints that group as an anchored -run before the package. A test
+  # in two groups fails every leg; a test in none runs in the group go_legs.py places it in, the
+  # same in every leg, with a warning (.github/ci-notes/ci-job-daemon-go.md says which is which).
+  # The job
   # envoy-go-race-api below waits for the legs and keeps the check-run name.
   # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
   envoy-go-race-api-legs:
@@ -106,13 +108,14 @@ jobs:
       # piped from .github/scripts/go_legs.py into the counter's go test as `-run=^(Name|...)$`
       # before the package: the names are anchored, so a test whose name begins with another's
       # runs in one leg only, and each test's subtests run with it. go_legs.py lists the
-      # package's tests under this step's own -race first and fails the step while one is in no
-      # group or in two, so a new test fails every leg until the groups file names it, and
-      # `set -o pipefail` is what fails the step then rather than count what xargs got.
+      # package's tests under this step's own -race first: a test in two groups fails the step,
+      # and a test in none is placed with a warning. `set -o pipefail` fails the step when
+      # go_legs.py refuses, and `xargs -r` runs nothing on the empty output that leaves, where a
+      # plain xargs would run the counter once with no package, its whole default table.
       - name: Race-test the Dispatch API
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()

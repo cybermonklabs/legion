@@ -1700,6 +1700,7 @@
   - TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp  # 1.3 s
   - TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill  # 3.0 s
   - TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed  # 1.3 s
+  - TestARenewedLiveSocketReadDeadlineLiftsTheOneItsTimerApplied
   - TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew  # 4.5 s
   - TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsText  # 1.1 s
   - TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersion  # 1.1 s

@@ -36,7 +36,15 @@ in exactly one group, held by `.github/scripts/go_legs.py` before the leg runs; 
 waits for the legs.
 
 What is new here, beside the daemon's: the step runs through
-`packages/envoy/scripts/database-skips.sh`, which counts the run's skips. A leg runs a third of the
-package, so that script takes the leg's `-run=^(…)$` as its own argument and holds its
-`EXPECTED_SKIPS` lines only against the tests that pattern selects; without that, every leg would
-report `database_skips=UNKNOWN` for the expected skips its group does not hold.
+`packages/envoy/scripts/database-skips.sh`, which counts the run's skips. A leg runs a share of the
+package, so that script takes the leg's `-run=^(…)$` as its own argument. An `EXPECTED_SKIPS` line
+whose test the package still has and the pattern leaves out is another leg's and is not held in
+this one; without that, every leg would report `database_skips=UNKNOWN` for the expected skips its
+group does not hold. A line whose test the package no longer has is held in every leg, so a deleted
+or renamed test's line still reads `UNKNOWN` (`packages/envoy/scripts/database-skips.test.sh`,
+control 7).
+
+The `packages/envoy` entry of `.github/go-legs.yaml` names only the two packages these legs and the
+document service's run, with no `elsewhere`: it claims nothing about the module's other packages,
+which run in jobs that do not read the file. So a pull request that adds or removes an envoy
+package, which selects neither lane, cannot leave these legs failing in a later merge group.

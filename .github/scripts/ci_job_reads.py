@@ -772,7 +772,9 @@ def legs_script(module, job, command):
     package. It also takes the command's own build flags (-race, -tags), under which it lists the
     tests of a package a leg runs a group of, so the listing is the build the run then reuses and
     names the tests the run can choose from. `set -o pipefail` is what fails the step when
-    go_legs.py refuses the file or go list fails, rather than run what xargs got."""
+    go_legs.py refuses the file or go list fails, and `xargs -r` runs nothing on the empty output a
+    refusal leaves, where a plain xargs would run the command once with no package (for the skip
+    counter, a run of its whole default table) before the pipeline's status failed the step."""
     words = command.split()
     # `--race` is how packages/envoy/scripts/database-skips.sh takes the same flag, and a leg
     # piped into that counter builds under the detector as surely as one piped into go test.
@@ -781,7 +783,7 @@ def legs_script(module, job, command):
     build += "".join(f" -tags={words[i + 1]}" for i, word in enumerate(words[:-1]) if word == "-tags")
     return ("set -o pipefail\n"
             f"python3 ../../{GO_LEGS_SCRIPT} {module} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
-            f"| xargs {command}")
+            f"| xargs -r {command}")
 
 
 # which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.

@@ -32,8 +32,10 @@ env:
 jobs:
   # The document service's tests run in three legs, all at the same time, each over the group of
   # the package's tests .github/go-legs/packages/envoy/internal/dispatch/docs.yaml gives it;
-  # .github/scripts/go_legs.py prints that group as an anchored -run before the package, and
-  # fails the leg while a test of the package is in no group or in two. The job
+  # .github/scripts/go_legs.py prints that group as an anchored -run before the package. A test
+  # in two groups fails every leg; a test in none runs in the group go_legs.py places it in, the
+  # same in every leg, with a warning (.github/ci-notes/ci-job-daemon-go.md says which is which).
+  # The job
   # envoy-go-race-docs below waits for the legs and keeps the check-run name. Each leg carries the
   # memory sampler and the cleanup detector, as the one job did.
   # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
@@ -122,14 +124,14 @@ jobs:
       # piped from .github/scripts/go_legs.py into the go command as `-run=^(Name|...)$` before
       # the package: the names are anchored, so a test whose name begins with another's runs in
       # one leg only, and each test's subtests run with it. go_legs.py lists the package's tests
-      # under this step's own -race first and fails the step while one is in no group or in two,
-      # so a new test fails every leg until the groups file names it, and `set -o pipefail` is
-      # what fails the step then rather than run what xargs got. `env` carries the two variables
+      # under this step's own -race first: a test in two groups fails the step, and a test in none
+      # is placed with a warning. `set -o pipefail` fails the step when go_legs.py refuses, and
+      # `xargs -r` runs nothing on the empty output that leaves. `env` carries the two variables
       # through xargs, which runs a program and not a shell.
       - name: Race-test the document service
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

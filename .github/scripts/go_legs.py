@@ -188,10 +188,18 @@ def split_problems(module: str, package: str, held: list, legs_path: str) -> lis
 
 
 def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) -> list:
-    """What keeps the entry from running each of `packages` (directories under the module) in
-    exactly one place: a package in no place, a package in two (unless the two are groups of its
-    tests, split_problems), a place that names no package, and an entry of no shape this script
-    reads."""
+    """What keeps the entry from running each package it names, and where it claims the whole
+    module each of `packages` (directories under the module), in exactly one place: a package in
+    no place, a package in two (unless the two are groups of its tests, split_problems), a place
+    that names no package, and an entry of no shape this script reads.
+
+    An entry claims the whole module when it has an `elsewhere` key, which names the job of each
+    package no leg runs: then every package `go list ./...` prints must be in one place, since its
+    legs run the module by elimination (packages/daemon's plain legs are `go list` less the
+    rest). An entry with no `elsewhere` names only the packages its legs run, and claims nothing
+    about the module's others: a package added elsewhere in that module runs where it ran before,
+    in a job that does not read this file, so it is no problem of these legs, and a leg that
+    refused it would fail a merge group the pull request that added it never ran."""
     named, malformed = places(entry)
     found = [f"{legs_path} gives job {job} leg {leg} the entry {written!r}, which is neither "
              f"`- <package>` nor `- <package>: <group>`: write it as one of the two"
@@ -200,9 +208,10 @@ def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) ->
     for place in named:
         where.setdefault(place.package, []).append(place)
     missing, _, unknown = once(packages, where)
-    found += [f"{module}/{package} is a package `go list ./...` prints, and no leg of {legs_path} "
-              f"runs it: add it to the leg of the job that should run it, or to {ELSEWHERE} with the "
-              f"job that runs it" for package in missing]
+    if ELSEWHERE in entry:
+        found += [f"{module}/{package} is a package `go list ./...` prints, and no leg of {legs_path} "
+                  f"runs it: add it to the leg of the job that should run it, or to {ELSEWHERE} with the "
+                  f"job that runs it" for package in missing]
     for package in packages:
         held = where.get(package, [])
         if len(held) > 1 or (held and held[0].group is not None):

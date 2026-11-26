@@ -307,4 +307,22 @@ print(" ".join(path for path in ex.documents()
 check "each workflow the step reader reads is among those reads${unread:+ (add it to .github/ci-gates/test.go_test_step_expansion_test.py): $unread}" \
   "$(is "$unread" "")"
 
+echo "case: both envoy lanes run in legs, and the reader reads every leg, keyed on its step"
+# Each leg is a job of its own with its row's values written in, so each is read apart; and each
+# runs a share of one step's tests, so each is keyed on the step's own name, which is what an
+# EXCEPTIONS entry declares (the document service's pair with envoy-go's plain race-impossible
+# step among them). The API's legs name no `go test` of their own: they pipe into the skip
+# counter, and the reader must still yield them.
+rows=$(py 'steps = ex.steps_of(ex.documents())
+for name in ("Race-test the Dispatch API", "Race-test the document service"):
+    found = [s for s in steps if s.name == name]
+    print(name, len(found), ",".join(sorted(s.row for s in found)), len({s.key for s in found}))')
+check "the API's three legs are read, one step" \
+  "$(contains "$rows" '^Race-test the Dispatch API 3 leg 1,leg 2,leg 3 1$')"
+check "the document service's three legs are read, one step" \
+  "$(contains "$rows" '^Race-test the document service 3 leg 1,leg 2,leg 3 1$')"
+stale=$(py 'keys = {s.key for s in ex.steps_of(ex.documents())}
+print(" ".join(sorted(f"{w}:{n}" for e in ex.EXCEPTIONS for (w, n) in e.steps if (w, n) not in keys)) or "none")')
+check "every EXCEPTIONS entry names steps the reader yields, so none is left unable to match" "$(is "$stale" "none")"
+
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"

@@ -89,6 +89,38 @@ check "names the package and what to do" "$(contains "$(err)" 'mod/b/c is a pack
 check "as an error on the legs file" "$(contains "$(err)" '^::error file=.github/go-legs.yaml::')"
 check "and fails every leg, not only the one that lost it" "$(contains "$(legs "$root" job 2)" '^exit=1$')"
 
+echo "case: an entry with no elsewhere names only the packages its legs run"
+# Such an entry claims nothing about the module's other packages, which run in jobs that do not
+# read this file (packages/envoy's race-api and race-docs legs). A package added elsewhere in the
+# module is then no problem of these legs: a leg that refused it would fail a merge group that the
+# pull request adding it never ran, since that pull request's paths select no job of these legs.
+root=$(tree partial 'mod:
+  job:
+    1:
+      - a
+    2:
+      - b')
+check "a leg passes though the module's other packages are named nowhere" \
+  "$(is "$(legs "$root" job 1)" "./a/
+exit=0")"
+check "and says nothing of them" "$(is "$(contains "$(err)" 'b/c is a package')" false)"
+check "the other leg too" "$(contains "$(legs "$root" job 2)" '^exit=0$')"
+root=$(tree partial-unknown 'mod:
+  job:
+    1:
+      - a
+    2:
+      - gone')
+check "a package it names that go list does not print still fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'names mod/gone (job leg 2), which `go list ./...` does not print as a package')"
+root=$(tree partial-twice 'mod:
+  job:
+    1:
+      - a
+    2:
+      - a')
+check "and a package it names twice still fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+
 echo "case: a package two places name"
 root=$(tree twice 'mod:
   job:
