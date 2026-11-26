@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
@@ -13,7 +13,7 @@ import type { Subprocess } from "bun"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
-import { collected } from "./row-deadline"
+import { collected, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -26,6 +26,12 @@ const DISPATCH_TOKEN = fixtureSecret("dsp")
 // before the command's guard ends the row. Fixed limits of 20 s and 30 s decided rows before: each
 // hook first wrote Bun's transpiler cache into its empty HOME (`./transpiler-cache.ts`), and at
 // loads of 790 to 960 a hook did not exit within them.
+//
+// The scan row keeps its own limit (`SCAN_ROW_LIMIT_MS`), and `waitSites` kills the scan 5 s
+// before it, counted from the row's start, which `rowStarted` marks. Unmarked, the count runs
+// from the file's load, so once this file has run for that limit, as it does under load, the
+// scan's kill deadline is past before the scan starts and the row fails at once.
+beforeEach(rowStarted)
 
 /** The pidfile directories of the fake jjs that never answer (`hangingJjDirectory`), one per jj,
  * each recorded before its row runs the hook. The hook spawns jj in a process group of its own
