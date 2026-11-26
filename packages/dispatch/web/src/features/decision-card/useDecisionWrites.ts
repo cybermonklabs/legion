@@ -71,8 +71,9 @@ export function useDecisionWrites({
   });
   const send = useKeyedWrite({
     inline: true,
-    // A write's label holds no markup: the reading list's `decision-heading-words`.
-    label: () => `${DECISION_ACT_WORDS.change} ${name}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`. It names the
+    // write as today's Decisions tab named it on `main`: "Change to <heading>".
+    label: () => `${DECISION_ACT_WORDS.change_to} ${name}`,
     method: "POST",
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
       api.createComment(issueKey, changeCommentInput(documentId, input), bounds),

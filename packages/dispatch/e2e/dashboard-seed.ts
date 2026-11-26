@@ -141,7 +141,7 @@ export async function mainHolds(): Promise<MainHolds> {
 
 /** A phase the daemon's list does not hold, for the row that reads "In another phase", and a
  *  claim state it does not hold, for the role that reads "in another state". */
-export const UNLISTED = "parked";
+export const UNLISTED = "unknown_state";
 
 /** A phase as the sampler stores it: the daemon's own word (`LEGION_PHASES`); `awaiting_merge`,
  *  which a daemon before its contract 86 reports and Dispatch still names
@@ -604,8 +604,9 @@ function entryRead(entry: unknown): DecisionRead | undefined {
 }
 
 /** Waits until `ready` holds of the issue's decisions, as the document service indexes their
- *  links a moment after each write answers. */
-async function awaitDecisions(
+ *  links a moment after each write answers. A row that writes a decision of its own
+ *  (`writeDecision`) waits for it here. */
+export async function awaitDecisions(
   key: string,
   holds: MainHolds,
   what: string,
@@ -965,6 +966,24 @@ export async function seedDashboard(
   };
 }
 
+/** A `decision` block of the spec, as every write of a decision where decisions are nodes formats
+ *  it: the statements it shapes, its heading and its words, and `replaced` where a later
+ *  decision took its place. */
+function decisionBlock(
+  id: string,
+  shaped: string,
+  decision: SeededDecision,
+  { replaced = false }: { readonly replaced?: boolean } = {}
+): string {
+  return `:::decision{#${id} shaped="${shaped}"${replaced ? ' replaced="true"' : ""}}\n### ${decision.heading}\n\n${decision.words}\n:::`;
+}
+
+/** A decision as a section of `decisions.md` on a bare main: its heading and its words, whose own
+ *  `Shapes <address>` is the tie. */
+function decisionSection(decision: SeededDecision): string {
+  return `## ${decision.heading}\n\n${decision.words}`;
+}
+
 /** The decisions as first written: on a bare main a `decisions.md`, and where decisions are
  *  nodes `decision` blocks of the spec's `## Decisions` part, with the person's decision an
  *  answered ask block that carries a `shaped` tie (dispatch://INFRA-1150). */
@@ -984,13 +1003,11 @@ async function writeDecisions(
   readonly read: readonly DecisionRead[];
 }> {
   if (holds.decisionsAreNodes) {
-    const block = (id: string, shaped: string, decision: { heading: string; words: string }) =>
-      `:::decision{#${id} shaped="${shaped}"}\n### ${decision.heading}\n\n${decision.words}\n:::`;
     const part = [
       "## Decisions",
-      block("d-kept", statement(key, "r1"), words.kept),
-      block("d-first", `${statement(key, "r1")} ${statement(key, "r3")}`, words.first),
-      `:::decision{#d-replaced shaped="${statement(key, "r3")}" replaced="true"}\n### ${words.replaced.heading}\n\n${words.replaced.words}\n:::`,
+      decisionBlock("d-kept", statement(key, "r1"), words.kept),
+      decisionBlock("d-first", `${statement(key, "r1")} ${statement(key, "r3")}`, words.first),
+      decisionBlock("d-replaced", statement(key, "r3"), words.replaced, { replaced: true }),
       `:::ask{#a-person urgency="med" shaped="${statement(key, "r2")}"}\n${words.person.heading}?\n:::`,
     ].join("\n\n");
     await editArtifact(
@@ -1013,9 +1030,9 @@ async function writeDecisions(
     key,
     {
       content: `${[
-        `## ${words.kept.heading}\n\n${words.kept.words}`,
-        `## ${words.person.heading}\n\n${words.person.words}`,
-        `## ${words.first.heading}\n\n${words.first.words}`,
+        decisionSection(words.kept),
+        decisionSection(words.person),
+        decisionSection(words.first),
         `## Replaced\n\n### ${words.replaced.heading}\n\n${words.replaced.words}`,
       ].join("\n\n")}\n`,
       name: "decisions.md",
@@ -1041,9 +1058,69 @@ async function writeDecisions(
   };
 }
 
-/** The second decision that waits for review, written after the first: a new section at the end
- *  of `decisions.md`, whose `##` heading closes `## Replaced`, or a `decision` block at the end
- *  of the spec where decisions are nodes. Answers its block id. */
+/** One decision to write with `writeDecision`. */
+interface DecisionWrite extends SeededDecision {
+  /** The block id of its `decision` block of the spec, where decisions are nodes. A section of
+   *  `decisions.md` on a bare main is named by the read, so this is unused there. */
+  readonly id: string;
+  /** The statements it shapes, by address, as a block's `shaped` writes them. On a bare main the
+   *  tie is the `Shapes <address>` the caller wrote into `words`, and nothing is added to it. */
+  readonly shaped: string;
+}
+
+/** The documents a decision is written into. */
+interface DecisionDocuments {
+  /** The issue's `decisions.md` on a bare main, where it has one: the decision is added at its
+   *  end. Undefined where there is none, and the write makes the document. Unused where
+   *  decisions are nodes. */
+  readonly decisions?: string;
+  /** The spec, where decisions are nodes: the decision is a `decision` block at its end. */
+  readonly spec: string;
+}
+
+/**
+ * One decision written as `writer` after the issue holds its first ones, and only the write: the
+ * caller waits for the read to hold it (`awaitDecisions`). Where decisions are nodes it is a
+ * `decision` block at the end of the spec (`decisionBlock`). On a bare main it is a section of
+ * `decisions.md` (`decisionSection`): the whole document, made with it, where the issue has none,
+ * else a section added at the end of the document, whose `##` heading closes the `## Replaced`
+ * section before it. `writeDecisions` writes the first ones in one edit or one create, so that no
+ * row reads them half written, and does not come through here.
+ */
+export async function writeDecision(
+  key: string,
+  documents: DecisionDocuments,
+  holds: MainHolds,
+  decision: DecisionWrite,
+  writer: { readonly actor: Actor; readonly as: "agent" }
+): Promise<void> {
+  if (holds.decisionsAreNodes) {
+    const block = decisionBlock(decision.id, decision.shaped, decision);
+    await editArtifact(
+      documents.spec,
+      { ops: [{ after: "end", markdown: block, op: "insert" }] },
+      writer
+    );
+    return;
+  }
+  if (documents.decisions === undefined) {
+    await createIssueArtifact(
+      key,
+      { content: `${decisionSection(decision)}\n`, name: "decisions.md" },
+      writer
+    );
+    return;
+  }
+  await editArtifact(
+    documents.decisions,
+    { ops: [{ after: "end", markdown: decisionSection(decision), op: "insert" }] },
+    writer
+  );
+}
+
+/** The second decision that waits for review, written after the first (`writeDecision`): a new
+ *  section at the end of `decisions.md`, or a `decision` block at the end of the spec where
+ *  decisions are nodes. Answers its block id. */
 async function writeSecondDecision(
   key: string,
   specArtifactId: string,
@@ -1051,38 +1128,19 @@ async function writeSecondDecision(
   holds: MainHolds,
   words: SeededDecisions
 ): Promise<string> {
+  await writeDecision(
+    key,
+    { decisions: documentId, spec: specArtifactId },
+    holds,
+    { ...words.second, id: "d-second", shaped: statement(key, "r4") },
+    asPlanner
+  );
   if (holds.decisionsAreNodes) {
-    await editArtifact(
-      specArtifactId,
-      {
-        ops: [
-          {
-            after: "end",
-            markdown: `:::decision{#d-second shaped="${statement(key, "r4")}"}\n### ${words.second.heading}\n\n${words.second.words}\n:::`,
-            op: "insert",
-          },
-        ],
-      },
-      asPlanner
-    );
     await awaitDecisions(key, holds, "the second decision block", (decisions) =>
       decisions.some((one) => one.id === "d-second")
     );
     return "d-second";
   }
-  await editArtifact(
-    documentId,
-    {
-      ops: [
-        {
-          after: "end",
-          markdown: `## ${words.second.heading}\n\n${words.second.words}`,
-          op: "insert",
-        },
-      ],
-    },
-    asPlanner
-  );
   const read = await awaitDecisions(key, holds, "the second waiting", (decisions) =>
     decisions.some((one) => one.heading === words.second.heading && one.waiting)
   );

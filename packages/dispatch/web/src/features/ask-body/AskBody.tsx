@@ -59,7 +59,14 @@ import {
   ASK_FORM_WORDS,
   ASK_LINE_WORDS,
 } from "./ask-body-words";
-import { type AskTextRenderer, authored, type TextMarks } from "./ask-text";
+import {
+  type AskPalette,
+  type AskTextRenderer,
+  authored,
+  ownPart,
+  ownWords,
+  type TextMarks,
+} from "./ask-text";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 
@@ -70,9 +77,10 @@ import { EarlierApproval } from "./EarlierApproval";
  * page's warning, its waiting orange; the answer box is the page's field, which keeps `main`'s
  * focus rule, the application's one focus indicator; Answer and Ask back instead are filled with
  * the ink, as the page's one filled control is, and the other actions are its header control's
- * rule and muted words. What the body's children draw - the options, the earlier approval, the
- * unsent answer's box (`UnsentBox`) - is theirs, and the card's frame is the card's own
- * (`inbox/AskCard.tsx`).
+ * rule and muted words. What the body's children draw is theirs: the options, the earlier
+ * approval, the anchor, Decline to answer and the record in the palette the host hands them
+ * (`AskBodyProps.palette`), the unsent answer's box (`UnsentBox`) in its own, and the card's
+ * frame is the card's own (`inbox/AskCard.tsx`).
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -172,19 +180,31 @@ export interface AskBodyProps {
    *  write the caller shows (`AskCompletionCard`). */
   markRecord?: DwellRef;
   /** The two marks of a host that divides its own words from an author's (`TextMarks`): with
-   *  them the open body's root wears the mark of the body's own words, which are the issue
-   *  page's declared ones (`ask-body-words.ts`), and each value inside it - who asked, who it
-   *  waits on, the document, a version, a date - the mark of a value, as the caller's renderer
-   *  marks the ask's own texts. The shared answer box, with its hint, and a refusal under it are
-   *  the box's and the server's words, so the form that holds them wears the mark of a value,
-   *  and the options and the actions in it the body's again. Dashboard hands them; no other
-   *  host does, so every other surface draws the elements it always drew, with no mark. */
+   *  them each element of the open body that holds the body's own words - a label, a line, a
+   *  control, the dot between two parts of a line - wears the mark of those words, which are the
+   *  issue page's declared ones (`ask-body-words.ts`), and each value inside one - who asked,
+   *  who it waits on, the document, a version, a date - the mark of a value, as the caller's
+   *  renderer marks the ask's own texts. The mark stands on each such element and never on a
+   *  box that holds several: a reader of the page takes each marked element's words whole, with
+   *  its values taken out, and two controls in one marked box read as one word ("Answer" and
+   *  "Ask back" as "answerask"). The shared answer box, with its hint, and a refusal under it,
+   *  are the box's and the server's words, so the form that holds them wears the mark of a
+   *  value, and the options' name and each action in it the body's again. Dashboard hands them;
+   *  no other host does, so every other surface draws the elements it always drew, with no mark. */
   marks?: TextMarks;
   /** Called once the server has recorded the reader's decline (`DeclineControl`). */
   onAnswered?: (id: string) => void;
   /** The project document that owns an ask whose read lacks `document`
    *  (`AskCardProps.owner`), where a file pasted into the answer goes. */
   owner?: { project: string; slug: string };
+  /** The palette the body's children and its settled record draw in (`AskPalette`): the
+   *  options, the earlier approval, the anchor's link and quote, Decline to answer and its
+   *  dialog, and the record. The body's own elements take the page's colours inside
+   *  `NoTooltips` whatever the host hands (`ON_PAGE`), so today's Dashboard, which is drawn
+   *  there, keeps `main`'s children while the new page's Dashboard hands `page` and draws every
+   *  element of the body in the page's colours (dispatch://INFRA-3940 R13). No other host hands
+   *  it, so every other surface draws the elements it always drew. */
+  palette?: AskPalette;
   /** The caller's renderer of every text of the ask the body draws (R17, `AskText`): the
    *  question, the options' labels and descriptions, and in the record the answer, the earlier
    *  answers, the reason a question was closed and the question's earlier wordings. */
@@ -199,7 +219,10 @@ export interface AskBodyProps {
  * The ask body (dispatch://INFRA-5702/spec#b-r-ask-body): an ask's question, options and answer
  * parts, which every surface draws an ask with, and the settled record in their place once the
  * ask is settled. Its root carries `data-ask-body`; a record carries it inside the element its
- * test id names (`AskCompletionCard`).
+ * test id names (`AskCompletionCard`). The root that draws the ask to answer carries
+ * `data-ask-answering` too, and a record's root does not: a page's single keys stay off an
+ * ask's answering controls where no card stands around them, and keep working on a record's
+ * (`inbox/ask-card.ts`).
  *
  * An open ask is root R34's row, as the new issue page draws a question's (`NodeRow.tsx`): a
  * bullet in the question's colour, then the question's words, with the kind, who asked and when
@@ -228,6 +251,7 @@ export function AskBody({
   marks,
   onAnswered,
   owner,
+  palette = "main",
   renderText,
   urgencyWord,
 }: AskBodyProps): ReactNode {
@@ -437,6 +461,7 @@ export function AskBody({
       disabled={cannotAnswer || disabledWhileOut || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
+      {...marks?.pageChrome}
     >
       {mutation.isPending
         ? changing
@@ -449,16 +474,16 @@ export function AskBody({
   );
   const submitHintNode =
     submitHint === undefined ? null : (
-      <p className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`} id={submitHintId}>
+      <p
+        className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+        id={submitHintId}
+        {...marks?.pageChrome}
+      >
         {submitHint}
       </p>
     );
   const answerActions = choiceShown ? (
-    <fieldset
-      aria-label={ASK_FORM_WORDS.question_shaped}
-      className="flex gap-2"
-      {...marks?.pageChrome}
-    >
+    <fieldset aria-label={ASK_FORM_WORDS.question_shaped} className="flex gap-2">
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
@@ -468,6 +493,7 @@ export function AskBody({
         }}
         ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
         type="button"
+        {...marks?.pageChrome}
       >
         {clarification.isPending ? ASK_FORM_WORDS.sending : ASK_FORM_WORDS.ask_back_instead}
       </button>
@@ -479,12 +505,13 @@ export function AskBody({
           if (!refusing) sendAnswer(answerText);
         }}
         type="button"
+        {...marks?.pageChrome}
       >
         {ASK_FORM_WORDS.answer_anyway}
       </button>
     </fieldset>
   ) : (
-    <div className="space-y-2" {...marks?.pageChrome}>
+    <div className="space-y-2">
       <div className="flex gap-2">
         {submitButton}
         {changing ? (
@@ -496,6 +523,7 @@ export function AskBody({
               if (!refusing) cancelChanging();
             }}
             type="button"
+            {...marks?.pageChrome}
           >
             {ASK_FORM_WORDS.cancel}
           </button>
@@ -511,6 +539,7 @@ export function AskBody({
               if (!refusing) sendClarification();
             }}
             type="button"
+            {...marks?.pageChrome}
           >
             {clarification.isPending ? ASK_FORM_WORDS.sending : ASK_FORM_WORDS.ask_back}
           </button>
@@ -533,6 +562,7 @@ export function AskBody({
           frame={frame}
           markRef={markRecord}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
+          palette={palette}
           renderText={renderText}
         />
         {unsentAnswer === "" ? null : (
@@ -573,7 +603,7 @@ export function AskBody({
     sessionAuthor === undefined || askerControl === undefined ? (
       askerName(
         displayedAsk.author.id === "" ? (
-          ASK_LINE_WORDS.asked
+          ownWords(marks, ASK_LINE_WORDS.asked)
         ) : (
           <AskAgent actor={displayedAsk.author} agentNames={agentNames} marks={marks} />
         )
@@ -605,7 +635,10 @@ export function AskBody({
   // when are one part, narrow and wide: the time never opens a line of its own. Outside
   // `NoTooltips` the time is held whole and the asker's name gives up the width the time needs
   // (`askerName` says how); inside, the time is a value that breaks anywhere as the name does,
-  // and the part's one flex line keeps the two together.
+  // and the part's one flex line keeps the two together. Each word of the body's on it, and each
+  // dot between two parts, carries the mark of the body's words on its own element
+  // (`AskBodyProps.marks`); the line itself carries none.
+  const dot = ownPart(marks, <Dot />);
   const firstLineEnd = (
     <div
       className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 @max-[32rem]/ask-body:max-w-full @max-[32rem]/ask-body:basis-full @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
@@ -614,25 +647,29 @@ export function AskBody({
         <>
           {isApproval ? (
             <>
-              <span className="shrink-0 font-semibold">{ASK_APPROVAL_WORDS.requested}</span>
-              <Dot />
+              <span className="shrink-0 font-semibold" {...marks?.pageChrome}>
+                {ASK_APPROVAL_WORDS.requested}
+              </span>
+              {dot}
             </>
           ) : null}
           {urgencyText === undefined ? null : (
             <>
-              <span className="shrink-0 font-semibold">{urgencyText}</span>
-              <Dot />
+              <span className="shrink-0 font-semibold" {...marks?.pageChrome}>
+                {urgencyText}
+              </span>
+              {dot}
             </>
           )}
-          <span className={`shrink-0 font-semibold ${pageKindTag.question}`}>
+          <span className={`shrink-0 font-semibold ${pageKindTag.question}`} {...marks?.pageChrome}>
             {ASK_LINE_WORDS.kind}
           </span>
-          <Dot />
+          {dot}
         </>
       )}
       <span className="flex min-w-0 items-center gap-x-1.5">
         {asker}
-        <Dot />
+        {dot}
         <Timestamp at={displayedAsk.created_at} className={tooltips ? "shrink-0" : undefined} />
       </span>
     </div>
@@ -663,7 +700,12 @@ export function AskBody({
           spec's own placement), with the diff from that version behind Show diff; a first
           request carries no earlier approval, and EarlierApproval renders nothing for it. */}
       {displayedAsk.approval === undefined ? null : (
-        <EarlierApproval agentNames={agentNames} approval={displayedAsk.approval} marks={marks} />
+        <EarlierApproval
+          agentNames={agentNames}
+          approval={displayedAsk.approval}
+          marks={marks}
+          palette={palette}
+        />
       )}
       {/* Whose turn it is, the one part of the ask's provenance a reader acts on, on its own line
           under the question. An agent's name is what gives up width. */}
@@ -672,6 +714,7 @@ export function AskBody({
           <span
             className={`${turnHolder === "you" ? "shrink-0" : tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"} font-semibold ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
             data-testid={`turn-${displayedAsk.id}`}
+            {...marks?.pageChrome}
           >
             {`${ASK_LINE_WORDS.waiting_on} `}
             {turnHolder === "you" ? (
@@ -692,7 +735,10 @@ export function AskBody({
         <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} marks={marks} />
       ) : null}
       {askChanged ? (
-        <p className={`mt-3 text-sm font-medium ${tooltips ? inlineWarningText : ON_PAGE.warning}`}>
+        <p
+          className={`mt-3 text-sm font-medium ${tooltips ? inlineWarningText : ON_PAGE.warning}`}
+          {...marks?.pageChrome}
+        >
           {ASK_FORM_WORDS.changed}
         </p>
       ) : null}
@@ -712,12 +758,10 @@ export function AskBody({
           // Inside `NoTooltips`, while the body refuses, the options are refused by their group's
           // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
           // attribute of its own on its input (`AskChoiceRow`).
-          <fieldset
-            aria-disabled={refusedWhileOut}
-            className="min-w-0 space-y-2"
-            {...marks?.pageChrome}
-          >
-            <legend className="sr-only">{ASK_FORM_WORDS.options}</legend>
+          <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
+            <legend className="sr-only" {...marks?.pageChrome}>
+              {ASK_FORM_WORDS.options}
+            </legend>
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
@@ -730,6 +774,7 @@ export function AskBody({
                   if (!refusing) selectRealOption(option.label);
                 }}
                 option={option}
+                palette={palette}
                 renderText={renderText}
                 source={source}
               />
@@ -744,6 +789,7 @@ export function AskBody({
                   if (!refusing) toggleOther();
                 }}
                 option={{ label: ASK_FORM_WORDS.other }}
+                palette={palette}
                 renderText={renderText}
                 source={source}
               />
@@ -783,6 +829,7 @@ export function AskBody({
           decline={decline}
           marks={marks}
           onDeclined={onAnswered}
+          palette={palette}
         />
       ) : null}
     </>
@@ -792,20 +839,29 @@ export function AskBody({
   // as a block as wide as the box it gives the body, so the inline-size containment a container
   // takes - its own content no longer widens it - takes no width from the body.
   return (
-    <div className="@container/ask-body" data-ask-body="" {...marks?.pageChrome}>
+    <div className="@container/ask-body" data-ask-answering="" data-ask-body="">
       <AskAnchorHeader
         ask={displayedAsk}
         inBlock={inBlock}
         marks={marks}
+        palette={palette}
         quoteSpacing="roomy"
         tone="surface"
       />
-      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
+      <OrphanedAnchorNotice
+        artifactSlug={artifactSlug}
+        ask={displayedAsk}
+        marks={marks}
+        palette={palette}
+      />
       {inBlock ||
       displayedAsk.block_id === undefined ||
       displayedAsk.block_id === null ||
       displayedAsk.block_artifact === undefined ? null : (
-        <p className={`mt-2 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
+        <p
+          className={`mt-2 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}
+          {...marks?.pageChrome}
+        >
           <AskBlockLink ask={displayedAsk} />
         </p>
       )}

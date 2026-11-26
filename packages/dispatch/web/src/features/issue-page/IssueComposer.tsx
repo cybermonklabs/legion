@@ -11,11 +11,14 @@ import {
 import { useHeldSend } from "../conversation/held-sends";
 import {
   MentionComposer,
+  type OutlineAnswers,
   type OutlineKind,
   type OutlineLook,
+  type OutlineNames,
 } from "../conversation/MentionComposer";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
-import { AgentName } from "../refs/AgentName";
+import { AgentName, type AgentStateWords } from "../refs/AgentName";
+import type { RefPickerWords } from "../refs/ref-picker";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
@@ -32,6 +35,8 @@ import {
 import { authorText, pageChrome } from "./page-structure";
 import {
   ANSWER_LINES,
+  BOX_PICKER_LINES,
+  BOX_PICKER_NAMES,
   COMPOSER_ANSWER_WORDS,
   CONTROL_LABELS,
   NODE_TYPE_NAMES,
@@ -79,6 +84,77 @@ function placeholderOf(target: keyof typeof PLACEHOLDERS, phone: boolean): strin
   const [wide, narrow] = PLACEHOLDERS[target];
   return phone ? narrow : wide;
 }
+
+/** What the box says in answer to the reader's act, each one sentence of the page's own list
+ *  (`COMPOSER_ANSWER_WORDS`), in place of the composer's own and of Dispatch's (decision 527). */
+const ANSWERS: OutlineAnswers = {
+  changedEdit: COMPOSER_ANSWER_WORDS.changed_edit,
+  deletedReply: COMPOSER_ANSWER_WORDS.deleted_reply,
+  delivery: COMPOSER_ANSWER_WORDS.delivery,
+  elsewhere: COMPOSER_ANSWER_WORDS.elsewhere,
+  goneReply: COMPOSER_ANSWER_WORDS.gone_reply,
+  keptReply: COMPOSER_ANSWER_WORDS.kept_reply,
+  late: COMPOSER_ANSWER_WORDS.late,
+  refusals: COMPOSER_ANSWER_WORDS.send_refusals,
+  refused: COMPOSER_ANSWER_WORDS.refused,
+  stopped: COMPOSER_ANSWER_WORDS.stopped,
+  upload: COMPOSER_ANSWER_WORDS.upload,
+};
+
+/** What the state mark before an agent the target line names says (`AgentStateWords`), and the
+ *  one before the agent a row of the box's picker names (`PICKER`), in the page's words: a
+ *  running session's state, how long ago it was seen and what an unresponsive one's state means
+ *  (`agent_running`, `agent_seen`, `agent_unresponsive_note`), and the other states in the words
+ *  the claim says them in, which the registry judges alike. */
+const TARGET_STATE_WORDS: AgentStateWords = {
+  labels: {
+    "not-running": CONTROL_LABELS.not_running,
+    running: CONTROL_LABELS.agent_running,
+    unknown: CONTROL_LABELS.unchecked,
+    unresponsive: CONTROL_LABELS.unresponsive,
+  },
+  seen: CONTROL_LABELS.agent_seen,
+  unresponsive: CONTROL_LABELS.agent_unresponsive_note,
+};
+
+/** The words the reference picker in the box draws, in the page's kind words: its names
+ *  (`BOX_PICKER_NAMES`), its lines (`BOX_PICKER_LINES`), the page's own words of a list of
+ *  references still loading and one that could not be read, and the state mark before the agent
+ *  a party's row names, as the target line names it (`TARGET_STATE_WORDS`). */
+const PICKER: RefPickerWords = {
+  headings: BOX_PICKER_NAMES.headings,
+  instruction: BOX_PICKER_LINES.instruction,
+  label: BOX_PICKER_NAMES.label,
+  marks: TARGET_STATE_WORDS,
+  parties: BOX_PICKER_LINES.agents,
+  parts: {
+    blocks: { control: BOX_PICKER_NAMES.parts.blocks, none: BOX_PICKER_LINES.parts_none.blocks },
+    documents: {
+      control: BOX_PICKER_NAMES.parts.documents,
+      none: BOX_PICKER_LINES.parts_none.documents,
+    },
+  },
+  states: {
+    empty: BOX_PICKER_LINES.empty,
+    loading: ANSWER_LINES.references_loading,
+    unreachable: ANSWER_LINES.references_unreadable,
+  },
+  stoppedRole: BOX_PICKER_LINES.stopped_role,
+};
+
+/** The names a screen reader reads the write line by, and its field's description, which says
+ *  what its keys do; the edit line's say Enter saves (`EDIT_NAMES`). */
+const WRITE_NAMES: OutlineNames = {
+  description: CONTROL_LABELS.composer_keys,
+  field: {
+    ask: CONTROL_LABELS.composer_question,
+    comment: CONTROL_LABELS.composer_comment,
+    edit: CONTROL_LABELS.composer_edit,
+  },
+  form: CONTROL_LABELS.composer_form,
+  targets: CONTROL_LABELS.composer_mentioned,
+};
+const EDIT_NAMES: OutlineNames = { ...WRITE_NAMES, description: CONTROL_LABELS.composer_keys_edit };
 
 /** Where the box stands on the page, as the slot reads it off the address (`slots/foot.tsx`). */
 export interface BoxPlace {
@@ -385,13 +461,15 @@ function WriteLine({
   const targets = useMemo(() => (tree === undefined ? undefined : drawnTargets(tree)), [tree]);
   const look: OutlineLook = {
     anchor,
+    answers: ANSWERS,
     cancelReply: CONTROL_LABELS.write_on_issue,
-    deletedReplyWay: ANSWER_LINES.deleted_reply_way,
     discardDraft: CONTROL_LABELS.discard_draft,
     end,
     endMark: CONTROL_LABELS.target_end_mark,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
     kinds: writesKinds ? KINDS : [],
+    names: WRITE_NAMES,
+    picker: PICKER,
     placeholder: placeholderOf(aim?.placeholder ?? "issue", place.phone),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.send,
@@ -413,7 +491,6 @@ function WriteLine({
       ),
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
-    words: COMPOSER_ANSWER_WORDS.composer,
   };
   return (
     <MentionComposer
@@ -497,12 +574,14 @@ function EditLine({
   const back = () =>
     finish(writer, place, { to: "self", under: { id: editing.id, kind: "comment" } });
   const look: OutlineLook = {
+    answers: ANSWERS,
     cancelReply: CONTROL_LABELS.write_on_issue,
-    deletedReplyWay: ANSWER_LINES.deleted_reply_way,
     discardDraft: CONTROL_LABELS.discard_draft,
     end: back,
     endMark: CONTROL_LABELS.target_end_mark,
     kinds: [],
+    names: EDIT_NAMES,
+    picker: PICKER,
     placeholder: placeholderOf("edit", place.phone),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.save,
@@ -510,7 +589,6 @@ function EditLine({
     target: <TargetNamed author={author} doing={CONTROL_LABELS.editing} kind="comment" />,
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
-    words: COMPOSER_ANSWER_WORDS.composer,
   };
   return (
     <MentionComposer
@@ -534,9 +612,10 @@ function EditLine({
  * What a target line says of its target (R3, R5, R11): what the line does to it - "Replying to:"
  * or "Editing:" - the target's author, where the line knows one, named as the page names an
  * author (`AgentName`'s `author`), so a person who acted through a session reads as their row
- * names them, and the page's word for its kind, with a middle dot between the two. It draws none
- * of the target's words: the entry stands whole in its own row, and an edited comment's words
- * stand whole in the field.
+ * names them, an agent's state mark named in the page's words (`TARGET_STATE_WORDS`), and the
+ * page's word for its kind, with a middle dot between the two. It draws none of the target's
+ * words: the entry stands whole in its own row, and an edited comment's words stand whole in the
+ * field.
  */
 function TargetNamed({
   author,
@@ -553,7 +632,7 @@ function TargetNamed({
       {author === undefined ? null : (
         <>
           <b className="font-semibold text-page-ink">
-            <AgentName actor={author} author inline />
+            <AgentName actor={author} author inline stateWords={TARGET_STATE_WORDS} />
           </b>{" "}
           <span aria-hidden="true">{CONTROL_LABELS.target_separator}</span>{" "}
         </>

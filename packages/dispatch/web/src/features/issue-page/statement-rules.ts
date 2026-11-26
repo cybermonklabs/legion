@@ -1,8 +1,13 @@
 import { primarySpec } from "../../api/issue-cache";
-import type { CheckBlock, CheckResult, DisplayTree, IssueCoverage } from "../../api/types";
+import type {
+  CheckBlock,
+  CheckResult,
+  DisplayTree,
+  IssueCoverage,
+  IssueDetails,
+} from "../../api/types";
 import { newestTimeFirst } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
-import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import type { CheckState, StatementState } from "./page-words";
 
 /**
@@ -14,9 +19,10 @@ import type { CheckState, StatementState } from "./page-words";
  * text run (`titleReading`). Dashboard's two tiles, the Verification view and the Spec view read a
  * statement by these alone, so each draws the same Met, Unknown and Out of date (R6, R14).
  *
- * They hold no React, make no request, and import no code of the tree's model - `tree-drafts.ts`,
- * `issue-tree.ts`, `useIssueTree.ts` - only its types, so Dashboard reads the one rule the tree
- * reads without carrying the tree in its chunk (R14).
+ * They hold no React, make no request, and import nothing of the tree's model - `tree-drafts.ts`,
+ * `issue-tree.ts`, `useIssueTree.ts` - not even its types, so Dashboard reads the one rule the
+ * tree reads without carrying the tree in its chunk (R14), and a part that reads one of them, as
+ * `RowText.tsx` reads `titleReading`, carries none of the tree's model in its imports.
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -34,7 +40,7 @@ export function blockNodeId(slug: string, blockId: string): string {
  * addresses nodes by it too, so the two never differ.
  */
 export function nodeIdOf(
-  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">
+  issue: Pick<IssueDetails, "artifacts" | "key" | "primary_artifact_id">
 ): (reference: string) => string | undefined {
   const key = issue.key;
   const specSlug = primarySpec(issue)?.slug ?? "";
@@ -68,7 +74,7 @@ export function nodeIdOf(
  * `features/dashboard/useWaitingItems.ts`, so the count counts the very decisions the tree marks.
  */
 export function coverageStatements(
-  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "key" | "primary_artifact_id">,
   coverage: IssueCoverage | undefined
 ): (reference: string) => boolean {
   const specSlug = primarySpec(issue)?.slug ?? "";
@@ -274,38 +280,6 @@ export function stateAtCommit(standing: CheckStanding, commit: string | undefine
   return standing.stands?.commit_sha === commit ? standing.state : "older";
 }
 
-/** One check of a statement, as the body draws it. */
-export interface CheckReading {
-  /** Whether the result its state stands on stands for something at the commit the server names
-   *  for the check: at the basis the check compares with (`commit_stands` is `at_basis`) and
-   *  recorded against the check's words now, as the server's `standingCommit` reads it. It is
-   *  `standsAtBasis`, which `checkStanding` reads too, so this mark and the check's state never
-   *  disagree. */
-  readonly atBasis: boolean;
-  /** How the check stands at the one commit the page names (`stateAtCommit`), which its
-   *  statement's state reads (R6), or `undefined` where `state` is. The row draws `state`, the
-   *  check's own (decision 152), so a pass at its own basis older than the commit the page names
-   *  reads Passed on its row and Out of date here. */
-  readonly atCommit?: CheckState;
-  /** Every other result of the check, newest first, which the body folds into one line with
-   *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */
-  readonly earlier: readonly TreeNode[];
-  /** The result the body draws under the check: the newest that still stands, or, where every
-   *  result of it was withdrawn, the newest withdrawn one, since that is what the reader is
-   *  owed. Absent where the check has no result at all, and where the results read has not
-   *  answered for the check. */
-  readonly latest?: TreeNode;
-  /** The id of the result the check's state stands on (`CheckStanding.stands`), which the body
-   *  marks wherever it draws it; absent where none stands. */
-  readonly standsOn?: string;
-  /** The check's own node, with its words and the four attributes its body draws. */
-  readonly node: TreeNode;
-  /** How the check stands, in the seven states the page has a word for, or `undefined` while
-   *  the results read has not answered for it: a check the page has not read how it stands
-   *  draws no state, because none of the seven is true of it. */
-  readonly state?: CheckState;
-}
-
 /**
  * How a statement stands, from how its checks stand at the one commit the page names
  * (`stateAtCommit`, R6, root R17): Met where every check of it reads Passed there, Not met where
@@ -316,7 +290,9 @@ export interface CheckReading {
  * body and `statementStandings`, the Spec view's reading of the same statements, all read it, so
  * one statement reads one state in each.
  */
-export function statementState(checks: readonly Pick<CheckReading, "atCommit">[]): StatementState {
+export function statementState(
+  checks: readonly { readonly atCommit?: CheckState }[]
+): StatementState {
   if (checks.length === 0) return "unknown";
   if (checks.every((check) => check.atCommit === "passed")) return "met";
   if (checks.some((check) => check.atCommit === "failed")) return "not_met";

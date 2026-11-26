@@ -17,7 +17,7 @@
       { "role": "role-retired", "state": "retired" },
       { "role": "role-shim-connected", "state": "shim_connected" },
       { "role": "role-suspended", "state": "suspended" },
-      { "role": "role-unlisted", "state": "parked" },
+      { "role": "role-unlisted", "state": "unknown_state" },
       { "role": "role-working", "state": "working" }
     ],
     "slot": null,

@@ -10,7 +10,11 @@ import {
   pageQuietText,
 } from "../../theme/classes";
 import { cardPaths, fromDecision, withStatementTexts } from "../decision-card/adapters";
-import { DecisionCard, type DecisionCardProps } from "../decision-card/DecisionCard";
+import {
+  type CardPalette,
+  DecisionCard,
+  type DecisionCardProps,
+} from "../decision-card/DecisionCard";
 import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
@@ -36,13 +40,18 @@ import type { WaitingItem } from "./useWaitingItems";
  *  opening view. */
 export type DashboardPage = "today" | "new";
 
+/** The palette the ask body and the decision card draw in on each page: the new page's own
+ *  colours on the new page (dispatch://INFRA-3940 R13), and on today's page the classes they
+ *  always drew there. */
+const PALETTES: Readonly<Record<DashboardPage, CardPalette>> = { new: "page", today: "main" };
+
 /** How many items the list draws at a time (R4). */
 export const WAITING_STEP = 5;
 
-/** A question or an approval request, by the ask body, answered in place (`DashboardAskBody`).
- *  On the new page, the focus going inside the item sets the page's focused node to the ask, so
- *  Details draws that ask's facts where it draws a focused node's
- *  (dispatch://INFRA-5702/spec#b-r-reads); today's page draws no Details panel. */
+/** A question or an approval request, by the ask body, answered in place (`DashboardAskBody`),
+ *  in the page's palette on the new page. On the new page, the focus going inside the item sets
+ *  the page's focused node to the ask, so Details draws that ask's facts where it draws a focused
+ *  node's (dispatch://INFRA-5702/spec#b-r-reads); today's page draws no Details panel. */
 function AskItem({
   ask,
   issueKey,
@@ -53,7 +62,7 @@ function AskItem({
   page: DashboardPage;
 }): ReactNode {
   const setFocusedNode = useSetFocusedNode();
-  const body = <DashboardAskBody ask={ask} />;
+  const body = <DashboardAskBody ask={ask} palette={PALETTES[page]} />;
   if (page === "today") return body;
   // The ask as the page's focused node reads it: the ask by its own id, its address, its words,
   // who asked it and how it stands, which is open for every ask the list holds.
@@ -112,19 +121,22 @@ function StaleItem({
 }
 
 /** A decision to review, by the decision card with its author line and level word on (R5), its
- *  text and heading drawn by `RowText`. A statement it shaped is drawn by the words the batched
- *  name read gives it, so the card reads no statement of its own (R8). */
+ *  text and heading drawn by `RowText`, in the palette of the page it is drawn on. A statement
+ *  it shaped is drawn by the words the batched name read gives it, so the card reads no
+ *  statement of its own (R8). */
 function DecisionItem({
   decision,
   documentId,
   issue,
   names,
+  palette,
 }: {
   decision: Decision;
   /** The issue's decisions document, which Keep and Change write to; none until it is known. */
   documentId: string | undefined;
   issue: IssueDetails;
   names: DashboardNames;
+  palette: CardPalette;
 }): ReactNode {
   const source = textSourceOf("artifact", documentId, issue.key);
   const { reads, tree: headingTree, words: name } = useDecisionHeadingWords(decision, source);
@@ -143,6 +155,7 @@ function DecisionItem({
       words: name,
     },
     marks: textMarks,
+    palette,
     paths: cardPaths(issue.key, primarySpec(issue)),
     renderText: (text) => (
       <RowText markdown={text.markdown} source={source} tabStops tree={text.tree} />
@@ -193,6 +206,7 @@ function ItemBody({
           documentId={decisionsDocument}
           issue={issue}
           names={names}
+          palette={PALETTES[page]}
         />
       );
     case "thread":
@@ -200,6 +214,7 @@ function ItemBody({
         <ThreadItem
           closed={issue.closed_at !== null}
           issueKey={issue.key}
+          palette={PALETTES[page]}
           row={item.row}
           viewer={viewer}
         />

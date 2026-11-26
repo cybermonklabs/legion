@@ -64,8 +64,11 @@ import { authored, type TextMarks } from "./ask-text";
  * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
  * card drawn where no list can drop it registers with nobody.
  *
- * A host that hands `marks` (`AskBodyProps.marks`) gets each login inside the mark of a value,
- * beside the body's own words; inside `NoTooltips` the time marks itself (`Timestamp`).
+ * A host that hands `marks` (`AskBodyProps.marks`) gets the badge, the line under it and the
+ * Nobody option each in the mark of the body's own words, with each login inside them in the
+ * mark of a value; inside `NoTooltips` the time marks itself (`Timestamp`). A refusal is the
+ * server's words, with `QueryError`'s Retry beside them, so it wears the mark of a value, as the
+ * body's form wears it for the refusals under its answer box.
  */
 export function AskHandOn({
   ask,
@@ -134,6 +137,7 @@ export function AskHandOn({
         <span
           aria-hidden="true"
           className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+          {...marks?.pageChrome}
         >
           {write.pending
             ? ASK_HAND_ON_WORDS.handing_on
@@ -162,7 +166,7 @@ export function AskHandOn({
           {/* Selected only where the server names no person, which only a Dispatch older than
               every project naming a default answers. Nobody is not a pick: the route takes a
               person's email and refuses anything else. */}
-          <option disabled value="">
+          <option disabled value="" {...marks?.pageChrome}>
             {ASK_HAND_ON_WORDS.nobody}
           </option>
           {/* An option holds text alone, so one that names a person is a value whole. */}
@@ -180,13 +184,16 @@ export function AskHandOn({
         </select>
       </span>
       {handedOnBy === "" || handedOnAt === null ? null : (
-        <span className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
+        <span
+          className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}
+          {...marks?.pageChrome}
+        >
           {`${ASK_HAND_ON_WORDS.handed_on_by} `}
           {authored(marks, handedOnBy)} <Timestamp at={handedOnAt} />
         </span>
       )}
       {write.failed ? (
-        <span className="basis-full">
+        <span className="basis-full" {...marks?.authorText}>
           <QueryError
             message={write.error ?? ASK_HAND_ON_WORDS.failed}
             onRetry={write.retry}

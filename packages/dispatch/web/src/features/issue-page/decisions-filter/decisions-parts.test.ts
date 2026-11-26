@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import { decision, decisionRef, KEY } from "../../decision-card/decision-fixture";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
@@ -14,13 +15,10 @@ import {
   ask,
   closing,
   DECISIONS_DOCUMENT,
-  decision,
   decisionNode,
-  decisionRef,
   decisionsRead,
   issueDetails,
   issueTree,
-  KEY,
   node,
   openAsk,
   READER,

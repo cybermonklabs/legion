@@ -93,11 +93,8 @@ import {
   expectedBack,
   HELD,
   type Held,
-  movedNote,
   newQueryClient,
-  noteIn,
   REFUSAL,
-  REFUSED_NOTE,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
 import { nextFrame } from "../../__tests__/frames";
@@ -124,11 +121,12 @@ import {
   rowOf,
   STATEMENT_QUOTE,
   STATEMENT_REWRITTEN,
+  STOPPED_IN_BOX,
   writeField,
 } from "../issue-page/composer-fixture";
 import type { TreeNode } from "../issue-page/issue-tree";
 import type { OutlineWriter } from "../issue-page/outline-writer";
-import { CONTROL_LABELS } from "../issue-page/page-words";
+import { COMPOSER_ANSWER_WORDS, CONTROL_LABELS } from "../issue-page/page-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { ReplyTarget } from "./composer-model";
 import { heldSends } from "./held-sends";
@@ -158,13 +156,28 @@ const OTHER_OWN_WORDS = "Another word of mine";
 const STATEMENT_ROW = "spec#b-r1";
 
 /** What Send says while the host has the box away from the issue its refused comment is for, and
- *  while the box shows the issue away from the reply a refusal is held for. */
-const WRITTEN_FOR_ISSUE = `This message was written for ${KEY}. Go back to it to send it, or discard it.`;
-const WRITTEN_AS_REPLY =
-  "This message was written as a reply. Reply to that message again to send it, or discard it.";
+ *  while the box shows the issue away from the reply a refusal is held for: the page's own
+ *  sentences (`COMPOSER_ANSWER_WORDS.elsewhere`), the first around where the comment was written
+ *  for. */
+const { elsewhere } = COMPOSER_ANSWER_WORDS;
+const WRITTEN_FOR_ISSUE = `${elsewhere.address.before}${COMPOSER_ANSWER_WORDS.address.prepositions[0]} ${KEY}${elsewhere.address.after}`;
+const WRITTEN_AS_REPLY = elsewhere.reply;
 
-/** What the box says of a stopped reply the reader carried to the issue (`SendMovedError`). */
-const MOVED_REPLY_NOTE = movedNote("as a reply");
+/** What the box says of a stopped reply the reader carried to the issue (`SendMovedError`): the
+ *  page's sentence around where it went, as a reply. */
+const MOVED_REPLY_NOTE = `${COMPOSER_ANSWER_WORDS.stopped.moved.before}${COMPOSER_ANSWER_WORDS.address.reply}${COMPOSER_ANSWER_WORDS.stopped.moved.after}`;
+
+/** What the box says of a send Dispatch refused with a code the box has no sentence of its own
+ *  for (`REFUSAL`), in place of Dispatch's words. */
+const REFUSED_NOTE = COMPOSER_ANSWER_WORDS.refused.other;
+
+/** Which note the box shows of a send it holds, in the box's own words: Dispatch's refusal, a
+ *  send the reader stopped, or none - the shared matrix's `noteIn`, read in the page's words. */
+function noteIn(place: HTMLElement): Held | "none" {
+  const shown = within(place);
+  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
+  return shown.queryByText(STOPPED_IN_BOX) === null ? "none" : "stopped";
+}
 
 /** What the box says of a reply it keeps for bob's comment while it shows another target. */
 const KEPT_FOR_BOB = keptReplyLine("bob");
@@ -315,7 +328,7 @@ async function writerFocused(): Promise<void> {
 /** The field of the line that edits the reader's comment. */
 function editField(): HTMLTextAreaElement {
   return within(composerBox()).getByRole<HTMLTextAreaElement>("textbox", {
-    name: "Edit comment",
+    name: CONTROL_LABELS.composer_edit,
   });
 }
 

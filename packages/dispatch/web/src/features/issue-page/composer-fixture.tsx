@@ -19,6 +19,7 @@ import type { Actor, CommentWithTrees, IssueAskRow } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { KEY_HOURS } from "../writes/write-words";
 import { useCurrentPoint } from "./current-point";
 import { IssueComposer } from "./IssueComposer";
 import { IssueTree } from "./IssueTree";
@@ -30,7 +31,13 @@ import {
   type ReplyItem,
   useOutlineWriter,
 } from "./outline-writer";
-import { ANSWER_LINES, CONTROL_LABELS, NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import {
+  ANSWER_LINES,
+  COMPOSER_ANSWER_WORDS,
+  CONTROL_LABELS,
+  NODE_TYPE_NAMES,
+  type NodeType,
+} from "./page-words";
 import { publishedTree } from "./projection-fixture";
 
 /**
@@ -478,10 +485,19 @@ export function goneDrafts(): { draft: string; lead: string; presses: string[] }
 export const KEPT_FOR_ISSUE = ANSWER_LINES.kept_on_issue;
 export const KEPT_FOR_STATEMENT = ANSWER_LINES.kept_on_statement;
 
-/** What the box says of a reply it keeps for `author`'s comment while it shows another target. */
-export function keptReplyLine(author: string): string {
-  return `Your reply to the comment by ${author} is kept. Press Reply on that comment to go on with it.`;
+/** What the box says of a reply it keeps for `author`'s post of `kind` - a comment unless named -
+ *  while it shows another target: the page's one sentence, around the author's name
+ *  (`COMPOSER_ANSWER_WORDS.kept_reply`). */
+export function keptReplyLine(
+  author: string,
+  kind: keyof typeof COMPOSER_ANSWER_WORDS.kept_reply = "comment"
+): string {
+  const { after, before } = COMPOSER_ANSWER_WORDS.kept_reply[kind];
+  return `${before}${author}${after}`;
 }
+
+/** What the box says of a send the reader stopped before Dispatch confirmed it. */
+export const STOPPED_IN_BOX = `${COMPOSER_ANSWER_WORDS.stopped.unconfirmed.before}${KEY_HOURS}${COMPOSER_ANSWER_WORDS.stopped.unconfirmed.after}`;
 
 /** The outline's row of `nodeId`. */
 export function rowOf(nodeId: string): HTMLElement {

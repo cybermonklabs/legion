@@ -25,17 +25,28 @@ import {
   ASK_TODAY,
   type AskTodayDecision,
   type AskTodaySeed,
+  awaitDecisions,
   type MainHolds,
   mainHolds,
   READER,
   seedAskToday,
+  writeDecision,
 } from "./dashboard-seed";
 import { literal } from "./dashboard-support";
 import { documentEditor } from "./editor";
 import { drawer, peekTrigger } from "./inbox-drawer";
-import { inboxList, inboxPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
+import {
+  backToList,
+  inboxPane,
+  inboxRow,
+  paneScroller,
+  readingView,
+  selectedRow,
+  selectRow,
+} from "./inbox-pane";
 import { inboxAt } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
+import { specBlockRef } from "./issue-layout-seed-text";
 import { viewportAt } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -136,12 +147,19 @@ const SURFACES: readonly Surface[] = [
   },
   {
     id: (seed) => seed.asks.byOption.id,
-    name: "Inbox card at 1279 px",
+    name: "Inbox reading view at 1279 px",
     question: ASK_TODAY.optionQuestion,
     async open(page, seed) {
       await narrow(page);
       await page.goto("/");
-      return ask(inboxList(page), seed.asks.byOption.id);
+      // Below 1280 px the list's short row only names the ask: the reading view the row opens in
+      // place of the list draws its card (INFRA-5200).
+      const row = inboxRow(page, seed.asks.byOption.id);
+      await expect(row).toBeVisible();
+      await expect(ask(row, seed.asks.byOption.id)).toHaveCount(0);
+      await expect(row.locator(BODY)).toHaveCount(0);
+      await selectRow(page, seed.asks.byOption.id);
+      return ask(readingView(page), seed.asks.byOption.id);
     },
   },
   {
@@ -387,24 +405,38 @@ test("the answer box stands in place on every surface", async ({ page }) => {
   }
 });
 
-/** The words of `words` that the page breaks over two lines: each word's own text rectangles,
- *  read where it stands, sit on more than one line. A word that fits its line is one rectangle. */
-async function brokenWords(words: Locator): Promise<string[]> {
+/** The words of `words` that the page draws wrong, each read by its own text rectangles where it
+ *  stands. `broken`: a word the page breaks over two lines, whose rectangles sit on more than one
+ *  line; a word that fits its line is one rectangle. `overrun`: a word that runs past the box of
+ *  `words` itself on the left or the right, a word longer than the room its line leaves, which the
+ *  page neither breaks nor wraps, so it stands over whatever is drawn beside it. */
+async function wordFaults(words: Locator): Promise<{ broken: string[]; overrun: string[] }> {
   return words.evaluate((element) => {
+    const box = element.getBoundingClientRect();
     const broken: string[] = [];
+    const overrun: string[] = [];
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
       for (const match of (node.textContent ?? "").matchAll(/\S+/g)) {
         const range = document.createRange();
         range.setStart(node, match.index);
         range.setEnd(node, match.index + match[0].length);
-        const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
-        if (lines.size > 1) broken.push(match[0]);
+        const rects = [...range.getClientRects()];
+        if (new Set(rects.map((rect) => Math.round(rect.top))).size > 1) broken.push(match[0]);
+        if (rects.some((rect) => rect.left < box.left - 1 || rect.right > box.right + 1)) {
+          overrun.push(match[0]);
+        }
       }
     }
-    return broken;
+    return { broken, overrun };
   });
 }
+
+/** The agent both whole-words rows write as. */
+const WHOLE_WORDS_AGENT = {
+  actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+  as: "agent",
+} as const;
 
 // The comments margin is a column about 384 px wide at a desktop width, where the first line's
 // end (the kind, an agent's name control and the time) stands beside the words. The words must
@@ -423,10 +455,7 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   const asked = await createAsk(
     issue.key,
     { anchor: { artifact: "spec", quote: "reseed" }, question },
-    {
-      actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
-      as: "agent",
-    }
+    WHOLE_WORDS_AGENT
   );
   await wide(page);
   await page.goto(`/issues/${issue.key}/spec`);
@@ -434,8 +463,63 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   const words = body.getByText(question, { exact: true }).first();
   await expect(words).toBeVisible();
   expect(
-    await brokenWords(words),
+    (await wordFaults(words)).broken,
     "the margin breaks a word of the question over two lines"
+  ).toEqual([]);
+});
+
+// The same margin draws an agent's decision by the decision card, whose first line's end (the
+// kind and the time) stood beside its heading and left the heading some 120 px: too few for a
+// word such as "internationalization", which ran past the heading's line under the kind. The
+// heading must take the whole line there and keep each word whole, neither broken over two
+// lines nor run past its line's end.
+test("in today's comments margin an agent's decision keeps each word of its heading whole", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  if (holds === undefined) throw new Error("The server probe did not run");
+  const heading = "Keep the internationalization troubleshooting section in the runbook";
+  const why = "Chosen so a reader finds each fix where they look for it.";
+  await createProject({ key: "WHOLE", name: "Whole words" });
+  const issue = await createIssue({
+    project: "WHOLE",
+    spec: ":::requirement{#r1}\nThe runbook keeps its troubleshooting section.\n:::\n",
+    title: "Whole words",
+  });
+  const shaped = specBlockRef(issue.key, "r1");
+  // The decision as the seed writes its own on each main R27 names (`writeDecision` in
+  // `dashboard-seed.ts`): a `decision` block of the spec that shapes r1, where the server refuses
+  // a new `decisions.md` with `409 DECISIONS_ARE_NODES`, and else a new `decisions.md` whose
+  // section ties r1 by the reference in its words, which the block's words do not hold.
+  const nodes = holds.decisionsAreNodes;
+  await writeDecision(
+    issue.key,
+    { spec: issue.primary_artifact_id ?? "" },
+    holds,
+    { heading, id: "d-whole", shaped, words: nodes ? why : `${why} Shapes ${shaped}.` },
+    WHOLE_WORDS_AGENT
+  );
+  // The read holds the decision once the document service has indexed its tie: on a bare main
+  // the member waiting for review with a link, and where decisions are nodes the entry of the
+  // `decision` block.
+  await awaitDecisions(issue.key, holds, "the seeded decision with its tie", (decisions) =>
+    decisions.some((decision) =>
+      nodes ? decision.id === "d-whole" : decision.heading === heading && decision.waiting
+    )
+  );
+  await wide(page);
+  await page.goto(`/issues/${issue.key}/spec`);
+  const card = margin(page).locator(CARD).filter({ hasText: heading }).first();
+  const words = card.getByRole("heading", { exact: true, name: heading });
+  await expect(words).toBeVisible();
+  const faults = await wordFaults(words);
+  expect(
+    faults.broken,
+    "the margin breaks a word of the decision's heading over two lines"
+  ).toEqual([]);
+  expect(
+    faults.overrun,
+    "a word of the decision's heading runs past its line, under the kind and the time beside it"
   ).toEqual([]);
 });
 
@@ -481,7 +565,22 @@ test("the reading pane keeps its approval view and the block draws the body with
   await expect(button(approval, "Show diff")).toBeVisible();
 });
 
-// SLOW(>=2s): the full issue seed and the live document in the Inbox's reading pane.
+/** Presses 1 to 9, each from `row` itself, and finds `card`'s two real options picked - the
+ *  first by 1, the second by every digit after it - and its "Other" row never. */
+async function expectRealOptionDigits(page: Page, row: Locator, card: Locator): Promise<void> {
+  const options = card.locator(OPTION);
+  const other = card.getByRole("radio", { exact: true, name: "Other" });
+  await expect(options).toHaveCount(2);
+  for (const digit of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+    await row.focus();
+    await page.keyboard.press(String(digit));
+    await expect(options.nth(digit === 1 ? 0 : 1)).toBeChecked();
+    await expect(other).not.toBeChecked();
+  }
+}
+
+// SLOW(>=2s): the full issue seed and the live document in the Inbox's reading pane, in the
+// reading view a short row opens below 1280 px, and the drawer's cards.
 test("in the Inbox 1 to 9 pick only real options and Enter reaches the box", async ({ page }) => {
   test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
   const data = await seed();
@@ -492,18 +591,43 @@ test("in the Inbox 1 to 9 pick only real options and Enter reaches the box", asy
   const card = ask(inboxPane(page), data.records.block);
   const field = card.locator(ANSWER);
   await expect(field, "Enter must reach an already visible field").toBeVisible();
-  const options = card.locator(OPTION);
-  const other = card.getByRole("radio", { exact: true, name: "Other" });
-  await expect(options).toHaveCount(2);
-  for (const digit of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
-    await row.focus();
-    await page.keyboard.press(String(digit));
-    await expect(options.nth(digit === 1 ? 0 : 1)).toBeChecked();
-    await expect(other).not.toBeChecked();
-  }
+  await expectRealOptionDigits(page, row, card);
   await row.focus();
   await page.keyboard.press("Enter");
   await expect(field).toBeFocused();
+
+  // Below 1280 px the same question's short row holds no box: Enter on it opens its reading
+  // view, which lands the focus in its scroller, and Enter there reaches the box in the view.
+  await narrow(page);
+  await page.goto("/?assignee=everyone");
+  const short = inboxRow(page, data.records.block);
+  await expect(short).toBeVisible();
+  await expect(short.locator(ANSWER)).toHaveCount(0);
+  await short.focus();
+  await expect(short).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(readingView(page)).toHaveAttribute("data-inbox-reading-row", data.records.block);
+  const opened = ask(readingView(page), data.records.block).locator(ANSWER);
+  await expect(opened, "Enter must reach an already visible field").toBeVisible();
+  await expect(paneScroller(page), "the view's scroller holds the focus").toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(opened).toBeFocused();
+
+  // The drawer keeps a card in each row, and its keys act on the ask row that holds the focus
+  // itself: not the control that opened the drawer, nor a control inside the card.
+  await wide(page);
+  await page.goto("/agents");
+  await peekTrigger(page).click();
+  const id = data.asks.byOption.id;
+  const drawerRow = drawer(page).locator(`[data-inbox-row="${id}"]`);
+  const drawerCard = ask(drawerRow, id);
+  const drawerField = drawerCard.locator(ANSWER);
+  await expect(drawerField, "Enter must reach an already visible field").toBeVisible();
+  await expectRealOptionDigits(page, drawerRow, drawerCard);
+  await drawerRow.focus();
+  await expect(drawerRow).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(drawerField).toBeFocused();
 });
 
 async function showQuestionChoice(card: Locator): Promise<void> {
@@ -849,8 +973,8 @@ test("today's Decisions tab and Spec margin read every statement's first line in
       await wide(page);
       const traffic = watchApiRequests(page);
       await page.goto(`/issues/${data.key}/${where}`);
-      // A card draws a statement by its first line once the batch has answered for it, and
-      // draws nothing for it before, so each line drawn here is the batch's.
+      // A card draws a statement by its first line once the batch has answered for it, and by
+      // the card's word for a statement it shaped before, so each line drawn here is the batch's.
       for (const entry of data.decisionCases) {
         if (where === "spec" && entry.case === "replaced") continue;
         const statements = decisionRoots(page, entry, where === "spec")
@@ -942,7 +1066,13 @@ function expectReads(traffic: ApiRequests, data: AskTodaySeed, surface: string):
     }
     if (inbox) {
       if (surface === "ThreadBody") return replyPaneReads.has(path);
-      if (surface === "Inbox card at 1279 px" || surface === "Inbox drawer") {
+      // The reading view draws the one row it opened, as the column beside the list does: the
+      // pane's read of that row's own ask, and nothing for the rows it hides with the list.
+      if (surface === "Inbox reading view at 1279 px") {
+        return path === askRead(data.asks.byOption.id);
+      }
+      // Every row of the drawer holds its own card.
+      if (surface === "Inbox drawer") {
         return replyPaneReads.has(path) || askReads.has(path) || path === picture;
       }
       return false;
@@ -1117,6 +1247,18 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
     reads[surface] = getPaths(traffic).map((path) => normalize(path, data));
     traffic.reset();
   };
+  /** What the Inbox draws for the row it opened, in the reading column or below its width in the
+   *  reading view: an approval's own view of its document's version, and any other ask's card. */
+  const captureOpened = async (surface: string, part: string, id: string) => {
+    if (part !== "approval") {
+      await capture(`${surface}/${part}`, ask(inboxPane(page), id), true);
+      return;
+    }
+    await inboxPane(page)
+      .getByRole("region", { name: `Document version ${data.asks.approval.version}` })
+      .waitFor({ state: "visible" });
+    await capture(`${surface}/approval`, inboxPane(page));
+  };
 
   await wide(page);
   await page.goto(inboxAt(seeded.byOption));
@@ -1125,15 +1267,7 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
     await capture(`Inbox list/${part}`, inboxRow(page, id));
     await inboxRow(page, id).locator("time").first().click();
     await selectedRow(page).and(inboxRow(page, id)).waitFor({ state: "visible" });
-    if (part === "approval") {
-      await inboxPane(page)
-        .getByRole("region", { name: `Document version ${data.asks.approval.version}` })
-        .waitFor({ state: "visible" });
-      await capture("reading pane/approval", inboxPane(page));
-    } else {
-      const root = ask(inboxPane(page), id);
-      await capture(`reading pane/${part}`, root, true);
-    }
+    await captureOpened("reading pane", part, id);
   }
   await measure("reading pane");
 
@@ -1144,11 +1278,17 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
   await capture("ThreadBody/thread", thread, true);
   await measure("ThreadBody");
 
+  // Below 1280 px the list's short rows hold no card (INFRA-5200): each row is read, then opened
+  // in place of the list, whose reading view draws what the column beside the list draws.
   await narrow(page);
   await page.goto("/?assignee=everyone");
-  for (const [part, id] of open)
-    await capture(`Inbox cards/${part}`, ask(inboxRow(page, id), id), true);
-  await measure("Inbox cards");
+  for (const [part, id] of open) {
+    await capture(`Inbox short rows/${part}`, inboxRow(page, id));
+    await selectRow(page, id);
+    await captureOpened("Inbox reading view", part, id);
+    await backToList(page);
+  }
+  await measure("Inbox reading view");
 
   await wide(page);
   await page.goto("/agents");
@@ -1290,7 +1430,9 @@ function compareInventory(before: Inventory, after: Inventory): void {
 // SLOW(>=2s): record every surface and its disclosed controls on the real issue seed.
 test("the inventory preserves each surface's words and controls", async ({ page }, testInfo) => {
   test.skip(!inventoryMode, "Set ASK_INVENTORY_FILE to record or compare the inventory");
-  test.setTimeout(180_000);
+  // Each open ask is opened twice: in the column beside the list, and in the reading view below
+  // 1280 px, which the row then leaves for the list again.
+  test.setTimeout(240_000);
   if (!inventoryFile) throw new Error("ASK_INVENTORY=record requires ASK_INVENTORY_FILE");
   const data = await seed();
   const inventory = await collectInventory(page, data);

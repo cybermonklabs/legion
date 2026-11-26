@@ -5,13 +5,17 @@ import { Link } from "react-router-dom";
 import { askThreadQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
+  AskRead,
+  CommentRead,
   CommentWithTrees,
   DisplayTree,
+  MessageRead,
   MessageWithTrees,
   MyReplyRow,
 } from "../../api/types";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { newestAttempt } from "../agents/exchange-delivery";
+import type { AskPalette } from "../ask-body/ask-text";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
@@ -41,16 +45,32 @@ import { DashboardAskBody } from "./DashboardAskBody";
  * and the item leaves.
  */
 
-/** The read of a thread's own route: the one this item draws from, which Dashboard waits on
- *  before it asks for the names of what the thread cites. */
+/** The texts a thread's own read holds of what its item draws, which name what the thread cites:
+ *  the root's body - an ask's question - and each reply's body. */
+function threadTexts(
+  root: string,
+  replies: readonly { readonly body: string }[] | null | undefined
+): readonly string[] {
+  return [root, ...(replies ?? []).map((reply) => reply.body)];
+}
+
+const askTexts = (read: AskRead) => threadTexts(read.ask.question, read.replies);
+const commentTexts = (read: CommentRead) => threadTexts(read.comment.body, read.replies);
+const messageTexts = (read: MessageRead) => threadTexts(read.message.body, read.replies);
+
+/** The read of a thread's own route, the one this item draws from, answering its texts
+ *  (`threadTexts`) from that kind's own read, by the row's kind: Dashboard waits on it before it
+ *  asks for the names those texts cite. Each `select` is one function for every render, so a read
+ *  is selected again only when it changes, and a read that changes shape fails to type-check
+ *  rather than answering no texts. */
 export function threadQuery(issueKey: string, row: Pick<MyReplyRow, "kind" | "thread_id">) {
   switch (row.kind) {
     case "ask":
-      return askThreadQuery(row.thread_id);
+      return { ...askThreadQuery(row.thread_id), select: askTexts };
     case "message":
-      return { ...messageQuery(issueKey, row.thread_id), ...EVENT_FRESH };
+      return { ...messageQuery(issueKey, row.thread_id), ...EVENT_FRESH, select: messageTexts };
     default:
-      return { ...commentQuery(row.thread_id), ...EVENT_FRESH };
+      return { ...commentQuery(row.thread_id), ...EVENT_FRESH, select: commentTexts };
   }
 }
 
@@ -139,11 +159,13 @@ export function replySendKey(threadId: string): readonly unknown[] {
 const noReturn = (): void => {};
 
 /** A comment's or a message's thread, from its own read (`CommentThread`, `MessageThread`): the
- *  root and each reply the reader has not read, the Inbox's reply control for the thread - or,
- *  where the root's author deleted it, the reply a draft kept for it - and the link to it. */
+ *  root and each reply the reader has not read, the Inbox's reply control for the thread, in the
+ *  palette of the page it is drawn on - or, where the root's author deleted it, the reply a draft
+ *  kept for it - and the link to it. */
 function ReplyThread({
   closed,
   issueKey,
+  palette,
   parentKind,
   readQuery,
   replies,
@@ -152,6 +174,7 @@ function ReplyThread({
 }: {
   closed: boolean;
   issueKey: string;
+  palette: AskPalette;
   /** What the root is, which names each entry's source, the reply's parent and the address. */
   parentKind: "comment" | "message";
   /** The thread's own read (`commentQuery`, `messageQuery`), which a sent reply reads again. */
@@ -207,6 +230,7 @@ function ReplyThread({
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
+            palette={palette}
             replyParent={root}
             replyTo={{
               actor: root.author,
@@ -227,11 +251,13 @@ function ReplyThread({
 function CommentThread({
   closed,
   issueKey,
+  palette,
   row,
   viewer,
 }: {
   closed: boolean;
   issueKey: string;
+  palette: AskPalette;
   row: MyReplyRow;
   viewer: string | undefined;
 }): ReactNode {
@@ -242,6 +268,7 @@ function CommentThread({
     <ReplyThread
       closed={closed}
       issueKey={issueKey}
+      palette={palette}
       parentKind="comment"
       readQuery={commentQuery(root.id)}
       replies={unreadEntries(row, read.replies ?? [], viewer)}
@@ -253,11 +280,13 @@ function CommentThread({
 function MessageThread({
   closed,
   issueKey,
+  palette,
   row,
   viewer,
 }: {
   closed: boolean;
   issueKey: string;
+  palette: AskPalette;
   row: MyReplyRow;
   viewer: string | undefined;
 }): ReactNode {
@@ -273,6 +302,7 @@ function MessageThread({
     <ReplyThread
       closed={closed}
       issueKey={issueKey}
+      palette={palette}
       parentKind="message"
       readQuery={messageQuery(issueKey, root.id)}
       replies={unreadEntries(row, all, viewer)}
@@ -286,15 +316,18 @@ function MessageThread({
   );
 }
 
-/** An ask's thread, from its own read: the ask by its body (`DashboardAskBody`), each reply the
- *  reader has not read, the reply control while the ask takes one, and the link to it. Named
- *  apart from the Inbox's `AskThread`, which the composer census tells mounts apart by. */
+/** An ask's thread, from its own read: the ask by its body (`DashboardAskBody`), in the
+ *  palette of the page it is drawn on, each reply the reader has not read, the reply control
+ *  while the ask takes one, and the link to it. Named apart from the Inbox's `AskThread`, which
+ *  the composer census tells mounts apart by. */
 function AskThreadItem({
   issueKey,
+  palette,
   row,
   viewer,
 }: {
   issueKey: string;
+  palette: AskPalette;
   row: MyReplyRow;
   viewer: string | undefined;
 }): ReactNode {
@@ -307,7 +340,7 @@ function AskThreadItem({
   return (
     // As `ReplyThread`'s: the ask body and the entries mark their own words.
     <div className="space-y-2" {...authorText}>
-      <DashboardAskBody ask={ask} />
+      <DashboardAskBody ask={ask} palette={palette} />
       {replies.length === 0 ? null : (
         <ol className="space-y-2">
           {replies.map((reply) => (
@@ -329,22 +362,42 @@ function AskThreadItem({
 export function ThreadItem({
   closed,
   issueKey,
+  palette = "main",
   row,
   viewer,
 }: {
   /** The issue is closed, which takes replies all the same; the composer says so itself. */
   closed: boolean;
   issueKey: string;
+  /** The palette an ask's body and a comment's or a message's reply control draw in
+   *  (`DashboardAskBody`, `MentionComposer`): `main`'s unless the list hands the page's. */
+  palette?: AskPalette;
   row: MyReplyRow;
   viewer: string | undefined;
 }): ReactNode {
   switch (row.kind) {
     case "ask":
-      return <AskThreadItem issueKey={issueKey} row={row} viewer={viewer} />;
+      return <AskThreadItem issueKey={issueKey} palette={palette} row={row} viewer={viewer} />;
     case "comment":
-      return <CommentThread closed={closed} issueKey={issueKey} row={row} viewer={viewer} />;
+      return (
+        <CommentThread
+          closed={closed}
+          issueKey={issueKey}
+          palette={palette}
+          row={row}
+          viewer={viewer}
+        />
+      );
     case "message":
-      return <MessageThread closed={closed} issueKey={issueKey} row={row} viewer={viewer} />;
+      return (
+        <MessageThread
+          closed={closed}
+          issueKey={issueKey}
+          palette={palette}
+          row={row}
+          viewer={viewer}
+        />
+      );
     default:
       return null;
   }

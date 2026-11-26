@@ -19,6 +19,13 @@ import {
   inlineWarningText,
   linkHoverText,
   linkText,
+  pageHairBorder,
+  pageInkText,
+  pageLabelChip,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageStateText,
   textMutedOnSurface,
   textPrimaryOnSuccessCallout,
   textPrimaryOnSurface,
@@ -34,35 +41,80 @@ import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
 import { AskAgent, AskResolutionActor } from "./ask-agent";
 import { ASK_LINK_WORDS, ASK_RECORD_WORDS } from "./ask-body-words";
-import { type AskTextRenderer, markdownText } from "./ask-text";
+import {
+  type AskPalette,
+  type AskTextRenderer,
+  markdownText,
+  ownWords,
+  type TextMarks,
+} from "./ask-text";
+
+/**
+ * The colours of the settled record, and of an ask's earlier wordings and answers, by the
+ * palette the ask body's host hands (`AskPalette`), as `issue-page/DecisionActions.tsx` keeps
+ * its own: `main`'s are the classes every surface of today's pages draws, and the new issue
+ * page's take the role `main`'s colour has. The answered record, `main`'s success callout, is the
+ * page's pane grey, the resolved one, `main`'s card, its paper, each inside the hairline rule;
+ * the words in either are the ink, a link the ink as every link of the ask body is, what
+ * qualifies them - who asked, when, who answered - the quiet grey, the resolution's badge the
+ * page's label chip, and a quote whose words changed the page's waiting orange, as the open
+ * body's warning is. Each pair is one `theme/classes.ts` registers for the page.
+ */
+const TONES = {
+  main: {
+    answered: `${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`,
+    answeredInk: textPrimaryOnSuccessCallout,
+    answeredQuiet: calloutSuccessTimestampText,
+    badge: `${badgeLow.bg} ${badgeLow.text}`,
+    ink: textPrimaryOnSurface,
+    link: `${linkText} ${linkHoverText}`,
+    quiet: textMutedOnSurface,
+    resolved: card,
+    warning: inlineWarningText,
+  },
+  page: {
+    answered: `${pageHairBorder} ${pagePaneBg} ${pageInkText}`,
+    answeredInk: pageInkText,
+    answeredQuiet: pageQuietText,
+    badge: pageLabelChip,
+    ink: pageInkText,
+    link: pageInkText,
+    quiet: pageQuietText,
+    resolved: `${pageHairBorder} ${pagePaperBg}`,
+    warning: pageStateText.waiting,
+  },
+} as const;
 
 /** An ask's earlier wordings, under the ask: the card draws it for an open ask, and the record
  *  for a settled one, which names the agent that reworded each as the ask body does
- *  (`agentNames`, `ask-agent.tsx`) and draws each wording through the same renderer
- *  (`renderText`). */
+ *  (`agentNames`, `ask-agent.tsx`), draws each wording through the same renderer
+ *  (`renderText`) and in the same palette (`palette`). */
 export function AskEditHistory({
   agentNames = "live",
   ask,
   edits,
+  palette = "main",
   renderText,
 }: {
   agentNames?: AgentNames;
   ask: Ask;
   edits: AskEditWithTrees[];
+  palette?: AskPalette;
   renderText: AskTextRenderer;
 }): ReactNode {
   if (ask.edited_at === null) {
     return null;
   }
+  const tones = TONES[palette];
   return (
-    <div className={`mt-2 text-xs ${textMutedOnSurface}`}>
+    <div className={`mt-2 text-xs ${tones.quiet}`}>
       <p>
         {`${ASK_RECORD_WORDS.edited} `}
         <Timestamp at={ask.edited_at} />
       </p>
       {edits.length === 0 ? null : (
         <details className="mt-1">
-          <summary className={`cursor-pointer font-medium ${linkText} ${linkHoverText}`}>
+          <summary className={`cursor-pointer font-medium ${tones.link}`}>
             {edits.length === 1
               ? ASK_RECORD_WORDS.previous_version
               : `${ASK_RECORD_WORDS.previous_versions.before} ${edits.length} ${ASK_RECORD_WORDS.previous_versions.after}`}
@@ -70,7 +122,7 @@ export function AskEditHistory({
           <div className="mt-2 space-y-3">
             {edits.map((edit) => (
               <div key={edit.at}>
-                <div className={`font-medium ${textPrimaryOnSurface}`}>
+                <div className={`font-medium ${tones.ink}`}>
                   {renderText({
                     markdown: edit.previous.question,
                     source: textSourceOf("ask", ask.id, ask.issue_key),
@@ -80,6 +132,7 @@ export function AskEditHistory({
                 </div>
                 <AskOptionList
                   options={edit.previous.options ?? []}
+                  palette={palette}
                   renderText={renderText}
                   selected={[]}
                   source={textSourceOf("ask", ask.id, ask.issue_key)}
@@ -101,30 +154,34 @@ export function AskEditHistory({
 /** Earlier answers to an ask whose answer was changed, oldest first. Every text here is the
  *  ask's own (`refs.ScopeOf`), answer and question alike, so each is drawn as a record of that
  *  ask. A chosen option's label is drawn from the tree the answer carries beside it
- *  (`selected_trees`), which is the label's own whether or not the ask still holds that option. */
+ *  (`selected_trees`), which is the label's own whether or not the ask still holds that option.
+ *  It draws in the answered record's palette (`palette`). */
 export function AskAnswerHistory({
   answers,
   askId,
   issue,
+  palette = "main",
   renderText,
 }: {
   answers: AskAnswerWithTrees[];
   askId: string;
   /** The issue the ask is on, none for a project document's ask. */
   issue: string | null;
+  palette?: AskPalette;
   renderText: AskTextRenderer;
 }): ReactNode {
   const earlier = answers.slice(0, -1);
   const latest = answers.at(-1);
   if (earlier.length === 0 || latest === undefined) return null;
+  const tones = TONES[palette];
   return (
-    <div className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
+    <div className={`mt-2 text-xs ${tones.answeredQuiet}`}>
       <p>
         {`${ASK_RECORD_WORDS.changed} `}
         <Timestamp at={latest.at} />
       </p>
       <details className="mt-1">
-        <summary className={`cursor-pointer font-medium underline ${textPrimaryOnSuccessCallout}`}>
+        <summary className={`cursor-pointer font-medium underline ${tones.answeredInk}`}>
           {earlier.length === 1
             ? ASK_RECORD_WORDS.earlier_answer
             : `${ASK_RECORD_WORDS.earlier_answers.before} ${earlier.length} ${ASK_RECORD_WORDS.earlier_answers.after}`}
@@ -173,20 +230,28 @@ export function AskAnswerHistory({
   );
 }
 
+/** The line over an anchored ask whose quoted words changed since, with the link to the version
+ *  it was asked on, in the palette the ask body's host hands (`palette`). Where the open body's
+ *  host hands `marks` (`AskBodyProps.marks`), the line's words and its link each wear the mark of
+ *  the body's own words. */
 export function OrphanedAnchorNotice({
   artifactSlug,
   ask,
+  marks,
+  palette = "main",
 }: {
   artifactSlug: string | undefined;
   ask: Ask;
+  marks?: TextMarks;
+  palette?: AskPalette;
 }): ReactNode {
   const anchor = ask.anchor;
   if (anchor === null || !anchor.orphaned || artifactSlug === undefined) {
     return null;
   }
   return (
-    <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>
-      {ASK_LINK_WORDS.text_changed}{" "}
+    <p className={`mb-2 text-xs font-medium ${TONES[palette].warning}`}>
+      {ownWords(marks, ASK_LINK_WORDS.text_changed)}{" "}
       {ask.issue_key === null ? null : (
         <Link
           className="underline"
@@ -196,6 +261,7 @@ export function OrphanedAnchorNotice({
             slug: artifactSlug,
             version: anchor.version,
           })}&ask=${ask.id}`}
+          {...marks?.pageChrome}
         >
           {ASK_LINK_WORDS.view_original}
         </Link>
@@ -214,6 +280,7 @@ function AnsweredAsk({
   frame,
   markRef,
   onChangeAnswer,
+  palette,
   renderText,
 }: {
   agentNames: AgentNames;
@@ -225,9 +292,11 @@ function AnsweredAsk({
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
+  palette: AskPalette;
   renderText: AskTextRenderer;
 }): ReactNode {
   const { answer } = ask;
+  const tones = TONES[palette];
   // A chosen "Other" answer carries no real option (answer.selected is empty) but still has
   // free text - render it under an Other label so the record reads as a chosen option, not an
   // unlabeled addendum. An ask with no options at all has no Other row to have chosen, so its
@@ -238,16 +307,16 @@ function AnsweredAsk({
       : null;
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
+      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${tones.answered}`}
       data-testid={`ask-${ask.id}`}
       ref={markRef}
     >
       {/* The ask body's root (`AskBody`), inside the record its test id names. */}
       <div data-ask-body="">
-        <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="success" />
-        <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
+        <AskAnchorHeader ask={ask} inBlock={frame === "block"} palette={palette} tone="success" />
+        <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} palette={palette} />
         {frame === "block" ? null : (
-          <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
+          <div className={`font-medium ${tones.answeredInk}`}>
             {renderText({
               markdown: ask.question,
               source: textSourceOf("ask", ask.id, ask.issue_key),
@@ -256,26 +325,31 @@ function AnsweredAsk({
             })}
           </div>
         )}
-        <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
+        <p className={`mt-1 text-xs ${tones.answeredQuiet}`}>
           <AskAgent actor={ask.author} agentNames={agentNames} inline />
         </p>
         {ask.kind === "approval" && documentLink ? (
-          <p className={`mt-1 text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
+          <p className={`mt-1 text-sm font-medium ${tones.answeredInk}`}>
             <AskApprovalLink ask={ask} />
           </p>
         ) : null}
-        <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
+        <AskEditHistory
+          agentNames={agentNames}
+          ask={ask}
+          edits={edits}
+          palette={palette}
+          renderText={renderText}
+        />
         <AskOptionList
           options={ask.options ?? []}
+          palette={palette}
           renderText={renderText}
           selected={answer?.selected ?? []}
           source={textSourceOf("ask", ask.id, ask.issue_key)}
         />
         {otherText !== null && otherText !== "" ? (
           <div className="mt-2">
-            <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
-              {ASK_RECORD_WORDS.other}
-            </p>
+            <p className={`text-sm font-medium ${tones.answeredInk}`}>{ASK_RECORD_WORDS.other}</p>
             <div className="mt-1">
               {renderText({
                 markdown: otherText,
@@ -296,12 +370,12 @@ function AnsweredAsk({
           </div>
         )}
         {answer === null ? (
-          <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
+          <p className={`mt-2 text-xs ${tones.answeredQuiet}`}>
             {`${ASK_RECORD_WORDS.asked} `}
             <Timestamp at={ask.created_at} />
           </p>
         ) : (
-          <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
+          <p className={`mt-2 text-xs ${tones.answeredQuiet}`}>
             {`${ASK_RECORD_WORDS.asked} `}
             <Timestamp at={ask.created_at} />
             {` · ${ASK_RECORD_WORDS.answered_by}`}{" "}
@@ -313,11 +387,12 @@ function AnsweredAsk({
           answers={answers}
           askId={ask.id}
           issue={ask.issue_key}
+          palette={palette}
           renderText={renderText}
         />
         {onChangeAnswer === undefined ? null : (
           <button
-            className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
+            className={`mt-2 min-h-11 text-sm font-semibold underline ${tones.answeredInk}`}
             onClick={onChangeAnswer}
             type="button"
           >
@@ -335,6 +410,7 @@ function ResolvedAsk({
   documentLink,
   edits,
   frame,
+  palette,
   renderText,
 }: {
   agentNames: AgentNames;
@@ -342,20 +418,22 @@ function ResolvedAsk({
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
+  palette: AskPalette;
   renderText: AskTextRenderer;
 }): ReactNode {
   const { resolution } = ask;
   const reason = askResolutionReason(resolution);
+  const tones = TONES[palette];
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${card}`}
+      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${tones.resolved}`}
       data-testid={`ask-${ask.id}`}
     >
       {/* The ask body's root (`AskBody`), inside the record its test id names. */}
       <div data-ask-body="">
-        <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
+        <AskAnchorHeader ask={ask} inBlock={frame === "block"} palette={palette} tone="surface" />
         {frame === "block" ? null : (
-          <div className={`font-medium ${textPrimaryOnSurface}`}>
+          <div className={`font-medium ${tones.ink}`}>
             {renderText({
               markdown: ask.question,
               source: textSourceOf("ask", ask.id, ask.issue_key),
@@ -365,27 +443,34 @@ function ResolvedAsk({
           </div>
         )}
         <span
-          className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+          className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${tones.badge}`}
           data-testid="ask-resolution-badge"
         >
           {askResolutionBadge(resolution)}
         </span>
-        <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
+        <p className={`mt-1 text-xs ${tones.quiet}`}>
           <AskAgent actor={ask.author} agentNames={agentNames} inline />
         </p>
         {ask.kind === "approval" && documentLink ? (
-          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
+          <p className={`mt-1 text-sm ${tones.link}`}>
             <AskApprovalLink ask={ask} />
           </p>
         ) : null}
         <AskOptionList
           options={ask.options ?? []}
+          palette={palette}
           renderText={renderText}
           selected={[]}
           source={textSourceOf("ask", ask.id, ask.issue_key)}
         />
-        <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
-        <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
+        <AskEditHistory
+          agentNames={agentNames}
+          ask={ask}
+          edits={edits}
+          palette={palette}
+          renderText={renderText}
+        />
+        <p className={`mt-2 text-xs ${tones.quiet}`}>
           {`${ASK_RECORD_WORDS.asked} `}
           <Timestamp at={ask.created_at} />
           {" · "}
@@ -430,6 +515,9 @@ interface AskCompletionCardProps {
   markRef?: DwellRef;
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;
+  /** The palette the record draws in (`TONES`): `main`'s, as every surface of today's pages
+   *  draws it, unless the ask body it stands in hands the page's (`AskBodyProps.palette`). */
+  palette?: AskPalette;
   /** The renderer of every text of the record (`AskBodyProps.renderText`): `MarkdownBody`, as
    *  every surface of today's pages draws them, unless the ask body it stands in hands another. */
   renderText?: AskTextRenderer;
@@ -445,6 +533,7 @@ export function AskCompletionCard({
   frame = "card",
   markRef,
   onChangeAnswer,
+  palette = "main",
   renderText = markdownText,
 }: AskCompletionCardProps): ReactNode {
   if (ask.state === "resolved") {
@@ -458,6 +547,7 @@ export function AskCompletionCard({
         documentLink={documentLink}
         edits={edits}
         frame={frame}
+        palette={palette}
         renderText={renderText}
       />
     );
@@ -473,6 +563,7 @@ export function AskCompletionCard({
       frame={frame}
       markRef={markRef}
       onChangeAnswer={onChangeAnswer}
+      palette={palette}
       renderText={renderText}
     />
   );

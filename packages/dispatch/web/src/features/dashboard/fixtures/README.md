@@ -42,9 +42,9 @@ Each case is one issue of the project `ACME` whose Legion state `seedLegionState
 
 | File | `phase` | Claims |
 | --- | --- | --- |
-| `planning.json` | `planning` | one role per claim state of `LEGION_CLAIM_STATES`, and `role-unlisted` in `parked` |
+| `planning.json` | `planning` | one role per claim state of `LEGION_CLAIM_STATES`, and `role-unlisted` in `unknown_state` |
 | `awaiting_person.json`, `held.json`, `integrating.json`, `awaiting_merge.json` | the file's name | `architect` working, `planner` idle |
-| `another.json` | `parked`, which no list holds | the same |
+| `another.json` | `unknown_state`, which no list holds | the same |
 | `admitted.json`, `implementing.json`, `testing.json`, `reviewing.json`, `accepting.json`, `retro.json`, `merging.json` | the file's name | the same |
 | `done.json`, `unrecorded.json` | the file's name | the same |
 | `state-null.json` | none written, so `state` is null | the same |
@@ -59,7 +59,9 @@ curl -sS -c "$COOKIE" -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_de
 curl -sS -b "$COOKIE" "http://127.0.0.1:$DISPATCH_E2E_PORT/api/v1/issues/<KEY>/legion" > legion-issue/<case>.json
 ```
 
-Each file is the answer as the server wrote it, formatted by `bunx biome format --write`.
+Each file is the answer as the server wrote it, formatted by `bunx biome format --write`, except for two values: the `phase` of `another.json` and the `state` of `role-unlisted` in `planning.json`.
+Each of the two is `unknown_state`, a word that only these tests and the seed's `UNLISTED` (`e2e/dashboard-seed.ts`) use for a value no list holds; it is not a phase or a role state that the daemon names.
+The two values were changed to `unknown_state` after the capture; the seed wrote another word for them then.
 Every `read.ok` is true: no read of the sampler's own, which fails against the address nothing answers, came between a seed and its capture.
 
 ## The reads of one Dashboard seed

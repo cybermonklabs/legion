@@ -14,7 +14,7 @@ const PLANNING: LegionIssueResponse = planningBody;
 const AWAITING_PERSON: LegionIssueResponse = awaitingPersonBody;
 
 /** A claim state no list holds, which the planning body's `role-unlisted` is in. */
-const UNKNOWN = "parked";
+const UNKNOWN = "unknown_state";
 
 /** The plan's role table: each claim state of `LEGION_CLAIM_STATES` and one unknown, with the
  *  role words Dashboard draws for it, or none for a claim that is not listed. */

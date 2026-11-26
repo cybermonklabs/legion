@@ -18,7 +18,7 @@ type WordsLike<T> = { readonly [K in keyof T]: T[K] extends string ? string : Wo
 
 /**
  * What the composer says in answer to the reader's act, on every surface, and what the issue
- * page's box says in its place from the page's own list (`OutlineLook.words`):
+ * page's box says where its host gives no sentences of its own (`OutlineLook.answers`):
  *
  * - `deletedReply`: Send's refusal of a reply to a post deleted since the reply opened, by the
  *   post's kind, before where the draft goes instead;
@@ -71,7 +71,7 @@ export const COMPOSER_WORDS = {
   stoppedUpload: STOPPED_UPLOAD_WORDS,
 } as const;
 
-/** The words of `COMPOSER_WORDS`, as a host gives them (`OutlineLook.words`). */
+/** The words of `COMPOSER_WORDS` with any strings, as a host gives some (`OutlineAnswers`). */
 export type ComposerWords = WordsLike<typeof COMPOSER_WORDS>;
 
 /** The control beside a refusal that drops the draft it handed back. */

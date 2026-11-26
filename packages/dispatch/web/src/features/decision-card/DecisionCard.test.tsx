@@ -5,7 +5,6 @@ import { MemoryRouter } from "react-router-dom";
 
 import { precedes } from "../../__tests__/document-order";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import { decision } from "../issue-page/decisions-filter/decisions-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { fromDecision } from "./adapters";
@@ -24,6 +23,7 @@ import {
   DECISION_LINK_WORDS,
   DECISION_STATE_WORDS,
 } from "./decision-card-words";
+import { decision } from "./decision-fixture";
 
 /**
  * The decision card (R19) and its setting (R20), drawn from each shape a read gives a decision:
@@ -149,14 +149,7 @@ test("the level of uncertainty and its reason stand under the text", () => {
 });
 
 test("each statement is a link by its first line, with Changed since and out of date, and never by its block's id", () => {
-  const nameless: CardDecision = {
-    ...WHOLE,
-    links: [
-      ...WHOLE.links,
-      { block_id: "p3", created_at: "2026-11-02T00:00:00Z", stale: true, text: undefined },
-    ],
-  };
-  const { card, view } = drawCard(nameless);
+  const { card, view } = drawCard(WHOLE);
   try {
     const links = within(card)
       .getAllByRole("link")
@@ -165,10 +158,53 @@ test("each statement is a link by its first line, with Changed since and out of 
       ["Notices are stored.", "/issues/CORE-1/spec#b-p1"],
       ["Old rows expire.", "/issues/CORE-1/spec#b-p2"],
     ]);
-    expect(card.textContent).not.toContain("p3");
     expect(within(card).getAllByText(DECISION_LINK_WORDS.changed_since)).toHaveLength(1);
     expect(within(card).getAllByText(DECISION_LINK_WORDS.out_of_date)).toHaveLength(1);
+    expect(card.textContent).not.toContain("Block");
     expect(card.textContent).not.toContain("Shaped in the spec:");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A statement whose words the caller holds none of - its batched read of the statements' names
+// has not answered, failed, or names the statement gone - is still drawn, as `main`'s tab drew
+// every link with its "out of date": by the card's word for a statement it shaped, as a link to
+// the same place, with "Changed since" and "out of date" where they apply, and never by its id.
+test("a statement with no words is a link by the card's word for it, with Changed since and out of date", () => {
+  const nameless: CardDecision = {
+    ...WHOLE,
+    links: [
+      ...WHOLE.links,
+      {
+        block_id: "p3",
+        changed_at: "2026-11-03T00:00:00Z",
+        created_at: "2026-11-02T00:00:00Z",
+        stale: true,
+        text: undefined,
+      },
+      { block_id: "p4", created_at: "2026-11-02T00:00:00Z", stale: false, text: "" },
+    ],
+  };
+  const { card, view } = drawCard(nameless);
+  try {
+    const links = within(card).getAllByRole("link");
+    expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Notices are stored.", "/issues/CORE-1/spec#b-p1"],
+      ["Old rows expire.", "/issues/CORE-1/spec#b-p2"],
+      [DECISION_LINK_WORDS.statement, "/issues/CORE-1/spec#b-p3"],
+      [DECISION_LINK_WORDS.statement, "/issues/CORE-1/spec#b-p4"],
+    ]);
+    const stale = links[2]?.closest("li");
+    if (stale === null || stale === undefined) throw new Error("the nameless link is in no item");
+    expect(within(stale).getByText(DECISION_LINK_WORDS.changed_since)).toBeDefined();
+    expect(within(stale).getByText(DECISION_LINK_WORDS.out_of_date)).toBeDefined();
+    const fresh = links[3]?.closest("li");
+    if (fresh === null || fresh === undefined) throw new Error("the nameless link is in no item");
+    expect(within(fresh).queryByText(DECISION_LINK_WORDS.out_of_date)).toBeNull();
+    expect(card.textContent).not.toContain("p3");
+    expect(card.textContent).not.toContain("p4");
+    expect(card.textContent).not.toContain("Block");
   } finally {
     view.unmount();
   }

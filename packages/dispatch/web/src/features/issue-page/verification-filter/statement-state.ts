@@ -1,8 +1,7 @@
 import type { CheckBlock } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
-import type { StatementState } from "../page-words";
+import type { CheckState, StatementState } from "../page-words";
 import {
-  type CheckReading,
   checkStanding,
   namedCommit,
   newestFirst,
@@ -53,6 +52,38 @@ import {
 
 /** The three, in the order the head counts them. */
 export const STATEMENT_STATES: readonly StatementState[] = ["met", "not_met", "unknown"];
+
+/** One check of a statement, as the body draws it. */
+export interface CheckReading {
+  /** Whether the result its state stands on stands for something at the commit the server names
+   *  for the check: at the basis the check compares with (`commit_stands` is `at_basis`) and
+   *  recorded against the check's words now, as the server's `standingCommit` reads it. It is
+   *  `standsAtBasis`, which `checkStanding` reads too, so this mark and the check's state never
+   *  disagree. */
+  readonly atBasis: boolean;
+  /** How the check stands at the one commit the page names (`stateAtCommit`), which its
+   *  statement's state reads (R6), or `undefined` where `state` is. The row draws `state`, the
+   *  check's own (decision 152), so a pass at its own basis older than the commit the page names
+   *  reads Passed on its row and Out of date here. */
+  readonly atCommit?: CheckState;
+  /** Every other result of the check, newest first, which the body folds into one line with
+   *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */
+  readonly earlier: readonly TreeNode[];
+  /** The result the body draws under the check: the newest that still stands, or, where every
+   *  result of it was withdrawn, the newest withdrawn one, since that is what the reader is
+   *  owed. Absent where the check has no result at all, and where the results read has not
+   *  answered for the check. */
+  readonly latest?: TreeNode;
+  /** The id of the result the check's state stands on (`CheckStanding.stands`), which the body
+   *  marks wherever it draws it; absent where none stands. */
+  readonly standsOn?: string;
+  /** The check's own node, with its words and the four attributes its body draws. */
+  readonly node: TreeNode;
+  /** How the check stands, in the seven states the page has a word for, or `undefined` while
+   *  the results read has not answered for it: a check the page has not read how it stands
+   *  draws no state, because none of the seven is true of it. */
+  readonly state?: CheckState;
+}
 
 /** One statement of the issue, with the checks that serve it. */
 export interface StatementReading {

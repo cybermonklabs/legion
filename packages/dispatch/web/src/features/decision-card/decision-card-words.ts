@@ -42,6 +42,9 @@ export const DECISION_LINK_WORDS = Object.freeze({
   changed_since: "Changed since",
   /** After a statement the decision changed after it was tied to it. */
   out_of_date: "out of date",
+  /** A statement whose words the caller holds none of - its batched read of the statements'
+   *  names has not answered, failed, or names it gone - in place of its first line. */
+  statement: "A statement it shaped",
   the_ask: "The ask it answers",
 } as const);
 
@@ -49,6 +52,9 @@ export const DECISION_LINK_WORDS = Object.freeze({
 export const DECISION_ACT_WORDS = Object.freeze({
   cancel: "Cancel",
   change: "Change",
+  /** Before the decision's heading in the name of a Change write (the shell's pending-writes
+   *  indicator): "Change to <heading>", the words today's Decisions tab named it by on `main`. */
+  change_to: "Change to",
   keep: "Keep",
   send_change: "Send change",
   /** What the card says of a write the reader stopped (`stoppedWriteNote`): the write, what it

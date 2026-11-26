@@ -11,7 +11,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Artifact,
   ArtifactText,
@@ -22,6 +22,7 @@ import type {
   DisplayTree,
   IssueAskRow,
   IssueDecisions,
+  ReferenceTarget,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -459,6 +460,96 @@ test("a shaped block's link reads its first line as plain words, never by the bl
   } finally {
     read.mockRestore();
     summary.mockRestore();
+  }
+});
+
+/** The two statements a decision of the tab below shaped: the address its tie names, where the
+ *  tab links it, and the words the names read answers for it. */
+const SHAPED = [
+  {
+    block: "p1",
+    href: "/issues/CORE-1/spec#b-p1",
+    name: "Notices are stored.",
+    ref: "dispatch://CORE-1/spec#b-p1",
+  },
+  {
+    block: "p 2",
+    href: "/issues/CORE-1/spec#b-p%202",
+    name: "Old rows expire.",
+    ref: "dispatch://CORE-1/spec#b-p%202",
+  },
+] as const;
+
+/** A refusal of a read, as Dispatch answers one it cannot serve now. */
+const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
+
+/** A decision that waits for review whose ties name their statements by address alone, as the
+ *  bare decisions read does today, so the words of each come from the names read alone. */
+function unnamedView(): IssueDecisions {
+  return {
+    decisions: [
+      decision({
+        block_id: "store",
+        heading: "Store notices in a table",
+        links: SHAPED.map(({ block, ref }) => ({
+          created_at: "2026-11-01T00:00:00Z",
+          created_version: 1,
+          from_block: "store-why",
+          stale: false,
+          to: graphNode({ block_id: block, id: `CORE-1/spec#${block}`, kind: "block", ref }),
+        })),
+        text: "## Store notices in a table\n\nA table keeps them queryable.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+}
+
+// The statements a decision shaped are named by one batched read for the whole tab, and a
+// decision's read ties each by its address alone. With that read refused the tab says so with a
+// Retry, every statement is still a link to its block by the card's word for it, and the Retry
+// names them again, the same links by their own words.
+test("a refused read of the statements' names says so with a Retry, keeps every statement a link to its block, and the Retry names them", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(unnamedView());
+  const names = spyOn(api, "getReferenceTargets")
+    .mockRejectedValueOnce(REFUSED)
+    .mockImplementation(async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        const named = SHAPED.find((one) => one.ref === ref);
+        return named === undefined ? [] : [{ gone: false, kind: "block", name: named.name, ref }];
+      }),
+    }));
+  try {
+    renderPanel();
+    const alert = await screen.findByRole("alert");
+    expect(
+      within(alert).getByText("Could not load the statements these decisions shaped.")
+    ).toBeInTheDocument();
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    const waiting = list("Waiting for your review");
+    const unnamed = within(waiting).getAllByRole("link", { name: "A statement it shaped" });
+    expect(unnamed).toHaveLength(SHAPED.length);
+    for (const [index, { href }] of SHAPED.entries()) {
+      expect(unnamed[index]).toHaveAttribute("href", href);
+    }
+
+    await user.click(retry);
+    await waitFor(() => {
+      for (const { href, name } of SHAPED) {
+        expect(within(waiting).getByRole("link", { name })).toHaveAttribute("href", href);
+      }
+    });
+    expect(within(waiting).queryByRole("link", { name: "A statement it shaped" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // One batched read of both statements, asked again by the Retry for the same two.
+    const asked = SHAPED.map(({ ref }) => ref).sort();
+    expect(names.mock.calls.map(([refs]) => [...refs])).toEqual([asked, asked]);
+  } finally {
+    read.mockRestore();
+    names.mockRestore();
   }
 });
 

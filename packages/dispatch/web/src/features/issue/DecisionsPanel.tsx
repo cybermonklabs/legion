@@ -26,6 +26,7 @@ import {
   DecisionCard,
   type DecisionCardProps,
 } from "../decision-card/DecisionCard";
+import { StatementNamesError } from "../decision-card/StatementNamesError";
 import { useStatementExcerpts } from "../decision-card/useStatementExcerpts";
 import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -346,8 +347,11 @@ export function DecisionsPanel({
     queryFn: () => api.getIssueDecisions(issueKey),
     queryKey: ["decisions", issueKey],
   });
-  // The words of every statement the decisions shaped, from one read of their names.
-  const statementExcerpt = useStatementExcerpts(view.data?.decisions);
+  // The words of every statement the decisions shaped, from one read of their names. A failed
+  // read is shown by `StatementNamesError`, and each statement is still drawn as a link.
+  const { failure: namesFailure, statementOf: statementExcerpt } = useStatementExcerpts(
+    view.data?.decisions
+  );
   // Each decision beside the shape the card draws it by, made once per answer of the decisions
   // read and of the statements' names, so a card's text is a new object only when the decisions
   // were read again and a repaint of the tab repaints no body it already drew. The three lists
@@ -389,6 +393,7 @@ export function DecisionsPanel({
       {view.data.document === null ? (
         <p className={`text-sm ${textMutedOnSurface}`}>This issue has no decisions.md yet.</p>
       ) : null}
+      <StatementNamesError failure={namesFailure} />
       <Section empty="No open questions." title="Open questions">
         {questions.map((ask) => (
           <OpenQuestion ask={ask} issueKey={issueKey} key={ask.id} spec={spec} />

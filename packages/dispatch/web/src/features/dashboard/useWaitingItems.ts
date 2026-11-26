@@ -134,6 +134,33 @@ function approvalDocuments(ask: IssueAskRow): readonly ApprovalDocument[] {
       ];
 }
 
+/**
+ * The one document an approval request is on, by artifact id: the ask's own (`artifact_id`),
+ * else the document of `issue` its approval names by slug (`approval_artifact`), else the issue's
+ * spec (`primary_artifact_id`). The header's approval control for that document carries Approve
+ * and Request changes, and is where the count's press puts the focus when nothing else waits
+ * (`issue-page/IssuePropertiesRow.tsx`), as `main`'s count placed it.
+ *
+ * It is not `approvalDocuments`, and the two are not one rule, since each answers its own
+ * question from other fields: `approvalDocuments` gives every document the request covers
+ * (`approval.documents`), each with the version it asks the reader to approve, which the item
+ * names and which keeps a stale approval of the same document off the list, and none where the
+ * read carries no `approval`; this gives the one document the ask itself is on, read against the
+ * issue's documents, and the spec where the ask names none. Read by `approvalDocuments`, the
+ * header would offer the two controls on every document one request covers, and on none for a
+ * request whose read carries no `approval`.
+ */
+export function requestedDocument(
+  ask: Pick<IssueAskRow, "approval_artifact" | "artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "primary_artifact_id">
+): string {
+  return (
+    ask.artifact_id ??
+    issue.artifacts?.find((artifact) => artifact.slug === ask.approval_artifact?.slug)?.id ??
+    issue.primary_artifact_id
+  );
+}
+
 /** Whether `author` is the Legion daemon's session of `project` (R11). */
 function isDaemon(author: MyReplyRow["root_author"], project: string): boolean {
   return author?.kind === "session" && author.id === `legion-daemon:${project}`;

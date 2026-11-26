@@ -1133,6 +1133,13 @@ html:has([data-issue-page]) [data-issue-composer]
   --tw-prose-links: currentColor;
 }
 
+/* A link in the words the new page's Dashboard draws (`issue-page/slots/view-dashboard.tsx`'s
+   `data-dashboard`) is the words' own ink too (dispatch://INFRA-3940 R13); today's page marks no
+   Dashboard so, and its links keep the app's link blue. */
+[data-dashboard] .dispatch-markdown {
+  --tw-prose-links: currentColor;
+}
+
 [data-node-words] .dispatch-markdown a {
   font-weight: inherit;
   text-decoration-color: var(--color-page-bullet);

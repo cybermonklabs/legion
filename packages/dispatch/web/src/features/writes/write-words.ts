@@ -9,8 +9,8 @@ import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
  */
 
 /** How many hours Dispatch keeps a write's key (`IDEMPOTENCY_KEY_TTL_MS`), as a Retry's words say
- *  it. */
-const KEY_HOURS = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
+ *  it: here, and in the issue page's box, which joins its own sentences around it. */
+export const KEY_HOURS = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
 
 /** The words of `sameKeyRetryNote` around what the write does once it lands, which it says
  *  twice: before the first, between the two, and after the second. */
