@@ -1691,7 +1691,7 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 // says so, and a person decides it: the broker may serve no name from it, or be older than the
 // judge tags and read none.
 func TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv in secret_test.go); it sets a package variable the package's other tests read (main.useAWS, awsClients set in secret_test.go).
 	source := policytest.Judged(policytest.Secret("RELEASE_PAT", "ada@example.com", policy.TierHuman, "s"), 900, "grant for the release job named in the reason")
 	unserved := policytest.Judged(policytest.Secret("UNSERVED_KEY", "ada@example.com", policy.TierHuman, "u"), 600, "")
 	local := secrets.NewLocal(source, unserved)
