@@ -819,8 +819,9 @@ function isHeld(element: Element): boolean {
 const ACTION_BOUND_MS = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
 
 /** The keys that only modify another key: one pressed alone acts on nothing, so it leaves an
- *  armed press armed (`armHandOff`). */
-const LONE_MODIFIERS: Readonly<Record<string, true>> = {
+ *  armed press armed (`armHandOff`), and the selection bar's hand-off owes its landing through it
+ *  (`SelectionBar`'s `useLastMarkedPlace`). */
+export const LONE_MODIFIERS: Readonly<Record<string, true>> = {
   Alt: true,
   Control: true,
   Meta: true,

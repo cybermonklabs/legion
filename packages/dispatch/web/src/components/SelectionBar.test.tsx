@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
@@ -1167,6 +1167,187 @@ test("j from the parked mark of a leaving row moves the focus to the next row, n
     answered();
     disarm();
     view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (N2a): a modifier pressed alone acts on nothing - it only changes the key
+// pressed with it - so it is none of the reader's acts. Shift on the parked mark of a leaving row
+// moves nothing and ends nothing: the landing is still owed, and the commit that takes the press's
+// rows away makes it.
+test("Shift alone on the parked mark of a leaving row moves nothing, and the landing is still made once the rows go", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const moves = watchMoves();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    const from = moves.focused.length;
+    await user.keyboard("{Shift}");
+    await act(afterTask);
+    expect(moves.focused.slice(from).map((move) => move.target.getAttribute("aria-label"))).toEqual(
+      []
+    );
+    expect(focusedName()).toBe("Select CORE-13");
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe("Select CORE-14");
+  } finally {
+    moves.restore();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The same rule, for the Tab of Shift+Tab: it is the reader's act, and it starts from the parked
+// mark, so the focus goes to the row before it. The reader has moved on, so the rows going then
+// land nothing. The reader holds Shift a moment before the Tab, as a hand does.
+test("Shift+Tab from the parked mark of a leaving row goes to the row before it, and its Tab is the reader's act", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={["CORE-13"]} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    await user.keyboard("{Shift>}");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+    await user.keyboard("{Tab}{/Shift}");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-12");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-13")} />);
+    expect(focusedName()).toBe("Select CORE-12");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (N2b): Space ticks a checkbox at its keyup, when the reader lets the key go,
+// a task or more after its keydown. Where the focus stands after a key is read once that key's own
+// keyup has been answered, so Space on the parked mark of a leaving row ticks that mark, and only
+// then does the list's own stop take the focus, with no scroll.
+test("Space on the parked mark of a leaving row ticks it, and only then does the list's own stop take the focus", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const moves = watchMoves();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    const mark = rowBox("CORE-13");
+    expect(mark).toHaveFocus();
+    // What held the focus as the mark was ticked.
+    const tickedOn: (string | null)[] = [];
+    mark.addEventListener("change", () => tickedOn.push(focusedName()));
+    await user.keyboard("[Space>]");
+    await act(afterTask);
+    await user.keyboard("[/Space]");
+    await act(afterTask);
+    expect(mark).toBeChecked();
+    expect(tickedOn).toEqual(["Select CORE-13"]);
+    expect(focusedName()).toBe("Rows");
+    expect(moves.focused.at(-1)?.target.getAttribute("aria-label")).toBe("Rows");
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(moves.scrolled.length).toBe(0);
+  } finally {
+    moves.restore();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (N4): the read of where the reader's act left the focus is still to come a
+// task after a wheel, and until its keyup after a key, which never comes where the window loses the
+// focus first. A settle before it - the hook's unmount, or a new landing owed - ends it unmade, so
+// nothing moves the focus after it. The hook runs here without its host and over a list drawn
+// apart from it, so the list outlives the hook and a read left behind would move the focus there.
+test.each([
+  ["a wheel", "the hook's unmount"],
+  ["a key", "the hook's unmount"],
+  ["a wheel", "a new landing owed"],
+  ["a key", "a new landing owed"],
+] as const)("%s's read of the focus, ended by %s before it runs, moves nothing", async (what, ending) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const rows = render(
+    <ul aria-label="Rows">
+      {PLACED_KEYS.map((key) => (
+        <li data-row={key} key={key}>
+          <input aria-label={`Select ${key}`} type="checkbox" />
+        </li>
+      ))}
+    </ul>
+  );
+  const stop = screen.getByRole("list", { name: "Rows" });
+  const hand = renderHook(() =>
+    useLastMarkedPlace({
+      control: (key) => stop.querySelector<HTMLElement>(`[data-row="${key}"] input`),
+      lastMarked: () => "CORE-13",
+      leaving: (key) => key === "CORE-13",
+      list: () => stop,
+      order: () => PLACED_KEYS,
+      shown: false,
+    })
+  );
+  let mounted = true;
+  try {
+    // The bar has gone and left the focus on the body: the landing is owed, and parked on the mark.
+    act(() => {
+      hand.result.current.land();
+    });
+    const mark = rowBox("CORE-13");
+    expect(mark).toHaveFocus();
+    if (what === "a wheel") document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    else
+      mark.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, code: "Enter", key: "Enter" })
+      );
+    if (ending === "the hook's unmount") {
+      hand.unmount();
+      mounted = false;
+    } else {
+      act(() => {
+        hand.result.current.land();
+      });
+    }
+    if (what === "a key") {
+      mark.dispatchEvent(
+        new KeyboardEvent("keyup", { bubbles: true, code: "Enter", key: "Enter" })
+      );
+    }
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+  } finally {
+    if (mounted) hand.unmount();
+    rows.unmount();
     laidOut();
   }
 });

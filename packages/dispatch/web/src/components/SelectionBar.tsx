@@ -23,6 +23,7 @@ import {
   focusNoScroll,
   focusOwnStop,
   isRowMark,
+  LONE_MODIFIERS,
   landNearest,
   outOfSight,
   pressIsArmedOwn,
@@ -127,10 +128,15 @@ export interface MarkedList {
  *
  * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends whatever is owed, the
  * table's landing on a row it is drawing included. A press the armed press counts as its own - the
- * second press on a control its write holds - is no such act (`pressIsArmedOwn`). Where the
- * act leaves the focus on the parked mark of a leaving row, read once its own handlers have run,
- * the list's own stop takes it with no scroll, so it does not fall to the body with that row.
- * Nothing of this follows the reader after that.
+ * second press on a control its write holds - is no such act (`pressIsArmedOwn`), and neither is
+ * a modifier key alone, which only changes the key pressed with it (`LONE_MODIFIERS`): the Tab of
+ * Shift+Tab is the act, and it starts from the parked mark. Where the act leaves the focus on the
+ * parked mark of a leaving row, the list's own stop takes it with no scroll, so it does not fall to
+ * the body with that row. That is read once the act has been answered (`afterAnswer`): a task
+ * after a press or a wheel, and a task after a key's own keyup, at which Space has ticked the mark.
+ * A settle before the read - a new landing owed, or the hook's unmount - ends it unmade, so a key
+ * whose keyup never comes, as when the window loses the focus, leaves no wait behind. Nothing of
+ * this follows the reader after that.
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
  * row nor to the page's body.
@@ -148,12 +154,18 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const owed = useRef<Owed | null>(null);
   // The mark a park left the focus on while its row is leaving, else null.
   const parked = useRef<HTMLElement | null>(null);
-  /** Ends what is owed and its watch on the reader's acts. It moves no focus. */
+  // What ends, unmade, the read of where the reader's act left the focus (`afterAnswer`) while it
+  // is still to come, else null.
+  const pending = useRef<(() => void) | null>(null);
+  /** Ends what is owed, its watch on the reader's acts, and a read their act left to come. It moves
+   *  no focus. */
   const settle = useCallback(() => {
     const was = owed.current;
     owed.current = null;
     parked.current = null;
     was?.unwatch();
+    pending.current?.();
+    pending.current = null;
   }, []);
   useEffect(() => settle, [settle]);
   // After every commit, so the commit that takes the press's rows away keeps the order before it.
@@ -173,16 +185,19 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       const onAct = (event: Event) => {
         if (owed.current !== entry) return;
         if (event.type !== "wheel" && pressIsArmedOwn(event.target)) return;
+        if (event instanceof globalThis.KeyboardEvent && LONE_MODIFIERS[event.key] === true) return;
         const stood = parked.current;
         if (entry.kind === "own") entry.abandon();
         settle();
         if (stood === null) return;
-        // Read once the act's own handlers have run: a key the page's keymap answers moves the
-        // focus itself, and Space ticks the mark. Only a focus the act left on the parked mark of
-        // a leaving row goes to the list's own stop.
-        window.setTimeout(() => {
+        // Read once the act has been answered: a key the page's keymap answers moves the focus
+        // itself, and Space ticks the mark at its keyup. Only a focus the act left on the parked
+        // mark of a leaving row goes to the list's own stop. Set after the settle above, so only a
+        // later one ends it.
+        pending.current = afterAnswer(event, () => {
+          pending.current = null;
           if (document.activeElement === stood) focusListStop(latest.current.list());
-        }, 0);
+        });
       };
       for (const kind of READER_ACTS) {
         document.addEventListener(kind, onAct, {
@@ -304,8 +319,38 @@ export interface MarkedPlace {
 
 /** What the reader does that ends a landing that is owed (`useLastMarkedPlace`): a press, a key or
  *  a wheel of theirs, read on the document's capture so nothing can stop it on the way. A press
- *  the armed press counts as its own is not one (`pressIsArmedOwn`). */
+ *  the armed press counts as its own is not one (`pressIsArmedOwn`), and neither is a keydown of
+ *  a modifier alone (`LONE_MODIFIERS`): a reader who holds Shift for Shift+Tab has not acted yet,
+ *  and the Tab that follows is their act. */
 const READER_ACTS = ["pointerdown", "keydown", "wheel"] as const;
+
+/** Runs `read` once the reader's act `event` has been answered, and answers what ends the wait
+ *  with `read` unrun (`useLastMarkedPlace`'s settle). A press or a wheel is answered by its own
+ *  handlers, so `read` runs a task after it. A key is answered at its keyup too, where Space
+ *  ticks a checkbox, so `read` runs a task after that key's own keyup, the one of the same
+ *  `code`: a modifier held from before and let go first does not run it early. */
+function afterAnswer(event: Event, read: () => void): () => void {
+  if (!(event instanceof globalThis.KeyboardEvent)) {
+    const timer = window.setTimeout(read, 0);
+    return () => window.clearTimeout(timer);
+  }
+  const { code } = event;
+  const released = new AbortController();
+  let timer = 0;
+  document.addEventListener(
+    "keyup",
+    (up) => {
+      if (up.code !== code) return;
+      released.abort();
+      timer = window.setTimeout(read, 0);
+    },
+    { capture: true, passive: true, signal: released.signal }
+  );
+  return () => {
+    released.abort();
+    window.clearTimeout(timer);
+  };
+}
 
 /** Parks the focus while a landing is owed, with no scroll, and answers the mark it left it on.
  *  The park is the mark of the row the reader marked last, while the list draws that row and the
