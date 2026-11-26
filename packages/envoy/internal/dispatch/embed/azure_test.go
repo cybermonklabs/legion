@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const testAzureKey = "test-azure-key-never-in-errors"
@@ -120,6 +122,51 @@ func TestAzureEmbedSendsTheDocumentedRequestForBothInputTypes(t *testing.T) {
 				t.Errorf("request body = %v, want %v", gotBody, want)
 			}
 		})
+	}
+}
+
+// An endpoint that carries a made-up token as its user name, with nothing listening: the error is
+// the failure's class alone and holds no part of the token, though net/http's error quotes the
+// request URL with only a password masked. Boot refuses such a DISPATCH_AZURE_EMBED_ENDPOINT (and
+// the client one with a query); the client prints none of it all the same.
+func TestAzureEmbedPrintsNoTokenOfTheEndpointOnAFailedCall(t *testing.T) {
+	const token = "madeUpEmbedToken0123"
+	client, err := NewAzure(AzureConfig{
+		Endpoint:        "http://" + token + "@" + testport.Refused(t) + "/models",
+		Deployment:      "embed-v-4-0",
+		TokensPerMinute: 300_000,
+		APIKey:          testAzureKey,
+	})
+	if err != nil {
+		t.Fatalf("NewAzure: %v", err)
+	}
+	_, err = client.Embed(t.Context(), []string{"a text"}, InputDocument)
+	if err == nil || err.Error() != "embed: azure embeddings: connection refused" {
+		t.Fatalf("Embed = %v, want the failed call's class alone", err)
+	}
+	if strings.Contains(err.Error(), token[:10]) {
+		t.Errorf("Embed = %q, which holds part of the token", err)
+	}
+}
+
+// A clean endpoint's failed call prints the failure itself, without net/http's quote of the URL
+// and its api-version query: a refused dial names the address it dialled, and a TLS failure the
+// certificate's fault, which the operator reads to fix it, where the class alone said "TLS failed".
+func TestAzureEmbedPrintsTheFailureOfACleanEndpoint(t *testing.T) {
+	refused := testport.Refused(t)
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(tlsServer.Close)
+	for endpoint, want := range map[string]string{
+		"http://" + refused + "/models": "embed: azure embeddings: dial tcp " + refused + ": connect: connection refused",
+		tlsServer.URL + "/models":       "embed: azure embeddings: tls: failed to verify certificate: x509: ",
+	} {
+		client, err := NewAzure(AzureConfig{Endpoint: endpoint, Deployment: "embed-v-4-0", TokensPerMinute: 300_000, APIKey: testAzureKey})
+		if err != nil {
+			t.Fatalf("NewAzure: %v", err)
+		}
+		if _, err = client.Embed(t.Context(), []string{"a text"}, InputDocument); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("Embed at %s = %v, want %q", endpoint, err, want)
+		}
 	}
 }
 

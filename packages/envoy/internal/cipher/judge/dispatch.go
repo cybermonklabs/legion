@@ -45,7 +45,7 @@ type Dispatch struct {
 	// that caches for ciphertoken.AccountTokenCacheTTL picks a rotation up within 30 seconds,
 	// so a rotated token reaches the judge with no restart. It is the interface rather than
 	// the reader so a test can stand in for it; cmd/cipherd wires
-	// ciphertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
+	// ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", the file that setting names).
 	Account ciphertoken.Account
 	// HTTP is the client every call is made with; a nil client is http.DefaultClient.
 	HTTP *http.Client

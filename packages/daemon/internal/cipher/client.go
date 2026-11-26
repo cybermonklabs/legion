@@ -35,6 +35,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/httpoutage"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -341,15 +342,18 @@ func rateLimitWait(status int, header http.Header, now time.Time) time.Duration 
 }
 
 // serviceToken is the daemon's projected ServiceAccount token as the file holds it now: read at
-// every use, so the kubelet's rotation is always picked up. Its errors name the file, never a token.
+// every use, so the kubelet's rotation is always picked up. Its errors name neither the token nor
+// the file's path, which runtime.kubernetes.agent_secrets.token_file sets and a token pasted there
+// would be: a file that cannot be read is named by why (fileerr.Err), which still unwraps to the
+// read's error.
 func (c *Client) serviceToken() (string, error) {
 	raw, err := os.ReadFile(c.TokenFile)
 	if err != nil {
-		return "", fmt.Errorf("read the ServiceAccount token: %w", err)
+		return "", fmt.Errorf("read the ServiceAccount token: its file cannot be read: %w", fileerr.Err(err))
 	}
 	token := strings.TrimSpace(string(raw))
 	if token == "" {
-		return "", fmt.Errorf("the ServiceAccount token file %s is empty", c.TokenFile)
+		return "", errors.New("the ServiceAccount token file is empty")
 	}
 	return token, nil
 }
