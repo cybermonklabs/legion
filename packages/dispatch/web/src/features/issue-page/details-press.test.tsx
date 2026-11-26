@@ -16,6 +16,7 @@ import { presetPath } from "./issue-address";
 import { type MarginDrawer, type MarginDrawerPage, MarginSlotProvider } from "./margin-slot";
 import { TWO_THREADS } from "./outline-fixtures";
 import { PROPERTY_LABELS } from "./page-structure";
+import { type TasksByHand, tasksByHand } from "./slices-fixtures";
 import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fixtures";
 
 /**
@@ -55,6 +56,7 @@ interface AskedRead {
 
 let stubs: { mockRestore(): void }[] = [];
 let restoreViewport: () => void = () => {};
+let tasks: TasksByHand;
 /** Each read of `AskedRead` since the case began, in order. */
 let log: AskedRead[] = [];
 /** An answer the case holds until it settles it: what `Promise.withResolvers` gives. */
@@ -114,9 +116,11 @@ beforeEach(() => {
       return held.promise;
     }),
   ];
+  tasks = tasksByHand();
 });
 afterEach(() => {
   cleanup();
+  tasks.restore();
   restoreViewport();
   for (const stub of stubs.reverse()) stub.mockRestore();
 });
@@ -193,6 +197,7 @@ function developmentRows(): { readonly row: HTMLElement; readonly drawn: string 
 test("a press on Details opens the drawer in its commit and sends its reads from the handler", async () => {
   const { view } = drawPage();
   const control = await detailsControl(view);
+  await tasks.runAll();
   await waitFor(() =>
     expect(view.baseElement.querySelector("[data-issue-body] [data-node-row]")).not.toBeNull()
   );

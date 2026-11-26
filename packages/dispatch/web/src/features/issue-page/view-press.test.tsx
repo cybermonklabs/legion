@@ -12,6 +12,7 @@ import { presetPath } from "./issue-address";
 import * as issueTreeModule from "./issue-tree";
 import { TWO_THREADS } from "./outline-fixtures";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
+import { type TasksByHand, tasksByHand } from "./slices-fixtures";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { AppProviders, commentNodes, inDocument, stubReads, treeOf } from "./slots/stage-fixtures";
 import { coverageRead } from "./spec-filter/spec-fixtures";
@@ -102,6 +103,7 @@ function plannedIssue(): IssueDetails {
 
 let stubs: { mockRestore(): void }[] = [];
 let restoreViewport: () => void = () => {};
+let tasks: TasksByHand;
 /** Every call of the tree route since the case began, in order. */
 let log: AskedRead[] = [];
 /** The calls still held, by read, each the first not answered yet first. */
@@ -143,6 +145,7 @@ function heldCall(read: TreeReadName): HeldRead {
 beforeEach(() => {
   log = [];
   held = new Map();
+  tasks = tasksByHand();
   stubs = [
     ...stubReads(),
     spyOn(api, "getIssue").mockResolvedValue(plannedIssue()),
@@ -158,7 +161,10 @@ beforeEach(() => {
       const answer = Promise.withResolvers<TreeAnswer>();
       const calls = held.get(read) ?? [];
       calls.push({
-        answer: (with_) => act(async () => answer.resolve(with_)),
+        answer: async (with_) => {
+          await act(async () => answer.resolve(with_));
+          await tasks.runAll();
+        },
         refuse: () =>
           act(async () =>
             answer.reject(new ApiError(503, { code: "UNAVAILABLE", error: "refused" }))
@@ -171,6 +177,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  tasks.restore();
   restoreViewport();
   for (const stub of stubs.reverse()) stub.mockRestore();
 });

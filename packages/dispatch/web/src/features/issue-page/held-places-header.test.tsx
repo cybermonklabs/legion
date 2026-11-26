@@ -11,6 +11,7 @@ import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import { IssueOutlinePage } from "./IssueOutlinePage";
 import { presetPath } from "./issue-address";
 import { TWO_THREADS } from "./outline-fixtures";
+import { type TasksByHand, tasksByHand } from "./slices-fixtures";
 import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fixtures";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -108,6 +109,7 @@ let whoami: Held<AuthenticatedUser>;
 
 let stubs: { mockRestore(): void }[] = [];
 let restoreViewport: () => void = () => {};
+let tasks: TasksByHand;
 beforeEach(() => {
   tree = Promise.withResolvers();
   projects = Promise.withResolvers();
@@ -124,9 +126,11 @@ beforeEach(() => {
     spyOn(api, "getMyState").mockResolvedValue({}),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
   ];
+  tasks = tasksByHand();
 });
 afterEach(() => {
   cleanup();
+  tasks.restore();
   restoreViewport();
   for (const stub of stubs.reverse()) stub.mockRestore();
   window.localStorage.removeItem(userPreferenceStorageKey(READER, "issue.children-section"));
@@ -202,6 +206,7 @@ test("the line holds the count's box before the tree read answers, and the count
   const approvalAt = placeIn(line, approval);
 
   await act(async () => tree.resolve(treeOf(commentNodes(TWO_THREADS))));
+  await tasks.runAll();
   const chip = await waitFor(() => {
     const drawn = line.querySelector('[data-testid="issue-whose-turn"]');
     expect(drawn, "the count was not drawn once the tree read answered").not.toBeNull();
@@ -239,6 +244,7 @@ test("a root's line holds the approval steps' place before the projects read ans
   const at = placeIn(line, slot);
 
   await act(async () => projects.resolve([GATED]));
+  await tasks.runAll();
   const steps = await waitFor(() => {
     const drawn = line.querySelector('[data-testid="issue-approval-steps"]');
     expect(drawn, "the steps were not drawn once the projects read answered").not.toBeNull();
@@ -267,11 +273,13 @@ test("the children's section is drawn once, folded as the reader saved it, after
   watch.observe(view.container, { attributes: true, childList: true, subtree: true });
   try {
     await act(async () => {});
+    await tasks.runAll();
     expect(
       view.container.querySelector("[data-children-section]"),
       "the section was drawn before the reader's login answered"
     ).toBeNull();
     await act(async () => whoami.resolve({ event_head: "0", kind: "user", login: READER }));
+    await tasks.runAll();
     const toggle = await waitFor(() => {
       const drawn = view.container.querySelector("[data-children-toggle]");
       expect(drawn, "the section was not drawn once the login answered").not.toBeNull();
@@ -312,6 +320,7 @@ test("below 1024 px each row of In short holds its counts' line before the reads
   }
 
   await act(async () => tree.resolve(treeOf(commentNodes(TWO_THREADS))));
+  await tasks.runAll();
   await waitFor(() =>
     expect(
       rows.map((row) => row.querySelector("[data-brief-counts]")?.textContent ?? ""),
