@@ -79,7 +79,7 @@ func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) 
 		client := rig.harness.client
 		server.Stop(t)
 		t.Cleanup(func() { server.Start(t) })
-		waitFor(t, 10*time.Second, "the listener's connection to reconnect after its server stopped", func() bool {
+		waitFor(t, "the listener's connection to reconnect after its server stopped", func() bool {
 			return !client.Connected() && client.Connection().IsReconnecting()
 		})
 		status, body, err := sendThroughDispatch(t, rig.mux, target)
