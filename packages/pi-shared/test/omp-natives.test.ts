@@ -96,7 +96,7 @@ test("a fill holding a file short of its embedded size caches nothing, and the n
 });
 
 // A file under natives that is not a native the binary embeds is refused by its name. Oh My Pi
-// writes each native to a `.tmp.<pid>.<ms>` file and renames it once whole, so a write that failed
+// writes each native to a `.tmp.<pid>.<uuid>` file and renames it once whole, so a write that failed
 // and whose cleanup failed too leaves that file in place of its native.
 test("a fill holding a leftover temporary file caches nothing", async () => {
   const dir = await scratch();
@@ -129,7 +129,7 @@ test("a fill whose extraction writes no native caches nothing", async () => {
 });
 
 // With no embedded list, every file an extraction holds would be refused by name anyway, so
-// refusing first fails with a precise message and never runs the binary to extract about 123 MiB.
+// refusing first fails with a precise message and never runs the binary to extract about 124 MiB.
 test("a binary that lists no embedded natives is refused before it runs", async () => {
   const dir = await scratch();
   const runs = path.join(dir, "runs");
