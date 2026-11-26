@@ -19,6 +19,7 @@ import { withIssuePage } from "./issue-page-option";
 import {
   commentReads,
   follows,
+  LONG_RUN_QUESTION,
   listedEdgesOf,
   listedRowsOf,
   mainContent,
@@ -32,6 +33,7 @@ import {
   retryBeside,
   runReference,
   runRowsOf,
+  seedLongRunIssue,
   seedRunIssue,
   seedRunReferences,
   targetReadsNaming,
@@ -399,5 +401,30 @@ test("a run's references are named in one batched read, on Details and on the ru
       targetReadsNaming(traffic, seeded.cited),
       "the run's page did not name the three comments in one batched read"
     ).toEqual([seeded.cited]);
+  });
+});
+
+// SLOW(>=2s): an issue and a run seeded, then alice's load of the issue on Conversation and the
+// list's opening.
+// Spec R1: the asker's question is the run's row's excerpt, whole, with no clamp and no "Show
+// more", however long it is. The tree read alone answers the runs (R4), so it must answer the
+// question whole too: a question longer than the 240 characters the server cuts an item's text
+// to beside an edge must not lose its end in Details.
+test("a run's question longer than an item's excerpt is drawn whole in Details", async ({
+  browser,
+}) => {
+  await phase(browser, seedLongRunIssue, async (page, seeded) => {
+    await gotoIssue(page, buildIssuePath({ key: seeded.key, kind: "conversation" }));
+    await openDetails(page);
+    await referencesControl(page).click();
+    const runRow = runRowsOf(page);
+    await expect(runRow.getByRole("link"), `the run's row reads ${RUN_WORD}`).toHaveText([
+      RUN_WORD,
+    ]);
+    await expect(runRow.getByRole("link")).toHaveAttribute("href", buildRunPath(seeded.run));
+    await expect(runRow.locator("p"), "the run's row cut its question").toHaveText(
+      LONG_RUN_QUESTION
+    );
+    await expect(runRow.getByRole("button", { name: "Show more" })).toHaveCount(0);
   });
 });

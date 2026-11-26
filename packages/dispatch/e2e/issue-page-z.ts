@@ -232,6 +232,22 @@ export async function seedRunReferences(): Promise<RunReferencesSeed> {
   };
 }
 
+/** A question longer than the 240 characters the server cuts an item's text to where it shows
+ *  the head of that text beside an edge (`refs/heads.go`'s `excerptRunes`), in words with no
+ *  markdown character and no reference, so Details draws it as typed. */
+export const LONG_RUN_QUESTION =
+  "Before the release on Thursday please read every open review on this issue and on the two issues it waits on, then tell me which of them still blocks the release, who owns each one, when each was last changed, and what the smallest change is that lets the release go out on time without a second build";
+
+/** An issue a run that asked `LONG_RUN_QUESTION` changed, as alice: the run changes the issue's
+ *  labels once, inside its 30 s window and before any browser step. */
+export async function seedLongRunIssue(): Promise<{ readonly key: string; readonly run: string }> {
+  await createProject({ key: PROJECT, name: "Core" });
+  const issue = await createIssue({ project: PROJECT, title: "Release checklist" });
+  const run = await runAs("alice", LONG_RUN_QUESTION, PROJECT);
+  await patchIssueInRun(issue.key, run.id, { labels: FIRST_LABELS }, "alice");
+  return { key: issue.key, run: run.id };
+}
+
 /** The address the run's page reads its run at (`run-page/run-page.ts`'s `runAddress`). */
 export function runReference(run: string): string {
   return `dispatch://interaction/${run}`;
