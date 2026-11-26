@@ -826,6 +826,147 @@ func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGro
 	}
 }
 
+// Main's row, with the child that holds the pipe in the command's own process group, asked one
+// more thing than the row above: that runWithin never stops that group after the run is over. A
+// runWithin that, once its budget had passed, stopped what is left of the group after the command's
+// own exit, and read that stop as its budget's, failed main's row on every run.
+//
+// Main's row also failed a correct runWithin under load: where a loaded machine holds the command's
+// reap past the budget, os/exec's Wait meets the ended context first and calls procgroup's stop,
+// which the child in the group takes, and the run reads a timeout. The two are told apart by the
+// kernel, not by a clock. Once the run is over, os/exec has closed the read end of the command's
+// output pipe (procgroup.WaitDelay ran out); a correct runWithin stops the group only inside Wait,
+// while that read end is still open. So the child ignores SIGPIPE, and its SIGTERM trap writes one
+// byte to its stdout: EPIPE says the reader was already gone, the group was stopped after the run,
+// and the row fails; a write that succeeds says the reader was still there, the stop was os/exec's
+// inside Wait, and that run is not judged. A run whose child took no SIGTERM is judged as main
+// judged it. The one false failure left needs two things at once: a reap held past the budget, and
+// the child's trap held past procgroup.WaitDelay after the stop, which lets Wait close the reader
+// before the trap writes.
+func TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput(t *testing.T) {
+	const budget = procgroup.WaitDelay - 100*time.Millisecond
+	within := testwait.Bounded(t, time.Minute, budget+procgroup.StopGrace+procgroup.WaitDelay+time.Second)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		held := filepath.Join(dir, "held")
+		childFile, open, closed := filepath.Join(dir, "child.pid"), filepath.Join(dir, "term-open"), filepath.Join(dir, "term-closed")
+		t.Cleanup(func() {
+			_ = os.WriteFile(held, nil, 0o644)
+			killPIDFile(t, childFile)
+		})
+		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+		// The child sets both traps before it writes its pid, and the command exits only once that
+		// pid is written, so any SIGTERM the group takes finds the child's trap set.
+		child := `trap '' PIPE; trap 'if printf . 2>/dev/null; then : >"$1/term-open"; else : >"$1/term-closed"; fi; exit 0' TERM; ` +
+			`echo $$ >"$1/child.pid.tmp" && mv "$1/child.pid.tmp" "$1/child.pid"; ` +
+			`while [ ! -e "$1/held" ] && kill -0 "$2" 2>/dev/null; do sleep 0.01; done`
+
+		started := time.Now()
+		r := img.runWithin(context.Background(), budget, "sh", "-c",
+			`echo 1.2.3; sh -c "$1" sh "$2" "$3" & until [ -s "$2/child.pid" ]; do sleep 0.01; done; exit 0`,
+			"sh", child, dir, strconv.Itoa(os.Getpid()))
+		elapsed := time.Since(started)
+		termed := childTermed(t, childFile, open, closed, within)
+		if err := os.WriteFile(held, nil, 0o644); err != nil {
+			t.Errorf("release run %d's child: %v", runs, err)
+		}
+
+		switch termed {
+		case closed:
+			t.Fatalf("run %d: the command's group was stopped after the run was over: the child in the group took a SIGTERM after os/exec had closed the command's output pipe, so runWithin stopped the group after the command's own exit (run = exit %d, error %v, stdout %q after %s)", runs, r.exit, r.err, r.stdout, elapsed)
+		case open:
+			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the child in the group took a SIGTERM while the command's output pipe was still read, which is os/exec's stop inside Wait, where a loaded machine held the command's reap past its %s budget (run = exit %d, error %v)", runs, budget, r.exit, r.err)
+				continue
+			}
+			t.Fatalf("no run of the right order in %d runs over %s: in each, os/exec's Wait met the ended %s budget before the command's reap and stopped its group", runs, within, budget)
+		case childGone:
+			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the child in the group was ended by a signal before its trap was set, which only a stop inside Wait can do, where a loaded machine held the command past its %s budget before it exited (run = exit %d, error %v)", runs, budget, r.exit, r.err)
+				continue
+			}
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the command's group was stopped before its child set its trap", runs, within)
+		}
+		if elapsed < budget {
+			t.Fatalf("run %d returned after %s, inside its %s budget: nothing held the pipe past the deadline, so this run proves nothing", runs, elapsed, budget)
+		}
+		if r.err != nil || r.exit != 0 || strings.TrimSpace(r.stdout) != "1.2.3" {
+			t.Errorf("run %d = exit %d, error %v, stdout %q after %s; want exit 0, no error, and the answer: the command exited on its own inside its %s budget",
+				runs, r.exit, r.err, r.stdout, elapsed, budget)
+		}
+		return
+	}
+}
+
+// childGone is what childTermed answers for a child that is gone, or a zombie, with no SIGTERM mark:
+// a signal ended it before its trap ran, or it never wrote its pid because the command was stopped
+// first. Only a stop inside os/exec's Wait comes that early: a stop after the run finds the child
+// with its trap set, since the command exits only once the child has written its pid.
+const childGone = "gone"
+
+// childTermed waits, after a run, for what the child at childFile took: the path of its SIGTERM
+// trap's mark (open or closed) once one is written; "" once it is seen alive with no SIGTERM pending
+// and no mark for settle; or childGone. A SIGTERM the kernel holds for the child (its SigPnd or
+// ShdPnd) is waited out, since its trap runs once the child next runs.
+func childTermed(t *testing.T, childFile, open, closed string, bound time.Duration) string {
+	t.Helper()
+	const settle = 500 * time.Millisecond
+	raw, err := os.ReadFile(childFile)
+	if err != nil {
+		return childGone
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quietSince time.Time
+	for deadline := time.Now().Add(bound); time.Now().Before(deadline); time.Sleep(testwait.Poll) {
+		for _, mark := range []string{closed, open} {
+			if _, err := os.Stat(mark); err == nil {
+				return mark
+			}
+		}
+		status, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
+		if err != nil || strings.Contains(string(status), "\nState:\tZ") {
+			// One last look: a trap that ran and exited just now left its mark before the exit.
+			for _, mark := range []string{closed, open} {
+				if _, err := os.Stat(mark); err == nil {
+					return mark
+				}
+			}
+			return childGone
+		}
+		if termPending(string(status)) {
+			quietSince = time.Time{}
+			continue
+		}
+		if quietSince.IsZero() {
+			quietSince = time.Now()
+		} else if time.Since(quietSince) >= settle {
+			return ""
+		}
+	}
+	t.Fatalf("the child (pid %d) wrote no SIGTERM mark and was not seen quiet within %s", pid, bound)
+	return ""
+}
+
+// termPending answers whether a /proc/<pid>/status text holds a SIGTERM the kernel has not yet
+// delivered, in the thread's pending set (SigPnd) or the process's (ShdPnd).
+func termPending(status string) bool {
+	const sigterm = uint64(1) << (15 - 1)
+	for _, line := range strings.Split(status, "\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || (name != "SigPnd" && name != "ShdPnd") {
+			continue
+		}
+		if mask, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64); err == nil && mask&sigterm != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // watchReaped watches, from before the command starts, for the command that writes its own pid to
 // leaderFile as its first act, and answers once when it first saw that pid answer ESRCH, which it
 // does once Go has reaped the command (a zombie still answers), or the zero time where it never did
