@@ -716,7 +716,12 @@ const (
 // read one word at a time and with no slice built of them, because this runs on every request a
 // verifier decides, an answer served from the cache included.
 func shapeOf(answer Introspection) tokenShape {
-	// The approve-only shape first and whole (approveShapeOf), so no word of the read and results
+	// A run belongs to a results token alone: one rule, ahead of every shape, so no case below and
+	// no shape added later can take a token that carries a run as any other kind.
+	if answer.CI != nil && answer.ProjectScope != ProjectScopeResults {
+		return shapeNotASession
+	}
+	// The approve-only shape next and whole (approveShapeOf), so no word of the read and results
 	// shapes below, and no order among their cases, can make a token that holds approve anything
 	// but the one shape it is.
 	if shape, holds := approveShapeOf(answer); holds {
@@ -747,12 +752,12 @@ func shapeOf(answer Introspection) tokenShape {
 	case ProjectScopeNamed:
 		// A named token that names no person is a job's or an account entry's naming no person,
 		// and the broker grants neither one an OAuth scope.
-		if read || results > 0 || answer.AsOf != "" || answer.CI != nil || (answer.Person == "" && scoped) {
+		if read || results > 0 || answer.AsOf != "" || (answer.Person == "" && scoped) {
 			return shapeNotASession
 		}
 		return shapeOrdinary
 	case ProjectScopePerson:
-		if read || results > 0 || answer.AsOf != "" || answer.CI != nil {
+		if read || results > 0 || answer.AsOf != "" {
 			return shapeNotASession
 		}
 		return shapeOrdinary
@@ -763,19 +768,19 @@ func shapeOf(answer Introspection) tokenShape {
 	case ProjectScopeNone:
 		// The read entry's token: a trade that asks for no scope keeps the word none, and the
 		// broker refuses a cut on a trade that does not ask for read, so none never carries one.
-		if readAlone && answer.AsOf == "" && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" && answer.CI == nil {
+		if readAlone && answer.AsOf == "" && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" {
 			return shapeReadOnly
 		}
 	case oauthwire.ProjectScopeReadNone:
-		if readAlone && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" && answer.CI == nil {
+		if readAlone && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" {
 			return shapeReadOnly
 		}
 	case oauthwire.ProjectScopeReadNamed:
-		if readAlone && answer.CI == nil {
+		if readAlone {
 			return shapeReadOnly
 		}
 	case oauthwire.ProjectScopeReadPerson:
-		if (readAlone || (readPerson && answer.Person != "")) && answer.CI == nil {
+		if readAlone || (readPerson && answer.Person != "") {
 			return shapeReadOnly
 		}
 	case ProjectScopeResults:

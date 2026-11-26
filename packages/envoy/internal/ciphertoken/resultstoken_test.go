@@ -169,8 +169,9 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 // its repository, a path and its ref (oauthwire.WorkflowPath), or a run whose commit is not 40
 // lowercase hex or whose run, attempt or check run is not a positive decimal, is no session's
 // credential even to a verifier that serves results tokens. So is one naming no project, two
-// projects, no person, or a service, none of which a result entry mints, and a run beside a
-// read-only token.
+// projects, no person, or a service, none of which a result entry mints, and a run beside any
+// token but a results token: a read-only token, a job's public and named tokens, and an
+// approve-only token.
 // The negative control is the whole results token on the same verifier, which it accepts.
 func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 	rig := newRig(t, func(options *ciphertoken.Options) { options.ServesResults, options.ServesReadOnly = true, true })
@@ -205,6 +206,21 @@ func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 		"a service beside the person": spoiled(func(a *ciphertoken.Introspection) { a.Service = "example-fleet" }),
 		"a run beside a read-only token": func() ciphertoken.Introspection {
 			answer := readOnlyToken(caller.jkt, time.Hour)
+			answer.CI = resultsRun()
+			return answer
+		}(),
+		"a run beside a job's public token": func() ciphertoken.Introspection {
+			answer := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+			answer.CI = resultsRun()
+			return answer
+		}(),
+		"a run beside a job's named token": func() ciphertoken.Introspection {
+			answer := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME")
+			answer.CI = resultsRun()
+			return answer
+		}(),
+		"a run beside an approve-only token": func() ciphertoken.Introspection {
+			answer := approveOnlyToken(caller.jkt, time.Hour)
 			answer.CI = resultsRun()
 			return answer
 		}(),
