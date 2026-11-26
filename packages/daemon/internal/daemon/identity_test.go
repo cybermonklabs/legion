@@ -220,7 +220,7 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 			if got, want := spec.Env[runtime.RoleIdentitiesVariable], runtime.RoleIdentities(ownRoles); got != want {
 				t.Errorf("LEGION_ROLE_IDENTITIES = %q, want the %s App's roles alone, %q", got, own, want)
 			}
-			if len(asked) != 2 || asked[0] != role || appauth.AppRoleFor(asked[1]) != other {
+			if len(asked) != 2 || asked[0] != role || appOf(asked[1]) != other {
 				t.Errorf("identity asked for %q, want the %s and then one role of the %s App, once", asked, role, other)
 			}
 			var warnings []map[string]any

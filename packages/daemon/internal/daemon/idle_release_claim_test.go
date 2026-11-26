@@ -44,7 +44,7 @@ func twoClaimIdleRig(t *testing.T) (*idleRig, *supervise.Machine) {
 	stored := supervise.Claim{Token: fresh, Project: "legion", Tree: rig.issue.Tree, Issue: rig.issue.Key,
 		Role: claim.RoleTester, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-tester",
-		SessionFile: "/tmp/tester.jsonl", PluginContract: api.DaemonAPIVersion}
+		SessionFile: "/tmp/tester.jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := rig.st.PutClaim(ctx, stored); err != nil {
 		t.Fatalf("seed the earlier version's tester: %v", err)
 	}

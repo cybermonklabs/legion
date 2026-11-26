@@ -302,10 +302,10 @@ func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.Works
 // line as found, which is "found work" or "found no work".
 func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]any, found string) {
 	t.Helper()
-	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Role != claim.RoleTester {
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Claim != rig.tokens[claim.RoleTester] {
 		t.Errorf("the workspace was read %+v, want one read of %s through the tester", reads, podUpdateIssue)
 	}
-	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(claim.RoleTester) {
+	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(rig.tokens[claim.RoleTester]) {
 		t.Errorf("the replacement's line names the read %+v, want one the tester made that %s", line, found)
 	}
 }
@@ -598,10 +598,10 @@ func TestTheWorkspaceLostMessageSaysWhyItNamesItsRoles(t *testing.T) {
 		want, not string
 	}{
 		"a read through a process that failed": {
-			read: workspaceRead{round: round, by: viaProcess, role: claim.RoleImplementer, err: errors.New("jj answered 1")},
+			read: workspaceRead{round: round, by: viaProcess, claim: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), err: errors.New("jj answered 1")},
 			want: notWaitedFor, not: unanswered},
 		"a read through a process that found work": {
-			read: workspaceRead{round: round, by: viaProcess, role: claim.RoleImplementer, work: runtime.WorkspaceWork{Head: "abc123", Commits: []string{"def456"}, Count: 1}},
+			read: workspaceRead{round: round, by: viaProcess, claim: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), work: runtime.WorkspaceWork{Head: "abc123", Commits: []string{"def456"}, Count: 1}},
 			want: notWaitedFor, not: unanswered},
 		"the sweep's replacement through a claim whose launch waits on the pod": {
 			read: processlessRead(round, viaProcess), want: unanswered, not: notWaitedFor},
