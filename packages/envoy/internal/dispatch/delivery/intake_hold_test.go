@@ -796,6 +796,19 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	if err := holder.client.Connection().FlushTimeout(untilTheBinaryDeadline(t)); err != nil {
 		t.Fatalf("flush the holder's restored connection: %v", err)
 	}
+	// The holder's fence, before anything is published for it to be handed: its delivery
+	// subscription closed. Its lost hold stopped its delivery, which unsubscribes a subscription
+	// whose link is down (heldDurable.run, bus.Client.DrainSubscription). From that close on, the
+	// holder's intake is handed no message while it makes no new subscription, which the row reads
+	// again before it reads the counts, so what the holder handled can no longer change by then and
+	// no window is waited out for a late handling. A holder that keeps its subscription fails here.
+	waitFor(t, untilTheBinaryDeadline(t), func() bool { return !intakeHoldsSubscription(holder.intake) }, func() string {
+		return "the holder still holds a live delivery subscription after the standby took the durable over: " + consumerState(publisher)
+	})
+	fenced := subscribedDelivery(holder.intake)
+	if fenced == nil {
+		t.Fatal("the holder has no delivery at all, so the row cannot tell whether a new one was made: " + consumerState(publisher))
+	}
 
 	later := make([]int, 20)
 	for i := range later {
@@ -813,19 +826,20 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 		return fmt.Sprintf("not every later message was handled: standby %v, holder %v; %s",
 			fetchesOf(standby, later), fetchesOf(holder, later), consumerState(publisher))
 	})
-	// Every message is acknowledged and none is pending, so the server has nothing left to send of
-	// them; a flush of the holder's connection then returns only once anything the server sent the
-	// holder has reached its client. A short window still lets a handler the holder started finish.
+	// Every message is acknowledged and none is pending, so the server has nothing left to deliver
+	// of them, and the standby's count is final.
 	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == 0 && info.NumPending == 0
 	}, func() string {
 		return "the later messages were not all acknowledged: " + consumerState(publisher)
 	})
-	if err := holder.client.Connection().FlushTimeout(untilTheBinaryDeadline(t)); err != nil {
-		t.Fatalf("flush the holder's connection: %v", err)
+	// The holder's count is final too, if its intake still has the delivery whose subscription
+	// closed before any of these messages existed, and that subscription is still closed.
+	if delivering := subscribedDelivery(holder.intake); delivering != fenced || intakeHoldsSubscription(holder.intake) {
+		t.Fatalf("the holder subscribed for delivery again after the standby took the durable over: it has the delivery whose subscription closed = %t, and holds a live delivery subscription = %t: %s",
+			delivering == fenced, intakeHoldsSubscription(holder.intake), consumerState(publisher))
 	}
-	time.Sleep(time.Second)
 	for _, number := range later {
 		if got := standby.fetches(number) + holder.fetches(number); got != 1 {
 			t.Errorf("message %d was handled %d times (standby %d, holder %d), want exactly once",
