@@ -350,7 +350,7 @@ export function IssuesTable({
       model.layout.scrollRef.current
         ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
         ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
-    drawRow: (key) => model.focusRow(key, ROW_CHECKBOX, "nearest"),
+    drawRow: (key, onLand) => model.focusRow(key, ROW_CHECKBOX, "nearest", onLand),
     // The box's height made current right before each landing, once the foot's pass has taken
     // away the end room main held while the bar stood at the foot: the table sizes the box to the
     // page at a `ResizeObserver`'s read, a frame after whatever changed the page, and the bar's

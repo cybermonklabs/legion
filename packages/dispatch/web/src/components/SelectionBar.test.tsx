@@ -7,7 +7,12 @@ import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { nextFrame } from "../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
-import { useFootInset } from "../hooks/useFootInset";
+import {
+  DOCUMENT_SCROLL_ATTRIBUTE,
+  footPassNow,
+  MARK_ATTRIBUTE,
+  useFootInset,
+} from "../hooks/useFootInset";
 import type { ControlSize } from "./control-names";
 import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
@@ -837,8 +842,7 @@ function PlacedList({
   cards?: boolean;
   count: number;
   /** Draws a listed, undrawn row and lands on its mark once drawn (`MarkedList`'s `drawRow`). */
-  drawRow?: (id: string) => () => void;
-  /** Makes the list's layout current before a landing (`MarkedList`'s `fit`). */
+  drawRow?: (id: string, onLand?: (mark: HTMLElement) => void) => () => void;
   fit?: () => void;
   head?: Element | null;
   headings?: readonly string[];
@@ -1786,6 +1790,309 @@ test("with the foot's pass still to come as the bar goes, the table's own landin
     float.unmount();
     view.unmount();
     Reflect.deleteProperty(document, "elementsFromPoint");
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 31 (the architect's ruling on red row (4)): a foot pass that runs as the bar
+// goes keeps main's end room while a scroll box it holds stands at its end, so taking that room
+// would clamp the box (`clampsABoxItHolds`). When the landing then scrolls that box off its end,
+// the hand-off runs the foot pass early (`footPassNow`), fits the box again and re-checks the
+// landing in the landing's own task, so the box already holds its kept height before the first
+// painted frame. Without the early pass, main still holds its end room and the box keeps the
+// smaller height until a later frame's pass.
+test("a landing that scrolls a box off its end releases kept foot room and refits the box in the landing's own task", async () => {
+  const viewHeight = 900;
+  const scrollHeight = 2000;
+  let boxHeight = 400;
+  const fitHeights: number[] = [];
+  const head = document.createElement("div");
+  const headBox = spyOn(head, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 300, 800, 40)
+  );
+  const Float = ({ active }: { active: boolean }) => {
+    const ref = useRef<HTMLDivElement | null>(null);
+    useFootInset(ref, active, "status");
+    return (
+      <div
+        data-testid="end-float"
+        ref={(node) => {
+          ref.current = node;
+          if (node !== null) {
+            node.getBoundingClientRect = () => new DOMRect(600, viewHeight - 64, 300, 48);
+          }
+        }}
+        style={{ position: "fixed" }}
+      />
+    );
+  };
+  const Page = ({ count, float }: { count: number; float: boolean }) => (
+    <>
+      <main data-testid="end-main" {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}>
+        <PlacedList
+          count={count}
+          fit={() => {
+            const main = document.querySelector<HTMLElement>('[data-testid="end-main"]');
+            const pad = main === null ? 0 : Number.parseFloat(main.style.paddingBottom) || 0;
+            boxHeight = 430 - Math.min(30, pad);
+            fitHeights.push(boxHeight);
+          }}
+          head={head}
+          last="CORE-10"
+          listed={PLACED_KEYS}
+        />
+        <p data-testid="end-line">The last line of the page.</p>
+      </main>
+      <Float active={float} />
+    </>
+  );
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const docScrollTop = document.documentElement.scrollTop;
+  document.documentElement.scrollTop = 0;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: viewHeight });
+  const view = render(<Page count={1} float />);
+  const main = screen.getByTestId("end-main");
+  const line = screen.getByTestId("end-line");
+  const list = screen.getByRole("list", { name: "Rows" });
+  const mark = rowBox("CORE-10");
+  list.style.overflowY = "auto";
+  list.append(head);
+  Object.defineProperties(list, {
+    clientHeight: { configurable: true, get: () => boxHeight },
+    scrollHeight: { configurable: true, get: () => scrollHeight },
+  });
+  list.getBoundingClientRect = () => new DOMRect(0, 300, 800, boxHeight);
+  line.getBoundingClientRect = () => new DOMRect(0, viewHeight - 20, 800, 20);
+  // CORE-10's checkbox starts 150 px above the sticky head's bottom (340), so landing on it
+  // scrolls the box up by 150 px, past main's 80 px of kept end room.
+  let markTop = 190;
+  mark.getBoundingClientRect = () => new DOMRect(10, markTop, 16, 16);
+  const scrolled = spyOn(list, "scrollBy").mockImplementation(
+    (options?: ScrollToOptions | number) => {
+      const dy = typeof options === "object" ? (options.top ?? 0) : 0;
+      list.scrollTop += dy;
+      markTop -= dy;
+    }
+  );
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => {
+      const node = screen.queryByTestId("end-float");
+      return node === null ? [line] : [node, line];
+    },
+  });
+  try {
+    // Let the foot pass mark main with 80 px of end room while the float is up.
+    await act(nextFrame);
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    expect(main.style.paddingBottom).toBe("80px");
+    // Put the table box at its scroll's end, then take the float away: main keeps its 80 px room
+    // because taking it now would clamp the box.
+    list.scrollTop = scrollHeight - boxHeight;
+    view.rerender(<Page count={1} float={false} />);
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    expect(main.style.paddingBottom).toBe("80px");
+    // Press Dismiss and let the bar go: the first fit reads main's kept 80 px room (400 px), the
+    // landing scrolls the box 150 px off its end, the early foot pass takes main's room away, and
+    // the second fit sets the kept height (430 px) in the landing's own task, before any frame.
+    pressInBar("Dismiss");
+    view.rerender(<Page count={0} float={false} />);
+    expect(mark).toHaveFocus();
+    expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+    expect(main.style.paddingBottom).toBe("");
+    expect(boxHeight).toBe(430);
+    expect(fitHeights).toEqual([400, 430]);
+    expect(mark.getBoundingClientRect().top).toBe(340);
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -150 }]]);
+  } finally {
+    list.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    scrolled.mockRestore();
+    headBox.mockRestore();
+    disarm();
+    view.unmount();
+    footPassNow();
+    if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", innerHeight);
+    document.documentElement.scrollTop = docScrollTop;
+    Reflect.deleteProperty(document, "elementsFromPoint");
+  }
+});
+
+// INFRA-3135, round 31 (the architect's ruling on red row (4), deferred `drawRow` path): when the
+// landing goes through a windowed table's `drawRow` and the row is drawn and focused in a later
+// render, `onLand` runs the early foot pass, refits the box and re-checks the landing in the task
+// that lands it, releasing kept end room and updating the box's height before the next frame.
+test("a deferred drawRow landing that scrolls a box off its end releases kept foot room, refits and re-checks in the landing's own task", async () => {
+  const viewHeight = 900;
+  const scrollHeight = 2000;
+  let boxHeight = 400;
+  const fitHeights: number[] = [];
+  const head = document.createElement("div");
+  const headBox = spyOn(head, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 300, 800, 40)
+  );
+  let pendingLand: ((mark: HTMLElement) => void) | undefined;
+  const drawRow = (_id: string, onLand?: (mark: HTMLElement) => void) => {
+    pendingLand = onLand;
+    return () => {
+      pendingLand = undefined;
+    };
+  };
+  const Float = ({ active }: { active: boolean }) => {
+    const ref = useRef<HTMLDivElement | null>(null);
+    useFootInset(ref, active, "status");
+    return (
+      <div
+        data-testid="deferred-float"
+        ref={(node) => {
+          ref.current = node;
+          if (node !== null) {
+            node.getBoundingClientRect = () => new DOMRect(600, viewHeight - 64, 300, 48);
+          }
+        }}
+        style={{ position: "fixed" }}
+      />
+    );
+  };
+  const Page = ({
+    count,
+    float,
+    undrawn,
+  }: {
+    count: number;
+    float: boolean;
+    undrawn: readonly string[];
+  }) => (
+    <>
+      <main data-testid="deferred-main" {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}>
+        <PlacedList
+          count={count}
+          drawRow={drawRow}
+          fit={() => {
+            const main = document.querySelector<HTMLElement>('[data-testid="deferred-main"]');
+            const pad = main === null ? 0 : Number.parseFloat(main.style.paddingBottom) || 0;
+            boxHeight = 430 - Math.min(30, pad);
+            fitHeights.push(boxHeight);
+          }}
+          head={head}
+          last="CORE-10"
+          listed={PLACED_KEYS}
+          undrawn={undrawn}
+        />
+        <p data-testid="deferred-line">The last line of the page.</p>
+      </main>
+      <Float active={float} />
+    </>
+  );
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const docScrollTop = document.documentElement.scrollTop;
+  document.documentElement.scrollTop = 0;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: viewHeight });
+  const view = render(<Page count={1} float undrawn={["CORE-10"]} />);
+  const main = screen.getByTestId("deferred-main");
+  const line = screen.getByTestId("deferred-line");
+  const list = screen.getByRole("list", { name: "Rows" });
+  list.style.overflowY = "auto";
+  list.append(head);
+  Object.defineProperties(list, {
+    clientHeight: { configurable: true, get: () => boxHeight },
+    scrollHeight: { configurable: true, get: () => scrollHeight },
+  });
+  list.getBoundingClientRect = () => new DOMRect(0, 300, 800, boxHeight);
+  line.getBoundingClientRect = () => new DOMRect(0, viewHeight - 20, 800, 20);
+  // Model a mark whose bottom edge stands at 736 (outside the 400 px box 300-700, and still 6 px
+  // past the 430 px box 300-730 so the re-check scrolls it by the remaining 6 px).
+  let markTop = 720;
+  const scrolled = spyOn(list, "scrollBy").mockImplementation(
+    (options?: ScrollToOptions | number) => {
+      const dy = typeof options === "object" ? (options.top ?? 0) : 0;
+      list.scrollTop += dy;
+      markTop -= dy;
+    }
+  );
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => {
+      const node = screen.queryByTestId("deferred-float");
+      return node === null ? [line] : [node, line];
+    },
+  });
+  try {
+    await act(nextFrame);
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    list.scrollTop = scrollHeight - boxHeight;
+    view.rerender(<Page count={1} float={false} undrawn={["CORE-10"]} />);
+    expect(main.style.paddingBottom).toBe("80px");
+    pressInBar("Dismiss");
+    view.rerender(<Page count={0} float={false} undrawn={["CORE-10"]} />);
+    expect(pendingLand).toBeDefined();
+    expect(fitHeights).toEqual([400]);
+    // A later render draws CORE-10 after the table scrolled the box off its end, focuses the mark,
+    // and invokes `onLand` in that same task.
+    view.rerender(<Page count={0} float={false} undrawn={[]} />);
+    const mark = rowBox("CORE-10");
+    mark.getBoundingClientRect = () => new DOMRect(10, markTop, 16, 16);
+    act(() => {
+      list.scrollTop = 1000;
+      mark.focus({ preventScroll: true });
+      pendingLand?.(mark);
+    });
+    expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+    expect(main.style.paddingBottom).toBe("");
+    expect(boxHeight).toBe(430);
+    expect(fitHeights).toEqual([400, 430]);
+    // Re-checked against the 430 px box (300-730): mark at 720-736 scrolled by 6 px to 714-730.
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: 6 }]]);
+    expect(mark.getBoundingClientRect().bottom).toBe(730);
+  } finally {
+    list.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    scrolled.mockRestore();
+    headBox.mockRestore();
+    disarm();
+    view.unmount();
+    footPassNow();
+    if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", innerHeight);
+    document.documentElement.scrollTop = docScrollTop;
+    Reflect.deleteProperty(document, "elementsFromPoint");
+  }
+});
+
+// INFRA-3135, round 31 (the architect's condition on the departure for a bar going with focus in a
+// row): the hook may owe a landing when the bar goes without `returnFocus` only where the focus
+// stands in a row the list names as leaving (a press of the reader's own). When the bar goes for a
+// cause that is not the reader's (for example a live read clearing the selection) with the focus
+// in a row no press named, nothing moves, nothing is owed, and a later commit lands nothing.
+test.each([
+  ["an unnamed row that stays", "CORE-11", "Select CORE-11"],
+  ["an unnamed row a later live read removes", "CORE-13", null],
+] as const)("the bar going for a cause not the reader's with focus in %s owes nothing and a later commit lands nothing", (_kind, heldRow, afterRemoval) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    const mark = rowBox(heldRow);
+    act(() => mark.focus());
+    const from = moves.focused.length;
+    // Another person's update clears the selection and takes the bar away: no press of the
+    // reader's is out and no row is named as leaving.
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={PLACED_KEYS} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(mark).toHaveFocus();
+    expect(moves.focused.slice(from)).toEqual([]);
+    expect(moves.scrolled).toEqual([]);
+    // A later live read removes CORE-12 and CORE-13: because nothing was owed, nothing lands.
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe(afterRemoval);
+    expect(moves.focused.slice(from)).toEqual([]);
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
     laidOut();
   }
 });

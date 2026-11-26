@@ -741,6 +741,33 @@ export function afterFootPass(settled: () => void): void {
   afterPass.push(settled);
 }
 
+/**
+ * Runs a foot pass at once (`clearScrollers`) and cancels any frame one was asked for, and answers
+ * whether any scroller's end room changed. Called only by the selection bar's hand-off
+ * (`components/SelectionBar.tsx`), right after a landing's scroll: a pass that ran as the bar went
+ * keeps a scroller's room while a box it holds stands at its end, so a landing that scrolls that
+ * box off its end lets this pass take the room away in the landing's own task, before the first
+ * painted frame.
+ */
+export function footPassNow(): boolean {
+  if (clearFrame !== 0) cancelAnimationFrame(clearFrame);
+  const before = new Map(marks);
+  clearScrollers();
+  if (marks.size !== before.size) return true;
+  for (const [scroller, now] of marks) {
+    const prev = before.get(scroller);
+    if (
+      prev === undefined ||
+      prev.way !== now.way ||
+      prev.room !== now.room ||
+      (prev.way === "padding" && now.way === "padding" && prev.own !== now.own)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Asks for a pass at the next animation frame, once however often it is asked. */
 function clearNextFrame(): void {
   if (clearFrame === 0) clearFrame = requestAnimationFrame(clearScrollers);

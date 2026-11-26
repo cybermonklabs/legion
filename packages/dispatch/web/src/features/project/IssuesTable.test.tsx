@@ -18,7 +18,12 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
-import { useFootInset } from "../../hooks/useFootInset";
+import {
+  DOCUMENT_SCROLL_ATTRIBUTE,
+  footPassNow,
+  MARK_ATTRIBUTE,
+  useFootInset,
+} from "../../hooks/useFootInset";
 import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
@@ -1676,6 +1681,107 @@ test("with the foot's pass still to come as the bar goes, the List gives its box
   // The box's own read after the landing finds the height it landed against.
   act(() => window.dispatchEvent(new Event("resize")));
   expect(boxPx()).toBe(atLanding);
+});
+
+// INFRA-3135, round 31 (red row (4) at the List itself): when the foot's pass runs as the bar goes
+// while the table's scroll box stands at its end, `main` keeps its end room (`clampsABoxItHolds`).
+// The landing then scrolls the box off its end; the hand-off runs the foot pass early
+// (`footPassNow`), refits the box (`fitHeight`) and re-checks the landing in that same task, so
+// the box already holds its kept height right after the landing without waiting for a later frame.
+test("when the List's landing scrolls its box off its end, the kept foot room is released and the box holds its kept height in the landing's own task", async () => {
+  const user = userEvent.setup();
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const docScrollTop = document.documentElement.scrollTop;
+  document.documentElement.scrollTop = 0;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+  restores.push(() => {
+    if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", innerHeight);
+    document.documentElement.scrollTop = docScrollTop;
+  });
+  table(
+    Array.from({ length: 3 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { inMain: true }
+  );
+  await screen.findByRole("checkbox", { name: "Select CORE-2" });
+  const box = tableBox();
+  const main = document.querySelector("main");
+  if (box === null || main === null) throw new Error("The List drew no box in main");
+  main.setAttribute(DOCUMENT_SCROLL_ATTRIBUTE, "");
+  const line = document.createElement("p");
+  line.textContent = "Pager";
+  line.getBoundingClientRect = () => new DOMRect(0, 880, 800, 20);
+  main.append(line);
+  const pager = screen.getByTestId("issues-table-pager");
+  const boxPx = () => Number.parseFloat(box.style.height || box.style.maxHeight) || 400;
+  box.style.overflowY = "auto";
+  Object.defineProperties(box, {
+    clientHeight: { configurable: true, get: () => boxPx() },
+    scrollHeight: { configurable: true, get: () => 2000 },
+  });
+  box.getBoundingClientRect = () => new DOMRect(0, 300, 800, boxPx());
+  pager.getBoundingClientRect = () => new DOMRect(0, 300 + boxPx(), 800, 20);
+  const head = box.querySelector("thead th") as HTMLElement | null;
+  if (head === null) throw new Error("The List drew no header cell");
+  head.getBoundingClientRect = () => new DOMRect(0, 300, 800, 40);
+  let markTop = 190;
+  const scrolled = spyOn(box, "scrollBy").mockImplementation((by?: ScrollToOptions | number) => {
+    const dy = typeof by === "object" ? (by.top ?? 0) : 0;
+    box.scrollTop += dy;
+    markTop -= dy;
+  });
+  restores.push(() => scrolled.mockRestore());
+  let floatNode: HTMLElement | null = null;
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => (floatNode === null ? [line] : [floatNode, line]),
+  });
+  restores.push(() => Reflect.deleteProperty(document, "elementsFromPoint"));
+  const float = render(<FootFloat />);
+  floatNode = screen.getByTestId("foot-float");
+  let floatMounted = true;
+  const unmountFloat = () => {
+    if (!floatMounted) return;
+    floatMounted = false;
+    floatNode = null;
+    float.unmount();
+  };
+  restores.unshift(() => {
+    box.scrollTop = 0;
+    unmountFloat();
+    footPassNow();
+  });
+  // Give main 80 px of end room while the float is up, and measure the box against it.
+  await afterFrameAndTasks();
+  expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+  expect(main.style.paddingBottom).toBe("80px");
+  act(() => window.dispatchEvent(new Event("resize")));
+  await afterFrameAndTasks();
+  const keptWithRoom = boxPx();
+  expect(keptWithRoom).toBe(500);
+  // Mark CORE-2 while it stands in view, then move the box to its scroll end so CORE-2 sits
+  // 150 px above the sticky head's bottom (340), and take the float away: main keeps its 80 px.
+  const liveMark = () => screen.getByRole("checkbox", { name: "Select CORE-2" });
+  await user.click(liveMark());
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  liveMark().getBoundingClientRect = () => new DOMRect(10, markTop, 16, 16);
+  box.scrollTop = 2000 - keptWithRoom;
+  unmountFloat();
+  expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+  expect(main.style.paddingBottom).toBe("80px");
+  // Clear selection: the landing scrolls the box 150 px off its end, the early foot pass releases
+  // main's 80 px room, and the second fitHeight sets the box to 580 px in the landing's own task.
+  act(() => within(bar).getByRole("button", { name: "Clear selection" }).focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(focusedName()).toBe("Select CORE-2"));
+  expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+  expect(main.style.paddingBottom).toBe("");
+  expect(boxPx()).toBe(580);
+  expect(liveMark().getBoundingClientRect().top).toBe(340);
+  // A resize measure after the landing agrees with that height.
+  act(() => window.dispatchEvent(new Event("resize")));
+  expect(boxPx()).toBe(580);
 });
 
 // A table action's bar stays, held, until the list read after its writes has settled, and goes
