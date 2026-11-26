@@ -22,7 +22,6 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
-import type { DecisionsRead } from "../issue/decision-entries";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
@@ -1237,63 +1236,6 @@ test("an issue document that is not its spec reads no decisions and shows none",
       })
     );
     expect(getIssueDecisions).not.toHaveBeenCalled();
-  } finally {
-    view.unmount();
-    getIssueDecisions.mockRestore();
-  }
-});
-
-// A server of the release before answers the Decisions read with no `entries`: its decisions are
-// the sections of the issue's decisions document, an agent's or, where a section cites an ask, a
-// person's, each with the links it shaped. During a roll a page of this build can reach one, and
-// the margin still draws each beside the spec blocks it links, as it draws an entry.
-test("a Decisions read of the release before, with no entries, still draws its decisions beside the spec", async () => {
-  const section = (
-    block: string,
-    to: string,
-    kind: string,
-    { replaced = false, unsure = false } = {}
-  ) => ({
-    asks: kind === "person" ? ["ask-1"] : [],
-    block_id: block,
-    changed_at: "2026-10-02T00:00:00Z",
-    changed_version: 2,
-    heading: `Decision ${block}`,
-    kept: null,
-    kind,
-    links: [decisionLink(block, to)],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
-    replaced,
-    text: `## Decision ${block}\n\nWe decided.`,
-    text_sha256: `sum-${block}`,
-    unsure,
-    waiting_review: kind === "agent" && !replaced,
-  });
-  const before: DecisionsRead = {
-    decisions: [
-      section("h-agent", "p-a", "agent"),
-      section("h-person", "p-b", "person", { unsure: true }),
-      section("h-replaced", "p-a", "agent", { replaced: true }),
-    ],
-    document: "dispatch://CORE-1/artifact/decisions-md",
-    open_questions: [],
-  };
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(
-    before as IssueDecisions
-  );
-  const view = renderDecisionItems(artifact);
-  try {
-    const agent = "dispatch://CORE-1/artifact/decisions-md#b-h-agent";
-    const person = "dispatch://CORE-1/artifact/decisions-md#b-h-person";
-    await waitFor(() =>
-      expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
-        decisions: [
-          ["p-b", person, true],
-          ["p-a", agent, false],
-        ],
-        items: [`decision:${person}:CORE-1/spec#p-b`, `decision:${agent}:CORE-1/spec#p-a`],
-      })
-    );
   } finally {
     view.unmount();
     getIssueDecisions.mockRestore();

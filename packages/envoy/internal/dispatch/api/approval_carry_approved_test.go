@@ -99,13 +99,16 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 }
 
 // Stale: the version he approved shows the block he answered under wording other than its row was
-// decided on - the one way an agent reaches this over HTTP alone. The human answered the block,
-// whose state the answer writes into its block (R3); the agent reworded its question through the edits route, which
-// versions in the route's own transaction; the human approved that version inside the settle
-// window, and settlement then wrote the decided wording back. That version differs from the one he
-// approved in the question's words, which no carry case takes out, so nothing is carried (R10: "A
-// write that changes one further character supersedes the approval"). The agent adds a second
-// block and the human answers it, which writes one version of its block's state alone, so the approval stays stale.
+// decided on, which only a person's reword reaches over HTTP: the agent's reword of an answered
+// ask's question is refused and writes no version, since an answered ask is a person's decision
+// whose words no agent's write changes (R32). The human answered the block, whose state the answer
+// writes into its block (R3); bob reworded its question through the edits route, which versions
+// in the route's own transaction; the human approved that version inside the settle window, and
+// settlement then wrote the decided wording back. That version differs from the one he approved
+// in the question's words, which no carry case takes out, so nothing is carried (R10: "A write
+// that changes one further character supersedes the approval"). The agent adds a second block and
+// the human answers it, which writes one version of its block's state alone, so the approval stays
+// stale.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {
 	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
@@ -113,9 +116,9 @@ func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t 
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Which region goes first?", "Which region goes last?", 2)
+	rewordAnsweredBlock(t, handler, issue.PrimaryArtifactID, "Which region goes first?", "Which region goes last?", 2)
 	if reworded := versionMarkdown(t, handler, issue.PrimaryArtifactID, 2); !strings.Contains(reworded, "Which region goes last?") {
-		t.Fatalf("version 2 = %s, want it to hold the agent's reword of the block alice answered", reworded)
+		t.Fatalf("version 2 = %s, want it to hold bob's reword of the block alice answered", reworded)
 	}
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 2)
 
@@ -131,7 +134,9 @@ func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t 
 	}
 
 	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-	documents.SettleNow(issue.PrimaryArtifactID)
+	// The answer's transaction marks the spec's room owed a settlement; the spec is edited in its
+	// issue's room, so the settlement that versions the answer's state is the room's (settledVersion).
+	settledVersion(t, handler, documents, issue.PrimaryArtifactID, 5)
 	requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 4, 1)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
 }

@@ -188,8 +188,12 @@ func requireEntriesReadOwnDocuments(t *testing.T, database *store.Store, key str
 			t.Fatalf("turn %s off: %v", setting, err)
 		}
 	}
+	kinds, ids, err := decisionEntryTargets(ctx, tx, key)
+	if err != nil {
+		t.Fatalf("select the decisions query's nodes: %v", err)
+	}
 	rows, err := tx.Query(ctx, `explain (costs off) `+decisionEntriesRead(), key,
-		refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}), entryFactKinds)
+		refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}), entryFactKinds, kinds, ids)
 	if err != nil {
 		t.Fatalf("read the plan of the entries statement: %v", err)
 	}

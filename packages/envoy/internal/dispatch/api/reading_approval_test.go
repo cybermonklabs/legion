@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // c-reading-approval: a reading never changes the decision it reads, so
@@ -87,8 +88,9 @@ type readingFixture struct {
 // so d1 and d2 are the agent's decisions, waits for settlement to open the asks of a1 to a4, has
 // alice answer a1 and a2 and decline a4 with a note - each of which settles into a version of its
 // own, the ask block's kept state (R3) - and approve the spec's latest version once it owes no
-// settlement. It fails unless the spec is the check's fixture: d1 decided by the session with its
-// level of certainty and its reason, a3 open, and a4 declined with the note.
+// settlement, the issue's queries owe no drain, and that version's version_renders row holds its
+// time and owes no record digest. It fails unless the spec is the check's fixture: d1 decided by
+// the session with its level of certainty and its reason, a3 open, and a4 declined with the note.
 func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Store, title string) readingFixture {
 	t.Helper()
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -111,9 +113,23 @@ func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Sto
 	requireValue(t, database, spec.address("d1"), refs.ValueUncertaintyReason, readingReason)
 	// The answers and the decline each settle into a version of their own, the ask block's kept
 	// state (R3): the person approves once the spec owes no settlement, so the version approved is
-	// the latest and the versions each case's write stores follow it.
-	awaitSettled(t, database, issue.PrimaryArtifactID)
+	// the latest and the versions each case's write stores follow it. A settled version records
+	// its record's digest after its COMMIT, and an approval given before that fill is carried by
+	// the fill at that same version (R15: "A person's approval given between the COMMIT and the
+	// fill ... the fill carries it at that version through `carryNewestApproval`"), a review more
+	// than the person's own. So she approves once no drain is owed and the version's row holds its
+	// time and owes no digest, and the only review of the approved version is hers.
+	renderAtVersionQuiet(t, database, issue.Key, issue.PrimaryArtifactID)
+	versions := documentVersions(t, handler, issue.PrimaryArtifactID)
+	latest := versions[len(versions)-1].Number
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("version %d of the spec of %s to hold its time and owe no record digest (its version_renders row)", latest, issue.Key), func() (string, bool) {
+		row := versionFillRowOf(t, database, issue.PrimaryArtifactID, latest)
+		return fmt.Sprintf("holds a time %t, holds a record digest %t, digest_owed %t", row.at != nil, row.digest != nil, row.owed), row.at != nil && !row.owed
+	})
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
+	if approval.Version != latest {
+		t.Fatalf("alice approved version %d of the spec of %s, want version %d, whose digest the wait read", approval.Version, issue.Key, latest)
+	}
 	return readingFixture{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, approval: approval, open: asks["a3"], declined: asks["a4"]}
 }
 

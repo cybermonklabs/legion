@@ -133,15 +133,15 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  3. a batch of 2: the issue's spec and whether it has a plan, and whether the issue is a view on
-//     the spec of an issue above it (issueCoverage's readCoverageSpecAndView, docs.QueueViewOf);
-//  4. the room the spec is edited in and its stored state's stamp, one statement, to read its text
-//     at (docs.Text's documentReadRoom, through requirementBlocksIn);
-//  5. begin, that text read's read-only snapshot;
-//  6. the document's stored snapshot;
-//  7. the updates after it;
-//  8. commit, which ends the text read; this spec marks no requirement, so the coverage asks
-//     nothing further - no descendant walk and no count of what serves each requirement;
+//  3. refs.TurnJITOff (`set local jit = off`, issueCoverageOverTuplesAndOwedGaps);
+//  4. a batch of 2: the issue's spec and whether it has a plan, and the documents that owe their
+//     block index with their gap lines (queueOwedDocumentGaps);
+//  5. the head cut of the tuple log (docs.WalkIssueTree's refs.HeadCut);
+//  6. the issue's conversation items, of which there are none (refs.ConversationNodes);
+//  7. the recursive subtree walk under the issue (refs.TreeSubtrees);
+//  8. the issue's ancestor chain and view mark (docs.readViewChain); this spec marks no
+//     requirement, so readTreeRequirements returns without loading block nodes and the coverage
+//     asks nothing further - no descendant walk and no count of what serves each requirement;
 //  9. begin, the request's own transaction;
 //  10. the artifact row (loadArtifact);
 //  11. a batch of 3: that artifact's versions, its latest review and its open approval request

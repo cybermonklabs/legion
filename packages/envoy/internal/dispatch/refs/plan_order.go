@@ -85,7 +85,7 @@ type OrderNode struct {
 // size, the whole number of minutes a plan node holds (AttributePlanSize) written in decimal, ""
 // for an issue half and for a plan node whose author gave none; the skills and the docs a plan
 // node's implementer should read (AttributePlanSkills, AttributePlanDocs), each in the order its
-// author wrote them and an empty list for a plan node that holds none, never nil, and nil for an
+// author wrote them, and an empty list, never nil, for a plan node that holds none and for an
 // issue half; and every node it waits on, sorted (compareOrderNodes), the fixed nodes among them,
 // and no overtaken one.
 type OrderedNode struct {
@@ -442,7 +442,7 @@ func (tree *planTree) order() TreeOrder {
 	}
 	fixed := map[OrderNode]bool{}
 	answer := func(node OrderNode) OrderedNode {
-		ordered := OrderedNode{OrderNode: node, Issue: issue[node]}
+		ordered := OrderedNode{OrderNode: node, Issue: issue[node], Skills: []string{}, Docs: []string{}}
 		if node.Kind == BlockNodeKind {
 			plan := tree.plans[node.ID]
 			ordered.Size, ordered.Skills, ordered.Docs = plan.size, plan.skills, plan.docs

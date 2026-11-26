@@ -83,6 +83,8 @@ func readChecks(t *testing.T, database *store.Store, issueKey string) checksStat
 func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, paragraph := pointerSpec(t, handler)
 	spec := "dispatch://" + issue.Key + "/spec"
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
@@ -142,6 +144,8 @@ func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
 func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, _ := pointerSpec(t, handler)
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
@@ -161,7 +165,9 @@ func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 // document, while a new pointer to the retyped target is refused.
 func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
-	handler, _ := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
@@ -187,6 +193,8 @@ func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database, broken := newBrokenTestServer(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, _ := pointerSpec(t, handler)
 	if response := uploadChecks(t, handler, issue.Key, "Before.\n"); response.Code != http.StatusCreated {
 		t.Fatalf("upload checks.md: status=%d body=%s, want 201", response.Code, response.Body.String())
@@ -219,6 +227,8 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
@@ -360,6 +370,8 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	documents, handler, database := browserDocumentService(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, _ := pointerSpec(t, handler)
 	if response := uploadChecks(t, handler, issue.Key, "Before.\n"); response.Code != http.StatusCreated {
 		t.Fatalf("upload checks.md: status=%d body=%s, want 201", response.Code, response.Body.String())
@@ -430,6 +442,8 @@ func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
 	// dependencies', the very one the handlers write through. Its documents never settle during
 	// the test, as blockIndexHandler's do not.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, paragraph := pointerSpec(t, handler)
 	spec := "dispatch://" + issue.Key + "/spec"
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"

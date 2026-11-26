@@ -1640,7 +1640,7 @@ func createAskBlock(
 	if err != nil {
 		return model.Ask{}, openedFollow{}, err
 	}
-	nodes, facts, marked := graphstore.AskFacts(id, project, parties, author, createdAt, graphstore.NoEvent, places)
+	nodes, facts, marked := graphstore.AskFacts(id, project, parties, author, createdAt, graphstore.NoEvent, places.On(block.id))
 	// The ask is the node this block makes, first of the nodes AskFacts answers
 	// (graphstore.Created).
 	nodes[0] = graphstore.Created(nodes[0])

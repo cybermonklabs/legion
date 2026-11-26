@@ -484,10 +484,10 @@ function documentReading(
  * say it (`node-row-chip.ts`'s `documentWord`).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
- * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`), read by
- * `primarySpec` and `roleDocument`, the rule the tree reads the documents' blocks by
- * (`useIssueTree.ts`). Where the issue names no id for a part - none (`""`), or a Dispatch older
- * than that part (absent) - no document plays it, and a document flagged `primary` or carrying
+ * for each (`primary_artifact_id`, and the artifact of its plan and of its verification query in
+ * `queries`), read by `primarySpec` and `roleDocument`, the rule the tree reads the documents'
+ * blocks by (`useIssueTree.ts`). Where the issue names no id for a part - none (`""`), or no
+ * query of that name - no document plays it, and a document flagged `primary` or carrying
  * that part's `role` is named by the page's word for a document: a chip naming "Spec" or "Plan"
  * opens a document whose blocks the tree reads as that part. A decisions document plays no part:
  * a decision is a `decision` block of the spec or of another document, and a decisions document

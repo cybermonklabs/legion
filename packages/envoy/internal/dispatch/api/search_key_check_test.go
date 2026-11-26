@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -110,6 +111,19 @@ func searchKeyHits(response model.SearchResponse) []searchKeyHit {
 	return hits
 }
 
+// searchKeyBlockAuthors is the block_author kind of report: who wrote each block whose node
+// records its authors, a block of an issue room among them, held triple by triple.
+func searchKeyBlockAuthors(t *testing.T, report *graphcensus.StoreReport) graphcensus.KindReport {
+	t.Helper()
+	for _, kind := range report.Kinds {
+		if kind.Kind == "block_author" {
+			return kind
+		}
+	}
+	t.Fatal("the store census reads no kind block_author")
+	return graphcensus.KindReport{}
+}
+
 // searchKeyMigrationSet is every migration of this issue's tree (store's issueTreeMigrationName,
 // <timestamp>_issue_tree_<what>.up.sql), by file name, with its text.
 func searchKeyMigrationSet(t *testing.T) map[string]string {
@@ -143,7 +157,12 @@ var searchKeyEmbeddingKinds = []string{
 // search reads only the windows of the current owner, so the moved block answers once. The
 // lexical search reads node_search, one row per node that holds text, and answers the node that
 // matched, while the artifact_versions_document_search trigger, its function and document_search
-// stay for a process of the release before, which reads that table alone.
+// stay for a process of the release before, which reads that table alone. The conversion carries
+// each moved block's authors to its node in the room (this issue's spec R22, T19b of its plan):
+// alice's, who wrote the spec's one version before the move. The store census holds each node to
+// her, read off the spec's own record of the block, never off the room's first version of the
+// spec, which the conversion wrote, nor off the node it checks: once the authored_by tuples the
+// conversion carried are taken off, it reads a row no tuple states at each block.
 func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	t.Parallel()
 	const project = "SKEY"
@@ -231,6 +250,22 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	}
 	if countedOnce != 1 {
 		t.Errorf("the store census names the %d windows the old owner keeps on %d lines, want one line counting them as the class the root deletes", len(oldWindows), countedOnce)
+	}
+
+	// The conversion carried each block's authors to its node in the room: alice's, and never the
+	// conversion's, whose version of the spec the room records the blocks in first. The census
+	// holds each node to them and agrees over the two blocks on both sides.
+	roomBlocks := []string{spec.address(firstBlock), spec.address(movedBlock)}
+	for _, address := range roomBlocks {
+		if held := currentTies(t, database, address, graphstore.TupleAuthoredBy); len(held) != 1 ||
+			held[0].ToKind != graphstore.KindPerson || held[0].ToID != "alice" {
+			t.Errorf("after the move the block %s states the authored_by %+v, want alice's alone, who wrote the spec's first version", address, held)
+		}
+	}
+	if authors := searchKeyBlockAuthors(t, report); authors.Rows != 2 || authors.Nodes != 2 ||
+		authors.RowDifferences != 0 || authors.NodeDifferences != 0 {
+		t.Errorf("after the move the store census reads block_author rows=%d tuples=%d with the differences %+v and %+v, want the authored_by to alice of each of the two moved blocks on both sides and none",
+			authors.Rows, authors.Nodes, authors.ReportedRows, authors.ReportedNodes)
 	}
 
 	// Search by meaning reads the windows of the current owner alone: the moved block answers once.
@@ -342,5 +377,31 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	}
 	if again := searchKeyHits(searchResponse(t, handler, "q="+word+"&keywords_only=true")); !slices.Equal(again, searchKeyHits(lexical)) {
 		t.Errorf("with document_search empty the search route answers %+v for %q, want %+v as before: this build's search reads node_search alone", again, word, searchKeyHits(lexical))
+	}
+
+	// The census reads the authors a moved block's node is to name off the spec's record of the
+	// block before the move, never off that node: with the authored_by tuples the conversion
+	// carried taken off both nodes, each block reads as a row no tuple states naming alice.
+	if removed, err := database.Pool.Exec(ctx, `delete from graph_tuples where from_kind = $1 and from_id = any($2) and kind = $3`,
+		refs.BlockNodeKind, roomBlocks, graphstore.TupleAuthoredBy); err != nil || removed.RowsAffected() == 0 {
+		t.Fatalf("take the authored_by the conversion carried off the blocks %v: %d rows, %v", roomBlocks, removed.RowsAffected(), err)
+	}
+	if report, err = graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined); err != nil {
+		t.Fatalf("take the store census with the carried authors taken off: %v", err)
+	}
+	var want, read []string
+	for _, address := range roomBlocks {
+		want = append(want, "a row no tuple states: block_author "+address+" "+graphstore.KindPerson+":alice "+
+			graphstore.TupleAuthoredBy+" -> "+graphstore.KindPerson+" alice")
+	}
+	authors := searchKeyBlockAuthors(t, report)
+	for _, difference := range authors.ReportedRows {
+		read = append(read, difference.Cause+": "+difference.At)
+	}
+	slices.Sort(want)
+	slices.Sort(read)
+	if authors.Rows != 2 || authors.Nodes != 0 || authors.RowDifferences != 2 || authors.NodeDifferences != 0 || !slices.Equal(read, want) {
+		t.Errorf("with the carried authors taken off the store census reads block_author rows=%d tuples=%d, the row differences %v and the tuple differences %+v, want two rows, no tuple and %v",
+			authors.Rows, authors.Nodes, read, authors.ReportedNodes, want)
 	}
 }

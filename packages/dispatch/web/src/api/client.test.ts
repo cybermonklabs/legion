@@ -34,6 +34,20 @@ function scriptedFetch(answers: readonly (() => Response)[]): {
   };
 }
 
+test("the decisions read follows the Decisions tree view's cursor", async () => {
+  const stub = scriptedFetch([
+    () => Response.json({ nodes: [], tuples: [], cursor: "page-2" }),
+    () => Response.json({ nodes: [], tuples: [], cursor: null }),
+  ]);
+  const api = createApiClient(stub.fetch);
+
+  expect((await api.getIssueDecisions("CORE-1")).entries).toEqual([]);
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/issues/CORE-1/tree?view=decisions",
+    "/api/v1/issues/CORE-1/tree?view=decisions&cursor=page-2",
+  ]);
+});
+
 /** A sleep that returns at once and records each wait it was asked for. */
 function recordedSleep(): { sleep: (ms: number) => Promise<void>; waits: number[] } {
   const waits: number[] = [];

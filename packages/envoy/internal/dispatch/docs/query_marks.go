@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,14 +155,16 @@ func (s *Service) drainQueryMark(ctx context.Context, issueKey string) ([]model.
 // refuses while a query version of the issue still owes its record digest, so the mark is never
 // cleared then, and queues each version (writeRevisions): its row, its node and its
 // version_renders row holding its record's digest, read before the batch, and the stand of its
-// block index where its bytes are the version before it's (queueRevisionStand). For each version
-// it then queues what an edit route's version writes beside it (finishRevision): the move of the
-// document's open approval request, the carry of an approval where the record moved by appended
-// results alone, and the version's artifact.version. Last it queues the clear of the mark, only
-// where it still holds the causes read, and then what the versions state, caused by the mark's
-// greatest_event or at the sentinel where it holds none, with their head rows, the last rows the
-// write takes. The write phase is one batch, and the COMMIT follows it: the transaction's window is
-// that batch and its COMMIT. A failure rolls back everything, the clear of the mark with it.
+// block index where no block pass is owed it - a version of the decisions query, or one whose bytes
+// are the version before it's (queueRevisionStand) - with the delete of the rows of the re-index
+// queue its insert made for the document (restoreReindexQueue). For each version it then queues
+// what an edit route's version writes beside it (finishRevision): the move of the document's open
+// approval request, the carry of an approval where the record moved by appended results alone, and
+// the version's artifact.version. Last it queues the clear of the mark, only where it still holds
+// the causes read, and then what the versions state, caused by the mark's greatest_event or at the
+// sentinel where it holds none, with their head rows, the last rows the write takes. The write
+// phase is one batch, and the COMMIT follows it: the transaction's window is that batch and its
+// COMMIT. A failure rolls back everything, the clear of the mark with it.
 func (s *Service) drainMark(ctx context.Context, issueKey string) ([]model.Event, bool, error) {
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
@@ -253,11 +256,13 @@ func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string
 // unchanged. The approved version's record is built again at the cut its version_renders row
 // records (approvedRecord), and the version's record holds it, byte for byte, once the result
 // nodes it does not hold are taken out (appendsResultsAlone). The carry is then the one every
-// version write runs (carryStandingApproval): where the version's text is the approved one's, as a
+// version write runs (carryNewestApproval): where the version's text is the approved one's, as a
 // version of a record moved alone is, the restore's carry, and where it is not, carryVerdict's
-// cases. A version whose record moved otherwise - a result retracted, a check moved or retargeted -
-// carries nothing, and the approval reads changed since. Its reads run where it is called, the
-// drain's read phase, and its writes are queued after the move's.
+// cases; its reason names the results that arrived, each by its check's block id and its verdict
+// (arrivedResults), after the opening the daemon matches. A version whose record moved otherwise -
+// a result retracted, a check moved or retargeted - carries nothing, and the approval reads
+// changed since. Its reads run where it is called, the drain's read phase, and its writes are
+// queued after the move's.
 func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision) error {
 	id, number := revised.document.id, revised.version.Number
 	if err := refuseSecondCarry(ctx, tx, id); err != nil {
@@ -271,11 +276,42 @@ func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey 
 	if err != nil || !held || !appendsResultsAlone(approved, revised.record) {
 		return err
 	}
+	arrived, err := arrivedResults(ctx, tx, approved, revised.record)
+	if err != nil {
+		return err
+	}
 	tree, err := pmdoc.ParseRendering(revised.markdown)
 	if err != nil {
 		return skipUnreadableVersion(id, number, err)
 	}
-	return s.carryStandingApproval(ctx, tx, id, number, renderedTree{markdown: revised.markdown, tree: tree}, *newest, decisionStepCases{}, eventSink(ctx))
+	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, revised.markdown, tree, *newest, s.serverURL, decisionStepCases{},
+		arrivedResultsChange(arrived), eventSink(ctx))
+}
+
+// arrivedResults names each result node record holds that approved does not, in record's order,
+// as "<check block id> (<verdict>)": the block id is the part of its check's address after the
+// last '#', and the verdict the result's verdict value (graphstore.AttributeVerdict).
+func arrivedResults(ctx context.Context, tx pgx.Tx, approved, record QueryRecord) ([]string, error) {
+	held := make(map[string]bool, len(approved.Nodes))
+	for _, node := range approved.Nodes {
+		held[node.Address()] = true
+	}
+	var named []string
+	for _, node := range record.Nodes {
+		if node.Type != graphstore.SupertagResult || held[node.Address()] {
+			continue
+		}
+		verdict, _, err := graphstore.CurrentValue(ctx, tx, node.Kind, node.ID, graphstore.AttributeVerdict)
+		if err != nil {
+			return nil, err
+		}
+		check := node.Parent.ID
+		if at := strings.LastIndexByte(check, '#'); at >= 0 {
+			check = check[at+1:]
+		}
+		named = append(named, check+" ("+verdict+")")
+	}
+	return named, nil
 }
 
 // approvedRecord is the record of query of the issue issueKey at the cut the version_renders row of

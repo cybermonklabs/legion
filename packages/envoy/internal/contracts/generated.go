@@ -355,6 +355,7 @@ var DispatchEventTypes = []string{
 	"artifact.changes_requested",
 	"artifact.created",
 	"artifact.human_edited",
+	"artifact.indexed",
 	"artifact.removed",
 	"artifact.renamed",
 	"artifact.version",

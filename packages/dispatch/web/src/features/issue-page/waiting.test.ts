@@ -296,6 +296,14 @@ const planned: IssueDetails = {
   ...issue,
   artifacts: [spec, plan],
   plan_artifact_id: plan.id,
+  queries: [
+    {
+      query: "plan",
+      artifact_id: plan.id,
+      takes: ["plan_task", "plan_role"],
+      subtree: `issue:${KEY}`,
+    },
+  ],
 };
 
 /** A `requirement` block of a document, as the blocks read answers it. */

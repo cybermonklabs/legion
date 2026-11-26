@@ -14,10 +14,7 @@ import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
-import {
-  artifactRecordHandler,
-  decisionsAndReadMarkHandlers,
-} from "../../__tests__/proof-document";
+import { artifactRecordHandler, readMarkHandlers } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
@@ -251,11 +248,10 @@ function stubIssuePage(
 /**
  * The reads the issue page's own panels make: the header's component line, the Spec tab's
  * requirements, the Artifacts tab's lists, the issue's references, and each document's own
- * record, text, blocks and versions, with the decisions and read marks
- * `decisionsAndReadMarkHandlers` answers. Each is answered with the API's empty shape, so a
- * panel renders its loaded-empty state rather than its error state. A test that asserts one of
- * these spies the `api` method that fetches it (`spyOn(api, "getArtifactText")`) and never
- * reaches these handlers.
+ * record, text, blocks and versions, with the read marks `readMarkHandlers` answers. Each is
+ * answered with the API's empty shape, so a panel renders its loaded-empty state rather than its
+ * error state. A test that asserts one of these spies the `api` method that fetches it
+ * (`spyOn(api, "getArtifactText")`) and never reaches these handlers.
  */
 function answerIssuePageReads(): void {
   answerRequests(
@@ -303,7 +299,7 @@ function answerIssuePageReads(): void {
     ),
     // The document the page re-reads is the one the stubbed issue carries.
     artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
-    ...decisionsAndReadMarkHandlers()
+    ...readMarkHandlers()
   );
 }
 

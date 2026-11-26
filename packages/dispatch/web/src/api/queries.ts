@@ -97,6 +97,17 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
+/** Whether the issue is a view on its ancestor's spec: the issue its tree read's `view_of` names
+ *  (`GET /api/v1/issues/{key}/tree?view=spec`), or null where it is none. Each document of the
+ *  issue is edited under the schema this answer gives (`editorBlockSchema`), and its admission
+ *  waits for it (`ProofDocument.tsx`). Only `view_of` is kept, since the page draws nothing else
+ *  of that read. */
+export const issueViewOfQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "view-of"],
+    queryFn: async () => (await api.getIssueTree(key, { view: "spec" })).view_of,
+  });
+
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,

@@ -312,20 +312,21 @@ func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer
 	if !written.Wrote || written.Version.Number != want {
 		t.Fatalf("the version write wrote %t at version %d, want version %d", written.Wrote, written.Version.Number, want)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"bob"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'linked.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-		returning id
-	`, document, want).Scan(&event); err != nil {
+	// The version's event takes its seq off the issue's own counter, as the route's append does
+	// (recordIssueEvent), so a later event of the issue, such as a tick's artifact.indexed, does not
+	// take the same seq.
+	event, err := recordIssueEvent(ctx, tx, "CORE-1", "artifact.version", []byte(`{"kind":"user","id":"bob"}`),
+		versionEventPayload(t, document, "linked.md", want))
+	if err != nil {
 		t.Fatalf("append version %d's event: %v", want, err)
 	}
 	// The version write queues its writes on the ledger, its node's among them, so what it stated
-	// is caused in the same write phase, after them, as a route queues it.
+	// is caused in the same write phase, after them, and the head write of the nodes it stated
+	// follows, which writes their node_search rows, as the route queues both
+	// (commitArtifactVersionEvent).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, written.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(written.Blocks))
 		return nil
 	}); err != nil {
 		t.Fatalf("queue what version %d's write stated: %v", want, err)

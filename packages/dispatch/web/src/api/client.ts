@@ -19,6 +19,8 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { decisionsFromTree } from "./decisions-tree";
+
 import {
   type Answer,
   type Body,
@@ -1294,6 +1296,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}", { key });
   }
 
+  /** `GET /api/v1/issues/{key}/tree`: the issue's tree as the reader may see it, under the view
+   *  `query` names. Every view answers `view_of`: the issue whose spec this issue is a view on, or
+   *  null where it is none. */
+  getIssueTree(key: string, query: Query<"/api/v1/issues/{key}/tree", "get"> = {}) {
+    return this.read("/api/v1/issues/{key}/tree", { key }, query);
+  }
+
   /** What a reference to the issue or one of its documents shows: title, status and each
    *  document's name, kind and latest version, without the full issue read. */
   getIssueSummary(key: string) {
@@ -1706,10 +1715,19 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
-   *  its spec holds, and each decision with the spec nodes it shaped. */
-  getIssueDecisions(key: string) {
-    return this.read("/api/v1/issues/{key}/decisions", { key });
+  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. */
+  async getIssueDecisions(key: string) {
+    const first = await this.getIssueTree(key, { view: "decisions" });
+    const nodes = [...(first.nodes ?? [])];
+    const tuples = [...(first.tuples ?? [])];
+    let cursor = first.cursor;
+    while (typeof cursor === "string") {
+      const page = await this.getIssueTree(key, { view: "decisions", cursor });
+      for (const node of page.nodes ?? []) nodes.push(node);
+      for (const tuple of page.tuples ?? []) tuples.push(tuple);
+      cursor = page.cursor;
+    }
+    return decisionsFromTree(key, nodes, tuples);
   }
 
   /** Record that the caller agrees with the decision at that block, as the text they

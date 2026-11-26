@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,12 +18,14 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The conversion of an issue into its room (R6 of this issue's spec): the three rooms an issue
@@ -32,30 +36,23 @@ import (
 //
 // The transaction holds the issue's owner lock, then the lock of each room it reads or writes:
 // the three documents' and the new tree's. It reads each document's room at its stored head, after
-// asking every process that holds one to store what it applied, renders each to markdown, and
-// writes, at once and in this order, so each read of the transaction sees what it wrote before it
-// (joinAtOnce, as the decisions step's restore of one issue writes):
+// asking every process that holds one to store what it applied, and renders each to markdown.
+// Steps 1–5 write at once; step 6 queues its writes; step 7 runs after that batch, before commit.
 //
 //  1. the tree artifact, its node and its issue_trees row, the issue's row of issue_views saying the
 //     conversion reached it (t19b, with the view mark where a child holds no requirement of its
-//     own, R23), and the three documents' document_rooms rows, announced to every process
-//     (AnnounceDocumentRooms), whose rooms of those documents close on the commit;
+//     own, R23);
 //  2. each document made a query node (graphstore.QueryNode), every role of the issue's
 //     documents cleared, and the issue's decisions query node where it holds none;
-//  3. the room's first update, one fragment for each document (encodeDocumentSeed), whose item
-//     count the bound of R5 is held to before it is written, the tree's empty first version, and
-//     a version of each document holding the text its room held;
-//  4. one moved_to tuple from each block's old address to its node in the room, a block id the
-//     room holds already in an earlier fragment taking a fresh id; each node's authors and Keeps
-//     carried to its node in the room; and the asks whose blocks the documents hold moved into the
-//     room;
-//  5. the old index of each document retired (its blocks' nodes gone, their rows deleted), the
-//     room indexed in one pass, and every pointer at a block that moved - a part_of, an
-//     anchored_in, a prevented_by, a check result's pair, a refs row and a block_refs row - moved
-//     to the block's node in the room;
+//  3. one moved_to tuple from each old block address, with its authors and Keep, and the asks,
+//     results and structured pointers that name the moved blocks;
+//  4. the room's first update, one fragment per document, and the versions it holds;
+//  5. the old indexes retired and the room indexed in one pass;
 //  6. for each document in the order verification-md, plan-md, spec (R21), the move of its open
 //     approval request, the carry of its approval, its artifact.version, and what its block index
-//     stated under that event; then the tree's own.
+//     stated under that event; then the tree's own. The batch inserts the carried reviews after
+//     the version events, and completes the approval events;
+//  7. the document_rooms mappings and the new owner's search windows, then the issue's census.
 //
 // The three old rooms keep every doc_updates, doc_snapshots and doc_checkpoints row they hold: no
 // statement here touches those tables but the tree's own first update.
@@ -92,8 +89,8 @@ type ConvertedIssue struct {
 	DryRun   bool
 }
 
-// ConvertGate runs first inside each issue's transaction, before any write: a ConvertRefusal ends
-// that issue with nothing written and stops the caller's run.
+// ConvertGate runs under the issue and room locks, after the read-back and before any conversion
+// write. A ConvertRefusal ends that issue with nothing written and stops the caller's run.
 type ConvertGate func(ctx context.Context, tx pgx.Tx) error
 
 // ConvertRefusal is a gate's refusal, naming what it read.
@@ -289,17 +286,21 @@ func (d *convertedDocument) part() *pmdoc.Node {
 // blockMove is one block of a converted document: its address in the document, its node in the
 // room, and its type.
 type blockMove struct {
-	fromID, toID, from, to, typ string
+	fromID, from, to string
 }
 
-// moves is each block of the document's head paired with its node in the room, the tree's ref_key
-// tree, where both addresses fit the store's bound.
+// moves pairs the indexed blocks of the document with their room addresses.
 func (d *convertedDocument) moves(tree string) []blockMove {
 	moves := make([]blockMove, 0, len(d.offsets))
+	seen := make(map[string]bool, len(d.offsets))
 	for index, offset := range d.offsets {
+		id := d.headOffsets[index].ID
+		if !indexableConversionID(id) || !indexableConversionID(offset.ID) || seen[id] {
+			continue
+		}
+		seen[id] = true
 		move := blockMove{
-			fromID: d.headOffsets[index].ID, toID: offset.ID, typ: offset.Type,
-			from: refs.BlockAddress(d.refKey, d.headOffsets[index].ID), to: refs.BlockAddress(tree, offset.ID),
+			fromID: id, from: refs.BlockAddress(d.refKey, id), to: refs.BlockAddress(tree, offset.ID),
 		}
 		if graphstore.AddressFits(move.from) && graphstore.AddressFits(move.to) {
 			moves = append(moves, move)
@@ -333,16 +334,15 @@ type conversionStop struct {
 	reason, document string
 }
 
+func (stop *conversionStop) Error() string { return stop.reason }
+
 // ConvertIssue converts the issue issueKey into its room in a transaction of its own, which it
 // commits, or under dryRun rolls back once every write and the write phase's end have run, and
 // answers what it did. A done issue, and one that holds its room already, is passed over before
 // the gate runs, with nothing read but its row. Every document of the issue's room is flushed by
-// every process that holds it first, holding no lock. Then, inside the transaction, gate runs
-// before anything else: its refusal (ConvertRefusal) is answered as the error, with nothing
-// written. Under the issue's owner lock the issue is read again, and it is deferred, with nothing
-// written, while one of its documents owes its block index or a room's text reads otherwise than
-// its latest version while it owes a settlement. A failure answers the error, with nothing
-// written.
+// every process that holds it first, holding no lock. Under the issue and room locks the
+// conversion checks that the stored versions and heads read back, and that no index or
+// settlement is owed, before the fleet gate and any conversion writes.
 func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate ConvertGate, dryRun bool) (ConvertedIssue, error) {
 	ctx = store.WithTransactionTracking(ctx)
 	began := time.Now()
@@ -378,13 +378,13 @@ func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate Conver
 		return answer(fmt.Errorf("begin the conversion of %s: %w", issueKey, err))
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := s.joinAtOnce(ctx, tx)
-	defer ledger.Discard()
-	if err := gate(joined, tx); err != nil {
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
 		return answer(err)
 	}
+	joined, ledger := s.joinAtOnce(ctx, tx)
+	defer ledger.Discard()
 	conversion := &issueConversion{s: s, tx: tx, key: issueKey}
-	stop, err := conversion.run(joined, &result)
+	stop, err := conversion.run(joined, gate, &result)
 	if err != nil {
 		return answer(fmt.Errorf("the conversion of %s: %w", issueKey, err))
 	}
@@ -392,18 +392,43 @@ func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate Conver
 		result.Outcome, result.Reason, result.Document = stop.outcome, stop.reason, stop.document
 		return answer(nil)
 	}
+	// The ledger runs this after the approval/version events and their tuples are written,
+	// but before the transaction can commit. A difference is a pass-over, not a partial move.
+	if err := ledger.AfterWrites(func(_ *store.WriteBatch) error {
+		if err := conversion.joinDocuments(joined); err != nil {
+			return err
+		}
+		if err := conversion.writeWindows(joined); err != nil {
+			return err
+		}
+		stop, err := conversion.checkConversion(joined)
+		if stop != nil {
+			return stop
+		}
+		return err
+	}); err != nil {
+		return answer(err)
+	}
+	answerCommit := func(err error) (ConvertedIssue, error) {
+		var stop *conversionStop
+		if errors.As(err, &stop) {
+			result.Outcome, result.Reason = stop.outcome, stop.reason
+			return answer(nil)
+		}
+		return answer(fmt.Errorf("finish the conversion of %s: %w", issueKey, err))
+	}
 	if dryRun {
 		if err := ledger.runQueue(ctx, ledger.commitWrites); err != nil {
-			return answer(fmt.Errorf("the write phase of %s: %w", issueKey, err))
+			return answerCommit(err)
 		}
 		if err := ledger.runAfterWrites(ctx); err != nil {
-			return answer(fmt.Errorf("the write phase of %s: %w", issueKey, err))
+			return answerCommit(err)
 		}
 		if err := tx.Rollback(ctx); err != nil {
 			return answer(fmt.Errorf("roll the dry run of %s back: %w", issueKey, err))
 		}
 	} else if err := ledger.Commit(ctx); err != nil {
-		return answer(fmt.Errorf("commit the conversion of %s: %w", issueKey, err))
+		return answerCommit(err)
 	}
 	result.Outcome = IssueConverted
 	return answer(nil)
@@ -456,9 +481,9 @@ func (s *Service) flushConvertedRoom(ctx context.Context, document *convertedDoc
 	return nil, nil
 }
 
-// run is the conversion inside its transaction, once the gate passed. It answers a stop where it
-// writes nothing, and fills result's item count where it measured the room's first update.
-func (c *issueConversion) run(ctx context.Context, result *ConvertedIssue) (*conversionStop, error) {
+// run checks the locked source rooms, then the fleet gate, before making the move. A stop here
+// precedes all writes; the census can stop the conversion after the ledger's write phase.
+func (c *issueConversion) run(ctx context.Context, gate ConvertGate, result *ConvertedIssue) (*conversionStop, error) {
 	if err := store.LockOwner(ctx, c.tx, store.IssueOwner(c.key)); err != nil {
 		return nil, err
 	}
@@ -470,14 +495,6 @@ func (c *issueConversion) run(ctx context.Context, result *ConvertedIssue) (*con
 		return &conversionStop{outcome: IssuePassedOver, reason: reason}, nil
 	}
 	c.issue = issue
-	var owedID, owedRef, owedSlug string
-	switch err := c.tx.QueryRow(ctx, conversionOwedStatement, c.key).Scan(&owedID, &owedRef, &owedSlug); {
-	case err == nil:
-		return &conversionStop{outcome: IssueDeferred, document: owedID,
-			reason: fmt.Sprintf("its document %s (%s, %s) owes its block index", owedSlug, owedRef, owedID)}, nil
-	case !errors.Is(err, pgx.ErrNoRows):
-		return nil, fmt.Errorf("read what the documents of %s owe: %w", c.key, err)
-	}
 	if c.documents, err = readConversionDocuments(ctx, c.tx, c.key); err != nil {
 		return nil, err
 	}
@@ -500,6 +517,12 @@ func (c *issueConversion) run(ctx context.Context, result *ConvertedIssue) (*con
 	if stop, err := c.readHeads(ctx); err != nil || stop != nil {
 		return stop, err
 	}
+	if stop, err := conversionOwed(ctx, c.tx, c.key); err != nil || stop != nil {
+		return stop, err
+	}
+	if err := gate(ctx, c.tx); err != nil {
+		return nil, err
+	}
 	if err := c.remint(); err != nil {
 		return nil, err
 	}
@@ -520,16 +543,111 @@ func (c *issueConversion) run(ctx context.Context, result *ConvertedIssue) (*con
 		return nil, err
 	}
 	for _, step := range []func(context.Context) error{
-		c.writeTree, c.writeQueries,
+		c.writeTree, c.writeQueries, c.writeMoves, c.moveAsks, c.movePointers,
 		func(ctx context.Context) error { return c.writeSeed(ctx, seed) },
-		c.writeVersions, c.writeMoves, c.moveAsks, c.retireDocuments, c.indexTheRoom, c.movePointers,
-		c.finish,
+		c.writeVersions, c.retireDocuments, c.indexTheRoom,
 	} {
 		if err := step(ctx); err != nil {
 			return nil, err
 		}
 	}
+	// The seed and index ran immediately so subsequent stages can read them. Queue the final
+	// events together so writeCarriedReview inserts and stamps the review after its version.
+	ledgerFrom(ctx).queueRemainingWrites()
+	return nil, c.finish(ctx)
+}
+
+// checkConversion reads only this issue's moves and projections. A difference rolls them back.
+func (c *issueConversion) checkConversion(ctx context.Context) (*conversionStop, error) {
+	var old, fresh, documents, blocks, bodies []string
+	var versions []int32
+	for _, d := range c.documents {
+		for _, move := range d.moves(c.treeRef) {
+			old, fresh = append(old, move.from), append(fresh, move.to)
+			documents = append(documents, d.id)
+		}
+		// The index records text for the first occurrence of a storable ID, regardless of type.
+		seen := make(map[string]bool, len(d.offsets))
+		for _, offset := range d.offsets {
+			id := offset.ID
+			if !indexableConversionID(id) || seen[id] {
+				continue
+			}
+			seen[id] = true
+			if offset.Type == requirementType || offset.Type == checkType {
+				blocks = append(blocks, offset.ID)
+				versions = append(versions, int32(d.version.Number))
+				bodies = append(bodies, d.markdown[offset.From:offset.To])
+			}
+		}
+	}
+	rows, err := c.tx.Query(ctx, `
+		with moved as materialized (
+			select * from unnest($4::text[], $5::text[], $6::uuid[]) m(old_addr, new_addr, document)
+		), differences as (
+			select 'artifact roles' as step, a.ref_key as address
+			from artifacts a where a.issue_key = $1 and a.role is not null
+			union all
+			select 'document rooms', d::text from unnest($3::uuid[]) as docs(d)
+			where not exists (select 1 from document_rooms r where r.artifact_id = d and r.room = $2)
+			union all
+			select 'shared block IDs', m.new_addr from moved m group by m.new_addr
+			having count(distinct m.old_addr) > 1
+			union all
+			select 'block redirects', m.old_addr from moved m
+			where block_address_walk(m.old_addr) is distinct from m.new_addr
+			union all
+			select 'room blocks', m.new_addr from moved m
+			where not exists (
+				select 1 from document_blocks b
+				join issue_room_blocks r on r.tree_artifact_id = b.artifact_id and r.block_id = b.block_id
+				where b.node_id = m.new_addr and b.artifact_id = $2 and r.document_id = m.document
+				  and (select t.asserted from graph_tuples t
+				       where t.from_kind = 'block' and t.from_id = m.new_addr and t.kind = 'in_document'
+				         and t.to_kind = 'artifact' and t.to_id = split_part(m.old_addr, '#', 1)
+				       order by t.seq desc limit 1) is true)
+			union all
+			select 'old block index', b.node_id from document_blocks b where b.artifact_id = any($3::uuid[])
+			union all
+			select 'reference projections', r.to_id from refs r
+			where r.from_kind = 'artifact' and r.to_kind = 'block' and r.to_id = any($4::text[])
+			union all
+			select 'block reference projections', r.to_id from block_refs r
+			where r.to_kind = 'block' and r.to_id = any($4::text[])
+			union all
+			select 'ask block projections', k.id::text from asks k where k.block_artifact_id = any($3::uuid[])
+			union all
+			select 'check result projections', r.id::text from check_results r where r.check_artifact_id = any($3::uuid[])
+			union all
+			select 'redraw would change a requirement''s or check''s words', expected.block
+			from unnest($7::text[], $8::int[], $9::text[]) expected(block, version, body)
+			left join document_block_texts held
+			  on held.artifact_id = $2 and held.block_id = expected.block and held.version = expected.version
+			where held.text is distinct from expected.body
+		)
+		select step, count(*), min(address) from differences group by step order by step
+	`, c.key, c.tree, c.ids(), old, fresh, documents, blocks, versions, bodies)
+	if err != nil {
+		return nil, fmt.Errorf("read the conversion census: %w", err)
+	}
+	differences, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
+		var step, address string
+		var count int64
+		err := row.Scan(&step, &count, &address)
+		return fmt.Sprintf("%s: %d difference(s), first at %s", step, count, address), err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read a conversion census difference: %w", err)
+	}
+	if len(differences) != 0 {
+		return &conversionStop{outcome: IssuePassedOver, reason: "conversion census: " + strings.Join(differences, "; ")}, nil
+	}
 	return nil, nil
+}
+
+// Match the IDs refs.uniqueBlocks admits. Nothing reads text or nodes at discarded IDs.
+func indexableConversionID(id string) bool {
+	return id != "" && len(id) <= text.MaxBlockIDBytes && text.Storable(id)
 }
 
 // readHeads reads each document's room at its stored head, under the room locks the transaction
@@ -581,12 +699,11 @@ func (c *issueConversion) readHeads(ctx context.Context) (*conversionStop, error
 				return passOver("the head of its document %s does not read back: %v", document.slug, err)
 			}
 		}
-		if document.latest.markdown != "" {
-			if _, err := pmdoc.ParseRendering(document.latest.markdown); err != nil {
+		if document.headMarkdown != document.latest.markdown {
+			latest, err := pmdoc.ParseRendering(document.latest.markdown)
+			if err != nil {
 				return passOver("version %d of its document %s does not read back: %v", document.latest.number, document.slug, err)
 			}
-		}
-		if document.headMarkdown != document.latest.markdown {
 			owed, err := settlementPending(ctx, c.tx, document.id)
 			if err != nil {
 				return nil, err
@@ -596,9 +713,24 @@ func (c *issueConversion) readHeads(ctx context.Context) (*conversionStop, error
 					reason: fmt.Sprintf("its document %s (%s, %s) owes a settlement of its room, whose text reads otherwise than its version %d",
 						document.slug, document.refKey, document.id, document.latest.number)}, nil
 			}
+			if document.latest.number != 0 && !slices.Equal(conversionWords(latest), conversionWords(document.part())) {
+				return passOver("the redraw of its document %s would change a requirement's or check's words", document.slug)
+			}
 		}
 	}
 	return nil, nil
+}
+
+// Compare wording, not the fences or IDs: a move may re-mint a block's ID but not change its text.
+func conversionWords(tree *pmdoc.Node) []struct{ typ, words string } {
+	var words []struct{ typ, words string }
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == requirementType || node.Type == checkType {
+			words = append(words, struct{ typ, words string }{node.Type, pmdoc.TextContent(node)})
+		}
+		return true
+	})
+	return words
 }
 
 // remint gives each block a fresh id where a fragment before its own in the room holds its id
@@ -631,6 +763,7 @@ func (c *issueConversion) remint() error {
 			continue
 		}
 		kept := map[string]struct{}{}
+		freshIDs := map[string]string{}
 		renamed := false
 		pmdoc.Walk(document.tree, func(node *pmdoc.Node) bool {
 			id := idOf(node)
@@ -638,7 +771,11 @@ func (c *issueConversion) remint() error {
 				return true
 			}
 			if _, taken := held[id]; taken {
-				fresh := uuid.NewString()
+				fresh := freshIDs[id]
+				if fresh == "" {
+					fresh = uuid.NewString()
+					freshIDs[id] = fresh
+				}
 				attrs := maps.Clone(node.Attrs)
 				attrs[pmdoc.BlockIDAttr] = fresh
 				node.Attrs = attrs
@@ -703,8 +840,7 @@ func (c *issueConversion) ids() []string {
 }
 
 // writeTree writes the tree artifact - its node with its part_of the issue, then its row - its
-// issue_trees row, the issue's row of issue_views, and the documents' document_rooms rows naming
-// the tree, announced to every process.
+// issue_trees row, and the issue's row of issue_views.
 func (c *issueConversion) writeTree(ctx context.Context) error {
 	actorJSON, err := json.Marshal(ConversionActor)
 	if err != nil {
@@ -752,6 +888,12 @@ func (c *issueConversion) writeTree(ctx context.Context) error {
 	`, c.key, viewMarked); err != nil {
 		return err
 	}
+	return nil
+}
+
+// joinDocuments writes the room mappings after the index and redirects stand. Its notification
+// is delivered at commit, when clients may reconnect to the new room.
+func (c *issueConversion) joinDocuments(ctx context.Context) error {
 	if err := writeExec(ctx, c.tx, "join the issue's documents to its room", `
 		insert into document_rooms (artifact_id, room)
 		select joined.document, $2::uuid from unnest($1::uuid[]) as joined (document)
@@ -873,6 +1015,9 @@ func (c *issueConversion) writeVersions(ctx context.Context) error {
 		return err
 	}
 	for _, document := range c.documents {
+		// The mapping itself is written after the batch. Until then the version writer must
+		// read the seeded tree's head, not the old document room's last update.
+		ledgerFrom(ctx).RegisterPendingRoom(document.id, c.tree)
 		if document.version, document.versionNode, err = c.writeVersion(ctx, document.id, document.markdown); err != nil {
 			return err
 		}
@@ -911,24 +1056,26 @@ var conversionHeldOutStatement = `
 	order by held.seq`
 
 // conversionFirstAuthorsStatement is, of each block $2 of the document $1, the authors of the
-// version that first held it, where Dispatch knows that version: the lowest version
-// document_block_texts records a text of the block in, which is version 1 or one whose version
-// before a block-aware build indexed, as the reader of a block's maker reads it (refs'
-// blockFirstVersion).
+// version that first held it: the lowest version document_block_texts records with its text,
+// and whether the reader knows it was first, as in refs.blockFirstVersion.
 const conversionFirstAuthorsStatement = `
-	select block.id, first.authors
+	select block.id, first.authors, first.created_at, first.known
 	from unnest($2::text[]) as block (id)
 	cross join lateral (
-		select v.authors,
-		       t.version = 1 or exists (
-		         select 1 from document_indexed_versions i where i.artifact_id = t.artifact_id and i.version = t.version - 1
-		       ) as known
+		select v.authors, v.created_at, t.version = 1 or exists (
+			select 1 from document_indexed_versions i where i.artifact_id = t.artifact_id and i.version = t.version - 1
+		) as known
 		from document_block_texts t
 		join artifact_versions v on v.artifact_id = t.artifact_id and v.number = t.version
 		where t.artifact_id = $1::uuid and t.block_id = block.id and t.text is not null
 		order by t.version limit 1
-	) first
-	where first.known`
+	) first`
+
+type conversionAuthors struct {
+	actors []model.Actor
+	at     time.Time
+	known  bool
+}
 
 // heldTuple is one tuple conversionHeldOutStatement reads.
 type heldTuple struct {
@@ -942,8 +1089,7 @@ type heldTuple struct {
 // at the old address there; the node's authors, its old node's authored_by in their order, or
 // where that states none the authors of the version that first held the block, so the pass, which
 // states authors only for a node that states none, keeps the authors Dispatch showed before the
-// move (R22); and the old node's Keep, its kept_by and its kept_text_sum. A decision's and a
-// reading's authors are their typed pass's, which states them from their words.
+// move (R22). The decision's decided_by and the old node's Keep move with the block.
 func (c *issueConversion) writeMoves(ctx context.Context) error {
 	var nodes []graphstore.Node
 	var tuples []graphstore.Tuple
@@ -958,21 +1104,21 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 		for index, move := range moves {
 			from[index] = move.from
 		}
-		held, err := c.readHeldOut(ctx, from, []string{graphstore.TupleAuthoredBy, refs.TupleKeptBy, refs.ValueKeptTextSum})
+		held, err := c.readHeldOut(ctx, from, []string{graphstore.TupleAuthoredBy, graphstore.TupleDecidedBy, refs.TupleKeptBy, refs.ValueKeptTextSum})
 		if err != nil {
 			return err
 		}
-		authored := map[string]bool{}
+		recorded := make(map[string][]heldTuple)
 		for _, tuple := range held {
-			authored[tuple.from] = authored[tuple.from] || tuple.kind == graphstore.TupleAuthoredBy
-		}
-		var unauthored []string
-		for _, move := range moves {
-			if !authored[move.from] && move.typ != decisionType && move.typ != readingType {
-				unauthored = append(unauthored, move.fromID)
+			if tuple.kind == graphstore.TupleAuthoredBy {
+				recorded[tuple.from] = append(recorded[tuple.from], tuple)
 			}
 		}
-		first, err := c.readFirstAuthors(ctx, document.id, unauthored)
+		ids := make([]string, 0, len(moves))
+		for _, move := range moves {
+			ids = append(ids, move.fromID)
+		}
+		first, err := c.readFirstAuthors(ctx, document.id, ids)
 		if err != nil {
 			return err
 		}
@@ -983,16 +1129,55 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 				FromKind: refs.BlockNodeKind, FromID: move.from, Kind: graphstore.TupleMovedTo,
 				ToKind: refs.BlockNodeKind, ToID: move.to, At: c.at, Who: ConversionActor, SourceEvent: graphstore.NoEvent, Asserted: true,
 			})
-			if move.typ == decisionType || move.typ == readingType || authored[move.from] {
+			moved := graphstore.NodeKey{Kind: refs.BlockNodeKind, ID: move.to}
+			if made[moved] {
 				continue
 			}
-			for _, author := range first[move.fromID] {
-				authorNodes, facts, named := graphstore.AuthorFacts(refs.BlockNodeKind, move.to, author, c.at, graphstore.NoEvent)
+			made[moved] = true
+			maker := first[move.fromID]
+			oldAuthors := recorded[move.from]
+			var actor model.Actor
+			at := c.at
+			if maker.known {
+				at = maker.at
+				if len(oldAuthors) != 0 {
+					actor = oldAuthors[0].who
+				} else if len(maker.actors) != 0 {
+					actor = maker.actors[0]
+				}
+			}
+			// The room's pass chooses the supertag and placement but keeps the first maker.
+			nodes = append(nodes, graphstore.Node{
+				Kind: moved.Kind, ID: moved.ID, Supertag: refs.BlockSupertag, Project: c.issue.project,
+				Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+				MadeAt: at, MadeBy: actor, SourceEvent: graphstore.NoEvent,
+			})
+			if len(oldAuthors) != 0 || !maker.known {
+				// An unknown first version keeps the recorded authors, but not a guessed time.
+				for _, held := range oldAuthors {
+					date := held.at
+					if maker.known {
+						date = maker.at
+					}
+					tuples = append(tuples, graphstore.Tuple{
+						FromKind: refs.BlockNodeKind, FromID: move.to, Kind: graphstore.TupleAuthoredBy,
+						ToKind: held.toKind, ToID: held.toID, At: date, Who: held.who, SourceEvent: graphstore.NoEvent, Asserted: true,
+					})
+				}
+				continue
+			}
+			namedAuthors := map[graphstore.NodeKey]bool{}
+			for _, author := range maker.actors {
+				authorNodes, facts, named := graphstore.AuthorFacts(refs.BlockNodeKind, move.to, author, maker.at, graphstore.NoEvent)
 				if !named {
 					continue
 				}
-				tuples = append(tuples, facts[0])
 				key := graphstore.NodeKey{Kind: authorNodes[0].Kind, ID: authorNodes[0].ID}
+				if namedAuthors[key] {
+					continue
+				}
+				namedAuthors[key] = true
+				tuples = append(tuples, facts[0])
 				if !aliased[key] {
 					aliased[key] = true
 					tuples = append(tuples, facts[1:]...)
@@ -1006,7 +1191,7 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 			}
 		}
 		for _, tuple := range held {
-			if tuple.kind == graphstore.TupleAuthoredBy && (documentMoveType(moves, tuple.from) == decisionType || documentMoveType(moves, tuple.from) == readingType) {
+			if tuple.kind == graphstore.TupleAuthoredBy {
 				continue
 			}
 			tuples = append(tuples, graphstore.Tuple{
@@ -1022,16 +1207,6 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 		return fmt.Errorf("state the moves of the blocks of %s: %w", c.key, err)
 	}
 	return graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf(nodes, tuples))
-}
-
-// documentMoveType is the type of the block whose old address is from among moves, "" for none.
-func documentMoveType(moves []blockMove, from string) string {
-	for _, move := range moves {
-		if move.from == from {
-			return move.typ
-		}
-	}
-	return ""
 }
 
 // readHeldOut reads the tuples of kinds the block nodes from assert now
@@ -1056,7 +1231,7 @@ func (c *issueConversion) readHeldOut(ctx context.Context, from, kinds []string)
 
 // readFirstAuthors reads, of each of blocks of the document artifactID, the authors of the version
 // that first held it (conversionFirstAuthorsStatement), by block id.
-func (c *issueConversion) readFirstAuthors(ctx context.Context, artifactID string, blocks []string) (map[string][]model.Actor, error) {
+func (c *issueConversion) readFirstAuthors(ctx context.Context, artifactID string, blocks []string) (map[string]conversionAuthors, error) {
 	if len(blocks) == 0 {
 		return nil, nil
 	}
@@ -1065,18 +1240,18 @@ func (c *issueConversion) readFirstAuthors(ctx context.Context, artifactID strin
 		return nil, fmt.Errorf("read who wrote the first versions of the blocks of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
-	first := map[string][]model.Actor{}
+	first := map[string]conversionAuthors{}
 	for rows.Next() {
 		var block string
 		var raw []byte
-		if err := rows.Scan(&block, &raw); err != nil {
+		var maker conversionAuthors
+		if err := rows.Scan(&block, &raw, &maker.at, &maker.known); err != nil {
 			return nil, fmt.Errorf("read who wrote the first version of a block of %s: %w", artifactID, err)
 		}
-		var authors []model.Actor
-		if err := json.Unmarshal(raw, &authors); err != nil {
+		if err := json.Unmarshal(raw, &maker.actors); err != nil {
 			return nil, fmt.Errorf("decode who wrote the first version of block %s of %s: %w", block, artifactID, err)
 		}
-		first[block] = authors
+		first[block] = maker
 	}
 	return first, rows.Err()
 }
@@ -1132,7 +1307,7 @@ func (c *issueConversion) moveAsks(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			claims = append(claims, graphstore.AskClaims(ask.id, places, ConversionActor, c.at, graphstore.NoEvent)...)
+			claims = append(claims, graphstore.AskClaims(ask.id, places.On(ask.block), ConversionActor, c.at, graphstore.NoEvent)...)
 		}
 		if err := writeExec(ctx, c.tx, "move the asks of the issue's documents into its room", `
 			update asks k set block_artifact_id = $1::uuid, block_id = moved.block
@@ -1223,6 +1398,16 @@ func (c *issueConversion) indexTheRoom(ctx context.Context) error {
 	return nil
 }
 
+// Write the new owner's windows with the move. The old owners' windows stay for rollback.
+func (c *issueConversion) writeWindows(ctx context.Context) error {
+	for _, d := range c.documents {
+		if err := refs.WriteDocumentWindows(ctx, c.tx, d.id, d.markdown, offsetBlocks(d.offsets, nil)); err != nil {
+			return fmt.Errorf("write the moved windows of %s: %w", d.slug, err)
+		}
+	}
+	return nil
+}
+
 // conversionPointersStatement is every tuple of the kinds $2 at one of the block nodes $1 that
 // stands now, out of a node that is no block of $1 and no result: the place of a node under a
 // block that moved, a comment's anchor block and a risk's prevention, each moved to the block's
@@ -1234,7 +1419,7 @@ var conversionPointersStatement = `
 	where held.asserted and held.from_kind <> '` + graphstore.KindResult + `'
 	  and not (held.from_kind = '` + refs.BlockNodeKind + `' and held.from_id = any($1::text[]))`
 
-// movePointers moves, after the room's pass, every structured pointer at a block that moved to the
+// movePointers moves, before seeding the room, every structured pointer at a block that moved to the
 // block's node in the room (R13): each pointer tuple the store holds at the old address
 // (conversionPointersStatement), retracted there and stated at the node; each check result's row,
 // whose pair names the tree and the block's id in the room, with its result_of and its part_of
@@ -1435,10 +1620,8 @@ func (c *issueConversion) moveResults(ctx context.Context) ([]graphstore.Claim, 
 
 // finish writes, for each document in the room's order - verification-md, plan-md, then the spec
 // (R21) - the move of its open approval request to the version the conversion wrote, the carry of
-// its standing approval to that version (carryStandingApproval: a version whose text is the
-// approved text carries it, as R22 has the person's approval carry across a change only of where
-// a block sits), its artifact.version, and, under that event, what retiring its old index and the
-// room's pass stated of its blocks and its version's node, with the stamp of its links; and then
+// its standing approval to that version, its artifact.version, and, under that event, what
+// retiring its old index and the room's pass stated of its blocks and version node; and then
 // what the pass stated of the tree's own fragment and the room's references, with the tree's
 // version's node, at the sentinel, since no event records the tree's own version.
 func (c *issueConversion) finish(ctx context.Context) error {
@@ -1455,9 +1638,13 @@ func (c *issueConversion) finish(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if newest != nil && newest.State == "approved" {
-			rendered := renderedTree{tree: document.part(), markdown: document.markdown}
-			if err := c.s.carryStandingApproval(ctx, c.tx, document.id, document.version.Number, rendered, *newest, decisionStepCases{}, sink); err != nil {
+		if newest != nil && newest.State == "approved" && newest.Version == document.latest.number {
+			origin, err := approvalOrigin(ctx, c.tx, document.id, *newest)
+			if err != nil {
+				return err
+			}
+			reason := fmt.Sprintf(carriedReasonPrefix, origin) + "the issue room conversion kept what was approved."
+			if err := writeCarriedReview(ctx, c.tx, c.s.events, document.id, document.version.Number, origin, *newest, reason, c.s.serverURL, sink); err != nil {
 				return err
 			}
 		}
@@ -1533,18 +1720,18 @@ const issueRoomStepLock int64 = 0x44495353524F4F4D
 // where it has work, it takes its own session lock (issueRoomStepLock), skipping where another
 // process holds it, and gives each issue that holds no tree, the projects in key order and the
 // issues of a project by number, to ConvertIssue in a transaction of its own under IssueRoomGate,
-// logging what the command prints of it. An issue converted, passed over or whose conversion
-// failed is settled for the life of the process; a deferred one is read again each tick until it
-// converts. The work is owed on the first tick, after a tick a live process without the issue room
-// held back, after a tick that converted an issue, and while an issue is deferred.
+// logging what the command prints of it. A successful backfill is needed on the first tick and
+// again after a tick held back by an older process. A deferred issue alone is probed until ready.
 type IssueRoomStep struct {
-	service  *Service
-	database *store.Store
-	logger   *slog.Logger
-	interval time.Duration
-	owed     bool
-	settled  map[string]bool
-	deferred map[string]string
+	service      *Service
+	database     *store.Store
+	logger       *slog.Logger
+	interval     time.Duration
+	gate         ConvertGate
+	owed         bool
+	backfillOwed bool
+	settled      map[string]bool
+	deferred     map[string]string
 }
 
 // NewIssueRoomStep is the step of a process over database, converting through service and logging
@@ -1555,7 +1742,7 @@ func NewIssueRoomStep(service *Service, database *store.Store, logger *slog.Logg
 	}
 	return &IssueRoomStep{
 		service: service, database: database, logger: logger, interval: BlockIndexReconcileInterval,
-		owed: true, settled: map[string]bool{}, deferred: map[string]string{},
+		gate: IssueRoomGate, owed: true, backfillOwed: true, settled: map[string]bool{}, deferred: map[string]string{},
 	}
 }
 
@@ -1574,12 +1761,27 @@ func (s *IssueRoomStep) Run(ctx context.Context) {
 	}
 }
 
-// unconvertedIssuesStatement is every issue that holds no tree, the projects in key order and the
-// issues of a project by number.
+type issueRoomCandidate struct{ key, status string }
+
+// Settled keys are excluded from the scan. A tick with only deferred work does not run it.
 const unconvertedIssuesStatement = `
-	select i.key from issues i
+	select i.key, i.status from issues i
 	where not exists (select 1 from issue_trees t where t.issue_key = i.key)
+	  and not (i.key = any(coalesce($1::text[], '{}')))
 	order by i.project_key, i.number, i.key`
+
+func conversionOwed(ctx context.Context, q Queryer, key string) (*conversionStop, error) {
+	var id, ref, slug string
+	err := q.QueryRow(ctx, conversionOwedStatement, key).Scan(&id, &ref, &slug)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("read what the documents of %s owe: %w", key, err)
+	}
+	return &conversionStop{outcome: IssueDeferred, document: id,
+		reason: fmt.Sprintf("its document %s (%s, %s) owes its block index", slug, ref, id)}, nil
+}
 
 // Tick is one pass of the step (IssueRoomStep).
 func (s *IssueRoomStep) Tick(ctx context.Context) error {
@@ -1591,10 +1793,10 @@ func (s *IssueRoomStep) Tick(ctx context.Context) error {
 	if blocker, blocked := withoutIssueRoom(live); blocked {
 		s.logger.Info("dispatch: the issue room step converts no issue while a live server process lists no issue_room",
 			"instance", blocker.ID, "commit", blocker.Commit)
-		s.owed = true
+		s.owed, s.backfillOwed = true, true
 		return nil
 	}
-	if !s.owed && len(s.deferred) == 0 {
+	if !s.owed && !s.backfillOwed && len(s.deferred) == 0 {
 		return nil
 	}
 	conn, err := s.database.Pool.Acquire(ctx)
@@ -1611,50 +1813,97 @@ func (s *IssueRoomStep) Tick(ctx context.Context) error {
 		held = false
 		return nil
 	}
-	rows, err := s.database.Pool.Query(ctx, unconvertedIssuesStatement)
-	if err != nil {
-		return fmt.Errorf("list the issues that hold no room: %w", err)
-	}
-	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("list the issues that hold no room: %w", err)
-	}
-	converted := false
-	for _, key := range keys {
-		if s.settled[key] {
-			continue
+	if s.backfillOwed {
+		run, err := graphcensus.StartBackfill(ctx, s.database, io.Discard, graphcensus.BackfillHorizonWaitBound)
+		if err == nil {
+			_, err = run.Passes(ctx, io.Discard)
 		}
+		if err != nil {
+			if moved, only := graphcensus.OnlyProjectMoved(err); only {
+				s.logger.Warn("dispatch: issue room step backfill left nodes in another project", "project_moved", moved)
+			} else {
+				return fmt.Errorf("issue room step backfill: %w", err)
+			}
+		}
+		s.backfillOwed = false
+	}
+	var candidates []issueRoomCandidate
+	if s.owed {
+		rows, err := s.database.Pool.Query(ctx, unconvertedIssuesStatement, slices.Collect(maps.Keys(s.settled)))
+		if err != nil {
+			return fmt.Errorf("list the issues that hold no room: %w", err)
+		}
+		candidates, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueRoomCandidate, error) {
+			var candidate issueRoomCandidate
+			err := row.Scan(&candidate.key, &candidate.status)
+			return candidate, err
+		})
+		if err != nil {
+			return fmt.Errorf("list the issues that hold no room: %w", err)
+		}
+		// A deferred candidate since removed or converted by hand no longer needs a probe.
+		pending := make(map[string]bool, len(candidates))
+		for _, candidate := range candidates {
+			pending[candidate.key] = true
+		}
+		maps.DeleteFunc(s.deferred, func(key, _ string) bool { return !pending[key] })
+	} else {
+		for _, key := range slices.Sorted(maps.Keys(s.deferred)) {
+			candidates = append(candidates, issueRoomCandidate{key: key})
+		}
+	}
+	s.owed = false
+	for _, candidate := range candidates {
+		key := candidate.key
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		result, err := s.service.ConvertIssue(ctx, key, IssueRoomGate, false)
-		var refusal *ConvertRefusal
-		switch {
-		case errors.As(err, &refusal):
-			s.logger.Info("dispatch: the issue room step converts no issue while a live server process lists no issue_room",
-				"reason", refusal.Reason)
-			s.owed = true
-			return nil
-		case err != nil:
-			s.logger.Error("dispatch: the issue room step failed on an issue; the next boot tries it again", "issue", key, "error", err)
-		case result.Outcome == IssueDeferred:
-			if s.deferred[key] != result.Reason {
-				s.logger.Info("dispatch: the issue room step deferred an issue", "issue", key, "document", result.Document, "reason", result.Reason)
-				s.deferred[key] = result.Reason
+		if candidate.status == "done" {
+			s.logger.Info("dispatch: the issue room step passed over an issue", "issue", key, "reason", "the issue is done", "items", 0)
+		} else {
+			stop, err := conversionOwed(ctx, s.database.Pool, key)
+			if err != nil {
+				s.owed = true
+				return err
 			}
-			continue
-		case result.Outcome == IssuePassedOver:
-			s.logger.Info("dispatch: the issue room step passed over an issue", "issue", key, "reason", result.Reason, "items", result.Items)
-		default:
-			s.logger.Info("dispatch: the issue room step converted an issue", "issue", key, "took", result.Took, "items", result.Items,
-				"rollback", ConversionRollbackCost)
-			converted = true
+			if stop != nil {
+				s.deferIssue(key, stop.document, stop.reason)
+				continue
+			}
+			s.owed = true
+			result, err := s.service.ConvertIssue(ctx, key, s.gate, false)
+			var refusal *ConvertRefusal
+			switch {
+			case errors.As(err, &refusal):
+				s.logger.Info("dispatch: the issue room step converts no issue while a live server process lists no issue_room", "reason", refusal.Reason)
+				s.backfillOwed = true
+				return nil
+			case ctx.Err() != nil:
+				return ctx.Err()
+			case err != nil:
+				s.logger.Error("dispatch: the issue room step failed on an issue; the next boot tries it again", "issue", key, "error", err)
+			case result.Outcome == IssueDeferred:
+				s.deferIssue(key, result.Document, result.Reason)
+				continue
+			case result.Outcome == IssuePassedOver:
+				s.logger.Info("dispatch: the issue room step passed over an issue", "issue", key, "reason", result.Reason, "items", result.Items)
+			default:
+				s.logger.Info("dispatch: the issue room step converted an issue", "issue", key, "took", result.Took, "items", result.Items,
+					"rollback", ConversionRollbackCost)
+			}
 		}
 		delete(s.deferred, key)
 		s.settled[key] = true
 	}
-	s.owed = converted
 	return nil
+}
+
+func (s *IssueRoomStep) deferIssue(key, document, reason string) {
+	if s.deferred[key] == reason {
+		return
+	}
+	s.logger.Info("dispatch: the issue room step deferred an issue", "issue", key, "document", document, "reason", reason)
+	s.deferred[key] = reason
 }
 
 // release gives the step's connection back: at once where it holds no lock, and otherwise through

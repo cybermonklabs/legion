@@ -460,6 +460,14 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     title: "The issue page draws one ordered body",
     updated_at: "2026-11-05T00:00:00Z",
     verification_artifact_id: verification.id,
+    queries: [
+      {
+        query: "verification",
+        artifact_id: verification.id,
+        takes: ["check", "result"],
+        subtree: `issue:${ISSUE_KEY}`,
+      },
+    ],
   };
   return buildIssueTree({
     coverage: {

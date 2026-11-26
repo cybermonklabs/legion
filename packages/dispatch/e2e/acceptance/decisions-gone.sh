@@ -414,9 +414,6 @@ step_admission() {
     packages/dispatch/web/src/features/refs/routes.test.ts)
       [[ "$text" != *"kind: ${quoted_word} as const"* && "$text" != *"issueTabForRoute(route, undefined)).toBe(${quoted_word})"* ]] ||
         printf 'test material: the dispatch://KEY/decisions route' ;;
-    packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx)
-      [[ "$text" != *"DecisionsRead[${quoted_word}]"* ]] ||
-        printf 'test material: the old decisions member of the Decisions view'"'"'s read, kept for one release (compat-objects)' ;;
     packages/dispatch/web/src/__tests__/event-feed.test.ts)
       [[ "$text" != *"decisions: { key: [${quoted_word}, "* && "$text" != *"spares: [${quoted_word}],"* ]] ||
         printf 'test material: the query key of the Decisions view' ;;

@@ -231,7 +231,7 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// it is open: the settlement versions it and carries the approval, whose answer of the
 		// request goes through the one writer of an ask's answer state (answerApprovalAsk).
 		Name: "docs/approval_carry.go#answerApprovalAsk", Database: r.database,
-		Sites: []string{"docs/approval_carry.go#answerApprovalAsk", "asks/settle.go#Queue", "docs/settlement.go#appendEvents", "refs/blocks.go#Queue"},
+		Sites: []string{"docs/approval_carry.go#answerApprovalAsk", "docs/approval_ask.go#rewriteApprovalAsk", "asks/settle.go#Queue", "docs/settlement.go#appendEvents", "refs/blocks.go#Queue"},
 		Ready: func(t *testing.T) {
 			carried = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -276,10 +276,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from asks where id = $1::uuid and state = 'answered')
 			`, request)
 		},
-		// The carry's answer of the request, the node of pat, the person who approved, and the
-		// version the settlement writes: the text value of the paragraph it gives back and the
-		// version's node.
-		Counts: merged(answerCounted, personNodeCounted, versionCounted, map[graphcensus.StoredKind][]string{
+		// The carry's answer of the request, the node of pat, the person who approved, the version
+		// the settlement writes - the text value of the paragraph it gives back and the version's
+		// node - and the move of the request to that version: the retraction of the approves it
+		// leaves and the assertion of the one it moves to.
+		Counts: merged(answerCounted, personNodeCounted, versionCounted, approvalMoveCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
 		}),
 	}, {

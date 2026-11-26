@@ -32,7 +32,8 @@ import (
 // back under the issue, where its text puts it, and one that names another ask moves it there. The
 // census kind block then counts no difference over the store, and a PATCH of a decision that holds
 // a from_ask, with a current If-Match, is 400 NODE_NOT_MOVABLE, naming the decision and its ask,
-// and writes nothing.
+// and writes nothing; once the caller may not read that ask, the same refusal names the decision
+// alone.
 //
 // Its three controls, each run alone: dropping the from_ask branch of planBlockParents
 // (refs/block_nodes.go) prints "decision <id> stands under issue <key>, want ask <uuid>"; dropping
@@ -128,6 +129,31 @@ func TestADecisionThatSettlesAnAskStandsUnderThatAsk(t *testing.T) {
 	if now, _ := placementOf(t, database, refs.BlockNodeKind, d2); now.Seq != held.Seq {
 		t.Errorf("the refused PATCH of decision %s moved it under %s %s", d2, now.ToKind, now.ToID)
 	}
+
+	// The refusal names the ask only where the caller may read it. No writer reserves an ask for
+	// its author (graphstore.CheckVisibilityAdmitted), so SQL reserves first, the ask d2 settles,
+	// as an ask alice may not read would stand: alice's read of its address answers 404, and her
+	// PATCH of d2 is still 400 NODE_NOT_MOVABLE, naming d2 and neither the ask's address nor its
+	// id, and writes nothing.
+	if read := dispatchReferences(t, handler, asked(first), "alice"); read.Code != http.StatusOK {
+		t.Fatalf("alice's read of the ask %s answered %d before it is reserved, want 200: %s", asked(first), read.Code, read.Body.String())
+	}
+	if _, err := database.Pool.Exec(ctx, `update graph_nodes set visibility = $3 where kind = $1 and id = $2`,
+		graphstore.KindAsk, first, graphstore.VisibilityAuthor); err != nil {
+		t.Fatalf("reserve the ask %s for its author: %v", first, err)
+	}
+	if read := dispatchReferences(t, handler, asked(first), "alice"); read.Code != http.StatusNotFound {
+		t.Fatalf("alice's read of the ask %s answered %d once it is reserved for its author, want 404, so this case proves nothing: %s", asked(first), read.Code, read.Body.String())
+	}
+	before = readDeleteCounts(t, database)
+	refused = patchNode(t, handler, key, d2, tag, map[string]any{"parent": d1}, "alice")
+	refusal = decodeBody[refusalAnswer](t, refused)
+	if body := refused.Body.String(); refused.Code != http.StatusBadRequest || refusal.Code != codeNodeNotMovable {
+		t.Errorf("PATCH of decision %s, whose ask alice may not read, answered %d, want 400 %s: %s", d2, refused.Code, codeNodeNotMovable, body)
+	} else if named := strings.Contains(body, d2) || strings.Contains(body, "#b-d2"); !named || strings.Contains(body, first) {
+		t.Errorf("the refusal of the PATCH of decision %s, whose ask alice may not read, does not name the decision, or names the ask %s: %s", d2, first, body)
+	}
+	requireUnchanged(t, database, "the refused PATCH of decision "+d2+", whose ask alice may not read", before)
 }
 
 // The words of the decision-under-ask test's spec and decisions, each unique in the store.

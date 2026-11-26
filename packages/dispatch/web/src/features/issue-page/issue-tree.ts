@@ -384,7 +384,7 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
 
 /**
  * Whether `node` is a check: a `check` block of the issue's Verification document, the one the
- * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
+ * issue read names for its verification query, or a check the results read answers for. Each
  * draws a state - `no-result` until the results read answers (`tree-drafts.ts`'s
  * `addDocumentBlocks`) - and a `check` block of any other document draws none and is a block and
  * nothing more: no row and no count of the Verification filter, no check of a statement, and no

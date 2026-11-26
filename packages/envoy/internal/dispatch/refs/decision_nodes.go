@@ -548,28 +548,40 @@ func settledAsks(ctx context.Context, q Queryer, issue string, ties []Pointer, f
 	return settles, rows.Err()
 }
 
-// DecisionFromAsk is the ask the decision block node at address holds a current from_ask to, as
-// its dispatch:// address where the ask's marked row names its issue and as the ask's store
-// address, ask/<id>, where no row does, and whether it holds one. Such a decision stands under the
-// ask it settles whatever a move would store (DecisionFacts), so the node route moves none (R7 of
-// the issue-tree spec, api's NODE_NOT_MOVABLE). It reads through q.
-func DecisionFromAsk(ctx context.Context, q Queryer, address string) (string, bool, error) {
-	var ask string
+// DecisionFromAsk is whether the decision block node at address holds a current from_ask, and the
+// name of the ask it holds one to as who may read it: the ask's dispatch:// address where the ask's
+// marked row names its issue, and its store address, ask/<id>, where that row names none. An ask
+// no marked row names, one the store holds gone and one the ask's predicate does not let who see
+// (VisibleKind) answer the one empty name, so what reaches who says nothing of an ask who may not
+// read, nor of whether one exists. Whether the decision holds one reads no visibility: such a
+// decision stands under the ask it settles whatever a move would store (DecisionFacts), so the
+// node route moves none, for every caller who reaches the decision (R7 of the issue-tree spec,
+// api's NODE_NOT_MOVABLE). It reads through q.
+func DecisionFromAsk(ctx context.Context, q Queryer, who model.Actor, address string) (string, bool, error) {
+	var ask *string
 	err := q.QueryRow(ctx, `
-		select coalesce('dispatch://' || k.issue_key || '/ask/' || held.to_id, '`+graphstore.KindAsk+`/' || held.to_id)
+		select case
+		         when k.id is not null and `+VisibleKind(graphstore.KindAsk, `held.to_id`, `$4`)+`
+		          and not exists (select 1 from graph_nodes gone_ask
+		            where gone_ask.kind = '`+graphstore.KindAsk+`' and gone_ask.id = held.to_id and gone_ask.state = '`+graphstore.StateGone+`')
+		         then coalesce('dispatch://' || k.issue_key || '/ask/' || held.to_id, '`+graphstore.KindAsk+`/' || held.to_id)
+		       end
 		from (`+graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
 		`t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = '`+graphstore.KindAsk+`'`)+`) held
 		left join asks k on k.node_kind = '`+graphstore.KindAsk+`' and k.node_address = held.to_id
 		where held.asserted
 		order by held.to_id limit 1
-	`, BlockNodeKind, address, TupleFromAsk).Scan(&ask)
+	`, BlockNodeKind, address, TupleFromAsk, VisibilityArg(who)).Scan(&ask)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("read the from_ask of the decision %s: %w", address, err)
 	}
-	return ask, true, nil
+	if ask == nil {
+		return "", true, nil
+	}
+	return *ask, true, nil
 }
 
 // namedAskRows is, of blocks, ask blocks of document artifactID, each whose row names the ask's

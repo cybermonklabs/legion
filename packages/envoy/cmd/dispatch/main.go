@@ -1113,6 +1113,18 @@ func main() {
 	// is woken by the trigger that announces each notice given a due time, and waits for the
 	// earliest one.
 	go documentService.RunEditNotices(ctx, editNoticesLeases, editNoticesWake)
+	// Whether graph_edges still holds the four arms the graph-store spec moved, read from the
+	// database before this process serves, so the backlink counts read the arm set the view holds
+	// from the first request (refs.SetFourArmsDeleted), whichever process's step deleted them; read
+	// again about every minute for the life of the process (graphcensus.FollowViewArms), and set
+	// once more by this boot's own step below, which deletes them where it may.
+	armsGone, err := graphcensus.ViewArmsGone(ctx, database.Pool)
+	if err != nil {
+		slog.Error("dispatch: read whether graph_edges holds its four old arms", "error", err)
+		os.Exit(1)
+	}
+	refs.SetFourArmsDeleted(armsGone)
+	go graphcensus.FollowViewArms(ctx, database.Pool, slog.Default())
 	// Every boot runs the graph store's backfill once (graphcensus.Backfill), whatever it finds owed,
 	// off the boot's path. The boot records the backfill's horizon of the event log here, before it
 	// starts the block-index reconciliation below, so, where the record completes, that
@@ -2751,8 +2763,9 @@ func bootBackfillHorizonBound(boot bootConfig) time.Duration {
 // anything the boot does after this call, and nothing of the boot waits for the passes.
 // DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
 // recorded, until the process stops. Once the run has logged that it is done, the same goroutine
-// runs R26's step (graphcensus.RunTypedBlockSupertagsStep), which a run that logged no done line
-// never reaches; fresh says this boot created the database from empty.
+// runs the step that deletes the four old arms of graph_edges (graphcensus.RunViewArmsStep) and then
+// R26's step (graphcensus.RunTypedBlockSupertagsStep), neither of which a run that logged no done
+// line ever reaches; fresh says this boot created the database from empty.
 func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig, fresh bool) {
 	var run graphcensus.BackfillRun
 	record := func(ctx context.Context) error {
@@ -2772,6 +2785,13 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 			_, err := run.Passes(ctx, io.Discard)
 			return err
 		}, func(ctx context.Context) {
+			gone, err := graphcensus.RunViewArmsStep(ctx, database, buildCommit, fresh, slog.Default())
+			if err != nil {
+				slog.Error(graphcensus.ViewArmsStepLine+" failed", "error", err)
+			}
+			if gone {
+				refs.SetFourArmsDeleted(true)
+			}
 			if err := graphcensus.RunTypedBlockSupertagsStep(ctx, database, buildCommit, fresh, slog.Default()); err != nil {
 				slog.Error("dispatch: the typed block supertags step failed", "error", err)
 			}

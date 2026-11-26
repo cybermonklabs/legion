@@ -880,6 +880,17 @@ var indexPasses = map[string]string{
 	// found by an anti-join since the row names no tuple: the tuple is the marker, as a version's
 	// node is the versions pass's. It states only what levels that node with its own row.
 	"graphcensus/census_anchors.go#writeAnchorBatch": "each comments row's own anchor, read again under its owner row, and the anchored_in its node states",
+	// The ask block pointer backfill compares the marked row with the current asked_on tuple.
+	"graphcensus/census_citations_asks.go#writeAskedOnBatch": "each marked asks row's block_artifact_id and block_id, read again under its owner with the asked_on its node states",
+	// The backfill of the approval requests' documents (R14 of this branch's spec): each marked
+	// approval ask's approval.documents, read again under its owner row, and the approves tuples
+	// its node states now, found by an anti-join both ways since the row names no tuple: the tuple
+	// is the marker, as an anchor's is. It states only what levels that node with its own row.
+	"graphcensus/census_approvals.go#writeApprovesBatch": "each marked approval ask's approval.documents, read again under its owner row, and the approves its node states",
+	// A move of an approval request's documents: the versions its caller moved the row to, which
+	// the rewrite's own arguments name, and the ask's node address, read to say whether the request
+	// names a node at all. It reads no side of a projection to mend the other.
+	"docs/approval_ask.go#rewriteApprovalAsk": "the documents its caller moved the request to and the request's node address",
 	// The backfill's Keep pass (R32 of this branch's spec): each Keep's decision_keeps row and the
 	// kept_text_sum its decision's node states, read again under the issue's owner row, each held
 	// to the sum of the decision's words with shaped, which a release before summed, and both written

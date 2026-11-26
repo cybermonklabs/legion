@@ -243,8 +243,12 @@ func TestTheMoveRefusesAParentOutsideItsPlaceAndAnAfterOfNoSiblingOfItsBand(t *t
 	if parent := rig.partOf(t, mc1); parent != "block/"+mr1 {
 		t.Fatalf("the check %s stands under %s, want %s, which it serves", mc1, parent, mr1)
 	}
-	if parent := rig.partOf(t, onR1Node); parent != "block/"+mr1 {
-		t.Fatalf("alice's comment on the text of %s stands under %s, want %s, the node its anchor is on", mr1, parent, mr1)
+	paragraph, _ := textBlockOf(t, rig.database, spec.id, "paragraph", "Every read answers in a second.")
+	if parent := rig.partOf(t, onR1Node); parent != "block/"+paragraph {
+		t.Fatalf("alice's comment on the text of %s stands under %s, want %s, the paragraph its anchor is on", mr1, parent, paragraph)
+	}
+	if node := treeNodes(t, rig.handler, key, "")[onR1.ID]; node.Parent == nil || node.Parent.ID != mr1 {
+		t.Fatalf("the tree read puts the comment %s under %+v, want %s, the paragraph's nearest returned ancestor", onR1.ID, node.Parent, mr1)
 	}
 
 	for _, parent := range []string{mr1, mc1} {

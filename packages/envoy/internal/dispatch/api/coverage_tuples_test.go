@@ -108,23 +108,20 @@ func TestTheCoverageReadOverTheTuplesHoldsTheFourStatesApart(t *testing.T) {
 	}
 }
 
-// TestTheCoverageAndResultsTwinsAnswerAsTheReadsTheyReplace: the census of the twins reads no
-// difference between the coverage read over the tuples and the coverage read over the spec's
-// markdown, nor between the checks read over the tuples and the checks of the Verification
-// document, on an issue the release before would have written - not converted, its documents
-// each a room of its own - and on an issue born converted, each with requirements, checks
-// serving one and two of them, a plan task and a recorded result. A serves tuple written into the
-// store alone, which no document's markdown holds, is read by the twin and not by the read it
-// replaces, and the census names that difference, so a census reading none is a census that reads.
-func TestTheCoverageAndResultsTwinsAnswerAsTheReadsTheyReplace(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{})
+// TestTheCoverageAndResultsReadsAnswerFromTheTuples: the coverage route and the results route
+// answer over the store's tuples on an issue the release before would have written - not
+// converted, its documents each a room of its own - and on an issue born converted, each with
+// requirements, checks serving one and two of them, a plan task and a recorded result. A serves
+// tuple written into the store alone, which no document's markdown holds, is read by the coverage
+// route, proving the route answers from the store rather than walking the spec's markdown.
+func TestTheCoverageAndResultsReadsAnswerFromTheTuples(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	createReferenceAPIProject(t, handler, "TWIN")
-	server := directServer(deps)
 	seed := func(unconverted bool) string {
 		t.Helper()
-		issue := createDigestIssue(t, handler, database, "TWIN", "Twins", "A paragraph of prose.\n\n"+
+		issue := createDigestIssue(t, handler, database, "TWIN", "Tuples", "A paragraph of prose.\n\n"+
 			":::requirement{#r1}\nThe list comes first.\n:::\n\n:::requirement{#r2}\nAn ask keeps its urgency.\n:::\n", unconverted)
 		spec := "dispatch://" + issue.Key + "/spec#b-"
 		owner := "/api/v1/issues/" + issue.Key
@@ -138,21 +135,22 @@ func TestTheCoverageAndResultsTwinsAnswerAsTheReadsTheyReplace(t *testing.T) {
 	}
 	for _, unconverted := range []bool{true, false} {
 		key := seed(unconverted)
-		differences, err := server.twinCensus(ctx, database.Pool, alice, key)
-		if err != nil {
-			t.Fatalf("take the census of the twins of %s: %v", key, err)
+		coverage := readCoverage(t, handler, key)
+		if !coverage.HasPlan || coverageOf(t, coverage, "r1").Checks != 2 || coverageOf(t, coverage, "r1").PlanTasks != 1 ||
+			coverageOf(t, coverage, "r2").Checks != 1 || coverageOf(t, coverage, "r2").PlanTasks != 0 {
+			t.Errorf("the coverage of %s (unconverted %t) is %+v: want c2 listed once under each requirement it serves", key, unconverted, coverage)
 		}
-		t.Logf("the census of the twins of %s (unconverted %t) reads %d differences: %q", key, unconverted, len(differences), differences)
-		if len(differences) > 0 {
-			t.Errorf("the census of the twins of %s (unconverted %t) reads %q, want no difference", key, unconverted, differences)
+		if want := []string{"r2 " + noPlanTaskReason}; !slices.Equal(coverage.Gaps, want) {
+			t.Errorf("the gaps of %s (unconverted %t) are %q, want %q", key, unconverted, coverage.Gaps, want)
 		}
-		if coverage, err := server.issueCoverageOverTuples(ctx, database.Pool, alice, key, nil); err != nil ||
-			coverageOf(t, coverage, "r1").Checks != 2 || coverageOf(t, coverage, "r2").Checks != 1 {
-			t.Errorf("the coverage of %s over the tuples is %+v, %v: want c2 listed once under each requirement it serves", key, coverage, err)
+		results := readResults(t, handler, key)
+		if len(results.Checks) != 2 || results.Checks[0].BlockID != "c1" || results.Checks[1].BlockID != "c2" ||
+			len(results.Checks[0].Results) != 1 || results.Checks[0].Results[0].Verdict != "pass" {
+			t.Errorf("the results of %s (unconverted %t) are %+v: want c1 (with its pass) then c2", key, unconverted, results)
 		}
 	}
 
-	// The planted difference: a serves tuple of c1 to r2 that only the store holds.
+	// The planted serves tuple: a serves tuple of c1 to r2 that only the store holds.
 	key := seed(false)
 	checks := readDecisionDocument(t, database, key, "verification-md")
 	requirements := readDecisionDocument(t, database, key, "spec")
@@ -171,13 +169,8 @@ func TestTheCoverageAndResultsTwinsAnswerAsTheReadsTheyReplace(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the planted serves tuple: %v", err)
 	}
-	differences, err := server.twinCensus(ctx, database.Pool, alice, key)
-	if err != nil {
-		t.Fatalf("take the census of the twins of %s: %v", key, err)
-	}
-	t.Logf("with the planted serves tuple the census of %s reads %q", key, differences)
-	if len(differences) != 1 || !strings.Contains(differences[0], "r2") || !strings.Contains(differences[0], "checks=2") {
-		t.Errorf("with a serves tuple only the store holds the census of %s reads %q, want the one difference naming r2 with two checks", key, differences)
+	if coverage := readCoverage(t, handler, key); coverageOf(t, coverage, "r2").Checks != 2 {
+		t.Errorf("with a serves tuple only the store holds, r2 of %s has %d checks, want 2", key, coverageOf(t, coverage, "r2").Checks)
 	}
 }
 
@@ -186,17 +179,15 @@ func TestTheCoverageAndResultsTwinsAnswerAsTheReadsTheyReplace(t *testing.T) {
 // child is a view of the parent. A client that skips the editor's creation gate writes a
 // requirement block into the child's spec fragment through the issue room, where no route's check
 // runs; the room's settlement versions it and its block index states it. The child's tree read
-// answers the block as a requirement node of the child, as its text and type say. Both coverage
-// reads name it in the one line `<block id> is a requirement on a view` of their gaps and list no
-// requirement but the parent's that the child's check serves; the census of the twins reads no
-// difference. The child is still a view of the parent, and a requirement written on it through
+// answers the block as a requirement node of the child, as its text and type say. The coverage
+// read names it in the one line `<block id> is a requirement on a view` of its gaps and lists no
+// requirement but the parent's that the child's check serves. The child is still a view of the
+// parent, and a requirement written on it through
 // POST /api/v1/artifacts/{id}/edits after the paste is still refused, since the pasted requirement
 // does not end the view. The parent's coverage names no such gap.
 func TestARequirementPastedIntoAViewIsAGapOfItsOwnKind(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
-	ctx := context.Background()
-	alice := model.Actor{Kind: "user", ID: "alice"}
 	createReferenceAPIProject(t, handler, "PASTE")
 	parent := createDigestIssue(t, handler, database, "PASTE", "The parent", ":::requirement{#r1}\nThe parent states it.\n:::\n", false)
 	child := createDigestChild(t, handler, database, "PASTE", "The view", "The view's design.\n", parent.Key, false)
@@ -224,32 +215,15 @@ func TestARequirementPastedIntoAViewIsAGapOfItsOwnKind(t *testing.T) {
 	if !slices.Contains(coverage.Gaps, line) {
 		t.Errorf("the coverage of %s holds no gap for the pasted requirement %s: %q", child.Key, block, coverage.Gaps)
 	}
-	server := directServer(deps)
-	twin, err := server.issueCoverageOverTuples(ctx, database.Pool, alice, child.Key, nil)
-	if err != nil {
-		t.Fatalf("read the coverage of %s over the tuples: %v", child.Key, err)
+	var listed []string
+	for _, requirement := range coverage.Requirements {
+		listed = append(listed, requirement.BlockID)
 	}
-	if !slices.Contains(twin.Gaps, line) {
-		t.Errorf("the coverage over the tuples of %s answers %q, want the line %q", child.Key, twin.Gaps, line)
+	if slices.Contains(listed, block) {
+		t.Errorf("the coverage of %s counts the pasted requirement %s as a requirement of the view", child.Key, block)
 	}
-	for _, read := range []model.IssueCoverage{coverage, twin} {
-		var listed []string
-		for _, requirement := range read.Requirements {
-			listed = append(listed, requirement.BlockID)
-		}
-		if slices.Contains(listed, block) {
-			t.Errorf("the coverage of %s counts the pasted requirement %s as a requirement of the view", child.Key, block)
-		}
-		if !slices.Equal(listed, []string{"r1"}) || coverageOf(t, read, "r1").Checks != 1 {
-			t.Errorf("the coverage of %s lists the requirements %q, want the parent's r1 alone, served by the child's check", child.Key, listed)
-		}
-	}
-	differences, err := server.twinCensus(ctx, database.Pool, alice, child.Key)
-	if err != nil {
-		t.Fatalf("take the census of the twins of %s: %v", child.Key, err)
-	}
-	if len(differences) > 0 {
-		t.Errorf("the census of the twins of %s reads %q, want no difference", child.Key, differences)
+	if !slices.Equal(listed, []string{"r1"}) || coverageOf(t, coverage, "r1").Checks != 1 {
+		t.Errorf("the coverage of %s lists the requirements %q, want the parent's r1 alone, served by the child's check", child.Key, listed)
 	}
 	if read.ViewOf == nil || *read.ViewOf != parent.Key {
 		value := "null"

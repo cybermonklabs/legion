@@ -641,8 +641,8 @@ function OpenQuestion({ entry, issueKey }: { entry: DecisionEntry; issueKey: str
 
 /** The issue's Decisions tab: its open questions, the agent's decisions waiting for a person's
  *  review (with Keep and Change), the person's own decisions, and the replaced ones, read from
- *  the entries of `GET /api/v1/issues/{key}/decisions`. Each decision links the node that holds
- *  it and the spec blocks it shaped. */
+ *  the nodes of `GET /api/v1/issues/{key}/tree?view=decisions`. Each decision links the node
+ *  that holds it and the spec blocks it shaped. */
 export function DecisionsPanel({
   artifacts,
   isClosed,
@@ -667,9 +667,7 @@ export function DecisionsPanel({
       .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
       .map((entry) => {
         const decision = entryDecision(entry);
-        // A decision a server of the release before answered names no document of its own
-        // (`withEntries`): its address is its section's heading block in the decisions document.
-        // kept for one release: compat-objects
+        // A decision for which the view names no document can still name a block by its address.
         const documentId = entry.document?.artifact_id ?? decisionDocumentId(documents, entry);
         return { blocks: entryBlocks(entry, decision), decision, documentId };
       });

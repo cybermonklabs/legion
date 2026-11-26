@@ -146,10 +146,9 @@ export function decisionBlockId(
   decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
   if (decision.document !== null) return decision.document.block_id;
-  // A decision a server of the release before answered names no document (`withEntries`): its
-  // address is its section's heading block in the decisions document, and that block is the one
-  // a Keep is written against and a Change is placed by.
-  // kept for one release: compat-objects
+  // The tree read names a document only on a typed block of a role document, so the entry of a
+  // decision of any other document names none (`api/decisions-tree.ts`): its own address names
+  // the block a Keep is written against and a Change is placed by.
   const route = parseNodeReference(decision.ref);
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }

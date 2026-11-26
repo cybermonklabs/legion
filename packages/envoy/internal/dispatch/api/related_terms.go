@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -594,18 +595,18 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 // relatedProbeSQL answers which of the given lexemes some item of the project holds, leaving out
 // the excluded owner's items. Each kind probes its own search index with an exists: issues, then
 // documents through node_search (migration 20261125160000_issue_tree_node_search), the
-// GIN-indexed vector of each block node, a block read as a block of its document
-// (refs.NodeSearchDocumentSQL), then comments, asks and messages.
+// GIN-indexed vector of each block node, then comments, asks and messages.
 //
-// The document arm's lexeme test is a subquery of its own, which `offset 0` keeps the planner
-// from folding into the exists around it. Folded in, the arm is costed as the search for a
-// single row, for which a scan of the whole table starts cheapest, and that scan then detoasts
-// one document vector after another until it meets a match - a cost paid again for every lexeme
-// the arms before it leave unanswered, which is what made a probe of twenty rare words cost
-// seconds. Planned on its own the arm is costed for every document it matches, and there the
-// GIN index is cheapest, so each lexeme is answered from the index: on the measurement database
-// the probe reads tens of milliseconds at twenty rare lexemes where the release before this
-// change reads about ten seconds.
+// The document arm reads a node as a block of its document as search does (the owner by its
+// ref_key, refs.NodeSearchDocumentSQL, and no converted document's old owner). The GIN match and
+// the document's kind, project and exclusions stand behind an offset 0, which keeps the planner
+// from folding the arm into the exists around it, costed as the search for one row, where a scan
+// of the whole table starts cheapest; and the ask test runs only on the rows those keep. Unlike
+// search's arm and the near-copy gate, the probe needs one row a lexeme and stops there, so it
+// tests the few it reads one at a time (graphstore.InsideAskBlockSQL): the node's own text from
+// its row, then its block parents. On the measurement database the issues arm answers every one
+// of the twenty probe lexemes and this arm never runs, so its cost there is its planning alone,
+// which four relations keep small.
 //
 // An item on no document (an issue's comment or ask) is never the excluded document's, so the
 // document test applies only when $4 names one: `is distinct from` a null $4 would leave out
@@ -620,10 +621,14 @@ with probe as (
 select p.lexeme from probe p
  where exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
     or exists (select 1
-                 from (select ` + refs.NodeSearchDocumentSQL("s") + ` as document from node_search s where s.search @@ p.tq offset 0) s
-                 join artifacts a on a.id = s.document
-                where a.kind = 'doc' and a.project_key = $1
-                  and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid)
+                 from (select s.node_address, s.text from node_search s
+                        join artifacts o on o.ref_key = ` + refs.NodeSearchOwnerSQL("s") + `
+                        join artifacts a on a.id = ` + refs.NodeSearchDocumentSQL("s", "o") + `
+                        where s.search @@ p.tq and a.kind = 'doc' and a.project_key = $1
+                          and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid
+                          and not exists (select 1 from document_rooms moved where moved.artifact_id = o.id)
+                        offset 0) eligible
+                where not ` + graphstore.InsideAskBlockSQL("eligible.node_address", "eligible.text") + `)
     or exists (select 1 from comments c
                  left join issues i on i.key = c.issue_key
                  left join artifacts a on a.id = c.artifact_id

@@ -245,15 +245,19 @@ type issueTreeBuilder struct {
 	key  string
 	view string
 	// kinds is the kinds of node the read with kind takes (parseTreeKinds), nil for every other
-	// read; kindContext is each context node a tuple of a node of its answer names (kindOrder).
+	// read; kindContext is each context node a tuple of a node of its answer names (kindOrder);
+	// untied is each node of the walk the read with kind or a view answers as context that such a
+	// tuple names, which contextOrder answers beside the context (untie).
 	kinds       []string
 	kindContext map[refs.Target]bool
+	untied      []refs.Target
 	// pageSize is the most nodes one page answers (window).
 	pageSize int
 	// serverURL is the deployment the read is served from, whose dashboard URLs each node's
 	// excerpt is cut around as references (refs.ExcerptedNodes).
 	serverURL string
 	cut       refs.TreeCut
+	atVersion bool
 	tree      docs.IssueTree
 	// heads is the issue's rows of the head projection a head read of a marked issue reads in
 	// place of the walk of the tuples (refs.HeadRows), nil for a read at a version and for an issue
@@ -386,6 +390,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 		return err
 	}
 	b.cut = cut
+	b.atVersion = version != 0
 	var skeleton *refs.HeadSkeleton
 	if b.view == "" {
 		documents, err := b.readSkeleton()
@@ -811,8 +816,20 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			cycles[node.OrderNode] = true
 		}
 	}
+	nonNil := func(items []string) []string {
+		if items == nil {
+			return []string{}
+		}
+		return items
+	}
 	place := func(node refs.OrderedNode, position *int) {
-		plan := &model.IssueTreePlan{Position: position, Needs: []model.IssueTreeHalfEnd{}, Cycle: cycles[node.OrderNode]}
+		plan := &model.IssueTreePlan{
+			Position: position,
+			Needs:    []model.IssueTreeHalfEnd{},
+			Skills:   nonNil(node.Skills),
+			Docs:     nonNil(node.Docs),
+			Cycle:    cycles[node.OrderNode],
+		}
 		for _, need := range node.Needs {
 			plan.Needs = append(plan.Needs, model.IssueTreeHalfEnd{Kind: need.Kind, ID: need.ID, Half: need.Half})
 		}
@@ -824,7 +841,11 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			target := refs.Target{Kind: graphstore.KindIssue, ID: node.ID}
 			halves := b.plans[target]
 			if halves == nil {
-				halves = &model.IssueTreePlan{Needs: []model.IssueTreeHalfEnd{}}
+				halves = &model.IssueTreePlan{
+					Needs:  []model.IssueTreeHalfEnd{},
+					Skills: []string{},
+					Docs:   []string{},
+				}
 				b.plans[target] = halves
 			}
 			if node.Half == refs.HalfDone {
@@ -838,7 +859,6 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			return
 		}
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
-		plan.Skills, plan.Docs = node.Skills, node.Docs
 		b.plans[target] = plan
 		if node.Issue != b.key {
 			b.add(target, refs.Target{}, node.Issue, treeRoleTree)
@@ -969,6 +989,11 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	if err != nil {
 		return fmt.Errorf("read the blocks of the tree of %s: %w", b.key, err)
 	}
+	if b.atVersion {
+		if err := b.readHistoricalBlocks(blocks, blockNodes, blockRows); err != nil {
+			return err
+		}
+	}
 	for _, target := range unread {
 		if _, held := b.headRow(target); held && loaderKind(target) == refs.BlockNodeKind {
 			continue
@@ -983,6 +1008,63 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	}
 	maps.Copy(b.blocks, blockRows)
 	return nil
+}
+
+// readHistoricalBlocks loads blocks the walk reached at the version's cut but whose current
+// projection has since been removed. Their state, text and document membership come from the cut,
+// not from the deleted document_blocks row. The store's visibility predicate still applies.
+func (b *issueTreeBuilder) readHistoricalBlocks(blocks []string, nodes map[string]refs.ExcerptedNode, rows map[string]refs.BlockRow) error {
+	var ids, documents []string
+	for _, id := range blocks {
+		target := refs.Target{Kind: refs.BlockNodeKind, ID: id}
+		entry := b.entries[target]
+		if _, projected := rows[id]; projected || entry == nil || entry.walk < 0 {
+			continue
+		}
+		for _, relation := range b.facts[target].Relations {
+			if relation.Kind == refs.TupleInDocument && relation.To.Kind == graphstore.KindArtifact {
+				ids, documents = append(ids, id), append(documents, relation.To.ID)
+				break
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	found, err := b.q.Query(b.ctx, `
+		select n.id, n.made_at, n.made_by, coalesce(d.id::text, ''), coalesce(d.slug, ''),
+		       coalesce(`+refs.DocumentBandSQL("d")+`, '')
+		from unnest($1::text[], $2::text[]) as historic (id, document)
+		join graph_nodes n on n.kind = 'block' and n.id = historic.id
+		left join artifacts d on d.ref_key = historic.document
+		where `+refs.VisibleKindRow(refs.BlockNodeKind, "n", "$3"),
+		ids, documents, refs.VisibilityArg(b.who))
+	if err != nil {
+		return fmt.Errorf("read historical blocks of %s: %w", b.key, err)
+	}
+	defer found.Close()
+	for found.Next() {
+		node := model.GraphNode{Kind: refs.BlockNodeKind}
+		var row refs.BlockRow
+		var author *model.Actor
+		var band string
+		if err := found.Scan(&node.ID, &node.MadeAt, &author, &row.Document, &row.Slug, &band); err != nil {
+			return fmt.Errorf("read a historical block of %s: %w", b.key, err)
+		}
+		target := refs.Target{Kind: refs.BlockNodeKind, ID: node.ID}
+		values := b.facts[target].Values
+		node.State, node.Visibility = values[graphstore.AttributeState], values[graphstore.AttributeVisibility]
+		if author != nil {
+			node.MadeBy = []model.Actor{*author}
+		}
+		nodes[node.ID] = refs.ExcerptedNode{Node: node}
+		if row.Document != "" && band != "" {
+			_, row.BlockID, _ = strings.Cut(node.ID, "#")
+			row.Type, row.Band = b.entries[target].typ, band[0]
+			rows[node.ID] = row
+		}
+	}
+	return found.Err()
 }
 
 // headRow is target's head row where the read is a head read of a marked issue whose rows hold
@@ -1967,7 +2049,9 @@ func (b *issueTreeBuilder) ordered() []refs.Target {
 // answers (inView), in its role, and each comment of a thread on the text of a node it answers
 // (carriedText), with its blocks, as context, of the view's comment page alone (pageViewComments).
 // The plan view orders them by their positions in the one order of the whole tree, the issue's
-// node first where that order holds it.
+// node first where that order holds it. Each node it answers as context that a has_kind,
+// constrained_by, changed_by_run or decided_by tuple names, such as a constraint of the issue a
+// tie brings in (readTies), it takes out of that order (untie).
 func (b *issueTreeBuilder) viewOrder(order []refs.Target) []refs.Target {
 	in := make(map[refs.Target]bool, len(order))
 	var viewed []refs.Target
@@ -1994,7 +2078,7 @@ func (b *issueTreeBuilder) viewOrder(order []refs.Target) []refs.Target {
 			return cmp.Compare(b.planPosition(left), b.planPosition(right))
 		})
 	}
-	return viewed
+	return b.untie(viewed, b.inContext)
 }
 
 // planPosition is where a node of the plan view stands in the one order of the whole tree: its
@@ -2014,7 +2098,8 @@ func (b *issueTreeBuilder) planPosition(target refs.Target) int {
 // contextOrder is the context nodes in kind order and then id order, each once, byte for byte: of
 // the read with kind, those a tuple of a node of its answer names (kindContext) alone; of a view,
 // its fixed context and the person or session a decided_by of a node it answers names, and no
-// decider of a decision the view does not answer (R8: a view's context is a fixed set).
+// decider of a decision the view does not answer (R8: a view's context is a fixed set); and of
+// either, each node of the walk it took out of the walk's order (untie).
 func (b *issueTreeBuilder) contextOrder() []refs.Target {
 	var deciders map[refs.Target]bool
 	if b.view != "" {
@@ -2039,10 +2124,53 @@ func (b *issueTreeBuilder) contextOrder() []refs.Target {
 			context = append(context, target)
 		}
 	}
+	context = append(context, b.untied...)
 	slices.SortFunc(context, func(left, right refs.Target) int {
 		return cmp.Or(strings.Compare(left.Kind, right.Kind), strings.Compare(left.ID, right.ID))
 	})
 	return context
+}
+
+// contextTie reports whether a tuple of kind places a context node in the paged answer: a
+// has_kind, constrained_by, changed_by_run or decided_by (R8).
+func contextTie(kind string) bool {
+	switch kind {
+	case graphstore.TupleHasKind, graphstore.TupleConstrainedBy, graphstore.TupleChangedByRun, graphstore.TupleDecidedBy:
+		return true
+	}
+	return false
+}
+
+// untie is order, the nodes of the walk the read with kind or a view answers, without each node
+// it marks as context that a tie (contextTie) of a node of order or of context names, which it
+// keeps in untied for contextOrder to answer beside the context, so window places it on the first
+// page that holds such a tie naming it and not at its place in the walk (R8). A node the read
+// answers as a node of the tree or of the view's query keeps its place, whatever tie names it.
+func (b *issueTreeBuilder) untie(order []refs.Target, context map[refs.Target]bool) []refs.Target {
+	if b.before != nil {
+		return order
+	}
+	named := map[refs.Target]bool{}
+	name := func(target refs.Target) {
+		for _, relation := range b.facts[target].Relations {
+			if contextTie(relation.Kind) {
+				named[relation.To] = true
+			}
+		}
+	}
+	for _, target := range order {
+		name(target)
+	}
+	for target := range context {
+		name(target)
+	}
+	return slices.DeleteFunc(order, func(target refs.Target) bool {
+		if !named[target] || b.entries[target].role != treeRoleContext {
+			return false
+		}
+		b.untied = append(b.untied, target)
+		return true
+	})
 }
 
 // documentPositions reads, for each typed block of a role document the page holds (window), its
@@ -2102,9 +2230,10 @@ func (b *issueTreeBuilder) roleBlock(target refs.Target) (refs.BlockRow, bool) {
 // answer's order, and holds every node of that answer (inAnswer). The page is a slice of the
 // walk's order from the cursor on with each context node a node of that slice places
 // (contextPlacement), at most pageSize nodes in all and one node of the walk at least; the last
-// page holds too each context node no node of the walk places. So each context node stands on the
-// first page whose slice holds a node a tuple of which names it, and on no other. A cursor that
-// names no node of the order is 400 INVALID_QUERY.
+// page holds too each context node no node of the walk places, which its bound counts with the
+// walk's last node. So each context node stands on the first page that holds a has_kind,
+// constrained_by, changed_by_run or decided_by tuple naming it, and on no other (R8). A cursor
+// that names no node of the order is 400 INVALID_QUERY.
 func (b *issueTreeBuilder) window(cursor string) error {
 	order := b.answered()
 	context := order[len(b.order):]
@@ -2126,6 +2255,9 @@ func (b *issueTreeBuilder) window(cursor string) error {
 	end, count := start, 0
 	for end < len(walk) {
 		add := 1 + brought[end]
+		if end == len(walk)-1 {
+			add += brought[len(walk)]
+		}
 		if end > start && count+add > b.pageSize {
 			break
 		}
@@ -2156,19 +2288,16 @@ func (b *issueTreeBuilder) window(cursor string) error {
 }
 
 // contextPlacement is, for each node of context, the index in walk, the answer's order but the
-// context, of the first node a tuple between the two names, out of either: a run's interaction
-// stands with the first node its changed_by_run names it from, and a person with the first
-// decision decided_by them. A context node a tuple names together with another context node is
-// placed with the earlier of the two, and so on through each such tie. A context node no node of
-// walk names is placed at len(walk), past every node of it.
+// context, of the first node whose tie (contextTie) names it: a lens kind stands with the first
+// lens of that kind, a constraint with the first node constrained_by it, a run's interaction with
+// the first node its changed_by_run names it from, and a person with the first decision decided_by
+// them. A context node a tie of another context node names stands no later than that node, and so
+// on through each such tie. A context node no tie of the answer names is placed at len(walk), past
+// every node of it; no other tuple, a part_of or an authored_by, places one.
 func (b *issueTreeBuilder) contextPlacement(walk, context []refs.Target) []int {
 	placement := make([]int, len(context))
 	if len(context) == 0 {
 		return placement
-	}
-	walked := make(map[refs.Target]int, len(walk))
-	for index, target := range walk {
-		walked[target] = index
 	}
 	contexts := make(map[refs.Target]int, len(context))
 	for index, target := range context {
@@ -2176,27 +2305,24 @@ func (b *issueTreeBuilder) contextPlacement(walk, context []refs.Target) []int {
 	}
 	for index, target := range walk {
 		for _, relation := range b.facts[target].Relations {
-			if at, held := contexts[relation.To]; held {
+			if at, held := contexts[relation.To]; held && contextTie(relation.Kind) {
 				placement[at] = min(placement[at], index)
 			}
 		}
 	}
 	var ties [][2]int
-	for at, target := range context {
+	for from, target := range context {
 		for _, relation := range b.facts[target].Relations {
-			if index, held := walked[relation.To]; held {
-				placement[at] = min(placement[at], index)
-			}
-			if other, held := contexts[relation.To]; held && other != at {
-				ties = append(ties, [2]int{at, other})
+			if to, held := contexts[relation.To]; held && to != from && contextTie(relation.Kind) {
+				ties = append(ties, [2]int{from, to})
 			}
 		}
 	}
 	for changed := len(ties) > 0; changed; {
 		changed = false
 		for _, tie := range ties {
-			if low := min(placement[tie[0]], placement[tie[1]]); placement[tie[0]] != low || placement[tie[1]] != low {
-				placement[tie[0]], placement[tie[1]], changed = low, low, true
+			if from, to := tie[0], tie[1]; placement[from] < placement[to] {
+				placement[to], changed = placement[from], true
 			}
 		}
 	}
@@ -2362,7 +2488,10 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 			node.MadeAt = &made
 		}
 	case entry.typ == graphstore.BlockTypeCheck:
-		if row, held := b.blocks[target.ID]; held {
+		// A check the walk reached at a version whose document_blocks row is gone since holds no
+		// text sum and no changed version (readHistoricalBlocks), so it answers no check member
+		// rather than one naming version 0.
+		if row, held := b.blocks[target.ID]; held && row.ChangedVersion != 0 {
 			node.Check = &model.IssueTreeCheck{TextSHA256: row.TextSHA256, ChangedVersion: row.ChangedVersion}
 		}
 	}

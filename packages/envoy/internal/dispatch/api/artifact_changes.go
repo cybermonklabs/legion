@@ -146,6 +146,14 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	changes, err := compareVersions(before, after)
 	if err != nil {
+		var unreadable *changeVersionParseError
+		if errors.As(err, &unreadable) {
+			number := from
+			if unreadable.later {
+				number = to
+			}
+			err = &docs.OutsideSchemaError{Cause: fmt.Errorf("version %d: %v", number, unreadable.cause)}
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -247,23 +255,38 @@ type cutBlock struct {
 	node *pmdoc.Node
 }
 
+// changeVersionParseError distinguishes source Markdown the parser refuses from a failure
+// to render the cut. The handler uses later to name the version the parser refused.
+type changeVersionParseError struct {
+	cause error
+	later bool
+}
+
+func (e *changeVersionParseError) Error() string { return e.cause.Error() }
+
 // compareVersions is the change set from the markdown before to the markdown after
 // (artifactChanges), its document and version numbers left for the caller to fill in.
 //
 // It names what differs first (nameChanges), and then says whether the change set is unchanged,
 // here and in no other place: one that is not decision-only and names no unit and no block is
 // unchanged, whatever its two texts were. So no pair of texts can answer a change that names
-// nothing. Two texts that are the same are never parsed, since they cut to one text and
-// name nothing, and the same line makes them unchanged.
+// nothing. Identical texts need one parse to verify that they can be read, but no cut.
 func compareVersions(before, after string) (artifactChanges, error) {
 	changes := artifactChanges{Sections: []artifactSectionChange{}, Blocks: []artifactBlockChange{}}
-	if before != after {
+	if before == after {
+		if _, err := pmdoc.ParseRendering(before); err != nil {
+			return artifactChanges{}, &changeVersionParseError{cause: err}
+		}
+	} else {
 		earlier, err := readCutVersion(before)
 		if err != nil {
 			return artifactChanges{}, err
 		}
 		later, err := readCutVersion(after)
 		if err != nil {
+			if unreadable, ok := err.(*changeVersionParseError); ok {
+				unreadable.later = true
+			}
 			return artifactChanges{}, err
 		}
 		if earlier.text == later.text {
@@ -362,7 +385,7 @@ func keyRuns(earlier, later []cutUnit) {
 func readCutVersion(markdown string) (cutVersion, error) {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return cutVersion{}, err
+		return cutVersion{}, &changeVersionParseError{cause: err}
 	}
 	cut := docs.WithoutAskBlocks(tree)
 	text, offsets, err := pmdoc.RenderWithBlockOffsets(cut)

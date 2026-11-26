@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -171,6 +172,9 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select id::text from asks where block_artifact_id = $1::uuid and block_id = 'k1'`, issue.PrimaryArtifactID).Scan(&askID); err != nil {
 		t.Fatalf("read the ask of the spec's k1 block: %v", err)
 	}
+	if ends := pointersFarEnds(t, database, graphstore.KindAsk, askID, graphstore.TupleAskedOn, refs.BlockNodeKind); !slices.Equal(ends, []string{specKey + "#k1"}) {
+		t.Errorf("new ask %s states asked_on to %v, want its block %s#k1", askID, ends, specKey)
+	}
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
 		"anchor": map[string]string{"artifact": "spec", "quote": "The cited paragraph"},
 		"body":   "A comment anchored on the cited paragraph.",
@@ -254,6 +258,8 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 			"block", fromNode, "mentions", "block", newAddress},
 		{"the ask's block_artifact_id", pointersRow{"the ask's block_artifact_id", `select coalesce((select ref_key from artifacts where id = k.block_artifact_id), '') from asks k where k.id = $1::uuid`, []any{askID}},
 			graphstore.KindAsk, askID, graphstore.TuplePartOf, "artifact", treeKey},
+		{"the ask's block", pointersRow{"the ask's block", `select coalesce((select ref_key from artifacts where id = k.block_artifact_id) || '#' || k.block_id, '') from asks k where k.id = $1::uuid`, []any{askID}},
+			graphstore.KindAsk, askID, graphstore.TupleAskedOn, refs.BlockNodeKind, treeKey + "#k1"},
 		{"the comment's anchor", pointersRow{"the comment's anchor", `select coalesce(` + graphstore.CommentAnchoredInSQL("c") + `, '') from comments c where c.id = $1::uuid`, []any{comment.ID}},
 			graphstore.KindComment, comment.ID, graphstore.TupleAnchoredIn, "block", newAddress},
 		{"the check_results pair", pointersRow{"the check_results pair", `select coalesce((select ref_key from artifacts where id = r.check_artifact_id) || '#' || r.check_block_id, '') from check_results r where r.id = $1::uuid`, []any{resultID}},

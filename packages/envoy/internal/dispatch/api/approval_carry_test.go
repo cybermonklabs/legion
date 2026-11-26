@@ -96,6 +96,33 @@ func reviseDocument(t *testing.T, handler http.Handler, artifactID, find, with s
 	waitForArtifactVersion(t, handler, artifactID, number)
 }
 
+// rewordAnsweredBlock replaces find with with in the block of an answered ask through the edits
+// route. The asking agent's edit is refused 409 ANSWERED_ASK_KEPT and leaves the document's latest
+// version at number-1 (R32: "An agent's write is refused `409 ANSWERED_ASK_KEPT` where it would do
+// one of these to a person's decision: change its words or retype it, on any path"; "the write
+// stores nothing"). The latest version is read without waiting for settlement, since a test that
+// settles past the run leaves a person's answer owing one until it settles the document itself.
+// bob's edit of the same text, a person's, is taken, versions the document to number in the
+// route's own transaction, and the helper waits until that version reads.
+func rewordAnsweredBlock(t *testing.T, handler http.Handler, artifactID, find, with string, number int) {
+	t.Helper()
+	reword := map[string]any{
+		"ops":   []map[string]string{{"op": "replace", "find": find, "with": with}},
+		"actor": sessionActor(),
+	}
+	if refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", reword); refused.Code != http.StatusConflict ||
+		decodeBody[errorBody](t, refused).Code != codeAnsweredAskKept {
+		t.Fatalf("the agent rewords the answered block: status=%d body=%s, want 409 %s", refused.Code, refused.Body.String(), codeAnsweredAskKept)
+	}
+	if versions := documentVersions(t, handler, artifactID); versions[len(versions)-1].Number != number-1 {
+		t.Fatalf("latest version after the agent's refused reword = %d, want %d: a refused write stores no version", versions[len(versions)-1].Number, number-1)
+	}
+	if edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", reword, "bob"); edited.Code != http.StatusOK {
+		t.Fatalf("bob rewords the answered block to version %d: status=%d body=%s", number, edited.Code, edited.Body.String())
+	}
+	waitForArtifactVersion(t, handler, artifactID, number)
+}
+
 // requestApproval opens the asking agent's approval request on the document and returns the ask
 // the route answers with.
 func requestApproval(t *testing.T, handler http.Handler, artifactID string) carriedAsk {
@@ -626,19 +653,20 @@ func versionMarkdown(t *testing.T, handler http.Handler, artifactID string, numb
 	}](t, version).Markdown
 }
 
-// Stale, then restored: the agent rewords a block the human answered. The human answered the first
+// Stale, then restored: a person rewords a block another answered. The human answered the first
 // block, whose state the answer writes into the block (R3); the agent added a second, and the human
-// approved that version and answered the second block. The agent's edit of the first block's
-// question, through the edits route, versions in the route's own transaction: it shows his
-// answer's block under wording nobody decided, a further character his approval does not hold, so
-// nothing is carried (R10: "A write that changes one further character supersedes the approval").
-// Settlement then writes the decided wording back, and that version is the one he approved but for
-// what a version keeps of the second answer (its block's state, answerer and time), which carries
-// his approval by R10's case.
+// approved that version and answered the second block. The agent cannot reword the first block's
+// question: an answered ask is a person's decision, whose words no agent's write changes (R32), so
+// its edit is refused and writes no version. bob's edit of the question, through the edits route,
+// versions in the route's own transaction: it shows the answer's block under wording nobody
+// decided, a further character the approval does not hold, so nothing is carried (R10: "A write
+// that changes one further character supersedes the approval"). Settlement then writes the decided
+// wording back, and that version is the one alice approved but for what a version keeps of the
+// second answer (its block's state, answerer and time), which carries her approval by R10's case.
 func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes(t *testing.T) {
 	t.Parallel()
 	// Settling past the run (pastTheRun), so no settlement timer versions alice's second answer
-	// before the agent's reword does, however long a loaded machine takes between the two requests;
+	// before bob's reword does, however long a loaded machine takes between the two requests;
 	// every settlement the test needs it makes at once (settledVersion, settledDecisionBlocks).
 	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Reword under the answer", "Context\n\n"+regionAsk)
@@ -651,10 +679,10 @@ func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 2)
 
 	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Which region goes first?", "Which region goes last?", 3)
+	rewordAnsweredBlock(t, handler, issue.PrimaryArtifactID, "Which region goes first?", "Which region goes last?", 3)
 	markdown := versionMarkdown(t, handler, issue.PrimaryArtifactID, 3)
 	if !strings.Contains(markdown, "Which region goes last?") {
-		t.Fatalf("version 3 = %s, want it to hold the agent's reword", markdown)
+		t.Fatalf("version 3 = %s, want it to hold bob's reword", markdown)
 	}
 	requireNoAnswerAttributes(t, "version 3", markdown)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")

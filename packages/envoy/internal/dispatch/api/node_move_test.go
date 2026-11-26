@@ -277,7 +277,7 @@ func decisionsQueryOf(t *testing.T, database *store.Store, key string) string {
 // decisions query the drain writes for it holds the bytes of the version before it.
 func TestThePatchRefusesAParentTheWalkDoesNotReach(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "WALK")
 	issue := createDigestIssue(t, handler, database, "WALK", "The walk's reach", walkReachSpec, false)
 	key := issue.Key
@@ -302,6 +302,14 @@ func TestThePatchRefusesAParentTheWalkDoesNotReach(t *testing.T) {
 		})))
 	decision := blockAddressOf(t, database, key, "d1")
 	decisions := decisionsQueryOf(t, database, key)
+	// The create writes the decisions before the room's settlement opens the ask. Pin the
+	// baseline after that settlement's drain, so the only change left to test is the move.
+	if err := deps.Docs.SettleIssueDocuments(t.Context(), key); err != nil {
+		t.Fatalf("settle the ask of %s: %v", key, err)
+	}
+	testwait.Eventually(t, "the decisions version to include the settled ask", func() bool {
+		return strings.Contains(newestQueryVersion(t, database, decisions).markdown, "Which store do the writers take?")
+	})
 	before := newestQueryVersion(t, database, decisions)
 	for _, parent := range []struct{ address, names, why string }{
 		{graphstore.KindComment + "/" + onText.ID, onText.ID, "conversation test"},

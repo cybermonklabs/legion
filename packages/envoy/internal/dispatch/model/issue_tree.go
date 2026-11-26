@@ -186,30 +186,38 @@ type IssueTreeDecision struct {
 // mark's position in that block: the number of the block's matches of the quote that start before
 // the mark, the count pmdoc.QuoteFinder.FindInBlock takes. It answers none for an anchor that is
 // orphaned or names no block, nor where the document no longer holds the mark inside that block.
-// A node anchor, on the text of a lens, a finding, a risk, a constraint or a result, answers the
-// node it names (IssueTreeAnchorNode), its quote, the occurrence of the quote in the node's text it
-// stores, and orphaned, and no member of a document anchor.
+// An orphaned document anchor also answers ContainerNodeID: the id a tree read answers the node of
+// the nearest typed block that holds the anchor's block by (IssueTreeNode.ID), found up that
+// block's part_of chain at the read's cut whether or not the read answers that node, where no block
+// of the chain up to it is gone at the cut and the reader may see it. It answers none where no such
+// block resolves, and none for an anchor that is not orphaned. A node anchor, on the text of a
+// lens, a finding, a risk, a constraint or a result, answers the node it names
+// (IssueTreeAnchorNode), its quote, the occurrence of the quote in the node's text it stores, and
+// orphaned, and no member of a document anchor.
 type IssueTreeAnchor struct {
-	ArtifactID string               `json:"artifact_id,omitempty"`
-	BlockID    *string              `json:"block_id,omitempty"`
-	MarkID     string               `json:"mark_id,omitempty"`
-	Version    int                  `json:"version,omitempty"`
-	Node       *IssueTreeAnchorNode `json:"node,omitempty"`
-	Quote      string               `json:"quote"`
-	Occurrence *int                 `json:"occurrence,omitempty"`
-	Orphaned   bool                 `json:"orphaned"`
+	ArtifactID      string               `json:"artifact_id,omitempty"`
+	BlockID         *string              `json:"block_id,omitempty"`
+	MarkID          string               `json:"mark_id,omitempty"`
+	Version         int                  `json:"version,omitempty"`
+	Node            *IssueTreeAnchorNode `json:"node,omitempty"`
+	Quote           string               `json:"quote"`
+	Occurrence      *int                 `json:"occurrence,omitempty"`
+	Orphaned        bool                 `json:"orphaned"`
+	ContainerNodeID string               `json:"container_node_id,omitempty"`
 }
 
 // MarshalJSON writes each form of the anchor with its own members alone: a document anchor as the
 // comments read writes it (Anchor), its block_id null where it names no block, with its occurrence
-// where the read computed one, and a node anchor as its node, its quote, its occurrence and its
-// orphaned mark.
+// where the read computed one and its container_node_id where the read resolved one, and a node
+// anchor as its node, its quote, its occurrence and its orphaned mark.
 func (a IssueTreeAnchor) MarshalJSON() ([]byte, error) {
 	if a.Node == nil {
 		return json.Marshal(struct {
 			Anchor
-			Occurrence *int `json:"occurrence,omitempty"`
-		}{Anchor{ArtifactID: a.ArtifactID, BlockID: a.BlockID, MarkID: a.MarkID, Version: a.Version, Quote: a.Quote, Orphaned: a.Orphaned}, a.Occurrence})
+			Occurrence      *int   `json:"occurrence,omitempty"`
+			ContainerNodeID string `json:"container_node_id,omitempty"`
+		}{Anchor{ArtifactID: a.ArtifactID, BlockID: a.BlockID, MarkID: a.MarkID, Version: a.Version, Quote: a.Quote, Orphaned: a.Orphaned},
+			a.Occurrence, a.ContainerNodeID})
 	}
 	return json.Marshal(struct {
 		Node       *IssueTreeAnchorNode `json:"node"`
@@ -297,15 +305,15 @@ type IssueTreeCheck struct {
 // IssueTreePlan is what the plan view answers of a node from the ordered read: its position in the
 // one order of the whole tree, null for a node in a cycle or overtaken; the nodes it needs; its
 // size in whole minutes, null where its author gave none; the skills and the docs its task names,
-// each an empty list where it names none and left out of an issue and its halves; and whether it
-// stands in a cycle the read reports. An issue answers its two halves (Start, Done), each a node
-// of the order of its own.
+// each `[]` where it names none, never null and never left out, an issue and its halves included;
+// and whether it stands in a cycle the read reports. An issue answers its two halves (Start, Done),
+// each a node of the order of its own.
 type IssueTreePlan struct {
 	Position *int               `json:"position"`
 	Needs    []IssueTreeHalfEnd `json:"needs"`
 	Size     *string            `json:"size"`
-	Skills   []string           `json:"skills,omitzero"`
-	Docs     []string           `json:"docs,omitzero"`
+	Skills   []string           `json:"skills"`
+	Docs     []string           `json:"docs"`
 	Cycle    bool               `json:"cycle"`
 	Start    *IssueTreePlan     `json:"start,omitempty"`
 	Done     *IssueTreePlan     `json:"done,omitempty"`

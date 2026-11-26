@@ -102,11 +102,12 @@ export const ArtifactApprovalSchema = z
     /** The latest review's kind, so a reader can say an approval is a plan review's rather than a
      *  person's; absent while no review stands, and from a Dispatch older than review kinds. */
     kind: ArtifactReviewKindSchema.optional(),
-    /** The version a carried approval was carried from (`artifact_review_carries`); absent for a
-     *  person's own approval, for no review, and from a Dispatch older than the carry record. A
-     *  carried person's approval reads `kind: person` with the person as its actor, so this member
-     *  is how a reader tells the carry from the person's own act. */
-    carried_from_version: z.number().int().optional(),
+    /** The version a carried approval was carried from (`artifact_review_carries`), and `null`
+     *  for a person's own approval, for a plan review's approval, and where no review stands.
+     *  Absent only from a Dispatch older than the carry record during a roll. A carried person's
+     *  approval reads `kind: person` with the person as its actor, so this member is how a reader
+     *  tells the carry from the person's own act. */
+    carried_from_version: z.number().int().nullable().optional(),
     /** Every document the open request covers, each at the version the request names, this one
      *  included; absent when it covers this document alone. It is the request's own list
      *  (`AskApprovalDocument`), so each entry carries the `requested_version` the request records
@@ -252,6 +253,19 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
   diff_truncated: artifactHumanEditedEventPayloadFields.diff_truncated.optional(),
 });
 
+/** `artifact.indexed`: the block-index reconciliation committed the block index of documents of
+ *  the issue whose versions their writes left owed one, each version announced already by its own
+ *  `artifact.version`. `artifact_ids` names each document whose owed index it cleared, sorted: the
+ *  coverage read's `owed_documents` and gaps, the tree read, the decisions read, the indexed checks
+ *  of a Verification document and a document's blocks answer from the index from then on. It is
+ *  quiet: it wakes nobody. A reader that does not know the type refreshes what it holds, as for any
+ *  event it cannot read. */
+export const ArtifactIndexedEventPayloadSchema = z
+  .strictObject({ artifact_ids: z.array(z.string()).readonly() })
+  .readonly();
+
+export type ArtifactIndexedEventPayload = z.output<typeof ArtifactIndexedEventPayloadSchema>;
+
 /** `artifact.approved` and `artifact.changes_requested`: a human review of a document,
  *  pinned to `version`; `reason` is required for changes requested; `ask_id` names the
  *  approval ask the review answered, null when given from the document header with no
@@ -279,6 +293,10 @@ export const artifactReviewEventPayloadFields = {
   kind: ArtifactReviewKindSchema.optional(),
   content_sha256: z.string().optional(),
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
+  /** The version a carried approval was carried from (`artifact_review_carries`), and `null` for a
+   *  person's own review or a plan review's; absent only from a Dispatch older than the carry
+   *  record during a roll. */
+  carried_from_version: z.number().int().nullable().optional(),
 };
 
 export const WrittenArtifactReviewEventPayloadSchema = z
@@ -299,6 +317,7 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   ask_id: artifactReviewEventPayloadFields.ask_id.optional(),
   content_sha256: artifactReviewEventPayloadFields.content_sha256,
   content_sha256_source: artifactReviewEventPayloadFields.content_sha256_source,
+  carried_from_version: artifactReviewEventPayloadFields.carried_from_version,
 });
 
 /** A server-owned typed-block attribute was restored from its indexed row. */

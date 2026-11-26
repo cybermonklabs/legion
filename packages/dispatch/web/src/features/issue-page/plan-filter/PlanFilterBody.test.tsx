@@ -989,6 +989,24 @@ function issueRead(verification?: Artifact): IssueDetails {
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
     verification_artifact_id: verification?.id ?? "",
+    queries: [
+      ...(verification === undefined
+        ? []
+        : [
+            {
+              query: "verification" as const,
+              artifact_id: verification.id,
+              takes: ["check", "result"],
+              subtree: `issue:${KEY}`,
+            },
+          ]),
+      {
+        query: "plan",
+        artifact_id: PLAN_ARTIFACT,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${KEY}`,
+      },
+    ],
   };
 }
 
