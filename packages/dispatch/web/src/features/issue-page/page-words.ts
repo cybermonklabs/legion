@@ -570,19 +570,23 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
 /**
  * What the page says of a gap in the reasoning, one line per kind of gap (R4, R10). A gap is
  * drawn on the node it is about and never as an error, and only where it tells that node apart
- * from its siblings and names work somebody owes: a requirement no check serves, and a check or
- * a plan task whose `serves` names no requirement. A gap every node of its kind has under
- * today's model tells the reader nothing about the node, so the page has no line for it - none
- * for a node that names no origin, since no requirement carries a `from` yet and no decision a
- * question it settles, and none for a summary nobody is recorded as writing or confirming,
- * which no issue records - and a requirement no plan task serves is no gap the page draws
- * either. Nor is a result that records no negative control: dispatch://INFRA-1253 R3 refuses
+ * from its siblings and names work somebody owes: a requirement no check serves, a requirement no
+ * plan task serves once the issue or an issue under it holds a plan task, and a check or a plan
+ * task whose `serves` names no requirement. A gap every node of its kind has under today's model
+ * tells the reader nothing about the node, so the page has no line for it - none for a node that
+ * names no origin, since no requirement carries a `from` yet and no decision a question it
+ * settles, and none for a summary nobody is recorded as writing or confirming, which no issue
+ * records. Nor is a result that records no negative control: dispatch://INFRA-1253 R3 refuses
  * the results that gap would name, so it is no gap the page draws.
  *
  * `no_check` is the gap the coverage read already carries (`RequirementCoverage.gaps`), said in
  * the page's own words rather than in the server's `<block id> has no check`, which names a
- * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
- * another, which the page draws rather than picking one of the two.
+ * block by its id. `no_plan_task` is read by the page itself (`tree-read/tree-nodes.ts`'
+ * `draftRequirement`): the server writes its own line only where the issue holds a plan document
+ * of its own, and a plan may stand wholly in the issues under it. `shaped_disagreement` is a
+ * decision claiming a node whose own origin names another; no draft of the tree read carries it,
+ * so nothing reads its words. They stay because this file takes additions only while today's
+ * page loads it, and they go when today's page does.
  *
  * Two of them are the chain's (R10), each read from what the page already holds
  * (`tree-drafts.ts`): `serves_not_requirement` is a citation that must name a requirement and
@@ -616,7 +620,8 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
   /** The citation names a node, and that node is a requirement no longer. */
   serves_not_requirement: "Not a statement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
-   *  two name different sources. */
+   *  two name different sources. Read by nothing now (`GAP_LINES`' doc), and kept until today's
+   *  page goes. */
   shaped_disagreement: "Sources disagree",
 } as const) satisfies Record<GapKind, string>;
 
@@ -625,9 +630,10 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
  * writes `<block id> has no check` and `<block id> has no plan task`
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
- * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing, and so does the line of a document
- * still being indexed (`coverageLineWords`), which names no gap of any requirement.
+ * server phrasing is drawn where a name belongs (R22). The page reads a requirement no plan task
+ * serves from its own reads (`no_plan_task`), since the server writes that line only where the
+ * issue holds a plan document of its own, so that line answers nothing, and so does the line of
+ * a document still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;

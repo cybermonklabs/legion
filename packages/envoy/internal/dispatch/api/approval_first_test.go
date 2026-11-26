@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// The spec of the approval-first case: A, which alice approves, holds a decision with no reading; G
-// changes the prose, which nobody approves; N undoes G's change and adds the agent's reading under
-// the decision, so N differs from A by that reading alone.
+// The spec of the approval-first case: A, which alice approves, holds the requirement r1 and a
+// decision with no reading; G changes one word of r1, which nobody approves; N undoes G's change
+// and adds the agent's reading under the decision, so N differs from A by that reading alone.
 const (
-	approvalFirstProse   = "The service ships behind a flag."
-	approvalFirstChanged = "The service ships behind a flag, on Friday."
-	approvalFirstSpec    = "# Plan\n\n" + approvalFirstProse + "\n\n:::decision{#d2}\n" + readingDecisionTwo + "\n:::\n"
+	approvalFirstRequirement = "The service ships behind a flag."
+	approvalFirstChanged     = "The service ships behind a canary."
+	approvalFirstSpec        = "# Plan\n\n:::requirement{#r1}\n" + approvalFirstRequirement + "\n:::\n\n:::decision{#d2}\n" + readingDecisionTwo + "\n:::\n"
 )
 
 // TestACarryCommitsApprovalFirstWhileTheRootWaitsAtAnUnapprovedVersion holds R14's order where the
@@ -23,7 +23,9 @@ const (
 // approval of A as a readings carry, and its artifact.approved comes before N's artifact.version,
 // in event id and in seq, so the daemon's gate reads the approval before the version and never
 // resumes the root on a version it reads as unapproved. The carry answers the request the root
-// waits on, in alice's name.
+// waits on, in alice's name. G's change is a word of a requirement because R14's approval covers
+// the spec query's record, which a prose change leaves as it is, so the approval would stand at G
+// and no root would wait there.
 func TestACarryCommitsApprovalFirstWhileTheRootWaitsAtAnUnapprovedVersion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -31,7 +33,7 @@ func TestACarryCommitsApprovalFirstWhileTheRootWaitsAtAnUnapprovedVersion(t *tes
 	issue := createInteractionIssue(t, handler, "TEST", "Approval first", approvalFirstSpec)
 	spec := issue.PrimaryArtifactID
 	approval := reviewDocument(t, handler, spec, "alice", "approved", "")
-	reviseDocument(t, handler, spec, approvalFirstProse, approvalFirstChanged, approval.Version+1)
+	reviseDocument(t, handler, spec, approvalFirstRequirement, approvalFirstChanged, approval.Version+1)
 	waiting := requestApproval(t, handler, spec)
 	if waiting.Approval.Version != approval.Version+1 {
 		t.Fatalf("the root's request waits at version %d, want G, version %d", waiting.Approval.Version, approval.Version+1)
@@ -40,7 +42,7 @@ func TestACarryCommitsApprovalFirstWhileTheRootWaitsAtAnUnapprovedVersion(t *tes
 	carried := approval.Version + 2
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
 		"ops": []map[string]string{
-			replaceOp(approvalFirstChanged, approvalFirstProse),
+			replaceOp(approvalFirstChanged, approvalFirstRequirement),
 			replaceOp(readingDecisionTwo, "::::decision{#d2}\n"+readingDecisionTwo+"\n\n:::reading{#r2}\n"+readingOfTwo+"\n:::\n::::"),
 		},
 		"actor": sessionActor(),

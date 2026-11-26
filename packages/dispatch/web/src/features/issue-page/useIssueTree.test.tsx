@@ -207,6 +207,14 @@ const issue: IssueDetails = {
   open_asks: [],
   parent: null,
   plan_artifact_id: plan.id,
+  queries: [
+    {
+      query: "plan",
+      artifact_id: plan.id,
+      takes: ["plan_task", "plan_role"],
+      subtree: `issue:${KEY}`,
+    },
+  ],
   primary_artifact_id: "",
   priority: null,
   progress: { children: null, tasks: null },
@@ -1112,6 +1120,15 @@ test("the tree is read in one request, and no document's blocks are read", async
     plan_artifact_id: plan.id,
     primary_artifact_id: "artifact-spec",
     verification_artifact_id: "artifact-verification",
+    queries: [
+      {
+        query: "verification",
+        artifact_id: "artifact-verification",
+        takes: ["check", "result"],
+        subtree: `issue:${KEY}`,
+      },
+      ...(issue.queries ?? []),
+    ],
   };
   let named = 0;
   const stubs = stubTreeReads(async (refs) => {
@@ -1143,7 +1160,7 @@ test("the tree is read in one request, and no document's blocks are read", async
 // task is a row of the tree, which the tree read answers with no blocks read.
 test("A plan with no role that the issue names by its id is named the plan, its task read from the tree", async () => {
   const roleless = issueDocument(plan.id, PLAN);
-  const named: IssueDetails = { ...issue, artifacts: [roleless], plan_artifact_id: roleless.id };
+  const named: IssueDetails = { ...issue, artifacts: [roleless] };
   const cites = `dispatch://${KEY}/artifact/${PLAN}`;
   const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
     comments: [{ ...comment, body: `The tasks are in ${cites}.` }],
@@ -1865,6 +1882,96 @@ test("Plan names both statements a step serves when only the outline holds those
   } finally {
     client.clear();
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// R10: whether the issue holds a plan task is read from the Plan view's answer the page holds.
+// Until that view answers, a statement no plan task serves is unmarked; once it answers holding a
+// task the statement is marked, and the mark stands while a later read of the view is refused,
+// since the page keeps that view's answer, rather than going and coming back at the next read. A
+// later answer that still holds a task builds no tree again, as it leaves the mark as it was.
+test("a statement no plan task serves is marked once the Plan view answers, and stays marked while its next read is refused", async () => {
+  const spec = issueDocument("artifact-spec", "spec", { primary: true });
+  const shown: IssueDetails = { ...issue, artifacts: [plan, spec], primary_artifact_id: spec.id };
+  const words = "A statement no plan task serves.";
+  const statement = answerNode("r1", "requirement", {
+    checks: 1,
+    document: { artifact_id: spec.id, position: 0, slug: spec.slug },
+    text: words,
+  });
+  const outline = fixtureAnswer([answerNode(KEY, "issue", { parent: null }), statement]);
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { tree: outline });
+  (api.getIssueCoverage as Mock<typeof api.getIssueCoverage>).mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [
+      {
+        block_id: "r1",
+        checks: 1,
+        gaps: [],
+        plan_tasks: 0,
+        ref: `dispatch://${KEY}/spec#b-r1`,
+        text: words,
+      },
+    ],
+    spec_artifact_id: spec.id,
+  });
+  const planOut = Promise.withResolvers<void>();
+  let refused = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if (query?.view !== "plan") return outline;
+    await planOut.promise;
+    if (refused) throw new Error("the plan view read was refused");
+    return viewAnswer({ ...task, role: "query" });
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const statementOf = (root: TreeNode) =>
+    nodesInOrder(root).find((node) => node.id === "spec#b-r1");
+  try {
+    const view = renderHook(() => useIssueTree(shown).root, { wrapper: stageWrapper(client) });
+    await waitFor(() =>
+      expect(statementOf(view.result.current)?.counts).toEqual({ checks: 1, planTasks: 0 })
+    );
+    expect(statementOf(view.result.current)?.gaps, "marked before the Plan view answered").toEqual(
+      []
+    );
+
+    await act(async () => {
+      planOut.resolve();
+    });
+    await waitFor(() => expect(statementOf(view.result.current)?.gaps).toEqual(["no_plan_task"]));
+
+    const marked = view.result.current;
+    const second = viewAnswer(
+      { ...task, role: "query" },
+      answerNode("t2", "plan_task", {
+        document: { artifact_id: plan.id, position: 1, slug: PLAN },
+        role: "query",
+        text: "A second task of the plan.",
+      })
+    );
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "plan"), second);
+    });
+    await waitFor(() => expect(view.result.current.views?.plan).toEqual(second));
+    expect(
+      view.result.current.children,
+      "a second Plan answer that still holds a plan task built the tree again"
+    ).toBe(marked.children);
+
+    refused = true;
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: viewKey(KEY, "plan") });
+    });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "plan"))?.status).toBe("error"));
+    expect(statementOf(view.result.current)?.gaps, "the refused read took the mark away").toEqual([
+      "no_plan_task",
+    ]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
   }
 });
 

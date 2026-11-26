@@ -29,7 +29,11 @@ func claimPointing(id, serves, body string) string {
 // shipped schema's nodes into graph_nodes. The tuple arm of graph_edges reads a pointer's
 // allowed targets from this attribute node (block_pointer_targets), not from the citing row, so
 // a test over a type the shipped schema does not hold - claim - seeds its node here or the arm
-// finds no targets. targets is the types the pointer may name, null for no limit.
+// finds no targets. The node of a typed block carries its type's supertag (R26 of the issue-tree
+// spec), and the store refuses a node of a type it holds no supertag node of
+// (graphstore.ErrSupertagNotHeld), so every test that writes a claim seeds its type here first, as
+// a deployment whose schema holds the type has it installed (pmdoc/schemanodes). targets is the
+// types the pointer may name, null for no limit.
 func seedPointerAttribute(t *testing.T, database *store.Store, typeName, attrName string, targets []string) {
 	t.Helper()
 	updatePointerTargets(t, database, typeName, attrName, targets)
@@ -312,6 +316,7 @@ func TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed(t *testing.
 func TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	writeIndexedDocument(t, database, service, "target", ":::requirement{#r1}\nA requirement.\n:::\n")
 	const r1 = "dispatch://CORE-1/artifact/target#b-r1"
 	checks := writeIndexedDocument(t, database, service, "checks", claimPointing("c1", r1, "It holds, per "+r1+".")+"\nSee dispatch://CORE-2.\n")
@@ -357,10 +362,14 @@ func TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite(t *testing.T) 
 // and the index's node for that id is its first holder with an offset. Pointers are written only
 // from that node, and only when it is the typed block holding them. A claim repeating the id of a
 // paragraph before it writes no edge (the paragraph's own mention of the same target stays), nor
-// does a claim repeating the id of a claim before it (whose own pointers stay). A list item has no
-// offset, so a claim after one holding the same id is the id's node and writes its pointer. The
-// version write, which indexes the tree, and the reconciliation, which reads the version's markdown
-// back (no paragraph's or list item's id is written there), store the same rows.
+// does a claim repeating the id of a claim before it (whose own pointers stay). A list item has an
+// offset too, because a move can nest a block under one, so a list item that holds an id first is
+// that id's node. A claim after it that repeats the id writes no pointer. The list item has no
+// words of its own, so it holds no row. The version write, which indexes the tree, and the
+// reconciliation, which reads the version's markdown back (no paragraph's or list item's id is
+// written there), store the same rows. Both paths take the id's node from a rendering of the same
+// tree, and that tree holds the list item's id. Only the pointers are read back from the markdown,
+// and the claim's opening line writes its id.
 func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 	const (
 		r1 = "dispatch://CORE-1/artifact/target#b-r1"
@@ -371,7 +380,7 @@ func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 		markdown string
 		// repeat gives the later block the earlier one's id, and returns that id.
 		repeat func(t *testing.T, service *Service, checks string, tree *pmdoc.Node) string
-		// want is the stored rows, each "<kind> <block id> <to id>", given the repeated id.
+		// want is the stored rows, each "<kind> <block id> <to id>", given the repeated id; nil for none.
 		want func(id string) []string
 	}{
 		{
@@ -403,12 +412,14 @@ func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 				tree.Children[1].Attrs["serves"] = []any{r2}
 				return "c1"
 			},
-			want: func(id string) []string { return []string{"serves " + id + " CORE-1/target#r2"} },
+			// The list item is the id's node, so the claim writes no pointer.
+			want: func(string) []string { return nil },
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 			database, service := blockIndexService(t)
+			seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 			writeIndexedDocument(t, database, service, "target", ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n")
 			checks := writeIndexedDocument(t, database, service, "checks", test.markdown)
 			var id string
@@ -444,6 +455,7 @@ func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 			}
 			requireRows("the version write")
 
+			awaitRoomStored(t, service, checks)
 			if _, err := database.Pool.Exec(context.Background(), `update document_block_versions set version = null where artifact_id = $1`, checks); err != nil {
 				t.Fatalf("mark checks.md owed: %v", err)
 			}
@@ -470,6 +482,7 @@ func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 			database, service := blockIndexService(t)
+			seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 			writeIndexedDocument(t, database, service, "target", ":::requirement{#r1}\nOne.\n:::\n")
 			checks := writeIndexedDocument(t, database, service, "checks", claimPointing("c1", r1, "It holds."))
 			editLiveTree(t, service, checks, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -494,6 +507,7 @@ func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
 				t.Fatalf("the version write: block_refs of checks.md = %q, want %q", stored, want)
 			}
 
+			awaitRoomStored(t, service, checks)
 			if _, err := database.Pool.Exec(context.Background(), `update document_block_versions set version = null where artifact_id = $1`, checks); err != nil {
 				t.Fatalf("mark checks.md owed: %v", err)
 			}
@@ -518,4 +532,15 @@ func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// awaitRoomStored waits until the room of artifactID counts no update the store has not taken. A
+// live edit's append lands in a transaction of its own after the edit, and until it lands the
+// reconciliation's pass reads the document live ahead and leaves it owed (roomHoldsUnstoredUpdate),
+// so a tick run before then indexes nothing.
+func awaitRoomStored(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	waitFor(t, 10*time.Second, "the room of "+artifactID+" to count no update the store has not taken", func() bool {
+		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
+	})
 }

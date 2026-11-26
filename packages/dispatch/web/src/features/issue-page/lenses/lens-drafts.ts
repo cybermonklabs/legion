@@ -5,7 +5,7 @@ import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
 import { storedReading } from "../stored-reading";
-import { blank, type Draft } from "../tree-drafts";
+import { blank, type Draft, titleReading } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { type StoreKind, storeAddressOf, storeKindOf } from "./store-link";
@@ -33,6 +33,10 @@ export interface LensChip {
   readonly address: string;
   /** The target's words, whole; in a fact line, the words the line names it by. */
   readonly words: string;
+  /** The reading `words` are read from, where a run of them keeps a mark the plain-text
+   *  projection reads (`namedBy`): code, or a link. `NodeLink.tsx` draws the chip's words through
+   *  the projection from it, so an address in code reads as written, and from `words` without it. */
+  readonly reading?: DisplayTree;
   /** Set only where `words` are the page's and not the author's: the page's word for a lens,
    *  which names a lens whose kind has no words (`lensChipWords`), and the page's word for the
    *  kind of a node the read so far holds none of (`unheldChip`). */
@@ -58,17 +62,22 @@ export interface LensChip {
 export interface LensPlace {
   readonly kindWords: string;
   /** The whole words of the node it stands under (`wholeWords`), where a step drafted that
-   *  node; `LensChain.tsx` draws them through the plain-text projection. */
+   *  node; `LensChain.tsx` draws them through the plain-text projection, from `onReading` where
+   *  they have one. */
   readonly onWords?: string;
+  /** The reading `onWords` are read from, where a run of them keeps a mark the projection reads
+   *  (`namedBy`). */
+  readonly onReading?: DisplayTree;
   /** Its id in the tree read, where a step drafted it. */
   readonly id?: string;
 }
 
 /** The lens facts of one node. A list with nothing in it draws no line. A fact line - a risk's
  *  early warning and prevention, a standard's reference, where a measurement was taken - is held
- *  once, as `storedFacts` stores it: its words, or, where they name a lens, a risk, a constraint
- *  or a finding the tree read holds, its parts (`FactParts`), which link each name to that node's
- *  row. Either way `factText` gives its words. */
+ *  once, as `storedFacts` stores it: its words, or its parts (`FactParts`) where a run of them
+ *  keeps a mark the plain-text projection reads (`factLine`) or they name a lens, a risk, a
+ *  constraint or a finding the tree read holds, a chip of which links that node's row. Either
+ *  way `factText` gives its words. */
 export interface LensFacts {
   /** A lens: its kind's words, as the `lens_kind` node holds them. */
   readonly kind?: string;
@@ -86,16 +95,38 @@ export interface LensFacts {
   readonly lenses?: ReadonlyMap<string, LensPlace>;
 }
 
-/** A fact line's words in parts: plain text, and a chip for each node it names. */
-export type FactParts = readonly (string | LensChip)[];
+/** Words a lens line draws through the plain-text projection: their text where no run of them
+ *  keeps a mark the projection reads, and else their reading, one paragraph of those runs
+ *  (`plainWords`), so the projection reads an address in code as written, as a row's body does. */
+export type PlainWords = string | DisplayTree;
+
+/** A fact line's words in parts: plain words (`PlainWords`), and a chip for each node it names. */
+export type FactParts = readonly (PlainWords | LensChip)[];
+
+/** Whether `part`, one of a fact line's parts, is a chip of a node the line names rather than
+ *  its plain words. */
+export function isChip(part: PlainWords | LensChip): part is LensChip {
+  return typeof part !== "string" && "address" in part;
+}
+
+/** The text of plain words (`PlainWords`): the words themselves, or their reading's words. */
+export function plainText(words: PlainWords): string {
+  return typeof words === "string" ? words : wordsOf(words);
+}
+
+/** The reading the plain-text projection reads plain words (`PlainWords`) from: their own, and
+ *  for words that have none, their text as one text run (`titleReading`). */
+export function wordsReading(words: PlainWords): DisplayTree {
+  return typeof words === "string" ? titleReading(words) : words;
+}
 
 /** A fact line's words (`LensFacts`), the one rule that joins them: a string is its own words,
- *  and parts are joined with nothing between them, each string as its text and each chip as its
- *  `words`, as `LensLines.tsx`'s `FactWords` draws them. */
+ *  and parts are joined with nothing between them, each part of plain words as their text
+ *  (`plainText`) and each chip as its `words`, as `LensLines.tsx`'s `FactWords` draws them. */
 export function factText(line: string | FactParts): string {
   return typeof line === "string"
     ? line
-    : line.map((part) => (typeof part === "string" ? part : part.words)).join("");
+    : line.map((part) => (isChip(part) ? part.words : plainText(part))).join("");
 }
 
 /** A kind's words with their first letter in capitals, as a lens's tag and a chip that names a
@@ -149,7 +180,7 @@ interface StoredWords {
  * The fact lines whose words one stored attribute holds, each under the kind of node that holds
  * it, by its `LensFacts` member and the rule a node draws it by: a risk's early warning and
  * prevention; a standard's reference, and where a measurement was taken. `lensDrafts` reads each
- * through `storedWords` (`storedFacts`), and `store-words.ts` through its reader that names each
+ * through `factLine` (`storedFacts`), and `store-words.ts` through its reader that names each
  * store address, so an attribute is named here alone, as a row's own words' is (`ROW_WORDS`).
  */
 const STORED_WORDS: readonly StoredWords[] = [
@@ -182,11 +213,11 @@ export function storedRowWords(node: TreeAnswerNode, type: "lens" | "risk"): str
 
 /** The fact lines of `node`, of kind `type`, whose words one stored attribute holds
  *  (`STORED_WORDS`): each one its rule draws, as `read` answers it - its words, or its parts where
- *  it names a node - where it has words to draw (`filled`). */
+ *  they keep a mark or name a node - where it has words to draw (`filled`). */
 export function storedFacts(
   node: TreeAnswerNode,
   type: StoreKind,
-  read: (markdown: string) => string | FactParts = storedWords
+  read: (markdown: string) => string | FactParts = factLine
 ): Partial<Pick<LensFacts, StoredFact>> {
   const facts: { [fact in StoredFact]?: string | FactParts } = {};
   for (const stored of STORED_WORDS) {
@@ -208,9 +239,12 @@ export function storedFacts(
  * (`addressOf`), and its author and time as the other steps give a turn's. Its words: a lens's
  * verdict, or none, which its row draws as `LENS_WORDS.no_verdict`; a finding's text and its
  * reading, as the other steps read a node's; a risk's heading; a constraint's words
- * (`constraintWords`); and its fact lines (`storedFacts`). Each stored string is read through
- * `storedWords`, but a kind's words, which are drawn as the `lens_kind` node holds them. Its lens
- * facts carry no chip yet: `lensChips` adds them.
+ * (`constraintRuns`); and its fact lines (`storedFacts`). A verdict, a heading and a
+ * constraint's words are drawn from a reading of their one line that keeps code alone
+ * (`codeOnlyRuns`, `setRowLine`), so the row draws them as plain words, whether or not they cite
+ * a node, and parses none of them again in the page. A fact line is read through `factLine`,
+ * and a kind's words are drawn as the `lens_kind` node holds them. Its lens facts carry no chip
+ * yet: `lensChips` adds them.
  */
 export function lensDrafts(
   node: TreeAnswerNode,
@@ -234,7 +268,7 @@ export function lensDrafts(
   if (address !== undefined) draft.reference = address;
   switch (type) {
     case "lens": {
-      draft.text = storedWords(storedRowWords(node, type));
+      setRowLine(draft, codeOnlyRuns(storedRowWords(node, type)));
       const kind = kindOf(node, context);
       draft.lens = kind === "" ? { ...NO_CHIPS } : { ...NO_CHIPS, kind };
       break;
@@ -245,15 +279,27 @@ export function lensDrafts(
       draft.lens = { ...NO_CHIPS };
       break;
     case "risk":
-      draft.text = storedWords(storedRowWords(node, type));
+      setRowLine(draft, codeOnlyRuns(storedRowWords(node, type)));
       draft.lens = { ...NO_CHIPS, ...storedFacts(node, type) };
       break;
     case "constraint":
-      draft.text = constraintWords(node);
+      setRowLine(draft, constraintRuns(node, codeOnlyRuns));
       draft.lens = { ...NO_CHIPS, ...storedFacts(node, type) };
       break;
   }
   return draft;
+}
+
+/** `draft`'s words and their reading from `runs`, the one line of a lens's verdict, a risk's
+ *  heading or a constraint's words: one paragraph of those runs (`lineOf`), and its words as the
+ *  draft's text. Where `runs` hold none the draft keeps no reading and its text stays `""`, which
+ *  the row of a lens with no verdict draws as `LENS_WORDS.no_verdict`. `store-words.ts` sets the
+ *  line again for a node whose words cite a `dispatch://` address, with each store address it
+ *  holds named. */
+export function setRowLine(draft: Draft, runs: DisplayTree[]): void {
+  if (runs.length === 0) return;
+  draft.tree = lineOf(runs);
+  draft.text = wordsOf(draft.tree);
 }
 
 /**
@@ -274,7 +320,7 @@ export function lensDrafts(
  *   (`lensChip`); and `lenses`, every lens of the answer by its address, one map shared by every
  *   lens.
  * - A risk: a chip for each check its `prevented_by` tuples name, named by that check's whole
- *   words (`wholeWords`).
+ *   words and, where they keep a mark, their reading (`wholeRuns`, `namedBy`).
  * - Any draft with a `constrained_by` tuple, a statement above all: a chip for each constraint it
  *   names, by the constraint's whole words (`constraintChip`). One of the issue's links its row,
  *   in Graph where only Graph draws it; a catalogue constraint is no row, so its chip is no link.
@@ -306,7 +352,7 @@ export function lensChips(
         chipTo(
           check,
           context.referenceOf(check) ?? check.id,
-          { words: wholeWords(check, context) },
+          namedBy(wholeRuns(check, context)),
           context
         )
       ),
@@ -398,62 +444,110 @@ export function lensStoreAddress(value: string): string | undefined {
  *  a place reads such an address by where it knows no name for the node: `lens`, `risk`,
  *  `constraint`, and `finding` for a block of a lens. Undefined for an interaction's and a lens
  *  kind's address. */
-export function storeKindWord(address: string): string | undefined {
+function storeKindWord(address: string): string | undefined {
   const kind = storeKindOf(address);
   return kind === undefined ? undefined : NODE_TYPE_NAMES[kind];
 }
 
+/** One store address of a lens, a risk, a constraint or a finding in a text
+ *  (`storeAddressSpans`). */
+export interface StoreAddressSpan {
+  /** Where the address starts in the text. */
+  readonly start: number;
+  /** Where the address ends in the text: what `trimReference` cut off its span stands after it. */
+  readonly end: number;
+  /** The address, as `storeAddressReference` writes it. */
+  readonly address: string;
+  /** The page's word for the kind of node it names (`storeKindWord`). */
+  readonly word: string;
+}
+
+/** Each store address of a lens, a risk, a constraint or a finding in `text`, in order, found as
+ *  the page finds a reference in text (`referenceSpans`), so what `trimReference` cuts off an
+ *  address's end stays where it stood. Every other address is none of them. Both the page's word
+ *  for a kind (`storeKindText`) and a row's names (`store-words.ts`'s `namedRuns`) are written
+ *  over these spans. */
+export function storeAddressSpans(text: string): StoreAddressSpan[] {
+  const spans: StoreAddressSpan[] = [];
+  for (const { start, value } of referenceSpans(text, "dispatch://")) {
+    const address = storeAddressReference(value);
+    const word = address === undefined ? undefined : storeKindWord(address);
+    if (address === undefined || word === undefined) continue;
+    spans.push({ address, end: start + value.length, start, word });
+  }
+  return spans;
+}
+
 /** `words` with each store address of a lens, a risk, a constraint or a finding in them written
- *  as the page's word for its kind (`storeKindWord`), so no uuid is drawn: the words of one text
- *  run (`storeKindWords`), and a lens kind's words and a finding's line, which name a node in a
- *  row's words (`store-words.ts`) and hold no other node's. An address is found as the page finds
- *  a reference in text (`referenceSpans`), and what `trimReference` cuts off its end stays where
- *  it stood. Every other address stays as its author wrote it. */
+ *  as the page's word for its kind (`storeAddressSpans`), so no uuid is drawn: the words of one
+ *  text run (`storeKindWords`), and a lens kind's words and a finding's line, which name a node
+ *  in a row's words (`store-words.ts`) and hold no other node's. Every other address stays as its
+ *  author wrote it. */
 export function storeKindText(words: string): string {
   let written = "";
   let cursor = 0;
-  for (const { start, value } of referenceSpans(words, "dispatch://")) {
-    const address = storeAddressReference(value);
-    const word = address === undefined ? undefined : storeKindWord(address);
-    if (word === undefined) continue;
+  for (const { end, start, word } of storeAddressSpans(words)) {
     written += `${words.slice(cursor, start)}${word}`;
-    cursor = start + value.length;
+    cursor = end;
   }
   return written + words.slice(cursor);
 }
 
 /**
- * `node`, a reading or a node inside one, with each store address of a lens, a risk, a
- * constraint or a finding in its text runs written as the page's word for its kind
- * (`storeKindText`), run by run, before its words are read: the words of a chip and of a chain
- * entry (`wholeWords`), which are drawn as plain words that link nothing. A run in code - marked
- * as inline code, or inside a code block, which `inCode` says `node` stands in - keeps its
- * address as its author wrote it, as a rendered body draws it.
+ * `node`, a reading or a node inside one, with each of its text runs written as `write` answers
+ * for it: the runs it is written as, or undefined where it stays as it is. `write` is given the
+ * run, its words, and whether it stands inside a code block, which `inCode` says `node` stands
+ * in; a run marked as inline code is the writer's to tell. Both passes that write a store
+ * address in a reading walk it so: `storeKindWords`, and `store-words.ts`'s `storeAddressesIn`.
  *
- * `node` itself is never changed, since a reading is shared (`storedReading`): a run that names
- * an address is copied, and so is each node above it; a node that holds none is answered as it
- * is.
+ * `node` itself is never changed, since a reading is shared (`storedReading`). A run written anew
+ * is copied, and so is each node above it; a node that holds none is answered as it is, so a
+ * reading with none is answered whole, the very object: a row's reading keeps its identity across
+ * reads, which `RowText.tsx`'s `useSameValue` and the paint rely on.
  */
-function storeKindWords(node: DisplayTree, inCode = false): DisplayTree {
-  if (typeof node.text === "string") {
-    const marks = Array.isArray(node.marks) ? (node.marks as DisplayTree[]) : [];
-    if (inCode || marks.some((mark) => mark.type === "inlineCode")) return node;
-    const text = storeKindText(node.text);
-    return text === node.text ? node : { ...node, text };
-  }
+export function writeRuns(
+  node: DisplayTree,
+  write: (run: DisplayTree, text: string, inCode: boolean) => readonly DisplayTree[] | undefined,
+  inCode = false
+): DisplayTree {
   const content = node.content;
   if (!Array.isArray(content)) return node;
   const code = inCode || node.type === "code_block";
   const children = content as DisplayTree[];
   // The children up to the first one written anew are the node's own; from there on they are
-  // copied, each as the walk answered it.
+  // copied, each as the walk answered it, a run as the runs it was written as.
   let changed: DisplayTree[] | undefined;
   for (const [at, child] of children.entries()) {
-    const written = storeKindWords(child, code);
-    if (changed === undefined && written !== child) changed = children.slice(0, at);
-    changed?.push(written);
+    let written: readonly DisplayTree[] | undefined;
+    if (typeof child.text === "string") {
+      written = write(child, child.text, code);
+    } else {
+      const walked = writeRuns(child, write, code);
+      written = walked === child ? undefined : [walked];
+    }
+    if (written === undefined) {
+      changed?.push(child);
+      continue;
+    }
+    changed ??= children.slice(0, at);
+    changed.push(...written);
   }
   return changed === undefined ? node : { ...node, content: changed };
+}
+
+/**
+ * `node`, a reading, with each store address of a lens, a risk, a constraint or a finding in its
+ * text runs written as the page's word for its kind (`storeKindText`), run by run (`writeRuns`),
+ * before its words are read: the words of a chip and of a chain entry (`wholeWords`), which are
+ * drawn as plain words that link nothing. A run in code - marked as inline code, or inside a
+ * code block - keeps its address as its author wrote it, as a rendered body draws it.
+ */
+function storeKindWords(node: DisplayTree): DisplayTree {
+  return writeRuns(node, (run, text, inCode) => {
+    if (inCode || inCodeSpan(marksOf(run))) return undefined;
+    const written = storeKindText(text);
+    return written === text ? undefined : [{ ...run, text: written }];
+  });
 }
 
 /**
@@ -500,42 +594,50 @@ export function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string 
   return "";
 }
 
-/** A constraint's words: the text of its runs (`constraintRuns`), each stored string read by
- *  `read`: to its plain words, unless the caller reads it otherwise (`wholeWords`). */
-export function constraintWords(
-  constraint: TreeAnswerNode,
-  read: (markdown: string) => DisplayTree[] = plainRuns
-): string {
-  return wordsOf({ content: constraintRuns(constraint, read), type: "paragraph" });
+/** The whole words `node` has, which a chip that names it and the chain entry of the row a lens
+ *  stands under draw, with nothing cut: the text of its runs (`wholeRuns`), `""` where the node
+ *  has none. */
+export function wholeWords(node: TreeAnswerNode, context: TreeDraftContext): string {
+  return wordsOf({ content: wholeRuns(node, context), type: "paragraph" });
 }
 
 /**
- * The whole words `node` has, which a chip that names it and the chain entry of the row a lens
- * stands under draw, with nothing cut: a lens's verdict, a risk's heading and a constraint's words
- * as their rows draw them, and any other node's reading where the read sent one (`text_tree`),
- * else its stored text. Each is read to plain words with one space between words, and each store
- * address in them as its kind's word, run by run before the words are read (`storeKindWords`),
- * since a chip and the chain draw them as plain words that link nothing; an address in code, and
- * every other address, stays as written. `""` where the node has none.
+ * The runs of the one paragraph the whole words `node` has read as (`wholeWords`): a lens's
+ * verdict, a risk's heading and a constraint's words as their rows draw them, and any other
+ * node's reading where the read sent one (`text_tree`), else its stored text. Each is read onto
+ * one line with one space between words, each run keeping the marks the plain-text projection
+ * reads (`markedRuns`), and each store address in them as its kind's word, run by run before the
+ * words are read (`storeKindWords`), since a chip and the chain draw them as plain words that
+ * link nothing; an address in code, and every other address, stays as written.
  */
-export function wholeWords(node: TreeAnswerNode, context: TreeDraftContext): string {
+function wholeRuns(node: TreeAnswerNode, context: TreeDraftContext): DisplayTree[] {
   const type = lensTypeOf(node, context);
-  if (type === "constraint") return constraintWords(node, (raw) => plainRuns(raw, storeKindWords));
+  if (type === "constraint") {
+    return constraintRuns(node, (raw) => markedRuns(storeKindWords(storedReading(raw))));
+  }
   const reading =
     type === "lens" || type === "risk"
       ? storedReading(storedRowWords(node, type))
       : (node.text_tree ?? storedReading(node.text));
-  return oneLine(storeKindWords(reading));
+  return markedRuns(storeKindWords(reading));
+}
+
+/** The words of `runs`, one paragraph's of `markedRuns`, and their reading where a run of them
+ *  keeps a mark (`plainWords`): what a chip names its node by (`LensChip`), and a chain entry the
+ *  node its lens stands under (`LensPlace`). */
+export function namedBy(runs: DisplayTree[]): Pick<LensChip, "reading" | "words"> {
+  const words = plainWords(runs);
+  return typeof words === "string" ? { words } : { reading: words, words: wordsOf(words) };
 }
 
 /** A constraint's words as the runs of one paragraph: a standard's `standard`, else a
  *  measurement's `<measurement>: <value>`, the `": "` a run of its own, and none where both are
- *  empty. `read` gives each stored string's runs, none where it holds no words: its plain words
- *  (`plainRuns`), and in a row's words its reading with each store address named
- *  (`store-words.ts`). */
+ *  empty. `read` gives each stored string's runs, none where it holds no words: in its row's
+ *  words its one line keeping code alone (`codeOnlyRuns`), with each store address named where it
+ *  names one (`store-words.ts`), and in a chip's its runs with their marks (`wholeRuns`). */
 export function constraintRuns(
   constraint: TreeAnswerNode,
-  read: (markdown: string) => DisplayTree[] = plainRuns
+  read: (markdown: string) => DisplayTree[]
 ): DisplayTree[] {
   const standard = constraint.attributes?.standard ?? "";
   if (standard !== "") return read(standard);
@@ -546,29 +648,135 @@ export function constraintRuns(
     : [...measurement, { text: ": ", type: "text" }, ...value];
 }
 
-/** The words of the stored markdown text `markdown` on one line: its reading (`storedReading`)
- *  read to plain words (`oneLine`). Each address stays as its author wrote it: `store-words.ts`
- *  names a store address in a row's words, and the row's renderer (`RowText.tsx`'s `DrawnText`)
- *  and a fact line's projection (`LensLines.tsx`) name every other reference. */
-export function storedWords(markdown: string): string {
-  return oneLine(storedReading(markdown));
+/** A fact line read from the stored string `markdown` (`LensFacts`): its words where no run of
+ *  them keeps a mark the plain-text projection reads, and else their reading as its one part
+ *  (`markedRuns`, `plainWords`), so the line reads an address in code as written. Every other
+ *  address stays as its author wrote it, for the projection to name (`LensLines.tsx`'s
+ *  `FactString`). */
+function factLine(markdown: string): string | FactParts {
+  const words = plainWords(markedRuns(storedReading(markdown)));
+  return typeof words === "string" ? words : [words];
 }
 
-/** The words of `reading` (`wordsOf`) on one line: each run of white space one space, and the
- *  ends trimmed. */
-function oneLine(reading: DisplayTree): string {
-  return wordsOf(reading).replace(/\s+/gu, " ").trim();
+/** The marks of a run that stands in no mark. */
+const NO_MARKS: readonly DisplayTree[] = [];
+
+/** The marks the run `run` carries, none where it carries none. */
+export function marksOf(run: DisplayTree): readonly DisplayTree[] {
+  return Array.isArray(run.marks) ? (run.marks as DisplayTree[]) : NO_MARKS;
 }
 
-/** The stored string `markdown`'s words as one text run, none where it holds no words: its plain
- *  words (`storedWords`), of its reading as `written` writes it where the caller writes it anew
- *  (`wholeWords`). */
-export function plainRuns(
-  markdown: string,
-  written: (reading: DisplayTree) => DisplayTree = (reading) => reading
+/** Whether a run of the marks `marks` stands in a code span: they hold inline code. */
+export function inCodeSpan(marks: readonly DisplayTree[]): boolean {
+  return marks.some((mark) => mark.type === "inlineCode");
+}
+
+/** The mark a run in code keeps on one line, where no code block or code span holds it: code,
+ *  for a code block's text (`markedRuns`) and for every run in code where code alone is kept
+ *  (`codeOnly`). */
+const IN_CODE: readonly DisplayTree[] = [{ type: "inlineCode" }];
+
+/** Whether the plain-text projection reads the mark `mark`: code, in whose words it names
+ *  nothing, and a link, whose words it reads as a rendered link's. Formatting reads as the words
+ *  it covers. */
+function readMark(mark: DisplayTree): boolean {
+  return mark.type === "inlineCode" || mark.type === "link";
+}
+
+/**
+ * The runs of the one paragraph `reading` reads as on one line: its text runs in order and spaced
+ * as `wordsOf` joins them, each run of white space one space, across the runs' edges too, and
+ * none at either end. Each run carries the marks `keep` gives it, `inCode` saying it stands
+ * inside a code block, and the text between two runs that carry marks is one run that carries
+ * none. A row's words are read onto one line so, keeping code alone (`codeOnlyRuns`), and in
+ * `store-words.ts` each name's run with its link too; a fact line's and a chip's words keep the
+ * marks the plain-text projection reads (`markedRuns`).
+ */
+export function oneLineRuns(
+  reading: DisplayTree,
+  keep: (run: DisplayTree, inCode: boolean) => readonly DisplayTree[]
 ): DisplayTree[] {
-  const words = oneLine(written(storedReading(markdown)));
-  return words === "" ? [] : [{ text: words, type: "text" }];
+  // The words since the last run that carries marks, each such run, and whether the next run
+  // stands apart from the words before it, as `wordsOf` spaces them.
+  const parts: DisplayTree[] = [];
+  let words = "";
+  let apart = false;
+  const read = (node: DisplayTree, inCode: boolean): void => {
+    if (typeof node.text === "string") {
+      if (apart && (words !== "" || parts.length > 0)) words += " ";
+      apart = false;
+      const marks = keep(node, inCode);
+      if (marks.length === 0) {
+        words += node.text;
+        return;
+      }
+      if (words !== "") parts.push({ text: words, type: "text" });
+      words = "";
+      parts.push({ marks, text: node.text, type: "text" });
+      return;
+    }
+    apart = true;
+    if (!Array.isArray(node.content)) return;
+    const code = inCode || node.type === "code_block";
+    for (const child of node.content as DisplayTree[]) read(child, code);
+    apart = true;
+  };
+  read(reading, false);
+  if (words !== "") parts.push({ text: words, type: "text" });
+  // One space wherever white space stands, across the runs' edges too, and none at either end.
+  const runs: DisplayTree[] = [];
+  let spaced = true;
+  for (const part of parts) {
+    let text = (part.text as string).replace(/\s+/gu, " ");
+    if (spaced && text.startsWith(" ")) text = text.slice(1);
+    if (text === "") continue;
+    spaced = text.endsWith(" ");
+    runs.push({ ...part, text });
+  }
+  const last = runs.pop();
+  const end = typeof last?.text === "string" ? last.text.trimEnd() : "";
+  if (last !== undefined && end !== "") runs.push({ ...last, text: end });
+  return runs;
+}
+
+/** `reading`'s runs on one line (`oneLineRuns`), each keeping the marks the plain-text projection
+ *  reads (`readMark`), and a code block's text marked as code, so the projection reads an address
+ *  in code as written, as a rendered body draws it. */
+export function markedRuns(reading: DisplayTree): DisplayTree[] {
+  return oneLineRuns(reading, (run, inCode) => {
+    if (inCode) return IN_CODE;
+    const marks = marksOf(run);
+    return marks.every(readMark) ? marks : marks.filter(readMark);
+  });
+}
+
+/** The marks a run keeps on one line where code alone is kept (`codeOnlyRuns`): code, for a run
+ *  marked as inline code and for a code block's text (`inCode`), and none for any other run. */
+export function codeOnly(run: DisplayTree, inCode: boolean): readonly DisplayTree[] {
+  return inCode || inCodeSpan(marksOf(run)) ? IN_CODE : NO_MARKS;
+}
+
+/** The stored string `markdown`'s runs on one line (`oneLineRuns` of its `storedReading`),
+ *  keeping code alone (`codeOnly`): what a lens's verdict, a risk's heading and a constraint's
+ *  words are drawn from (`lensDrafts`), so their row draws code as code and every other mark the
+ *  author typed as the words it covers, with nothing parsed again in the page. An author's link
+ *  reads as its words, and a bare `dispatch://` address stays a plain run, which the row's
+ *  renderer names (`RowText.tsx`'s `DrawnText`). */
+export function codeOnlyRuns(markdown: string): DisplayTree[] {
+  return oneLineRuns(storedReading(markdown), codeOnly);
+}
+
+/** `runs`, one paragraph's of `markedRuns`, as plain words (`PlainWords`): their text where no
+ *  run of them carries a mark, and else their reading (`lineOf`). */
+export function plainWords(runs: DisplayTree[]): PlainWords {
+  return runs.some((run) => Array.isArray(run.marks))
+    ? lineOf(runs)
+    : wordsOf({ content: runs, type: "paragraph" });
+}
+
+/** A reading of one paragraph that holds `runs`. */
+export function lineOf(runs: DisplayTree[]): DisplayTree {
+  return { content: [{ content: runs, type: "paragraph" }], type: "doc" };
 }
 
 /** A kind of tuple whose far end a chip names (`endChips`). */
@@ -634,12 +842,12 @@ function lensChip(lens: TreeAnswerNode, context: TreeDraftContext): LensChip | u
     : chipTo(lens, address, lensChipWords(kindOf(lens, context)), context);
 }
 
-/** The chip naming `target` at `address` by `named`'s words, linked by its read id where a step
- *  drafted it. */
+/** The chip naming `target` at `address` by `named`'s words, and their reading where they have
+ *  one, linked by its read id where a step drafted it. */
 function chipTo(
   target: TreeAnswerNode,
   address: string,
-  named: Pick<LensChip, "chrome" | "words">,
+  named: Pick<LensChip, "chrome" | "reading" | "words">,
   context: TreeDraftContext
 ): LensChip {
   return {
@@ -651,16 +859,17 @@ function chipTo(
   };
 }
 
-/** The chip naming the constraint `constraint` at `address` by its whole words (`wholeWords`):
- *  linked by its read id where a step drafted it (`chipTo`), and else, where it is one of the
- *  issue's (`underIssue`), linked by it to Graph's row, which only Graph draws then
- *  (`graphOnly`). A catalogue constraint is no row, so its chip is no link. */
+/** The chip naming the constraint `constraint` at `address` by its whole words, and their reading
+ *  where they keep a mark (`wholeRuns`, `namedBy`): linked by its read id where a step drafted it
+ *  (`chipTo`), and else, where it is one of the issue's (`underIssue`), linked by it to Graph's
+ *  row, which only Graph draws then (`graphOnly`). A catalogue constraint is no row, so its chip
+ *  is no link. */
 function constraintChip(
   constraint: TreeAnswerNode,
   address: string,
   context: TreeDraftContext
 ): LensChip {
-  const chip = chipTo(constraint, address, { words: wholeWords(constraint, context) }, context);
+  const chip = chipTo(constraint, address, namedBy(wholeRuns(constraint, context)), context);
   return chip.id !== undefined || !underIssue(constraint, context)
     ? chip
     : { ...chip, graphOnly: true, id: constraint.id };
@@ -676,9 +885,10 @@ function uniqueChips(chips: readonly LensChip[]): LensChip[] {
 }
 
 /** Every lens of the answer by its address, for the chain a lens draws (`LensChain.tsx`): its
- *  kind's words as held, its id where a step drafted it, and the whole words of its parent where
- *  a step drafted the parent. One map per build, shared by every lens: it reads which nodes were
- *  drafted, which the page's other reads change while the answer stands. */
+ *  kind's words as held, its id where a step drafted it, and the whole words of its parent, with
+ *  their reading where they keep a mark (`namedBy`), where a step drafted the parent. One map per
+ *  build, shared by every lens: it reads which nodes were drafted, which the page's other reads
+ *  change while the answer stands. */
 const placeIndexes = new WeakMap<TreeDraftContext, ReadonlyMap<string, LensPlace>>();
 
 function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<string, LensPlace> {
@@ -689,12 +899,15 @@ function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<
     const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
     if (address === undefined) continue;
     const parent = lens.parent === null ? undefined : context.nodeOf(lens.parent.id);
-    const onWords =
-      parent !== undefined && context.drafted(parent.id) ? wholeWords(parent, context) : "";
+    const on: Pick<LensChip, "reading" | "words"> =
+      parent !== undefined && context.drafted(parent.id)
+        ? namedBy(wholeRuns(parent, context))
+        : { words: "" };
     places.set(address, {
       ...(context.drafted(lens.id) ? { id: lens.id } : {}),
       kindWords: kindOf(lens, context),
-      ...(onWords === "" ? {} : { onWords }),
+      ...(on.words === "" ? {} : { onWords: on.words }),
+      ...(on.reading === undefined ? {} : { onReading: on.reading }),
     });
   }
   placeIndexes.set(context, places);

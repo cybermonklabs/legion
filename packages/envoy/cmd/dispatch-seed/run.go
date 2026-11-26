@@ -38,6 +38,11 @@ type seedRun struct {
 	blockCounter int
 	tableRow     string
 
+	// noHeadRows is whether the database holds none of the head projection this build writes
+	// (readNoHeadRows), so no writer of the run writes a head row. do reads it once, before its
+	// first step; its zero value is this release's schema, whose head rows every writer writes.
+	noHeadRows bool
+
 	// subjects are the named rows the measurements take: filled as the run writes them.
 	subject subjects
 }
@@ -81,6 +86,11 @@ func (r *seedRun) do(ctx context.Context) error {
 	fmt.Fprintf(r.out, "planned %d issues, %d documents, %d asks, %d comments and %d messages in %s\n",
 		len(r.plan.issues), len(r.plan.documents), len(r.plan.asks), len(r.plan.comments),
 		len(r.plan.messages), time.Since(planned).Round(time.Millisecond))
+	noHeadRows, err := r.readNoHeadRows(ctx)
+	if err != nil {
+		return err
+	}
+	r.noHeadRows = noHeadRows
 
 	steps := []struct {
 		name string

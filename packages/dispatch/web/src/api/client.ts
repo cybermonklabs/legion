@@ -19,6 +19,8 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { decisionsFromTree } from "./decisions-tree";
+
 import {
   type Answer,
   type Body,
@@ -1321,9 +1323,11 @@ export class DispatchApiClient {
     return this.json<DispatchEvent[]>(routeUrl("/api/v1/issues/{key}/events", { key }, query));
   }
 
-  /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree, or of one of its views
-   *  (`view`), from the node `cursor` names on (`IssueTreeRead.cursor`). A caller passes the
-   *  `signal` of the read it is still interested in, so a read given up ends its page in flight. */
+  /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree as the reader may see it, or of
+   *  one of its views (`view`), from the node `cursor` names on (`IssueTreeRead.cursor`). Every
+   *  view answers `view_of`: the issue whose spec this issue is a view on, or null where it is
+   *  none. A caller passes the `signal` of the read it is still interested in, so a read given up
+   *  ends its page in flight. */
   getIssueTree(
     key: string,
     query: Query<"/api/v1/issues/{key}/tree", "get"> = {},
@@ -1730,10 +1734,19 @@ export class DispatchApiClient {
     return this.read("/api/v1/schema/blocks", {});
   }
 
-  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
-   *  its spec holds, and each decision with the spec nodes it shaped. */
-  getIssueDecisions(key: string) {
-    return this.read("/api/v1/issues/{key}/decisions", { key });
+  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. */
+  async getIssueDecisions(key: string) {
+    const first = await this.getIssueTree(key, { view: "decisions" });
+    const nodes = [...(first.nodes ?? [])];
+    const tuples = [...(first.tuples ?? [])];
+    let cursor = first.cursor;
+    while (typeof cursor === "string") {
+      const page = await this.getIssueTree(key, { view: "decisions", cursor });
+      for (const node of page.nodes ?? []) nodes.push(node);
+      for (const tuple of page.tuples ?? []) tuples.push(tuple);
+      cursor = page.cursor;
+    }
+    return decisionsFromTree(key, nodes, tuples);
   }
 
   /** Record that the caller agrees with the decision at that block, as the text they

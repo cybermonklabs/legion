@@ -398,7 +398,7 @@ func TestCrossProjectRelatedSkipsAsksThatDoNotQualify(t *testing.T) {
 	// 0.92 of the question through the answer's own words; its state is what leaves it out. No
 	// route writes this state, so it is written here as the decisions step's catch-up states a
 	// retraction a release before wrote (asks.Recorded): on the ask's node, which the statement
-	// reads the state off (askNodeStateOf), and on its row.
+	// reads the state off (asks.NodeStateOf), and on its row.
 	retraction := model.AskResolution{
 		Kind: "resolved", Reason: "the document moved on", Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC(),
 	}

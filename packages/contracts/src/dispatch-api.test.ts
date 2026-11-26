@@ -8,6 +8,7 @@ import {
   type Anchor,
   type AnchorInput,
   type AnswerAskInput,
+  ArtifactApprovalSchema,
   type ArtifactBlock,
   ArtifactReviewEventPayloadSchema,
   type ArtifactText,
@@ -73,6 +74,7 @@ import {
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
+  WrittenArtifactReviewEventPayloadSchema,
 } from "./dispatch-api";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
@@ -90,6 +92,45 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+test("artifact approval and review event schemas hold carried_from_version as integer, null or absent", () => {
+  // This build writes carried_from_version on every answer and payload (the source version for a
+  // carry, null for a person's own act); a Dispatch from the release before leaves it out during
+  // a roll.
+  for (const carried of [4, null, undefined] as const) {
+    const approval = {
+      latest_version: 5,
+      state: "approved" as const,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(ArtifactApprovalSchema.parse(approval)).toEqual(approval);
+
+    const written = {
+      actor: { id: "alice", kind: "user" as const },
+      artifact_id: "doc-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: null,
+      version: 5,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(WrittenArtifactReviewEventPayloadSchema.parse(written)).toEqual(written);
+
+    const inbound = {
+      artifact_id: "doc-1",
+      version: 5,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(ArtifactReviewEventPayloadSchema.parse(inbound)).toEqual(inbound);
+  }
+  expect(
+    ArtifactApprovalSchema.safeParse({
+      carried_from_version: 4.5,
+      latest_version: 5,
+      state: "approved",
+    }).success
+  ).toBe(false);
 });
 
 test("a project.access_changed payload names the project and the change, and no access list", () => {

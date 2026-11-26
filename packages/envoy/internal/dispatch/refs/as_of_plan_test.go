@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,11 +191,41 @@ func asOfReads(seed asOfSeed) []asOfRead {
 		{"the moved_to resolve at a time", treeMovedToStatement,
 			[]any{[]string{"SEED-1/old#b3", "SEED-1/spec#b9"}, seq, open, graphstore.MovedToHops},
 			[]string{"graph_tuples_as_of_out", "graph_tuples_current"}},
+		{"the moved_to presence probe before BlockLinks and Closure resolve a target", `select ` + ResolvedBlockSQL("$1::text"),
+			[]any{"SEED-1/spec#b9"}, []string{"graph_tuples_as_of_out", "graph_tuples_current"}},
 		{"the nodes of an issue placed under an issue above, at a time", treePlacedAboveStatement,
 			[]any{"SEED-2", []string{"SEED-1"}, seq, open}, []string{"graph_tuples_as_of_in"}},
 		{"the blocks of a document as of a render's time", treeMembersStatement,
 			[]any{"SEED-1/spec", unbounded, at}, []string{"graph_tuples_as_of_in"}},
 	}
+}
+
+// EXPLAIN hides PL/pgSQL statements. Extract the installed hop query, including its
+// predicate and ordering, and bind the function's reached address as a parameter.
+var blockHop = regexp.MustCompile(`(?s)select moved\.to_kind, moved\.to_id into far_kind, far_end\s+from \(.*?\)\s*moved\s+where moved\.asserted and moved\.to_kind in \('block', 'ask'\)\s+order by moved\.at desc, moved\.seq desc\s+limit 1;`)
+
+func blockResolutionReads(t *testing.T, database *store.Store) []asOfRead {
+	t.Helper()
+	var reads []asOfRead
+	for _, reader := range []struct{ function, name string }{
+		{"block_address_walk", "a moved_to hop in the reference, closure and block-link resolvers and the unresolved counter"},
+		{"moved_to_reach", "the terminal ask lookup in the resolvers and the unresolved counter"},
+	} {
+		var body string
+		err := database.Pool.QueryRow(t.Context(), `select prosrc from pg_proc where oid = $1::text::regprocedure`, reader.function+"(text)").Scan(&body)
+		if err != nil {
+			t.Fatalf("read %s: %v", reader.function, err)
+		}
+		query := blockHop.FindString(body)
+		if query == "" {
+			t.Fatalf("cannot find the moved_to block lookup in %s:\n%s", reader.function, body)
+		}
+		query = strings.Replace(query, " into far_kind, far_end", "", 1)
+		query = regexp.MustCompile(`\breached\b`).ReplaceAllLiteralString(query, "$1::text")
+		reads = append(reads, asOfRead{reader.name, strings.TrimSuffix(query, ";"), []any{"SEED-1/old#b3"},
+			[]string{"graph_tuples_as_of_out", "graph_tuples_current"}})
+	}
+	return reads
 }
 
 // asOfUnkeyedRead is the control: the children read with its parent's kind left out, which no
@@ -255,7 +286,7 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	}
 	requireSubtreesReadEveryLevelsChildren(t, database, seed)
 
-	for _, read := range asOfReads(seed) {
+	for _, read := range append(asOfReads(seed), blockResolutionReads(t, database)...) {
 		plan := asOfPlan(t, database, read.statement, read.args)
 		for _, table := range []string{"graph_tuples", "graph_nodes"} {
 			if explaintest.SeqScansRelation(t, plan, table) {

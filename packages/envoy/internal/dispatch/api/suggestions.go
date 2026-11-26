@@ -26,8 +26,8 @@ import (
 const (
 	// relatedCheckAllowance is the most a write waits on its related-item check: the
 	// meaning search's relatedMeaningAllowance and the time the keyword search may still need
-	// after it. At its end only the keyword search can still be running, and the check answers
-	// that it was not made rather than hold the write longer.
+	// after it. The graph neighbourhood shares this allowance. A read still pending at its
+	// end answers as not made rather than holding the write longer.
 	relatedCheckAllowance = 5 * time.Second
 	// relatedMeaningAllowance is the time from the check's start that the meaning search, the
 	// text's embedding and then the meaning query, has to answer. Past it the check answers its
@@ -55,6 +55,8 @@ const (
 	relatedRecordRetryLimit = 4
 	// suggestionRelatedCount is "the three items most like what was just filed" (LEGION-550's spec).
 	suggestionRelatedCount = 3
+	// neighbourLimit is the most graph neighbours a create names: five, beside the text check's three (R24).
+	neighbourLimit = 5
 	// suggestionOtherProjectCount is how many answered questions of the other projects a check
 	// whose write is a question offers (Suggestions.OtherProjects). Two: they stand beside the
 	// project's own items, which keep their three places.
@@ -379,6 +381,14 @@ func (s *server) runRelatedCheck(
 	defer cancel()
 	record := relatedRecord{project: input.project, terms: []string{}}
 	suggestions := &model.Suggestions{Related: []model.WriteSuggestion{}}
+	if input.source.kind == "issue" {
+		neighbourhood := s.startIssueNeighbourhood(bounded, input.source)
+		// Collect even when the text search returns early. This runs before cancel and
+		// waits only on the deadline both reads already share.
+		defer func() {
+			neighbourhood.fill(bounded, allowance, suggestions)
+		}()
+	}
 	notMade := func(reason, text string) (*model.Suggestions, relatedRecord) {
 		suggestions.Outcome, suggestions.Missing = relatedNotMade, text
 		record.reason = reason
@@ -444,7 +454,10 @@ func (s *server) runRelatedCheck(
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
-		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
+		pick.err = s.relatedReadHolds.search.wait(keywordCtx)
+		if pick.err == nil {
+			pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
+		}
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
 		switch {
@@ -617,6 +630,66 @@ func (s *server) runRelatedCheck(
 		suggestions.Outcome = relatedFound
 	}
 	return suggestions, record
+}
+
+type issueNeighbourhoodResult struct {
+	neighbours []model.IssueNeighbour
+	err        error
+}
+
+type issueNeighbourhood <-chan issueNeighbourhoodResult
+
+// startIssueNeighbourhood runs beside the text stages, on its own connection mark.
+// The create already committed; neither statement reads on the write's transaction.
+func (s *server) startIssueNeighbourhood(ctx context.Context, source suggestionSource) issueNeighbourhood {
+	answer := make(chan issueNeighbourhoodResult, 1)
+	readCtx, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		answer <- issueNeighbourhoodResult{err: err}
+		return answer
+	}
+	go func() {
+		var result issueNeighbourhoodResult
+		result.err = s.relatedReadHolds.neighbourhood.wait(readCtx)
+		if result.err == nil {
+			result.neighbours, result.err = refs.IssueNeighbours(readCtx, s.deps.Store.Pool, source.actor, source.issueKey, neighbourLimit)
+		}
+		answer <- result
+	}()
+	return answer
+}
+
+func (answer issueNeighbourhood) fill(ctx context.Context, allowance time.Duration, suggestions *model.Suggestions) {
+	var result issueNeighbourhoodResult
+	select {
+	case result = <-answer:
+	case <-ctx.Done():
+		// Keep an answer already available when the deadline fired.
+		select {
+		case result = <-answer:
+		default:
+			result.err = ctx.Err()
+		}
+	}
+	outcome := &model.NeighbourhoodCheck{Outcome: relatedNone}
+	suggestions.Neighbourhood = outcome
+	if result.err == nil {
+		if len(result.neighbours) > 0 {
+			outcome.Outcome = "made"
+			suggestions.Neighbours = result.neighbours
+		}
+		return
+	}
+	outcome.Outcome = relatedNotMade
+	switch {
+	case errors.Is(context.Cause(ctx), errRelatedAllowanceEnded):
+		outcome.Missing = "the graph read did not answer within " + allowance.String()
+	case ctx.Err() != nil:
+		outcome.Missing = relatedCancelledMissing
+	default:
+		slog.Warn("dispatch: graph neighbourhood check not made", "error", result.err)
+		outcome.Missing = "the graph read failed"
+	}
 }
 
 // relatedMeaningStage is stage 2: the text's embedding, started at once, then, once stage 1 has

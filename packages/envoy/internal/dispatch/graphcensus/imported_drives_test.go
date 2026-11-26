@@ -583,7 +583,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_requester")}, "", http.StatusCreated)
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, approvalRequestCounted, followCounted),
 	}, {
 		// That request renewed by another session while it waits on the person: a retry, which
 		// appends no event.
@@ -633,6 +633,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			map[graphcensus.StoredKind][]string{
 				{graphstore.KindAsk, graphstore.TupleAnchoredTo}: {"ask_opened"},
 				{graphstore.KindAsk, graphstore.TuplePartOf}:     {"ask_opened"},
+				{graphstore.KindAsk, graphstore.TupleAskedOn}:    {"ask_opened"},
 			}),
 	}, {
 		// A person's live edit of the notes, which a build without the block index then wrote as a
@@ -1066,6 +1067,18 @@ var (
 	}
 	askAuthorCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindAsk, graphstore.TupleAuthoredBy}: {"ask_opened"},
+	}
+	// What an approval request states on its node beyond an ask's own (R14): one approves tuple to
+	// each query version node it names and the store revision it was taken at, which the term
+	// ask_opened counts; and, where a version of a document it names moves the request, the
+	// retraction of the approves it leaves and the assertion of the one it moves to, which the term
+	// ask_edit counts.
+	approvalRequestCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphcensus.TupleApproves}:           {"ask_opened"},
+		{graphstore.KindAsk, graphcensus.AttributeRequestReadSeq}: {"ask_opened"},
+	}
+	approvalMoveCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphcensus.TupleApproves}: {"ask_edit"},
 	}
 	followCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindAsk, graphstore.TupleFollowedBy}: {"ask_follower"},

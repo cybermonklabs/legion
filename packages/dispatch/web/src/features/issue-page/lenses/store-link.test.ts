@@ -121,6 +121,12 @@ test("placeStoreLinks writes only a placed store link as a link to nothing", () 
     { text: "Failover", type: "text" },
   ];
   for (const tree of unplaced) expect(placeStoreLinks(tree, PAGE)).toBe(tree);
+  // A reading of several blocks with no store link anywhere in it comes back as the same object.
+  const reading: DisplayTree = {
+    content: [linked("Spec", { href: "dispatch://CORE-1/spec" }), linked("Plain words")],
+    type: "doc",
+  };
+  expect(placeStoreLinks(reading, PAGE)).toBe(reading);
   // The same link on a page that is no issue's is placed nowhere.
   const tree = linked("Failover", { href: risk, title: path });
   expect(placeStoreLinks(tree, { pathname: "/inbox", search: "" })).toBe(tree);

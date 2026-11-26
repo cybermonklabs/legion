@@ -1,6 +1,7 @@
 import { TREE_FILTERS, type TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import type { ReferenceNameReading } from "../refs/reference-names";
+import { parseNodeReference } from "../refs/routes";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
 import {
@@ -22,7 +23,7 @@ import {
   type Preset,
 } from "./page-words";
 import { storedReading } from "./stored-reading";
-import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import { isForeign, nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -125,12 +126,15 @@ export interface PresetView {
   /** How many distinct nodes of the view's main kind it draws: a check drawn under two
    *  requirements is one node, so this is what the control's own count says. */
   readonly matches: number;
-  /** How the view names each other parent of a row that the page's names read gave no words,
-   *  by the parent's reference: by the parent's own words, read off the tree that holds it
-   *  (`nodeReading`). The row's chip carries the reading; the page publishes it for the names
-   *  (`slots/view-parents.ts`), so the chip draws as every other does. Empty where the view is
-   *  read off the outline's tree. */
-  readonly parents: ReadonlyMap<string, ReferenceNameReading>;
+  /** The reading the view names each block by that a chip or a parent line of one of its rows
+   *  names - a step's need, a statement a row stands under or also serves - by the block's
+   *  reference: the reading the row's chip carries, else that of the block's own words, read off
+   *  the tree that holds it (`nodeReading`). The view's own read is often the one read that holds
+   *  such a block, as it holds the plan's tasks, so the page's names read was never asked for it;
+   *  the page publishes these for the names (`slots/view-readings.ts`), so each chip draws as
+   *  every other does. A block the page's read names too is named again by the same words.
+   *  Empty where the view is read off the outline's tree. */
+  readonly readings: ReadonlyMap<string, ReferenceNameReading>;
   /** The tree as the view leaves it. Under a filter its children are the filter's top rows. */
   readonly root: TreeNode;
   /** Whether the issue itself is the outline's first row: with no filter on, and never under a
@@ -155,8 +159,8 @@ export interface PresetLine {
 /** No line on any row: a view read off the tree. */
 const NO_LINES: ReadonlyMap<string, readonly PresetLine[]> = new Map();
 
-/** No other parent named by the view: a view read off the outline's tree. */
-const NO_PARENTS: ReadonlyMap<string, ReferenceNameReading> = new Map();
+/** No block named by the view: a view read off the outline's tree. */
+const NO_READINGS: ReadonlyMap<string, ReferenceNameReading> = new Map();
 
 /** The kind a filter reads `node` as: its type, but for a requirement that is no statement
  *  (`isStatement`) and a check that is no check (`isCheck`), which are blocks of a document that
@@ -344,7 +348,7 @@ function conversationView(
       context,
       lines: NO_LINES,
       matches: matched.size,
-      parents: NO_PARENTS,
+      readings: NO_READINGS,
       root: pruned,
       rootRow: true,
     };
@@ -355,7 +359,7 @@ function conversationView(
     context,
     lines: NO_LINES,
     matches: 0,
-    parents: NO_PARENTS,
+    readings: NO_READINGS,
     root: { ...root, children: [], held: 0 },
     rootRow: true,
   };
@@ -437,7 +441,7 @@ function filterView(
     context,
     lines: NO_LINES,
     matches: matched.size,
-    parents: NO_PARENTS,
+    readings: NO_READINGS,
     root: { ...root, children: top, held: heldBy(top) },
     rootRow: false,
   };
@@ -459,6 +463,15 @@ function filterView(
  * view holds it as a row, and else where `filterView` draws it, at each place the tree has it,
  * under the nearest row of the view above it there or at the top, in the tree's order among the
  * view's rows there.
+ *
+ * Plan draws as rows, beside the issue's own tasks, the plan tasks of every issue under it,
+ * which its read answers as context, each marked with its issue (`viewRow`): after the issue's
+ * own, each issue under it in the tree's order, the order the read first answers a node of it,
+ * and each issue's tasks in the order its document writes them (`document.position`), which is
+ * the written order the plan's walk starts from (`plan-filter/plan-order.ts`). Each of its rows
+ * carries what the read answers of the task beside the node: its size and the issue it is
+ * another issue's task of (`planFactsOf`). No other view takes a node of another issue as a
+ * row.
  */
 function heldFilterView(
   root: TreeNode,
@@ -476,8 +489,8 @@ function heldFilterView(
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
   // Each node of the two trees by its own address, the outline's first: a row drawn from the
-  // view's own tree names each other parent whose chip the names read gave no words - a statement
-  // of the outline read the view's tree holds as context - by that parent's line (`otherParents`).
+  // view's own tree names each block a chip of it names - a step it needs, a statement of the
+  // outline read the view's tree holds as context - by that block's line (`chipsNamed`).
   const byReference = new Map<string, TreeNode>();
   const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
@@ -501,18 +514,44 @@ function heldFilterView(
   index(root, true);
   const own = root.views?.trees?.[filter];
   if (own !== undefined) index(own, false);
-  // The node's other parents (`TreeNode.alsoUnder`), each chip with no words named by its
-  // parent's own words (`nodeReading`), where a tree holds that parent. The page publishes each
-  // such reading for the names (`PresetView.parents`), so the chip is drawn as any other is.
-  const parents = new Map<string, ReferenceNameReading>();
-  const otherParents = (chips: readonly NodeChip[]): readonly NodeChip[] =>
+  // Each chip of a row that names a block of a document - a need (`TreeNode.chips`), another
+  // statement the row serves (`TreeNode.alsoUnder`) - with the reading it is named by: its own,
+  // else, for a chip with no words, the block's own words (`nodeReading`) where a tree holds the
+  // block. The page publishes each such reading for the names (`PresetView.readings`), as it does
+  // the block a row's parent line names (`drawTop`), so the chip is drawn as any other is. The
+  // view draws a node at each of its placements, so whether a reference names a block, and a
+  // node's reading, are each worked out once for the call.
+  const readings = new Map<string, ReferenceNameReading>();
+  const namesBlock = new Map<string, boolean>();
+  const nameBlock = (reference: string, reading: ReferenceNameReading): void => {
+    let block = namesBlock.get(reference);
+    if (block === undefined) {
+      const route = parseNodeReference(reference);
+      block =
+        route !== undefined &&
+        (route.kind === "spec" || route.kind === "artifact") &&
+        route.block !== undefined;
+      namesBlock.set(reference, block);
+    }
+    if (block) readings.set(reference, reading);
+  };
+  const readingOfNode = new Map<TreeNode, ReferenceNameReading>();
+  const nodeReadingOf = (node: TreeNode): ReferenceNameReading => {
+    let reading = readingOfNode.get(node);
+    if (reading === undefined) {
+      reading = nodeReading(node);
+      readingOfNode.set(node, reading);
+    }
+    return reading;
+  };
+  const chipsNamed = (chips: readonly NodeChip[]): readonly NodeChip[] =>
     chips.map((chip) => {
-      const parent =
-        chip.reading === undefined && !chip.gone ? byReference.get(chip.ref) : undefined;
-      if (parent === undefined) return chip;
-      const reading = nodeReading(parent);
-      parents.set(chip.ref, reading);
-      return { ...chip, reading };
+      if (chip.gone) return chip;
+      const target = chip.reading === undefined ? byReference.get(chip.ref) : undefined;
+      const reading = chip.reading ?? (target === undefined ? undefined : nodeReadingOf(target));
+      if (reading === undefined) return chip;
+      nameBlock(chip.ref, reading);
+      return chip.reading === undefined ? { ...chip, reading } : chip;
     });
   // The tree's node each node of the view stands for: the one of its own id (`treeIdOfNode`), so
   // two nodes of one block id, blocks of two documents, are two; else, for a view node that names
@@ -548,8 +587,24 @@ function heldFilterView(
   const contextKinds: readonly string[] = CONTEXT_KINDS[filter];
   const rows = nodes.filter(
     (node) =>
-      treeOf.has(node) && (node.role === "query" ? kinds : contextKinds).includes(node.supertag)
+      treeOf.has(node) &&
+      (viewRow(node, filter, root.id) ? kinds : contextKinds).includes(node.supertag)
   );
+  if (filter === "plan") {
+    const issues = new Map<string, number>();
+    for (const node of nodes) {
+      if (node.issue !== undefined && !issues.has(node.issue)) issues.set(node.issue, issues.size);
+    }
+    const place = (node: TreeAnswerNode): readonly [number, number] =>
+      isForeign(node, root.id)
+        ? [issues.get(node.issue) ?? 0, node.document?.position ?? Number.POSITIVE_INFINITY]
+        : [-1, 0];
+    rows.sort((one, other) => {
+      const [issue, at] = place(one);
+      const [otherIssue, otherAt] = place(other);
+      return issue - otherIssue || at - otherAt;
+    });
+  }
   const rowIds = new Set(rows.map((node) => treeOf.get(node)?.id));
   // Where each row stands: under its parent where that is a row, and under Verification a check
   // under each statement its `serves` tuples name too.
@@ -671,10 +726,11 @@ function heldFilterView(
     const inner = new Set([...above, tree.id]);
     const lifted = liftedAt.get(tree) ?? liftedOf.get(tree.id);
     const parts = amongView(below.get(tree.id) ?? [], lifted, (child) => draw(child, tree, inner));
-    const own = named.has(tree.id) || (node.role === "query" && holds(tree, wanted));
+    const row = viewRow(node, filter, root.id);
+    const own = named.has(tree.id) || (row && holds(tree, wanted));
     const placing =
       !own &&
-      node.role !== "query" &&
+      !row &&
       (wanted === "" || holds(tree, wanted) || parts.some((part) => part.rows.length > 0));
     if (!own && !placing) return { drawn: false, rows: liftPast(tree, parts) };
     if (own && counted.includes(tree.type)) matched.add(tree.id);
@@ -684,13 +740,24 @@ function heldFilterView(
     return {
       drawn: true,
       rows: [
-        { ...tree, alsoUnder: otherParents(tree.alsoUnder), children: kept, held: heldBy(kept) },
+        {
+          ...tree,
+          alsoUnder: chipsNamed(tree.alsoUnder),
+          chips: chipsNamed(tree.chips),
+          children: kept,
+          held: heldBy(kept),
+          ...(filter === "plan" ? planFactsOf(node, root.id) : {}),
+        },
       ],
     };
   };
   const drawTop = (node: TreeAnswerNode): Lifted => {
     const part = draw(node, undefined, new Set());
-    const line = part.drawn ? viewParentLine(node, root, parentOf.get(node)) : undefined;
+    const parent = parentOf.get(node);
+    const line = part.drawn ? viewParentLine(node, root, parent) : undefined;
+    if (line?.reference !== undefined && parent !== undefined) {
+      nameBlock(line.reference, nodeReadingOf(parent));
+    }
     return line === undefined
       ? part
       : { drawn: true, rows: part.rows.map((row) => ({ ...row, parentLine: line })) };
@@ -703,7 +770,7 @@ function heldFilterView(
     context,
     lines: viewLines(answer, treeNodeOf, drawnIds),
     matches: matched.size,
-    parents,
+    readings,
     root: {
       ...issueNode,
       children,
@@ -711,6 +778,31 @@ function heldFilterView(
       ...(nextTreeCursor(answer) === undefined ? {} : { moreToRead: true }),
     },
     rootRow: false,
+  };
+}
+
+/** Whether the view read of `filter` answers `node` as one of the view's rows rather than as
+ *  context: a node its query took, and under Plan a node of an issue under `key`, the issue the
+ *  page is of, which the Plan read answers beside the issue's own as context, each marked with
+ *  its issue. The row kinds (`ROW_KINDS`) still choose which of them are rows. */
+function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean {
+  return node.role === "query" || (filter === "plan" && isForeign(node, key));
+}
+
+/**
+ * What the Plan view's read answers of a task beside its node, which the task's row carries: its
+ * size, the whole number of minutes the read answers as `plan.size` from the task's `size`
+ * attribute, where it holds one; and the issue it belongs to, where that is an issue under `key`,
+ * the issue the page is of. A size that is no whole number of minutes is no size. This is the
+ * one place the page reads `plan.size`; `tree-read/tree-nodes.ts`' `draftServing` reads only
+ * whether the read answered a `plan`.
+ */
+function planFactsOf(node: TreeAnswerNode, key: string): Pick<TreeNode, "issue" | "size"> {
+  const written = node.plan?.size;
+  const size = typeof written === "string" && written !== "" ? Number(written) : Number.NaN;
+  return {
+    ...(isForeign(node, key) ? { issue: node.issue } : {}),
+    ...(Number.isInteger(size) && size >= 0 ? { size } : {}),
   };
 }
 
@@ -770,11 +862,12 @@ function viewLines(
   return lines;
 }
 
-/** How a chip names `node`, a node of a tree whose chip the names read gave no words: by the
- *  reading of its words, its read's own else its stored text's (`storedReading`), with the page's
- *  word for its kind where those words project to none, as a chip names a block
- *  (`tree-drafts.ts`'s `treeContext`), and by that word alone where it holds no words (R22). */
-function nodeReading(node: TreeNode): ReferenceNameReading {
+/** How a chip names `node`, a node of a tree whose chip the names read gave no words, or the
+ *  parent a row's line names (`ParentLine`, which carries the same words): by the reading of its
+ *  words, its read's own else its stored text's (`storedReading`), with the page's word for its
+ *  kind where those words project to none, as a chip names a block (`tree-drafts.ts`'s
+ *  `treeContext`), and by that word alone where it holds no words (R22). */
+export function nodeReading(node: Pick<TreeNode, "text" | "tree" | "type">): ReferenceNameReading {
   const word = NODE_TYPE_NAMES[node.type];
   const tree = node.tree ?? (node.text === "" ? undefined : storedReading(node.text, node));
   return tree === undefined || firstWordedBlock(tree) === undefined
@@ -833,7 +926,7 @@ export function filterSignals(
       node.text_tree === undefined ? node.text : wordsOf(node.text_tree);
     return new Set(
       (held.nodes ?? []).flatMap((node) =>
-        node.role === "query" &&
+        viewRow(node, filter, root.id) &&
         kinds.includes(node.supertag) &&
         (wanted === "" || words(node).toLowerCase().includes(wanted))
           ? [node.id]

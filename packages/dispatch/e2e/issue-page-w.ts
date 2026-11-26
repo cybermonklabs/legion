@@ -16,13 +16,14 @@ import {
   type Result,
   routeUrl,
 } from "../web/src/api/paths";
-import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import type { IssueTreeNode, IssueTreeRead, LiveServerFrame } from "../web/src/api/types";
 import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
+import { type Gate, TREE_PATH, type TreeAnswerWatch } from "./issue-page-t-tree";
+import { isLiveSocket } from "./live-socket-watch";
 
 /**
  * What the rows of `e2e/issue-page-w.e2e.ts` write and read, and what any other row that needs
@@ -39,7 +40,7 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
  *   the server.
  * - **The readers**: the rows `[data-node-row]` of the four types, each line `[data-lens-line]`
  *   under a row's words (its label `[data-page-chrome]`, its chips `[data-node-chip]` with their
- *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
+ *   words `[data-chip-name]`, and its stored words `[data-author-text]`), each row's act
  *   `[data-row-lens]`, the menu it opens (`role="menu"`, each `role="menuitem"` holding a kind's
  *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
  *   `[data-lens-menu-line]`, a lens's chain (`[data-lens-show-chain]`, each entry
@@ -403,7 +404,7 @@ export function lensLines(row: Locator): Promise<LensLine[]> {
   }, SELECTORS);
 }
 
-/** The focused row's Lens act, which opens the menu of lens kinds. */
+/** A row's Lens act, which opens the menu of lens kinds. */
 export function lensAct(row: Locator): Locator {
   return row.locator("[data-row-lens]");
 }
@@ -516,15 +517,12 @@ export async function lensCatalogue(): Promise<LensKind[]> {
 // What the page received of the tree read.
 // ---------------------------------------------------------------------------------------------
 
-/** The tree read's path, whatever issue it reads (`GET /api/v1/issues/{key}/tree`). */
-const TREE_ROUTE = /^\/api\/v1\/issues\/[^/]+\/tree$/;
-
 /** Whether `response` is an answer of the tree read with no view that the page could read. */
 function treeReadAnswer(response: Response): boolean {
   const url = new URL(response.url());
   return (
     response.request().method() === "GET" &&
-    TREE_ROUTE.test(url.pathname) &&
+    TREE_PATH.test(url.pathname) &&
     url.searchParams.get("view") === null &&
     response.ok()
   );
@@ -603,36 +601,24 @@ export interface EventFrame {
   readonly kind: string;
 }
 
-/** An `event` frame of the live socket, as `@legion/contracts`' `LiveEventFrame` names it: only
- *  the fields `watchEventFrames` keeps, each optional, since a frame of another type has none. */
-interface LiveFrame {
-  readonly event?: {
-    readonly created_at?: string;
-    readonly issue_key?: string | null;
-    readonly project?: string;
-    readonly type?: string;
-  };
-  readonly id?: string;
-  readonly type?: string;
-}
-
-/** Keeps each event the page's live socket (`/ws/live`) carries from now on, in the order the
- *  socket sent them: the frames of every socket the page opens after this call, one for each
- *  document it loads. A row watches before its first navigation, so no socket opens unwatched.
- *  The answer grows as frames arrive; a row reads the part after the length it noted. */
+/** Keeps each event the page's live socket (`/ws/live`, `isLiveSocket`) carries from now on, in
+ *  the order the socket sent them: the frames of every socket the page opens after this call, one
+ *  for each document it loads. A row watches before its first navigation, so no socket opens
+ *  unwatched. The answer grows as frames arrive; a row reads the part after the length it noted. */
 export function watchEventFrames(page: Page): readonly EventFrame[] {
   const frames: EventFrame[] = [];
   page.on("websocket", (socket) => {
-    if (new URL(socket.url()).pathname !== "/ws/live") return;
+    if (!isLiveSocket(socket)) return;
+    // Dispatch sends only the contract's server frames, each one JSON object.
     socket.on("framereceived", ({ payload }) => {
-      const frame = JSON.parse(String(payload)) as LiveFrame;
+      const frame = JSON.parse(String(payload)) as LiveServerFrame;
       if (frame.type !== "event") return;
       frames.push({
         at: Date.now(),
-        created: frame.event?.created_at ?? "",
-        entity: frame.event?.issue_key ?? frame.event?.project ?? "",
-        id: frame.id ?? "",
-        kind: frame.event?.type ?? "",
+        created: frame.event.created_at,
+        entity: frame.event.issue_key ?? frame.event.project ?? "",
+        id: frame.id,
+        kind: frame.event.type,
       });
     });
   });

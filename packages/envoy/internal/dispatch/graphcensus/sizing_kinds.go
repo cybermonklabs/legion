@@ -260,7 +260,7 @@ func storeKinds() []StoreKind {
 		Driver: "document_block_texts of the versions written in the window, a block's first row in an issue's spec," +
 			" Verification document or plan, the documents the issue's room holds once the issue converts (R6), each" +
 			" block of which records its authors: one authored_by for each author the version that first holds it lists",
-		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null)`,
+		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null and role)`,
 	}, {
 		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6,
 		Driver: "artifact_versions.created_at: a version's node, its visibility, its state and its document's project or" +
@@ -447,9 +447,16 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from events where type in ('artifact.removed', '` + model.DocumentRetiredEventType + `')
 			and created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1, Assumed: 5 * sizingWindowDays,
-		Driver: "assumed at 5 a day, since the block schema holds no criterion type before the blocks child ships and no" +
-			" row holds one: its authored_by, its node and placement being a block's, which the block terms count",
+		// Counted off refs' recordsAuthors and blockAuthors: a criterion records its authors as
+		// authored_by tuples anywhere it is written; a criterion in an issue's spec, Verification
+		// document or plan is already counted by block_author, so this counts one outside those
+		// role documents (document_block_texts rows whose opening line opens a criterion block).
+		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "document_block_texts of the versions written in the window, a criterion block's first row outside an" +
+			" issue's spec, Verification document or plan (which block_author counts): one authored_by for each author" +
+			" the version that first holds it lists, its node, values and placement being a block's, which the block" +
+			" terms count",
+		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null and criterion and not role)`,
 	}, {
 		// Counted off the block index's links (refs' pointerPairs, queueBlockRefs), whose rows of the
 		// kinds authoredPointerKinds names are an authored block's pointers, and off the values a
@@ -512,10 +519,10 @@ func storeKinds() []StoreKind {
 		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
 		count:  `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
-		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 7,
+		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 8,
 		Driver: "ask.opened events in the window: the ask's answer_state, question and options values, its authored_by" +
 			" and, at most, its anchored_to and owned_by, and the part_of the document holding its block, which an ask" +
-			" block's anchored_to names too",
+			" block's anchored_to names too, and asked_on to the block itself",
 		count: `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
 		Name: "ask_edit", MovedBy: movedWithAsks, Tuples: 2,
@@ -733,11 +740,12 @@ func reachesANode(topic string) string {
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
 // that counts it: the comments written inside the window with the facts each one's write states
 // beside its node; the document_block_texts rows of the versions written inside it, each with
-// whether the block's row before it held a text (null for the block's first row), for a row of an
-// issue's spec, Verification document or plan (roleDocument), how many authors its version lists,
-// and whether it is a plan_task block's row whose opening line writes a size, as the renderer
-// writes one there (refs.WrittenSizeSQL); the messages written inside it, and each issue message's
-// thread root, found up in_reply_to as user_threads_message finds it; the thread of each comment,
+// whether the block's row before it held a text (null for the block's first row), how many authors
+// its version lists, whether its document is an issue's spec, Verification document or plan
+// (roleDocument), whether it is a criterion block's row, and whether it is a plan_task block's row
+// whose opening line writes a size, as the renderer writes one there (refs.WrittenSizeSQL); the
+// messages written inside it, and each issue message's thread root, found up in_reply_to as
+// user_threads_message finds it; the thread of each comment,
 // issue message and answer written inside it, with its writer as user_threads_record names one; the
 // ask events inside it; the people a comment first names, the roles an event first addresses, and
 // the components an import inside it wrote.
@@ -774,7 +782,10 @@ func sizingWritesWith(rooms bool) string {
 		where c.created_at > ` + sizingWindow + `
 	),
 	sized_texts as (
-		select t.text is not null as written, earlier.held as earlier, coalesce(role.authors, 0) as authors,
+		select t.text is not null as written, earlier.held as earlier,
+		       case when jsonb_typeof(v.authors) = 'array' then jsonb_array_length(v.authors) else 0 end as authors,
+		       exists (select 1 from artifacts d where d.id = v.artifact_id and ` + roleDocument("d") + `) as role,
+		       coalesce(split_part(t.text, chr(10), 1) ~ '^:{3,}criterion\{', false) as criterion,
 		       coalesce(split_part(t.text, chr(10), 1) ~ '^:{3,}plan_task\{.* ` + refs.AttributePlanSize + `="', false) as sized
 		from artifact_versions v
 		join document_block_texts t on ` + documentTexts("t", "v.artifact_id", rooms) + ` and t.version = v.number
@@ -783,10 +794,6 @@ func sizingWritesWith(rooms bool) string {
 			where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
 			order by p.version desc limit 1
 		) earlier on true
-		left join lateral (
-			select jsonb_array_length(v.authors) as authors from artifacts d
-			where d.id = v.artifact_id and jsonb_typeof(v.authors) = 'array' and ` + roleDocument("d") + `
-		) role on true
 		where v.created_at > ` + sizingWindow + `
 	),
 	sized_messages as (

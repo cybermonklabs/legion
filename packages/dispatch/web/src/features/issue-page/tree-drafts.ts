@@ -458,15 +458,15 @@ function documentReading(
  * say it (`node-row-chip.ts`'s `documentWord`).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
- * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`), read by
- * `primarySpec` and `roleDocument`, the rule the tree read's blocks of each part are read by
- * (`tree-read/tree-nodes.ts`' `blocksOfRole`). Where the issue names no id for a part - none
- * (`""`), or a Dispatch older than that part (absent) - no document plays it, and a document
- * flagged `primary` or carrying that part's `role` is named by the page's word for a document: a
- * chip naming "Spec" or "Plan" opens a document whose blocks the tree reads as that part. A
- * decisions document plays no part: a decision is a `decision` block of the spec or of another
- * document, and a decisions document an earlier release stored is named by the page's word for a
- * document too.
+ * for each (`primary_artifact_id`, and the artifact of its plan and of its verification query in
+ * `queries`), read by `primarySpec` and `roleDocument`, the rule the tree read's blocks of each
+ * part are read by (`tree-read/tree-nodes.ts`' `blocksOfRole`). Where the issue names no id for a
+ * part - none (`""`), or no query of that name - no document plays it, and a document flagged
+ * `primary` or carrying that part's `role` is named by the page's word for a document: a chip
+ * naming "Spec" or "Plan" opens a document whose blocks the tree reads as that part. A decisions
+ * document plays no part: a decision is a `decision` block of the spec or of another document,
+ * and a decisions document an earlier release stored is named by the page's word for a document
+ * too.
  */
 function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
@@ -858,29 +858,15 @@ export function markKeptAndUnsure(
 }
 
 /**
- * The gaps on one statement: the ones the coverage read carries that the page draws
- * (`coverageGapKind`), and `shaped_disagreement` where the statement has an origin - the node its
- * own `from` names - and a decision that says it shaped the statement (`shapers`, each by its
- * node id) is not that origin: the two edges disagree, and the page draws that rather than
- * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
- * draws none, and an absent `from` is no gap of its own (R10). A decision is what the decisions
- * read's entries hold one to be (`isDecisionEntry`): an open or a declined ask decided nothing.
- * `tree-read/tree-nodes.ts`' `draftRequirement` reads both edges from the tree read: the
- * statement's `from` attribute and the `shaped` tuples that end at it from a decision.
+ * The gaps on one statement that the coverage read carries and the page draws
+ * (`coverageGapKind`). `tree-read/tree-nodes.ts`' `draftRequirement` adds the ones it reads from
+ * the tree read and the Plan view itself.
  */
-export function requirementGaps(
-  coverage: readonly string[],
-  origin: string | undefined,
-  shapers: ReadonlySet<string> | undefined
-): GapKind[] {
-  const gaps = coverage.flatMap((line): GapKind[] => {
+export function requirementGaps(coverage: readonly string[]): GapKind[] {
+  return coverage.flatMap((line): GapKind[] => {
     const kind = coverageGapKind(line);
     return kind === undefined ? [] : [kind];
   });
-  if (origin !== undefined && [...(shapers ?? [])].some((shaper) => shaper !== origin)) {
-    gaps.push("shaped_disagreement");
-  }
-  return gaps;
 }
 
 /**

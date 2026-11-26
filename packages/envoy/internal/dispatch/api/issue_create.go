@@ -1088,10 +1088,12 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 // with its version node, a query version holding the query's definition version; and that version
 // indexed in the create's transaction (docs.API.IndexDocumentReferences), handed no text, so it
 // indexes no block, no member and no reference of the version: each node the rendering prints is a
-// node of the issue, indexed as one, and the tree holds no member of the decisions query node. The
-// pass states the version, so its version_renders row goes in the create's batch with its cut, and
-// its record's digest is filled after the COMMIT (docs' fillOwedDigests). What it states joins
-// room's held facts, which the issue's event causes.
+// node of the issue, indexed as one, and the tree holds no member of the decisions query node; its
+// re-index queue rows, including the scope row the version insert's trigger made, are cleared in
+// the same batch (docs.SettleDecisionsQueryQueues). The pass states the version, so its
+// version_renders row goes in the create's batch with its cut, and its record's digest is filled
+// after the COMMIT (docs' fillOwedDigests). What it states joins room's held facts, which the
+// issue's event causes.
 func (s *server) queueDecisionsFirstVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, room *convertedIssueRoom, key, project string, actor model.Actor, spec *pmdoc.Node) error {
 	rendered, err := docs.DecisionsOfSpec(spec)
 	if err != nil {
@@ -1111,6 +1113,9 @@ func (s *server) queueDecisionsFirstVersion(ctx context.Context, tx pgx.Tx, ledg
 	_, indexed, err := s.deps.Docs.IndexDocumentReferences(ctx, room.decisions, decisionsVersion.Number, "")
 	if err != nil {
 		return fmt.Errorf("index the decisions query's first version: %w", err)
+	}
+	if err := docs.SettleDecisionsQueryQueues(ctx, tx, room.decisions); err != nil {
+		return fmt.Errorf("clear the re-index queues of the decisions query's first version: %w", err)
 	}
 	room.held = graphstore.Joined(room.held, decisionsVersionNode, indexed)
 	return nil

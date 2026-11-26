@@ -556,10 +556,13 @@ test("a transport that fails to load is reported instead of connecting forever",
   const { toolbar, view } = renderProofDocument({ fake });
 
   try {
-    await flushLoadFailure(rejection);
-    const alert = within(view.container).getByRole("alert");
+    // The admission starts only once the artifact read names the document's fragment (this
+    // file's artifact names none), so the transport's failure reaches the page a read after the
+    // render: the row waits for the alert, and then for the toolbar's report of it, which a
+    // passive effect makes a commit later (`flushLoadFailure` in `__tests__/proof-document.tsx`).
+    const alert = await within(view.container).findByRole("alert");
     expect(alert.textContent).toBe("This document could not load: Failed to fetch");
-    expect(toolbar.current?.connection).toBe("failed");
+    await waitFor(() => expect(toolbar.current?.connection).toBe("failed"));
   } finally {
     view.unmount();
   }

@@ -72,7 +72,9 @@ export function TreeRows({
   onOlder?: () => void;
   /** Draws the next page of a node's children, which the row that pages them does. */
   onPage: (row: PageRow) => void;
-  onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
+  /** Folds or unfolds one row, by its key (`rowKeyOf`), which a press on its fold control does:
+   *  the fold is the row's, so another row of the same node stays as it was. */
+  onToggle: (row: string, expanded: boolean | undefined) => void;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
@@ -100,8 +102,9 @@ export function TreeRows({
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();
-  // The Lens act the focused row offers in Conversation and in Graph, one value while the
-  // address stands (`useLensAct`).
+  // The Lens act each row offers in Conversation and in Graph, whatever the focus, with every
+  // node's invocations read once for all the rows: one value while the address stands and no
+  // invocation of a lens changes (`useLensAct`).
   const lensAct = useLensAct();
   return (
     <>
@@ -152,7 +155,7 @@ export function TreeRows({
               level={row.level}
               node={row.node}
               onFocus={() => onFocus(key, row.node)}
-              onToggle={() => onToggle(row.node, row.expanded)}
+              onToggle={() => onToggle(key, row.expanded)}
               ownAnswer={isReader(row.node.answer?.by, reader)}
               placesItself={unplaced !== key}
               {...(report?.row === key ? { report: report.line } : {})}

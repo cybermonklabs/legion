@@ -102,13 +102,19 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	// indexed by the room's one pass over every fragment (indexDocumentInRoom): no pass indexes one
 	// fragment of a room alone. The pass defers as one document's does, measured on the blocks it
 	// would index, every fragment's. A document this transaction creates takes its room from the
-	// ledger (indexedRoom): its row is written in the write phase, after this read.
+	// ledger (indexedRoom): its row is written in the write phase, after this read. A pass that
+	// states anything marks the issue's queries owed, for the drain after the COMMIT to version
+	// each query whose record it moved (markRoomQueries).
 	room, layout, err := indexedRoom(ctx, tx, artifactID)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if len(layout) > 0 {
-		return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, nil, true)
+		changes, stated, err := s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, nil, true)
+		if err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		return changes, stated, markRoomQueries(ctx, tx, room, stated)
 	}
 	// An empty version holds no block, whatever the transaction rendered, so one no write of this
 	// transaction rendered - an issue's decisions query's version 1, which no fragment holds - is
@@ -368,8 +374,9 @@ func deferredBlockIndex(ctx context.Context) bool {
 
 // indexVersion is indexDocument for a version of artifactID its writer wrote outside an issue
 // room's settlement (writeVersionTx): the document's own pass where it is a room of its own with
-// no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom).
-// Where deferLarge is set (versionWrite.deferLarge), a version of a document that is its own room
+// no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom),
+// which marks the issue's queries owed where it states anything (markRoomQueries). Where
+// deferLarge is set (versionWrite.deferLarge), a version of a document that is its own room
 // holding more blocks than a write indexes in its own request leaves them to the block-index
 // reconciliation, its references and typed nodes indexed here (indexDeferredVersion), as
 // IndexDocumentReferences leaves an upload's, and the room's pass defers as it does for an upload.
@@ -379,7 +386,11 @@ func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if len(layout) > 0 {
-		return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, deferLarge)
+		changes, stated, err := s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, deferLarge)
+		if err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		return changes, stated, markRoomQueries(ctx, tx, room, stated)
 	}
 	if held := len(rendered.offsets); deferLarge && rendered.tree != nil && held > deferBlockIndexBlocks {
 		logDeferredVersion(artifactID, versions[artifactID].Number, held)

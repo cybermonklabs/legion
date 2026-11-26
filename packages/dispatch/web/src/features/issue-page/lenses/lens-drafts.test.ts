@@ -564,6 +564,38 @@ test("a statement's and an early warning's words read a constraint they cite by 
   ]);
 });
 
+// A node's name that holds another `dispatch://` reference - a constraint's words that cite a
+// statement - keeps that reference out of the name's link, a run of its own that the row's
+// renderer names, since it names no reference inside a link's words; the rest of the name links
+// the node's row, and the row's words read as before.
+test("a name keeps another reference it holds out of its link", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const cited = `dispatch://constraint/${constraint}`;
+  const other = "dispatch://CORE-1/spec#b-r2";
+  const { root } = drawn(
+    answer([
+      block("r1", "requirement", KEY, SPEC, 0, {
+        text: `Answer as ${cited}.`,
+        text_tree: reading(`Answer as ${cited}.`),
+      }),
+      bare(constraint, "constraint", KEY, {
+        attributes: { standard: `Retention as ${other} sets it` },
+      }),
+    ])
+  );
+  const statement = rowOf(root, blockNodeId("spec", "r1"));
+  const link = { attrs: { href: cited, title: rowPath(constraint) }, type: "link" };
+
+  expect(lineWordsRaw(statement)).toBe(`Answer as Retention as ${other} sets it.`);
+  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Answer as ", type: "text" },
+    { marks: [link], text: "Retention as ", type: "text" },
+    { text: other, type: "text" },
+    { marks: [link], text: " sets it", type: "text" },
+    { text: ".", type: "text" },
+  ]);
+});
+
 // A risk's fact lines that name a node the answer holds are their parts: the text, and a chip for
 // each name, which holds the node's address, the words the line names it by and its read id, so
 // the line links its row. An early warning's bare address of a constraint is named by the
@@ -796,9 +828,9 @@ test("an author's words linked to a store address link the node's row", () => {
 
 // A verdict that cites a risk is drawn in the shape of the same verdict that cites none: one line
 // of the plain words its stored string reads as, a list's items and emphasis among them, the
-// risk's name in place of its address. The one that cites is one paragraph of those words, whose
-// link opens the risk's row; the one that cites none has no reading, and its row draws its words
-// as they are.
+// risk's name in place of its address. Both carry a one-paragraph reading of those words, so the
+// row parses neither again in the page; the citing one's one change is the named words, whose
+// link opens the risk's row.
 test("a verdict draws one line of plain words whether or not it cites a risk", () => {
   const risk = "d4000000-0000-4000-8000-000000000004";
   const cited = `dispatch://risk/${risk}`;
@@ -820,8 +852,8 @@ test("a verdict draws one line of plain words whether or not it cites a risk", (
   const citing = rowOf(root, FIRST);
   const plain = rowOf(root, SECOND);
 
-  expect(plain.tree).toBeUndefined();
   expect(plain.text).toBe("Keep one region: the cost doubles Failover takes minutes first");
+  expect(plain.tree).toEqual(reading(plain.text));
   expect([citing.text, nodeWords(citing), lineWordsRaw(citing)]).toEqual([
     plain.text,
     plain.text,
@@ -843,9 +875,9 @@ test("a verdict draws one line of plain words whether or not it cites a risk", (
   ]);
 });
 
-// A verdict's code span that holds a store address keeps it as written, as `storedWords` reads a
-// code span; the same address outside the code is named, linked to its row, and nothing else of
-// the verdict's plain words changes.
+// A verdict's code span that holds a store address keeps its code mark and its words as written;
+// the same address outside the code is named, linked to its row, and nothing else of the
+// verdict's plain words changes.
 test("a verdict's code span keeps a store address as written while its words name it", () => {
   const risk = "d4000000-0000-4000-8000-000000000004";
   const cited = `dispatch://risk/${risk}`;
@@ -868,7 +900,9 @@ test("a verdict's code span keeps a store address as written while its words nam
   expect(verdict.tree?.content).toEqual([
     {
       content: [
-        { text: `Run dispatch read ${cited} before `, type: "text" },
+        { text: "Run ", type: "text" },
+        { marks: [{ type: "inlineCode" }], text: `dispatch read ${cited}`, type: "text" },
+        { text: " before ", type: "text" },
         {
           marks: [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
           text: "Failover takes minutes",
@@ -1080,8 +1114,8 @@ test("a store address inside a link's words reads as its node's name in that one
 });
 
 // An author's link whose words are a code span, ``[`RFC 9110`](dispatch://constraint/<uuid>)``,
-// keeps its words as written and links the node's row, as an author's other words do: a verdict
-// draws it as one link in its one line.
+// keeps its words and links the node's row, as an author's other words do: a verdict draws it as
+// one link in its one line, its words carrying the link alone.
 test("a verdict's author's link whose words are code links the constraint's row", () => {
   const constraint = "e5000000-0000-4000-8000-000000000005";
   const held = `dispatch://constraint/${constraint}`;
@@ -1449,10 +1483,11 @@ test("a chip whose far end no page read so far holds names its kind and links it
 });
 
 // A risk's row draws its heading, its early warning and its prevention, each read to
-// plain words, and a chip for each check its `prevented_by` names, named by that check's whole
-// text in the tree - both its blocks, past the 32 characters part G cuts a chip at, with no cut -
-// not by the first block its row draws a line from, and linked to its row; a risk no check
-// prevents has none.
+// plain words, a line whose words hold code as their reading, which its line draws them from so
+// it reads the code as written, and a chip for each check its `prevented_by` names, named by that
+// check's whole text in the tree - both its blocks, past the 32 characters part G cuts a chip
+// at, with no cut - not by the first block its row draws a line from, and linked to its row; a
+// risk no check prevents has none.
 test("a check's chip takes its words whole from its node", () => {
   const whole = "C1. The index builds concurrently. Then it is checked.";
   const { root } = drawn(
@@ -1496,7 +1531,21 @@ test("a check's chip takes its words whole from its node", () => {
   expect(factsOf(rowOf(root, "risk-b"))).toEqual({
     ...NO_FACTS,
     earlyWarning: "Writes queue.",
-    prevention: "Build the index CONCURRENTLY.",
+    prevention: [
+      {
+        content: [
+          {
+            content: [
+              { text: "Build the index ", type: "text" },
+              { marks: [{ type: "inlineCode" }], text: "CONCURRENTLY", type: "text" },
+              { text: ".", type: "text" },
+            ],
+            type: "paragraph",
+          },
+        ],
+        type: "doc",
+      },
+    ],
     preventedBy: [
       {
         address: checkRow.reference ?? "",
@@ -1507,6 +1556,7 @@ test("a check's chip takes its words whole from its node", () => {
       },
     ],
   });
+  expect(lineText(factsOf(rowOf(root, "risk-b")).prevention)).toBe("Build the index CONCURRENTLY.");
   expect(lineWordsRaw(checkRow), "the check's row draws its first block as its line").toBe(
     "C1. The index builds concurrently."
   );

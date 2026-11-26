@@ -68,8 +68,9 @@
 #            the wait for the backfill, the stored markdown of every version whose version_renders
 #            row holds a time equals the render the version read answers (Dispatch-Render-Source
 #            tree), and `envoy-dispatch census --store` prints its `census: versions` line with
-#            tree_mismatch=0 and tree_mismatch_repaired=0, rendered_from_tree equal to the rows that
-#            hold a time and deferred equal to the rows that hold none, at least one.
+#            tree_mismatch=0 and tree_mismatch_repaired=0 (lib-tree.sh's tree_census_versions, which
+#            otherwise fails naming the corpus and printing that line), rendered_from_tree equal to
+#            the rows that hold a time and deferred equal to the rows that hold none, at least one.
 # The Go half of the check, TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed, is the
 # check's own step.
 #
@@ -927,22 +928,13 @@ while read -r issue slug number stored; do
   compared=$((compared + 1))
 done <"$work/timed.txt"
 pass "$section" "each of the $compared versions whose version_renders row holds a time stores the render of the tree as of that time"
-tree_envoy_dispatch_status census --store
-versions_line="$(grep -m 1 '^census: versions ' "$work/out")" ||
-  fail "$section" "envoy-dispatch census --store prints its census: versions line" \
-    "it exited $tree_envoy_status and printed: $(tail -n 20 "$work/out")"
-printf '%s\n' "$versions_line"
-census_value() { sed -nE "s/.*(^| )$1=([0-9,]+).*/\\2/p" <<<"$versions_line" | tr -d ,; }
-mismatch="$(census_value tree_mismatch)"
-repaired="$(census_value tree_mismatch_repaired)"
-[[ "$mismatch" == 0 && "$repaired" == 0 ]] ||
-  fail "$section" "the census reads no version whose tree does not render as its stored markdown" \
-    "the census reads tree_mismatch=${mismatch:-(none)} tree_mismatch_repaired=${repaired:-(none)} over the corpus of $project, want 0 and 0: $(grep '^census: versions' "$work/out" | paste -sd ' ')"
-rendered_from_tree="$(census_value rendered_from_tree)"
-deferred="$(census_value deferred)"
+tree_census_versions "$section" "the census reads no version whose tree does not render as its stored markdown" \
+  "the corpus of $project"
+rendered_from_tree="$(tree_census_member rendered_from_tree)"
+deferred="$(tree_census_member deferred)"
 [[ "$rendered_from_tree" == "$timed" && "$deferred" == "$untimed" ]] ||
   fail "$section" "the census compares the versions whose row holds a time and counts the rows that hold none as deferred" \
     "it reads rendered_from_tree=${rendered_from_tree:-(none)} deferred=${deferred:-(none)}, and version_renders holds $timed rows with a time and $untimed with none"
-pass "$section" "the census reads tree_mismatch=0 tree_mismatch_repaired=0, compares the $timed versions whose row holds a time, and counts $untimed deferred"
+pass "$section" "the census compares the $timed versions whose row holds a time, and counts $untimed deferred"
 
 printf 'PASS: %s complete 11 sections\n' "$driver"

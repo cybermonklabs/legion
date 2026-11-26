@@ -17,22 +17,21 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { withEntries } from "../../issue/decision-entries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionChanges, decisionNodeChanges } from "../decision-review";
+import { decisionsRead } from "../decisions-filter/decisions-fixtures";
 import {
   assemble,
   buildIssueTree,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
-import { nameOf } from "../projection-fixture";
+import { drawnChip, nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
 import {
   pagedAnswer,
@@ -43,6 +42,7 @@ import {
 } from "./tree-fixtures";
 import {
   blocksOfRole,
+  holdsPlanTask,
   nextTreeCursor,
   nodesRemaining,
   type TreeDraftMark,
@@ -75,13 +75,6 @@ const KEY = "CORE-1";
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
  *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint and a
@@ -622,10 +615,10 @@ test("a reading stands under the parent the read names, and nowhere else", () =>
 });
 
 // R10: a statement whose own `from` names one origin and a decision that says it shaped it names
-// another draws the two edges disagreeing - an agent's decision, and an ask a person answered,
-// which the read answers with that person's decision. An ask still open decided nothing, as the
-// decisions read's entries hold (`isDecisionEntry`), so its `shaped` tuple draws no disagreement.
-test("an open ask's shaped tuple draws no shaped_disagreement, where a decision's and an answered ask's do", () => {
+// another is no gap the page draws: a gap says what work someone owes, and the two edges
+// disagreeing is none. An agent's decision, an ask a person answered and an ask still open alike
+// draw none.
+test("a statement whose origin and whose shaping decision disagree draws no gap for it on the new page", () => {
   const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
   const { drafts } = drawn(
     answer(
@@ -652,7 +645,129 @@ test("an open ask's shaped tuple draws no shaped_disagreement, where a decision'
 
   expect(
     ["r-open", "r-answered", "r-agent"].map((id) => drafts.get(blockNodeId("spec", id))?.gaps)
-  ).toEqual([[], ["shaped_disagreement"], ["shaped_disagreement"]]);
+  ).toEqual([[], [], []]);
+});
+
+/** The coverage read's row for statement `id`, which no plan task serves. */
+function unplanned(id: string): RequirementCoverage {
+  return { ...requirement(id), plan_tasks: 0 };
+}
+
+/** The gaps of the spec's statements `ids`, drawn from `tree` with `reads`. */
+function statementGaps(
+  tree: TreeAnswer,
+  reads: IssueTreeReads,
+  ids: readonly string[]
+): (readonly string[] | undefined)[] {
+  const { drafts } = drawn(tree, reads);
+  return ids.map((id) => drafts.get(blockNodeId("spec", id))?.gaps);
+}
+
+// R10: a statement no plan task serves is a gap once the issue holds a plan task, since a plan is
+// written after the spec is approved. Conversation's read holds no plan task, so whether one is
+// held is read from the Plan view's answer; what serves the statement is the coverage read's count.
+test("a statement no plan task serves is marked once the plan view holds a plan task", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0, { checks: 1 }),
+    block("r2", "requirement", KEY, SPEC, 1, { checks: 1 }),
+  ]);
+  const plan = answer([
+    block("t1", "plan_task", KEY, PLAN, 0, {
+      attributes: { serves: `dispatch://${KEY}/spec#b-r2` },
+      role: "query",
+    }),
+  ]);
+  const reads: IssueTreeReads = {
+    coverage: coverage([unplanned("r1"), requirement("r2")]),
+    holdsPlanTask: holdsPlanTask(plan),
+    issue: issueDetails(),
+  };
+
+  expect(statementGaps(tree, reads, ["r1", "r2"])).toEqual([["no_plan_task"], []]);
+});
+
+// R10: the Plan view answers the plan tasks of every issue under the issue with its own, and the
+// coverage read counts a child's task that serves a statement of this issue's spec: a parent whose
+// plan stands wholly in its children marks the statement no task serves, and not the one a child's
+// task serves.
+test("a plan task of an issue under this one counts", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0, { checks: 1 }),
+    block("r2", "requirement", KEY, SPEC, 1, { checks: 1 }),
+  ]);
+  const plan = answer([
+    node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
+    node("t1", "plan_task", "CORE-2", {
+      attributes: { serves: `dispatch://${KEY}/spec#b-r2` },
+      document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan-md" },
+      issue: "CORE-2",
+      role: "query",
+    }),
+  ]);
+  const reads: IssueTreeReads = {
+    coverage: coverage([unplanned("r1"), requirement("r2")]),
+    holdsPlanTask: holdsPlanTask(plan),
+    issue: issueDetails(),
+  };
+
+  expect(statementGaps(tree, reads, ["r1", "r2"])).toEqual([["no_plan_task"], []]);
+});
+
+// R10: until the issue or an issue under it holds a plan task, a statement no task serves owes
+// nothing yet: not where the Plan view's answer holds none - a plan role alone, and a task gone at
+// its cut - and not before that view answers, so a mark is drawn late rather than drawn and taken
+// away.
+test("no statement is marked for a missing plan task while no plan task exists, or before the plan view answers", () => {
+  const tree = answer([block("r1", "requirement", KEY, SPEC, 0, { checks: 1 })]);
+  const reads: IssueTreeReads = { coverage: coverage([unplanned("r1")]), issue: issueDetails() };
+  const none = answer([
+    block("role-1", "plan_role", KEY, PLAN, 0, { role: "query" }),
+    block("t-gone", "plan_task", KEY, PLAN, 1, { role: "query", state: "gone" }),
+  ]);
+
+  expect(holdsPlanTask(none), "a plan role and a task gone at its cut hold a plan task").toBe(
+    false
+  );
+  expect(statementGaps(tree, { ...reads, holdsPlanTask: holdsPlanTask(none) }, ["r1"])).toEqual([
+    [],
+  ]);
+  expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
+});
+
+// While a document of the issue is still being indexed, the coverage read's counts may not hold
+// the plan tasks that serve a statement yet, and the server names no requirement as lacking one:
+// nor does the page.
+test("no statement is marked for a missing plan task while a document of the issue is still being indexed", () => {
+  const owed = "plan.md version 3 is still being indexed; its coverage shows once that ends.";
+  const tree = answer([block("r1", "requirement", KEY, SPEC, 0, { checks: 1 })]);
+  const plan = answer([block("t1", "plan_task", KEY, PLAN, 0, { role: "query" })]);
+  const reads: IssueTreeReads = {
+    coverage: { ...coverage([unplanned("r1")]), gaps: [owed] },
+    holdsPlanTask: holdsPlanTask(plan),
+    issue: issueDetails(),
+  };
+
+  expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
+});
+
+// R10, R27: a proposed statement is a question still open and an overtaken one is closed, so
+// neither draws a gap - neither for a missing check, which the answer counts as none on an
+// overtaken statement, nor for a missing plan task - where a live one draws both.
+test("a proposed or an overtaken statement draws no gap for a missing check or plan task", () => {
+  const tree = answer([
+    block("r-live", "requirement", KEY, SPEC, 0, { checks: 0 }),
+    block("r-proposed", "requirement", KEY, SPEC, 1, { checks: 0, state: "proposed" }),
+    block("r-overtaken", "requirement", KEY, SPEC, 2, { checks: 0, state: "overtaken" }),
+  ]);
+  const plan = answer([block("t1", "plan_task", KEY, PLAN, 0, { role: "query" })]);
+  const ids = ["r-live", "r-proposed", "r-overtaken"];
+  const reads: IssueTreeReads = {
+    coverage: coverage(ids.map((id) => ({ ...unplanned(id), checks: 0 }))),
+    holdsPlanTask: holdsPlanTask(plan),
+    issue: issueDetails(),
+  };
+
+  expect(statementGaps(tree, reads, ids)).toEqual([["no_check", "no_plan_task"], [], []]);
 });
 
 // R1, root R4: a check stands under the requirement the read answers and again under each other
@@ -895,12 +1010,12 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   ]);
 });
 
-// R3 (and INFRA-5706 R1, decision 474): a decision of a decisions read of the release before - a
-// section of `decisions.md`, which no node of the answer holds, read as its entry (`withEntries`)
-// - finds its Change by its words, with no block of the decisions document read: the change is the
-// first decision whose words hold the anchor's quote, so that decision reads Change requested.
-// Under R1 every comment anchored in a document block is on text and is no row of any outline,
-// whether the answer holds a node for its block or not.
+// R3 (and INFRA-5706 R1, decision 474): a decision no node of the answer holds - a block of
+// `decisions.md`, as the decisions read answers its entry (`decisionsRead`) - finds its Change by
+// its words, with no block of the decisions document read: the change is the first decision whose
+// words hold the anchor's quote, so that decision reads Change requested. Under R1 every comment
+// anchored in a document block is on text and is no row of any outline, whether the answer holds
+// a node for its block or not.
 test("a decisions.md section finds its Change by its words", () => {
   const anchored = (id: string, quote: string): Comment => ({
     anchor: {
@@ -938,14 +1053,7 @@ test("a decisions.md section finds its Change by its words", () => {
     anchored("c-change", "Draw it once."),
     anchored("c-stray", "Words no decision holds."),
   ];
-  const decisions = withEntries(
-    {
-      decisions: [keep, draw],
-      document: `dispatch://${KEY}/artifact/decisions-md`,
-      open_questions: [],
-    },
-    KEY
-  );
+  const decisions = decisionsRead([keep, draw], DECISIONS);
 
   const changes = decisionChanges(decisions, comments, issueDetails(), undefined);
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
@@ -966,22 +1074,15 @@ test("a decisions.md section finds its Change by its words", () => {
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
 
-// A decision of a decisions read of the release before is drafted beside the tree read's nodes,
-// and a re-read of the same reads hands its row the words and the source it handed it before, as
-// a node of the tree read's does.
+// A decision of the decisions read that no node of the answer holds is drafted beside the tree
+// read's nodes, and a re-read of the same reads hands its row the words and the source it handed
+// it before, as a node of the tree read's does.
 test("drawing the same decisions read twice hands a section's row the same words and source", () => {
   const section = decisionsSection("d1", "Keep it", "Keep the model pure.", {
     text_tree: typedReading("decision", { blockId: "d1" }, "Keep the model pure."),
   });
   const reads = {
-    decisions: withEntries(
-      {
-        decisions: [section],
-        document: `dispatch://${KEY}/artifact/decisions-md`,
-        open_questions: [],
-      },
-      KEY
-    ),
+    decisions: decisionsRead([section], DECISIONS),
     issue: issueDetails(),
     tree: answer([]),
   };
@@ -2082,4 +2183,61 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
     const offTree = nodesOf(presetView(graph.root, filter, "").root).map((one) => one.id);
     expect(offTree, `${filter} read off the tree`).not.toContain("p1");
   }
+});
+
+// R19: on an issue with issues under it the Plan view's read answers each plan task of an issue
+// under it, as context marked with its issue, with its place in the plan (`plan`) and its size in
+// whole minutes. Built from that answer, the tree drafts the task by its block id alone, addressed
+// in its own issue, with a chip for the task of its issue it needs and no gap of its own; the Plan
+// view draws it as a row in the walk's order after the issue's own task, with its size and its
+// issue. The outline's answer, which carries no `plan`, drafts no task of another issue.
+test("a plan task's size and issue come from the plan view's answer", () => {
+  const place = (size: string | null) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position: 0,
+    size,
+    skills: null,
+  });
+  const childPlan = { artifact_id: "artifact-child-plan", slug: "plan-md" };
+  const child = (id: string, position: number, size: string | null) =>
+    node(id, "plan_task", "CORE-2", {
+      document: { ...childPlan, position },
+      issue: "CORE-2",
+      plan: place(size),
+      role: "context",
+      text: `Task ${id} of the child.`,
+    });
+  const plan = answer(
+    [
+      node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
+      child("x2", 1, "45"),
+      child("x1", 0, "90"),
+      block("t1", "plan_task", KEY, PLAN, 0, { plan: place("30"), role: "query" }),
+    ],
+    [tuple("needs", "x2", "x1")],
+    { view: "plan" }
+  );
+  const { drafts, root } = drawn(plan);
+  expect(
+    ["x1", "x2"].map((id) => {
+      const draft = drafts.get(id);
+      return [draft?.reference, draft?.chips.map((one) => one.ref), draft?.gaps];
+    })
+  ).toEqual([
+    ["dispatch://CORE-2/artifact/plan-md#b-x1", [], []],
+    ["dispatch://CORE-2/artifact/plan-md#b-x2", ["dispatch://CORE-2/artifact/plan-md#b-x1"], []],
+  ]);
+  const view = presetView({ ...root, views: { plan, trees: { plan: root } } }, "plan", "");
+  expect(view.root.children.map((row) => [row.id, row.size, row.issue])).toEqual([
+    [blockNodeId("plan-md", "t1"), 30, undefined],
+    ["x1", 90, "CORE-2"],
+    ["x2", 45, "CORE-2"],
+  ]);
+  const outline = answer([
+    node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
+    node("x1", "plan_task", "CORE-2", { document: { ...childPlan, position: 0 }, issue: "CORE-2" }),
+  ]);
+  expect(drawn(outline).drafts.has("x1")).toBe(false);
 });

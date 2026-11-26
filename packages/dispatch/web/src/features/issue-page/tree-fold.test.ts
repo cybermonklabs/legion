@@ -5,10 +5,10 @@ import type { NodeType } from "./page-words";
 import {
   CHILD_PAGE,
   type DrawnRow,
-  foldedLine,
   indentOf,
   NOTHING_OPENED,
   type OpenedBranches,
+  placeOf,
   treeRows,
   withEveryFoldUndone,
   withFold,
@@ -18,8 +18,9 @@ import {
 
 /**
  * The fold, over a tree built by hand: the page opens with every node unfolded and folds none
- * itself, the reader folds a node to its first line and a count, `z` unfolds what they folded,
- * a node draws its children a page of 50 at a time, and every level is drawn (R11, R15).
+ * itself, the reader folds a row to its node's first line and a count, `z` unfolds what they
+ * folded, a node draws its children a page of 50 at a time, and every level is drawn (R11, R15).
+ * A fold and a page are the reader's act on one row, kept by the row's place.
  */
 
 function node(
@@ -93,6 +94,15 @@ function holding(id: string, count: number): TreeNode {
   );
 }
 
+/** An issue whose one node `served` holds is built under two requirements, as a check that
+ *  serves both is (`issue-tree.ts`): its rows are two, one under each requirement. */
+function servedTwice(served: () => TreeNode): TreeNode {
+  return node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [served()]),
+    node("spec#b-r2", "requirement", [served()]),
+  ]);
+}
+
 // R11: Conversation and Graph open with no node folded, at any depth, whatever the node holds:
 // a path to nothing open, a passed check, an answered question, a replaced decision.
 test("no node opens folded", () => {
@@ -108,37 +118,26 @@ test("no node opens folded", () => {
   }
 });
 
-// R11: a node the reader folds shows its first line - to its first sentence end, or to 100
-// characters cut at a word - and how many nodes it holds, at every level, and its branch is
-// drawn as no rows; unfolded, the branch is back.
-test("a folded node shows its first line and how many nodes it holds", () => {
-  const long = `${"word ".repeat(30)}with no end`;
-  const deep = node("doc-3", "document", [node("note", "callout")], { text: long });
+// R11: a node the reader folds counts how many nodes it holds, at every level, and its branch is
+// drawn as no rows; unfolded, the branch is back. The line a folded row draws is the row's
+// (`NodeRow.drawn.test.tsx`).
+test("a folded node counts the nodes it holds and draws no row of its branch", () => {
+  const deep = node("doc-3", "document", [node("note", "callout")]);
   const root = node("CORE-1", "issue", [
-    node(
-      "comment-1",
-      "comment",
-      [node("reply-1", "comment", [node("reply-2", "comment")]), node("reply-3", "comment")],
-      { text: "The first sentence ends here. The second does not show." }
-    ),
+    node("comment-1", "comment", [
+      node("reply-1", "comment", [node("reply-2", "comment")]),
+      node("reply-3", "comment"),
+    ]),
     node("doc-1", "document", [node("doc-2", "document", [deep])]),
   ]);
-  let opened = withFold(NOTHING_OPENED, "comment-1", false);
-  opened = withFold(opened, "doc-3", false);
+  let opened = withFold(NOTHING_OPENED, "CORE-1>comment-1", false);
+  opened = withFold(opened, "CORE-1>doc-1>doc-2>doc-3", false);
   const rows = treeRows(root, opened);
   expect(idsOf(rows)).toEqual(["CORE-1", "comment-1", "doc-1", "doc-2", "doc-3"]);
-  const comment = rowOf(rows, "comment-1");
-  expect(comment).toMatchObject({ expanded: false, folded: 3 });
-  expect(foldedLine(comment.node)).toBe("The first sentence ends here.");
-  const document = rowOf(rows, "doc-3");
-  expect(document).toMatchObject({ expanded: false, folded: 1, level: 4 });
-  const line = foldedLine(document.node);
-  expect(line.endsWith("…")).toBe(true);
-  expect(line.length).toBeLessThanOrEqual(101);
-  expect(long.startsWith(line.slice(0, -1))).toBe(true);
-  expect(line.slice(0, -1).endsWith(" ")).toBe(false);
+  expect(rowOf(rows, "comment-1")).toMatchObject({ expanded: false, folded: 3 });
+  expect(rowOf(rows, "doc-3")).toMatchObject({ expanded: false, folded: 1, level: 4 });
   // Unfolded by the same control, the branch is back.
-  const unfolded = treeRows(root, withFold(opened, "comment-1", true));
+  const unfolded = treeRows(root, withFold(opened, "CORE-1>comment-1", true));
   expect(idsOf(unfolded)).toContain("reply-2");
   expect(idsOf(unfolded)).not.toContain("note");
 });
@@ -152,13 +151,85 @@ test("z unfolds every node the reader folded", () => {
   const page = treeRows(root).find((row) => row.kind === "page");
   if (page?.kind !== "page") throw new Error("no page row");
   let opened: OpenedBranches = withNextPage(NOTHING_OPENED, page);
-  for (const id of ["spec#b-r1", "v#b-c1", "thread"]) opened = withFold(opened, id, false);
+  for (const place of ["CORE-1>spec#b-r1", "CORE-1>spec#b-r1>v#b-c1", "CORE-1>thread"]) {
+    opened = withFold(opened, place, false);
+  }
   expect(idsOf(treeRows(root, opened))).toEqual(["CORE-1", "thread", "spec#b-r1"]);
   const undone = withEveryFoldUndone(opened);
   expect(undone.closed.size).toBe(0);
   expect(idsOf(treeRows(root, undone))).toEqual(everyId(root));
   // With nothing folded, `z` changes nothing.
   expect(withEveryFoldUndone(NOTHING_OPENED)).toBe(NOTHING_OPENED);
+});
+
+// R11: a fold is the reader's act on one row. A check that serves two requirements is drawn under
+// each, and the reader's fold of one of those rows folds that row alone: the other row of the
+// check stays as it was, and unfolding the row draws back exactly the rows its count said.
+test("a fold on one row of a node drawn under two parents folds that row alone", () => {
+  const root = servedTwice(() =>
+    node("v#b-c1", "check", [
+      node("result-1", "result", [node("note", "callout")]),
+      node("result-2", "result"),
+    ])
+  );
+  const place = "CORE-1>spec#b-r2>v#b-c1";
+  const folded = treeRows(root, withFold(NOTHING_OPENED, place, false));
+  const checks = folded.filter((row) => row.kind === "node" && row.node.id === "v#b-c1");
+  expect(checks.map((row) => row.trail.at(-1))).toEqual(["spec#b-r1", "spec#b-r2"]);
+  expect(checks[0], "the fold of the check's row under r2 folded its row under r1").toMatchObject({
+    expanded: true,
+  });
+  expect(checks[0]).not.toHaveProperty("folded");
+  expect(checks[1]).toMatchObject({ expanded: false, folded: 3 });
+  expect(idsOf(folded)).toEqual([
+    "CORE-1",
+    "spec#b-r1",
+    "v#b-c1",
+    "result-1",
+    "note",
+    "result-2",
+    "spec#b-r2",
+    "v#b-c1",
+  ]);
+  // Unfolded by the same control, the row draws back the three rows its count said, and no more.
+  const unfolded = treeRows(root, withFold(withFold(NOTHING_OPENED, place, false), place, true));
+  expect(unfolded.length - folded.length).toBe(3);
+  expect(idsOf(unfolded)).toEqual(idsOf(treeRows(root)));
+});
+
+// R11: the reader's fold is kept by the row's place from the issue, which the rows drawn from a
+// zoomed node are seeded with, so a fold holds through a zoom into a branch above it and back
+// out, a fold made inside the zoom holds once zoomed out, and both hold through a read drawn
+// again with the same nodes.
+test("a fold holds through a zoom in and back out, and through a read drawn again", () => {
+  const build = (): TreeNode =>
+    node("CORE-1", "issue", [
+      node("doc-1", "document", [
+        node("doc-2", "document", [node("comment-1", "comment", [node("reply-1", "comment")])]),
+      ]),
+    ]);
+  const root = build();
+  const whole = rowOf(treeRows(root), "comment-1");
+  const opened = withFold(NOTHING_OPENED, placeOf(whole.trail, whole.node.id), false);
+  expect(rowOf(treeRows(root, opened), "comment-1")).toMatchObject({ expanded: false, folded: 1 });
+  // Zoomed into doc-1, the row is still folded.
+  const doc = rowOf(treeRows(root), "doc-1").node;
+  const inside = treeRows(doc, opened, ["CORE-1"]);
+  expect(rowOf(inside, "comment-1"), "the zoom into doc-1 drew the folded row open").toMatchObject({
+    expanded: false,
+    folded: 1,
+  });
+  expect(idsOf(inside)).not.toContain("reply-1");
+  // Zoomed back out, and drawn again from a new read of the same nodes, it is still folded.
+  expect(rowOf(treeRows(root, opened), "comment-1")).toMatchObject({ expanded: false });
+  expect(idsOf(treeRows(build(), opened))).toEqual(["CORE-1", "doc-1", "doc-2", "comment-1"]);
+  // A fold made inside the zoom is the same row's once zoomed back out.
+  const zoomed = rowOf(treeRows(doc, NOTHING_OPENED, ["CORE-1"]), "comment-1");
+  const madeInside = withFold(NOTHING_OPENED, placeOf(zoomed.trail, zoomed.node.id), false);
+  expect(
+    rowOf(treeRows(root, madeInside), "comment-1"),
+    "the fold made inside the zoom was lost on the zoom out"
+  ).toMatchObject({ expanded: false, folded: 1 });
 });
 
 // R15: a node draws its first 50 children, in the read's order, and one row after them that says
@@ -189,6 +260,26 @@ test("a node draws its first 50 children and the count of the rest", () => {
   expect(treeRows(node("CORE-1", "issue", [holding("post", 50)])).at(-1)?.kind).toBe("node");
 });
 
+// R15: the row that pages a node's children draws the next page under its own row. A node drawn
+// under two parents has a page row under each, and a press on one draws the rest under that row
+// alone.
+test("the next page of a node's children is drawn under the row pressed alone", () => {
+  const root = servedTwice(() => holding("thread", CHILD_PAGE + 7));
+  const first = treeRows(root);
+  const pages = first.filter((row) => row.kind === "page");
+  expect(idsOf(pages)).toEqual(["page:thread:7", "page:thread:7"]);
+  const pressed = pages[1];
+  if (pressed?.kind !== "page") throw new Error("no page row under r2");
+  const second = treeRows(root, withNextPage(NOTHING_OPENED, pressed));
+  const left = second.filter((row) => row.kind === "page");
+  expect(idsOf(left), "the press under r2 drew the next page under r1 too").toEqual([
+    "page:thread:7",
+  ]);
+  expect(left[0]?.trail).toEqual(["CORE-1", "spec#b-r1"]);
+  // The seven rows drawn take the place of the row that paged them.
+  expect(second.length - first.length).toBe(6);
+});
+
 // R15: a child the focus, an address or a write names is drawn with every child before it, at
 // every level of the path down to it, so a new row past the first 50 lands in view.
 test("the child the focus names is drawn with every child before it", () => {
@@ -210,6 +301,26 @@ test("the child the focus names is drawn with every child before it", () => {
   expect(deep.at(-1)).toBe("page:post:5");
   // Named by nothing, it is behind its parent's page again.
   expect(idsOf(treeRows(root))).not.toContain("post-52");
+});
+
+// R15: a row the page names by its place - the row the tab stop rests on - is drawn with every
+// child before it at that place alone, and the same node's other placement keeps its first page.
+// A node named by its id alone is drawn so where `pathTo` finds it, its first placement.
+test("a row named past its parent's first 50 is drawn with every child before it, under that place alone", () => {
+  const root = servedTwice(() => holding("thread", CHILD_PAGE + 7));
+  const placed = treeRows(root, NOTHING_OPENED, [], [], ["CORE-1>spec#b-r2>thread>thread-55"]);
+  const pages = placed.filter((row) => row.kind === "page");
+  expect(idsOf(pages), "the row named under r2 drew more children under r1").toEqual([
+    "page:thread:7",
+    "page:thread:2",
+  ]);
+  expect(pages.map((row) => row.trail.at(-1))).toEqual(["spec#b-r1", "spec#b-r2"]);
+  // Named by its id alone, the node is drawn at its first placement, under r1.
+  const named = treeRows(root, NOTHING_OPENED, [], ["thread-55"]);
+  expect(idsOf(named.filter((row) => row.kind === "page"))).toEqual([
+    "page:thread:2",
+    "page:thread:7",
+  ]);
 });
 
 // R11: every level is drawn, and past six levels a row's indent stops growing, so its words keep

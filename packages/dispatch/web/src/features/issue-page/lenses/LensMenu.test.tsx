@@ -19,6 +19,7 @@ import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
 import { conversationTreeKey } from "../../../api/queries";
 import { trackQueryFetches } from "../../../api/query-refresh";
+import { pageFocusedRow } from "../../../theme/classes";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useDialog } from "../../shell/useDialog";
@@ -47,7 +48,7 @@ import {
 import { lensActFor } from "./LensMenu";
 
 /**
- * The Lens act of a focused row and its menu of lens kinds.
+ * The Lens act of a row and its menu of lens kinds.
  *
  * The rows are drawn by `TreeRows`, as the outline draws them, under a router at the address the
  * test names, so the act is offered the way the page offers it; where a case counts the rows, they
@@ -317,17 +318,17 @@ function rowOf(view: RenderResult, id = STATEMENT_ID): HTMLElement {
   return row;
 }
 
-function lensAct(view: RenderResult): HTMLButtonElement | null {
-  return view.container.querySelector<HTMLButtonElement>("[data-row-lens]");
+function lensAct(view: RenderResult, id?: string): HTMLButtonElement | null {
+  const scope = id === undefined ? view.container : rowOf(view, id);
+  return scope.querySelector<HTMLButtonElement>("[data-row-lens]");
 }
 
-/** Focuses the row once it is drawn, as `j` or a press does, and answers its act once the row
- *  draws it. */
+/** Focuses the row once it is drawn, as `j` or a press does, and answers its act. */
 async function focusedAct(view: RenderResult, id = STATEMENT_ID): Promise<HTMLButtonElement> {
   const row = await waitFor(() => rowOf(view, id));
   act(() => row.focus());
   return waitFor(() => {
-    const control = lensAct(view);
+    const control = lensAct(view, id);
     if (control === null) throw new Error("the focused row draws no Lens act");
     return control;
   });
@@ -368,8 +369,9 @@ async function drawnItems(view: RenderResult): Promise<HTMLElement[]> {
 const REFUSAL = '[data-row-acts] [role="status"]:not([data-lens-menu-line])';
 
 /** The one sentence the acts' line says of a refusal, where it says one. */
-function refusal(view: RenderResult): string | null {
-  return view.container.querySelector(REFUSAL)?.textContent ?? null;
+function refusal(view: RenderResult, id?: string): string | null {
+  const scope = id === undefined ? view.container : rowOf(view, id);
+  return scope.querySelector(REFUSAL)?.textContent ?? null;
 }
 
 /** What the menu's own line says of its reads, beside the menu; null where no menu is open. */
@@ -396,20 +398,31 @@ test("the menu lists the catalogue in order", async () => {
   });
   const view = renderAt(<Rows nodes={[statement]} />);
   try {
-    expect(lensAct(view), "an unfocused row draws the act").toBeNull();
-    const control = await focusedAct(view);
-    expect(control.textContent).toBe(LENS_WORDS.act);
-    expect(control.hasAttribute("data-page-chrome")).toBe(true);
-    expect(control.hasAttribute("data-row-act"), "the act is marked as a writer's act").toBe(false);
-    expect(control.closest("[data-row-acts]"), "the act stands outside the row's acts").not.toBe(
+    // Every eligible row draws the Lens act before any row takes the focus; focusing the row adds
+    // no text, and the catalogue is still not read until the menu opens.
+    const beforeFocus = rowOf(view).textContent;
+    const unfocused = lensAct(view, STATEMENT_ID);
+    expect(unfocused, "an unfocused row draws no Lens act").not.toBeNull();
+    if (unfocused === null) return;
+    expect(unfocused.textContent).toBe(LENS_WORDS.act);
+    expect(unfocused.hasAttribute("data-page-chrome")).toBe(true);
+    expect(unfocused.hasAttribute("data-row-act"), "the act is marked as a writer's act").toBe(
+      false
+    );
+    expect(unfocused.closest("[data-row-acts]"), "the act stands outside the row's acts").not.toBe(
       null
     );
-    expect(control.tabIndex, "the act is in the tab order").toBe(-1);
-    expect(control.getAttribute("aria-haspopup")).toBe("menu");
-    expect(control.getAttribute("aria-expanded")).toBe("false");
+    expect(unfocused.tabIndex, "the act is in the tab order").toBe(-1);
+    expect(unfocused.getAttribute("aria-haspopup")).toBe("menu");
+    expect(unfocused.getAttribute("aria-expanded")).toBe("false");
+    await letRequestsSettle();
+    expect(catalogue.reads, "an unfocused row read the catalogue").toBe(0);
+
+    const control = await focusedAct(view);
+    expect(control, "focusing the row replaced the Lens act").toBe(unfocused);
+    expect(rowOf(view).textContent, "focusing the row changed its text").toBe(beforeFocus);
     await letRequestsSettle();
     expect(catalogue.reads, "the focus read the catalogue").toBe(0);
-
     await user.click(control);
     const menu = menuOf(view);
     expect(menu, "the press opened no menu").not.toBeNull();
@@ -740,7 +753,7 @@ test("a 201 after the reader left the outline leaves them where they went", asyn
 });
 
 // Where the reader still stands on this issue's outline as the 201 comes, the page lands on the
-// new lens's row though the row it was picked on lost the focus, and its menu with it: at the
+// new lens's row though the row it was picked on lost the focus and its menu closed: at the
 // address that stands then, which keeps the words filter the reader typed after the pick.
 test("a 201 lands on the outline the reader still stands on", async () => {
   const user = userEvent.setup();
@@ -945,9 +958,10 @@ test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?
   }
 });
 
-// A refusal that comes after the row lost the focus, and its menu with it, is said at that row
-// once it is focused again, and at no other; the next opening of the menu lets it go.
-test("a refusal after the row lost the focus is said when it is focused again", async () => {
+// A refusal that comes after the row lost the focus, and its menu closed, is said on that row
+// alone (and on no other) without stealing focus, stays there once focused again, and the next
+// opening of the menu lets it go.
+test("a refusal after the row lost the focus is said on that row at once and stays", async () => {
   const user = userEvent.setup();
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
   const out = Promise.withResolvers<void>();
@@ -962,22 +976,29 @@ test("a refusal after the row lost the focus is said when it is focused again", 
     await user.click((await drawnItems(view))[0] as HTMLElement);
     await waitFor(() => expect(bodies).toHaveLength(1));
     await focusedAct(view, OTHER_ID);
+    expect(menuOf(view), "the menu outlived its row's focus").toBeNull();
 
     out.resolve();
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     await letRequestsSettle();
-    expect(refusal(view), "another row said the refusal").toBeNull();
+    expect(refusal(view, OTHER_ID), "another row said the refusal").toBeNull();
+    expect(refusal(view, STATEMENT_ID), "the refused row did not say its refusal").toBe(
+      LENS_ANSWERS.gone
+    );
+    expect(document.activeElement, "the refusal stole the focus from the other row").toBe(
+      rowOf(view, OTHER_ID)
+    );
 
     const control = await focusedAct(view);
-    expect(refusal(view)).toBe(LENS_ANSWERS.gone);
-    const status = view.container.querySelector(REFUSAL);
+    expect(refusal(view, STATEMENT_ID)).toBe(LENS_ANSWERS.gone);
+    const status = rowOf(view, STATEMENT_ID).querySelector(REFUSAL);
     expect(status?.getAttribute("role")).toBe("status");
     expect(status?.hasAttribute("data-page-chrome")).toBe(true);
     expect(control.nextElementSibling, "the sentence is not the act's next").toBe(status);
     expect(rowOf(view).contains(status), "the sentence is not at the row").toBe(true);
 
     await user.click(control);
-    expect(refusal(view), "the sentence outlived the next opening").toBeNull();
+    expect(refusal(view, STATEMENT_ID), "the sentence outlived the next opening").toBeNull();
   } finally {
     out.resolve();
     view.unmount();
@@ -985,8 +1006,8 @@ test("a refusal after the row lost the focus is said when it is focused again", 
 });
 
 // A row focused again while its pick is out says so in its menu, and a pick there sends
-// nothing: whether a pick is out is kept with the node's invocations, not in the menu the row's
-// focus took away. The 201 still lands.
+// nothing: whether a pick is out is kept with the node's invocations, not only while the menu
+// stays open. The 201 still lands.
 test("a row focused again while its pick is out takes no second pick", async () => {
   const user = userEvent.setup();
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
@@ -1006,7 +1027,10 @@ test("a row focused again while its pick is out takes no second pick", async () 
     await user.click(await focusedAct(view));
     await user.click((await drawnItems(view))[1] as HTMLElement);
     await waitFor(() => expect(bodies).toHaveLength(1));
-    await focusedAct(view, OTHER_ID);
+    const otherControl = await focusedAct(view, OTHER_ID);
+    expect(otherControl, "another row did not draw its own Lens act").not.toBe(
+      lensAct(view, STATEMENT_ID)
+    );
     expect(menuOf(view), "the menu outlived its row's focus").toBeNull();
 
     await user.click(await focusedAct(view));
@@ -1200,14 +1224,28 @@ const NOT_TAKEN = [
   "dispatch://lens/not-a-uuid",
 ];
 
-/** Whether the statement's row, focused at `path`, draws the Lens act, once it draws its acts:
- *  the rows read the act from the address. */
+/** Whether every row of `[statement, other]` at `path` draws the Lens act, both unfocused and
+ *  with the first row focused, once the rows draw their acts: the rows read the act from the
+ *  address. */
 async function drawsLensAct(path: string, isClosed = false): Promise<boolean> {
-  const drawn = renderAt(<Rows isClosed={isClosed} nodes={[statement]} />, path);
+  const drawn = renderAt(<Rows isClosed={isClosed} nodes={[statement, other]} />, path);
   try {
-    act(() => rowOf(drawn).focus());
-    await waitFor(() => expect(drawn.container.querySelector("[data-row-copy]")).not.toBeNull());
-    return lensAct(drawn) !== null;
+    await waitFor(() =>
+      expect(rowOf(drawn, STATEMENT_ID).querySelector("[data-row-copy]")).not.toBeNull()
+    );
+    const beforeStatement = lensAct(drawn, STATEMENT_ID) !== null;
+    const beforeOther = lensAct(drawn, OTHER_ID) !== null;
+    expect(beforeOther, `rows at ${path} disagree on the Lens act while unfocused`).toBe(
+      beforeStatement
+    );
+    act(() => rowOf(drawn, STATEMENT_ID).focus());
+    const afterStatement = lensAct(drawn, STATEMENT_ID) !== null;
+    const afterOther = lensAct(drawn, OTHER_ID) !== null;
+    expect(afterStatement, `focusing a row at ${path} changed its Lens act`).toBe(beforeStatement);
+    expect(afterOther, `focusing another row at ${path} changed this row's Lens act`).toBe(
+      beforeOther
+    );
+    return afterStatement;
   } finally {
     drawn.unmount();
   }
@@ -1320,4 +1358,85 @@ test("no key pressed in the menu reaches the tree", async () => {
     out.resolve();
     view.unmount();
   }
+});
+
+/** `count` statements of the spec, `spec/r1` on, each a row the Lens act stands on. */
+function statements(count: number): TreeNode[] {
+  return Array.from({ length: count }, (_unused, at) =>
+    node({
+      id: `spec/r${at + 1}`,
+      reference: statementRef(`r${at + 1}`),
+      text: `Statement ${at + 1}`,
+      type: "requirement",
+    })
+  );
+}
+
+/** What the page asks of a client's mutation cache since `watchMutations` began: how many
+ *  listeners it holds now, and how many notices it has sent them. */
+interface MutationWatch {
+  listeners: number;
+  notices: number;
+}
+
+/** Watches `client`'s mutation cache, from before anything is drawn with it. */
+function watchMutations(client: QueryClient): MutationWatch {
+  const cache = client.getMutationCache();
+  const watch: MutationWatch = { listeners: 0, notices: 0 };
+  const subscribe = cache.subscribe;
+  jest.spyOn(cache, "subscribe").mockImplementation((listener) => {
+    const unsubscribe = subscribe(listener);
+    watch.listeners += 1;
+    return () => {
+      watch.listeners -= 1;
+      unsubscribe();
+    };
+  });
+  const notify = cache.notify.bind(cache);
+  jest.spyOn(cache, "notify").mockImplementation((event) => {
+    watch.notices += 1;
+    notify(event);
+  });
+  return watch;
+}
+
+// The act stands on every row that takes it, and a focus move draws every row again, so what an
+// act reads of the mutation cache itself would make each move cost more with every row: the
+// outline reads every node's invocations once, the same for 3 rows as for 30, and a move tells
+// the cache's listeners nothing.
+test("the rows' Lens acts listen to the mutation cache once, however many rows", async () => {
+  // For each count of rows: the cache's listeners once the rows are drawn, and after three focus
+  // moves; and the notices those moves sent.
+  const listeners: number[][] = [];
+  const notices: number[] = [];
+  for (const count of [3, 30]) {
+    const client = signedIn();
+    const watch = watchMutations(client);
+    const view = renderAt(<Rows nodes={statements(count)} />, undefined, client);
+    try {
+      await waitFor(() =>
+        expect(view.container.querySelectorAll("[data-row-lens]")).toHaveLength(count)
+      );
+      const drawn = watch.listeners;
+      const before = watch.notices;
+      for (const at of [1, 2, count]) {
+        const id = `spec/r${at}`;
+        await focusedAct(view, id);
+        expect(
+          rowOf(view, id).querySelector("[data-node-card]")?.className,
+          "the focus move did not draw the rows again"
+        ).toContain(pageFocusedRow);
+      }
+      listeners.push([drawn, watch.listeners]);
+      notices.push(watch.notices - before);
+    } finally {
+      view.unmount();
+    }
+  }
+  const [few] = listeners;
+  expect(listeners, "the mutation cache's listeners grew with the rows or a focus move").toEqual([
+    [few?.[0], few?.[0]],
+    [few?.[0], few?.[0]],
+  ]);
+  expect(notices, "a focus move told the mutation cache's listeners").toEqual([0, 0]);
 });
