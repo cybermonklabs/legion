@@ -460,8 +460,9 @@ func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
 // Nothing else is sent, no move back is counted, and the landing in merging tells the merger and
 // asks the reviewer to read the merge. One message more than main's is sent, at the ready of a
 // launch the daemon makes of the merger by itself while the merge is open: the merger is held
-// again (holdSentWorker), where main sends no message at a ready. Its check uses t.Errorf, so the
-// landing is still read on main.
+// again (holdSentWorker), where main sends no message at a ready. Its checks use t.Errorf, so the
+// landing is still read on main, and after that ready too the checks-red notice is still the one
+// and no move back is counted.
 func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T) {
 	t.Parallel()
 	pool := seedConflictIssue(t, phase.Reviewing, "needs_review", waitingOnTheMergeState())
@@ -498,6 +499,12 @@ func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T)
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute+30*time.Second), intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleMerger, Launch: 2})
 	if got, held := mergeForwardMessages(t, pool), append(slices.Clone(want), heldIn(claim.RoleMerger, phase.Merging, why)); !reflect.DeepEqual(got, held) {
 		t.Errorf("after the ready of the merger's launch 2 the merge-forward messages are %+v, want %+v: the ready holds the merger again", got, held)
+	}
+	if told := capNotices(t, pool, "checks-red"); told != 1 {
+		t.Errorf("after the ready of the merger's launch 2 the architect has %d checks-red notices, want 1", told)
+	}
+	if moves := backwardMoves(t, pool); len(moves) != 0 {
+		t.Errorf("after the ready of the merger's launch 2 the moves back counted are %v, want none", moves)
 	}
 
 	asked := len(mergeForwardMessages(t, pool))
