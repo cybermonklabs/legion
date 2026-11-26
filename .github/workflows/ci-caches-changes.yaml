@@ -32,6 +32,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A ref of a name actions/checkout never removes, so the reader's fetch offers this commit
+      # as one it has and is sent only what its own commit adds: the checkout removes a remote
+      # branch that conflicts with the ref it checks out, and its fetch offers refs alone, never a
+      # detached HEAD (ci-caches.md says what a run without such a ref fetched).
+      - name: Keep this commit under a ref of its own
+        run: git update-ref refs/ci-cache/main HEAD
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .git

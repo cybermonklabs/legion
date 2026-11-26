@@ -197,7 +197,12 @@ as a prefix and answers with the newest entry; actions/checkout finds a reposito
 there and fetches only what the run's commit adds to main's objects. The checkout's fetch was 13.0
 s for 91 MB (18,368 objects at 15.45 MiB/s, run 45766372051, job fetch), most of the job's 15 s
 checkout, and the restore of the 96 MB entry took 0.8 s, the fetch after it 1.0 s and the checkout
-1.3 s (the same run, job restore). The fill's superseded job deletes the entries of this ref older
+1.3 s (the same run, job restore). The fill keeps the commit under refs/ci-cache/main as well:
+the fetch offers the server the refs it holds as the commits it has, never a detached HEAD, and
+actions/checkout removes a remote branch that conflicts with the ref it checks out, so an entry
+saved from a detached checkout was fetched whole again (13 s in demo run 45781883565's first
+attempt), and one with a ref of that name in 0.3 s (its second attempt, job 139787204657). The
+fill's superseded job deletes the entries of this ref older
 than the one it saved, as refill-superseded deletes its families' (the section above says why it
 is a job of its own), so one entry stays. A restore that misses, or an entry the checkout cannot
 use, leaves the checkout to fetch everything, as it did before.
