@@ -93,6 +93,12 @@ import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 // The composer draws the quote of the message it answers through the Markdown engine, a module
 // loaded on first use (`markdown-engine.ts`). A cell reads what the composer quotes in the commit
 // after its press, which a first load of the engine can come after, so the engine is loaded
@@ -610,7 +616,10 @@ for (const held of HELD) {
         await within(row()).findByRole("combobox", { name: "Issue" }),
         coreIssue.key
       );
-      await waitFor(() => expect(field().value).toBe(`@Planner ${BODY}`));
+      // The issue's seed names Planner as the link a pick writes (`seededDraft`).
+      await waitFor(() =>
+        expect(field().value).toBe(`[@Planner](dispatch://agent/planner-session) ${BODY}`)
+      );
       expect({ note: note(), retry: retryOffered() }).toEqual(ownMoveToIssue[held]);
     } finally {
       page.restore();

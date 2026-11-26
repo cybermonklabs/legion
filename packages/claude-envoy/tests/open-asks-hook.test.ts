@@ -1665,8 +1665,8 @@ const DEVICE_LOGIN_LOCK_SOURCE = "packages/cipher-client/src/device-login-lock.t
 /** The device-login route's waits, the one route the hook's exit leaves to run
  *  (`endOnceWritten`): its trade holds the login's lock and may yet save a rotated refresh token.
  *  So its waits run to their bounds: the trade's attempt, the refresh's two requests
- *  (device-login.ts:131's BROKER_REQUEST_MS, at :274), the lock's heartbeat
- *  (device-login-lock.ts:63) and the retry's jittered first wait. */
+ *  (device-login.ts's BROKER_REQUEST_MS, armed in brokerConfiguration's customFetch), the lock's
+ *  heartbeat (device-login-lock.ts:63) and the retry's jittered first wait. */
 const DEVICE_LOGIN_ROUTE: readonly CensusEntry[] = [
   DISPATCH_READ,
   CREDENTIAL_WAIT,
@@ -1982,7 +1982,11 @@ for (const route of BROKER_ROUTES) {
 /**
  * The wait sites of the hook's code whose call carries no bound the scan traces, each with what
  * bounds it. An entry names its file, a text of the site's first line, and how many unbounded
- * sites of that file carry that text: one more of them, or one fewer, fails the row.
+ * sites of that file carry that text: one more of them, or one fewer, fails the row. No check
+ * reads `bound`: it is the reviewer's note, so a line number in it holds only at the commit that
+ * wrote it and moves whenever its file changes above that line, with nothing to say so. The
+ * device-login.ts references name functions instead, since that file's lines moved under them
+ * more than once.
  */
 const REVIEWED_WAIT_SITES: readonly {
   file: string
@@ -2062,25 +2066,25 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "proved.fetch(url, requestInit(options, signal, headers))",
     count: 1,
     bound:
-      "requestInit merges openid-client's own signal and `signal` into the request's (:103); its " +
-      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:274) and the trade's " +
-      "AbortSignal.any([closed, attempt]) (token-client.ts:557), attempt being " +
-      "AbortSignal.timeout(this.#attemptMs) (token-client.ts:554)",
+      "requestInit merges openid-client's own signal and `signal` into the request's (:112); its " +
+      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts, brokerConfiguration) and the trade's " +
+      "AbortSignal.any([closed, attempt]) (token-client.ts:560), attempt being " +
+      "AbortSignal.timeout(this.#attemptMs) (token-client.ts:557)",
   },
   {
     file: "packages/cipher-client/src/device-login.ts",
     text: "fetchImpl(url, requestInit(options, deadline, options.headers))",
     count: 1,
     bound:
-      "requestInit (broker-request.ts:103) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :274",
+      "requestInit (broker-request.ts:112) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS), armed just before it in brokerConfiguration's customFetch",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
     text: "send(url, requestInit(init, signal, init.headers))",
     count: 1,
     bound:
-      "openid-client calls it with the signal of its own `timeout` (ISSUER_TIMEOUT_SECONDS, :135), " +
-      "which requestInit merges with the caller's (broker-request.ts:103)",
+      "openid-client calls it with the signal of its own `timeout` (ISSUER_TIMEOUT_SECONDS, :117), " +
+      "which requestInit merges with the caller's (broker-request.ts:112)",
   },
   {
     file: "packages/claude-envoy/hooks/session-hook.ts",
@@ -2127,8 +2131,8 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the broker client's default fetch (:358), handed to each trade's request (:804) and called at " +
-      "broker-request.ts:140 under the trade's signal",
+      "the broker client's default fetch (:360), handed to each trade's request (:807) and called at " +
+      "broker-request.ts:149 under the trade's signal",
   },
   {
     file: "packages/cipher-client/src/device-login.ts",
@@ -2136,7 +2140,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 3,
     bound:
-      "a device login's default fetch (:396, :468, :718), handed to brokerConfiguration, whose requests are made at :276 under AbortSignal.timeout(BROKER_REQUEST_MS)",
+      "a device login's default fetch (startDeviceLogin, finishDeviceLogin and refreshDeviceLogin), handed to brokerConfiguration, whose customFetch makes each request under AbortSignal.timeout(BROKER_REQUEST_MS)",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
@@ -2153,6 +2157,14 @@ const REVIEWED_WAIT_SITES: readonly {
     count: 1,
     bound:
       "the pool identity's default fetch (:171), called only at :197 under AbortSignal.timeout(POOL_TIMEOUT_MS)",
+  },
+  {
+    file: "packages/cipher-client/src/github-actions-identity.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "a GitHub Actions run's identity's default fetch (:83), called only at :90 under AbortSignal.timeout(TIMEOUT_MS) (:87)",
   },
   {
     file: "packages/cipher-client/src/metadata-identity.ts",

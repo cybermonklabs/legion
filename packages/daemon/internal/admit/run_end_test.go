@@ -464,6 +464,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.DispatchApprovalMoved{}, intake.DispatchAskRestored{}, intake.HandoffComplete{}, intake.PullRequestOpened{},
 		intake.PullRequestSynchronized{}, intake.Push{}, intake.BasePush{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
+		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{}, intake.TextsFellBack{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},

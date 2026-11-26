@@ -40,6 +40,13 @@
 admission_power() {
   local kube="$1" step="$2" guarded id url policies allowlist sns sname why engines
   POWER_RIGHTS='[]'
+  # WEBHOOK_SERVICES: the Service of every webhook of the cluster's configurations ({id, ns, name}),
+  # whatever the webhook's selectors or rules (webhook-backends.jq's `backends`, built by the walk
+  # that builds `services`); "" when the list was not read, which the UNKNOWN below names with jq's
+  # error when webhook-backends.jq could not read it.
+  # broker-fence.sh reads it: entry into a backend's pod changes what its webhook does to every
+  # object it admits.
+  WEBHOOK_SERVICES=""
   guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
   # The cluster-scoped resources, so a webhook rule naming a resource that is namespaced in one group
   # it names and cluster-scoped in another (a CRD of the same plural) is judged. kubectl prints what
@@ -54,6 +61,7 @@ admission_power() {
     unknown "$step" "the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: $(first_line "$WORK/webhooks.err")"
   else
     POWER_RIGHTS="$(jq -c .rights "$WORK/webhooks.out")"
+    WEBHOOK_SERVICES="$(jq -c .backends "$WORK/webhooks.out")"
     while IFS=$'\t' read -r id url; do
       unknown "$step" "the webhook $id can match a guarded namespace or a cluster-scoped object and calls $url, outside the cluster, whose holders this check cannot read"
     done < <(jq -r '.urls[] | [.id, .url] | @tsv' "$WORK/webhooks.out")
