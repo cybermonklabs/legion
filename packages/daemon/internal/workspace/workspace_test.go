@@ -118,7 +118,7 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	if isClone(actual.Argv) && !slices.Contains(command.Env, "GIT_ALLOW_PROTOCOL=file") {
 		actual.Argv[3] = r.remote
 	}
-	if commandWith(actual.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
+	if actual.Argv[0] == "git" && slices.Contains(actual.Argv, "clone") {
 		for i, arg := range actual.Argv {
 			if arg == "https://github.com/acme/widgets" {
 				actual.Argv[i] = r.remote

@@ -2614,3 +2614,54 @@ func deltaCommand(calls []Command, feed string) Command {
 	}
 	return found
 }
+
+// A ready cache from an earlier release can still stream every branch. An issue pod must keep
+// waiting until the cache explicitly says it has narrowed to its default branch.
+func TestCacheNotReadyRequiresDefaultBranchOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(CacheRepositoryHeader, "acme/widgets")
+		_, _ = w.Write([]byte(`{"ready":true}`))
+	}))
+	t.Cleanup(server.Close)
+	request := fetchRequest(t)
+	request.CacheURL = server.URL
+
+	why, err := cacheNotReady(context.Background(), request, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "defaultBranchOnly"; !strings.Contains(why, want) {
+		t.Fatalf("cache readiness %q, want it to name missing %s", why, want)
+	}
+}
+
+// Fetch is the repository cache's operation. Its first clone and each refresh retain GitHub's
+// current default branch alone, never tags or a branch another issue might have pushed.
+func TestFetchKeepsOnlyTheDefaultBranchInTheRepositoryCache(t *testing.T) {
+	run := newLocalRunner(t)
+	pushRemoteBranch(t, run.remote, "cold/x", "cold.txt")
+	pushRemoteBranch(t, run.remote, "legion/OTHER-1", "other.txt")
+	runSetup(t, t.TempDir(), "git", "--git-dir="+run.remote, "tag", "-a", "v1", "-m", "version", "main")
+	request := fetchRequest(t)
+	request.Root, request.Feed = t.TempDir(), ""
+
+	first, err := Fetch(context.Background(), run, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.TrimSpace(runSetup(t, first.Feed, "git", "--git-dir="+first.Feed, "for-each-ref", "--format=%(refname)")); refs != "refs/heads/main" {
+		t.Fatalf("cache refs %q, want refs/heads/main alone", refs)
+	}
+	if tagOpt := strings.TrimSpace(runSetup(t, first.Feed, "git", "--git-dir="+first.Feed, "config", "--get", "remote.origin.tagopt")); tagOpt != "--no-tags" {
+		t.Fatalf("cache remote.origin.tagopt %q, want --no-tags", tagOpt)
+	}
+
+	pushRemoteBranch(t, run.remote, "release/next", "next.txt")
+	second, err := Fetch(context.Background(), run, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.TrimSpace(runSetup(t, second.Feed, "git", "--git-dir="+second.Feed, "for-each-ref", "--format=%(refname)")); refs != "refs/heads/main" {
+		t.Fatalf("refreshed cache refs %q, want refs/heads/main alone", refs)
+	}
+}

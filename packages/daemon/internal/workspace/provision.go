@@ -111,6 +111,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
+	if source.issue != nil {
+		if err := configureIssueCloneMaintenance(ctx, run, workspace.Clone); err != nil {
+			return Workspace{}, err
+		}
+	}
 	if err := configurePackWindows(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
