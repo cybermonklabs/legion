@@ -14,7 +14,14 @@ import {
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import type { NodeType } from "./page-words";
-import { CHILD_PAGE, NOTHING_OPENED, type OpenedBranches, treeRows } from "./tree-fold";
+import {
+  CHILD_PAGE,
+  NOTHING_OPENED,
+  type OpenedBranches,
+  placeOf,
+  treeRows,
+  withFold,
+} from "./tree-fold";
 
 /**
  * The conversation's current point: the node the reader's next turn answers, and the drawn rows
@@ -110,9 +117,10 @@ function replyingTo(id: string, parentKind: "ask" | "comment" | "message"): Poin
   return { ...NOTHING_AIMED, reply: { actor: BOB, excerpt: "Earlier words", id, parentKind } };
 }
 
-/** Folds the branch of each of `ids` shut by hand. */
-function closed(...ids: string[]): OpenedBranches {
-  return { ...NOTHING_OPENED, closed: new Set(ids) };
+/** Folds shut by hand the row at each of `places`, as the row's fold control does (`withFold`): a
+ *  fold is kept by the row's place (`placeOf`), never by its node's id. */
+function closed(...places: string[]): OpenedBranches {
+  return places.reduce((opened, place) => withFold(opened, place, false), NOTHING_OPENED);
 }
 
 /** The nodes `path` runs through, each found among its parent's children by its id, which no
@@ -318,7 +326,7 @@ test("the point's own row is marked here, and no other row is marked", () => {
 test("with the point folded away, each drawn row on its path is marked path", () => {
   const root = deepQuestion();
   const path = currentPath(root, NOTHING_AIMED);
-  const rows = treeRows(root, closed("c2"));
+  const rows = treeRows(root, closed(placeOf([KEY, "c1"], "c2")));
   expect(Object.fromEntries(pointMarks(rows, path))).toEqual({
     "CORE-1": "path",
     "CORE-1>c1": "path",
@@ -328,7 +336,9 @@ test("with the point folded away, each drawn row on its path is marked path", ()
     "CORE-1>c1": "path",
     "CORE-1>c1>c2": "path",
   });
-  expect(Object.fromEntries(pointMarks(treeRows(root, closed("c1")), path))).toEqual({
+  expect(
+    Object.fromEntries(pointMarks(treeRows(root, closed(placeOf([KEY], "c1"))), path))
+  ).toEqual({
     "CORE-1": "path",
     "CORE-1>c1": "path",
   });
@@ -346,7 +356,7 @@ test("the rows of a zoomed outline are marked by their trails", () => {
   expect(Object.fromEntries(pointMarks(zoomed(NOTHING_OPENED), path))).toEqual({
     "CORE-1>c1>c2>a1": "here",
   });
-  expect(Object.fromEntries(pointMarks(zoomed(closed("c2")), path))).toEqual({
+  expect(Object.fromEntries(pointMarks(zoomed(closed(placeOf([KEY, "c1"], "c2"))), path))).toEqual({
     "CORE-1>c1": "path",
     "CORE-1>c1>c2": "path",
   });
@@ -362,7 +372,10 @@ test("a transcluded placement's rows are never marked", () => {
   expect(Object.fromEntries(pointMarks(open, path))).toEqual({
     [`CORE-1>spec#b-r2>${CHECK}>a1`]: "here",
   });
-  const folded = treeRows(root, closed(CHECK));
+  const folded = treeRows(
+    root,
+    closed(placeOf([KEY, "spec#b-r1"], CHECK), placeOf([KEY, "spec#b-r2"], CHECK))
+  );
   expect(folded.filter((row) => row.kind === "node" && row.node.id === CHECK)).toHaveLength(2);
   expect(Object.fromEntries(pointMarks(folded, path))).toEqual({
     "CORE-1": "path",
