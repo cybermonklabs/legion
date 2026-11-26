@@ -360,6 +360,16 @@ export function waitForOwnership(
   })
 }
 
+/** A live server beside the one leaving can take over its shared threads. */
+export async function hasStandbyServer(
+  directory: string,
+  self: CodexServerEntry,
+  probe: ProcessProbe = SYSTEM_PROBE,
+): Promise<boolean> {
+  const seen = await readEntries(directory, probe)
+  return seen?.entries.some((entry) => entry.pid !== self.pid && serverAlive(entry, probe)) ?? false
+}
+
 /** Whether `self` still owns the session: true too when no owner can be decided now. The owner
  *  re-checks every few seconds and warns when it finds another owner, which the order of
  *  publication rules out while every entry is readable. It rejects when the directory cannot be

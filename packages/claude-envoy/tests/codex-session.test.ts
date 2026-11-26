@@ -19,12 +19,18 @@ import {
   codexProcessId,
   codexSessionRecordFile,
   codexSubcommand,
+  markSharedCodexThreadEnded,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
+  readSharedCodexState,
   recordOfProcess,
+  recordSharedCodexRegistration,
   sharedAppServer,
+  sharedCodexRecordActive,
+  sharedCodexRecordFile,
   writeCodexSessionRecord,
+  writeSharedCodexRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
@@ -54,6 +60,56 @@ describe("the Codex session record", () => {
     expect(await readCodexSessionRecord(file)).toEqual(record)
     await Bun.write(file, '{"session_id": ""}')
     expect(await readCodexSessionRecord(file)).toBeUndefined()
+  })
+
+  test("a shared thread's unload and resume leave the other threads alone", async () => {
+    const state = join(directory, "shared-threads")
+    const pid = process.pid
+    const first = sharedCodexRecordFile(state, pid, "first")
+    const second = sharedCodexRecordFile(state, pid, "second")
+    const started = "this-process"
+    const record = {
+      codex_executable: null,
+      codex_home: "/h",
+      codex_started: started,
+      cwd: "/w",
+      generation: "first-load",
+      session_id: "first",
+      source: "startup",
+      transcript_path: "/first.jsonl",
+    }
+    await writeCodexSessionRecord(first, record)
+    await writeCodexSessionRecord(second, { ...record, session_id: "second" })
+    const threads = async (processStart = started) =>
+      [...(await readSharedCodexState(state, pid, processStart)).live.keys()].sort()
+    expect(await threads()).toEqual(["first", "second"])
+    expect(await threads("a-process-that-reused-the-pid")).toEqual([])
+
+    const earlierInstance = "a".repeat(32)
+    const laterInstance = "b".repeat(32)
+    await recordSharedCodexRegistration(first, record.generation, earlierInstance)
+    await recordSharedCodexRegistration(first, record.generation, laterInstance)
+    await recordSharedCodexRegistration(second, record.generation, "c".repeat(32))
+    expect((await readSharedCodexState(state, pid, started)).endedRegistrations).toEqual([])
+
+    await markSharedCodexThreadEnded(first, record.generation)
+    expect(await sharedCodexRecordActive(first, record.generation)).toBe(false)
+    expect(await threads()).toEqual(["second"])
+    expect(
+      (await readSharedCodexState(state, pid, started)).endedRegistrations
+        .map(({ record: ended, clientInstanceID }) => [ended.session_id, clientInstanceID])
+        .sort(),
+    ).toEqual([
+      ["first", earlierInstance],
+      ["first", laterInstance],
+    ])
+
+    await writeSharedCodexRecord(first, { ...record, generation: "second-load", source: "resume" })
+    expect(existsSync(`${first}.ended`)).toBe(false)
+    expect(await sharedCodexRecordActive(first, record.generation)).toBe(false)
+    expect(await sharedCodexRecordActive(first, "second-load")).toBe(true)
+    expect(await threads()).toEqual(["first", "second"])
+    expect(() => sharedCodexRecordFile(state, pid, "../first")).toThrow("invalid thread id")
   })
 
   test("a record is this process's only when it names this process's start", () => {

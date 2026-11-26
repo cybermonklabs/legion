@@ -28,7 +28,7 @@
           {
             "type": "command",
             "command": "bun \"${PLUGIN_ROOT}/dist/codex-hook.js\" session-end",
-            "timeout": 3
+            "timeout": 20
           }
         ]
       }

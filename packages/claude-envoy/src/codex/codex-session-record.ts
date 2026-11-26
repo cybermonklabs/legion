@@ -1,23 +1,21 @@
 import { spawnSync } from "node:child_process"
 import { readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
-import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
+import { hasErrnoCode } from "@legion/envoy-client/errors"
 import { z } from "zod"
 import { processExists } from "../session-identity"
-import { pruneStateDirectory } from "../session-state"
+import { pruneStateDirectory, writeAtomicStateFile } from "../session-state"
+import { threadIdShape } from "./codex-thread-id"
 
 /**
  * How the Codex plugin's MCP server learns which session it serves.
  *
- * Codex starts the plugin's MCP server as a child of the `codex` process with a stripped
- * environment and no session id, and runs the plugin's hooks as children of that same process
- * with the session's id in their input. So the `SessionStart` hook writes this record under the
- * `codex` process's id, and the server, whose parent that process is, reads it. `SessionStart`
- * runs at the session's first prompt and again after `/new`, with the new session's id. Codex
- * starts one server per thread, so a process can have several; the one that owns the process's
- * session (`./codex-owner`) follows the record to each session the process runs. Measured on Codex
- * CLI 0.154.0.
+ * The MCP server and the hooks run as children of the Codex process, but only hooks know the id
+ * before a thread makes a tool call. SessionStart writes a shared thread's record under the
+ * process id and thread id. In a process with one session, it writes one record that moves to
+ * the next thread on /new.
  */
 export const CodexSessionRecord = z.object({
   session_id: z.string().min(1),
@@ -25,6 +23,8 @@ export const CodexSessionRecord = z.object({
   codex_home: z.string().min(1),
   cwd: z.string().min(1),
   source: z.string().nullable(),
+  /** One load of a shared thread. An ended marker from a previous load cannot stop this one. */
+  generation: z.string().optional(),
   /** The `codex` binary the session runs (`/proc/<pid>/exe`), or null where it cannot be read. */
   codex_executable: z.string().nullable(),
   /** When the `codex` process started (`processStarted`: `/proc/<pid>/stat`, or `ps` where there
@@ -38,6 +38,105 @@ export type CodexSessionRecord = z.infer<typeof CodexSessionRecord>
 /** The file the record for the `codex` process `pid` lives in. */
 export function codexSessionRecordFile(stateDirectory: string, pid: number): string {
   return join(stateDirectory, "codex-sessions", `${pid}.json`)
+}
+
+function sharedCodexRecordsDirectory(stateDirectory: string, pid: number): string {
+  return join(stateDirectory, "codex-sessions", String(pid))
+}
+
+export function sharedCodexRecordFile(stateDirectory: string, pid: number, thread: string): string {
+  if (!threadIdShape(thread)) throw new Error("Codex supplied an invalid thread id")
+  return join(sharedCodexRecordsDirectory(stateDirectory, pid), `${thread}.json`)
+}
+
+export async function writeSharedCodexRecord(
+  file: string,
+  record: CodexSessionRecord & { generation: string },
+): Promise<void> {
+  // Publish the new generation first so a scan cannot wake the previous load on resume.
+  await writeCodexSessionRecord(file, record)
+  await rm(`${file}.ended`, { force: true })
+}
+
+/** The shared marker belongs to one load, even if a resume crosses a scan of the records. */
+export async function markSharedCodexThreadEnded(file: string, generation: string): Promise<void> {
+  await writeAtomicStateFile(`${file}.ended`, generation)
+}
+
+function sharedCodexEndedGeneration(file: string): Promise<string | undefined> {
+  return readFile(`${file}.ended`, "utf8").catch((error: unknown) => {
+    if (!hasErrnoCode(error, "ENOENT")) throw error
+    return undefined
+  })
+}
+
+export async function sharedCodexRecordActive(file: string, generation: string): Promise<boolean> {
+  const ended = await sharedCodexEndedGeneration(file)
+  return ended !== generation && (await readCodexSessionRecord(file))?.generation === generation
+}
+
+/** Record the instance before its first registry write. A successor must be able to remove the
+ *  old route after an unload, even if Codex stopped the owner before it could deregister it. */
+export async function recordSharedCodexRegistration(
+  threadFile: string,
+  generation: string,
+  clientInstanceID: string,
+): Promise<void> {
+  await writeAtomicStateFile(`${threadFile}.${clientInstanceID}.registration`, generation)
+}
+
+interface SharedRegistration {
+  readonly record: CodexSessionRecord
+  readonly clientInstanceID: string
+  readonly file: string
+}
+
+export interface SharedCodexState {
+  readonly live: Map<string, CodexSessionRecord & { generation: string }>
+  readonly endedRegistrations: readonly SharedRegistration[]
+}
+
+/** Only this app server's records count. Each instance has its own file so a failed replacement
+ *  never overwrites the id of an earlier instance that still holds the listener route. */
+export async function readSharedCodexState(
+  stateDirectory: string,
+  pid: number,
+  started: string,
+): Promise<SharedCodexState> {
+  const directory = sharedCodexRecordsDirectory(stateDirectory, pid)
+  const names = await readdir(directory).catch((error: unknown) => {
+    if (!hasErrnoCode(error, "ENOENT")) throw error
+    return []
+  })
+  const live: SharedCodexState["live"] = new Map()
+  const ended = new Map<string, CodexSessionRecord>()
+  await Promise.all(
+    names.map(async (name) => {
+      const thread = name.slice(0, -".json".length)
+      if (!name.endsWith(".json") || !threadIdShape(thread)) return
+      const file = join(directory, name)
+      const record = await readCodexSessionRecord(file)
+      const generation = record?.generation
+      if (
+        record?.session_id !== thread ||
+        record.codex_started !== started ||
+        generation === undefined
+      )
+        return
+      if ((await sharedCodexEndedGeneration(file)) === generation) ended.set(thread, record)
+      else live.set(thread, { ...record, generation })
+    }),
+  )
+  const endedRegistrations = names.flatMap((name) => {
+    const match = /^([0-9A-Za-z-]+)\.json\.([0-9a-f]{32})\.registration$/.exec(name)
+    const thread = match?.[1]
+    const clientInstanceID = match?.[2]
+    const record = thread === undefined ? undefined : ended.get(thread)
+    return record === undefined || clientInstanceID === undefined
+      ? []
+      : [{ record, clientInstanceID, file: join(directory, name) }]
+  })
+  return { live, endedRegistrations }
 }
 
 /**
@@ -230,9 +329,7 @@ export function recordOfProcess(record: CodexSessionRecord, pid: number): boolea
  * Whether the `codex` process `pid` is Codex's shared app server (`codex app-server`), which runs
  * several sessions in one process: a later plain `codex` reuses one `codex agents` started, and
  * Codex 0.170.0's terminal runs every session in a background `codex app-server --managed-daemon`
- * (measured on 0.170.0). This plugin keys a session by its process, so there two sessions would
- * share one record and one hand-off, and one would take the other's identity, so it registers none
- * of them with Envoy; `dispatch` still acts as the thread that calls it.
+ * (measured on 0.170.0). Each of those threads has its own session and record.
  */
 export function sharedAppServer(pid: number): boolean {
   let argv: string[]
@@ -287,16 +384,12 @@ export function codexSubcommand(args: readonly string[]): string | undefined {
   return undefined
 }
 
-/** What a session of the shared app server is told about Envoy and Dispatch. */
-export const SHARED_APP_SERVER_NOTE =
-  "Codex runs this session in its shared app server (`codex app-server`), which runs several sessions in one process, so the Envoy plugin does not register it with Envoy: it receives no Envoy messages and does not show on Dispatch's Agents page. Its `dispatch` tool works, acting as this session."
-
 /** Removes what `codex` processes that have exited left (their records, ended markers and server
  *  entries), so a later process that reuses a pid never finds any of it. */
 export async function pruneCodexSessionRecords(stateDirectory: string): Promise<void> {
   // Records and ended markers, then the server entries (`./codex-owner`), of exited codex pids.
   await pruneStateDirectory(join(stateDirectory, "codex-sessions"), (file) => {
-    const match = /^(\d+)\.(?:json|.+\.ended)$/.exec(basename(file))
+    const match = /^(\d+)(?:\.(?:json|.+\.ended))?$/.exec(basename(file))
     return match !== null && !processExists(Number(match[1]))
   })
   await pruneStateDirectory(join(stateDirectory, "codex-servers"), (file) => {

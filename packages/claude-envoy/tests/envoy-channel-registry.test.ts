@@ -50,6 +50,55 @@ function relayRemoval(nats: FakeNats, event: string, topics: readonly string[], 
 
 const scratchState = useScratchState()
 
+test("a shared owner handoff retains the listener route until the thread unloads", async () => {
+  const stateDirectory = scratchState()
+  const oldConnection = new FakeNats()
+  const newConnection = new FakeNats()
+  const id = "codex-shared-thread"
+  let registeredInstance: string | undefined
+  const deletedBy: (string | undefined)[] = []
+  const client = recordingClient([], {
+    subscribe: async ({ clientInstanceID }) => {
+      registeredInstance = clientInstanceID
+      return noInterest()
+    },
+    unregisterSession: async ({ clientInstanceID }) => {
+      deletedBy.push(clientInstanceID)
+      if (registeredInstance === clientInstanceID) registeredInstance = undefined
+    },
+  })
+  const start = (connection: FakeNats, clientInstanceID: string) =>
+    startChannelSession(
+      sessionOptions(new SessionIdentity(id, "/tmp"), stateDirectory, {
+        client,
+        clientInstanceID,
+        connection,
+      }),
+    )
+
+  const owner = await start(oldConnection, "old-owner")
+  try {
+    expect(registeredInstance).toBe("old-owner")
+    await owner.shutdown(async () => true)
+    expect(oldConnection.subscriptions.size).toBe(0)
+    expect(registeredInstance).toBe("old-owner")
+    expect(deletedBy).toEqual([])
+
+    const successor = await start(newConnection, "new-owner")
+    try {
+      expect(registeredInstance).toBe("new-owner")
+      await successor.shutdown(async () => false)
+      expect(newConnection.subscriptions.size).toBe(0)
+      expect(registeredInstance).toBeUndefined()
+      expect(deletedBy).toEqual(["new-owner"])
+    } finally {
+      await successor.shutdown()
+    }
+  } finally {
+    await owner.shutdown()
+  }
+})
+
 test("drops local topics named by a human Dispatch subscription removal", async () => {
   const calls: string[] = []
   const nats = new FakeNats(calls)

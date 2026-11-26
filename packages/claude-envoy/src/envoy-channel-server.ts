@@ -332,8 +332,9 @@ export interface ChannelSession {
   /** The Dispatch message a delivered row of the conversation is, or undefined for a row of the
    *  session's own: what tags that row on the live view's frames. */
   messageOf(row: string): string | undefined
-  /** Drain NATS, deregister this listener route, and release timer resources. */
-  shutdown(): Promise<void>
+  /** Close the relay and release local resources. Keep the listener route only when a shared
+   *  owner is handing off a thread that is still loaded. */
+  shutdown(retainRegistration?: () => Promise<boolean>): Promise<void>
 }
 
 export interface ChannelSessionOptions {
@@ -2311,7 +2312,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
     },
-    async shutdown() {
+    async shutdown(retainRegistration) {
       if (shuttingDown) return
       shuttingDown = true
       clearInterval(heartbeatTimer)
@@ -2331,11 +2332,21 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // two full waits before it is killed.
       const settleBy = Date.now() + shutdownSettleMs
       await settledOrGivenUp(registryWrites, shutdownSettleMs)
-      await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
+      const retain = await retainRegistration?.().catch((error: unknown) => {
         process.stderr.write(
-          `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
+          `envoy-channel: could not check the session handoff — ${messageFor(error)}\n`,
         )
+        return false
       })
+      if (!retain) {
+        await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch(
+          (error: unknown) => {
+            process.stderr.write(
+              `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
+            )
+          },
+        )
+      }
       // What was written meanwhile (a resume point, a ledger record, a message taken) lands
       // before the process goes.
       await stateWriter?.idle()

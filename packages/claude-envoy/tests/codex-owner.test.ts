@@ -15,6 +15,7 @@ import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
   currentOwner,
+  hasStandbyServer,
   type ProcessProbe,
   registerServer,
   serverAlive,
@@ -110,6 +111,11 @@ describe("the owner of a codex process's Envoy session", () => {
     expect((await currentOwner(directory, both))?.pid).toBe(101)
     expect(await stillOwner(directory, first, both)).toBe(true)
     expect(await stillOwner(directory, second, both)).toBe(false)
+    expect(await hasStandbyServer(directory, first, both)).toBe(true)
+    expect(await hasStandbyServer(directory, first, probeOf({ 101: "s101" }))).toBe(false)
+    expect(
+      await hasStandbyServer(directory, first, probeOf({ 101: "s101", 102: "reused-pid" })),
+    ).toBe(false)
     // The first is gone: the second owns. No server removes another's entry.
     expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
     await unregisterServer(directory, second)

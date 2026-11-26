@@ -2,9 +2,9 @@
 // `codex/hooks/hooks.json` runs `dist/codex-hook.js session-start` at a session's first prompt and
 // again after `/new`, and `dist/codex-hook.js session-end` when Codex unloads a thread.
 //
-// At SessionStart it records which session the `codex` process now runs, where the plugin's MCP
+// At SessionStart it records the thread, where the plugin's MCP
 // servers read it (`../src/codex/codex-session-record`): they are that process's children too, but
-// Codex hands them no session id. It writes the record Claude Code's hook writes as well
+// Codex hands them no session id. For a session in a process of its own it also writes
 // (`sessions/<pid>/session-id`), so the server that owns the process's session
 // (`../src/codex/codex-owner`) follows `/new` to the new id the way it follows a Claude Code
 // `/clear`. Then it tells the model this session's open Dispatch asks and how to run `dispatch`
@@ -27,13 +27,15 @@ import {
   codexProcessId,
   codexSessionRecordFile,
   markSessionEnded,
+  markSharedCodexThreadEnded,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
   recordOfProcess,
-  SHARED_APP_SERVER_NOTE,
   sharedAppServer,
+  sharedCodexRecordFile,
   writeCodexSessionRecord,
+  writeSharedCodexRecord,
 } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 
@@ -71,11 +73,16 @@ async function sessionEnd(raw: unknown): Promise<void> {
   )
   if (pluginData === undefined) return
   const pid = codexProcessId()
-  const file = codexSessionRecordFile(pluginData, pid)
+  const shared = sharedAppServer(pid)
+  const file = shared
+    ? sharedCodexRecordFile(pluginData, pid, input.session_id)
+    : codexSessionRecordFile(pluginData, pid)
   const record = await readCodexSessionRecord(file)
   if (record === undefined || record.session_id !== input.session_id) return
   if (!recordOfProcess(record, pid)) return
-  await markSessionEnded(pluginData, pid, input.session_id)
+  if (shared) {
+    if (record.generation !== undefined) await markSharedCodexThreadEnded(file, record.generation)
+  } else await markSessionEnded(pluginData, pid, input.session_id)
 }
 
 async function sessionStart(raw: unknown): Promise<void> {
@@ -94,10 +101,7 @@ async function sessionStart(raw: unknown): Promise<void> {
     }
     try {
       const started = processStarted(pid)
-      if (sharedAppServer(pid)) {
-        // No record: two sessions of one process would share it (`sharedAppServer`).
-        process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
-      } else if (input.transcript_path === null || input.transcript_path === undefined) {
+      if (input.transcript_path === null || input.transcript_path === undefined) {
         // A fork (`/side`, `/btw`) or an ephemeral session (`codex exec --ephemeral`): it keeps no
         // transcript, recording a fork would move its session's registration to it, and Codex
         // refuses `codex queue` for an ephemeral thread, so nothing could reach it.
@@ -107,19 +111,25 @@ async function sessionStart(raw: unknown): Promise<void> {
           `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read; it gets no Envoy messages\n`,
         )
       } else {
-        // The session again (`/resume`): it has not ended. The marker goes before the record is
-        // written, so a server that reads the new record never reads the old marker beside it.
-        await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
-        await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
+        const record = {
           codex_executable: codexExecutable(pid) ?? null,
           codex_home: codexHome(process.env),
           codex_started: started,
           cwd: input.cwd,
           session_id: input.session_id,
           source: input.source ?? null,
-          transcript_path: input.transcript_path ?? null,
-        })
-        await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
+          transcript_path: input.transcript_path,
+        }
+        if (sharedAppServer(pid)) {
+          await writeSharedCodexRecord(sharedCodexRecordFile(pluginData, pid, input.session_id), {
+            ...record,
+            generation: crypto.randomUUID(),
+          })
+        } else {
+          await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
+          await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), record)
+          await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
+        }
       }
     } catch (error) {
       process.stderr.write(`envoy: could not record the session id — ${messageFor(error)}\n`)

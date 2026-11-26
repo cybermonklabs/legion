@@ -297,38 +297,26 @@ other session on the machine: the file `ENVOY_CONFIG_FILE` names, else
 `~/.codex`) the plugin reads the session's transcript, writes only to the state directory Codex
 gives each plugin (`plugins/data/`), and adds to Codex's message queue through `codex queue`;
 it never touches Codex's configuration.
-Measured on Codex CLI 0.154.0.
 
-Which sessions get Envoy depends on how Codex runs them.
-A session in a `codex` process of its own (the terminal on 0.154.0, `codex exec`) registers with
-Envoy and gets everything below.
-Codex's shared app server runs several sessions in one process: `codex agents` (with or without `--no-daemon`), a plain `codex` that joins a running app server, and on 0.170.0 every terminal session, which runs in a background `codex app-server --managed-daemon`.
-The plugin cannot tell those sessions' Envoy traffic apart, so there it registers none of them:
-they get no Envoy messages and do not show on the Agents page, and the hook tells the model so.
-Everything else still runs there: the `dispatch` tool, as the session that calls it, and the
-`SessionStart` hooks (the open-asks summary, the dispatch-first skill and the answers list).
-A fork (`/side`, `/btw`) is never registered: its session's registration stays where it was.
-Neither is an ephemeral session (`codex exec --ephemeral`), which no message could reach.
+Envoy supports Codex sessions in the shared app server, including plain `codex` and
+`codex agents`, and sessions in their own process, including `codex --no-daemon` and
+`codex exec`. Each shared thread has its own registration, inbox and live conversation.
+A fork (`/side`, `/btw`) or an ephemeral session (`codex exec --ephemeral`) keeps no transcript
+and does not register.
 
 - `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
   `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
   Codex expands no `${PLUGIN_ROOT}` in a server's arguments). Codex hands a plugin's server only
   `HOME`, `PATH` and a few more, so `env_vars` names the ones the server reads.
-- The session appears on the Agents page at its first prompt, not when the terminal opens: Codex
-  gives the MCP server no session id, and its `SessionStart` hook, which runs at the first prompt
-  and again after `/new`, records the id under the `codex` process both are children of
-  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`). Codex starts one MCP server per
-  thread, so a `/new` or a fork starts another; one server per `codex` process owns the session
-  (`src/codex/codex-owner.ts`) and the others stand by, serving only their thread's `dispatch`
-  calls. After `/new`, the owner moves the registration to the new session at its first prompt.
-  Until then, a message to the old session can still be queued into it, since Codex runs the old
-  thread's `SessionEnd` hook only when it unloads that thread: `thread_unload_delay` (60 s by
-  default, and configurable) after the thread is idle with no subscriber, and after it has
-  stopped that thread's servers. Until every server started before the new thread's has exited,
-  the new thread's own Envoy tools (`envoy_send` and the rest) answer that another server serves
-  the session; messages to it arrive meanwhile, and its `dispatch` tool works.
-  A fork or an ephemeral session (`codex exec --ephemeral`) keeps no transcript and is never
-  registered, since Codex refuses `codex queue` for an ephemeral thread.
+- At the first prompt, the trusted `SessionStart` hook records the thread id. One plugin server
+  in the process registers the threads and serves Envoy tool calls from their MCP servers.
+  Each shared thread shows on the Agents page with its directory name and short id. It leaves
+  when Codex unloads it and registers again under the same id when resumed.
+  Codex unloads a thread after `thread_unload_delay_secs` of idle time with no connected client.
+  The default is 60 seconds. A message can start a turn while the thread is still loaded.
+- In a process of its own, `/new` moves the registration at the new thread's first prompt.
+  The new thread can receive messages and call `dispatch` while its MCP server waits for ownership.
+  Its Envoy tools become available when its MCP server takes over.
 - The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool
   call (`_meta.threadId`), and runs in the directory that thread's newest turn ran in.
 - A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few
