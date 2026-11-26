@@ -2,7 +2,6 @@ package natscallout
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,14 +44,13 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 			_, _ = fmt.Fprintf(w, `{"person":%q,"member_kind":"full","held":%t,"as_of":%q}`, person, isHeld, asOf.Format(time.RFC3339Nano))
 		}))
 		keeper := hold.New(hold.Config{Access: projectaccess.New(answering.URL, projectaccesstest.StaticAccount("token"), nil), Store: st})
-		err := keeper.Check(t.Context(), person)
+		v := keeper.Decide(t.Context(), person)
 		answering.Close()
+		want := hold.Served
 		if isHeld {
-			require.ErrorIs(t, err, hold.ErrHeld, "Check(%s) with Dispatch answering held", person)
-			require.NotErrorIs(t, err, hold.ErrUncheckable, "Check(%s) with Dispatch answering held", person)
-		} else {
-			require.NoError(t, err, "Check(%s) with Dispatch answering not held", person)
+			want = hold.Held
 		}
+		require.Equal(t, want, v.Kind, "Decide(%s) with Dispatch answering held %t: %v", person, isHeld, v.Err)
 		kept, keptAt, _, found, err := st.PersonStanding(t.Context(), person)
 		require.NoError(t, err, "read person_standing for %s", person)
 		require.True(t, found && kept == isHeld && keptAt.Equal(asOf),
@@ -70,30 +68,16 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 	t.Cleanup(func() { close(release) })
 	gate := hold.New(hold.Config{Access: projectaccess.New(hanging.URL, projectaccesstest.StaticAccount("token"), nil), Store: st})
 	base := introspector(served, held)
-	// introspect is base with the gate's answer mapped onto it as oauth.Provider's withHold maps it
-	// (internal/cipher/oauth/introspect.go), case for case. It mirrors that mapping rather than
-	// calling it: withHold is an unexported method of *oauth.Provider, reached only through
-	// Provider.Introspect for a token the broker's own exchange stored, and the sessions here are
-	// this package's test sessions (introspector), which no broker store holds.
+	// introspect is base with the gate's verdict mapped onto it by oauth.HoldAnswer, the mapping
+	// oauth.Provider's withHold makes: withHold itself is reached only through Provider.Introspect
+	// for a token the broker's own exchange stored, and the sessions here are this package's test
+	// sessions (introspector), which no broker store holds.
 	introspect := func(ctx context.Context, token string) (oauthwire.Introspection, error) {
 		answer, err := base(ctx, token)
 		if err != nil {
 			return answer, err
 		}
-		until, err := gate.CheckUntil(ctx, answer.Person)
-		switch {
-		case err == nil:
-			if !until.IsZero() {
-				answer.NotHeldUntil = until.Unix()
-			}
-		case errors.Is(err, hold.ErrDeadlinePassed) && !errors.Is(err, hold.ErrHeld):
-			answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
-		case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
-			return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Person: answer.Person, Err: err}
-		default:
-			answer.Held = true
-		}
-		return answer, nil
+		return oauth.HoldAnswer(answer, gate.Decide(ctx, answer.Person))
 	}
 
 	keys := testnats.NewCalloutKeys(t)

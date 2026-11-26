@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -756,25 +755,22 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 }
 
 // refuseHeld asks the hold gate whether Dispatch holds login, the signed-in approver, and answers
-// the page's refusal when it does or cannot tell, reporting whether it refused: 403 in the gate's
-// words for a hold (hold.Gate.HeldWords), and 503 while the gate cannot tell (hold.ErrUncheckable,
-// tested first, so a held answer the gate could not keep is a 503), saying why in hold.Reason's
-// fixed words and logging the gate's own error, which can carry the database's user, name and
-// address, alone. A broker with no gate holds nobody.
+// the page's refusal when it does or cannot tell, reporting whether it refused, by the gate's
+// Verdict and in its words (hold.Verdict.Refusal): 403 for hold.Held, and 503 for every kind that
+// decides nothing, a held answer the gate could not keep among them, saying why in fixed words and
+// logging the gate's own error, which can carry the database's user, name and address, alone. A
+// broker with no gate holds nobody.
 func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) bool {
-	err := p.cfg.Hold.Check(r.Context(), login)
-	switch {
-	case err == nil:
+	v := p.cfg.Hold.Decide(r.Context(), login)
+	status, code, words := v.Refusal()
+	switch v.Kind {
+	case hold.Served:
 		return false
-	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
-		slog.Error("approval page: whether Dispatch holds the approver cannot be read, so nothing was decided", "login", login, "error", err)
-		writeMessage(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", say("Unavailable",
-			fmt.Sprintf("Whether Dispatch holds %s cannot be read: %s.", login, hold.Reason(err)),
-			"Nothing was decided. Try again shortly."))
+	case hold.Held:
+		writeMessage(w, status, code, say("Held", words+".", "Nothing was decided."))
 	default:
-		writeMessage(w, http.StatusForbidden, "MEMBERSHIP_HELD", say("Held",
-			p.cfg.Hold.HeldWords(login)+".",
-			"Nothing was decided."))
+		slog.Error("approval page: whether Dispatch holds the approver cannot be read, so nothing was decided", "login", login, "error", v.Err)
+		writeMessage(w, status, code, say("Unavailable", strings.ToUpper(words[:1])+words[1:]+".", "Nothing was decided. Try again shortly."))
 	}
 	return true
 }

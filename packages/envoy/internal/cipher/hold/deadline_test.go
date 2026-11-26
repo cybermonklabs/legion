@@ -300,7 +300,7 @@ func TestHoldGateDeadlineSurvivesARestart(t *testing.T) {
 // the person and what ends the hold. A gate without RequireDeadline says their next Dispatch
 // sign-in, or Dispatch confirming them with Google, ends it. Under RequireDeadline, which only an
 // IAP deployment's broker sets, a sign-in releases nothing and the Workspace Directory's next
-// active answer does, so the words say that, as Dispatch's own refusal under IAP says it.
+// active answer does, so the words say that.
 //
 // Control: HeldWords ignoring RequireDeadline; the IAP gate's words tell ada to sign in, and the
 // test fails naming them.

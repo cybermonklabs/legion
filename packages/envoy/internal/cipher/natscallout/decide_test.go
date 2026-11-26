@@ -273,8 +273,8 @@ func TestRefusals(t *testing.T) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
 	}}
 	uncheckable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
-		return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Person: "person@example.com",
-			Err: fmt.Errorf("%w: person@example.com: %w", hold.ErrUncheckable, dispatchread.ErrBrokerRefused)}
+		return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Verdict: hold.Verdict{Kind: hold.Uncheckable, Person: "person@example.com",
+			Err: fmt.Errorf("%w: person@example.com: %w", hold.ErrUncheckable, dispatchread.ErrBrokerRefused)}}
 	}}
 	// cancelled is what each of the broker's calls answers once the decision's context ends.
 	cancelled := Deps{
@@ -350,7 +350,7 @@ func TestRefusals(t *testing.T) {
 // admitted before the deadline must not outlive it, as the airlock cuts a call it carries then. A
 // deadline after the token's expiry changes nothing, and an answer naming none expires with the
 // token. The decider's clock is the broker's: Dispatch's unavailable answer, whose deadline is its
-// own as_of, never reaches it as a not-held answer (hold.Gate.CheckUntil answers it uncheckable).
+// own as_of, never reaches it as a not-held answer (hold.Gate.Decide answers it uncheckable).
 func TestANotHeldSessionIsAdmittedNoLongerThanItsDeadline(t *testing.T) {
 	now := time.Now()
 	for name, row := range map[string]struct {

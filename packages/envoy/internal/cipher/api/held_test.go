@@ -477,14 +477,14 @@ func TestHeldUpkeepIsServed(t *testing.T) {
 	bob := b.upkeep(t, servedBob)
 
 	b.hold()
-	if err := b.gate.Check(context.Background(), heldAda); !errors.Is(err, hold.ErrHeld) {
-		t.Fatalf("the broker's gate answered ada %v, want hold.ErrHeld: the rows below would prove nothing", err)
+	if v := b.gate.Decide(context.Background(), heldAda); v.Kind != hold.Held {
+		t.Fatalf("the broker's gate answered ada %+v, want hold.Held: the rows below would prove nothing", v)
 	}
 	b.serves(t, "ada", ada)
 
 	b.refuseAccount()
-	if err := b.gate.Check(context.Background(), servedBob); !errors.Is(err, hold.ErrUncheckable) {
-		t.Fatalf("the broker's gate answered bob %v, want hold.ErrUncheckable: the rows below would prove nothing", err)
+	if v := b.gate.Decide(context.Background(), servedBob); v.Kind != hold.Uncheckable {
+		t.Fatalf("the broker's gate answered bob %+v, want hold.Uncheckable: the rows below would prove nothing", v)
 	}
 	b.serves(t, "bob", bob)
 }
