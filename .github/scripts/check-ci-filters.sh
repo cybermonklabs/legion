@@ -582,7 +582,9 @@ export CI_FILTERS_MODE="${1:-check}"
 # ci_job_reads.py runs go_build_tags.py's go commands as it is imported, and again after main().
 # The first reading comes before the audit hook too, since it opens every file of the tree and none
 # of those opens is the computation's. A run whose imports fail is a failure before the second
-# read has anything to add.
+# read has anything to add. The generate mode starts its TypeScript listings
+# (ci_ts_listing.start) right after the engine's own import, so tsc and Bun list while the table
+# loads and the go commands run; they read the tree and write nothing in it.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os
@@ -661,6 +663,9 @@ with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     import ci_filter_coverage
     ci_filter_coverage.OPENED = opened
+    if os.environ["CI_FILTERS_MODE"] == "generate":
+        import ci_ts_listing
+        ci_ts_listing.start()
     started = time.monotonic()
     try:
         import ci_job_reads

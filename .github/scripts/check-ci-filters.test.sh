@@ -631,6 +631,60 @@ check "every filter is every path" \
   "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 check "and the computed filters stand" "$(contains "$(cat "$root.generated.computed.yaml")" "^  - 'mod/cmd/\*\*'$")"
 
+# The base's filters as a push of that commit to main generated them
+# (.github/workflows/ci-caches-changes.yaml), which the changes job restores into the directory
+# CI_FILTERS_BASE_COMPUTED names: the script reads them only when the directory's commit file names
+# the base. The base tree's own generation fails in both cases below, so a run that generated it
+# would make every filter every path.
+# base_cache <root> <commit>: such a directory for <commit> beside the fixture, holding the filters
+# this head computes with the read of docs/** the base's shared helper gave app.
+base_cache() {
+  mkdir -p "$1.base-cache"
+  run_generate "$1"
+  awk '{ print } $0 == "app:" { print "  - '"'"'docs/**'"'"'" }' "$1.generated.computed.yaml" > "$1.base-cache/ci-filters.yaml"
+  printf '%s\n' "$2" > "$1.base-cache/commit"
+}
+# cached_fixture <name>: a fixture whose base commit cannot generate its filters and whose head
+# drops the shared read; echoes the root, and the base commit in $base_commit.
+cached_fixture() {
+  local root
+  root=$(fixture "$1")
+  shared_read "$root"
+  printf 'raise RuntimeError("broken on purpose")\n' >> "$root/.github/scripts/ci_job_reads.py"
+  commit_all "$root" base > "$root.base-commit"
+  replace "$root/.github/scripts/ci_job_reads.py" 'raise RuntimeError("broken on purpose")' ''
+  replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = [Read("docs/**", "the shared helper reads the docs")]' 'SHARED = []'
+  commit_all "$root" head >/dev/null
+  echo "$root"
+}
+
+echo "case: the base's filters a push to main computed stand in for generating the base tree"
+root=$(cached_fixture base-cached)
+base_commit=$(cat "$root.base-commit")
+base_cache "$root" "$base_commit"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" CI_FILTERS_BASE_COMPUTED="$root.base-cache" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes no every_filter output" "$(is "$(cat "$root.github-output")" "")"
+check "says it read the filters the push of the base computed" \
+  "$(contains "$out" "^the base tree's filters are the ones the push of $base_commit to main computed")"
+check "and generated no base tree" "$(is "$(grep -c "the base tree's filter generation took" <<<"$out" || true)" 0)"
+check "prints the filter and the pattern only the base has" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "and the filters no difference touches as computed" "$(is "$(filter_of site | tr '\n' ' ')" 'go.work mod/go.mod docs/** ')"
+
+echo "case: an entry whose commit file names another commit is not read (control)"
+root=$(cached_fixture base-cached-other)
+base_commit=$(cat "$root.base-commit")
+base_cache "$root" "$(git -C "$root" rev-parse HEAD)"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" CI_FILTERS_BASE_COMPUTED="$root.base-cache" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "generates the base tree" "$(contains "$out" "^the base tree's filter generation took [0-9]* s and exited 1$")"
+check "whose failure makes every filter every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
+
 # What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
 # `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
 # bunx prints the program's `listed` file, which stands for tsc's new answer to the new tsconfig.

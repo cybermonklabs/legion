@@ -184,3 +184,33 @@ leg saved, under the output name the fill gives it; a leg whose fill saved nothi
 before its save) skips its steps, and the job runs when any fill failed, so one failed fill does
 not stop the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need nothing of an x64
 machine.
+
+## The two entries the changes job restores
+
+.github/workflows/ci-caches-changes.yaml fills, on every push to main and on ubuntu-24.04-arm, the
+runner of ci.yaml's changes job, two entries that job restores. They are in a workflow of their own
+because ci-caches.yaml is near the 64,000 bytes check-workflow-files.sh allows a workflow file.
+
+changes-git-<os>-<arch>-<commit> is the `.git` of a one-commit checkout of the pushed commit. The
+changes job restores it before its checkout, by the key without the commit, which GitHub matches
+as a prefix and answers with the newest entry; actions/checkout finds a repository of the same URL
+there and fetches only what the run's commit adds to main's objects. The checkout's fetch was 13.0
+s for 91 MB (18,368 objects at 15.45 MiB/s, run 45766372051, job fetch), most of the job's 15 s
+checkout, and the restore of the 96 MB entry took 0.8 s, the fetch after it 1.0 s and the checkout
+1.3 s (the same run, job restore). The fill's superseded job deletes the entries of this ref older
+than the one it saved, as refill-superseded deletes its families' (the section above says why it
+is a job of its own), so one entry stays. A restore that misses, or an entry the checkout cannot
+use, leaves the checkout to fetch everything, as it did before.
+
+ci-filters-<os>-<arch>-<commit> is the filters the pushed commit's own `check-ci-filters.sh
+generate` writes, with a file naming the commit. When a change touches a file the filters are
+computed with, .github/scripts/ci-filters-generate.sh generates the base tree's filters with the
+base tree's own engine, about 18 s on the runner, and a pull request measured against main runs
+that in more than half of its runs (85 of 149 between 03:31 and 05:30 UTC on 2026-11-26). The
+changes job restores the entry of its base commit, and the generation reads it in place of
+generating the base tree, but only when its commit file names that base: the same command over
+the same tree on the same runner, run with the base's own Go and Bun, so the file is the one the
+generation would write. A base no push to main left, such as a merge group's base that is the group
+ahead of it, has no entry and is generated as before. The fill looks the exact key up first and
+computes nothing when the entry is there, as the lookups of ci-caches.yaml do. An entry is about 20
+KB, and GitHub drops each after seven days unread, so they are not deleted.
