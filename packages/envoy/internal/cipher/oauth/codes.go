@@ -47,12 +47,11 @@ func NormalizeUserCode(s string) string {
 // of jwt.Strategy as refusals.
 //
 // The RFC 8693 custom JWT type factory asserts the composed strategy to jwt.Strategy, and the
-// handler it builds uses that strategy only to issue a JSON Web Token: it validates a subject token
-// through the token type's own key function instead. This provider issues no JSON Web
-// Token — its exchange client may ask for an access token or the proxy placeholder of the approve
-// capability (grantApprove, which answers a random placeholder and no token), and nothing else —
-// so the method set is here to satisfy the assertion and to refuse. No signing key is generated
-// anywhere in this provider, so nothing can silently mint a signed token whatever calls these.
+// handler it builds uses that strategy only to issue a JSON Web Token: it validates a subject
+// token through the token type's own key function instead. This provider issues no JSON Web
+// Token — its exchange client may ask for an access token and nothing else — so the method set
+// is here to satisfy the assertion and to refuse. No signing key is generated anywhere in this
+// provider, so nothing can silently mint a signed token whatever calls these.
 type codeStrategy struct {
 	*hoauth2.HMACCoreStrategy
 }

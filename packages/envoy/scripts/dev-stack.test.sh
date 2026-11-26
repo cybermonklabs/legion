@@ -1745,21 +1745,6 @@ for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; d
   done
 done
 printf 'PASS: a stop grace or readiness bound that is empty or no whole number of seconds from 1 to 9999 is refused with exit 2, naming the variable and the value, before anything is created or started\n'
-# (t2a) --approve beside --callout or --project-access, each of which takes the broker's proxy port,
-# and --approve-allow-all without --approve, whose block it opens: each refused with exit 2 and one
-# line naming it, before anything is created or started. The control is approve-check.sh, which
-# runs --approve and --approve-allow-all to ready against a real Postgres.
-approve_refused() { # <line> <dev-stack.sh arguments...>
-  local line="$1"
-  shift
-  refuse_run "a run given $*" 2 "$@"
-  [[ "$(<"$refusal")" == "$line" ]] || fail "a run given $* printed '$(<"$refusal")', not '$line'"
-}
-approve_pair_line="dev-stack: --approve runs alone of --callout and --project-access: each takes the broker's proxy port"
-approve_refused "$approve_pair_line" --approve --callout
-approve_refused "$approve_pair_line" --project-access --approve
-approve_refused "dev-stack: --approve-allow-all opens the allow list of --approve's block, so it needs --approve" --approve-allow-all
-printf 'PASS: --approve beside --callout or --project-access, and --approve-allow-all alone, are refused with exit 2 and one line each, before anything is created or started\n'
 
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer

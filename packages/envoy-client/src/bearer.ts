@@ -115,34 +115,10 @@ export interface RequestCredential {
    */
   identity?(presented: Readonly<Record<string, string>>): string | undefined;
   /**
-   * The route a review takes where this credential is a person's sign-in on this machine: a
-   * placeholder of Cipher's proxy for the person's approve capability, traded for at this call,
-   * and how to reach that proxy (`ApproveRoute`). Dispatch takes the approve power from every
-   * token a box holds, so a person approves from a box only through the proxy, which swaps a
-   * token the broker mints and keeps for the placeholder (`DispatchClient`'s `reviewArtifact`).
-   * It answers undefined where the credential trades no person, the machine's own identity, whose
-   * review Dispatch refuses as it always has. A bearer has none: a personal token holds its own
-   * scopes and goes to Dispatch directly.
-   */
-  approveRoute?(signal?: AbortSignal): Promise<ApproveRoute | undefined>;
-  /**
    * The secret this credential is presenting, which an excerpt of someone else's answer must
    * redact (`DispatchClient`'s `excerpt`), or "" while it holds none.
    */
   secret(): string;
-}
-
-/**
- * Where a person's review goes from this machine (`RequestCredential.approveRoute`): the
- * placeholder a request carries as `Authorization: DPoP <placeholder>` and as the proxy's
- * password, the proxy's URL, the certificate the proxy signs its hosts' certificates with, and
- * the hosts the approve capability reaches, one of which the Dispatch URL must name.
- */
-export interface ApproveRoute {
-  readonly placeholder: string;
-  readonly proxyUrl: string;
-  readonly caCertificate: string;
-  readonly hosts: readonly string[];
 }
 
 /**

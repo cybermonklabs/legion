@@ -31,10 +31,6 @@ def at(job: str, step: str, held_by: str = "") -> str:
 PROGRAMS = [
     ("contracts", "packages/contracts", at("contracts", "Typecheck contracts (bun run typecheck: bunx tsc --noEmit)")),
     ("envoy_client", "packages/envoy-client", at("envoy-client", "Typecheck Envoy client")),
-    # approve-check's session (packages/envoy/scripts/approve/session.ts) runs on envoy-client's
-    # credential and Dispatch client, so the job that typechecks envoy-client typechecks it too.
-    ("envoy_client", "packages/envoy/scripts/approve",
-     at("envoy-client", "Typecheck approve-check's session (bunx tsc --noEmit -p ../envoy/scripts/approve)")),
     ("broker_client", "packages/cipher-client", at("broker-client", "Typecheck the broker client")),
     ("pi_shared", "packages/pi-shared", at("pi-shared", "Typecheck pi-shared")),
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
@@ -79,9 +75,6 @@ BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (`packages/envoy/cmd/dispatch/twobuild_cli_test.go#currentCLI` runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
-    ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
-     at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
-                           "`bun scripts/approve/scan.ts`)")),
 ]
 
 # The trees a filter names file by file rather than whole: the changes job's generation writes

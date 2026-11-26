@@ -394,7 +394,6 @@ const KINDS: readonly Kind[] = [
     respond: () => refused(400, "REQUEST_BODY_UNREADABLE", "could not read the request body"),
   },
   ...[
-    "APPROVE_ONLY_TOKEN",
     "OAUTH_SCOPE_REQUIRED",
     "PROJECT_SCOPE",
     "PROJECT_SCOPE_DEPLOYMENT",

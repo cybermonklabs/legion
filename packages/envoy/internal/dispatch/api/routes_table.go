@@ -569,35 +569,6 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
 }
 
-// approveScopeRoutes is every route an approve-only token may call, by "<method> <pattern>": the
-// token the secrets broker mints for a person's approve grant, binds to its own pod's key and spends
-// through its proxy, never released (model.Credential.ApproveOnly). It acts as its person with both
-// of the person's scopes, and every other row of the table, and GET /ws/live beside it, answers it
-// 403 APPROVE_ONLY_TOKEN before anything else the route does (refuseApproveOnlyToken), so a route
-// added later stays closed to it until it is listed here.
-//
-// The list is the rows routeScopes gives approve, the routes that settle what a person settles,
-// less two: the mint and the change of a personal token, since a token they made or widened would
-// be an approve credential written to the box the session runs on, which is what the proxy exists
-// to keep off it. The revoke of a personal token stays. Beside them is the answer of an ask, which
-// checks approve in its handler for an approval request and refuses an approve-only token the
-// answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
-// (ask_transitions.go). register refuses to mount a table whose list names a row it does not mount
-// (routesNotMounted).
-var approveScopeRoutes = []string{
-	"POST /api/v1/artifacts/{id}/reviews",
-	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
-	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
-	"POST /api/v1/credential-requests/{id}/approve",
-	"POST /api/v1/credential-requests/{id}/deny",
-	"POST /api/v1/credential-requests/machine-lookup",
-	"POST /api/v1/credential-grants/{id}/revoke",
-	"POST /api/v1/machine-logins/{id}/revoke",
-	"POST /api/v1/signins/{id}/revoke",
-	"DELETE /api/v1/me/agent-tokens/{id}",
-	"POST /api/v1/asks/{id}/answer",
-}
-
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -636,24 +607,20 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses, the OAuth scopes it stamps from routeScopes, the read class it stamps from
-// readClasses, and whether an approve-only token may call it, which it stamps from
-// approveScopeRoutes. Register mounts the table and GET /api/v1 lists it, so the two can never
-// disagree about what the server serves. Every mutating row carries a Scope, and a GET row carries
-// none (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach;
-// Read is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every
-// other row, so no row but a GET row is ever a read. Only the read-only gate reads Read
-// (refuseReadOnlyToken); ApproveOnly is true on the rows the approve list names and on no other,
-// and only the approve-only gate reads it (refuseApproveOnlyToken); neither reaches the route
-// index or the OpenAPI document. The row's own five columns are read through it by promotion.
-// What the route takes and answers is routeShapes', which only the OpenAPI emitter reads, so no
-// row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, and the read class it stamps from
+// readClasses. Register mounts the table and GET /api/v1 lists it, so the two can never disagree
+// about what the server serves. Every mutating row carries a Scope, and a GET row carries none
+// (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach; Read
+// is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every other
+// row, so no row but a GET row is ever a read. Only the read-only gate reads Read
+// (refuseReadOnlyToken), never the route index or the OpenAPI document. The row's own five
+// columns are read through it by promotion. What the route takes and answers is routeShapes',
+// which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
 	Read        readEntry
-	ApproveOnly bool
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -962,7 +929,7 @@ func (s *server) routes() []apiRoute {
 		if row.Method == http.MethodGet {
 			read = readClasses[name]
 		}
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], read, slices.Contains(approveScopeRoutes, name)}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], read}
 	}
 	return routes
 }

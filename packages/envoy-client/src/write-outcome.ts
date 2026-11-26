@@ -23,10 +23,6 @@
 // trade does (`packages/cipher-client/src/token-client.ts`): a fail-fast caller is told the trade's
 // last failure at once while the trade goes on in the background (`TradeRetryingError`); a trade
 // not yet answered and a registration still pending are told only once the caller's signal ends.
-// And, for a write sent through Cipher's proxy (a person's review), on what the proxy says of its
-// own answers (`packages/envoy/internal/cipher/proxy/record.go`, `ownAnswer`): each names its code
-// in `Cipher-Proxy-Code`, with `Cipher-Proxy-Forwarded: false` when no byte of the request left the
-// proxy and `unknown` when the request may have reached Dispatch first.
 
 /** Where a write stands between its attempts. A settled write is no state: the call returns. */
 export type WriteState = "nothing-sent" | "may-have-landed";
@@ -103,19 +99,7 @@ export type WriteEvent =
   | "cancelled"
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
-  | "exhausted"
-  /** Cipher's proxy refused the write on its own (a 4xx with `Cipher-Proxy-Code` and
-   *  `Cipher-Proxy-Forwarded: false`): nothing of it reached Dispatch, and asking again with the
-   *  same placeholder gets the same answer. */
-  | "proxy-refused"
-  /** Cipher's proxy failed the write on its own before any of it left (a 5xx with
-   *  `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing reached Dispatch, and it is
-   *  asked again under the key. */
-  | "proxy-failed"
-  /** Cipher's proxy answered on its own after the write may have reached Dispatch
-   *  (`Cipher-Proxy-Code` with `Cipher-Proxy-Forwarded: unknown`, or none): it may have landed, and
-   *  it is asked again under the key, which Dispatch answers from what it stored. */
-  | "proxy-unsettled";
+  | "exhausted";
 
 /**
  * What follows an event: `settle` (the answer is the call's: its payload, or the refusal Dispatch
@@ -169,9 +153,6 @@ export const WRITE_TRANSITIONS: {
   "cancelled-in-flight": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   cancelled: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
   exhausted: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
-  "proxy-refused": { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
-  "proxy-failed": { "nothing-sent": nothing("retry"), "may-have-landed": landed("retry") },
-  "proxy-unsettled": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
 };
 
 /**

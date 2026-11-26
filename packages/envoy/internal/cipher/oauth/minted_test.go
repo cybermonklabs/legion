@@ -5,8 +5,6 @@ package oauth_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"strings"
 	"testing"
@@ -67,32 +65,5 @@ func TestAMintedGrantsTokenIsBoundToThePodAndEndsWithItsGrant(t *testing.T) {
 	}
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Fatalf("access tokens after the refused exchange and the keyless mint = %d, want the %d there were", after, before)
-	}
-}
-
-// TestEachMintedTokensHashAndBindingAreLoggedAndNeverTheToken: every token a broker pod mints for
-// a minted grant writes one line naming the grant, its session, the token's SHA-256 and the RFC
-// 7638 thumbprint of the pod key it is bound to, which is what an audit compares a string found
-// anywhere with to say whether it is such a token. No line holds the token itself. Two mints for
-// one grant write two lines, each the hash of its own token.
-func TestEachMintedTokensHashAndBindingAreLoggedAndNeverTheToken(t *testing.T) {
-	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Hour })
-	logged := capturedLog(t)
-	grant := mintedGrant(oauthwire.ScopeApprove, time.Now().Add(15*time.Minute))
-	pod := newKey(t)
-	for i := range 2 {
-		minted, err := f.provider.MintGrantToken(context.Background(), grant, thumbprint(t, pod))
-		if err != nil {
-			t.Fatalf("MintGrantToken: %v", err)
-		}
-		sum := sha256.Sum256([]byte(minted))
-		lines := logged.lines(`"msg":"broker: minted a grant's token"`, `"token_sha256":"`+hex.EncodeToString(sum[:])+`"`,
-			`"jkt":"`+thumbprint(t, pod)+`"`, `"grant":"`+grant.ID+`"`, `"session":"`+grant.Session+`"`)
-		if len(lines) != 1 {
-			t.Fatalf("mint %d: %d lines name the grant, its session, the token's SHA-256 and the pod key's thumbprint; want 1", i+1, len(lines))
-		}
-		if leaked := logged.lines(minted); len(leaked) != 0 {
-			t.Fatalf("mint %d: %d logged lines hold the minted token itself; want none", i+1, len(leaked))
-		}
 	}
 }

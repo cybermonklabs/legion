@@ -4,9 +4,9 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -726,14 +726,7 @@
- 	if k == nil {
- 		return nil, why
+@@ -712,14 +712,7 @@
+ 	case listed && hasMethodOverrideParameter(r.Query):
+ 		return nil, "request carries a method override parameter"
  	}
 -	// A request that already carries the real value learnt it somewhere other than this
 -	// swap, so the airlock refuses it rather than forwarding it. The scan reads every

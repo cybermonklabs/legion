@@ -672,8 +672,7 @@ func TestTheProviderHasThreeClientsAndNoOther(t *testing.T) {
 
 // TestTheExchangeClientIsConfidentialAndNarrow: the library refuses a public client at the
 // token-exchange grant, so that client must never read as public; it may present exactly the
-// five kinds of subject token this broker accepts, ask for an access token or the proxy
-// placeholder a person's sign-in is traded for (oauth.Provider.grantApprove) and nothing else,
+// five kinds of subject token this broker accepts, ask for an access token and nothing else,
 // and present the machine's Google identity token as the one actor token a person's sign-in
 // carries and nothing else. Only it may exchange a machine login's token, and it says that an
 // authorization outside the subject token decides a delegation, since Google puts no 'may_act'
@@ -704,7 +703,7 @@ func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 				"urn:ietf:params:oauth:token-type:access_token",
 			}},
 		{name: "requested token types", got: exchanger.GetSupportedRequestTokenTypes(),
-			want: []string{"urn:ietf:params:oauth:token-type:access_token", oauthwire.TokenTypeProxyPlaceholder}},
+			want: []string{"urn:ietf:params:oauth:token-type:access_token"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if !slices.Equal(c.got, c.want) {
