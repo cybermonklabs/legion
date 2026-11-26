@@ -1376,3 +1376,46 @@ func TestAStatementPastTheCommitBoundIsABusyPool(t *testing.T) {
 		t.Fatal("a statement that did not fail was named a refusal")
 	}
 }
+
+// A separate pool handed to its callers (Background, Live, Settlements, Outbox, TextTrees) opens no
+// pool of its own: one it opened would be held by nothing that closes it, and Stats and
+// ConnectionsPerProcess would never count it. Every pool it could ask for is refused with
+// ErrNotRootPool, and the pool Open returned still opens each of them.
+func TestASeparatePoolOpensNoPoolOfItsOwn(t *testing.T) {
+	database := openTestStore(t)
+	background, err := database.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	opens := []struct {
+		name string
+		open func(*Pool) error
+	}{
+		{"Rooms", func(p *Pool) error { _, err := p.Rooms(); return err }},
+		{"RoomAppends", func(p *Pool) error { _, err := p.RoomAppends(); return err }},
+		{"Leases", func(p *Pool) error { _, err := p.Leases(); return err }},
+		{"Outbox", func(p *Pool) error { _, err := p.Outbox(); return err }},
+		{"Compaction", func(p *Pool) error { _, err := p.Compaction(); return err }},
+		{"TextTrees", func(p *Pool) error { _, err := p.TextTrees(); return err }},
+		{"Horizon", func(p *Pool) error { _, err := p.Horizon(); return err }},
+		{"Live", func(p *Pool) error { _, err := p.Live(); return err }},
+		{"Settlements", func(p *Pool) error { _, err := p.Settlements(); return err }},
+		{"Background", func(p *Pool) error { _, err := p.Background(); return err }},
+		{"OpenRegistry", func(p *Pool) error { _, err := p.OpenRegistry(context.Background()); return err }},
+		{"Healthy", func(p *Pool) error { _, err := p.HealthyWithin(context.Background(), time.Second); return err }},
+	}
+	for _, open := range opens {
+		if err := open.open(background); !errors.Is(err, ErrNotRootPool) {
+			t.Errorf("%s on the background pool: %v, want ErrNotRootPool", open.name, err)
+		}
+	}
+	before := len(database.Pool.Stats())
+	for _, open := range opens[:len(opens)-2] {
+		if err := open.open(database.Pool); err != nil {
+			t.Errorf("%s on the pool Open returned: %v", open.name, err)
+		}
+	}
+	if after := len(database.Pool.Stats()); after <= before {
+		t.Errorf("the pool Open returned reports %d pools after opening them, %d before", after, before)
+	}
+}

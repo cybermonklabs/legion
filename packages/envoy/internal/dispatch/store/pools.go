@@ -278,6 +278,11 @@ const healthProbeTimeout = 2 * time.Second
 // ErrPoolClosed is a connection asked for after the pool was released.
 var ErrPoolClosed = errors.New("connection pool is closed")
 
+// ErrNotRootPool is a separate pool asked of a pool that is itself one of them, wrapped for its
+// callers (Background, Live, Settlements, Outbox, TextTrees): only the pool Open returns opens,
+// records and closes the separate pools.
+var ErrNotRootPool = errors.New("a separate pool opens no pool of its own: ask the pool Open returned")
+
 // Rooms is where a document load takes its connection. A load runs while the request that
 // triggered it holds an open transaction on this pool - it happens when an anchored write
 // stamps its mark in a room nobody has opened yet - and it is deliberately not part of that
@@ -371,8 +376,14 @@ func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, err
 	if err != nil {
 		return 0, err
 	}
-	// A no-op once the transaction has committed.
-	defer func() { _ = tx.Rollback(context.Background()) }()
+	// A no-op once the transaction has committed. It runs on a context of its own, bounded at
+	// RollbackTimeout (RollbackContext), so a database that stopped answering holds the probe,
+	// which must fail on time, no longer than that past its bound.
+	defer func() {
+		rollbackCtx, cancelRollback := RollbackContext(ctx)
+		defer cancelRollback()
+		_ = tx.Rollback(rollbackCtx)
+	}()
 	version, err := scanSchemaVersion(tx.QueryRow(ctx, schemaVersionRead))
 	if err != nil {
 		return 0, err
@@ -815,13 +826,15 @@ func (p *Pool) Settlements() (*Pool, error) {
 }
 
 // wrapped is the separate pool name, wrapped so the nested-acquire guard and the ErrPoolBusy
-// mapping apply to it as they do to the request pool.
+// mapping apply to it as they do to the request pool. The wrapper holds none of this pool's
+// separate pools, its lease registry or its close, so it opens none (ErrNotRootPool): a pool it
+// opened would be one Close, Stats and ConnectionsPerProcess never see.
 func (p *Pool) wrapped(name string, size int32) (*Pool, error) {
 	opened, err := p.open(name, size)
 	if err != nil {
 		return nil, err
 	}
-	return &Pool{pool: opened.pool, name: opened.name, acquire: opened.acquire}, nil
+	return &Pool{pool: opened.pool, name: opened.name, acquire: opened.acquire, wrapper: true}, nil
 }
 
 // SetAcquireBoundForTest sets the acquire bound the separate pool named name opens with, in place
@@ -907,8 +920,12 @@ func (p *Pool) healthPool() (*RawPool, error) {
 }
 
 // openLocked is the pool named name, opened when this pool has none under that name. Its caller
-// holds mu and has checked the close rule that applies to the pool it asks for.
+// holds mu and has checked the close rule that applies to the pool it asks for. A wrapped separate
+// pool opens none (ErrNotRootPool).
 func (p *Pool) openLocked(name string, size int32) (openedPool, error) {
+	if p.wrapper {
+		return openedPool{}, ErrNotRootPool
+	}
 	if err, failing := p.openFailures[name]; failing {
 		return openedPool{}, err
 	}
@@ -1011,6 +1028,9 @@ func (p *Pool) OpenRegistry(ctx context.Context) (*RawPool, error) {
 	defer p.mu.Unlock()
 	if p.closed {
 		return nil, ErrPoolClosed
+	}
+	if p.wrapper {
+		return nil, ErrNotRootPool
 	}
 	opened, err := p.newSeparate(ctx, RegistryPool, registryPoolSize)
 	if err != nil {

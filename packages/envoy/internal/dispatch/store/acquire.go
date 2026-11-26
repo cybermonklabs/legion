@@ -781,6 +781,13 @@ func BoundAcquires(config *pgxpool.Config, bound time.Duration) {
 // lockTimeoutRead reads a connection's lock_timeout in milliseconds, the unit pg_settings gives it.
 const lockTimeoutRead = `select setting from pg_settings where name = 'lock_timeout'`
 
+// lockBoundReadTimeout bounds requireLockBound's one read of a just-dialled connection. It is a
+// read of one setting that waits on nothing, so it answers in a round trip; ten seconds is well
+// past the request and lease pools' acquire bounds (requestAcquireBound, leaseAcquireBound), so
+// only a database that has stopped answering runs it out, and such a connection is refused as
+// every failed connect is.
+const lockBoundReadTimeout = 10 * time.Second
+
 // requireLockBound refuses conn, a new connection of a pool whose configuration asks for the write
 // lock bound (lockWaitDefault, configurePool: the request pool's; every other pool asks for none,
 // lockTimeoutNone, and is not checked), unless its session waits for a lock under a bound no
@@ -792,10 +799,18 @@ const lockTimeoutRead = `select setting from pg_settings where name = 'lock_time
 // database carries a bound of its own at or below lockWait (ALTER ROLE ... SET lock_timeout,
 // cmd/dispatch/README.md). It reads on pgconn, below pgx's query tracer, so a test counting a
 // request's statements never counts it, and it costs a round trip per connection, not per request.
+//
+// The read runs under lockBoundReadTimeout of its own. pgxpool runs this hook inside puddle's
+// constructor, whose context keeps the acquire's values and drops its cancellation, and pgx's
+// ConnectTimeout covers the dial and the handshake alone: unbounded, a database that stalls after
+// the handshake would hold the connection's place in its pool until the pool closed, with the
+// acquire that asked for it long gone.
 func requireLockBound(ctx context.Context, conn *pgx.Conn) error {
 	if conn.Config().RuntimeParams[lockTimeoutParam] != lockWaitDefault {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, lockBoundReadTimeout)
+	defer cancel()
 	results, err := conn.PgConn().Exec(ctx, lockTimeoutRead).ReadAll()
 	if err != nil {
 		return fmt.Errorf("read this connection's %s: %w", lockTimeoutParam, err)

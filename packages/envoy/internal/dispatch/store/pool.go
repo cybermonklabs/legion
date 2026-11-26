@@ -249,6 +249,9 @@ type Pool struct {
 	// parameter (DropLockTimeoutParameterForTest): a test sees what a pool's work does behind a
 	// pooler that drops startup parameters.
 	lockTimeoutDropped map[string]bool
+	// wrapper marks a separate pool wrapped for its callers (Pool.wrapped), which opens no pool of
+	// its own (ErrNotRootPool).
+	wrapper bool
 }
 
 // NewPool wraps an open pgx pool. Its name and acquire tracer are the ones configurePool set on
