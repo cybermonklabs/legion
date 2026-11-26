@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -46,6 +47,7 @@ import (
 // (ghroute's TestAHelpReadThatTimesOutStopsWhatGhStarted), would put the help read in that last
 // case too without the handling these rows read.
 func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
@@ -124,7 +126,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				dir := t.TempDir()
 				pidFile := filepath.Join(dir, "stand-in")
 				stub := filepath.Join(dir, "gh")
-				if err := os.WriteFile(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
+				if err := execfile.Write(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				state := t.TempDir()
@@ -136,7 +138,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				}
 				if held.git != nil {
 					bin := t.TempDir()
-					if err := os.WriteFile(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
+					if err := execfile.Write(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
 						t.Fatal(err)
 					}
 					env["PATH"] = bin + string(os.PathListSeparator) + ghWrapperDir(t) + string(os.PathListSeparator) + os.Getenv("PATH")

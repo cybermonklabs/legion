@@ -458,7 +458,12 @@ func Import(ctx context.Context, conn *Conn, path string, content []byte, mtime 
 const Absent int64 = -1
 
 // partBytes is the largest part Replace stores, Oh My Pi's PART_BYTES: a full write is split into
-// parts of at most 1 MiB, where an append stores what it adds as one part.
+// parts of at most 1 MiB. Oh My Pi's appends store parts two ways (sql-session-storage.ts at the
+// pinned tag): a line appended alone is one part of its own length (append), and two or more
+// lines queued while an earlier write to the session runs are stored in one transaction
+// (appendBatch, from indexed-session-storage.ts), short lines sharing parts of at most 1 MiB and a
+// longer line cut across parts at character boundaries (appendedParts). Append stores what it
+// adds as one part, as a line appended alone is stored.
 const partBytes = 1024 * 1024
 
 // MovedError is Append's and Replace's refusal of a session whose row is not the one its writer

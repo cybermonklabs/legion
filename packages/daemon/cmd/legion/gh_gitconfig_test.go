@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
@@ -32,6 +33,7 @@ import (
 // deadline as the only bound on the wait, and the child must be gone with it. The remotes read is
 // ghroute.ReadGitRemotes, whose first git is `git remote -v`.
 func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	for _, tc := range []struct {
 		name, refused string
 		read          func(context.Context) error
@@ -43,7 +45,7 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
 			const childSeconds, gitSeconds = "86397", "86396"
 			script := "#!/bin/sh\n" + recordsChild(child, childSeconds) + "\nexec sleep " + gitSeconds + "\n"
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -78,6 +80,7 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 // records it and exits 0 at once; the row gives WaitDelay a value of its own (procgroup.
 // WaitDelayBound), since it reads that delay's end, and the child holds the output past any delay.
 func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable procgroup.WaitDelayBound.
 	previous := procgroup.WaitDelayBound
 	procgroup.WaitDelayBound = 100 * time.Millisecond
 	t.Cleanup(func() { procgroup.WaitDelayBound = previous })
@@ -92,7 +95,7 @@ func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
 			const childSeconds = "86398"
 			script := "#!/bin/sh\n" + recordsChild(child, childSeconds) + "\nexit 0\n"
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -141,6 +144,7 @@ func gitConfigPairsOf(t *testing.T, block []string) [][2]string {
 // scoped. A count past the pairs the environment holds reads the pairs there, and a count that is
 // no count reads none.
 func TestGhChildGitConfigKeepsOnlyTheRuntimesPairs(t *testing.T) {
+	t.Parallel()
 	runtime := sandbox.GitConfigPairs()
 	cased := slices.Clone(runtime)
 	cased[2][0] = "CREDENTIAL.https://github.com.USEHTTPPATH"
@@ -218,6 +222,7 @@ func repositoryWith(t *testing.T, settings ...[]string) string {
 // submodule recursion on, which would fetch a submodule with its own configuration; the command
 // line holds the runtime's pairs and ghForcedGitConfig alone, recursion off among them.
 func TestGhChildGitReadsNoConfigurationOfTheCallers(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -277,6 +282,7 @@ func TestGhChildGitReadsNoConfigurationOfTheCallers(t *testing.T) {
 // extraheader, a key on the command line, a global file the environment never lets git read, and
 // a directory that is no repository pass. A configuration git cannot read is refused.
 func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -368,6 +374,7 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // (boundByTheDeadline): at a box load of about 1,100 that script and the git it runs took past the
 // product's 30 s, which the rows read as a refusal.
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -378,7 +385,7 @@ func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	old := t.TempDir()
 	script := "#!/bin/sh\nfor arg; do\n  if [ \"$arg\" = --show-scope ]; then\n    echo \"error: unknown option \\`show-scope'\" >&2\n    exit 129\n  fi\ndone\n" +
 		"PATH=" + shellWord(started) + "\nexec git \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(old, "git"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(old, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, path, dir, want string }{
@@ -438,6 +445,7 @@ func withoutRecursionOff(env []string) []string {
 // with submodule.recurse and fetch.recurseSubmodules true in the repository's own configuration,
 // and not with fetchRecurseSubmodules true in the .gitmodules of HEAD or of the fetched commit.
 func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
+	t.Parallel()
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git on this machine")
@@ -452,7 +460,7 @@ func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 		t.Helper()
 		scratch := t.TempDir()
 		helper = filepath.Join(scratch, "helper.sh")
-		if err := os.WriteFile(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_submodule_fake\\n'\n"), 0o700); err != nil {
+		if err := execfile.Write(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_submodule_fake\\n'\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		iso := []string{"PATH=" + filepath.Dir(git) + ":/usr/bin:/bin", "HOME=" + t.TempDir(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
@@ -578,6 +586,7 @@ func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 //   - extensions.worktreeConfig, with a URL-scoped sslVerify=false in a linked worktree's own
 //     config.worktree, which the main worktree's read does not hold.
 func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git on this machine")
@@ -585,7 +594,7 @@ func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
 	proxy := startCaptureProxy(t)
 	scratch := t.TempDir()
 	helper := filepath.Join(scratch, "helper.sh")
-	if err := os.WriteFile(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_later_read_fake\\n'\n"), 0o700); err != nil {
+	if err := execfile.Write(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_later_read_fake\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	iso := []string{"PATH=" + filepath.Dir(git) + ":/usr/bin:/bin", "HOME=" + t.TempDir(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",

@@ -400,7 +400,7 @@ runtime:
     #                                  # with the result. It does not use the pod's own credentials.
     #                                  # This member requires impersonate_service_account.
     # resources:                       # two keys, each a pod's reservation: issue, every issue pod's (its one
-    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers), and
+    #   issue: { memory: 32Gi, memory_request: 8Gi }   # roles container and both init containers), and
     #   controller: { cpu: 2, memory: 8Gi }  # controller, the daemon-launched controller's pod's (controller:
     #                                  # daemon only, else refused). cpu and memory are the limits, each
     #                                  # requested in full unless cpu_request or memory_request sets less (at most
@@ -409,7 +409,7 @@ runtime:
     #                                  # ephemeral_storage is the pod's limit on the node's disk (the image's
     #                                  # content and each role's home and /tmp; the scratch and the caches are on
     #                                  # issue_volume) over ephemeral_storage_request, what the scheduler reserves
-    #                                  # of it. A field left out takes the daemon's default: issue 3 CPU and 19Gi,
+    #                                  # of it. A field left out takes the daemon's default: issue 2 CPU and 8Gi,
     #                                  # 80Gi over 6Gi of disk; controller 1 and 4Gi, 10Gi over 1Gi. On GKE
     #                                  # Autopilot, which caps a pod's ephemeral storage at 10Gi, set
     #                                  # issue: { ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi }

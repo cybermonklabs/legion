@@ -18,6 +18,7 @@ const stderrToken = "FAKEtok3nZQ9x"
 // added as https://x-access-token:<token>@github.com/... does: the refusal names that remote by
 // its URL with no credential, and holds no token.
 func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	stub, _ := visibilityReadGh(t, ":\n")
 	repository := t.TempDir()
@@ -49,6 +50,7 @@ func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 // refusal of a flag's value among it: `legion state --port <url>` quotes the value it could not
 // read, and prints that URL with no credential.
 func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"legion", "state", "--port", "https://x-access-token:" + stderrToken + "@github.com/acme/widgets.git"}, &stdout, &stderr)
 	shown := strings.ReplaceAll(stdout.String()+stderr.String(), stderrToken, "<the token>")

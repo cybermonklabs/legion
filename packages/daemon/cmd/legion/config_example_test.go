@@ -26,12 +26,14 @@ import (
 // an operator's first check. The example names no Postgres; the environment does, as its comment
 // offers.
 func TestShippedLegionYAMLExamplePassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	checkShippedExample(t, func(example string) string { return example }, nil)
 }
 
 // The example's commented role_config_files, uncommented with the operator-roles volume and mount
 // it points to, passes the same check, and names the three roles' overlays.
 func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example,
 			"# role_config_files:",
@@ -57,6 +59,7 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 // `instructions` stays commented: boot reads that file from the daemon's own disk, and the example
 // names a path only an operator has.
 func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -91,6 +94,7 @@ func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
 // project declares: its mode, its unit, and the two arms it compares. The arm that names no file
 // is the control, which is why only one of the two carries an overlay.
 func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -145,6 +149,7 @@ func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
 // plan their owner gives, and `default`, whose issues run the project's default steps. It needs no
 // volume and no mount: neither arm names a file.
 func TestShippedLegionYAMLExamplesPlanningExperimentPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -176,6 +181,7 @@ func TestShippedLegionYAMLExamplesPlanningExperimentPassesCheckConfig(t *testing
 // names the one repository whose commits a pane of the project stamps with its issue key. It
 // needs no volume and no mount: the key names repositories, not files.
 func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -199,6 +205,7 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 // passes the same check and settles on the repository and the manifest digest it names. It needs
 // no volume and no mount: the block names a repository and a digest, not files.
 func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	checker := strings.Repeat("5e", 32)
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
@@ -224,6 +231,7 @@ func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
 // only an operator has, whose words the check reads, so it is covered no more than the memory
 // block's `instructions` is.
 func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example,
 			"# hooks:",
@@ -256,6 +264,7 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 // stays commented in the file itself: an active key would change the stdout
 // TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
 func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, "# worker_silence_minutes: 30")
 		return strings.Replace(example, "worker_silence_minutes: 30", "worker_silence_minutes: 15", 1)
@@ -278,6 +287,7 @@ func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T
 // file itself, as the silence key's does, for the same reason: an active key would change the
 // stdout TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
 func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, "# worker_background_hours: 4")
 		return strings.Replace(example, "worker_background_hours: 4", "worker_background_hours: 0.5", 1)
@@ -318,6 +328,7 @@ var memoryGuardExampleLines = []string{
 // (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
 // example teach a number no daemon runs. The controller pod's wait_seconds is 1.
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example, memoryGuardExampleLines...)
 	}, nil)
@@ -340,6 +351,7 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 // the range the block's own comment states. The block stays commented in the file itself: its
 // values are the defaults, which apply without it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	for _, kind := range []struct {
 		name string
 		max  int
@@ -377,6 +389,7 @@ func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T
 // file itself: the shipped store is postgres, and the stdout
 // TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
 func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAccountsEmailAndLogin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	for _, tc := range []struct {
 		name           string
 		edit           [][2]string
@@ -539,6 +552,7 @@ func answersCheckOK(tools string) string {
 // Without that pin, or without the setting, the same file is refused, naming what is missing,
 // since a Kubernetes daemon's gh tool would then have no check to run before any call.
 func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	gh := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(gh, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
 		t.Fatal(err)

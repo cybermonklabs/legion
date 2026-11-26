@@ -218,7 +218,7 @@ on:
       - 'packages/envoy/internal/dispatch/envoy/**'
       - 'packages/envoy/internal/dispatch/events/**'
       - 'packages/envoy/internal/dispatch/files/*'
-      - 'packages/envoy/internal/dispatch/githubapi/**'
+      - 'packages/envoy/internal/dispatch/githubapi/*'
       - 'packages/envoy/internal/dispatch/githubapp/*'
       - 'packages/envoy/internal/dispatch/githubapp/ratelimit/**'
       - 'packages/envoy/internal/dispatch/githubreads/**'

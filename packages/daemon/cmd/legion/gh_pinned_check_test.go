@@ -114,6 +114,7 @@ const ghGuardLookup = "visibility api --hostname github.com repos/acme/widgets -
 // that did not answer public fails as what it was, stopped by visibilityAnswerBound after so many
 // seconds or ending with its own status and words, and not as a read missing from gh's count.
 func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
+	t.Parallel()
 	// The guard's own lookup is a whole guard's, which reads the visibility only where the
 	// deployment names its rule file.
 	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
