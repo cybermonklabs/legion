@@ -54,7 +54,7 @@ function askedId(stdout: string): string {
   return id ?? "";
 }
 
-// SLOW(>=2s): five cold `bun` starts of the real `dispatch` command, each its own process,
+// SLOW(>=2s): five `bun` starts of the real `dispatch` command, each its own process,
 // around one hand-on made in a browser.
 test("open-asks names the person each ask waits on, before and after a hand-on", async ({
   browser,

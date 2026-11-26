@@ -60,6 +60,12 @@ plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server, and
 `e2e/global-teardown.ts` stops them. It keeps the stacks' logs unless the run
 showed that it passed. A run of one stack writes none, since that stack's
 servers write to the run's own stderr.
+The hook also makes one directory for the run under the temporary directory,
+once its preflight has passed, or as it returns for servers you started. Bun
+keeps the compiled modules of each `dispatch` command a row starts there, in
+place of each row's own HOME, and the directory and its variable go when the
+run ends (`e2e/cli-transpiler-cache.ts`). A run of the stubbed layer alone
+makes none.
 Playwright runs under Node, which reads `@legion/contracts` from that package's
 built `dist/`, and a fresh checkout has no `dist/`: `bun install` makes none.
 The hook does not build it and cannot. Playwright loads
@@ -116,7 +122,7 @@ server serves on a port the OS chooses and holds until it serves: the Dispatch
 server on a socket `scripts/e2e/lib/held-port.py` hands it, each Bun listener by
 binding port 0. Each reports its port on its listening line, and
 `e2e/global-setup.ts` writes them into the `DISPATCH_E2E_STACKS` manifest every
-worker inherits, which is the only variable that hook writes, so
+worker inherits, which is the only stack variable that hook writes, so
 no run shares a port with another and
 none empties the database behind a server it did not start. Set, a port is
 used as given, and an occupied one fails with `address already in use`.

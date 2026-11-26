@@ -4,8 +4,9 @@
  *  It is the hook of every run, including the ones that start nothing, because the decision not
  *  to start is this file's: a run against servers a person started
  *  (`DISPATCH_E2E_REUSE_SERVERS=1`, which is also what `e2e/harness-up.ts` prints) and a run of
- *  the stubbed layer alone (`e2e/stub/selection.ts`) each return here before a directory is made
- *  or a server starts.
+ *  the stubbed layer alone (`e2e/stub/selection.ts`) each return here before a server starts. The
+ *  run of the stubbed layer alone makes no directory either; the run against servers a person
+ *  started makes one, the transpiler cache below.
  *
  *  The one thing it does BEFORE the reuse return is refuse a run of more than one worker whose
  *  caller set a variable one stack owns (`refuseStackConflicts`, `e2e/harness-ports.ts`), since
@@ -41,12 +42,23 @@
  *  would sign its person out at the first request B answers. Under DISPATCH_E2E_SIGNIN=oidc
  *  (`e2e/harness-signin.ts`) the servers have no dev sign-in to check that with; there the one
  *  spec it runs signs a person in through the issuer and asks both processes who they are.
+ *
+ *  THE COMMAND'S TRANSPILER CACHE. Every run that reaches a server - the stacks this hook starts,
+ *  a deployed server, or servers a person started - gets one directory of its own where Bun keeps
+ *  the compiled modules of each `dispatch` command a row starts (`e2e/cli-transpiler-cache.ts`
+ *  says why one directory serves the whole run). The hook makes it last: after the preflight, or
+ *  just before it returns for servers a person started. It returns the function that removes the
+ *  directory and its variable, which Playwright keeps and calls when the run ends, and in its UI
+ *  mode before a re-run sets up again; a hook that throws returns nothing to call
+ *  (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:6597-6612 and
+ *  6936-6961), so a refused or failed setup makes no directory to leave behind.
  */
 import { existsSync } from "node:fs";
 import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@playwright/test";
 
 import { resetFakeEnvoy, setLiveSessions } from "./agents";
 import { baseUrlOf, devSignInPath, listAgents, sessionCookieFrom } from "./api";
+import { openCliTranspilerCache } from "./cli-transpiler-cache";
 import { stubProjectNames } from "./configurations";
 import { type Stack, startStacks } from "./harness-pool";
 import { harnessPorts, refuseStackConflicts, stacksVariable } from "./harness-ports";
@@ -216,7 +228,7 @@ async function requireOneCookieKey(url: string): Promise<void> {
   }
 }
 
-export default async function globalSetup(config: FullConfig): Promise<void> {
+export default async function globalSetup(config: FullConfig): Promise<(() => void) | undefined> {
   // The two runs that address servers this one does not start. The stub-only answer is read
   // exactly as the config reads it (`e2e/stub/selection.ts`): the config ran first, in this
   // process, so this asks the same question of the same command line and the same environment.
@@ -236,7 +248,10 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // on the one server and the one database, which `e2e/test.ts` truncates before every row, so
   // the rows would delete each other's fixtures and fail as though the product were broken.
   if (config.workers > 1) refuseStackConflicts(config.workers);
-  if (process.env.DISPATCH_E2E_REUSE_SERVERS === "1") return;
+  // Servers a person started still give the `dispatch` command's rows this run's own transpiler
+  // cache. It is made here, after the refusal above, and nothing is left to fail between the
+  // making and Playwright taking the function that removes it.
+  if (process.env.DISPATCH_E2E_REUSE_SERVERS === "1") return openCliTranspilerCache();
 
   // Before a directory is made or a server starts, so a run whose browsers are missing says so
   // whatever else is wrong with it.
@@ -248,10 +263,11 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // Every worker inherits what this writes (Playwright carries the environment `globalSetup`
   // leaves behind into each worker process), and resolves its own stack out of the manifest
   // through `TEST_PARALLEL_INDEX`; a process with no index of its own, this one included, reads
-  // the first record. The manifest is the ONLY thing written: the plain names are left as the
-  // caller had them, so a second setup in this process - Playwright's UI mode re-runs that way -
-  // cannot read a stopped stack's `DATABASE_URL` as though the caller had named it and skip
-  // starting a Postgres. `e2e/global-teardown.ts` takes the manifest back out again.
+  // the first record. The manifest is the ONLY stack variable written: the plain names are left
+  // as the caller had them, so a second setup in this process - Playwright's UI mode re-runs that
+  // way - cannot read a stopped stack's `DATABASE_URL` as though the caller had named it and skip
+  // starting a Postgres. `e2e/global-teardown.ts` takes the manifest back out again, and the
+  // function this hook returns takes out the transpiler cache's variable.
   process.env[stacksVariable] = JSON.stringify(stacks.map((stack) => stack.env));
 
   for (const stack of stacks) await checkStack(stack, count);
@@ -260,4 +276,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   }
   const which = count === 1 ? "the stack" : `each of the ${count} stacks`;
   console.error(`${named}: the preflight passed: ${which} answers from this run's fake Envoy`);
+  // Last, once every check has passed: a hook that throws returns no function to remove it, so a
+  // directory made before a check that failed would be left behind.
+  return openCliTranspilerCache();
 }

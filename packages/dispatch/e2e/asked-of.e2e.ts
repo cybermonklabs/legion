@@ -331,7 +331,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   }
 });
 
-// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command, each its own process,
+// SLOW(>=2s): four `bun` starts of the real `dispatch` command, each its own process,
 // against a page that must follow every one of them.
 test("an agent sets and clears the issue assignee from the command", async ({
   browser,

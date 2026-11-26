@@ -225,8 +225,10 @@ async function expectedOf(
   return { kind: "gap" };
 }
 
-// Each row runs the command with a HOME of its own, where bun keeps a transpiler cache of about
-// 2 MB, so the row removes it afterwards: a run leaves each row's text and none of that cache.
+// Each row runs the command with a HOME of its own, where the command keeps its session state, so
+// the row removes it afterwards: a run leaves each row's text and none of that state. Bun keeps
+// its transpiler cache in the run's own directory instead, which the run removes when it ends
+// (`e2e/cli-transpiler-cache.ts`).
 test.afterEach(() => {
   rmSync(join(test.info().outputPath(), "home"), { force: true, recursive: true });
 });
@@ -252,8 +254,9 @@ for (const [index, row] of rows.entries()) {
       for (const target of ["a new name", "a held name"] as const) {
         // The row, the way, --force and the target, so a failure names all four.
         const combination = `${row.name}: ${way.label}, ${force ? "--force" : "no --force"}, over ${target}`;
-        // SLOW(>=2s): two cold `bun` starts of the real `dispatch` command for the row, and texts
-        // of up to 1 MiB sent through it.
+        // SLOW(>=2s): two `bun` starts of the real `dispatch` command for the row, each a fresh
+        // process that reads its compiled modules from the run's transpiler cache, and texts of
+        // up to 1 MiB sent through it.
         test(combination, async () => {
           const output = test.info().outputPath();
           const home = join(output, "home");

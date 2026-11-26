@@ -334,7 +334,7 @@ async function seedInbox(): Promise<SeededInbox> {
 test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it @pr", async ({
   browser,
 }) => {
-  // Cold `bun` starts for the command, a seeded workspace and a page of its own.
+  // Fresh `bun` processes for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   const seeded = await seedInbox();
   const home = mkdtempSync(join(tmpdir(), "dispatch-inbox-cli-"));
@@ -557,7 +557,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 test("dispatch inbox lists the reader's unread threads, the page's own thread rows: the thread an agent wrote in and the message a session answered, each with its owner, its replier and its age", async ({
   browser,
 }) => {
-  // A cold `bun` start for the command, a seeded workspace and a page of its own.
+  // A fresh `bun` process for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   await seedInbox();
   const home = mkdtempSync(join(tmpdir(), "dispatch-inbox-cli-threads-"));

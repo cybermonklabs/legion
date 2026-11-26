@@ -7,8 +7,9 @@
  *  `process.env` under their plain names, so the second start read the STOPPED stack's
  *  `DATABASE_URL` as though the caller had named it, took the "a run of one stack against the
  *  database the caller named starts no Postgres" branch (`e2e/harness-pool.ts`), and handed the
- *  server a database that was gone. The hook now writes the manifest and nothing else, and
- *  `e2e/global-teardown.ts` takes even that back out.
+ *  server a database that was gone. The hook writes the stack manifest, and
+ *  `e2e/global-teardown.ts` takes it out again. Playwright also calls the cache cleanup
+ *  function returned by setup.
  *
  *  WHY A CHILD AND NOT A CALL FROM THIS RUNNER. The hook can be driven from a test - it takes a
  *  config object and reads `process.argv` and `process.env` - but the thing to prove is what it
@@ -54,14 +55,14 @@ test.skipIf(withoutPostgres)(
       'const { stacksVariable } = await import("./e2e/harness-ports.ts");' +
       'const config = { filteredProjects: [{ name: "chromium" }], workers: 1 };' +
       "const urls = () => JSON.parse(process.env[stacksVariable]).map((s) => s.DATABASE_URL);" +
-      "await setup(config);" +
+      "const closeFirst = await setup(config);" +
       "const first = urls();" +
       "const plainAfterSetup = process.env.DATABASE_URL ?? null;" +
-      "await teardown();" +
+      "try { await teardown(); } finally { closeFirst?.(); }" +
       "const manifestAfterTeardown = process.env[stacksVariable] ?? null;" +
-      "await setup(config);" +
+      "const closeSecond = await setup(config);" +
       "const second = urls();" +
-      "await teardown();" +
+      "try { await teardown(); } finally { closeSecond?.(); }" +
       "console.log(JSON.stringify({ first, second, plainAfterSetup, manifestAfterTeardown }));";
     const { code, named, stderr, stdout } = await runBounded({
       argv: ["bun", "--eval", script],
@@ -101,9 +102,8 @@ test.skipIf(withoutPostgres)(
     expect(read.first[0], stderr).toMatch(/^postgres:\/\//);
     expect(read.second[0], stderr).not.toBe(read.first[0]);
 
-    // Why it is clean: the hook writes the manifest and nothing else, and the teardown removes
-    // the manifest. The child was given no `DATABASE_URL`, so a value under that plain name
-    // could only have come from the hook.
+    // The teardown removes the stack manifest. The child was given no `DATABASE_URL`, so a
+    // value under that plain name could only have come from setup.
     expect(read.plainAfterSetup).toBeNull();
     expect(read.manifestAfterTeardown, `${stacksVariable} outlived the teardown`).toBeNull();
   },
