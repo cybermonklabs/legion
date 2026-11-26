@@ -696,7 +696,7 @@ func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession str
 // standing and a session's claim are not things the record's next head changes, save one: a
 // review-App review that comes while the reviewer's claim records no session waits
 // (RefusedWhileNoSession), since the session the claim records later says whose it is.
-// No review decides a review step the owner does: settleRound settles no round there.
+// No review decides a review step the owner does: reviewRound answers no round there.
 func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession string) bool {
 	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
 }
@@ -748,8 +748,8 @@ const (
 // reviewToApply), which applies only a review this would take - and both ask this one judgement,
 // so neither judges by a narrower rule than the other, and neither asks a second one to learn how
 // long a refusal stands: the answer carries that (RoundRefusal.Lasts).
-// A review step the owner does is decided by no review at all, which settleRound holds whatever
-// this answers.
+// A review step the owner does is decided by no review at all: reviewRound answers no round there,
+// whatever this answers.
 func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
 	if !e.DecidesRound(review, reviewerSession) {
 		switch {
@@ -1250,8 +1250,11 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 // reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
 // request as a fact left them. Where a worker does the review step, the review event decides it,
 // and the reviewer's handoff records its findings (dispatch://INFRA-714/spec R1); a review step
-// the owner does ends by its verdict instead, and settleRound acts on no round of it. A request
-// for changes ends the round whether or not the
+// the owner does (record.Issue.OwnersPlace) has no round: it ends by the owner's own report, its
+// verdict (handoff's reviewing case), so this answers no round there, whatever review GitHub
+// holds. So no reader acts on one or asks GitHub for its merge state (settleRound,
+// mergeStateOwed), as classify.RoundWaitsOnMergeState holds no wait there. A request for changes
+// ends the round whether or not the
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and the merge state the record holds for that head is one the round
@@ -1294,7 +1297,7 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 // approval is of other code than the head's (stuckApprovedOtherCode). An approval of a head that
 // code is on its way from keeps the round open, and classify.CodeOnItsWay says when that is.
 func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {
-	if issue.Phase != phase.Reviewing {
+	if issue.Phase != phase.Reviewing || issue.OwnersPlace() {
 		return round{}
 	}
 	completed := row.Completed()
@@ -1395,14 +1398,11 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
 //
-// A review step the owner does (the claim that works the issue's place is the architect,
-// record.Issue.RoleAt) has no round to settle: it ends by the owner's own report, its verdict
-// (handoff's reviewing case), so no review on GitHub decides it, the owner's own among them, and
-// nothing is told of it. Its review on GitHub is for the repository's rule of a merge alone.
+// A review step the owner does (record.Issue.OwnersPlace) has no round to settle, and reviewRound
+// answers none there: it ends by the owner's own report, its verdict (handoff's reviewing case), so
+// no review on GitHub decides it, the owner's own among them, and nothing is told of it. Its review
+// on GitHub is for the repository's rule of a merge alone.
 func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
-	if issue.RoleAt(issue.Phase) == claim.RoleArchitect {
-		return false, nil
-	}
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:

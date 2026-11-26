@@ -1422,12 +1422,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 	case phase.Reviewing:
 		// A verdict ends a review step that no review on GitHub decides: the reviewer of an issue
-		// with no pull request, and a review step the owner does, whose round no review settles
-		// (settleRound). The route takes a verdict from exactly those (api's stepReportRefusal). The
-		// step keeps the commit its completion read, as a review step of the deployment keeps it
-		// (recordStepReview), and its fail goes back to the step its returnTo names, or to the one
-		// its plan reads. A completion with no verdict leaves the round to the reviews on GitHub, as
-		// it always has.
+		// with no pull request, and a review step the owner does, which has no round for a review
+		// to settle (reviewRound). The route takes a verdict from exactly those (api's
+		// stepReportRefusal). The step keeps the commit its completion read, as a review step of
+		// the deployment keeps it (recordStepReview), and its fail goes back to the step its
+		// returnTo names, or to the one its plan reads. A completion with no verdict leaves the
+		// round to the reviews on GitHub, as it always has.
 		if fact.Verdict == "pass" || fact.Verdict == "fail" {
 			return intake.Result{}, e.endByVerdict(ctx, tx, *issue, w, row, pr, fact, returnTo, TriggerReviewRejected, func() error {
 				return e.transition(ctx, tx, *issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")

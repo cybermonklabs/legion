@@ -104,7 +104,7 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 
 // A review step the owner of the task does (`reviewer:owner`, where the claim that works the place
 // is the architect: record.Issue.OwnersPlace) has no round for GitHub's merge state to settle: it
-// ends by the owner's own report, and workflow's settleRound returns at once there. A qualifying
+// ends by the owner's own report, and workflow's reviewRound answers no round there. A qualifying
 // review on GitHub still writes its decision on the reviewer's row, so an approval can stand on a
 // head GitHub will not merge from; the round waits on no answer all the same, so the state shows no
 // mergeWait for it and the engine owes no read of GitHub's merge state for it. The same approval at
