@@ -663,7 +663,7 @@ func readLoadAnswer(output string) loadAnswer {
 // names and their models. So an operator with no pi-envoy installed reads "install
 // @sjawhar/pi-envoy", never that a skill it ships is missing.
 func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pluginLane, version string, check promptCheck) (bootprobe.Outcome, loaded) {
-	script := `exec ` + launch + ` models ` + lane.flags + ` --json >/dev/null`
+	script := launch + ` models ` + lane.flags + ` --json >/dev/null; s=$?; [ "$s" -gt 128 ] && kill -$((s - 128)) $$; sleep 15; exit "$s"`
 	if exports := append(check.assignments(), lane.exports...); len(exports) > 0 {
 		script = "export " + strings.Join(exports, " ") + "; " + script
 	}
