@@ -632,7 +632,7 @@ check "every filter is every path" \
 check "and the computed filters stand" "$(contains "$(cat "$root.generated.computed.yaml")" "^  - 'mod/cmd/\*\*'$")"
 
 # The base's filters as a push of that commit to main generated them
-# (.github/workflows/ci-caches-changes.yaml), which the changes job restores into the directory
+# (.github/workflows/ci-caches.yaml, its changes job), which the changes job restores into the directory
 # CI_FILTERS_BASE_COMPUTED names: the script reads them only when the directory's commit file names
 # the base. The base tree's own generation fails in both cases below, so a run that generated it
 # would make every filter every path.

@@ -161,8 +161,8 @@ them.
 
 ## What the refill-superseded job deletes, and why it is a job of its own
 
-The entries of go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet that the
-fills replaced, deleted once each fill has saved its new one. Each fill saves a new entry, over a
+The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-darwin-vet and changes-git
+that the fills replaced, deleted once each fill has saved its new one. Each fill saves a new entry, over a
 gigabyte for most families, so without this the entries would pile up: GitHub drops an entry only
 after seven days unread, and over the repository's cache limit it evicts the least recently used
 entries, which can be another family's live one. For each family and architecture this keeps one
@@ -176,20 +176,23 @@ the entry would have given it, slower but not failed. An entry of another runner
 no such entry and stays. None is deleted unless the new key is among this ref's entries, so a save
 that did not land leaves the old entries in place.
 
-A job of its own, so the token that may delete caches is in no job that builds code. A cache key is
-text any build that saves on this ref chose, so the step never splits or prints one raw: the list
-stays JSON, jq selects the numeric ids to delete, and each id is checked to be a number before
-`gh cache delete` gets it. One leg per family and architecture, each keeping the key that fill's
-leg saved, under the output name the fill gives it; a leg whose fill saved nothing (it failed
-before its save) skips its steps, and the job runs when any fill failed, so one failed fill does
-not stop the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need nothing of an x64
-machine.
+A job of its own, so the token that may delete caches is in no job that builds code. Its legs, and
+those of envoy-infra-superseded and dispatch-builds-superseded, run
+.github/scripts/cache-superseded.sh, which moved their three step bodies out of the workflow when
+the changes job's fill joined it (the file is held to 64,000 bytes, and a file at that size moves
+its bodies to .github/scripts). A cache key is text any build that saves on this ref chose, so the
+script never splits or prints one raw: the list stays JSON, jq selects the numeric ids to delete,
+and each id is checked to be a number before `gh cache delete` gets it. One leg per family and
+architecture, each keeping the key that fill's leg saved, under the output name the fill gives it;
+a leg whose fill saved nothing (it failed before its save) skips its steps, and the job runs when
+any fill failed, so one failed fill does not stop the others' deletes. Every leg runs on
+ubuntu-24.04-arm: gh and jq need nothing of an x64 machine.
 
 ## The two entries the changes job restores
 
-.github/workflows/ci-caches-changes.yaml fills, on every push to main and on ubuntu-24.04-arm, the
-runner of ci.yaml's changes job, two entries that job restores. They are in a workflow of their own
-because ci-caches.yaml is near the 64,000 bytes check-workflow-files.sh allows a workflow file.
+ci-caches.yaml's changes job fills, on every push to main and on ubuntu-24.04-arm, the runner of
+ci.yaml's changes job, the two entries that job restores. Rule 11 of check-ci-filters.sh holds
+each save's key and path to ci.yaml's restore, as it holds every family of the file.
 
 changes-git-<os>-<arch>-<commit> is the `.git` of a one-commit checkout of the pushed commit. The
 changes job restores it before its checkout, by the key without the commit, which GitHub matches
@@ -201,10 +204,10 @@ checkout, and the restore of the 96 MB entry took 0.8 s, the fetch after it 1.0 
 the fetch offers the server the refs it holds as the commits it has, never a detached HEAD, and
 actions/checkout removes a remote branch that conflicts with the ref it checks out, so an entry
 saved from a detached checkout was fetched whole again (13 s in demo run 45781883565's first
-attempt), and one with a ref of that name in 0.3 s (its second attempt, job 139787204657). The
-fill's superseded job deletes the entries of this ref older
-than the one it saved, as refill-superseded deletes its families' (the section above says why it
-is a job of its own), so one entry stays. A restore that misses, or an entry the checkout cannot
+attempt), and one with a ref of that name in 0.3 s (its second attempt, job 139787204657).
+changes-git is a refilled family: its key is the readers' key and the commit, and
+refill-superseded's changes-git leg deletes this ref's older entries, so one entry stays. A restore
+that misses, or an entry the checkout cannot
 use, leaves the checkout to fetch everything, as it did before.
 
 ci-filters-<os>-<arch>-<commit> is the filters the pushed commit's own `check-ci-filters.sh
@@ -217,5 +220,7 @@ generating the base tree, but only when its commit file names that base: the sam
 the same tree on the same runner, run with the base's own Go and Bun, so the file is the one the
 generation would write. A base no push to main left, such as a merge group's base that is the group
 ahead of it, has no entry and is generated as before. The fill looks the exact key up first and
-computes nothing when the entry is there, as the lookups of ci-caches.yaml do. An entry is about 20
-KB, and GitHub drops each after seven days unread, so they are not deleted.
+computes nothing when the entry is there, as the lookups of ci-caches.yaml do. The lookup's key is
+the changes job's restore key word for word, its `steps.base.outputs.sha` this commit, which the
+fill's step of that id names, so rule 11 holds the two to one text. An entry is about 20 KB, and
+GitHub drops each after seven days unread, so they are not deleted.
