@@ -32,7 +32,6 @@ import {
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { type ReferenceNaming, useMarkdownHeadline } from "../refs/markdown-engine";
 import { EditedMark } from "../refs/PostMarks";
 import { usePlainHeadline } from "../refs/plain-text";
 import { deletedLineText, postDeletion } from "../refs/post-marks";
@@ -1496,13 +1495,10 @@ function Chip({
   );
 }
 
-/** What a held chip's line is projected with: as the names store projects a block's line
- *  (`refs/reference-names.tsx`), a title over one record's words, in which no name is read. */
-const HELD_NAMING: ReferenceNaming = { names: new Map(), readsNone: true };
-
-/** A held chip's name (`Chip`'s `holds`): the line the tree holds for its block, projected as the
- *  names store projects a block's line, and cut as a chip cuts it (`chipName`), in the weight and
- *  the wrapping of the link that names it once the names read has, so it holds that link's box. */
+/** A held chip's name (`Chip`'s `holds`): the line the tree holds for its block, projected from
+ *  the server's reading of it as a chip's line is (`usePlainHeadline`), and cut as a chip cuts it
+ *  (`chipName`), in the weight and the wrapping of the link that names it once the names read
+ *  has, so it holds that link's box. */
 function HeldChipName({
   line,
   target,
@@ -1510,11 +1506,11 @@ function HeldChipName({
   line: DisplayTree;
   target: DispatchReferenceRoute;
 }): ReactNode {
-  const words =
-    useMarkdownHeadline(line, Number.POSITIVE_INFINITY, undefined, HELD_NAMING)?.text ?? "";
+  const { reads, text } = usePlainHeadline(line, undefined, { surface: "node-row-chip" });
   return (
     <span className="font-medium whitespace-nowrap" data-chip-name="" {...authorText}>
-      {chipName(target, words)}
+      {reads}
+      {text === undefined ? "" : chipName(target, text.text)}
     </span>
   );
 }
