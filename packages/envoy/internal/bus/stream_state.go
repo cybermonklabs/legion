@@ -87,8 +87,21 @@ func (s *SessionConsumers) readStreamStates() {
 	}
 }
 
-// readStreamState reads the stream's identity and sequences with one stream info.
+// readStreamState reads the stream's identity and sequences with STREAM.INFO. It sends once and
+// waits up to servingReadBound, and sends again only when that send draws no answer
+// (resentOnTimeout), so a server that answers within that bound is read once and a lost reply is
+// still recovered inside the stream-read wait rather than failing every streamState waiter of the
+// shared read.
 func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamState, error) {
+	ctx, cancel := waitUnlessDeadline(ctx, sessionStreamReadWait)
+	defer cancel()
+	return resentOnTimeout(ctx, s.logger, Stream+" STREAM.INFO", servingReadBound, func(ctx context.Context) (sessionStreamState, error) {
+		return s.readStreamStateOnce(ctx)
+	})
+}
+
+// readStreamStateOnce reads the stream's identity and sequences with one stream info.
+func (s *SessionConsumers) readStreamStateOnce(ctx context.Context) (sessionStreamState, error) {
 	reply, err := s.client.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
 	if err != nil {
 		return sessionStreamState{}, err

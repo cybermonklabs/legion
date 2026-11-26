@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -168,10 +169,11 @@ func readModeBucket(t *testing.T, admin *nats.Conn, client *Client, bucket, key 
 // one on a stream that does not as a get from the stream's leader, never the other (readsDirect).
 // A handle of a client that reads with stream message gets (WithStreamMessageReads), an edge
 // listener's, sends every read as a get from the stream's leader, on a stream that allows direct
-// gets too (streamMessageReads). So a read whose own request lost its answer, while the connection
-// earned the refusal of the request the other kind of handle sends, reports its own silence and
-// leaves that refusal in the record; and a read whose own request the grant refuses names that
-// refusal.
+// gets too (streamMessageReads). A read whose own request lost its answer, while the connection
+// earned the refusal of the request the other kind of handle sends, leaves that refusal in the
+// record: a non-retrying read reports its own unanswered error; a retrying read (the leader get,
+// the edge stream-message get) sends again and recovers. A read whose own request the grant
+// refuses names that refusal.
 //
 // Each row starts a server of its own, whose user may publish to anything but the one subject the
 // row refuses, and the server's admin makes the bucket there. The handle under test is the user's,
@@ -192,13 +194,17 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 		own, other string
 		call       func(KeyValue, uint64) (nats.KeyValueEntry, error)
 		client     []ConnectOption
+		retries    bool
 	}{
-		{"direct Get", true, directByKey, fromLeader, get, nil},
-		{"direct GetRevision", true, directBySequence, fromLeader, getRevision, nil},
-		{"leader Get", false, fromLeader, directByKey, get, nil},
-		{"leader GetRevision", false, fromLeader, directBySequence, getRevision, nil},
-		{"stream message Get", true, fromLeader, directByKey, get, messageReads},
-		{"stream message GetRevision", true, fromLeader, directBySequence, getRevision, messageReads},
+		{"direct Get", true, directByKey, fromLeader, get, nil, false},
+		{"direct GetRevision", true, directBySequence, fromLeader, getRevision, nil, false},
+		{"leader Get", false, fromLeader, directByKey, get, nil, false},
+		{"leader GetRevision", false, fromLeader, directBySequence, getRevision, nil, false},
+		{"explicit leader Get", true, fromLeader, directByKey, func(kv KeyValue, _ uint64) (nats.KeyValueEntry, error) {
+			return kv.GetFromLeader(context.Background(), key)
+		}, nil, true},
+		{"stream message Get", true, fromLeader, directByKey, get, messageReads, true},
+		{"stream message GetRevision", true, fromLeader, directBySequence, getRevision, messageReads, true},
 	} {
 		t.Run(read.name+" lost beside a refusal of a request it does not send", func(t *testing.T) {
 			t.Parallel()
@@ -210,12 +216,28 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 			}
 
 			relay.arm(1)
-			requireUnansweredBeside(t, relay, client, read.name, read.other, func() error {
-				_, err := read.call(kv, revision)
-				return err
-			})
-			if sends := relay.sent(); sends != 1 {
-				t.Fatalf("sends of %s = %d, want 1: the row's read sends that request and no other", read.own, sends)
+			if read.retries {
+				var entry nats.KeyValueEntry
+				requireLeft, err := besideRefusal(t, relay, client, read.other, nil, func() error {
+					var callErr error
+					entry, callErr = read.call(kv, revision)
+					return callErr
+				})
+				if err != nil || string(entry.Value()) != "value" {
+					t.Fatalf("the %s after its first reply was lost beside the refusal of %s = %v, want the value written", read.name, read.other, err)
+				}
+				requireLeft(read.name + " retry")
+				if sends := relay.sent(); sends != 2 {
+					t.Fatalf("sends of %s = %d, want 2: the first reply was lost and this idempotent read is sent again", read.own, sends)
+				}
+			} else {
+				requireUnansweredBeside(t, relay, client, read.name, read.other, func() error {
+					_, err := read.call(kv, revision)
+					return err
+				})
+				if sends := relay.sent(); sends != 1 {
+					t.Fatalf("sends of %s = %d, want 1: the row's read sends that request and no other", read.own, sends)
+				}
 			}
 		})
 		t.Run(read.name+" whose own request is refused", func(t *testing.T) {

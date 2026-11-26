@@ -287,14 +287,11 @@ func clientOwning(conn *nats.Conn) *Client {
 	return nil
 }
 
-// loggerOwning is the logger of the client that owns conn (WithLogger), and followsDefault, which
-// writes where slog.Default() points at each line, when no client owns it: where a function given
-// a connection and no client, such as EnsureKeyValue, writes its lines.
+// loggerOwning is the logger of the client that owns conn (Client.log), and followsDefault, which
+// writes where slog.Default() points at each line, when no client owns it (a nil client's log()):
+// where a function given a connection and no client, such as EnsureKeyValue, writes its lines.
 func loggerOwning(conn *nats.Conn) *slog.Logger {
-	if owner := clientOwning(conn); owner != nil {
-		return owner.log()
-	}
-	return followsDefault
+	return clientOwning(conn).log()
 }
 
 // refusedBy is send's answer, or the server's refusal of one of subjects, the subjects send
@@ -320,12 +317,14 @@ func loggerOwning(conn *nats.Conn) *slog.Logger {
 // ends at send's own wait, and its answer is then dropped, as Bounded drops one, since what
 // these sends answer holds nothing (refusedByRecord releases an answer that does). That costs a
 // goroutine, a channel and two closures, under a microsecond, which is why it serves the requests
-// of a start and the other requests made once in a while (readsRefusals, the KeyValue handle's
-// Status and stream reads, and a watch's create through refusedByRecord, watchRefused); the reads
-// and writes of a key made on every request the bus serves take refusedAfter, which costs nothing
-// when the server answers. The signal is taken and the time read before send, because
-// deniedPublish takes only a violation recorded at or after the moment the caller's own message
-// went out and send's message goes out after this.
+// of a start (readsRefusals, the KeyValue handle's Status and stream reads, and a watch's create
+// through refusedByRecord, watchRefused), and the reads that send again (leaderGet, the KV leader
+// read and the edge stream-message read): refusedBy ends each send as the refusal arrives, so a
+// read the grant refuses is not sent again. The reads and writes of a key sent once on every
+// request the bus serves take refusedAfter instead, which costs nothing when the server answers.
+// The signal is taken and the time read before send, because deniedPublish takes only a violation
+// recorded at or after the moment the caller's own message went out and send's message goes out
+// after this.
 //
 // The caller names owner, found once for the many requests it makes (readsRefusals and the
 // KeyValue handle look it up with clientOwning); the client's own JetStream context and stream
@@ -388,10 +387,10 @@ func refusedByRecord[T any](owner *Client, denied func(sentAt time.Time) error, 
 // refusedAfter is send, made on the caller's goroutine, with the server's refusal of one of the
 // subjects in place of its answer when the server left it unanswered and owner's record holds that
 // refusal (deniedPublishOf): the reads and writes of a key the bus makes on every request it
-// serves (KeyValue's Get, Put and the rest, GetFromLeader), which this keeps exactly as fast as a
-// send made without it. A refused one waits out its own wait, as it always has, and then names the
-// refusal where it named only the silence. subjects is called only then, so a send the server
-// answers builds no subject either. owner nil sends as send does.
+// serves (KeyValue's Get, Put and the rest), which this keeps exactly as fast as a send made
+// without it. A refused one waits out its own wait, as it always has, and then names the refusal
+// where it named only the silence. subjects is called only then, so a send the server answers
+// builds no subject either. owner nil sends as send does.
 func refusedAfter[T any](owner *Client, subjects func() []string, send func() (T, error)) (T, error) {
 	if owner == nil {
 		return send()

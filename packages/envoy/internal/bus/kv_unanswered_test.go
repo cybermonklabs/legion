@@ -328,8 +328,9 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // A start whose lookup the server never answers ends at the start's hang guard, with an error that
 // names the lookup, the sends that drew no answer and the guard, rather than hanging the program's
 // start for as long as the server stays silent. The guard is shortened here (ensureKeyValue), to
-// two seconds: each lookup is a read, waited for up to its read limit (firstReadLimit, then twice
-// that) and sent again, so the guard passes during the third send and cuts it (Bounded).
+// two seconds: each lookup is a read, and a send still unanswered at its read limit (firstReadLimit,
+// then twice that) starts another beside it, so the guard passes while sends are in flight and ends
+// the wait (sentAgain, Bounded).
 func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	const bucket = "envoy_unanswered_never"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
@@ -603,10 +604,10 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	}
 }
 
-// A caller that is no start sends the open once, whatever the server does with it.
-// roles.Buckets.bucket reaches WrapKeyValue through OpenKeyValue for a read whose caller waits two
-// seconds for it, so an open that kept sending would leave that read and every one after it
-// unanswered instead of saving a start.
+// A caller that reaches WrapKeyValue or OpenKeyValue sends the open once, whatever the server does
+// with it: the handle rebuilds and the once-off opens a watcher's repair makes. A role or session
+// holder resolution opens through OpenKeyValueAgain instead, which sends a lost read again under
+// its own bound; this row holds the one-send path that WrapKeyValue takes.
 func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 	t.Parallel()
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))

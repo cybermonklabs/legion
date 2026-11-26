@@ -21,6 +21,15 @@ const storedMessageAPI = "$JS.API.STREAM.MSG.GET." + Stream
 // storedMessageWait bounds a stored-message read whose caller set no deadline of its own.
 const storedMessageWait = 10 * time.Second
 
+// waitUnlessDeadline is ctx bounded by wait when it carries no deadline of its own, else ctx as
+// it is; the cancel is the caller's to defer either way.
+func waitUnlessDeadline(ctx context.Context, wait time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, wait)
+}
+
 // StoredMessage is one message the notification stream holds: its stream sequence, the concrete
 // subject it was published on, when the stream stored it, its body, and the Nats-Msg-Id it was
 // published under (empty for one published under none).
@@ -224,13 +233,20 @@ func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 // storedMessage makes one stored-message read of the notification stream and reads its answer, for
 // NextStoredMessage and LastStoredMessage alike: request is the body each builds, naming the
 // message it wants. The stream's error answer comes back as the *nats.APIError it is, and an
-// answer that names neither a message nor an error is this package's own error.
+// answer that names neither a message nor an error is this package's own error. Each send waits
+// servingReadBound, and a send the server leaves unanswered is sent again (resentOnTimeout): a read
+// the server answers within that bound is sent once, and a lost reply is recovered inside the
+// storedMessageWait budget this read holds when its caller set no deadline.
 func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage, error) {
+	ctx, cancel := waitUnlessDeadline(ctx, storedMessageWait)
+	defer cancel()
 	body, err := json.Marshal(request)
 	if err != nil {
 		return StoredMessage{}, err
 	}
-	reply, err := c.requestConfirmed(ctx, storedMessageAPI, body)
+	reply, err := resentOnTimeout(ctx, c.log(), storedMessageAPI, servingReadBound, func(sendCtx context.Context) (*nats.Msg, error) {
+		return c.requestConfirmed(sendCtx, storedMessageAPI, body)
+	})
 	if err != nil {
 		return StoredMessage{}, err
 	}
@@ -278,11 +294,8 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
-		defer cancel()
-	}
+	ctx, cancel := waitUnlessDeadline(ctx, storedMessageWait)
+	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
 	}
@@ -340,11 +353,8 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
 func (c *Client) RequestCore(ctx context.Context, subject, reply string, header nats.Header) (*nats.Msg, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
-		defer cancel()
-	}
+	ctx, cancel := waitUnlessDeadline(ctx, storedMessageWait)
+	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
 	}

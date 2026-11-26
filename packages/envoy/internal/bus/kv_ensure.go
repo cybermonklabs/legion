@@ -109,8 +109,9 @@ func namedRequest(request string, err error) error {
 // serves, while the legion agent registry's open logs one ERROR, leaves the registry
 // unavailable and is retried in the background (openLegionAgentRegistry), and Dispatch's
 // webhook redelivery sweep (redeliver.OpenState), which logs the failure and tries again on its
-// next pass. A caller that waits on a budget of its own, such as a request or a watcher's
-// repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
+// next pass. A role or session holder resolution, which bounds its open at twice RequestTimeout
+// (roles.openBound), opens through OpenKeyValueAgain, which sends a lost read again too; every
+// other request or watcher's repair opens through OpenKeyValue or WrapKeyValue, which send it once.
 //
 // ctx is the context the caller runs under, so a stop that ends it ends a start that waits: the
 // listener's start, which a signal ends at once, runs under no other; the legion agent registry's
@@ -144,7 +145,7 @@ func ensureKeyValue(ctx context.Context, logger *slog.Logger, guard time.Duratio
 	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
-		kv, err := readAgain(ctx, logger, lookup, readLimitOf(ctx), func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		kv, err := readAgain(ctx, logger, lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
@@ -212,7 +213,7 @@ func ensureKeyValue(ctx context.Context, logger *slog.Logger, guard time.Duratio
 			step = "raise"
 		}
 		var info *nats.StreamInfo
-		info, err = readAgain(ctx, logger, lookup, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		info, err = readAgain(ctx, logger, lookup, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 		if err != nil {
 			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
@@ -305,7 +306,8 @@ func bucketMissing(err error) bool {
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
 // returns the copies it had then, 0 when it left the bucket alone: the keeper's raise, made again
 // at its next pass (raiseStream). Its read of the stream is a read of a stream's state, sent again
-// while the server leaves it unanswered, each send up to its read limit, for as long as ctx lasts
+// while the server leaves it unanswered, each lost send starting the next beside it at its read
+// limit, for as long as ctx lasts
 // (readAgain), as updateStream's read after an update is: a cluster that answers no read within
 // the JetStream context's wait has said nothing of the bucket, so a read sent once would log a
 // raise that failed over a question nobody answered. One copy needs no read: every stream has at
@@ -315,7 +317,7 @@ func raiseReplicas(ctx context.Context, logger *slog.Logger, js nats.JetStreamCo
 		return 0, nil
 	}
 	stream := "KV_" + bucket
-	info, err := readAgain(ctx, logger, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	info, err := readAgain(ctx, logger, stream+" STREAM.INFO", func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return 0, fmt.Errorf("raise %s: %w", stream, err)
 	}
@@ -431,7 +433,7 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	logger := loggerOwning(conn)
 	stream := "KV_" + bucket
 	read := stream + " STREAM.INFO"
-	info, err := readAgain(ctx, logger, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	info, err := readAgain(ctx, logger, read, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, namedRequest(read, err))
 	}

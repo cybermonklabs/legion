@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,60 @@ func TestTheRelayDropsOnlyThePongsItIsToldToWhereverTheServersStreamIsCut(t *tes
 		if got.String() != want || pongs != 3 || stream.broken != nil {
 			t.Errorf("pieces of %d bytes passed on %q with %d PONGs asked about (broken %v), want %q and 3", cut, got.String(), pongs, stream.broken, want)
 		}
+	}
+}
+
+// TestTheReplyDropLeavesOnlyItsSelectedReplyOutWhereverTheWireIsCut proves the reply-drop seam
+// records the reply inbox of a matching PUB or HPUB, then leaves out exactly that MSG or HMSG and
+// its payload. The dropped payload itself looks like a NATS message: if the filter lost framing,
+// it would mistake those bytes for a second server operation instead of dropping them whole.
+func TestTheReplyDropLeavesOnlyItsSelectedReplyOutWhereverTheWireIsCut(t *testing.T) {
+	const request = "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS"
+	const reply = "_INBOX.reply-to-drop"
+	header := "NATS/1.0\r\nX: reply-drop\r\n\r\n"
+	fakeMessage := "MSG _INBOX.not-a-message 9 0\r\n\r\n"
+	hmsg := func(subject string, sid int, data string) string {
+		return fmt.Sprintf("HMSG %s %d %d %d\r\n%s%s\r\n", subject, sid, len(header), len(header)+len(data), header, data)
+	}
+	msg := func(subject string, sid int, data string) string {
+		return fmt.Sprintf("MSG %s %d %d\r\n%s\r\n", subject, sid, len(data), data)
+	}
+	for _, row := range []struct {
+		name, client, dropped string
+	}{
+		{
+			name:    "PUB to MSG",
+			client:  fmt.Sprintf("PUB %s %s 2\r\n{}\r\n", request, reply),
+			dropped: msg(reply, 2, fakeMessage),
+		},
+		{
+			name:    "HPUB to HMSG",
+			client:  fmt.Sprintf("HPUB %s %s %d %d\r\n%s{}\r\n", request, reply, len(header), len(header)+2, header),
+			dropped: hmsg(reply, 2, fakeMessage),
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			armed := make(chan struct{})
+			close(armed)
+			before := msg("_INBOX.before", 1, "one")
+			after := hmsg("_INBOX.after", 3, "after")
+			for _, cut := range []int{1, 2, 3, 7, 64, len(row.client) + len(before) + len(row.dropped) + len(after)} {
+				drop := &replyDrop{prefix: []byte(request), armed: armed}
+				conn := replyDropConnection{drop: drop, received: protocolStream{fromServer: true}, replies: map[string]struct{}{}}
+				for start := 0; start < len(row.client); start += cut {
+					conn.sent.observe([]byte(row.client[start:min(start+cut, len(row.client))]), conn.recordRequest)
+				}
+				served := before + row.dropped + after
+				var got strings.Builder
+				for start := 0; start < len(served); start += cut {
+					got.Write(conn.received.filterMessages([]byte(served[start:min(start+cut, len(served))]), conn.drops))
+				}
+				if got.String() != before+after || conn.drop.dropped != 1 || conn.sent.broken != nil || conn.received.broken != nil {
+					t.Fatalf("pieces of %d bytes passed %q, dropped %d, client parse %v, server parse %v; want %q, one drop, and no parse error",
+						cut, got.String(), conn.drop.dropped, conn.sent.broken, conn.received.broken, before+after)
+				}
+			}
+		})
 	}
 }
 

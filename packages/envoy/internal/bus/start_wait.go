@@ -223,22 +223,24 @@ func awaitStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamCont
 }
 
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
-// and ctx lasts, with request naming it in the line each further send logs to logger: the stream
-// read and the create of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and
-// EnsureKeyValue's lookup of a KV bucket and its create (kv_ensure.go). A wait that runs out is
-// either a request the server will never answer, on one of the paths listed below, or one it is
+// and ctx lasts, with request naming it in the line each further send logs to logger. Its callers
+// are the two creates of a start (ensureStreamWithConfig and EnsureKeyValue's bucket create) and
+// resentOnTimeout, which wraps the reads that serve requests (the session stream-state read, the
+// KV leader and edge reads, and the stored-message reads). A wait that runs out is either a request
+// the server will never answer, on one of the paths listed below, or one it is
 // still working on, and either is safe to send again: a read changes nothing, and a second identical
 // create is deduplicated and carries the same id as the one that may have landed, so no second
 // send can contradict the send before it (an update is read again rather than sent again,
 // updateStream). The create of a stream of more than one copy is one the server is still working
 // on until that stream's group elects its first leader, and the server answers it then: how many
 // sends that takes depends on the election, so no count of sends, and no clock of its own, ends
-// this wait. ctx does, which every caller bounds by the start's hang guard (startHangGuard), so a
-// bus that is not serving JetStream at all ends the start at that guard, with an error that says
-// how many sends drew no answer (unansweredUntil). Each send carries the wait of each request it
-// makes, and a send in flight when ctx ends is abandoned and its answer dropped (Bounded): a create
-// that lands after that leaves a stream the next start finds. Between two sends it pauses
-// bucketAppliedInterval, so a request that a context of the send's own ends at once
+// this wait. ctx does, which every caller bounds by a deadline: the start's hang guard
+// (startHangGuard), a session's stream-state wait, a stored-message read's doubled wait, or a KV
+// read's leaderGetBound; a bus that is not serving JetStream at all ends at that deadline, with an
+// error that says how many sends drew no answer (unansweredUntil). Each send carries the wait of
+// each request it makes, and a send in flight when ctx ends is abandoned and its answer dropped
+// (Bounded): a create that lands after that leaves a stream the next start finds. Between two
+// sends it pauses bucketAppliedInterval, so a request that a context of the send's own ends at once
 // (requestsUnder) is not sent in a loop.
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
 // once. A refusal the server reports on the connection rather than in the request's answer
@@ -325,14 +327,13 @@ func unansweredUntil(sends int, last, ended error) error {
 // another member read the stream every 25 ms until it had had a leader for 2 s. Of 167,230 reads,
 // the slowest answered took 209 ms, and 153 drew no answer within ten seconds, in 150 of the 448
 // rounds. Three times 209 ms is 627 ms.
-//
-// The limit decides no result. Each read the server leaves unanswered doubles the next one's
-// limit, up to RequestTimeout (readLimit.lost), so a server that answers slower than the
-// measurement is waited for at the caller's own wait after a few reads, and only the start's hang
-// guard ends the wait. Each read the server answers sets the next one's limit to three times that
-// read's own time, the same sizing, and never under this one (readLimit.answered): lost reads early
-// in a run of reads do not make a lost read later in it cost more, and a server that answers every
-// read late keeps a limit above its delay, so no read of it is cut and read again.
+// The limit decides no result: when a read has not answered within it, a new overlapping send
+// starts, but the previous send stays alive (readAgain). Each unanswered limit doubles the next
+// one, up to RequestTimeout (readLimit.lost), so a server that answers slower than the measurement
+// is waited for at the caller's own wait after a few overlapping sends, and only the caller's
+// deadline ends the wait. Each read the server answers sets the next one's limit to three times
+// that read's own time, the same sizing, and never under this one (readLimit.answered): lost reads
+// early in a run do not make a lost read later in it cost more.
 const firstReadLimit = 630 * time.Millisecond
 
 // firstReadLimitKey is the context key a test that counts a start's requests sets its first read
@@ -350,13 +351,13 @@ func firstReadLimitOf(ctx context.Context) time.Duration {
 	return firstReadLimit
 }
 
-// readLimit is the limit of the next read of a stream's state in a run of reads: every read of one
-// bucket's open (EnsureKeyValue), of one ensure of the notification stream (ensureStreamWithConfig)
-// or of one setting of the session bucket's age (SetKeyValueMaxAge), each of which carries its run
-// in its context (withReadLimit), so that a delay one step's reads measured holds for the next
-// step's first read and a slow server is not learnt again at every step. The reads of a run are made
-// one after the other, never two at once. A read made under a context that carries no run, such as
-// a keeper pass's, starts a run of its own (readLimitOf).
+// readLimit is the limit of the next read in a run of reads: every read of one bucket's open
+// (EnsureKeyValue), of one ensure of the notification stream (ensureStreamWithConfig) or of one
+// setting of the session bucket's age (SetKeyValueMaxAge), each of which carries its run in its
+// context (withReadLimit), so that a delay one step's reads measured holds for the next step's
+// first read and a slow server is not learnt again at every step. A read made under a context that
+// carries no run, such as a keeper pass's or a stored-message read's, starts a run of its own
+// (readLimitOf).
 type readLimit struct {
 	first, limit time.Duration
 }
@@ -396,9 +397,8 @@ func (r *readLimit) answered(took time.Duration) {
 // then abandoned, its answer dropped (Bounded), and it sets limit for the next read of the run
 // from what this one came to: a read the server left unanswered (lost) or one it answered
 // (answered), an error of the server's included. answered is false when the limit or ctx passed
-// first, and wait is the limit the read had, so a caller's error names it. Its callers are the
-// reads a start makes of one request, sent again while unanswered (readAgain), and the reads of a
-// wait on a stream (awaitStream).
+// first, and wait is the limit the read had, so a caller's error names it. Its one caller is
+// awaitStream, the reads of a wait on a stream.
 func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, error)) (value T, wait time.Duration, answered bool, err error) {
 	wait = limit.limit
 	readCtx, cancel := context.WithTimeout(ctx, wait)
@@ -413,19 +413,111 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 	return value, wait, answered, err
 }
 
-// readAgain is sentAgain for read, a read of a stream's state, each send of which is waited for
-// up to its read limit (limitedRead) rather than up to the caller's whole wait: a read past its
-// limit is read again, as an unanswered one is. A create keeps the caller's wait (sentAgain): its
-// first send is answered only at the stream's first leader election, seconds after it is sent.
-// Its callers are the reads a start makes: EnsureKeyValue's lookup, its read of a found bucket's
-// stream and its handle open (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig),
-// SetKeyValueMaxAge's read and updateStream's read after an update that drew no answer; and the
-// keeper's first read of the stream (keepStream) and of each bucket it raises (raiseReplicas).
-func readAgain[T any](ctx context.Context, logger *slog.Logger, request string, limit *readLimit, read func() (T, error)) (T, error) {
+// readAgain sends an idempotent read again when the server leaves it unanswered, for the reads a
+// start makes: EnsureKeyValue's lookup and handle open (wrapKeyValue), ensureStreamWithConfig,
+// SetKeyValueMaxAge, updateStream, the keeper, and a role or session bucket open. It owns its own
+// loop: a send starts at the beginning and again each time the current read passes its read limit
+// (readLimitOf), so a read lost during a leader election is sent again in a fraction of a second
+// rather than after the caller's whole wait. Every send stays alive and writes its answer to one
+// channel; the first answer that is not a timeout wins, so a send that answers slowly but within
+// the caller's ctx is not wasted. A read the server answers sets the next send's limit from its own
+// time (readLimit.answered: three times that, or the first limit), one it leaves unanswered raises
+// it (readLimit.lost). sends++, the WARN and readLimit.lost happen only where a send starts; an
+// unanswered answer that arrives while other sends are in flight is dropped, so the count and the
+// WARN lines count sends, not waits.
+//
+// An abandoned send runs its read to that read's own bound (each is a request bounded by
+// RequestTimeout) and its answer is dropped; it does not end the moment readAgain returns.
+func readAgain[T any](ctx context.Context, logger *slog.Logger, request string, read func() (T, error)) (T, error) {
+	limit := readLimitOf(ctx)
+	type answer struct {
+		value T
+		err   error
+		took  time.Duration
+	}
+	results := make(chan answer)
+	inner, stop := context.WithCancel(ctx)
+	defer stop()
+	launch := func() {
+		go func() {
+			sent := time.Now()
+			value, err := read()
+			select {
+			case results <- answer{value, err, time.Since(sent)}:
+			case <-inner.Done():
+			}
+		}()
+	}
+	sends := 1
+	launch()
+	var lastErr error
+	// The timer runs from the last send's launch, not from each loop pass: a dropped timeout from
+	// an overlapping send does not restart it, so a send left unanswered does not postpone the next.
+	wait := limit.limit
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case got := <-results:
+			if !unanswered(got.err) {
+				limit.answered(got.took)
+				return got.value, got.err
+			}
+			// An unanswered send, while others may still run: drop it, and leave the timer running
+			// so the next send still starts on time.
+			lastErr = got.err
+		case <-timer.C:
+			limit.lost()
+			sends++
+			lastErr = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
+			logger.Warn("envoy nats stream request unanswered; sending it again",
+				slog.String("request", request), slog.Int("sent", sends), slog.String("error", lastErr.Error()))
+			launch()
+			wait = limit.limit
+			timer.Reset(wait)
+		case <-ctx.Done():
+			var none T
+			return none, unansweredUntil(sends, lastErr, context.Cause(ctx))
+		}
+	}
+}
+
+// servingReadBound is the per-send bound resentOnTimeout gives the reads that serve requests: a
+// read the server answers within it is sent once, and one it does not is sent again. It is well
+// above a healthy stream read's milliseconds, so only a lost reply or a badly degraded server
+// draws a second send, and small enough that a lost reply is recovered quickly for the handover
+// whose order depends on it. A caller with a shorter deadline gets a smaller bound (resentOnTimeout).
+const servingReadBound = 2 * time.Second
+
+// resentOnTimeout sends read once and waits for it up to a per-send bound, and sends it again only
+// when the server leaves that send unanswered (sentAgain). A read the server answers within the
+// bound is sent once and logs nothing, so a merely-slow read costs one request where a start's
+// readAgain would send duplicates. It serves the reads that serve requests, each of which carries no
+// run of reads and would otherwise start every call at firstReadLimit: the session stream-state
+// read, the KV leader and edge stream-message reads, and the notification stream's stored-message
+// reads.
+//
+// The per-send bound is maxBound, except that when ctx carries a deadline the bound is at most half
+// the time left, so a send left unanswered still leaves room for one more within the caller's own
+// budget: a caller that waits 2 s recovers a lost reply inside that wait, where one send of the
+// whole budget could not.
+func resentOnTimeout[T any](ctx context.Context, logger *slog.Logger, request string, maxBound time.Duration, read func(context.Context) (T, error)) (T, error) {
 	return sentAgain(ctx, logger, request, func() (T, error) {
-		value, wait, answered, err := limitedRead(ctx, limit, read)
+		bound := maxBound
+		if deadline, ok := ctx.Deadline(); ok {
+			if half := time.Until(deadline) / 2; half < bound {
+				bound = half
+			}
+		}
+		if bound <= 0 {
+			// No budget left for a bounded send; let ctx end it.
+			bound = time.Millisecond
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, bound)
+		defer cancel()
+		value, answered, err := Bounded(sendCtx, func() (T, error) { return read(sendCtx) })
 		if !answered {
-			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
+			err = fmt.Errorf("no answer within %s: %w", bound, context.DeadlineExceeded)
 		}
 		return value, err
 	})

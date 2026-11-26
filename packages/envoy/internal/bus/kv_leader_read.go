@@ -164,9 +164,9 @@ func (kv KeyValue) ReadFromLeader(ctx context.Context, key string) (LeaderEntry,
 // refused the same ones. Any other answer from the stream is the error nats.go reports, named
 // with the key and the bucket.
 //
-// ctx bounds the whole read, the one request it sends included. A ctx carrying no deadline is
-// bounded by RequestTimeout, the bound every other read of a bucket's stream through this handle
-// takes (ReadStreamState), so no caller waits on this read for good.
+// ctx bounds the whole read. A ctx carrying no deadline is bounded by RequestTimeout, the bound
+// every other read of a bucket's stream through this handle takes (ReadStreamState), so no caller
+// waits on this read for good.
 func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
 	entry, err := kv.NewestFromLeader(ctx, key)
 	if err != nil {
@@ -209,26 +209,21 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 	if reads, ok := kv.legacy.(LeaderReads); ok {
 		return reads.NewestFromLeader(ctx, key)
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, RequestTimeout)
-		defer cancel()
-	}
+	ctx, cancel := waitUnlessDeadline(ctx, RequestTimeout)
+	defer cancel()
 	bucket := kv.Bucket()
 	named := func(err error) error {
 		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
 	}
-	// The legacy JetStream context of the connection this handle reads the bucket's stream
-	// through: building one sends nothing, and these reads are its only callers, so it is built
-	// here rather than kept on the handle.
 	js, err := kv.streams.Conn().JetStream()
 	if err != nil {
 		return nil, named(err)
 	}
-	// A read the grant refuses draws no answer; the record names the refusal after the read's own
-	// wait (refusedAfter), which costs a read the leader answers nothing.
-	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
-		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	// An unanswered get is safe to send again: it changes no stream state, and every answer names
+	// the same newest message. A get the grant refuses draws no answer either; refusedBy in
+	// leaderGet ends each send as the refusal arrives.
+	message, err := leaderGet(ctx, kv.owner, "KV_"+bucket, func(sendCtx context.Context) (*nats.RawStreamMsg, error) {
+		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(sendCtx))
 	})
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound

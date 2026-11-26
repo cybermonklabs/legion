@@ -407,9 +407,11 @@ type protocolStream struct {
 	// fromServer says the stream is the server's to the client.
 	fromServer bool
 	// line is the control line read so far, and payload how many bytes of the current message,
-	// its CRLF among them, are still to come: 0 while a control line is being read.
-	line    []byte
-	payload int
+	// its CRLF among them, are still to come: 0 while a control line is being read. dropping says
+	// filterMessages is leaving the current message's payload out of the receiving stream.
+	line     []byte
+	payload  int
+	dropping bool
 	// broken is why the stream stopped reading as NATS protocol.
 	broken error
 	// connected says a client's stream has sent its CONNECT, and pings counts its PINGs.
@@ -445,6 +447,12 @@ func (p *protocolStream) toBoundary(data []byte) int {
 
 // wrote records the next piece of a client's stream, which reached the server.
 func (p *protocolStream) wrote(piece []byte) {
+	p.observe(piece, nil)
+}
+
+// observe records the next piece of a stream and calls observed for each complete control line.
+// observed must not retain line: it belongs to the protocol stream and is reused on the next line.
+func (p *protocolStream) observe(piece []byte, observed func(line []byte)) {
 	for len(piece) > 0 && p.broken == nil {
 		if p.payload > 0 {
 			taken := min(p.payload, len(piece))
@@ -463,6 +471,9 @@ func (p *protocolStream) wrote(piece []byte) {
 		case "PING":
 			p.pings++
 		}
+		if observed != nil {
+			observed(p.line)
+		}
 		p.payload, p.broken = payloadAfter(string(p.line), p.fromServer)
 		p.line = p.line[:0]
 	}
@@ -473,6 +484,15 @@ func (p *protocolStream) wrote(piece []byte) {
 // passed on once it is whole, so no PONG is passed on in part; once the stream cannot be read,
 // everything is passed on as it comes.
 func (p *protocolStream) filter(piece []byte, drop func() bool) []byte {
+	return p.filterMessages(piece, func(line []byte) bool {
+		return operation(line) == "PONG" && drop()
+	})
+}
+
+// filterMessages returns what of piece the receiving client is to get, leaving out each complete
+// message whose control line drop selects. A selected message loses both its line and payload,
+// including across separate reads. The bytes it returns are its own, never piece's.
+func (p *protocolStream) filterMessages(piece []byte, drop func(line []byte) bool) []byte {
 	var passed []byte
 	for len(piece) > 0 {
 		if p.broken != nil {
@@ -480,7 +500,9 @@ func (p *protocolStream) filter(piece []byte, drop func() bool) []byte {
 		}
 		if p.payload > 0 {
 			taken := min(p.payload, len(piece))
-			passed = append(passed, piece[:taken]...)
+			if !p.dropping {
+				passed = append(passed, piece[:taken]...)
+			}
 			p.payload -= taken
 			piece = piece[taken:]
 			continue
@@ -494,10 +516,11 @@ func (p *protocolStream) filter(piece []byte, drop func() bool) []byte {
 			}
 			return passed
 		}
-		if operation(p.line) != "PONG" || !drop() {
+		p.dropping = drop(p.line)
+		if !p.dropping {
 			passed = append(passed, p.line...)
-			p.payload, p.broken = payloadAfter(string(p.line), p.fromServer)
 		}
+		p.payload, p.broken = payloadAfter(string(p.line), p.fromServer)
 		p.line = p.line[:0]
 	}
 	return passed
