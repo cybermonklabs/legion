@@ -46,7 +46,7 @@ type settlementReconciliation struct {
 	retracted []model.Ask
 	// answeredGone is whether an answered ask of the document has no block in the tree reconciled
 	// - a row no block matched - which alone can make the version a person's removal of its block
-	// (holdSettledRemovals), so a settlement whose tree holds every answered ask's block reads no
+	// (holdRoomRemovals), so a settlement whose tree holds every answered ask's block reads no
 	// removal.
 	answeredGone bool
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
@@ -285,6 +285,11 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 			return err
 		}
 		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
+		claimed := make([]graphstore.NodeKey, 0, len(claims))
+		for _, claim := range claims {
+			claimed = append(claimed, graphstore.NodeKey{Kind: claim.FromKind, ID: claim.FromID})
+		}
+		graphstore.QueueHeads(b, claimed)
 		return nil
 	}, nil
 }
@@ -384,6 +389,7 @@ func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx p
 			tuples[index].SourceEvent = cause
 		}
 		graphstore.QueueWrite(b, nil, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
 		return nil
 	}, nil
 }
@@ -732,8 +738,11 @@ func (s *Service) reconcileAskBlocks(
 				},
 			))
 		}
-		// kept for one release: stored-ask-state
+		// An invalid block keeps none of the attributes a version can store where it has no ask row
+		// (R10), which stays, and an indexed one what a version keeps of its ask, which goes with
+		// that form.
 		unread := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
 		if indexed {
 			unread = keptAskState(shown(ask), "")
 		}
@@ -938,6 +947,7 @@ func (s *Service) reconcileAskBlocks(
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
 		kept := ask
+		// kept for one release: stored-ask-state
 		if !stated {
 			kept = shown(ask)
 		}

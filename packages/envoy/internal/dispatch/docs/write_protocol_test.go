@@ -553,7 +553,7 @@ func writeProtocolStepConcurrentMoves(t *testing.T, rig *writeProtocolRig) {
 			return moveAnswer{won: won, err: tx.Commit(ctx)}
 		}()
 	}()
-	if early, done := storetest.WaitForQueuedBehind(t, first, pid, answered, fenceWait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, first, pid, answered); done {
 		t.Fatalf("the second move answered (won %t, %v) without waiting on the first", early.won, early.err)
 	}
 	if err := first.Commit(ctx); err != nil {
@@ -816,7 +816,7 @@ func writeProtocolStepHeldCommit(t *testing.T, rig *writeProtocolRig) {
 	afterEvent := lastEvent()
 	committed := make(chan error, 1)
 	go func() { committed <- write(held, true) }()
-	if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
+	if waiters := storetest.WaitForLockWaiters(t, holder, 1); waiters < 1 {
 		select {
 		case err := <-committed:
 			t.Fatalf("the write of version %d finished (%v) without its commit waiting on the held lock", held, err)

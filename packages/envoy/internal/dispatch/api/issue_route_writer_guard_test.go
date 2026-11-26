@@ -5,6 +5,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go `packages/envoy/internal/dispatch/api/module_source_test.go#scanModuleSources` walks packages/envoy (infra, testdata and all) and parses every .go file it finds but the test files, for the tests that ask it for the module's sources: `packages/envoy/internal/dispatch/api/lock_level_test.go#TestNoForUpdateOnOwnerTables`, `packages/envoy/internal/dispatch/api/event_insert_guard_test.go#TestOnlyTheBrokerInsertsEvents`, `packages/envoy/internal/dispatch/api/review_order_guard_test.go#TestEveryReviewReadOrdersByReviewOrder`, `packages/envoy/internal/dispatch/api/review_write_guard_test.go#TestOnlyQueueReviewWritesReviews`, `packages/envoy/internal/dispatch/api/one_expression_guard_test.go#TestOneExpressionDecidesWhoWaitsInOneSpelling`, `packages/envoy/internal/dispatch/api/issue_route_writer_guard_test.go#TestOnlyTheIssuePatchWritesTheRoute`; that last also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"go/ast"
 	"go/parser"
@@ -104,6 +106,7 @@ func routeScanSkipped(path string, entry fs.DirEntry) bool {
 // app's end-to-end fixtures seed a fresh database whose issues have no event yet. A second writer
 // belongs behind the same rule: give it its event, then name it here.
 func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -176,6 +179,7 @@ func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
 // guard reads and checks it is seen, and that what it must not count is not: an update of another
 // column, a read of the route, and a test file, which writes rows on purpose.
 func TestTheRouteWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	planted := `package planted
 
 func move(tx tx, key string) error {

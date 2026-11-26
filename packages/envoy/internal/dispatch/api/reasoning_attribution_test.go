@@ -28,6 +28,7 @@ import (
 // it as the pod's workload and not as that session. A lens the pod reserves for itself is made by
 // the pod's token, which names only a workload, so it holds no authored_by and answers no author.
 func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})

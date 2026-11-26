@@ -31,6 +31,7 @@ import (
 // TestNoAttributeNodeStoresItsValuesUnderABaseAttribute, which fails naming the colliding
 // attribute node.
 func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
+	t.Parallel()
 	service, document := newTestService(t)
 	service.settle = time.Hour
 	database := service.store
@@ -94,7 +95,7 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 	}
 
 	// The fixture's issue, document and first version are written by SQL (createIssueDocument), as
-	// a build before their nodes wrote them (dispatch://INFRA-1253): the backfill gives each its
+	// a build before their nodes wrote them (the issue-tree spec): the backfill gives each its
 	// node and names no block, every one of which the block index named, so the census below
 	// reads the blocks as the index left them.
 	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {

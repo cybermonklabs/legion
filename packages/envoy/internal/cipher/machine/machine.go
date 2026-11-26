@@ -51,6 +51,10 @@ var (
 	// already holds a live launcher credential under another record: a machine signed two logins
 	// with one key and the first was approved. The record stays pending.
 	ErrKeyHoldsLiveCredential = errors.New("this machine login's key already holds a live launcher credential")
+	// ErrKeyBindsReadToken is ApplyDecision's and TokenLogin's refusal of a key a live read token
+	// is bound to (enroll.ErrKeyBindsReadToken): a read token's key signs no launcher proof, so
+	// the machine makes a new key and logs in with it. The record stays pending.
+	ErrKeyBindsReadToken = errors.New("a live read token is bound to this machine login's key, and a key that signs launcher proofs is bound to no read token: make a new key and log in with it")
 	// ErrNotLive is Refreshed's and Live's refusal for a launcher credential that is revoked or
 	// past its expiry: a refresh never revives a login that has ended. It is an
 	// oauth.ErrLoginEnded, so the token endpoint refuses it invalid_grant.
@@ -148,9 +152,10 @@ func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now
 }
 
 // checkLauncherRequest is verifyLauncherRequest short of its jti: the object's signature and
-// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a reason naming
-// no more projects than a new request may (record.CheckReasonProjects), then the caller's own
-// check. It reads and writes nothing.
+// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, on a broker that
+// holds a project-access client (the enrollment's Projects) a reason naming no more projects than
+// a new request may (record.CheckReasonProjects), then the caller's own check. It reads and writes
+// nothing. A broker with no project-access client takes any reason, as before that bound (R9).
 func (s *Service) checkLauncherRequest(compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
 	obj, err := record.VerifyRequestObject(compact, s.Audience, s.Skew, now)
 	if err != nil {
@@ -159,8 +164,10 @@ func (s *Service) checkLauncherRequest(compact string, now time.Time, check func
 	if len(obj.Details) != 1 || obj.Details[0].Type != record.KindLauncherCredential {
 		return record.RequestObject{}, fmt.Errorf("%w: exactly one launcher_credential detail is required", record.ErrRequestInvalid)
 	}
-	if err := record.CheckReasonProjects(obj.Reason); err != nil {
-		return record.RequestObject{}, err
+	if s.Enroll.Projects != nil {
+		if err := record.CheckReasonProjects(obj.Reason); err != nil {
+			return record.RequestObject{}, err
+		}
 	}
 	if err := check(obj); err != nil {
 		return record.RequestObject{}, err
@@ -264,8 +271,9 @@ func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 // credential — bound to the request object's own key (thumbprint and embedded JWK), with the lifetime
 // its record names (LoginDevice) counted from the decision — in the same transaction that records the
 // decision, so a crash between the two never orphans a credential no decision names. A key that
-// already holds a live credential under another record is ErrKeyHoldsLiveCredential, and the
-// record stays pending.
+// already holds a live credential under another record is ErrKeyHoldsLiveCredential, one that a
+// live read token is bound to (enroll.ErrKeyBindsReadToken) is ErrKeyBindsReadToken, and either
+// way the record stays pending.
 func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string) (state, credentialID string, err error) {
 	var denier serviceDenier
 	if !approve {
@@ -361,8 +369,11 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
 			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second))
-		if store.IsUniqueViolation(err) {
+		if enroll.KeyHeld(err) {
 			return "", "", ErrKeyHoldsLiveCredential
+		}
+		if errors.Is(err, enroll.ErrKeyBindsReadToken) {
+			return "", "", ErrKeyBindsReadToken
 		}
 		if err != nil {
 			return "", "", err

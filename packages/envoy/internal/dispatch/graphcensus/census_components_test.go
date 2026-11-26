@@ -89,12 +89,13 @@ func currentComponentRelations(t *testing.T, database *store.Store) []string {
 }
 
 // TestTheComponentBatchesTakeTheStoreLockOrder holds the three batches of the components' backfill
-// (dispatch://INFRA-1253 R9) to the store's lock order, as TestTheIssueLinkBatchTakesTheStoreLockOrder
-// holds writeIssueLinkBatch: the owner row first - the architecture source's row for a component
-// and its dependency, the issue's row for an issue's component - then the node rows where the
-// batch writes any, then the rows that name the node; the tuples are stated at the sentinel, which
-// no repeat key holds, so no hold stands on them. After each run the rows name their node and the
-// store states what each row projects, dated as graph_edges' old arm dates the edge.
+// (R9 of the issue-tree spec) to the store's lock order, as
+// TestTheIssueLinkBatchTakesTheStoreLockOrder holds writeIssueLinkBatch: the owner row first - the
+// architecture source's row for a component and its dependency, the issue's row for an issue's
+// component - then the node rows where the batch writes any, then the rows that name the node; the
+// tuples are stated at the sentinel, which no repeat key holds, so no hold stands on them. After
+// each run the rows name their node and the store states what each row projects, dated as
+// graph_edges' old arm dates the edge.
 //
 // The component batch reads each row's parent under the source's row: beside two components the
 // release before wrote, naming no node, envoy's row names its node, whose part_of names legion,

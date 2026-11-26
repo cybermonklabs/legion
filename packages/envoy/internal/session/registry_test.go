@@ -398,8 +398,7 @@ func TestSessionRegistryDeleteIf_RetriesOnceAfterALostCompareAndSwap(t *testing.
 	if err != nil {
 		t.Fatalf("encode the interleaved heartbeat: %v", err)
 	}
-	race := &interleavingSessionGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: sessionID, value: heartbeat, interleaves: 1}
-	useKV(t, reg, race)
+	deletes := heartbeatBeforeDeletes(t, reg, sessionID, heartbeat, 1)
 
 	outcome, err := reg.DeleteIf(context.Background(), sessionID, DeleteConditions{ClientInstanceID: instanceID})
 	if err != nil {
@@ -408,8 +407,8 @@ func TestSessionRegistryDeleteIf_RetriesOnceAfterALostCompareAndSwap(t *testing.
 	if outcome != EntryDeleted {
 		t.Fatalf("DeleteIf = %s, want %s where its own heartbeat only lost it one compare-and-swap", outcome, EntryDeleted)
 	}
-	if got := race.reads(); got != 2 {
-		t.Fatalf("read the entry %d times, want the one retry (2)", got)
+	if got := deletes(); got != 2 {
+		t.Fatalf("made %d fenced deletes, want the one retry (2)", got)
 	}
 	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
@@ -466,8 +465,7 @@ func TestSessionRegistryDeleteIf_KeepsTheEntryAfterTwoLostCompareAndSwaps(t *tes
 	if err != nil {
 		t.Fatalf("encode the interleaved heartbeat: %v", err)
 	}
-	race := &interleavingSessionGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: sessionID, value: heartbeat, interleaves: 2}
-	useKV(t, reg, race)
+	deletes := heartbeatBeforeDeletes(t, reg, sessionID, heartbeat, 2)
 
 	outcome, err := reg.DeleteIf(context.Background(), sessionID, DeleteConditions{ClientInstanceID: instanceID})
 	if err != nil {
@@ -476,11 +474,35 @@ func TestSessionRegistryDeleteIf_KeepsTheEntryAfterTwoLostCompareAndSwaps(t *tes
 	if outcome != EntryKeptAfterLostRace {
 		t.Fatalf("DeleteIf = %s, want %s after both compare-and-swaps lost", outcome, EntryKeptAfterLostRace)
 	}
-	if got := race.reads(); got != 2 {
-		t.Fatalf("read the entry %d times, want the one retry (2)", got)
+	if got := deletes(); got != 2 {
+		t.Fatalf("made %d fenced deletes, want the one retry (2)", got)
 	}
 	if _, err := reg.watcher.KV().Get(sessionID); err != nil {
 		t.Fatalf("read the entry that stayed: %v, want it still stored", err)
+	}
+}
+
+// heartbeatBeforeDeletes rebuilds reg over a handle on its bucket that writes heartbeat under
+// sessionID just before each of the first lost deletes through it (faultyDeleteKeyValue), so each
+// of those fenced deletes loses its compare-and-swap whichever read reported the revision it is
+// fenced on: DeleteIf's first read is a direct get and its retry's the stream leader's
+// (readForStop), and a write landed between either and its delete. It returns how many deletes
+// the handle has passed, one per DeleteIf attempt.
+func heartbeatBeforeDeletes(t *testing.T, reg *SessionRegistry, sessionID string, heartbeat []byte, lost int) func() int {
+	t.Helper()
+	race := &faultyDeleteKeyValue{KeyValue: reg.watcher.KV().Legacy()}
+	useKV(t, reg, race)
+	race.armFault(func(n int) error {
+		if n > lost {
+			return nil
+		}
+		_, err := race.KeyValue.Put(sessionID, heartbeat)
+		return err
+	})
+	return func() int {
+		race.mu.Lock()
+		defer race.mu.Unlock()
+		return race.deletes
 	}
 }
 
@@ -821,9 +843,8 @@ func (kv *interleavingSessionPutKeyValue) wrote(revision uint64, err error) (uin
 
 // interleavingSessionGetKeyValue writes value under key after each of the first interleaves reads
 // of key, so whatever that reader does next loses its compare-and-swap: the revision it read is
-// no longer the last one by the time it deletes. One interleaved write is the heartbeat
-// DeleteIf retries past; two leave it no attempt that can land. Reads of any other key,
-// and reads that did not answer, pass straight through and are not counted.
+// no longer the last one by the time it writes. Reads of any other key, and reads that did not
+// answer, pass straight through and are not counted.
 type interleavingSessionGetKeyValue struct {
 	natsgo.KeyValue
 
@@ -831,8 +852,9 @@ type interleavingSessionGetKeyValue struct {
 	value       []byte
 	interleaves int
 
-	mu   sync.Mutex
-	gets int
+	mu       sync.Mutex
+	gets     int
+	firstGot []byte
 }
 
 func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
@@ -843,6 +865,9 @@ func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry,
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.gets++
+	if kv.firstGot == nil {
+		kv.firstGot = append([]byte(nil), entry.Value()...)
+	}
 	if kv.gets > kv.interleaves {
 		return entry, nil
 	}
@@ -852,11 +877,20 @@ func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry,
 	return entry, nil
 }
 
-// reads is how often the key was read through this bucket, one per DeleteIf attempt.
+// reads is how often the key was read through this bucket.
 func (kv *interleavingSessionGetKeyValue) reads() int {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	return kv.gets
+}
+
+// firstGetValue is the raw record the first read of key returned to its caller, captured before
+// this seam wrote value over the key. It is what a reader's direct get actually saw, where Refresh
+// re-reads the cache after applying the read and so can answer the newer value this seam wrote.
+func (kv *interleavingSessionGetKeyValue) firstGetValue() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return kv.firstGot
 }
 
 type historyFailSessionKeyValue struct {

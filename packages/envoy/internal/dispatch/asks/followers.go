@@ -88,7 +88,11 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+		return nil
+	}); err != nil {
 		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 	}
 	return followed, nil
@@ -162,7 +166,7 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 				(select node.kind from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
 				(select node.id from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
 				coalesce($5::timestamptz, now()))
-			on conflict (ask_id, session_id) do update
+			on conflict (ask_id, session_id) do update -- kept for one release: follower-row-mark
 				set node_kind = excluded.node_kind, node_address = excluded.node_address
 				where ask_followers.node_kind is null and excluded.node_kind is not null
 			returning xmax = 0 as added, node_kind is not null as marked, since
@@ -280,6 +284,7 @@ func PlanFollowAuthor(ctx context.Context, q RowQueryer, askID string, author mo
 	switch {
 	case !held:
 		plan.marks, plan.since = true, now
+	// kept for one release: follower-row-mark
 	case !marked && since != nil:
 		plan.marks, plan.since = true, *since
 	}
@@ -316,6 +321,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 		return held, nil
 	}
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
 	return held, nil
 }
 

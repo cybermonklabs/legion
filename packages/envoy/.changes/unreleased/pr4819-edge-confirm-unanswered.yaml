@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  An edge listener's `503` for a leader read that confirms a session's stored record and does not
+  answer names no session. The read's own error named the session it read, a session the read had
+  not confirmed and the request had not named: a role's holder in `GET /v1/roles/{role}` and in both
+  `409`s of `POST /v1/roles/set`, a row of `GET /v1/sessions`, and a Legion agent's session or its
+  replacement in the three Legion agent reads. An in-house session whose record the server
+  re-published under an outside project could so be named to that project's sessions. The `503`
+  keeps its status and `Retry-After: 1`, its text is the listener's own, and the read's error goes
+  to the log with the session it names.
+time: 2026-11-22T11:09:45Z
+custom:
+    Issue: pr4819

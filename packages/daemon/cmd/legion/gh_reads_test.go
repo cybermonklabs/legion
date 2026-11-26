@@ -523,6 +523,13 @@ type ghGuardRecord struct {
 	stderr, gh, checked, log string
 }
 
+// ghGuardRun is the line a recording stand-in check (leakguardtest.Recording) writes for the
+// guard's run of the gh call args: the check's gh-guard mode, `--` and the call's words, the call
+// form leak-check-v33 takes (leakguard's modeArgv).
+func ghGuardRun(args []string) string {
+	return "checked gh-guard -- " + strings.Join(args, " ") + "\n"
+}
+
 // ghRigEnv is what the stand-in gh records of the pager, browsers and editor the rig's caller
 // names for a call guarded whole: none of them, since gh is run from an allowlist of its caller's
 // environment that holds no program (ghChildEnviron), and as its editor a program that fails
@@ -661,7 +668,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 			if got.code != 7 {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7", args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(args, " ") + "\n"; got.checked != want {
+			if want := ghGuardRun(args); got.checked != want {
 				t.Errorf("the shared check recorded %q, want its one run of the call, %q", got.checked, want)
 			}
 			if strings.Contains(got.gh, "visibility ") {
@@ -705,7 +712,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 			if got.code != 2 || !strings.Contains(got.stderr, "LEAK CHECK: refusing") || !strings.Contains(got.stderr, "it carries a credential") {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want exit 2 and the check's refusal of a credential", args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(args, " ") + "\n"; got.checked != want {
+			if want := ghGuardRun(args); got.checked != want {
 				t.Errorf("the shared check recorded %q, want its run of the call", got.checked)
 			}
 			if got.gh != "" {
@@ -888,7 +895,7 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	if got.code != 7 {
 		t.Errorf("legion gh %q = exit %d, stderr %q; want the guard to clear it and gh's own 7", args, got.code, got.stderr)
 	}
-	if want := "checked gh-guard " + strings.Join(args, " ") + "\n"; !strings.Contains(got.checked, want) {
+	if want := ghGuardRun(args); !strings.Contains(got.checked, want) {
 		t.Errorf("the shared check recorded %q, want its run of the call, %q", got.checked, want)
 	}
 	wantReads := 0

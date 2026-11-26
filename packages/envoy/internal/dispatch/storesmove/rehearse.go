@@ -42,11 +42,11 @@ var rehearsalTables = []string{"priority_nodes", "priority_tuples", "workflow_no
 // pending migration is another tree's, held to pgmigrate.RehearseOther's. A migration this issue
 // adds joins the list in the change that adds it, or the rehearsal reads it as another tree's.
 var ownMigrations = []string{
-	"20261122200000_graph_edges_retirements.up.sql",
-	"20261123120000_graph_edges_one_tuple_arm.up.sql",
-	"20261123134318_stores_moved.up.sql",
-	"20261123185607_graph_nodes_artifact_id_index.up.sql",
-	"20261125093000_graph_tuples_workflow_inbound_index.up.sql",
+	"20261126000100_graph_edges_retirements.up.sql",
+	"20261126000200_graph_edges_one_tuple_arm.up.sql",
+	"20261126000300_stores_moved.up.sql",
+	"20261126000400_graph_nodes_artifact_id_index.up.sql",
+	"20261126000500_graph_tuples_workflow_inbound_index.up.sql",
 }
 
 // OwnMigrations is ownMigrations, a fresh slice for each caller: store's

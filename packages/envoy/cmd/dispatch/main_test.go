@@ -1,11 +1,14 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/store/migrations/* TestHealthzReportsAnUnstampedCommitAsNull
+
 import (
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -26,7 +29,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -143,6 +150,7 @@ func iapWhoami(handler http.Handler, assertion string, headers map[string]string
 }
 
 func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -157,6 +165,7 @@ func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
 // an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
 // other identity, which would leave it unread.
 func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
+	t.Parallel()
 	for name, value := range map[string]string{
 		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
 		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
@@ -213,6 +222,7 @@ func noSignInEnvironment(overrides map[string]string) map[string]string {
 }
 
 func TestResolveBootConfigReadsTheFourSignInSettings(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(signInEnvironment(nil)))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -239,6 +249,7 @@ func googleSignInEnvironment(overrides map[string]string) map[string]string {
 }
 
 func TestResolveBootConfigReadsTheDomainSignIn(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_DOMAIN": " example.com "})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -253,6 +264,7 @@ func TestResolveBootConfigReadsTheDomainSignIn(t *testing.T) {
 // was given, and the ones it still misses. The case below is the issuer, the client and the
 // secret with neither a group nor a domain, which admits nobody.
 func TestResolveBootConfigRefusesAPartialSignIn(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{"DISPATCH_SIGNIN_GROUP": ""})))
 	if want := "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET set, DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN missing"; err == nil || err.Error() != want {
 		t.Fatalf("sign-in with neither a group nor a domain: err = %v, want %q", err, want)
@@ -263,6 +275,7 @@ func TestResolveBootConfigRefusesAPartialSignIn(t *testing.T) {
 // trips two checks gets the first: both set, a partial set, a domain under another issuer, a
 // malformed domain, a group under Google's issuer.
 func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
+	t.Parallel()
 	const lead = "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: "
 	const both = "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain"
 	noSignIn := map[string]string{"DATABASE_URL": "postgres://dispatch", "DISPATCH_AGENT_TOKEN": "agent-token"}
@@ -319,6 +332,7 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 
 // A setting a release removed is refused, never silently ignored.
 func TestResolveBootConfigRefusesRemovedSettings(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"DISPATCH_ALLOWED_LOGINS", "DISPATCH_APP_CLIENT_SECRET", "COHERE_API_KEY", "DISPATCH_AGENT_SECRETS_TOKEN", "DISPATCH_AGENT_SECRETS_TOKEN_FILE", "DISPATCH_ASSET_STORE_BUCKET", "DISPATCH_REPO_PROJECTS", "DISPATCH_DEFAULT_PROJECT"} {
 		_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{name: "value"})))
 		if err == nil || !strings.Contains(err.Error(), name+" is no longer read") {
@@ -344,6 +358,7 @@ func TestResolveBootConfigRefusesRemovedSettings(t *testing.T) {
 }
 
 func TestResolveBootConfigFencesHeaderIdentityToTrustedLocalHarnesses(t *testing.T) {
+	t.Parallel()
 	withoutAcknowledgement := headerIdentityEnvironment(map[string]string{
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "",
 	})
@@ -370,6 +385,7 @@ func TestResolveBootConfigFencesHeaderIdentityToTrustedLocalHarnesses(t *testing
 }
 
 func TestDevSignInRefusesTheSignInSettings(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
 		"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_CLIENT_ID": "c",
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "s", "DISPATCH_SIGNIN_GROUP": "g",
@@ -393,6 +409,7 @@ func TestDevSignInRefusesTheSignInSettings(t *testing.T) {
 }
 
 func TestResolveBootConfigDisablesNATS(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -409,6 +426,7 @@ func TestResolveBootConfigDisablesNATS(t *testing.T) {
 }
 
 func TestResolveBootConfigDefaultsAndValidatesEnvoyURL(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "t",
@@ -439,6 +457,7 @@ func TestResolveBootConfigDefaultsAndValidatesEnvoyURL(t *testing.T) {
 // The credential-request UI feature is off by default (no broker URL configured), and
 // resolveBootConfig must not require a token when the URL is unset.
 func TestResolveBootConfigLeavesAgentSecretsOffByDefault(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -451,6 +470,7 @@ func TestResolveBootConfigLeavesAgentSecretsOffByDefault(t *testing.T) {
 }
 
 func TestResolveBootConfigAcceptsAgentSecretsURLAndTokenFile(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                              "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":                      "agent-token",
@@ -476,6 +496,7 @@ func TestResolveBootConfigAcceptsAgentSecretsURLAndTokenFile(t *testing.T) {
 // ENVOY_URL check but additionally refusing a path component: the broker's client builds every
 // call by appending a fixed path to this base.
 func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"DATABASE_URL":                              "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":                      "agent-token",
@@ -499,6 +520,7 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 // parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
 // other value as redact.NotPrinted: user info, a query, escapes, a control byte.
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
+	t.Parallel()
 	shape := func(brokerURL string) settingValues {
 		return envGetter(map[string]string{
 			"DATABASE_URL":                              "postgres://dispatch",
@@ -545,6 +567,7 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 // A broker URL with no token file must refuse to boot rather than construct a client that
 // authenticates with an empty bearer.
 func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -557,10 +580,106 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 	}
 }
 
+// TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
+// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
+// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
+// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
+// a proof signed for either is accepted, and one for an origin neither setting names is refused.
+// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
+// scheme, each refuse the start naming it.
+func TestDispatchReadsItsProofOrigins(t *testing.T) {
+	const (
+		public    = "https://dispatch.example"
+		inCluster = "http://dispatch.internal.example:8766"
+		elsewhere = "https://dispatch.elsewhere.example"
+		route     = "/api/v1/whoami"
+		token     = "a-session-token-the-broker-issued"
+	)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	broker.Says(token, ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_proof_origins",
+		Person:       "alice",
+		ProjectScope: ciphertoken.ProjectScopeNamed,
+		Projects:     []string{"INFRA"},
+		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   caller.JKT(),
+	})
+	accountToken := writeFile(t, "account-token", "dispatchs-own-account-token")
+	// start is what main does with values: the boot config, the server URL, the verifier.
+	start := func(t *testing.T, values map[string]string) ([]string, *ciphertoken.Verifier) {
+		t.Helper()
+		values["DISPATCH_SERVER_URL"] = public
+		values["DISPATCH_AGENT_SECRETS_URL"] = broker.Server.URL
+		values["DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"] = accountToken
+		env := bootEnvironment(values)
+		boot, err := resolveBootConfig(env)
+		if err != nil {
+			t.Fatalf("resolve boot config: %v", err)
+		}
+		envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
+		if err != nil {
+			t.Fatalf("load envoy config: %v", err)
+		}
+		serverURL := envoyConfig.Dispatch.ServerURL
+		verifier, err := brokerTokenVerifier(boot, storetest.Open(t), serverURL)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+	}
+	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
+		t.Helper()
+		_, err := verifier.Verify(t.Context(), caller.Signed(t, http.MethodGet, origin+route, token))
+		return err
+	}
+
+	t.Run("production's shape", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "})
+		if !slices.Equal(origins, []string{public, inCluster}) {
+			t.Fatalf("the verifier's origins are %q, want %q and %q, each once", origins, public, inCluster)
+		}
+		for _, origin := range []string{public, inCluster} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("unset", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{})
+		if !slices.Equal(origins, []string{public}) {
+			t.Fatalf("the verifier's origins are %q, want DISPATCH_SERVER_URL's %q alone", origins, public)
+		}
+		if err := verify(t, verifier, public); err != nil {
+			t.Errorf("a proof for DISPATCH_SERVER_URL's origin was refused: %v", err)
+		}
+		if err := verify(t, verifier, inCluster); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("unset, a proof for %s answered %v, want ErrProofInvalid", inCluster, err)
+		}
+	})
+
+	t.Run("an entry that is no origin", func(t *testing.T) {
+		for entry, naming := range map[string]string{
+			inCluster + "/dispatch":           `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + inCluster + `/dispatch"`,
+			"ftp://dispatch.internal.example": `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + redact.NotPrinted + `"`,
+		} {
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "," + entry}, naming)
+		}
+	})
+}
+
 // The issuer and the audience are one setting in two variables: half of it is a
 // misconfiguration a deployment must not boot with, and neither means the server
 // verifies no service-account token at all.
 func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -603,6 +722,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 }
 
 func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
+	t.Parallel()
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -620,6 +740,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 // probe answers 200 with `ok` true and reports the bus in `nats` alone: a readiness probe that
 // failed with the bus would take every server process out of service at once.
 func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil)
 	response := httptest.NewRecorder()
@@ -645,6 +766,7 @@ type untouchedFiles struct{ files.Store }
 // never reached. It is what the liveness and startup probes ask, which must not wait on or fail
 // with a dependency.
 func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
+	t.Parallel()
 	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
@@ -662,6 +784,7 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 // path it does not know with the dashboard's HTML shell, so a scraper would otherwise collect a
 // page instead of the outbox's publish failures.
 func TestDispatchHandlerServesMetrics(t *testing.T) {
+	t.Parallel()
 	router := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, "<!doctype html><title>dispatch</title>")
@@ -688,6 +811,7 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 // on the health page and not only as failed uploads. The bucket never decides `ok`: the load
 // balancer would replace the one task, taking documents and asks down with the files.
 func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
@@ -718,6 +842,7 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 // configured, false until its discovery document has been read, true after. Neither decides `ok`:
 // a process whose issuer is down still serves agents and the people whose confirmation stands.
 func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
@@ -759,6 +884,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 // image applied shows up at once, which is the only reading under which comparing it with a
 // commit's migrations tests anything.
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil)
@@ -798,6 +924,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // the ones nothing filled as null, outbox_publisher false - a process with NATS disabled publishes
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
+	t.Parallel()
 	response := httptest.NewRecorder()
 	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
@@ -827,6 +954,7 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	succeededAt := time.Date(2026, 11, 18, 3, 4, 5, 678901000, time.FixedZone("UTC+2", 2*60*60))
 	failedAt := succeededAt.Add(90 * time.Second)
@@ -964,6 +1092,7 @@ func jsonObjectKeys(t *testing.T, raw json.RawMessage) []string {
 // publisher hold, false while it stands by for the other process's, and false again once it has
 // stopped and released the hold. It never decides ok.
 func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
+	t.Parallel()
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	type process struct {
@@ -1043,6 +1172,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 // database down, closed or never configured - carries it in its body as a 200 does, and the check
 // reads the body whatever the status.
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
+	t.Parallel()
 	closed := storetest.Open(t)
 	closed.Pool.Close()
 	for name, probe := range map[string]struct {
@@ -1098,6 +1228,7 @@ func highestMigrationFile(t *testing.T) int {
 // sixty-four while the other packages' tests share the server would push a default Postgres
 // past its hundred.
 func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	config := storetest.Open(t).Pool.Config().Copy()
 	config.MaxConns = 4
@@ -1149,6 +1280,8 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 // makes this the cold case; the warm one, which production actually runs, is the unbounded
 // one and is measured against the real binary rather than here.
 func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 5 s timeout
+	// around a 2 s unanswered probe).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1210,6 +1343,8 @@ func (unansweringBucket) Healthy(ctx context.Context) error {
 // run one after the other they took four, and the compose healthcheck and the deploy script
 // read that silence as a dead process; run side by side they take two.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 3 s timeout
+	// around a 2 s probe and a 2 s bucket).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1350,17 +1485,35 @@ func envGetter(values map[string]string) settingValues {
 // under the `memory` tag) drive a real Dispatch process and read its own resident memory.
 const memoryTestServeEnv = "DISPATCH_MEMORY_TEST_SERVE"
 
+// dispatchTestParallelism is how many of this package's parallel tests run at once when the
+// command line names no -parallel (TestMain). Most of them wait - on a Dispatch process they
+// started, on Postgres, on a product timer - rather than compute: serially the test binary and its
+// processes kept about a tenth of a core busy (41 CPU-s over 376 s, 4 CPUs, build pod). go test's
+// default, GOMAXPROCS, is four on CI's runner; eight lets the tests that start no process run
+// beside the ones that hold the four process slots (dispatchSlots).
+//
+// The memory build sets it to zero, which keeps go test's default (parallelism_memory_test.go):
+// its tests measure processes' memory against a runner's 16 GB and were sized at that default.
+var dispatchTestParallelism = 8
+
 // TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
-// test's Dispatch server.
+// test's Dispatch server. It sets the package's default -parallel (dispatchTestParallelism); go
+// test parses its flags inside m.Run, so a -parallel on the command line still wins.
 func TestMain(m *testing.M) {
 	if os.Getenv(memoryTestServeEnv) == "1" {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	if dispatchTestParallelism > 0 {
+		if err := flag.Set("test.parallel", strconv.Itoa(dispatchTestParallelism)); err != nil {
+			panic("set this package's default -parallel: " + err.Error())
+		}
+	}
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	writeBlockIDBackfillReport(&output, docs.BlockIDBackfill{
 		ArtifactID: "artifact-1",
@@ -1373,6 +1526,7 @@ func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
 }
 
 func TestWriteBlockIDBackfillReportLabelsDocumentErrors(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if writeBlockIDBackfillReport(&output, docs.BlockIDBackfill{
 		ArtifactID: "artifact-1",
@@ -1387,6 +1541,7 @@ func TestWriteBlockIDBackfillReportLabelsDocumentErrors(t *testing.T) {
 }
 
 func TestWriteAnchorBlockBackfillReport(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	writeAnchorBlockBackfillReport(&output, docs.AnchorBlockBackfill{Asks: 2, Comments: 3, Skipped: 1})
 	const want = "backfill-anchor-blocks: asks=2 comments=3 skipped=1\n"
@@ -1398,6 +1553,7 @@ func TestWriteAnchorBlockBackfillReport(t *testing.T) {
 // An empty dashboard origin would make every URL-form mention unrecognisable and the rebuild
 // would delete them all, so the subcommand refuses before it opens the database.
 func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
@@ -1416,6 +1572,7 @@ func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 // otherwise apply the very migrations the census was to inspect. backfill-embeddings is one such
 // argument now: the server's embedding queue keeps coverage itself.
 func TestRunSubcommandRefusesAnUnknownSubcommand(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"cenus", "backfill-embeddings"} {
 		var stdout, stderr bytes.Buffer
 		code := runSubcommand(context.Background(), []string{name}, envGetter(nil), &stdout, &stderr)
@@ -1436,6 +1593,7 @@ func TestRunSubcommandRefusesAnUnknownSubcommand(t *testing.T) {
 // The census exits 2 when it could not be taken and 0 when nothing refuses, and prints the report
 // to stdout.
 func TestCensusSubcommandExitCodes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var out, errOut bytes.Buffer
 	if code := census(ctx, nil, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
@@ -1465,6 +1623,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 // pgmigrate.Census already prefixes its errors with "census:", so the command prints that
 // prefix once when a census cannot be taken.
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
 	if code := census(context.Background(), nil, database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
@@ -1479,6 +1638,7 @@ func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 // A database at 52 holding a row 0053's check refuses is refused by the embedded 0053 census,
 // exit 1, and the report names the migration, the count and the census file.
 func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
@@ -1490,6 +1650,9 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		-- create.
 		create table users (login text primary key);
 		alter table delivery_settings add column production_job_name text;
+		-- CORE's default assignee has signed in, so 20261116015736's census counts no project
+		-- the owner fill would leave without an owner, and 0053's is the one refusal.
+		insert into people (email) values ('alice');
 		drop table priority_nodes, priority_tuples, workflow_nodes, workflow_tuples;
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -1521,6 +1684,7 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 // migrated, and 1 when a recorded version names another file, which it prints. The control is the
 // migrated database itself, read before the row is changed.
 func TestVersionsSubcommandExitCodes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var out, errOut bytes.Buffer
 	if code := versions(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
@@ -1543,6 +1707,7 @@ func TestVersionsSubcommandExitCodes(t *testing.T) {
 }
 
 func TestWriteRebuildRefsReport(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	writeRebuildRefsReport(&output, refs.Rebuild{Documents: 4, Asks: 3, Comments: 2, Messages: 1, Orphans: 5, Edges: 9, BlocksOwed: 4, ItemsOwed: 6})
 	const want = "rebuild-refs: documents=4 asks=3 comments=2 messages=1 orphans=5 edges=9 blocks_owed=4 items_owed=6\n"
@@ -1574,6 +1739,7 @@ func devSignInEnvironment(overrides map[string]string) settingValues {
 }
 
 func TestResolveBootConfigDevSignInFlagValue(t *testing.T) {
+	t.Parallel()
 	// Off (getenv answers "" for an unset variable as for an empty one), the fence asks nothing of
 	// the rest of the environment.
 	boot, err := resolveBootConfig(devSignInEnvironment(map[string]string{
@@ -1600,6 +1766,7 @@ func TestResolveBootConfigDevSignInFlagValue(t *testing.T) {
 }
 
 func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
 		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
@@ -1612,6 +1779,7 @@ func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
 // The fence checks the address the server binds, not a second reading of the variable: every
 // spelling it accepts yields boot.ListenAddr, listenAddress's one value, which main binds.
 func TestResolveBootConfigDevSignInChecksTheAddressItBinds(t *testing.T) {
+	t.Parallel()
 	for _, host := range []string{"", "0.0.0.0", "::", "10.0.0.5", "localhost", "::ffff:127.0.0.1", "[::1%lo]", "]]::1[[", "[[::1]]", "127.0.0.1:9000", "[::1]:9000"} {
 		boot, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_LISTEN_HOST": host}))
 		if err == nil || !strings.Contains(err.Error(), "DISPATCH_LISTEN_HOST") {
@@ -1653,6 +1821,7 @@ func TestResolveBootConfigDevSignInChecksTheAddressItBinds(t *testing.T) {
 // serves: a socket on every interface is refused, naming the variable, though DISPATCH_LISTEN_HOST
 // names that socket's address correctly, and a loopback one is accepted.
 func TestResolveBootConfigDevSignInChecksTheListenSocket(t *testing.T) {
+	t.Parallel()
 	wildcard, address := listeningFD(t, "tcp4", "0.0.0.0:0")
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_LISTEN_FD": wildcard, "DISPATCH_LISTEN_HOST": "0.0.0.0"}))
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_DEV_SIGNIN=1 is for a loopback server only") ||
@@ -1685,6 +1854,7 @@ func listeningFD(t *testing.T, network, address string) (string, *net.TCPAddr) {
 }
 
 func TestResolveBootConfigDevSignInRequiresALoopbackDatabase(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	for _, tc := range []struct{ databaseURL, host string }{
 		{databaseURL: "postgres://postgres:x@db.example.com:5432/d", host: "db.example.com"},
 		{databaseURL: "postgres://u@10.0.0.5/d", host: "10.0.0.5"},
@@ -1718,6 +1888,7 @@ func TestResolveBootConfigDevSignInRequiresALoopbackDatabase(t *testing.T) {
 }
 
 func TestResolveBootConfigDevSignInRefusesAConfiguredSigningKey(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_SIGNING_KEY": "abc"}))
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_SIGNING_KEY") {
 		t.Fatalf("configured signing key: err = %v, want a refusal naming DISPATCH_SIGNING_KEY", err)
@@ -1727,6 +1898,7 @@ func TestResolveBootConfigDevSignInRefusesAConfiguredSigningKey(t *testing.T) {
 // With the flag a loopback client acts as any person it names, so the process may not publish
 // into another machine's NATS.
 func TestResolveBootConfigDevSignInRefusesRemoteNATS(t *testing.T) {
+	t.Parallel()
 	if _, err := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1"})); err == nil || !strings.Contains(err.Error(), "ENVOY_ALLOW_REMOTE_NATS") {
 		t.Fatalf("ENVOY_ALLOW_REMOTE_NATS=1 with NATS on: err = %v, want a refusal naming ENVOY_ALLOW_REMOTE_NATS", err)
 	}
@@ -1741,6 +1913,7 @@ func TestResolveBootConfigDevSignInRefusesRemoteNATS(t *testing.T) {
 // With the flag a loopback client acts as any person it names, so the process may not decide
 // another machine's secrets broker requests as one.
 func TestResolveBootConfigDevSignInRefusesARemoteAgentSecretsBroker(t *testing.T) {
+	t.Parallel()
 	broker := func(brokerURL string) map[string]string {
 		return map[string]string{
 			"DISPATCH_AGENT_SECRETS_URL":                brokerURL,
@@ -1767,6 +1940,7 @@ func TestResolveBootConfigDevSignInRefusesARemoteAgentSecretsBroker(t *testing.T
 // With the flag a loopback client acts as any person it names, so the process may not deliver
 // that human's mentions through another machine's Envoy listener.
 func TestResolveBootConfigDevSignInRefusesARemoteEnvoyListener(t *testing.T) {
+	t.Parallel()
 	for _, listenerURL := range []string{"https://listener.example.com", "http://10.0.0.5:9020"} {
 		if _, err := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_URL": listenerURL})); err == nil || !strings.Contains(err.Error(), "ENVOY_URL") {
 			t.Errorf("ENVOY_URL=%s: err = %v, want a refusal naming ENVOY_URL", listenerURL, err)
@@ -1790,6 +1964,7 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 // and import any repository it is installed on, so an App private key from the environment may
 // sign calls only to a loopback host.
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
+	t.Parallel()
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
 	// Unset, the App calls https://api.github.com.
@@ -1819,6 +1994,7 @@ func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 // The dashboard origin comes from envoy.json, which main reads after the environment, so the fence
 // over loaded values checks it, before anything connects.
 func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
+	t.Parallel()
 	const public = "https://dispatch.example.com"
 	if err := devSignInLoadedFence(devSignInBoot(t, nil), public, nil, appCredentialSource{}); err == nil || !strings.Contains(err.Error(), "DISPATCH_SERVER_URL") {
 		t.Errorf("origin %s with the flag: err = %v, want a refusal naming DISPATCH_SERVER_URL", public, err)
@@ -1833,6 +2009,7 @@ func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
 // base, naming the file and the environment key that replaces it, while a throwaway key in the
 // environment with a loopback fake boots, as packages/dispatch/e2e/run-server.sh's does.
 func TestDevSignInRefusesAnAppJSONKeyWhateverTheBase(t *testing.T) {
+	t.Parallel()
 	const fake = "http://127.0.0.1:9022"
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, "app.json")
@@ -1880,6 +2057,7 @@ func devSignInBoot(t *testing.T, overrides map[string]string) bootConfig {
 }
 
 func TestListenAddressJoinsAnIPv6LoopbackHost(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ host, port, want string }{
 		{host: "::1", port: "", want: "[::1]:8766"},
 		{host: "::1", port: "8799", want: "[::1]:8799"},
@@ -1958,6 +2136,7 @@ func runBackfillFiles(t *testing.T, database *store.Store, bucket string, args .
 // one does not. Those exit codes are what an operator's script reads before it trusts that the
 // rows' bytes are safe to have cleared.
 func TestBackfillFilesExitsNonZeroUntilEveryFileReadsBackFromTheBucket(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	database := storetest.Open(t)
 	const bucket = "example-files-bucket"
 	fake := filestest.ServeS3(t, bucket)
@@ -2016,6 +2195,7 @@ func TestBackfillFilesExitsNonZeroUntilEveryFileReadsBackFromTheBucket(t *testin
 // fleet columns, which registers no file_store. --verify-only and --restore, which take no bytes
 // out of a row, still run. Once those rows lapse, the backfill moves the row.
 func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	database := storetest.Open(t)
 	const bucket = "example-files-bucket"
 	filestest.ServeS3(t, bucket)
@@ -2058,6 +2238,7 @@ func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
 }
 
 func TestExplainMigrateErrorNamesTheDeploymentBootstrapOnAVectorPermissionDenial(t *testing.T) {
+	t.Parallel()
 	pgErr := &pgconn.PgError{Code: "42501", Message: `permission denied to create extension "vector"`}
 	original := fmt.Errorf("apply migration 72: execute migration: migration 0072_embeddings_core.up.sql: %w", pgErr)
 	explained := explainMigrateError(original)
@@ -2070,6 +2251,7 @@ func TestExplainMigrateErrorNamesTheDeploymentBootstrapOnAVectorPermissionDenial
 }
 
 func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.T) {
+	t.Parallel()
 	cases := map[string]error{
 		"a different SQLSTATE entirely": fmt.Errorf(
 			"apply migration 42: execute migration: migration 0042_something.up.sql: %w",
@@ -2116,6 +2298,8 @@ const (
 // none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the boot's wait of
+	// LiveWindow + HeartbeatInterval + 30 s past the refusing row).
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
@@ -2223,14 +2407,21 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 // started takes the hold the moment its process serves and writes the waiting events' rows.
 const keywordFillDeferredWatch = 15 * time.Second
 
+// keywordFillTablesEmpty is the end of the deferral line of a process booted with
+// DISPATCH_SEARCH_FILL=off on a database where neither table the keyword fill writes holds a row
+// (searchFillTableRows).
+const keywordFillTablesEmpty = "search_text_versions_rows=none search_text_versions_fill_rows=none"
+
 // DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
 // off, a process that the registry of live server processes admitted, and so serves, logs once
-// that the fill is deferred, and for keywordFillDeferredWatch takes no hold of the fill's and
-// writes no row and no cursor row, though 50 events wait for their rows and 50 more are written
-// while it serves. Booted with it on, on a database of its own holding the same events, a process
-// takes the hold, writes every event's row and the cursor row, and logs no deferral; the same read
-// that finds none of them in the off row counts each of them there.
+// that the fill is deferred, saying that neither table the fill writes holds a row, and for
+// keywordFillDeferredWatch takes no hold of the fill's and writes no row and no cursor row, though
+// 50 events wait for their rows and 50 more are written while it serves. Booted with it on, on a
+// database of its own holding the same events, a process takes the hold, writes every event's row
+// and the cursor row, and logs no deferral; the same read that finds none of them in the off row
+// counts each of them there.
 func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
+	t.Parallel()
 	t.Run("off", func(t *testing.T) {
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
@@ -2248,6 +2439,9 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
 			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
 		}
+		if !process.logged(keywordFillDeferredLine + " " + keywordFillTablesEmpty) {
+			t.Fatalf("the deferral does not end with %s, though neither table holds a row:\n%s", keywordFillTablesEmpty, process.Output.String())
+		}
 		for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
 			if process.logged(line) {
 				t.Fatalf("the process logged %s; want a keyword fill that never started:\n%s", line, process.Output.String())
@@ -2262,7 +2456,7 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		process.waitHealthy(t)
 		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
-		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
+		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
 		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
 			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
 		}
@@ -2270,6 +2464,189 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
 		}
 	})
+}
+
+// searchFillTableRows answers the deferral line's fields, one read per table the keyword fill
+// writes. On a migrated database that no fill has written, both say none. A row of the keyword
+// table makes its field some and leaves the cursor's none, and the cursor's row alone does the
+// reverse. A table the read cannot read, here the keyword table dropped, makes its field unknown
+// with the read's error, and the cursor's field still reads. The steps run in order on one
+// database, each on what the one before left.
+func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	for _, step := range []struct {
+		name       string
+		statements []string
+		want       string
+	}{
+		{"no row in either table", nil, keywordFillTablesEmpty},
+		{"a row of the keyword table", []string{`
+			insert into search_text_versions (kind, id, project_key, event_id, event_seq, started_at, body, body_from, search)
+			values ('comment', 'a-comment', 'PROJ', 1, 1, now(), 'the signing keys rotate', 'event', to_tsvector('simple', 'the signing keys rotate'))`},
+			"search_text_versions_rows=some search_text_versions_fill_rows=none"},
+		{"the cursor's row alone", []string{
+			`delete from search_text_versions`,
+			`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`},
+			"search_text_versions_rows=none search_text_versions_fill_rows=some"},
+		{"the keyword table dropped", []string{`drop table search_text_versions`},
+			`search_text_versions_rows=unknown search_text_versions_rows_error=ERROR: relation "public.search_text_versions" does not exist (SQLSTATE 42P01) search_text_versions_fill_rows=some`},
+	} {
+		for _, statement := range step.statements {
+			if _, err := database.Pool.Exec(ctx, statement); err != nil {
+				t.Fatalf("%s: %s: %v", step.name, statement, err)
+			}
+		}
+		if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != step.want {
+			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
+		}
+	}
+}
+
+// A failed read of a table the keyword fill writes does not stop the boot. Booted with
+// DISPATCH_SEARCH_FILL=off on a database whose keyword table was dropped and whose cursor holds its
+// row, a process logs the deferral once, saying the keyword table is unknown with the read's error
+// and the cursor holds a row, and then serves: it answers its health check and the registry of
+// live server processes admits it.
+func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	for _, statement := range []string{
+		`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`,
+		`drop table search_text_versions`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=unknown search_text_versions_rows_error="ERROR: relation \"public.search_text_versions\" does not exist (SQLSTATE 42P01)" search_text_versions_fill_rows=some`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+}
+
+// A lock on a table the keyword fill writes ends the read at the server, and the boot goes on.
+// Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in a transaction it keeps
+// open for the whole test. searchFillTableRows then gives the cursor's table unknown with
+// Postgres's own lock timeout (55P03) and the keyword table still none, and a read of the cursor's
+// table alone ends with 55P03 before the client's deadline could end it; once it returned, no
+// backend of the database waits for a lock on the cursor's table, though the lock is still held.
+// A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same fields once,
+// then serves: it answers its health check and the registry of live server processes admits it,
+// and still no backend waits for the lock.
+func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (requireTheServerEndsTheRead's 10 s over a 5 s lock timeout).
+	database := storetest.Open(t)
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `lock table public.search_text_versions_fill in access exclusive mode`); err != nil {
+		t.Fatalf("lock search_text_versions_fill: %v", err)
+	}
+	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)`
+
+	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
+		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
+	}
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03")
+	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)"`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+	requireNoKeywordFillCursorLockWait(t, database, "after the booted process logged the deferral")
+}
+
+// A read of a table the keyword fill writes that runs on with no lock to wait for is ended by
+// Postgres's statement timeout, and the boot goes on. search_text_versions_fill is replaced with a
+// view whose select sleeps 30 s, past the client's deadline. searchFillTableRows then gives that
+// table unknown with Postgres's own statement timeout (57014) and the keyword table still none,
+// and a read of that table alone ends with 57014 before the client's deadline could end it. A
+// process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
+// serves: it answers its health check and the registry of live server processes admits it.
+func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (requireTheServerEndsTheRead's 10 s over a 6 s statement timeout).
+	database := storetest.Open(t)
+	ctx := context.Background()
+	for _, statement := range []string{
+		`drop table public.search_text_versions_fill`,
+		`create view public.search_text_versions_fill as select 1 as id from pg_sleep(30)`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to statement timeout (SQLSTATE 57014)`
+	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
+		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
+	}
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014")
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+}
+
+// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, and fails
+// the test unless Postgres itself ended the read: an error of the SQLSTATE code, before
+// searchFillTableReadTimeout, the client's own deadline, could end it. It judges the server's end
+// of the read by its error, not by a time that a slow box or a slow dial would stretch.
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code string) {
+	t.Helper()
+	started := time.Now()
+	_, err := searchFillTableHoldsRow(context.Background(), database.Pool, table)
+	took := time.Since(started)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Errorf("the read of %s ended after %v with %v; want Postgres's own error %s", table, took.Round(time.Millisecond), err, code)
+	}
+	if took >= searchFillTableReadTimeout {
+		t.Errorf("the read of %s took %v; want less than the client's deadline, %v", table, took.Round(time.Millisecond), searchFillTableReadTimeout)
+	}
+}
+
+// requireNoKeywordFillCursorLockWait fails the test when a backend of the database waits for a
+// lock on search_text_versions_fill. when says at which moment the test reads it.
+func requireNoKeywordFillCursorLockWait(t *testing.T, database *store.Store, when string) {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_locks
+		 where database = (select oid from pg_database where datname = current_database())
+		   and relation = 'public.search_text_versions_fill'::regclass
+		   and not granted`).Scan(&waiting); err != nil {
+		t.Fatalf("read the lock waits on search_text_versions_fill: %v", err)
+	}
+	if waiting != 0 {
+		t.Fatalf("%s, %d backends still wait for a lock on search_text_versions_fill; want none", when, waiting)
+	}
+}
+
+// deferralFields writes the fields searchFillTableRows answers as `key=value` pairs, one space
+// between, in their order.
+func deferralFields(fields []any) string {
+	pairs := make([]string, 0, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		pairs = append(pairs, fmt.Sprintf("%v=%v", fields[i], fields[i+1]))
+	}
+	return strings.Join(pairs, " ")
 }
 
 // awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,

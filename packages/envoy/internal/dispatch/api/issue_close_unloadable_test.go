@@ -22,8 +22,10 @@ import (
 // older release made and restoring for its reopen, succeed rather than fail on that document for
 // good.
 func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningRestoresThem(t *testing.T) {
-	// An hour, so no settlement timer loads the unloadable document between the requests.
-	f := newRepairFixtureSettlingAfter(t, time.Hour)
+	t.Parallel()
+	// Past the run (pastTheRun), so no settlement timer loads the unloadable document between the
+	// requests.
+	f := newRepairFixtureSettlingAfter(t, pastTheRun)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closing beside an unloadable document", "Context\n")
 	uploaded := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "notes.md", "content": "Notes\n",
@@ -79,6 +81,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 // test reads the live tree, and the text an agent reads, which answers each state in its asks
 // member.
 func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlockResolved(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Rebuilding a closed issue's document", "Context\n")
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{

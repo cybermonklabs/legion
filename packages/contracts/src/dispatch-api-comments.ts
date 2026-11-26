@@ -97,6 +97,10 @@ export const commentFields = {
   resolved_by: ActorSchema.nullable(),
   resolved_at: z.string().nullable(),
   edited_at: z.string().nullable(),
+  /** When the comment's author deleted it, and who they are: the body is cleared and every read
+   *  of the comment gives the mark and no body. Null on every comment that stands. */
+  deleted_at: z.string().nullable(),
+  deleted_by: ActorSchema.nullable(),
   suggestion: SuggestionSchema.nullable(),
   created_at: z.string(),
   mentions: z.array(WrittenCommentMentionSchema),
@@ -109,17 +113,71 @@ export const commentFields = {
 
 export const CommentSchema = z.strictObject(commentFields).readonly();
 
+/** The states the node a comment's anchor names stands in, as the tree read answers a node's
+ *  (`model.IssueTreeAnchorNode`): `gone` for a node deleted since the comment was written. */
+const ANCHORED_NODE_STATES = ["live", "gone", "proposed", "settled", "overtaken"] as const;
+
+/**
+ * The member `node_anchor` that `GET /api/v1/issues/{key}/comments` and `GET /api/v1/comments/{id}`
+ * answer a caller that sends `?node_anchor=true`, on each comment whose anchor names a node or a
+ * block (`model.CommentNodeAnchor`): that node by its store kind and id, with its state; the words
+ * the anchor quotes; the zero-based match of those words in the node's text it names, null for a
+ * document anchor, which stores none; and `orphaned`, which says the quoted words left the node's
+ * text. A reader tells a deleted node from its `state`, `gone`, since an edit that drops the words
+ * makes `orphaned` true too. A node is named as the store keys it: a lens, a risk, a constraint and
+ * a result by kind and uuid, a finding and a block of a document as kind `block` with the block's
+ * own node id (`lens/<uuid>#<block id>`, `<ref_key>#<block id>`).
+ *
+ * A comment on a node answers `anchor: null` and no `node_anchor` to every read without the
+ * parameter and in every `comment.*` event, because the deployed clients read a comment with the
+ * strict `CommentSchema`, and an event is retained verbatim under the strict
+ * `WrittenCommentEventPayloadSchema`: either refuses a member it does not declare.
+ */
+export const CommentNodeAnchorSchema = z
+  .strictObject({
+    node: z
+      .strictObject({ kind: z.string(), id: z.string(), state: z.enum(ANCHORED_NODE_STATES) })
+      .readonly(),
+    quote: z.string(),
+    occurrence: z.number().int().nonnegative().nullable(),
+    orphaned: z.boolean(),
+  })
+  .readonly();
+
+/** A comment as the two comment reads answer it to a caller that sends `?node_anchor=true`: the
+ *  comment `CommentSchema` reads, with `node_anchor` (`CommentNodeAnchorSchema`) where its anchor
+ *  names a node or a block. Only a caller that sends the parameter reads a comment with it. */
+export const CommentWithNodeAnchorSchema = z
+  .strictObject({ ...commentFields, node_anchor: CommentNodeAnchorSchema.optional() })
+  .readonly();
+
 /**
  * The payload of every `comment.*` event. It is the comment row as it stood when the event was
  * written, and events are retained verbatim, so the row's later additions are optional here:
  * `mentions` and `deliveries` were added on 2026-09-18 (#1188), and every comment event recorded
- * before that day carries neither. A read row (`Comment`) always has both. `thread_logins` (the
- * comment's ask, else its root) is carried by `comment.created` and `comment.answered`.
+ * before that day carries neither; `deleted_at` and `deleted_by` were added by the post
+ * corrections, and every comment event recorded before them carries neither. A read row
+ * (`Comment`) always has all four. The read of an edited comment's event gives `edited_at` as the
+ * comment reads now, the time its author last replaced the body, beside the body the event
+ * recorded (`attachPostMarks` in `api/events.go`). `thread_logins` (the comment's ask, else its
+ * root) is carried by `comment.created`, `comment.answered`, `comment.edited` and
+ * `comment.deleted`.
  */
 export const commentEventPayloadFields = {
   ...commentFields,
   mentions: z.array(WrittenCommentMentionSchema).optional(),
   deliveries: z.array(WrittenCommentDeliverySchema).optional(),
+  /** The comment's body, and a suggestion's replacement text with it. Every comment row has
+   *  both, but a deleted comment's events carry neither: the read of the event takes `body`,
+   *  `body_truncated` and `suggestion` out of the payload (`attachPostMarks` in
+   *  `api/events.go`), so both are optional here. */
+  body: commentFields.body.optional(),
+  suggestion: commentFields.suggestion.optional(),
+  /** When the comment's author deleted it, and who they are; both null on a comment nobody
+   *  deleted, and absent on every event written before the post corrections. The read of a deleted
+   *  comment's event stamps these two where the body was. */
+  deleted_at: commentFields.deleted_at.optional(),
+  deleted_by: commentFields.deleted_by.optional(),
   artifact_name: z.string(),
   /** The document owner for an artifact comment, including direct author routes. */
   project_key: z.string().optional(),
@@ -141,6 +199,26 @@ export const commentEventPayloadFields = {
    *  owns the ask. Carried by `comment.created` alone; absent on a comment outside an ask's thread
    *  and from a Dispatch older than the field. */
   ask_sessions: z.array(z.string()).optional(),
+  /** The id of the root comment of the thread the comment replies in, which its `reply_to` names
+   *  too. Carried by `comment.created`, the `comment.answered` a delivery callback appends,
+   *  `comment.edited` and `comment.deleted`, so a reader routes a correction as it routes the
+   *  post; absent on a root comment, on a reply to an ask and on every other comment event. */
+  thread_root_id: z.string().optional(),
+  /** Carried by `comment.deleted` alone, of a comment whose accepted suggestion named a document
+   *  version after the comment's body: that version as the delete renamed it - its document, its
+   *  number, and the name (`summary`) every read of the document's versions now gives it, which
+   *  quotes the suggestion's quote and replacement, the document's own text since the accept, and
+   *  none of the comment's body. A reader holding the document's versions gives that version this
+   *  name. Absent on every other comment event, on a delete that renamed no version, and from a
+   *  Dispatch older than the field. */
+  renamed_version: z
+    .strictObject({
+      artifact_id: z.string(),
+      number: z.number().int().positive(),
+      summary: z.string(),
+    })
+    .readonly()
+    .optional(),
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,
@@ -195,6 +273,11 @@ export const CommentEventPayloadSchema = z
     suggestion: z.object({ replace_with: suggestionFields.replace_with.optional() }).nullish(),
     author: InboundActorSchema.optional(),
     created_at: commentFields.created_at.optional(),
+    // The mark of a post its author deleted: null on a live post, absent on every event written
+    // before the post corrections, and set on each event of a deleted one, whose body the read
+    // of the event takes out of the payload.
+    deleted_at: commentFields.deleted_at.optional(),
+    deleted_by: InboundActorSchema.nullish(),
     mentions: z.array(CommentMentionSchema).optional(),
     deliveries: z.array(CommentDeliverySchema).optional(),
     reply_block: ReplyBlockSchema.nullish(),

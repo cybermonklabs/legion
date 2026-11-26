@@ -19,6 +19,7 @@ import (
 // another issue in its uncertainty_reason lists that issue by the decision's mention, and not
 // alice, who wrote the decision, by its decided_by.
 func TestTheIssueReferencesRouteListsNoDecidedBy(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	cited := createReferenceAPIIssue(t, handler, "CORE")

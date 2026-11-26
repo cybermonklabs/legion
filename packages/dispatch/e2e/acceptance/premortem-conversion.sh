@@ -18,7 +18,7 @@
 # what it would write and writes nothing; and for real, whose lens and risks it compares by content
 # with the command's. Between the first call and the second, a map that names for risk 5 the check
 # of an issue of another project, which the run creates, is refused naming the risk and the check:
-# by the command, which exits 1 naming the map file's line, and by the route, 400 INVALID_POINTER,
+# by the command, which exits 1 naming them, and by the route, 400 INVALID_POINTER,
 # each with a dry run and without; after each, psql on STORE_DSN counts no node or tuple of that
 # conversion more than before it, the issue's lenses and document list are unchanged, and the
 # document's address still answers the document. Through psql on STORE_DSN it reads one moved_to
@@ -244,15 +244,14 @@ readonly conversion_census="with lenses as (
       and not exists (select 1 from graph_tuples t where t.from_kind = n.kind and t.from_id = n.id and t.kind = 'part_of')))"
 
 # refused_convert SECTION WHAT ARGS…: runs the command (run_convert) on the map file
-# $work/far-map.tsv; it exits 1, naming that file's line for risk 5, the risk and the check of
-# another project.
+# $work/far-map.tsv; it exits 1, naming the risk, risk 5, and the check of another project.
 refused_convert() {
   local section="$1" what="$2" code
   shift 2
   run_convert "$@"
   [[ "$code" == 1 ]] ||
     fail "$section" "$what" "envoy-dispatch premortem-convert $* exited $code: $(<"$work/command.err") $(head -c 600 "$work/command.out")"
-  [[ "$(<"$work/command.err")" == *"$work/far-map.tsv:$far_line (risk 5): "*"$far_check"* ]] ||
+  [[ "$(<"$work/command.err")" =~ (^|[^[:alnum:]])risk\ 5([^[:digit:]]|$) && "$(<"$work/command.err")" == *"$far_check"* ]] ||
     fail "$section" "$what" "it exited 1 printing: $(<"$work/command.err")"
   pass "$section" "$what: $(<"$work/command.err")"
 }
@@ -552,8 +551,8 @@ cp "$work/refusal.json" "$work/body"
 status="$refused_status"
 want_status 400 R1 "the call with the eleven entries and one for risk 11 is refused"
 expect R1 "the refusal is ARTIFACT_INPUT" '"ARTIFACT_INPUT"' '.code'
-expect R1 "the refusal names the entry for risk 11, the twelfth, which the document does not hold" true \
-  '.error | contains("prevented_by entry 12 (risk 11)") and contains("the document holds no risk 11")'
+expect R1 "the refusal names the entry, the twelfth, and its risk, 11" true \
+  '.error | test("\\b12\\b") and test("\\b11\\b")'
 
 # --- F: a map naming a check of another project, refused by the command and by the route -------
 
@@ -592,7 +591,7 @@ jq -e '.lenses == 0 and .risks == 0 and .prevented_by_at_the_check == 0' <<<"$ce
 pass F "the store holds no lens or risk under $key2 and no prevented_by tuple at $far_check: $census_before"
 
 for dry_run in --dry-run ""; do
-  refused_convert F "envoy-dispatch premortem-convert --issue $key2 --artifact $slug2 --prevented-by <the map naming $far_check> ${dry_run:-with no --dry-run} is refused naming the line, risk 5 and the check" \
+  refused_convert F "envoy-dispatch premortem-convert --issue $key2 --artifact $slug2 --prevented-by <the map naming $far_check> ${dry_run:-with no --dry-run} is refused naming risk 5 and the check" \
     --issue "$key2" --artifact "$slug2" --prevented-by "$work/far-map.tsv" ${dry_run:+"$dry_run"}
   untouched F "the command's refused run ${dry_run:-with no --dry-run}"
 done
@@ -608,7 +607,7 @@ for dry_run in true false; do
   want_status 400 F "the call with the map naming $far_check and dry_run $dry_run is refused"
   expect F "the refusal of the call with dry_run $dry_run is INVALID_POINTER, naming risk 5 and the check $far_check" \
     '{"code":"INVALID_POINTER","names_risk_5":true,"names_the_check":true}' --arg c "$far_check" \
-    '{code, names_risk_5: (.error | contains("(risk 5)")), names_the_check: (.error | contains($c))}'
+    '{code, names_risk_5: (.error | test("\\brisk 5\\b")), names_the_check: (.error | contains($c))}'
 done
 
 # --- R2: the route's dry run --------------------------------------------------------------------

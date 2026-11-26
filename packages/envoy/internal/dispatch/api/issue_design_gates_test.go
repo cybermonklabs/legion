@@ -154,6 +154,7 @@ func designGateEditRequest(t *testing.T, artifactID, markdown string) *http.Requ
 // about every other document. The rows below are that whole path, driven over the routes a
 // daemon, a person and an agent each reach, and never over the table itself.
 func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
 	// The deployment serving DGATE gates both steps, and its rows say nothing of holding their
@@ -623,6 +624,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 // the publish's body requires its step and its document and not holds, and the entry of the
 // answer requires all three.
 func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
+	t.Parallel()
 	_, document := readOpenAPI(t)
 	schema := func(name string) map[string]any {
 		t.Helper()
@@ -653,6 +655,7 @@ func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
 // the role-holder publish (issue_role_holders.go), whose acceptance found the mix. Twenty rounds,
 // because one round can pass by the order the two happen to run in.
 func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
 	issue := createAdviceIssue(t, handler, "DGATE", "Racing publishes", nil).Key
@@ -704,6 +707,7 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 // that step alone reads as [spec], so the spec gate still names its clause. A publish of a set
 // holding the step is refused 400 INVALID_ISSUE, naming the step, and changes nothing stored.
 func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createAdviceProject(t, handler, "DROW")

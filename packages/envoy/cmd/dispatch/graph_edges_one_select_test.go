@@ -183,7 +183,7 @@ const (
 )
 
 // armOwner is the child whose deletion takes arm. Every arm over graph_tuples is the tuple arm:
-// migration 20261123120000 folded into it the arm over a lens's findings and the arm over the
+// migration 20261126000200 folded into it the arm over a lens's findings and the arm over the
 // artifacts that carry their node, which T7b's second part was given.
 func armOwner(arm viewArm) string {
 	switch arm.table {
@@ -538,7 +538,7 @@ func childObjects(arms []viewArm, owner string, probes []string) []string {
 // The probes of the tuple arm each child deletes with its arms; dispatch://INFRA-1253's test of a
 // document's marker, in the arm over refs and in the tuple arm's reads of a document's rows; that
 // child's reads of the artifacts row and the refs row behind a document's mentions and its
-// attached_to (migration 20261123120000); and the arm over refs' branch for a far end past the
+// attached_to (migration 20261126000200); and the arm over refs' branch for a far end past the
 // store's bound, which goes with that child's half of the arm.
 var (
 	asksProbes      = []string{"FROM asks projected", "FROM ask_followers projected"}

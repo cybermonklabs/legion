@@ -19,6 +19,7 @@ import (
 // constrained by the gone constraint. A write that did not read its far end again under that lock
 // would wait there and then point at the gone node.
 func TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	// requireNothingAt fails unless no tuple of kind points at the node the store keys by toKind
 	// and toID.

@@ -21,7 +21,8 @@
 // A caller that wants a priority as it stands asks Read or List, one that wants how a fact got
 // here asks History, which serves an attribute and a relation alike, or Timeline, which is one
 // priority's whole log in the order it was written. A caller that writes asks Write or the named
-// writes above it (Create, SetAttributes, SetState, Move, Advance, Retract).
+// writes above it (Create, SetAttributes, SetState, Move, Advance, Retract), and one that compares
+// the row before it writes reads it with ReadForWrite first, in the same transaction.
 //
 // The `advances` relations of a page of issues at once are no call of this package: each caller
 // that answers them splices AdvancesTupleRead, the one reading of the log they rest on, into a

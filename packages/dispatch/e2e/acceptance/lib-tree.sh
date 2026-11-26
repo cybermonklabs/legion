@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# What the acceptance drivers of dispatch://INFRA-1253 share, so that no driver copies it: the
+# What the issue-tree acceptance drivers share, so that no driver copies it: the
 # request to a server as the agent or as the person, the person's dev sign-in and the project create
 # that names that person, the tree read, the two CLIs, and for a driver over rows an earlier release
 # wrote the boot of this head over them, the store backfill's run and the wait for the backfill, the
@@ -7,7 +7,7 @@
 # for an upgrade driver after lib-baseline.sh too, which this file reads but does not source: a
 # driver against `bun run dispatch:local` boots no server and has no use for it.
 #
-# The checks it serves are every driver check of the Verification document of dispatch://INFRA-1253
+# The checks it serves are every driver check of the issue-tree Verification document
 # (verification-md), and seed-corpus.sh, which writes the corpus several of them read:
 #   against `bun run dispatch:local` on infra_1253: c-reparent-and-state, c-coverage-states,
 #     c-issue-relations-read, c-conversation-holds-the-discussion, c-tree-read-views,
@@ -349,15 +349,17 @@ tree_stop_head() {
 
 # tree_wait_backfill SECTION [LOG]: waits for the backfill, as the Verification preamble states it.
 # Every 2 s it reads, with the database's clock_timestamp(), the count of document_block_versions
-# owed a block index by either mark (version null, or this build's mark store_owed_at set) and the
+# owed a block index by either mark (version null, or this build's mark store_owed_at set), the
 # owed counts of comment_block_state, message_block_state and ask_block_state (rows whose owed_at is
-# not null), prints them on one line, and reads LOG (by default the log of the server
-# tree_boot_head booted) for tree_backfill_end. It passes once all four read 0 and that line is in
-# the log, and fails after 300 s naming each count that stayed above zero and the line, where the
-# log holds none. It never waits on a fixed sleep. Inputs: `database_url`, and tree_head_log or LOG.
+# not null) and the count of issues that hold no head mark (issue_head_marks, which the boot's
+# backfill and the block index's tick fill), prints them on one line, and reads LOG (by default the
+# log of the server tree_boot_head booted) for tree_backfill_end. It passes once all five read 0 and
+# that line is in the log, and fails after 300 s naming each count that stayed above zero and the
+# line, where the log holds none. It never waits on a fixed sleep. Inputs: `database_url`, and
+# tree_head_log or LOG.
 tree_wait_backfill() {
   local section="$1" log="${2:-$tree_head_log}" deadline=$((SECONDS + tree_wait_seconds))
-  local at unindexed comments messages asks ended stayed
+  local at unindexed comments messages asks unmarked ended stayed
   [[ -n "$log" ]] || tree_refuse "tree_wait_backfill reads a server's log: boot it with tree_boot_head or name the log"
   while true; do
     query "$section" "read what the backfill still owes" "
@@ -365,16 +367,17 @@ tree_wait_backfill() {
              (select count(*) from document_block_versions where version is null or store_owed_at is not null),
              (select count(*) from comment_block_state where owed_at is not null),
              (select count(*) from message_block_state where owed_at is not null),
-             (select count(*) from ask_block_state where owed_at is not null)"
-    IFS='|' read -r at unindexed comments messages asks <<<"$answer"
+             (select count(*) from ask_block_state where owed_at is not null),
+             (select count(*) from issues i where not exists (select 1 from issue_head_marks m where m.issue_key = i.key))"
+    IFS='|' read -r at unindexed comments messages asks unmarked <<<"$answer"
     ended=no
     if grep -qF -- "$tree_backfill_end" "$log"; then
       ended=yes
     fi
-    printf 'backfill at %s: document_block_versions_owed=%s comment_block_state_owed=%s message_block_state_owed=%s ask_block_state_owed=%s boot_backfill_ended=%s\n' \
-      "$at" "$unindexed" "$comments" "$messages" "$asks" "$ended"
-    if [[ "$unindexed" == 0 && "$comments" == 0 && "$messages" == 0 && "$asks" == 0 && "$ended" == yes ]]; then
-      pass "$section" "the backfill owes nothing and has logged its end"
+    printf 'backfill at %s: document_block_versions_owed=%s comment_block_state_owed=%s message_block_state_owed=%s ask_block_state_owed=%s issues_unmarked=%s boot_backfill_ended=%s\n' \
+      "$at" "$unindexed" "$comments" "$messages" "$asks" "$unmarked" "$ended"
+    if [[ "$unindexed" == 0 && "$comments" == 0 && "$messages" == 0 && "$asks" == 0 && "$unmarked" == 0 && "$ended" == yes ]]; then
+      pass "$section" "the backfill owes nothing, every issue holds its head mark, and the backfill has logged its end"
       return 0
     fi
     if ((SECONDS >= deadline)); then
@@ -383,6 +386,7 @@ tree_wait_backfill() {
       [[ "$comments" == 0 ]] || stayed+=" comment_block_state_owed=$comments"
       [[ "$messages" == 0 ]] || stayed+=" message_block_state_owed=$messages"
       [[ "$asks" == 0 ]] || stayed+=" ask_block_state_owed=$asks"
+      [[ "$unmarked" == 0 ]] || stayed+=" issues_unmarked=$unmarked"
       [[ "$ended" == yes ]] || stayed+=" and $log holds no line '$tree_backfill_end'"
       fail "$section" "the backfill ends within ${tree_wait_seconds} s" "after ${tree_wait_seconds} s:${stayed}"
     fi

@@ -53,12 +53,22 @@ type memoryController struct {
 	minted [][]byte
 }
 
-func (m *memoryController) MintController(_ context.Context, _ string, hash []byte) (uint64, error) {
+func (m *memoryController) mint(hash []byte) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.record = controller.Record{Generation: m.record.Generation + 1, CapabilityHash: hash}
 	m.minted = append(m.minted, hash)
-	return m.record.Generation, nil
+	return m.record.Generation
+}
+
+// MintControllerThen is the in-memory mint's committed continuation.
+func (m *memoryController) MintControllerThen(_ context.Context, _ string, hash []byte, onCommit func(generation uint64)) (uint64, error) {
+	if onCommit == nil {
+		return 0, errors.New("a controller mint needs its commit hook")
+	}
+	generation := m.mint(hash)
+	onCommit(generation)
+	return generation, nil
 }
 
 func (m *memoryController) Controller(context.Context, string) (controller.Record, bool, error) {
@@ -296,7 +306,8 @@ type controllerOptions struct {
 	// waitForFile, when set, has the recording Oh My Pi wait until that file exists before it
 	// records argv, env, and cwd and exits with exitCode, so a test of the refresh loop keeps
 	// Oh My Pi running exactly until it has observed what it needs, whatever the machine's load,
-	// and then releases it by creating the file.
+	// and then releases it by creating the file, which lies in a t.TempDir of the test's own
+	// (releaseWait).
 	waitForFile string
 }
 
@@ -359,7 +370,8 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
 	// a copy of the file its --append-system-prompt names and that file's mode (the command removes
 	// the file once Oh My Pi exits), environment, and working directory, and exits with the code
-	// the test asked for.
+	// the test asked for. Under LEGION_TEST_HOLD it waits for that release (releaseWait) and copies
+	// its prompt file only then.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
@@ -384,9 +396,8 @@ fi
 %[3]s
 if [ -n "$LEGION_TEST_HOLD" ]; then
   : >%[1]s/held
-  i=0
-  while [ "$i" -lt 1200 ] && [ ! -e "$LEGION_TEST_HOLD" ]; do i=$((i + 1)); sleep 0.1; done
-  [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
+  hold_dir=$(dirname "$LEGION_TEST_HOLD")
+%[4]s  [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
   exit 0
 fi
 if [ "$1" = --append-system-prompt ]; then cp "$2" %[1]s/system-prompt; stat -c %%a "$2" >%[1]s/system-prompt-mode; fi
@@ -395,7 +406,7 @@ readlink /proc/self/fd/0 >%[1]s/stdin
 env -0 >%[1]s/env
 pwd >%[1]s/cwd
 exit %[2]d
-`, record, opts.exitCode, waitForFileScript(opts.waitForFile))
+`, record, opts.exitCode, waitForFileScript(opts.waitForFile), releaseWait(`"$LEGION_TEST_HOLD"`, `"$hold_dir"`))
 	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
@@ -422,23 +433,26 @@ exit %[2]d
 	isTerminal := stdinIsTerminal
 	stdinIsTerminal = func() bool { return true }
 	t.Cleanup(func() { stdinIsTerminal = isTerminal })
-	c.installPlugin(api.DaemonAPIVersion)
+	c.installPlugin(api.DaemonAPIVersion())
 	return c
 }
 
-// waitForFileScript is the recording Oh My Pi's wait for file: a poll every tenth of a second,
-// bounded at two minutes so a test that never releases it still ends. Empty when file is empty,
-// so a test with no loop to wait for records and exits at once.
+// waitForFileScript is the recording Oh My Pi's wait for file (releaseWait). Empty when file is
+// empty, so a test with no loop to wait for records and exits at once.
 func waitForFileScript(file string) string {
 	if file == "" {
 		return ""
 	}
-	return fmt.Sprintf(`i=0
-while [ "$i" -lt 1200 ] && [ ! -e %q ]; do
-  i=$((i + 1))
-  sleep 0.1
-done
-`, file)
+	return releaseWait(shellprefix.Word(file), shellprefix.Word(filepath.Dir(file)))
+}
+
+// releaseWait is the recording Oh My Pi's wait for the release the test creates at file, a shell
+// word, in dir, the test's own t.TempDir: a poll every tenth of a second that ends once file
+// exists, or once the test has ended (its cleanup removed dir) or this test binary has. No span
+// of its own ends it, so Oh My Pi outlives every wait the test makes, however slow the machine,
+// and a test that never releases it still ends it.
+func releaseWait(file, dir string) string {
+	return fmt.Sprintf("while [ ! -e %s ] && [ -d %s ] && kill -0 %d 2>/dev/null; do sleep 0.1; done\n", file, dir, os.Getpid())
 }
 
 // installPlugin installs, in the operator's default Oh My Pi profile, a pi-legion manifest
@@ -656,7 +670,7 @@ func TestControllerStartFetchesTheSecretWithTheOperatorBearer(t *testing.T) {
 	got := requests[1]
 	if got.method != http.MethodPost || got.path != "/legion/v1/controller/secret" ||
 		got.authorization != "Bearer "+controllerOperatorToken || got.contentType != "application/json" ||
-		string(got.body) != fmt.Sprintf(`{"pluginContract":%d}`, api.DaemonAPIVersion) || got.status != http.StatusOK {
+		string(got.body) != fmt.Sprintf(`{"pluginContract":%d}`, api.DaemonAPIVersion()) || got.status != http.StatusOK {
 		t.Fatalf("secret request = %s %s auth %q type %q body %q → %d", got.method, got.path, got.authorization, got.contentType, got.body, got.status)
 	}
 }
@@ -901,7 +915,7 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 		code, _, _ := c.run()
 		held <- code
 	}()
-	testwait.Eventually(t, "the held run's Oh My Pi to start and wait", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, "the held run's Oh My Pi to start and wait", func() bool {
 		_, err := os.Stat(filepath.Join(c.record, "held"))
 		return err == nil
 	})
@@ -912,13 +926,8 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case code := <-held:
-		if code != 0 {
-			t.Fatalf("the held run of legion controller start = %d", code)
-		}
-	case <-time.After(2 * time.Minute):
-		t.Fatal("the held run of legion controller start never ended")
+	if code := testwait.Receive(t, "the held run of legion controller start to end", held); code != 0 {
+		t.Fatalf("the held run of legion controller start = %d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(c.record, "held-prompt"))
 	if err != nil || !strings.Contains(string(got), "Design gate steps: `spec`.") {
@@ -1175,7 +1184,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		_, _, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion)
+		_, _, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
 		server.Close()
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("fetchControllerSecret(%s) error = %v; want it to name %q", tc.body, err, tc.want)
@@ -1187,7 +1196,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 		_, _ = w.Write([]byte(`{"secret":"s","designGateSteps":[]}`))
 	}))
 	defer server.Close()
-	secret, steps, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion)
+	secret, steps, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
 	if err != nil || secret != "s" || steps == nil || len(steps) != 0 {
 		t.Fatalf("fetchControllerSecret of the empty list = %q, %v, %v; want the secret and a list that gates nothing", secret, steps, err)
 	}
@@ -1286,7 +1295,7 @@ func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *t
 		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 	}})
 	code, _, errb := c.run()
-	want := fmt.Sprintf("%s/legion/v1/controller/secret: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon\n", old.URL, api.DaemonAPIVersion)
+	want := fmt.Sprintf("%s/legion/v1/controller/secret: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon\n", old.URL, api.DaemonAPIVersion())
 	if code != 1 || !strings.HasSuffix(errb, want) {
 		t.Fatalf("legion controller start = %d, stderr %q; want 1 and a refusal ending %q", code, errb, want)
 	}
@@ -1429,10 +1438,10 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	t.Run("a plugin in the operator's Oh My Pi profile that speaks another contract, naming both", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		c.installPlugin(api.DaemonAPIVersion - 1)
+		c.installPlugin(api.DaemonAPIVersion() - 1)
 		manifest := filepath.Join(c.home, ".omp", "plugins", "node_modules", "@sjawhar", "pi-legion", "package.json")
 		c.refused(fmt.Sprintf("pi-legion at %s (package 9.9.9) speaks daemon API contract %d; this daemon requires %d.",
-			manifest, api.DaemonAPIVersion-1, api.DaemonAPIVersion))
+			manifest, api.DaemonAPIVersion()-1, api.DaemonAPIVersion()))
 		c.wantNoMintRequest()
 		c.wantNothingLaunchedOrWritten(c.defaultDir)
 	})
@@ -1490,8 +1499,8 @@ func TestControllerStartHoldsTheCopyOhMyPiLoadsToTheContract(t *testing.T) {
 	t.Run("the loaded copy speaks the contract; the profile's own does not", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		c.installPluginAt(filepath.Join(c.home, ".omp"), api.DaemonAPIVersion-1)
-		c.loads(c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion))
+		c.installPluginAt(filepath.Join(c.home, ".omp"), api.DaemonAPIVersion()-1)
+		c.loads(c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion()))
 		if code, _, errb := c.run(); code != 0 || !c.launched() {
 			t.Fatalf("legion controller start = %d (launched %t), stderr %q; want the controller started", code, c.launched(), errb)
 		}
@@ -1499,10 +1508,10 @@ func TestControllerStartHoldsTheCopyOhMyPiLoadsToTheContract(t *testing.T) {
 	t.Run("the loaded copy speaks another contract; the profile's own speaks this one", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		loaded := c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion-1)
+		loaded := c.installPluginAt(filepath.Join(c.home, "project", ".omp"), api.DaemonAPIVersion()-1)
 		c.loads(loaded)
 		c.refused(fmt.Sprintf("pi-legion at %s (package 9.9.9) speaks daemon API contract %d; this daemon requires %d.",
-			filepath.Join(loaded, "package.json"), api.DaemonAPIVersion-1, api.DaemonAPIVersion))
+			filepath.Join(loaded, "package.json"), api.DaemonAPIVersion()-1, api.DaemonAPIVersion()))
 		c.wantNoMintRequest()
 		c.wantNothingLaunchedOrWritten(c.defaultDir)
 	})
@@ -1957,7 +1966,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 	acme, sjawhar := filepath.Join(ghDir, "acme", "hosts.yml"), filepath.Join(ghDir, "sjawhar", "hosts.yml")
 	// The first write holds the first token; only then does sjawhar's lease turn, so the loop,
 	// not the first fetch, is what carries the second token into the file.
-	testwait.Eventually(t, sjawhar+" to hold ghs_first", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, sjawhar+" to hold ghs_first", func() bool {
 		body, err := os.ReadFile(sjawhar)
 		return err == nil && strings.Contains(string(body), "ghs_first")
 	})
@@ -1966,7 +1975,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Fatal(err)
 	}
 	tokens.setOwner("sjawhar", "ghs_second")
-	testwait.Eventually(t, sjawhar+" to hold ghs_second", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, sjawhar+" to hold ghs_second", func() bool {
 		body, err := os.ReadFile(sjawhar)
 		return err == nil && strings.Contains(string(body), "ghs_second")
 	})
@@ -1974,12 +1983,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Fatal(err)
 	}
 
-	var r result
-	select {
-	case r = <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("legion controller start did not return")
-	}
+	r := testwait.Receive(t, "legion controller start to return once Oh My Pi exited", done)
 	if r.code != 7 {
 		t.Fatalf("legion controller start = %d, want 7 (Oh My Pi's exit code); stderr %q", r.code, r.errb)
 	}
@@ -2024,18 +2028,18 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 		close(done)
 	}()
 	hostsFile := filepath.Join(c.defaultDir, "gh", "acme", "hosts.yml")
-	testwait.Eventually(t, hostsFile+" to exist", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, hostsFile+" to exist", func() bool {
 		_, err := os.Stat(hostsFile)
 		return err == nil
 	})
 	// Mint a second capability, which supersedes the one this controller holds.
 	status, _, err := (operator{base: d.url, bearer: controllerOperatorToken}).do(context.Background(), http.MethodPost,
-		"/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion})
+		"/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()})
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("mint a second capability: status %d, err %v", status, err)
 	}
 	logFile := filepath.Join(c.defaultDir, "github-credential.log")
-	testwait.Eventually(t, logFile+" to hold \"github credential refresh stopped\"", func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, logFile+" to hold \"github credential refresh stopped\"", func() bool {
 		body, err := os.ReadFile(logFile)
 		return err == nil && strings.Contains(string(body), "github credential refresh stopped")
 	})
@@ -2047,11 +2051,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("legion controller start did not return")
-	}
+	testwait.Receive(t, "legion controller start to return once Oh My Pi exited", done)
 	hosts, err := os.ReadFile(hostsFile)
 	if err != nil || string(hosts) != ghconfig.Hosts("ghs_first-read") {
 		t.Fatalf("hosts.yml = %q, %v; want it to keep the first token", hosts, err)

@@ -1,10 +1,15 @@
 package supervise
 
 import (
+	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // View never waits on a decision in flight, where Claim does: while a relaunch waits in the
@@ -152,5 +157,131 @@ func TestViewSaysAProcessIsStoppingOnlyWhenItsClaimDoesNotRunAgain(t *testing.T)
 				t.Error("once the decision returned View still says the process is stopping")
 			}
 		})
+	}
+}
+
+// A turn's start is published as the decision writes it, as a launch is (putClaim): the start
+// writes the claim working together with the task it carries, in one transaction
+// (confirmCarrying, putClaimAndPending), and then goes on to write the turn's step record. A
+// reader of the published claim reads it working from the moment the store holds it working, not
+// only once the decision ends. The daemon's refresh pass is such a reader: it posts a claim in a
+// turn no credit of the refresh gate, and one it read ready would be posted a credit its machine
+// gives back only when the turn's decision has ended (internal/daemon's refreshStalePlugins).
+//
+// The decision is held at the step record's write. The control is putClaimAndPending's publish
+// taken out: the claim then reads ready, as the delivery's decision left it, while the store holds
+// it working.
+func TestATurnsStartIsPublishedAsItIsWrittenWithTheTaskItCarries(t *testing.T) {
+	h := newBareHarness(t)
+	// reached says which came first: the step record's write, held, or the decision's return.
+	reached := make(chan string, 2)
+	held := &stepHeldStore{memStore: h.store, reached: reached, release: make(chan struct{})}
+	h.deps.Store = held
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+
+	held.armed.Store(true)
+	var (
+		started     error
+		decided     = make(chan struct{})
+		releaseOnce sync.Once
+	)
+	release := func() { releaseOnce.Do(func() { close(held.release) }) }
+	// A failure below lets the held decision go and waits for it, so no decision outlives the
+	// test holding the machine's lock.
+	t.Cleanup(func() {
+		release()
+		<-decided
+	})
+	go func() {
+		defer close(decided)
+		started = h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token})
+		reached <- "returned"
+	}()
+	if first := testwait.Receive(t, "the turn's start to write its step record", reached); first != "held" {
+		t.Fatalf("the turn's start returned (%v) before it wrote its step record", started)
+	}
+	if stored := h.store.load(h.token); stored.State != StateWorking {
+		t.Fatalf("the store holds the claim %s while the turn's step is written, want %s", stored.State, StateWorking)
+	}
+	if published := h.m.Published(); published.State != StateWorking {
+		t.Fatalf("the claim is published %s while the store holds it %s, want it published as written", published.State, StateWorking)
+	}
+	release()
+	<-decided
+	if started != nil {
+		t.Fatalf("the turn's start: %v", started)
+	}
+	if c := h.m.View(); c.State != StateWorking {
+		t.Fatalf("the claim reads %s once the turn's start ended, want %s", c.State, StateWorking)
+	}
+}
+
+// stepHeldStore holds the first step record written once it is armed until the test lets it
+// through, and says on reached that it holds it.
+type stepHeldStore struct {
+	*memStore
+	armed   atomic.Bool
+	reached chan<- string
+	release chan struct{}
+}
+
+func (s *stepHeldStore) PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error) {
+	if s.armed.CompareAndSwap(true, false) {
+		s.reached <- "held"
+		<-s.release
+	}
+	return s.memStore.PutClaimStep(ctx, token, step)
+}
+
+// The claim the joint write publishes is the claim it writes: normalized, as the store takes it
+// (stored, NormalizeClaim). A publish made before that call would show a reader state a claim may
+// hold only while it records a compatible running process — a suspension source on a claim that
+// is not suspended, a death charged against a process that is gone — where the store holds
+// neither. The daemon's refresh pass reads the published claim and decides the lane's terms from
+// it (internal/daemon's refreshStalePlugins).
+//
+// The claim is given both of those to hold and the write is made under the machine's lock,
+// which is where every caller makes it (confirmCarrying, settle, repair, retirePending): the
+// published claim is read inside that section, before the decision's end publishes again. The
+// control is the publish put back before the stored call: each field then reads as the claim held
+// it.
+func TestTheJointWriteOfAClaimAndItsTaskPublishesTheClaimTheStoreTakes(t *testing.T) {
+	h := newBareHarness(t)
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+
+	// What only a claim recording a compatible running process may hold, on a claim that is ready
+	// and records none: the write takes neither, so neither may the publish.
+	h.m.mu.Lock()
+	h.m.claim.Locator, h.m.claim.SuspendedBy, h.m.claim.DeathCharged = nil, SuspendedByOperator, true
+	err := h.m.putClaimAndPending(h.ctx)
+	published := h.m.Published()
+	h.m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("the joint write of the claim and its task: %v", err)
+	}
+	stored := h.store.load(h.token)
+	for _, held := range []struct {
+		what             string
+		published, store bool
+	}{
+		{"a suspension source", published.SuspendedBy != "", stored.SuspendedBy != ""},
+		{"a death charged", published.DeathCharged, stored.DeathCharged},
+	} {
+		if held.store {
+			t.Fatalf("the store holds %s for a ready claim recording no process: the write normalizes the claim it takes", held.what)
+		}
+		if held.published {
+			t.Errorf("the claim is published holding %s where the store holds none: the publish is of the claim the write takes", held.what)
+		}
 	}
 }

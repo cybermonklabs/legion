@@ -27,7 +27,7 @@ var StoresMovedKinds = []string{processes.CapabilityStoresMoved}
 // graph_nodes and the functions of their names (graphstore.StoresMovedTriggers), the four names of
 // the old tables, which the swap makes views over graph_nodes and graph_tuples (storesmove's
 // storesViews), and the index that serves the release before's reads of workflow_tuples through
-// its view (migration 20261125093000_graph_tuples_workflow_inbound_index).
+// its view (migration 20261126000500_graph_tuples_workflow_inbound_index).
 var (
 	storesMovedTriggers  = []string{"graph_nodes_workflow_state", "graph_nodes_workflow_project"}
 	storesMovedFunctions = []string{"graph_nodes_workflow_state()", "graph_nodes_workflow_project()"}

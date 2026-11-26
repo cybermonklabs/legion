@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -13,10 +14,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // routeIndexGolden is the committed index of the table: one route per line, sorted by path then
@@ -46,6 +47,7 @@ func routeIndexLines(routes []apiRoute) string {
 // table happens to hold: two methods of one path whose auth classes sort the other way round are
 // ordered by their methods, not by their auth.
 func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
+	t.Parallel()
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
 		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
@@ -57,6 +59,7 @@ func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
 }
 
 func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
@@ -131,6 +134,7 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
 // generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if err := WriteRouteIndex(&output); err != nil {
 		t.Fatal(err)
@@ -185,6 +189,7 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // (testdata/routes.txt), which two branches that each add a route merge into the union of their
 // two lines.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
+	t.Parallel()
 	routes := (&server{}).routes()
 	seen := make(map[string]struct{}, len(routes))
 	for _, route := range routes {
@@ -261,6 +266,7 @@ func requireRouteNames(t *testing.T, what string, got map[string]bool, want []st
 // one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
 // having one, so nothing else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	t.Parallel()
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
 		descriptions[route.Method+" "+route.Pattern] = route.Description
@@ -314,6 +320,8 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 // nothing and says why not at once, and one that resolves an id without naming that 404, fails
 // on each.
 func TestEveryIDRouteIsNamed(t *testing.T) {
+	// Not parallel: it adds a row to idRoutes (withIDRoute), the table every server of the package
+	// reads.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
@@ -520,13 +528,16 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 // That last probe is what holds the gate to the table: without it a row the table declares
 // `approve` whose gate asked only for `person` would pass every test here.
 func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	personal := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
 	personOnly := personalTokenHolding(t, database, model.ScopePerson)
-	probe := func(route apiRoute, credential string) *httptest.ResponseRecorder {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		request := httptest.NewRequestWithContext(ctx, route.Method, routeProbePath(route.Pattern), bytes.NewReader([]byte(routeProbeBody(route))))
+	// A probe ends on its route's answer, waited for through the shared wait, whose one bound is
+	// the test binary's deadline: a fixed deadline on the request ended a probe whose token read a
+	// loaded machine held past it, and the route then answered 5xx where it would have refused.
+	probe := func(t *testing.T, route apiRoute, credential string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(route.Method, routeProbePath(route.Pattern), bytes.NewReader([]byte(routeProbeBody(route))))
 		request.Header.Set("Content-Type", "application/json")
 		switch credential {
 		case "cookie":
@@ -538,27 +549,31 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 			// A personal token's plaintext, presented as the person's own credential.
 			request.Header.Set("Authorization", "Bearer "+credential)
 		}
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			answered <- response
+		}()
+		return testwait.Receive(t, fmt.Sprintf("the %s caller's probe of %s %s to answer", credential, route.Method, route.Pattern), answered)
 	}
 	expectAdmitted := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		if refused, why := authRefusal(response); refused {
 			t.Fatalf("%s %s is %q but refuses a %s caller with %s: %s", route.Method, route.Pattern, route.Auth, credential, why, response.Body.String())
 		}
 	}
 	expectRefused := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		if refused, _ := authRefusal(response); !refused {
 			t.Fatalf("%s %s is %q but admits a %s caller: %d %s", route.Method, route.Pattern, route.Auth, credential, response.Code, response.Body.String())
 		}
 	}
 	expectScopeRefusal := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		refused, why := authRefusal(response)
 		if !refused || why != "403 "+codeScopeRequired {
 			t.Fatalf("%s %s needs %v but answers a %s caller %d %s", route.Method, route.Pattern, route.OAuthScopes, credential, response.Code, response.Body.String())
@@ -592,11 +607,19 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 
 // Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
 // and the scope map names no route the table does not mount: the two halves register's panic
-// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted.
+// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted. The one
+// exception is `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's
+// comment has an author of kind session, so a person scope would shut every author of one out
+// of its own edit, and the route holds the caller to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
+	t.Parallel()
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",
+		// Turning a project's proven-sessions setting off is the spec-writer spec's own row, and
+		// the person's as the default assignee above is: it weakens a check, which no credential
+		// the deployment configured may do.
+		"DELETE /api/v1/projects/{key}/proven-sessions",
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
@@ -630,7 +653,6 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
-		"PATCH /api/v1/comments/{id}",
 		"POST /api/v1/comments/{id}/reject",
 		"GET /api/v1/artifacts/{id}/subscribers",
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",

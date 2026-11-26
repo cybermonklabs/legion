@@ -16,10 +16,14 @@ import (
 
 // A backward move between two phases that show the same Dispatch status writes no status row, so
 // the reason goes as a message row of its own: carried only on a status row, it would reach no
-// issue, and the issue would show nothing of the move. The three such pairs are the implementer
-// asking for a new plan (in_progress), the architect sending accepting back to reviewing
-// (needs_review) and the merger sending merging back to retro (retro).
+// issue, and the issue would show nothing of the move. In the default steps the three such pairs
+// are the implementer asking for a new plan (in_progress), the architect sending accepting back
+// to reviewing (needs_review) and the merger sending merging back to retro (retro); a task whose
+// planner stands after its implementer, or whose reviewer stands after its acceptance, moves back
+// between the same two statuses the other way, planning to implementing or reviewing to
+// accepting.
 func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from, to phase.Phase
 		want     string
@@ -39,8 +43,13 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 			role := phase.RoleFor(tc.from)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
-			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-				intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the plan names the wrong table"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the plan names the wrong table"}
+			if role == claim.RoleArchitect {
+				// An architect's move names its owner and the run it read (api's phaseBackward).
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the plan names the wrong table")
+			}
+			applyRefusingNothing(t, pool, engine, move)
 			assertPhase(t, pool, tc.to)
 			var statuses int
 			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = $1", string(record.OutboxKindDispatchStatus)).Scan(&statuses); err != nil || statuses != 0 {
@@ -75,6 +84,7 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 // block the marker adds; an ask block is refused however short the reason is, under a code of
 // its own. Each refusal moves, counts and queues nothing.
 func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
+	t.Parallel()
 	const decision = ":::ask{urgency=\"med\"}\nWhich table should the plan name?\n\n- users: the old one\n- accounts: the new one\n:::"
 	for _, tc := range []struct {
 		name, reason, code string
@@ -113,6 +123,7 @@ func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 // and the outbox's marker come with it, so the check reads the post and not the reason; a reason
 // one block shorter is taken.
 func TestABackwardReasonIsMeasuredAsItsPost(t *testing.T) {
+	t.Parallel()
 	reason := strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n")
 	if err := dispatchbody.Check(reason); err != nil {
 		t.Fatalf("the reason alone = %v, want Dispatch taking it", err)

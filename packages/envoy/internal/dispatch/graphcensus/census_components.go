@@ -14,7 +14,7 @@ import (
 
 // componentProjections are the census's kinds of the architecture components' relations
 // (projections), each held triple by triple (projection.tuples) against the tuples the store
-// states now (dispatch://INFRA-1253 R9): components.parent against each component's part_of,
+// states now (R9 of the issue-tree spec): components.parent against each component's part_of,
 // each component_depends row against the depends_on of its pair, and each issue_component_members
 // row against the affects of its issue and its component. A row that names no node is a row a
 // process of the release before wrote, which graph_edges' old arm answers until the backfill names
@@ -80,7 +80,7 @@ var componentBackfills = []backfillPass{
 
 // componentRowUnmarked is the test that the components row aliased c is one its marker does not
 // mark: it names no node, or it names a parent its node's part_of does not name
-// (store.ComponentParentMoved, R9 of dispatch://INFRA-1253), which graph_edges' old part_of arm
+// (store.ComponentParentMoved, R9 of the issue-tree spec), which graph_edges' old part_of arm
 // answers. A row past the store's bound, its own address or its parent's, is no node of the store
 // and is left out (componentFits).
 const componentRowUnmarked = `(c.node_kind is null or (c.parent is not null and ` + store.ComponentParentMoved + `))`
@@ -101,20 +101,14 @@ type componentRow struct {
 // backfillComponents states, for every components row its marker does not mark, the component's
 // node and its part_of to the parent its row names, dated at its snapshot's imported_at, as
 // graph_edges' old arm dates the edge, and names the node on the row in the transaction that
-// states them, so a second run reads no row the first one wrote (dispatch://INFRA-1149's
+// states them, so a second run reads no row the first one wrote (the graph-store spec's
 // r-view-end contract). It walks the rows in their primary key's order, one batch a transaction
 // (writeComponentBatch).
 func backfillComponents(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "component"}
 	var afterProject, afterID string
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select c.project_key, c.id, c.parent, s.imported_at
-			from components c join architecture_snapshots s on s.id = c.snapshot_id
-			where `+componentRowUnmarked+` and `+componentFits+` and (c.project_key, c.id) > ($1, $2)
-			order by c.project_key, c.id
-			limit $3
-		`, afterProject, afterID, backfillBatch)
+		rows, err := database.Pool.Query(ctx, componentRowsStatement, afterProject, afterID, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the components their marker does not mark: %w", err)
 		}
@@ -145,6 +139,17 @@ func backfillComponents(ctx context.Context, database *store.Store) (KindBackfil
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
+
+// componentRowsStatement is backfillComponents' selection: at most $3 of the components rows their
+// marker does not mark and the store can address, past the key ($1, $2), in key order, each with
+// its snapshot's imported_at. Each batch reads components_pkey from the key on, so a run reads each
+// row once however many batches it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var componentRowsStatement = `
+	select c.project_key, c.id, c.parent, s.imported_at
+	from components c join architecture_snapshots s on s.id = c.snapshot_id
+	where ` + componentRowUnmarked + ` and ` + componentFits + ` and (c.project_key, c.id) > ($1, $2)
+	order by c.project_key, c.id
+	limit $3`
 
 func scanComponentRow(row pgx.CollectableRow) (componentRow, error) {
 	var component componentRow
@@ -273,15 +278,7 @@ func backfillComponentDepends(ctx context.Context, database *store.Store) (KindB
 	done := KindBackfill{Kind: "component_depends"}
 	var afterProject, afterFrom, afterTo string
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select d.project_key, d.from_id, d.to_id, s.imported_at
-			from component_depends d
-			join components c on c.project_key = d.project_key and c.id = d.from_id
-			join architecture_snapshots s on s.id = c.snapshot_id
-			where d.node_kind is null and `+componentDependsFits+` and `+componentFits+` and (d.project_key, d.from_id, d.to_id) > ($1, $2, $3)
-			order by d.project_key, d.from_id, d.to_id
-			limit $4
-		`, afterProject, afterFrom, afterTo, backfillBatch)
+		rows, err := database.Pool.Query(ctx, componentDependsRowsStatement, afterProject, afterFrom, afterTo, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the component dependencies naming no node: %w", err)
 		}
@@ -313,6 +310,20 @@ func backfillComponentDepends(ctx context.Context, database *store.Store) (KindB
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
+
+// componentDependsRowsStatement is backfillComponentDepends' selection: at most $4 of the
+// component_depends rows naming no node whose ends and whose component the store can address, past
+// the key ($1, $2, $3), in key order, each with its component's snapshot's imported_at. Each batch
+// reads component_depends_pkey from the key on, so a run reads each row once however many batches
+// it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var componentDependsRowsStatement = `
+	select d.project_key, d.from_id, d.to_id, s.imported_at
+	from component_depends d
+	join components c on c.project_key = d.project_key and c.id = d.from_id
+	join architecture_snapshots s on s.id = c.snapshot_id
+	where d.node_kind is null and ` + componentDependsFits + ` and ` + componentFits + ` and (d.project_key, d.from_id, d.to_id) > ($1, $2, $3)
+	order by d.project_key, d.from_id, d.to_id
+	limit $4`
 
 func scanComponentDependsRow(row pgx.CollectableRow) (componentDependsRow, error) {
 	var dependency componentDependsRow
@@ -409,13 +420,7 @@ func backfillIssueComponentMembers(ctx context.Context, database *store.Store) (
 	done := KindBackfill{Kind: "issue_component_member"}
 	var afterIssue, afterComponent string
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select m.issue_key, m.project_key, m.component_id, c.updated_at
-			from issue_component_members m join issue_components c using (issue_key)
-			where m.node_kind is null and `+memberFits+` and (m.issue_key, m.component_id) > ($1, $2)
-			order by m.issue_key, m.component_id
-			limit $3
-		`, afterIssue, afterComponent, backfillBatch)
+		rows, err := database.Pool.Query(ctx, issueComponentMemberRowsStatement, afterIssue, afterComponent, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the issue components naming no node: %w", err)
 		}
@@ -446,6 +451,18 @@ func backfillIssueComponentMembers(ctx context.Context, database *store.Store) (
 	return done, nil
 }
 
+// issueComponentMemberRowsStatement is backfillIssueComponentMembers' selection: at most $3 of the
+// issue_component_members rows naming no node whose component the store can address, past the key
+// ($1, $2), in key order, each with its issue_components row's updated_at. Each batch reads
+// issue_component_members_pkey from the key on, so a run reads each row once however many batches
+// it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var issueComponentMemberRowsStatement = `
+	select m.issue_key, m.project_key, m.component_id, c.updated_at
+	from issue_component_members m join issue_components c using (issue_key)
+	where m.node_kind is null and ` + memberFits + ` and (m.issue_key, m.component_id) > ($1, $2)
+	order by m.issue_key, m.component_id
+	limit $3`
+
 func scanIssueComponentMemberRow(row pgx.CollectableRow) (issueComponentMemberRow, error) {
 	var member issueComponentMemberRow
 	err := row.Scan(&member.issue, &member.project, &member.component, &member.updatedAt)
@@ -457,7 +474,7 @@ func scanIssueComponentMemberRow(row pgx.CollectableRow) (issueComponentMemberRo
 // markInboxReadThreads): the issue rows the batch's rows stand under first, each once, in
 // ascending key (events.LockOwnerRows), which an issue's components write takes first too (its
 // create's and its PATCH's lock of the issue's row), then the batch's rows read again under them,
-// then the tuples (graphstore.Write, which writes no node: each issue's node is the object
+// then the tuples (graphstore.QueueWrite, which writes no node: each issue's node is the object
 // pass's), then the rows that name the node. A row the issue's own write replaced meanwhile is not
 // read again and states nothing; nor is one of an issue whose own row names no node yet, which the
 // object pass reaches first on its next run. It answers how many rows it named, one tuple each.
@@ -468,7 +485,7 @@ func writeIssueComponentMemberBatch(ctx context.Context, database *store.Store, 
 		issues := make([]string, len(batch))
 		components := make([]string, len(batch))
 		for index, member := range batch {
-			owners.Add(member.issue, "", "issue "+member.issue)
+			owners.Add(member.issue, "")
 			issues[index], components[index] = member.issue, member.component
 		}
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
@@ -502,14 +519,16 @@ func writeIssueComponentMemberBatch(ctx context.Context, database *store.Store, 
 				graphstore.ComponentAddress(member.project, member.component), true, backfillActor, member.updatedAt)
 			heldIssues[index], heldComponents[index] = member.issue, member.component
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			update issue_component_members m set node_kind = $3, node_address = m.issue_key
-			from unnest($1::text[], $2::text[]) as batch (issue_key, component_id)
-			where m.issue_key = batch.issue_key and m.component_id = batch.component_id
-		`, heldIssues, heldComponents, graphstore.KindIssue); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			b.Queue("", `
+				update issue_component_members m set node_kind = $3, node_address = m.issue_key
+				from unnest($1::text[], $2::text[]) as batch (issue_key, component_id)
+				where m.issue_key = batch.issue_key and m.component_id = batch.component_id
+			`, heldIssues, heldComponents, graphstore.KindIssue)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(held))

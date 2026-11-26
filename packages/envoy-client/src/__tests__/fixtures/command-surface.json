@@ -1,5 +1,5 @@
 {
-  "commands": 49,
+  "commands": 55,
   "refusals": 31,
   "runs": [
     {
@@ -20,6 +20,28 @@
       "outcome": "result",
       "text": [
         "No person wrote to this session in the last 72 hours."
+      ]
+    },
+    {
+      "tool": "dispatch_api",
+      "call": "valid",
+      "args": {
+        "path": "/api/v1/issues/DSP-1/events?limit=200"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/events?limit=200",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
       ]
     },
     {
@@ -482,6 +504,74 @@
       ]
     },
     {
+      "tool": "dispatch_delete_comment",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/comments/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Deleted comment 01234567-0000-4000-8000-000000000001 on DSP-1. No read of it gives its body again; the events of a reply's creation and of each edit of the reply written before the delete keep the preview of it they carried, and the document's events written before the delete keep the name an accepted suggestion gave its version."
+      ]
+    },
+    {
+      "tool": "dispatch_delete_message",
+      "call": "valid",
+      "args": {
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/messages/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Deleted message 01234567-0000-4000-8000-000000000001 on DSP-1. No read of it gives its body again; the events of a reply's creation and of each edit of the reply written before the delete keep the preview of it they carried."
+      ]
+    },
+    {
       "tool": "dispatch_doc_edit",
       "call": "refusal: artifact beside a ref naming another document",
       "args": {
@@ -763,6 +853,78 @@
       ]
     },
     {
+      "tool": "dispatch_edit_comment",
+      "call": "valid",
+      "args": {
+        "body": "Corrected: the retry window is 72 hours, not 24.",
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/comments/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "Corrected: the retry window is 72 hours, not 24."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Edited comment 01234567-0000-4000-8000-000000000001 on DSP-1."
+      ]
+    },
+    {
+      "tool": "dispatch_edit_message",
+      "call": "valid",
+      "args": {
+        "body": "Corrected: the export runs at 02:00 UTC, not 02:00 local.",
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/messages/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "Corrected: the export runs at 02:00 UTC, not 02:00 local."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Edited message 01234567-0000-4000-8000-000000000001 on DSP-1."
+      ]
+    },
+    {
       "tool": "dispatch_finding",
       "call": "valid",
       "args": {
@@ -887,7 +1049,7 @@
       "tool": "dispatch_handoff_write",
       "call": "valid",
       "args": {
-        "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"DSP-1\"}",
+        "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"note\":\"Run the checks with bun test src/x.test.ts in packages/x.\"}",
         "issue": "DSP-1",
         "phase": "implement"
       },
@@ -911,7 +1073,7 @@
                 "session_title": "Record the command surface"
               }
             },
-            "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"DSP-1\"}"
+            "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"note\":\"Run the checks with bun test src/x.test.ts in packages/x.\"}"
           }
         }
       ],
@@ -1086,7 +1248,7 @@
       "text": [
         "dispatch issues was not called: 1 problem",
         "- --all takes every matching issue in one unpaged read, so it cannot be combined with --limit or --offset: name --all on its own, or page with --limit and --offset",
-        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --help, --dry-run",
+        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --json, --no-json, --help, --dry-run",
         "- Example: dispatch issues --project PROJ --limit 250 --offset 250"
       ]
     },
@@ -1559,8 +1721,8 @@
         "Work under no priority (1: DSP 1):",
         "- DSP-7 [in_progress] Rotate the broker keys · DSP · person@example.com · changed 2026-01-02T03:04:05Z",
         "",
-        "Priority work parked (1: ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
+        "Priority work in backlog or icebox (1: ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · moved to backlog 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
       ]
     },
     {
@@ -1598,6 +1760,41 @@
       "outcome": "result",
       "text": [
         "Created project CORE (Core) at 2026-01-02T03:04:05Z: http://dispatch.test/projects/CORE"
+      ]
+    },
+    {
+      "tool": "dispatch_project_update",
+      "call": "valid",
+      "args": {
+        "project": "CORE",
+        "proven_sessions": "on"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/CORE/proven-sessions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Project CORE (Core): proven sessions on."
       ]
     },
     {
@@ -1655,7 +1852,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- ref dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001 names no document, so dispatch read would read it and drop artifact spec: drop --artifact to read the ref, or read the document with --issue DSP-1 --artifact spec",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1672,7 +1869,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- --events and --all-events both say how many events the read lists: name one, --events N for the last N or --all-events for every one",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1688,7 +1885,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- --events lists an issue's events, which dispatch read prints only for an issue or its dispatch://KEY/log, not for an ask: drop --events",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1703,7 +1900,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1719,7 +1916,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- project CORE and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --project CORE alone acts on that project document",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1734,7 +1931,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- dispatch read prints the live document's summary, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: read that version with dispatch doc-read --ref dispatch://DSP-1/artifact/spec@v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1811,7 +2008,7 @@
         "Priority: P1",
         "Labels: infra",
         "Components: none live",
-        "Advances: ship-the-daemon (own), legion-first (inherited)",
+        "Advances: ship-the-daemon (own), legion-first (inherited); revision 7",
         "Route: none",
         "Repository: owner/repo (own)",
         "Progress: none",
@@ -1901,7 +2098,7 @@
       ],
       "outcome": "result",
       "text": [
-        "Approval requested for spec.md (document id 01234567-0000-4000-8000-00000000000a) at version 1 (ask 01234567-0000-4000-8000-000000000001). The human's Inbox asks: \"Which way should the release go?\". The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the ask blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version that changes only the block's state, and who answered and when: an approval carries across it, and this request stays with whoever holds its turn."
+        "Approval requested for spec.md (document id 01234567-0000-4000-8000-00000000000a) at version 1 (ask 01234567-0000-4000-8000-000000000001). The human's Inbox asks: \"Which way should the release go?\". The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the ask blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when: an approval carries across it, and this request stays with whoever holds its turn. The version carries an approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent."
       ]
     },
     {
@@ -1984,7 +2181,7 @@
       "outcome": "error",
       "text": [
         "dispatch resolve-comment was not called: 1 problem",
-        "- comment must be a bare comment id or a dispatch://.../comment/<id> reference",
+        "- comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference",
         "- Allowed flags: --comment, --comment-file, --help, --dry-run",
         "- Example: dispatch resolve-comment --comment 01234567-0000-4000-8000-000000000001"
       ]

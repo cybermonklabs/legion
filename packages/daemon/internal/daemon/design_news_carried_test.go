@@ -156,6 +156,7 @@ func (r *newsPathRig) sweepNews() {
 // answers that it is streaming, and that turn is the earlier prompt's, which carried no opening:
 // the confirmation raises the version that prompt told and leaves the opening owed.
 func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -189,6 +190,7 @@ func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t
 // answers that send busy, since it is preparing the first prompt's turn. That turn starts: it
 // confirms the task, and raises what the first prompt carried, which said nothing of the opening.
 func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	clock := &heldClock{}
 	const wait = 7 * time.Second
@@ -236,6 +238,7 @@ func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testi
 // reopening by a task of its own, which the sweep's reconcile queues once the reviewer holds no
 // task, and that task's confirmation clears it.
 func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwedAndItIsTold(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -279,6 +282,7 @@ func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwe
 // the task's, so it confirms nothing and raises nothing. The turn's end sends the task, and the
 // turn its prompt starts confirms it.
 func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		adoption bool
@@ -347,6 +351,7 @@ func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing
 // it as stale and nothing takes the news back there. The retirement gave it back: the reviewer is
 // owed the news again, and once its operator's task is done, the sweep's reconcile sends it again.
 func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBack(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -411,6 +416,7 @@ func (r *newsPathRig) checksEvent(kind intake.DispatchArtifactKind, version int)
 // opening too. A version of the spec that changes ask blocks alone, which Dispatch carries
 // approved, then sends the reviewer nothing: the reconcile raises what it took.
 func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNothing(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing},
 		pathMember{key: pathChild, parent: pathRoot, at: phase.Testing})
 	r.inTx(func(tx pgx.Tx) error {
@@ -503,6 +509,7 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 // task, which the sweep's reconcile queues, carries the version and the reopening both; its
 // confirmation raises the one and clears the other.
 func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)

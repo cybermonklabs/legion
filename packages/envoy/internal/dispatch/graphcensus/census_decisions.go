@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// decisionProjections are the census's kinds of dispatch://INFRA-1150 (projections): the ties of
+// decisionProjections are the census's kinds of the decisions-tree spec (projections): the ties of
 // decisions, readings and asks that block_refs, document_blocks, asks and ask_followers project,
 // each held triple by triple (projection.tuples) but a person's answer; and after them the same
 // ties as graph_edges answers them, each one that view answers (edgeProjection).
@@ -187,8 +187,8 @@ func kindSoFar(write func(context.Context, *store.Store) (KindBackfill, error)) 
 // predicate kinds selects (written over t.kind), read as a statement reads a current relation, the
 // newest tuple per (kind, far end) kept while it asserts (graphstore.CurrentTupleRead), each as
 // (from_kind, from_id, kind, to_kind, to_id). A node is present at any state but gone (R12 of
-// dispatch://INFRA-1950, as presentNodes reads one), so a proposed or settled decision's ties are
-// held as a live one's are. Each node's relations are read through graph_tuples_current, one
+// the node-visibility spec, as presentNodes reads one), so a proposed or settled decision's ties
+// are held as a live one's are. Each node's relations are read through graph_tuples_current, one
 // probe per node, as currentLinks reads them.
 func heldTuples(kinds string, holders ...string) string {
 	return `
@@ -199,7 +199,7 @@ func heldTuples(kinds string, holders ...string) string {
 		`t.from_kind = n.kind and t.from_id = n.id
 		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 		) held
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'
 		  and held.asserted`
 }
 
@@ -344,9 +344,10 @@ const edgeSuffix = "_edge"
 // answers no edge for is a tuple no row projects, and an edge that reaches the wrong node reads as
 // both.
 //
-// The view's definition
-// (store/migrations/20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql, which
-// restates the arms 20261116094101_graph_edges_asks.up.sql and
+// The view's last restatement
+// (store/migrations/20261123180000_issue_tree_graph_edges_after_store_class_last.up.sql, which
+// states 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql's view again: the
+// arms 20261116094101_graph_edges_asks.up.sql and
 // 20261117020856_graph_edges_asks_and_store_class.up.sql give these ties, with 20261120122700's
 // filter of the tuple arm) answers each of these ties from one arm, which the projection row
 // decides. For a row that names its node, the tuple arm answers the newest tuple of the triple

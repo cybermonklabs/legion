@@ -3,7 +3,7 @@ import type { Node as ProseMirrorNode, NodeType } from '@milkdown/kit/prose/mode
 import type { EditorState, Transaction } from '@milkdown/kit/prose/state';
 
 import { askReferenceProblem, blockPointerRefusal, findBlock, otherIssueRefusal, parentProblem } from './block-pointers.js';
-import { creatable, creatableValue, daysValueProblem, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
+import { creatable, creatableValue, minutesValueProblem, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
 import { BLOCK_ID_ATTR, blockIdOf } from './editor/schema/block-ids.js';
 
 export type TypedBlockAttributeValue = string | boolean | readonly string[];
@@ -66,8 +66,8 @@ function validateValue(typeName: string, name: string, attribute: BlockAttribute
     case 'timestamp':
       if (typeof value !== 'string') throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be a string`);
       return;
-    case 'days': {
-      const problem = typeof value === 'string' ? daysValueProblem(value) : 'must be a duration in days';
+    case 'minutes': {
+      const problem = typeof value === 'string' ? minutesValueProblem(value) : 'must be a duration in minutes';
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
       return;
     }

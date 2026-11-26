@@ -64,6 +64,12 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigOutboxSweep is how often the rig's daemon sweeps its outbox lanes (overrides.outboxSweep,
+// outboxLease in production). A row the rig makes due or frees behind the daemon, such as a
+// teardown or a start whose slot opened, runs at the next sweep, and at outboxLease that is up to
+// 30 s of the wall clock per such row.
+const idleRigOutboxSweep = time.Second
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -179,7 +185,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
-	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
+	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
+		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
@@ -193,7 +200,6 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	t.Setenv(idleRigURLVariable, rig.agents.url)
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -255,13 +261,13 @@ func (r *idleWakeRig) awaitListenerReady() {
 		}
 		// A durable consumer this daemon has just created starts at the next message
 		// (intake's createConsumer), so the report the listener published at its own start is
-		// behind it. The listener is started again on the same port, which publishes a fresh
-		// one that the consumer does see and leaves every URL already handed out valid.
+		// behind it. The listener is started again on the socket the test holds, which publishes
+		// a fresh one that the consumer does see and leaves every URL already handed out valid.
 		if !restarted && time.Since(began) > 2*time.Second {
 			restarted = true
-			port := r.listener.port
+			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
 		}
 		return false
 	})
@@ -291,21 +297,26 @@ func idleRigUser(t *testing.T, pool *store.Pool) string {
 	return pool.Config().ConnConfig.User
 }
 
-// idleRigSessionPassword puts the rig's database password where a launcher's own session client
-// finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its URL
-// from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
+// idleRigSessionPassword checks that the rig's database password is where a launcher's own session
+// client finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its
+// URL from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
 // generation's proxy is a byte copy that hands the client's startup packet to the server
 // unchanged, so a server that asks for one refuses the login (`failed SASL auth`, SQLSTATE
 // 28P01) however the proxy's upstream was dialed. A pod's Cloud SQL asks for none — the
 // connector mints the login as it dials and no password is ever written into a pod
 // (internal/sessionproxy) — so this is the rig's stand-in for that identity and no production
-// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. A
-// trust-authenticated server, which this repository's own pod serves, names no password, and an
-// empty PGPASSWORD is no setting at all (pgx's parseEnvSettings keeps only what is non-empty),
-// so the rig runs the same against either.
+// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. TestMain
+// puts it there once for the whole test binary, from LEGION_TEST_PG_DSN, the server and login
+// every rig's database is cloned on, so the rigs run beside each other, which a t.Setenv refuses;
+// this check fails a rig whose database is on another login. A trust-authenticated server, which
+// this repository's own pod serves, names no password, and an empty PGPASSWORD is no setting at
+// all (pgx's parseEnvSettings keeps only what is non-empty), so the rig runs the same against
+// either.
 func idleRigSessionPassword(t *testing.T, pool *store.Pool) {
 	t.Helper()
-	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
+	if os.Getenv("PGPASSWORD") != pool.Config().ConnConfig.Password {
+		t.Fatal("PGPASSWORD does not hold the password of the rig's database: TestMain sets it from LEGION_TEST_PG_DSN, and the rig's database is on another login")
+	}
 }
 
 // idleRigHostPort is the rig's Postgres as a dialable address, which the session proxy's upstream
@@ -338,7 +349,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 			wanted[role] = token
 		}
 	}
-	r.pods.podReady(pod, uid, wanted, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	r.pods.podReady(pod, uid, wanted, func(role, dir string, _ *idleRigPodProcesses) { r.agents.setPrivate(key, role, dir) })
 }
 
 // seed records one issue, its tree's lifecycle and its implementer's suspended claim, as
@@ -358,7 +369,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 		r.t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Project: r.cfg.Project,
 			Tree: key, Title: "An idle pod", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
@@ -427,7 +438,7 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick,
+			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
@@ -564,20 +575,12 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	r.built.address = address
 	r.built.mu.Unlock()
 	k := *r.cfg.Runtime.Kubernetes
-	opts, err := sandboxOptions(r.cfg, k, r.project, "placeholder-dispatch-token", lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
+	opts, err := sandboxOptions(r.cfg, k, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	tools := r.toolsDir()
 	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
-	// The two halves of a release's saved work, as the daemon's own factory hands them to the
-	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
-	// one is sent before any role of that pod starts, and what the launcher's confirmation
-	// drops. Without them no pod of this rig is ever offered a bundle. They cost a rig whose
-	// releases save none one indexed read per role start, which answers no row: the save of a
-	// workspace with nothing unpushed stores nothing and deletes what the issue had
-	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
@@ -602,7 +605,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
-	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
+	opts.Tools.Legion = idleRigLegionTool(r.t, tools, r.agents.url)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL
@@ -1073,8 +1076,7 @@ func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
 // gives up, so a failure names what it waited for rather than arriving as the binary's panic. It
-// is the second testwait.Eventually leaves (internal/testwait), widened for the launchers' log
-// and the daemon's, which this rig prints on its way out.
+// leaves time for the launchers' log and the daemon's, which this rig prints on its way out.
 const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
@@ -1123,7 +1125,7 @@ const idleRigPoll = idleRigTick
 
 // idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
 // pace, and fails naming what it waited for. The bound is within from now, or the test binary's
-// own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
+// own deadline less the margin above when that is sooner, which is the clamp testwait.Bounded
 // makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
 // `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
 // wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it

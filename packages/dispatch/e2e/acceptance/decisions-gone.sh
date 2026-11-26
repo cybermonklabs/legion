@@ -378,6 +378,30 @@ step_admission() {
         "$text" != *"[${dq}d${dq}, ${quoted_word}]"* &&
         "$text" != *"[${dq}spec${dq}, ${dq}verification${dq}, ${dq}plan${dq}, ${quoted_word}]"* ]] ||
         printf 'test material: the Decisions tab of the issue page' ;;
+    # Main's Decisions view (#4225): its slot draws the Decisions filter, its stage fixture and
+    # its tests draw that view at its address, its e2e rows open it, and the body's drawn test puts
+    # the Decisions read in the cache under its query key on a line of its own. Each is admitted by
+    # its text, as #4196's are, so any other line of these files that spells the word is still a
+    # hit.
+    packages/dispatch/web/src/features/issue-page/slots/view-decisions.tsx)
+      [[ "$text" != *"presetView(root, ${quoted_word}, "* ]] || printf 'the Decisions filter of the issue page' ;;
+    packages/dispatch/web/src/features/issue-page/slots/stage-fixtures.tsx)
+      [[ "$bare" != "preset = ${quoted_word}," ]] || printf 'test material: the Decisions filter of the issue page' ;;
+    packages/dispatch/web/src/features/issue-page/slots/stage.test.tsx | packages/dispatch/web/src/features/issue-page/decisions-filter/view-decisions-slot.test.tsx)
+      [[ "$text" != *"presetPath(KEY, ${quoted_word})"* ]] ||
+        printf 'test material: the Decisions filter of the issue page'"'"'s address' ;;
+    packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx)
+      if [[ "$text" =~ presetView\(.*,\ ${dq}decisions${dq}, ]]; then
+        printf 'test material: the Decisions filter of the issue page'
+      elif [[ "$bare" == "[${quoted_word}, KEY]," ]]; then
+        printf 'test material: the query key of the Decisions view'
+      fi
+      ;;
+    packages/dispatch/e2e/issue-page-q.e2e.ts)
+      [[ "$text" != *"openPreset(page, seeded.key, ${quoted_word})"* &&
+        "$text" != *"presetPath(seeded.key, ${quoted_word})"* &&
+        "$text" != *"presetPath(key, ${quoted_word})"* ]] ||
+        printf 'test material: the Decisions filter of the issue page' ;;
     packages/dispatch/web/src/features/refs/routes.ts)
       if [[ "$text" == *"| { key: string; kind: ${quoted_word} }"* ]]; then
         printf 'the dispatch://KEY/decisions route (IssueRoute)'
@@ -399,7 +423,7 @@ step_admission() {
     packages/dispatch/web/src/features/issue-page/IssuePresets.test.tsx)
       [[ ! "$bare" =~ ^\[${dq}\{[A-Za-z]+\}${dq},\ ${dq}decisions${dq}\],$ ]] ||
         printf 'test material: the Decisions tab of the filter row' ;;
-    packages/dispatch/web/src/features/issue-page/presets.test.ts | packages/dispatch/web/src/features/issue-page/decisions-filter/decisions-parts.test.ts)
+    packages/dispatch/web/src/features/issue-page/presets.test.ts | packages/dispatch/web/src/features/issue-page/decisions-filter/decisions-parts.test.ts | packages/dispatch/web/src/features/issue-page/decisions-filter/decisions-entries.test.tsx)
       [[ ! "$text" =~ presetView\(.*,\ ${dq}decisions${dq}, && "$text" != *"drawn(root, ${quoted_word})"* ]] ||
         printf 'test material: the Decisions filter of the issue page' ;;
     packages/dispatch/web/src/features/issue-page/issue-address.test.ts)

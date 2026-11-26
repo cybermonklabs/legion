@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -27,7 +29,8 @@ import (
 // after the spec's approval. A requirement whose block's node state is proposed is a question
 // still open (spec requirement r-proposed), so it raises neither gap here and the
 // approval request's answer names none for it; one at settled or live is counted as every
-// requirement is, and cybermonklabs/legion#4180 gives overtaken its meaning. A check or a plan task
+// requirement is, and one at overtaken is closed (R7 of the issue-tree spec), so it raises
+// neither gap either. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
 // requirement is counted without it (queueServingBlockCounts). An issue that is a view on its
 // ancestor's spec (docs.ViewOf) holds no requirement of its own: its coverage lists the
@@ -36,10 +39,12 @@ import (
 // of the view's own spec - one that reached it through its room, as a block a person pasted in the
 // browser, since every write route refuses one - is listed as no requirement of the view and
 // raises no missing check or plan task: it is named in the gaps alone, as a requirement on a view,
-// so it is moved into the ancestor's spec. Nothing is ever refused
-// for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
-// which prints each gap after `Coverage: `, and an approval request's answer, which names the
-// missing checks alone.
+// so it is moved into the ancestor's spec. While a document of the issue owes its block index the
+// counts may not hold what serves a requirement yet, so no requirement lacks a check or a plan task
+// then: the gaps name each such document instead (owedGap, spec requirement r-owed-coverage).
+// Nothing is ever refused for a gap: three readers show it — the route below for the Spec tab,
+// `dispatch read --issue`, which prints each gap after `Coverage: `, and an approval request's
+// answer, which names the missing checks alone, and the owed documents in their place.
 
 // noRequirementsGap is the one gap line a spec that marks no requirement answers, in place of a
 // line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, as
@@ -92,7 +97,9 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // is a view and which of its documents owe their block index are read in one batch too
 // (readCoverageSpecAndView), and an issue that is a view (docs.ViewOf) answers the coverage
 // viewCoverage reads. The answer names each document that owes its index (OwedDocuments), whose
-// checks and requirements the counts may not hold yet, whether the issue is a view or not.
+// checks and requirements the counts may not hold yet, whether the issue is a view or not; while
+// one does, no requirement lacks a check or a plan task (coverRequirements), and the gaps hold one
+// line for each such document in place of those (owedGap).
 //
 // trees is the reader of a request that answers the requirements' trees, nil for every other
 // caller: each requirement the answer lists registers with it (registerRequirementTrees), in the
@@ -100,49 +107,61 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // rule GET /api/v1/reference-targets reads the same block's tree by, and the caller resolves it.
 // The rows are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
+	coverage, _, err := s.issueCoverageAndOwedGaps(ctx, q, who, issueKey, trees)
+	return coverage, err
+}
+
+// issueCoverageAndOwedGaps is issueCoverage's answer and, apart, the gap line of each document of
+// the issue that owes its block index (owedGap), which the answer's gaps hold wherever it covers a
+// requirement and an approval request's answer carries in place of the missing checks
+// (approvalCoverage).
+func (s *server) issueCoverageAndOwedGaps(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, []string, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	spec, view, owed, err := readCoverageSpecAndView(ctx, q, issueKey)
+	spec, view, err := readCoverageSpecAndView(ctx, q, issueKey)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return model.IssueCoverage{}, nil, err
 	}
-	coverage.SpecArtifactID, coverage.HasPlan, coverage.OwedDocuments = spec.artifactID, spec.hasPlan, owed
+	coverage.SpecArtifactID, coverage.HasPlan, coverage.OwedDocuments = spec.artifactID, spec.hasPlan, spec.owed
 	if spec.artifactID == "" {
 		coverage.Gaps = []string{noRequirementsGap}
-		return coverage, nil
+		return coverage, spec.owedGaps, nil
 	}
 	if view != "" {
-		return s.viewCoverage(ctx, q, who, coverage, view, trees)
+		coverage, err = s.viewCoverage(ctx, q, who, coverage, view, spec.owedGaps, trees)
+		return coverage, spec.owedGaps, err
 	}
 	requirements, contents, err := s.requirementBlocksIn(ctx, spec.artifactID, trees != nil)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return model.IssueCoverage{}, nil, err
 	}
 	if len(requirements) == 0 {
 		coverage.Gaps = []string{noRequirementsGap}
-		return coverage, nil
+		return coverage, spec.owedGaps, nil
 	}
 	issues, err := coverageIssues(ctx, q, who, issueKey)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return model.IssueCoverage{}, nil, err
 	}
-	if err := coverRequirements(ctx, q, who, issueKey, spec, requirements, issues, coverage.HasPlan); err != nil {
-		return model.IssueCoverage{}, err
+	if err := coverRequirements(ctx, q, who, issueKey, spec, requirements, issues, coverage.HasPlan, len(spec.owed) > 0); err != nil {
+		return model.IssueCoverage{}, nil, err
 	}
 	coverage.Requirements = requirements
-	coverage.Gaps = requirementGaps(requirements)
+	coverage.Gaps = append(requirementGaps(requirements), spec.owedGaps...)
 	registerRequirementTrees(trees, coverage.Requirements, contents)
-	return coverage, nil
+	return coverage, spec.owedGaps, nil
 }
 
 // viewCoverage is the coverage of the view coverage.Issue on the spec of ancestor (docs.ViewOf),
 // read for who, coverage holding the view's spec and whether it has a plan: the requirements of
 // the ancestor's spec, in that spec's order, that a check of the view or of an issue under it
 // serves, each counted over what the view and the issues under it hold, as issueCoverage counts
-// the requirements of an issue that is no view; then, for each requirement block of the view's own
-// spec, the one line `<block id> is a requirement on a view` in the gaps and nothing else: such a
-// block is listed as no requirement of the view and lacks no check and no plan task. A view that
-// lists no requirement and holds none answers the single gap line.
-func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, coverage model.IssueCoverage, ancestor string, trees *displayTreeReader) (model.IssueCoverage, error) {
+// the requirements of an issue that is no view; then owedGaps, the line of each document of the
+// view that owes its block index, which leaves no listed requirement lacking a plan task
+// (coverRequirements); then, for each requirement block of the view's own spec, the one line
+// `<block id> is a requirement on a view` in the gaps and nothing else: such a block is listed as
+// no requirement of the view and lacks no check and no plan task. A view that lists no requirement
+// and holds none answers the single gap line.
+func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, coverage model.IssueCoverage, ancestor string, owedGaps []string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	above, err := readCoverageSpec(ctx, q, ancestor)
 	if err != nil {
 		return model.IssueCoverage{}, err
@@ -157,7 +176,7 @@ func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, c
 		if err != nil {
 			return model.IssueCoverage{}, err
 		}
-		if err := coverRequirements(ctx, q, who, ancestor, above, requirements, issues, coverage.HasPlan); err != nil {
+		if err := coverRequirements(ctx, q, who, ancestor, above, requirements, issues, coverage.HasPlan, len(owedGaps) > 0); err != nil {
 			return model.IssueCoverage{}, err
 		}
 		for index, requirement := range requirements {
@@ -174,7 +193,7 @@ func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, c
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	coverage.Gaps = requirementGaps(coverage.Requirements)
+	coverage.Gaps = append(requirementGaps(coverage.Requirements), owedGaps...)
 	for _, requirement := range pasted {
 		coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+viewRequirementReason)
 	}
@@ -188,10 +207,15 @@ func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, c
 // coverageSpec is what the coverage read reads of one issue's documents: its spec's id, the
 // ref_key its blocks' nodes are keyed under - the spec's own, or its room's where it is edited in
 // its issue's room (refs.DocumentRoomSQL) - and whether the issue has a plan document. An issue
-// with no spec holds "" in both.
+// with no spec holds "" in both. Where readCoverageSpecAndView reads it, owed holds each document
+// of the issue that owes its block index and owedGaps that document's gap line at the same index
+// (queueOwedDocumentGaps); readCoverageSpec, which reads the spec of a view's ancestor, reads
+// neither.
 type coverageSpec struct {
 	artifactID, nodeKey string
 	hasPlan             bool
+	owed                []model.OwedDocument
+	owedGaps            []string
 }
 
 // coverageSpecStatement reads the coverageSpec of the issue $1: its spec's id, the ref_key its
@@ -212,16 +236,15 @@ func readCoverageSpec(ctx context.Context, q queryer, issueKey string) (coverage
 	return spec, nil
 }
 
-// readCoverageSpecAndView is readCoverageSpec of the issue issueKey, the issue it is a view of
-// (docs.ViewOf), "" where it is none, and the documents of the issue that owe their block index
-// (queueOwedDocuments), read through q in one batch, one round trip: the coverage read of an issue
-// reads them before anything else, and an approval request of a spec reads that coverage, so
-// neither the view nor the owed documents cost the request a round trip of its own. The view is
-// read for an issue with no spec too, whose coverage reads nothing of it.
-func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (coverageSpec, string, []model.OwedDocument, error) {
+// readCoverageSpecAndView is readCoverageSpec of the issue issueKey, with the documents of the
+// issue that owe their block index and their gap lines (queueOwedDocumentGaps), and the issue it
+// is a view of (docs.ViewOf), "" where it is none, read through q in one batch, one round trip:
+// the coverage read of an issue reads them before anything else, and an approval request of a spec
+// reads that coverage, so neither the view nor the owed documents cost the request a round trip
+// of its own. The view is read for an issue with no spec too, whose coverage reads nothing of it.
+func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (coverageSpec, string, error) {
 	var spec coverageSpec
 	var view string
-	var owed []model.OwedDocument
 	batch := &pgx.Batch{}
 	batch.Queue(coverageSpecStatement, issueKey).QueryRow(func(row pgx.Row) error {
 		if err := row.Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
@@ -230,20 +253,20 @@ func readCoverageSpecAndView(ctx context.Context, q queryer, issueKey string) (c
 		return nil
 	})
 	docs.QueueViewOf(batch, issueKey, &view)
-	queueOwedDocuments(batch, issueKey, &owed)
+	queueOwedDocumentGaps(batch, issueKey, &spec.owed, &spec.owedGaps)
 	if err := q.SendBatch(ctx, batch).Close(); err != nil {
-		return coverageSpec{}, "", nil, err
+		return coverageSpec{}, "", err
 	}
-	return spec, view, owed, nil
+	return spec, view, nil
 }
 
 // owedDocumentsStatement reads each document of the issue $1 - each artifact it holds, its tree
 // artifact among them - that owes its block index by either mark the block-index reconciliation
 // lists a document by (docs' owedDocuments): its document_block_versions.version null, or
-// store_owed_at set, with the number of its newest markdown version, 0 where it holds none, in
-// the order the documents were made.
+// store_owed_at set, with the number of its newest markdown version, 0 where it holds none, and
+// its name, in the order the documents were made.
 const owedDocumentsStatement = `
-	select a.id::text, coalesce((select max(v.number) from artifact_versions v where v.artifact_id = a.id and v.markdown is not null), 0)
+	select a.id::text, coalesce((select max(v.number) from artifact_versions v where v.artifact_id = a.id and v.markdown is not null), 0), a.name
 	from artifacts a
 	join document_block_versions b on b.artifact_id = a.id
 	where a.issue_key = $1 and (b.version is null or b.store_owed_at is not null)
@@ -251,23 +274,48 @@ const owedDocumentsStatement = `
 
 // queueOwedDocuments queues, in b, the read of the documents of the issue issueKey that owe their
 // block index (owedDocumentsStatement), and fills owed with them once the batch is read, nil where
-// none owes one, so the answer carries no member (model.OwedDocument). The coverage read and the
-// tree read each take it in a batch of reads they make anyway, so the member costs neither a round
-// trip.
+// none owes one, so the answer carries no member (model.OwedDocument). The tree read takes it, and
+// the coverage read takes it with each document's gap line (queueOwedDocumentGaps), each in a
+// batch of reads it makes anyway, so the member costs neither a round trip.
 func queueOwedDocuments(b *pgx.Batch, issueKey string, owed *[]model.OwedDocument) {
+	queueOwedDocumentGaps(b, issueKey, owed, nil)
+}
+
+// queueOwedDocumentGaps is queueOwedDocuments that fills gaps too, where it is not nil, with the
+// gap line of each document it fills owed with, at the same index (owedGap). Where gaps is nil the
+// document's name is not scanned at all.
+func queueOwedDocumentGaps(b *pgx.Batch, issueKey string, owed *[]model.OwedDocument, gaps *[]string) {
 	b.Queue(owedDocumentsStatement, issueKey).Query(func(rows pgx.Rows) error {
+		var name string
+		var named any // nil: pgx skips the column
+		if gaps != nil {
+			named = &name
+		}
 		for rows.Next() {
 			var document model.OwedDocument
-			if err := rows.Scan(&document.ArtifactID, &document.Version); err != nil {
+			if err := rows.Scan(&document.ArtifactID, &document.Version, named); err != nil {
 				return fmt.Errorf("read the documents of %s that owe their block index: %w", issueKey, err)
 			}
 			*owed = append(*owed, document)
+			if gaps != nil {
+				*gaps = append(*gaps, owedGap(name, document.Version))
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read the documents of %s that owe their block index: %w", issueKey, err)
 		}
 		return nil
 	})
+}
+
+// owedGap is the gap line of a document of the issue that owes its block index, named by its name
+// and the version whose blocks wait (spec requirement r-owed-coverage). Until the block-index
+// reconciliation indexes it, the counts of what serves each requirement may not hold what the
+// document holds, so the coverage read and an approval request's answer write this line in place
+// of every missing check and plan task, and draw no requirement as lacking one from an index that
+// is owed.
+func owedGap(name string, version int) string {
+	return name + " version " + strconv.Itoa(version) + " is still being indexed; its coverage shows once that ends."
 }
 
 // coverageIssues is the issue issueKey and every issue below it that who may see
@@ -283,9 +331,12 @@ func coverageIssues(ctx context.Context, q queryer, who model.Actor, issueKey st
 // coverRequirements fills in each of requirements, the requirement blocks of the spec of the issue
 // issueKey, for who: its reference, its node's state (queueRequirementStates), how many checks and
 // plan tasks of the documents of issues serve it (queueServingBlockCounts), both read in one batch,
-// and its gaps. A proposed requirement is a question still open and lacks nothing; any other lacks
-// a check where none serves it, and a plan task where hasPlan and none serves it.
-func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, spec coverageSpec, requirements []model.RequirementCoverage, issues []string, hasPlan bool) error {
+// and its gaps. A proposed requirement is a question still open and lacks nothing, an overtaken one
+// is closed (R7 of the issue-tree spec) and lacks nothing either, and so does every requirement
+// while owed, while a document of the issue owes its block index, whose checks and plan tasks the
+// counts may not hold yet (owedGap names that document instead); any other lacks a check where none
+// serves it, and a plan task where hasPlan and none serves it.
+func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, spec coverageSpec, requirements []model.RequirementCoverage, issues []string, hasPlan, owed bool) error {
 	batch := &pgx.Batch{}
 	states := make(map[string]string, len(requirements))
 	served := map[string]servingCounts{}
@@ -303,8 +354,10 @@ func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey
 		requirement.Checks, requirement.PlanTasks = counts.checks, counts.planTasks
 		requirement.State = cmp.Or(states[requirement.BlockID], graphstore.StateLive)
 		requirement.Gaps = []string{}
-		// A proposed requirement is a question still open, never work left undone.
-		if requirement.State != graphstore.StateProposed {
+		// A proposed requirement is a question still open, and an overtaken one closed, never work
+		// left undone; and while a document owes its block index, what serves a requirement is not
+		// counted yet.
+		if requirement.State != graphstore.StateProposed && requirement.State != graphstore.StateOvertaken && !owed {
 			if requirement.Checks == 0 {
 				requirement.Gaps = append(requirement.Gaps, noCheckReason)
 			}
@@ -375,22 +428,24 @@ func noCheckGap(blockID string) string {
 }
 
 // missingCheckGaps is the gap lines an approval request's answer carries: one per requirement
-// with no check, and never a missing plan task, since the plan comes after the approval. A
+// with no check, as its own gaps say (coverRequirements), and never a missing plan task, since the
+// plan comes after the approval; then owedGaps, the line of each document of the issue that owes
+// its block index, which the route's gaps hold too and while which no requirement lacks a check. A
 // requirement at proposed is a question still open and carries none, as the route's gaps carry
 // none for it. A spec that marks no requirements carries the one line that says so, as the route
-// does, so the approver is told that too; a spec every requirement of which has a check carries
-// none.
-func missingCheckGaps(coverage model.IssueCoverage) []string {
+// does, so the approver is told that too; a spec every requirement of which has a check, with no
+// document owed, carries none.
+func missingCheckGaps(coverage model.IssueCoverage, owedGaps []string) []string {
 	if len(coverage.Requirements) == 0 {
 		return []string{noRequirementsGap}
 	}
 	gaps := []string{}
 	for _, requirement := range coverage.Requirements {
-		if requirement.Checks == 0 && requirement.State != graphstore.StateProposed {
+		if slices.Contains(requirement.Gaps, noCheckReason) {
 			gaps = append(gaps, noCheckGap(requirement.BlockID))
 		}
 	}
-	return gaps
+	return append(gaps, owedGaps...)
 }
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
@@ -517,7 +572,8 @@ var servingBlockCountsQuery = `
 // approvalCoverage is the coverage an approval request's answer carries for the document id
 // names, read for who, the requester, and whether that coverage could not be read. The gaps are
 // the issue's, when that document is the issue's spec (isSpecDocument), and none for any other
-// document.
+// document: its missing checks, or while a document of the issue owes its block index, that
+// document's line in their place (missingCheckGaps).
 //
 // It is read before the request opens its transaction. Reading it folds the issue's live spec,
 // which for a document no room holds is a cold read bounded by a minute (docs/read_cache.go),
@@ -538,10 +594,10 @@ func (s *server) approvalCoverage(ctx context.Context, q queryer, who model.Acto
 	if !isSpecDocument(artifact) {
 		return []string{}, false, nil
 	}
-	coverage, err := s.issueCoverage(ctx, q, who, *artifact.IssueKey, nil)
+	coverage, owedGaps, err := s.issueCoverageAndOwedGaps(ctx, q, who, *artifact.IssueKey, nil)
 	if err != nil {
 		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", err)
 		return []string{}, true, nil
 	}
-	return missingCheckGaps(coverage), false, nil
+	return missingCheckGaps(coverage, owedGaps), false, nil
 }

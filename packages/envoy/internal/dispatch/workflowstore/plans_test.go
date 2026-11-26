@@ -2,6 +2,7 @@ package workflowstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -76,6 +77,21 @@ func planText(plan Plan) string {
 		plan.Generation, plan.Source, document, plan.Tasks)
 }
 
+// heldPlan reads plan id back from its node row, the row the read of a project takes it from.
+func heldPlan(t *testing.T, pool *store.Pool, id string) Plan {
+	t.Helper()
+	var attributes []byte
+	if err := pool.QueryRow(context.Background(),
+		`select attributes from graph_nodes where kind = $1 and id = $2`, KindPlan, id).Scan(&attributes); err != nil {
+		t.Fatalf("read the node of plan %s: %v", id, err)
+	}
+	plan, err := planFrom(id, attributes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
 // A plan is one node of kind plan, part of its issue by one relation tuple, holding its source, its
 // run and its tasks, each attribute stated by one value tuple.
 func TestAPlanIsANodePartOfItsIssue(t *testing.T) {
@@ -115,61 +131,169 @@ func TestAPlanIsANodePartOfItsIssue(t *testing.T) {
 	}
 }
 
-// Each field of a plan is written once: a later write of the same id with another generation,
-// another source and other tasks is taken, changes nothing and appends nothing. An owner's plan
-// names its document and version.
-func TestAPlanWriteKeepsTheFirst(t *testing.T) {
+// The source, the document, the version and the tasks of a plan are one fact. A write of a version
+// above the one the node holds replaces all four in one write, appending a value tuple for each,
+// and a write at or below it changes nothing, appends nothing and answers the node as it stands,
+// whatever generation, source and tasks it names. A default plan, which has no version, counts as
+// version 0. The issue, the project and the generation are each set once, whatever the version.
+// Each write is read back from the node.
+func TestAPlanWriteOfAHigherVersionReplacesItsFact(t *testing.T) {
 	pool := storetest.Open(t).Pool
-	id, document := uuid.NewString(), uuid.NewString()
-	owner := PlanWrite{
-		ID: id, Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		Document: PlanDocument{ArtifactID: document, Version: 3},
-		Tasks:    []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer:fresh"}}, {ID: "docs", Steps: []string{"implementer"}}},
-	}
-	first := putPlan(t, pool, owner, minute(0))
-	before := wholeLog(t, pool)
+	document := uuid.NewString()
+	first := []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}}
+	second := []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer:fresh"}}, {ID: "docs", Steps: []string{"implementer"}}}
+	other := []PlanTask{{ID: "docs", Steps: []string{"implementer", "tester"}}}
 
-	again := putPlan(t, pool, defaultPlan(id, "LEG-1", 10), minute(1))
-	if planText(again) != planText(first) {
-		t.Fatalf("a second write answers\n%s\nwant the first\n%s", planText(again), planText(first))
+	owner := func(id string, version int, tasks []PlanTask) PlanWrite {
+		return PlanWrite{
+			ID: id, Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(1)), Source: new(PlanSourceOwner),
+			Document: PlanDocument{ArtifactID: document, Version: version}, Tasks: tasks,
+		}
 	}
-	if after := wholeLog(t, pool); len(after) != len(before) {
-		t.Fatalf("a second write appended %d tuples, want none", len(after)-len(before))
+	ownerHeld := func(id string, version int, tasks []PlanTask) Plan {
+		return Plan{ID: id, Issue: "LEG-1", Project: "LEG", Generation: 1, Source: PlanSourceOwner,
+			Document: &PlanDocument{ArtifactID: document, Version: version}, Tasks: tasks}
 	}
-	if first.Generation != 2 || first.Document == nil || *first.Document != (PlanDocument{ArtifactID: document, Version: 3}) || len(first.Tasks) != 2 {
-		t.Fatalf("the owner's plan answers %s, want generation 2 and its document %s at version 3 and two tasks", planText(first), document)
+	byDefault := func(id string) PlanWrite {
+		write := defaultPlan(id, "LEG-1", 1)
+		write.Project = new("LEG")
+		return write
+	}
+	defaultHeld := func(id string) Plan {
+		return Plan{ID: id, Issue: "LEG-1", Project: "LEG", Generation: 1, Source: PlanSourceDefault,
+			Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
+	}
+	// planStep is one write of a case and the plan its node holds after it. replaced is whether the
+	// write replaced the fact, appending the four value tuples of the plan it wants; a write after
+	// the first that did not replace it appends nothing.
+	type planStep struct {
+		write    PlanWrite
+		want     Plan
+		replaced bool
+	}
+
+	for name, steps := range map[string]func(id string) []planStep{
+		"version 2 after version 1 replaces the four fields": func(id string) []planStep {
+			return []planStep{
+				{write: owner(id, 1, first), want: ownerHeld(id, 1, first)},
+				{write: owner(id, 2, second), want: ownerHeld(id, 2, second), replaced: true},
+			}
+		},
+		"version 1 after version 2 changes nothing": func(id string) []planStep {
+			return []planStep{
+				{write: owner(id, 1, first), want: ownerHeld(id, 1, first)},
+				{write: owner(id, 2, second), want: ownerHeld(id, 2, second), replaced: true},
+				{write: owner(id, 1, other), want: ownerHeld(id, 2, second)},
+			}
+		},
+		"the same version again changes nothing, also with other tasks": func(id string) []planStep {
+			return []planStep{
+				{write: owner(id, 1, first), want: ownerHeld(id, 1, first)},
+				{write: owner(id, 2, second), want: ownerHeld(id, 2, second), replaced: true},
+				{write: owner(id, 2, second), want: ownerHeld(id, 2, second)},
+				{write: owner(id, 2, other), want: ownerHeld(id, 2, second)},
+			}
+		},
+		"a default plan and then an owner's version 1": func(id string) []planStep {
+			return []planStep{
+				{write: byDefault(id), want: defaultHeld(id)},
+				{write: owner(id, 1, first), want: ownerHeld(id, 1, first), replaced: true},
+			}
+		},
+		"an owner's plan and then a default write of another generation changes nothing": func(id string) []planStep {
+			elsewhere := byDefault(id)
+			elsewhere.Generation = new(int64(10))
+			return []planStep{
+				{write: byDefault(id), want: defaultHeld(id)},
+				{write: owner(id, 1, first), want: ownerHeld(id, 1, first), replaced: true},
+				{write: elsewhere, want: ownerHeld(id, 1, first)},
+			}
+		},
+		"a later version leaves the generation and the project the first write set": func(id string) []planStep {
+			later := owner(id, 2, second)
+			later.Generation, later.Project = new(int64(3)), new("OTHER")
+			return []planStep{
+				{write: owner(id, 1, first), want: ownerHeld(id, 1, first)},
+				{write: later, want: ownerHeld(id, 2, second), replaced: true},
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := uuid.NewString()
+			for index, step := range steps(id) {
+				before := len(planLog(t, pool, id))
+				at := minute(index)
+				if answer := putPlan(t, pool, step.write, at); planText(answer) != planText(step.want) {
+					t.Fatalf("write %d answers\n%s\nwant\n%s", index+1, planText(answer), planText(step.want))
+				}
+				if held := heldPlan(t, pool, id); planText(held) != planText(step.want) {
+					t.Fatalf("after write %d the node holds\n%s\nwant\n%s", index+1, planText(held), planText(step.want))
+				}
+				if index == 0 {
+					continue
+				}
+				var appended []string
+				for _, tuple := range planLog(t, pool, id)[before:] {
+					appended = append(appended, fmt.Sprintf("%s %s/%s at %s", tuple.kind, tuple.toKind, tuple.toID, tuple.at.UTC().Format(time.RFC3339)))
+				}
+				var want []string
+				if step.replaced {
+					tasks, err := json.Marshal(step.want.Tasks)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var held PlanDocument
+					if step.want.Document != nil {
+						held = *step.want.Document
+					}
+					for _, value := range [][2]string{
+						{AttributeSource, step.want.Source}, {AttributeArtifactID, held.ArtifactID},
+						{AttributeVersion, strconv.Itoa(held.Version)}, {AttributeTasks, string(tasks)},
+					} {
+						want = append(want, fmt.Sprintf("%s %s/%s at %s", value[0], KindValue, value[1], at.Format(time.RFC3339)))
+					}
+				}
+				if !slices.Equal(appended, want) {
+					t.Fatalf("write %d appended %q, want %q", index+1, appended, want)
+				}
+			}
+		})
 	}
 }
 
-// A plan made with the source default holds no document, and a later write of the same id that
-// names the source owner, a document and a version is taken, changes nothing and appends nothing:
-// the write, a second write of the same default plan and the read of the project all answer the
-// default plan with no document.
-func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
+// A plan made with the source default holds its document and version empty, and holds no
+// document, so a later owner's write of the same id leaves no part of the default beside its own
+// fact: the owner's version, above the default's 0, replaces the source, the document, the version
+// and the tasks whole (TestAPlanWriteOfAHigherVersionReplacesItsFact), and the write, a later write
+// of the same default plan and the read of the project all answer the owner's plan as it was
+// written, with no default task and no default source left in it.
+func TestADefaultPlanTakesALaterOwnersPlanWhole(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(time.Hour)
 	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed})
 	id := uuid.NewString()
 	first := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(0))
-	want := defaultPlanRead(id, "LEG-1", 1)
-	if planText(first) != planText(want) {
+	if want := defaultPlanRead(id, "LEG-1", 1); planText(first) != planText(want) {
 		t.Fatalf("the default plan answers\n%s\nwant\n%s", planText(first), planText(want))
 	}
-	before := wholeLog(t, pool)
 
-	owner := putPlan(t, pool, PlanWrite{
+	ownersPlan := PlanWrite{
 		ID: id, Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(1)), Source: new(PlanSourceOwner),
 		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 3},
 		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
-	}, minute(1))
-	if planText(owner) != planText(want) {
-		t.Fatalf("a later owner's write answers\n%s\nwant the default plan\n%s", planText(owner), planText(want))
 	}
+	want := Plan{ID: id, Issue: "LEG-1", Project: "LEG", Source: PlanSourceOwner, Generation: 1, Document: &ownersPlan.Document, Tasks: ownersPlan.Tasks}
+	if owner := putPlan(t, pool, ownersPlan, minute(1)); planText(owner) != planText(want) {
+		t.Fatalf("a later owner's write answers\n%s\nwant the owner's plan whole\n%s", planText(owner), planText(want))
+	}
+	// A default write after the owner's plan is at a lower version: it changes nothing and
+	// appends no tuple.
+	before := wholeLog(t, pool)
 	if again := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(2)); planText(again) != planText(want) {
-		t.Fatalf("the default plan written again answers\n%s\nwant\n%s", planText(again), planText(want))
+		t.Fatalf("the default plan written again answers\n%s\nwant the owner's\n%s", planText(again), planText(want))
 	}
 	if after := wholeLog(t, pool); len(after) != len(before) {
-		t.Fatalf("the later writes appended %d tuples, want none", len(after)-len(before))
+		t.Fatalf("the default write after the owner's plan appended %d tuples, want none", len(after)-len(before))
 	}
 
 	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
@@ -177,8 +301,20 @@ func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
 	if len(read) != 1 || read[0].Plan == nil || planText(*read[0].Plan) != planText(want) {
-		t.Fatalf("the read lists %+v, want LEG-1 with the default plan\n%s", read, planText(want))
+		t.Fatalf("the read lists %+v, want LEG-1 with the owner's plan\n%s", read, planText(want))
 	}
+}
+
+// planLog is every tuple of the log stated about plan id, in the order it was appended.
+func planLog(t *testing.T, pool *store.Pool, id string) []loggedTuple {
+	t.Helper()
+	var stated []loggedTuple
+	for _, tuple := range wholeLog(t, pool) {
+		if tuple.fromKind == KindPlan && tuple.fromID == id {
+			stated = append(stated, tuple)
+		}
+	}
+	return stated
 }
 
 // A value outside its form is refused ErrPlanInput, naming the field, and writes nothing.
@@ -373,17 +509,27 @@ func issuePlanText(issue IssuePlan) string {
 	for index, rating := range issue.Ratings {
 		ratings[index] = fmt.Sprintf("%d %q %s %s", rating.Rating, rating.Reason, rating.StepID, moment(rating.EndedAt))
 	}
-	return fmt.Sprintf("%s %q closed %s plan %s ratings %v from %s to %s failed %d", issue.Issue, issue.Title,
-		issue.ClosedAt.UTC().Format(time.RFC3339Nano), plan, ratings, moment(issue.StartedAt), moment(issue.EndedAt), issue.FailedSteps)
+	return fmt.Sprintf("%s %q closed %s plan %s ratings %v from %s to %s failed %d variant %s", issue.Issue, issue.Title,
+		issue.ClosedAt.UTC().Format(time.RFC3339Nano), plan, ratings, moment(issue.StartedAt), moment(issue.EndedAt), issue.FailedSteps,
+		variantText(issue.Experiment))
+}
+
+// variantText is an experiment and its variant as experiment/variant, or none.
+func variantText(drawn *StepExperiment) string {
+	if drawn == nil {
+		return "none"
+	}
+	return drawn.Experiment + "/" + drawn.Variant
 }
 
 // The read of a project lists each issue of it that is done and closed, newest close first, with
-// its plan, the rating of its retro, the first start and the last end of its records and its
-// count of failed steps of kind step, all in one statement: a failed retro and a failed merge are
-// no failed step. An issue still open, an issue done with no close, an issue closed that is not
-// done, an issue of another project, LEGX's among them though its key starts with LEG, and a
-// record of another issue are not read into it; a finished issue Legion never ran is listed with
-// no plan, no rating, no time and no failed step.
+// its plan, the rating of its retro, the first start and the last end of its records, its count of
+// failed steps of kind step, and the experiment and the variant the records of its newest run name,
+// all in one statement: a failed retro and a failed merge are no failed step, and no record here
+// names an experiment, so each issue reads none. An issue still open, an issue done with no close,
+// an issue closed that is not done, an issue of another project, LEGX's among them though its key
+// starts with LEG, and a record of another issue are not read into it; a finished issue Legion
+// never ran is listed with no plan, no rating, no time and no failed step.
 func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closedFirst, closedSecond, closedThird := t0.Add(time.Hour), t0.Add(2*time.Hour), t0.Add(3*time.Hour)
@@ -631,15 +777,15 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 // the rest default plans, so a rule that took an owner's plan over a default one, before the
 // generation or as a tie of it, finds an owner's plan newer than a plan after it.
 func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
-	plans := []madePlan{
-		{plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, made: minute(50)},
-		{plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(10)},
-		{plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, made: minute(30)},
-		{plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(30)},
-		{plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, made: minute(0)},
+	plans := []MadePlan{
+		{Plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, Made: minute(50)},
+		{Plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, Made: minute(10)},
+		{Plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, Made: minute(30)},
+		{Plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, Made: minute(30)},
+		{Plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, Made: minute(0)},
 	}
-	text := func(plan madePlan) string {
-		return fmt.Sprintf("generation %d made %s id %s source %s", plan.plan.Generation, plan.made.Format(time.RFC3339), plan.plan.ID, plan.plan.Source)
+	text := func(plan MadePlan) string {
+		return fmt.Sprintf("generation %d made %s id %s source %s", plan.Plan.Generation, plan.Made.Format(time.RFC3339), plan.Plan.ID, plan.Plan.Source)
 	}
 	for older := range plans {
 		if !plans[older].newerThan(nil) {
@@ -649,6 +795,103 @@ func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
 			if got, want := plans[newer].newerThan(&plans[older]), newer > older; got != want {
 				t.Errorf("the plan of %s newer than the plan of %s: %t, want %t", text(plans[newer]), text(plans[older]), got, want)
 			}
+		}
+	}
+}
+
+// A finished issue names the experiment and the variant the records of its newest run name, its
+// highest generation, and none where those records name none. LEG-1's first run names planning/a
+// and its second planning/b, the second's record written first, so a read that took the variant of
+// an older run, or of the first record it met, answers planning/a. LEG-2's records name none, and
+// LEG-3's first run names one while its newest names none yet, as a run whose variant still waits
+// for Dispatch's route does: it names none, never the older run's.
+func TestAFinishedIssueNamesItsVariant(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", new(t0.Add(5 * time.Hour))},
+		seededIssue{"LEG-2", "done", new(t0.Add(4 * time.Hour))}, seededIssue{"LEG-3", "done", new(t0.Add(3 * time.Hour))})
+	// run writes the start of the implementer's step of issue's generation, with the variant drawn
+	// where it names one.
+	run := func(issue string, generation int64, drawn *StepExperiment) {
+		t.Helper()
+		id := stepRun(t, pool, issue, StepKindStep, "implementer", 2, generation, new(minute(int(generation)*10)), nil, "")
+		if drawn != nil {
+			put(t, pool, StepWrite{ID: id, Issue: issue, Project: new(projectOf(issue)), Experiment: drawn}, minute(int(generation)*10))
+		}
+	}
+	run("LEG-1", 2, &StepExperiment{Experiment: "planning", Variant: "b"})
+	run("LEG-1", 1, &StepExperiment{Experiment: "planning", Variant: "a"})
+	run("LEG-2", 1, nil)
+	run("LEG-3", 1, &StepExperiment{Experiment: "planning", Variant: "a"})
+	run("LEG-3", 2, nil)
+
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	if err != nil {
+		t.Fatalf("read the plans of LEG: %v", err)
+	}
+	got := make([]string, len(read))
+	for index, issue := range read {
+		got[index] = issue.Issue + " " + variantText(issue.Experiment)
+	}
+	if want := []string{"LEG-1 planning/b", "LEG-2 none", "LEG-3 none"}; !slices.Equal(got, want) {
+		t.Fatalf("the read names the variants %v, want %v", got, want)
+	}
+}
+
+// The read of some issues' plans answers each issue's plans with the moment each node was made,
+// oldest first, and nothing for an issue Legion never ran or one it was not asked about.
+func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	second := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 2), minute(10))
+	first := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(20))
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-2", 1), minute(5))
+	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1", "LEG-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["LEG-1"]) != 2 {
+		t.Fatalf("the read answered %v, want two plans of LEG-1 and nothing else", got)
+	}
+	if older, newer := got["LEG-1"][0], got["LEG-1"][1]; older.Plan.ID != first.ID || newer.Plan.ID != second.ID ||
+		!older.Made.Equal(minute(20)) || !newer.Made.Equal(minute(10)) {
+		t.Fatalf("the plans of LEG-1 are %s made %s, then %s made %s, want generation 1's, then generation 2's",
+			planText(older.Plan), older.Made, planText(newer.Plan), newer.Made)
+	}
+}
+
+// One run keeps one plan node, whose made_at is its first write's, and a later version replaces the
+// node's tasks whole, with a value tuple of the new tasks at the moment of its write. So the read
+// answers each version of the run's plan at the moment its own write made it, oldest first: the
+// metrics' fallback timeline then reads each mark by the version in force at its time, not the
+// whole run by the newest.
+func TestIssuesPlansAnswersEachVersionOfARunsPlanAtItsOwnTime(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id, document := uuid.NewString(), uuid.NewString()
+	version := func(n int, steps ...string) PlanWrite {
+		return PlanWrite{ID: id, Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(1)), Source: new(PlanSourceOwner),
+			Document: PlanDocument{ArtifactID: document, Version: n}, Tasks: []PlanTask{{ID: "a", Steps: steps}}}
+	}
+	putPlan(t, pool, version(1, "implementer", "tester", "reviewer"), minute(10))
+	putPlan(t, pool, version(2, "implementer", "reviewer", "tester"), minute(30))
+	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := got["LEG-1"]
+	if len(plans) != 2 {
+		t.Fatalf("the read answered %d plans of LEG-1 (%v), want both versions of its one run", len(plans), plans)
+	}
+	for i, want := range []struct {
+		made    time.Time
+		version int
+		steps   []string
+	}{
+		{minute(10), 1, []string{"implementer", "tester", "reviewer"}},
+		{minute(30), 2, []string{"implementer", "reviewer", "tester"}},
+	} {
+		plan := plans[i]
+		if plan.Plan.ID != id || !plan.Made.Equal(want.made) || plan.Plan.Document == nil || plan.Plan.Document.Version != want.version ||
+			len(plan.Plan.Tasks) != 1 || !slices.Equal(plan.Plan.Tasks[0].Steps, want.steps) {
+			t.Fatalf("plan %d of LEG-1 is %s made %s, want version %d with steps %v made %s", i, planText(plan.Plan), plan.Made, want.version, want.steps, want.made)
 		}
 	}
 }

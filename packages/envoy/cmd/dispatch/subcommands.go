@@ -45,6 +45,9 @@ var subcommands = []subcommand{
 	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
+	{"convert-issues", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return convertIssues(ctx, args, env, stdout, stderr)
+	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
@@ -65,9 +68,6 @@ var subcommands = []subcommand{
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},
-	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
-	}},
 	{"lens-kind-add", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return lensKindAdd(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
@@ -76,6 +76,9 @@ var subcommands = []subcommand{
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
+	}},
+	{"project-owner", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return giveProject(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"settings", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
 		if err := writeSettings(stdout); err != nil {
@@ -210,13 +213,15 @@ func committedOpenAPIPath() (string, error) {
 // build (schemanodes.InstallFromStore), as the server's boot does beside its own migration run,
 // so a subcommand that parses, renders or writes a document holds it to the store's types rather
 // than to the file this binary embeds. It reports each failure on out under the subcommand's
-// label. The caller closes the returned store's pool.
+// label. The caller closes the returned store's pool. The install opens one of the pool's
+// transactions, so its context is marked for the pool's nested-acquire guard
+// (store.WithTransactionTracking), as every entry point of the pool's transactions marks its own.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	database, ok := openMigratedWithoutBlockSchema(ctx, label, databaseURL, out)
 	if !ok {
 		return nil, false
 	}
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
@@ -241,6 +246,47 @@ func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL stri
 	}
 	if err := database.Migrate(ctx); err != nil {
 		fmt.Fprintf(out, "%s: migrate database: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	return database, true
+}
+
+// openUnmigrated opens the database a dry run works on without writing to it: where this
+// binary's migrations are not all applied (store.Census, which migrates nothing and reads in a
+// read-only transaction), it refuses on out under the subcommand's label, since applying them is a
+// write; otherwise it opens the store and installs its block schema, as openMigrated does after
+// its migration run. The caller closes the returned store's pool.
+func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
+	if strings.TrimSpace(databaseURL) == "" {
+		fmt.Fprintln(out, label+": DATABASE_URL is required")
+		return nil, false
+	}
+	report, err := store.Census(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(out, "%s: read which migrations the database has still to apply: %v\n", label, err)
+		return nil, false
+	}
+	if report.Fresh || len(report.Pending) > 0 {
+		owed := "every migration of this build"
+		if !report.Fresh {
+			names := make([]string, len(report.Pending))
+			for index, entry := range report.Pending {
+				names[index] = entry.Migration.Name
+			}
+			owed = strings.Join(names, ", ")
+		}
+		fmt.Fprintf(out, "%s: --dry-run writes nothing, and the database has %s still to apply; run %s without --dry-run, or boot a server of this build, first\n",
+			label, owed, label)
+		return nil, false
+	}
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(out, "%s: open database: %v\n", label, err)
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
 	}
@@ -297,7 +343,9 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 		return 1
 	}
 	defer database.Pool.Close()
-	report, err := graphcensus.Backfill(ctx, database, out)
+	// Each batch is one of the pool's transactions, marked for its nested-acquire guard as the
+	// decisions step marks the same batches under its boot and its tick.
+	report, err := graphcensus.Backfill(store.WithTransactionTracking(ctx), database, out)
 	if err != nil {
 		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
 		return 1

@@ -29,11 +29,13 @@ const (
 )
 
 // bootBackfillOutcome is what one call of runBootBackfill did: what it answered its caller, whether
-// it called the run, and every line it logged.
+// it called the run, whether it called what follows a done line (R26's step at a boot), and every
+// line it logged.
 type bootBackfillOutcome struct {
-	answer error
-	ran    bool
-	lines  []string
+	answer   error
+	ran      bool
+	followed bool
+	lines    []string
 }
 
 // holding is every line of the outcome that holds part.
@@ -57,7 +59,7 @@ func callBootBackfill(t *testing.T, record func(context.Context) error, ran erro
 		func(context.Context) error {
 			outcome.ran = true
 			return ran
-		})
+		}, func(context.Context) { outcome.followed = true })
 	for line := range strings.Lines(logged.String()) {
 		outcome.lines = append(outcome.lines, strings.TrimRight(line, "\n"))
 	}
@@ -92,6 +94,9 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 		t.Helper()
 		if outcome.answer != nil {
 			t.Errorf("the boot backfill returned %v to its caller, which would stop the process", outcome.answer)
+		}
+		if done := len(outcome.holding(bootBackfillDoneMatch)) == 1; outcome.followed != done {
+			t.Errorf("the boot backfill called what follows a done line %v, and logged a done line %v: the two go together", outcome.followed, done)
 		}
 	}
 

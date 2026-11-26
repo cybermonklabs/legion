@@ -1,17 +1,16 @@
 //go:build twobuild
 
 // The node half of the two-build suite: what a document's node is left as when the build before
-// this one, which writes no node, creates or removes a document beside this build during a roll
-// (twobuild_harness_test.go holds the harness every half starts its builds with).
+// this one creates or removes a document beside this build during a roll, whichever of the two
+// writers of document nodes that build is (twobuild_harness_test.go holds the harness every half
+// starts its builds with).
 
 package main
 
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -23,8 +22,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
-// A document's node is addressed by its ref_key, and the build before this one writes none, so
-// the orders a roll can mix leave a node the census has to name, each with its cure:
+// A document's node is addressed by its ref_key. The test first reads, before this build starts,
+// which of two writers the previous build is (previousWritesDocumentNodes), and holds each order
+// to what that writer leaves. A build from before document nodes, as a release from before this
+// change is, writes no document node and states none gone. A build that writes them, such as this
+// tree built as the previous build in the merge group's dispatch-two-builds-same, writes a
+// document's node in the transaction that makes its row and states it gone in the one that
+// removes it.
+//
+// Beside a build that writes no node, the orders a roll can mix leave a node the census has to
+// name, each with its cure:
 //
 //   - This build removes a document, stating its node gone, and the previous build makes a
 //     document of the same issue and name, which takes the same address: the row stands behind a
@@ -32,8 +39,10 @@ import (
 //     makes the node live from the row's own content once it reaches the row, so the roll needs no
 //     second envoy-dispatch backfill-graph-store.
 //   - This build makes a document, writing its node, and the previous build removes it: the node
-//     stands live behind no row. The census names it orphaned, with the command that removes it,
-//     the backfill leaves it as it is, and that command, run as the census printed it, removes it.
+//     stands live behind no row. The census names it orphaned, and the backfill, which reads no
+//     node no row stands behind, leaves it as it is. This build's block-index tick, in the object
+//     pass it runs once the previous build has stopped, states it gone as this build's own removal
+//     would have (graphcensus's StateOrphanedGone), and the census then names it no more.
 //   - The previous build removes this build's document and this build makes it again: the create
 //     finds the orphaned node at the free address and states it gone, then live, under its own
 //     event, and the census names nothing.
@@ -53,17 +62,26 @@ import (
 // row at all, and this build's block-index ticks wrote at least the two rows' nodes (the
 // object_nodes= of their lines), with no backfill run after those rows were made.
 //
-// After the last cure the census names no project row or node at all. Each order has its control.
-// The first and fourth orders' is the tick's object pass taken out of docs' ReconcileBlockIndex,
-// after which the census names both rows gone for as long as the test waits. The second's is this
-// file run in the tree at the branch's head before these classes and their cures, where this
-// build's removal states nothing gone and the census prints no orphaned field, so it fails at its
-// first census.
-// The third's is the gone step taken out of this build's create (api's storeArtifact): the node
-// then keeps the removed row's live statement, and the census names the new row gone.
+// Beside a build that writes document nodes, no order leaves this build anything to cure: the
+// previous build's removal states the node gone and its create states it live under the row's own
+// event, as this build's do. Each order reads its node and the census's lines naming its row right
+// after the order's last write, with no backfill run and neither of this build's passes waited
+// for: the first order's node is live, the second's gone and named orphaned by no census, and the
+// third's and fourth's live, and once the previous build stops the census names no project row or
+// node at all.
+//
+// Each order beside a build that writes no node has its control. The first and fourth orders' is
+// the tick's object pass taken out of docs' ReconcileBlockIndex, after which the census names both
+// rows gone for as long as the test waits. The second's is this file run in the tree at the
+// branch's head before these classes and their cures, where this build's removal states nothing
+// gone and the census prints no orphaned field, so it fails at its first census. The third's is
+// the gone step taken out of this build's create (api's storeArtifact): the node then keeps the
+// removed row's live statement, and the census names the new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
+	writesNodes := previousWritesDocumentNodes(t, builds)
+	t.Logf("the %s writes document nodes: %t", builds.previousName(), writesNodes)
 	builds.startCurrent(t, nil)
 	previous, current := builds.previous(), builds.current()
 	t.Logf("the %s serves beside the %s", builds.previousName(), builds.currentName())
@@ -72,32 +90,39 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	issue, _ := createDocument(t, current, project, "Documents two builds remove and make", "The spec.\n")
 	// The rows this build cures, read once the previous build has stopped.
 	var forTheTick []string
+	// leaveForTheTick ends the first and fourth orders at the row at ref: beside a build that
+	// writes document nodes, its node is live and the census names nothing of it; beside one that
+	// writes none, the row is left for this build to cure.
+	leaveForTheTick := func(t *testing.T, ref string) {
+		t.Helper()
+		if writesNodes {
+			requireDocumentNodeState(t, builds, ref, graphstore.StateLive)
+			requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), ref)
+			return
+		}
+		forTheTick = append(forTheTick, ref)
+	}
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
 		document := makeTypedDocument(t, current, builds.currentName(), issue, "Removed by the previous build.md")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
 		removeTypedDocument(t, previous, builds.previousName(), document)
-		erase := "envoy-dispatch erase --node artifact:" + document.ref
+		if writesNodes {
+			requireDocumentNodeState(t, builds, document.ref, graphstore.StateGone)
+			census := runTwoBuildStoreCensus(t, builds)
+			requireProjectLine(t, census, "artifact", "orphaned=0")
+			requireIncompleteLinesNaming(t, census, document.ref)
+			return
+		}
+		orphaned := "artifact " + document.ref + ": orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"
 		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "orphaned=1")
-		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
+		if !requireIncompleteLinesNaming(t, census, document.ref, orphaned) {
 			t.FailNow()
 		}
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		census = runTwoBuildStoreCensus(t, builds)
-		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
-			t.FailNow()
-		}
-		printed := strings.TrimPrefix(incompleteLinesNaming(census, document.ref)[0], "artifact "+document.ref+": orphaned; remove it with: ")
-		listing := runPrinted(t, builds, 1, printed)
-		digest := regexp.MustCompile(`(?m)^  listing digest: ([0-9a-f]{64})$`).FindStringSubmatch(listing)
-		if digest == nil {
-			t.Fatalf("the printed command %q listed no digest:\n%s", printed, listing)
-		}
-		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
-		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
-		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref)
+		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref, orphaned)
 	})
 
 	t.Run("this build removes a document and the previous build makes it again", func(t *testing.T) {
@@ -109,7 +134,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, removed.ref)
 		}
-		forTheTick = append(forTheTick, again.ref)
+		leaveForTheTick(t, again.ref)
 	})
 
 	t.Run("the previous build removes this build's document and this build makes it again", func(t *testing.T) {
@@ -131,12 +156,14 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, document.ref)
 		}
-		forTheTick = append(forTheTick, again.ref)
+		leaveForTheTick(t, again.ref)
 	})
 
 	t.Run("the previous build stops and this build cures what it left", func(t *testing.T) {
-		if len(forTheTick) != 2 {
-			t.Fatalf("the orders left %d row(s) for this build to cure, want the first and fourth orders' two", len(forTheTick))
+		// Beside a build that writes no node, the first and fourth orders each left a row for this
+		// build to cure.
+		if !writesNodes && len(forTheTick) != 2 {
+			t.Fatalf("the orders left %d row(s) for this build to cure, want 2", len(forTheTick))
 		}
 		t.Logf("before the previous build stops, the census names %q", incompleteLines(runTwoBuildStoreCensus(t, builds)))
 		var commits []string
@@ -148,6 +175,13 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		}
 		t.Logf("the registry holds %q", commits)
 		stop(t, previous)
+		if writesNodes {
+			if lines := incompleteLines(runTwoBuildStoreCensus(t, builds)); len(lines) > 0 {
+				t.Errorf("once the %s, which writes document nodes, stopped, the census names %q, want nothing: no order beside it leaves this build a row to cure",
+					builds.previousName(), lines)
+			}
+			return
+		}
 		for _, ref := range forTheTick {
 			awaitThisBuildsCure(t, builds, ref)
 		}
@@ -172,12 +206,50 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	})
 }
 
-// noDocumentNode is what requireDocumentNodeState reads for an address the store holds no node at.
+// previousWritesDocumentNodes answers whether the previous build writes document nodes. Through
+// that build it makes a project and an issue of its own, makes an untouched document of the issue
+// and reads the node at its address, then removes the document and reads the node again: a build
+// from before document nodes leaves no node either time, and one that writes them leaves the node
+// live, then gone. Any other pair is neither writer, and fails the test. It runs while the
+// previous build's process is the only one live, before this build starts, so no pass of this
+// build (its block-index tick, its decisions step's phase 1) can have written or stated the
+// probe's node.
+//
+// The probe's document is removed by the time this answers, and its issue stays, since no route
+// removes an issue. Beside a build that writes document nodes, the issue and its spec hold their
+// nodes from their create, as the row's own issue does. Beside one that writes none, they hold
+// none, and this tree's backfill-graph-store writes them before this build starts: otherwise this
+// build's boot, whose decisions step runs phase 1 before it serves, would write the spec's node
+// and log it on the step's kind=artifact line, whose rows= the last subtest counts as a pass's
+// cure of the rows the orders left. Either way the census names nothing of the probe.
+func previousWritesDocumentNodes(t *testing.T, builds *twoBuilds) bool {
+	t.Helper()
+	previous := builds.previous()
+	project := uniqueProjectKey(t, "NWR")
+	previous.createProject(t, project, "Which writer of document nodes the previous build is")
+	issue, _ := createDocument(t, previous, project, "A document the previous build makes and removes alone", "The spec.\n")
+	probe := makeTypedDocument(t, previous, builds.previousName(), issue, "Which writer the previous build is.md")
+	made := documentNodeState(t, builds, probe.ref)
+	removeTypedDocument(t, previous, builds.previousName(), probe)
+	removed := documentNodeState(t, builds, probe.ref)
+	switch {
+	case made == noDocumentNode && removed == noDocumentNode:
+		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
+		return false
+	case made == graphstore.StateLive && removed == graphstore.StateGone:
+		return true
+	}
+	t.Fatalf("the %s left the node of a document it made %s, and %s once it removed the document; want no node both times, from a build before document nodes, or live then gone, from one that writes them",
+		builds.previousName(), made, removed)
+	return false
+}
+
+// noDocumentNode is what documentNodeState reads for an address the store holds no node at.
 const noDocumentNode = "(no node)"
 
-// requireDocumentNodeState fails unless the store holds the document node at ref in state, or
-// holds none when state is noDocumentNode.
-func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string) {
+// documentNodeState is the state the store holds the document node at ref in, noDocumentNode
+// where it holds none.
+func documentNodeState(t *testing.T, builds *twoBuilds, ref string) string {
 	t.Helper()
 	var held string
 	if err := builds.database.Pool.QueryRow(context.Background(), `
@@ -185,7 +257,14 @@ func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string
 	`, graphstore.KindArtifact, ref, noDocumentNode).Scan(&held); err != nil {
 		t.Fatalf("read the node of %s: %v", ref, err)
 	}
-	if held != state {
+	return held
+}
+
+// requireDocumentNodeState fails unless the store holds the document node at ref in state, or
+// holds none when state is noDocumentNode.
+func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string) {
+	t.Helper()
+	if held := documentNodeState(t, builds, ref); held != state {
 		t.Errorf("the node of %s is %s, want %s", ref, held, state)
 	}
 }
@@ -200,12 +279,7 @@ func awaitThisBuildsCure(t *testing.T, builds *twoBuilds, ref string) {
 	deadline := time.Now().Add(3*docs.BlockIndexReconcileInterval + 30*time.Second)
 	for {
 		census := runTwoBuildStoreCensus(t, builds)
-		var held string
-		if err := builds.database.Pool.QueryRow(context.Background(), `
-			select coalesce((select state from graph_nodes where kind = $1 and id = $2), $3)
-		`, graphstore.KindArtifact, ref, noDocumentNode).Scan(&held); err != nil {
-			t.Fatalf("read the node of %s: %v", ref, err)
-		}
+		held := documentNodeState(t, builds, ref)
 		if held == graphstore.StateLive && len(incompleteLines(census)) == 0 {
 			return
 		}
@@ -261,19 +335,6 @@ func runTwoBuildStoreCensus(t *testing.T, builds *twoBuilds) string {
 func runCurrentCommand(t *testing.T, builds *twoBuilds, wants []int, args ...string) string {
 	t.Helper()
 	return runCommand(t, builds, wants, strings.Join(args, " "), exec.Command(builds.binary, args...))
-}
-
-// runPrinted runs a command line as the census printed it, in a POSIX shell whose PATH finds this
-// tree's envoy-dispatch first, against the pair's database, failing the test unless it exits with
-// want. The shell reads the line as an operator's does, its quoting included.
-func runPrinted(t *testing.T, builds *twoBuilds, want int, line string) string {
-	t.Helper()
-	command := exec.Command("sh", "-c", line)
-	command.Env = append(command.Environ(), "PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if filepath.Base(builds.binary) != "envoy-dispatch" {
-		t.Fatalf("this tree's server is built as %s, so no shell finds it as envoy-dispatch", builds.binary)
-	}
-	return runCommand(t, builds, []int{want}, line, command)
 }
 
 func runCommand(t *testing.T, builds *twoBuilds, wants []int, shown string, command *exec.Cmd) string {

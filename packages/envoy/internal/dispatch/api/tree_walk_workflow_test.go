@@ -10,7 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -21,7 +21,7 @@ import (
 // the records of the issue's workflow (R8): a run of a step, the plan a run ran from and the
 // handoff a run reported. An issue born converted holds one requirement. In one transaction the
 // test seeds the types of the three kinds, which no migration of the store holds
-// (graphstoretest.SeedSupertags), writes one node of each kind and a lens visible to the project
+// (graphseedtest.SeedSupertags), writes one node of each kind and a lens visible to the project
 // through graphstore.PlanUncaused and its node write (graphstore.QueueNodes), with a part_of from
 // each of the three to the issue's node and from the lens to the step, and appends those tuples
 // under the event that created the issue (graphstore.Caused), as the store holds the records once
@@ -66,7 +66,7 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 	nodes = append(nodes, lens)
 	tuples = append(tuples, partOf(lens, nodes[0].Kind, nodes[0].ID))
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := graphstoretest.SeedSupertags(ctx, tx, kinds...); err != nil {
+		if err := graphseedtest.SeedSupertags(ctx, tx, kinds...); err != nil {
 			return err
 		}
 		write := graphstore.PlanUncaused(nodes, tuples)

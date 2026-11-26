@@ -172,6 +172,7 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // commit, and once every live process serves this build its announcement lists the kinds the
 // tuple arm renders (refs.TupleKinds), while the earlier one lists none.
 func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -251,7 +252,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	// duplicate_of and filed_from are its create's and its PATCH's, and a component's depends_on and
 	// an issue's affects are an import's and an issue's components', which api's
 	// TestGraphEdgesKeepsEveryRelationAcrossARollback writes. A document's attached_to is the
-	// tuple arm's since migration 20261123120000, from the part_of the backfill states of each
+	// tuple arm's since migration 20261126000200, from the part_of the backfill states of each
 	// document of CORE-1.
 	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy,
 		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
@@ -388,13 +389,12 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
 		t.Fatalf("create the previous release's view: %v", err)
 	}
-	literals := func(values []string) string { return "'" + strings.Join(values, "', '") + "'" }
 	if _, err := database.Pool.Exec(context.Background(), `create view `+previousCountedEdges+` as
 		select from_kind, from_id, kind, to_kind, to_id from `+previousGraphEdges+`
 		union all
 		select from_kind, from_id, kind, to_kind, to_id from graph_edges
-		where kind in (`+literals(storeClassKinds)+`)
-		   or (kind in (`+literals(storeClassOwnKinds)+`) and from_kind in (`+literals(storeClassSources)+`))`); err != nil {
+		where kind in (`+store.QuoteLiterals(storeClassKinds)+`)
+		   or (kind in (`+store.QuoteLiterals(storeClassOwnKinds)+`) and from_kind in (`+store.QuoteLiterals(storeClassSources)+`))`); err != nil {
 		t.Fatalf("create the previous release's view with the class store beside it: %v", err)
 	}
 }
@@ -506,7 +506,7 @@ func referenceStoredInTheStore(t *testing.T, database *store.Store, row graphEdg
 }
 
 // attachedInTheStore reads whether the artifacts row behind row, a document's attached_to its
-// issue, is one the tuple arm answers (migration 20261123120000): it names its node, whose part_of
+// issue, is one the tuple arm answers (migration 20261126000200): it names its node, whose part_of
 // to that issue the arm reads. Any other such row is the arm over the artifacts that name no
 // node's.
 func attachedInTheStore(t *testing.T, database *store.Store, row graphEdgeRow) bool {
@@ -524,7 +524,7 @@ func attachedInTheStore(t *testing.T, database *store.Store, row graphEdgeRow) b
 // 20261117020856): a relation the store holds with no projection row behind it, of a kind
 // changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
 // part_of or authored_by out of an interaction, a lens, a finding of a lens (which the tuple arm
-// writes as a lens_block since migration 20261123120000), a risk or a constraint. It is the migration's own rule,
+// writes as a lens_block since migration 20261126000200), a risk or a constraint. It is the migration's own rule,
 // read over a row: a row it leaves out - a comment's authored_by, a block's part_of its parent -
 // that the view answers is held to the previous release's reading, which answers none of them.
 func storeClass(row graphEdgeRow) bool {
@@ -1447,7 +1447,7 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 
 // seededStoreClass is the rows of the class `store` every migrated store holds before any write:
 // the one constrained_by tuple from each kind of the lens catalogue to its source (migrations
-// 20261116123354 and 20261116123355), read from the store as the seed wrote them, so a kind the
+// 20261123174710 and 20261123174720), read from the store as the seed wrote them, so a kind the
 // seed adds or drops moves every expectation built on them with it.
 func seededStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()

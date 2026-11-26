@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -180,8 +181,9 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
 		}
-		// That release resolves no node of the kind. Its predicate stays: the registry answered
-		// for every kind then as it does now, and only the loader is the newer build's.
+		// That release resolves no node of the kind. Its key stays, and with it the predicate
+		// VisibleKind binds: the registry answered for every kind then as it does now, and only
+		// the loader is the newer build's.
 		entry.load = nil
 		previous[kind] = entry
 	}
@@ -193,6 +195,88 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	}
 	if got, want := resolved(older), []string{"ask", "comment", "issue", "message"}; !slices.Equal(got, want) {
 		t.Errorf("the previous release resolves the kinds %v; want %v", got, want)
+	}
+}
+
+// A block node of a comment or of an issue message carries its post's edit time and delete mark,
+// as the post's own node does. A delete takes every block out of the post's current revision (the
+// index of its empty body, api's planEditedItem; TombstoneItem then clears their text), so no
+// current block node of a deleted post resolves after it. RemovedItemBlockNode, a comment's,
+// builds a node of such a block with the comment's mark when called; no API read reaches it for a
+// deleted post, whose pinned block read answers 404 first. The message's current block is read
+// with the mark stamped on its row and no tombstone, the one state in which loadMessageBlockNodes
+// can be seen to carry it.
+func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin fixture transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	createReferenceIssue(t, tx, "CORE-1", "CORE")
+	const body = "One.\n\nTwo."
+	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", body)
+	message := insertIndexedItem(t, tx, ItemMessage, "CORE-1", body)
+	editedAt := time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 11, 2, 10, 45, 0, 0, time.UTC)
+	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
+	node := func(step, kind, id string) model.GraphNode {
+		t.Helper()
+		found, ok, err := Node(ctx, tx, model.Actor{}, kind, id, false)
+		if err != nil || !ok {
+			t.Fatalf("%s: the node %s %s = %v, %v; want it", step, kind, id, ok, err)
+		}
+		return found
+	}
+	mark := func(table, id, set string, args ...any) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `update `+table+` set `+set+` where id = $1`, append([]any{id}, args...)...); err != nil {
+			t.Fatalf("mark %s %s: %v", table, id, err)
+		}
+	}
+	commentBlock, messageBlock := "comment/"+comment+"#b1", "message/"+message+"#b1"
+	for _, block := range [][2]string{{"comment_block", commentBlock}, {"message_block", messageBlock}} {
+		if got := node("as written", block[0], block[1]); got.EditedAt != nil || got.DeletedAt != nil || got.DeletedBy != nil {
+			t.Fatalf("as written: the block %s = %#v, want no mark", block[1], got)
+		}
+	}
+
+	mark("comments", comment, `edited_at = $2`, editedAt)
+	mark("messages", message, `edited_at = $2`, editedAt)
+	for _, block := range [][2]string{{"comment_block", commentBlock}, {"message_block", messageBlock}} {
+		if got := node("after the edit", block[0], block[1]); got.EditedAt == nil || !got.EditedAt.Equal(editedAt) || got.DeletedAt != nil {
+			t.Fatalf("after the edit: the block %s = %#v, want the edit at %s alone", block[1], got, editedAt)
+		}
+	}
+
+	mark("messages", message, `deleted_at = $2, deleted_by = '{"kind":"user","id":"alice"}'`, deletedAt)
+	if got := node("the message's mark", "message_block", messageBlock); got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
+		t.Fatalf("the message's block = %#v, want alice's delete at %s", got, deletedAt)
+	}
+
+	mark("comments", comment, `body = '', deleted_at = $2, deleted_by = '{"kind":"user","id":"alice"}'`, deletedAt)
+	// The delete's own writes, as api's clearDeletedPostBody makes them: the index of the empty
+	// body, then the tombstone of what the index leaves of the old one.
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, "", deletedAt, nil, nil); err != nil {
+		t.Fatalf("index the comment's cleared body: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return TombstoneItem(b, ItemComment, comment)
+	}); err != nil {
+		t.Fatalf("tombstone the comment: %v", err)
+	}
+	if _, current, err := Node(ctx, tx, model.Actor{}, "comment_block", commentBlock, false); err != nil || current {
+		t.Fatalf("the deleted comment's block resolves = %v, %v; want no current node", current, err)
+	}
+	removed, held, err := RemovedItemBlockNode(ctx, tx, model.Actor{}, ItemComment, commentBlock, 2)
+	if err != nil || !held {
+		t.Fatalf("the deleted comment's removed block = %v, %v; want its node", held, err)
+	}
+	if removed.EditedAt == nil || !removed.EditedAt.Equal(editedAt) ||
+		removed.DeletedAt == nil || !removed.DeletedAt.Equal(deletedAt) || !byAlice(removed.DeletedBy) {
+		t.Fatalf("the deleted comment's removed block = %#v, want the edit at %s and alice's delete at %s", removed, editedAt, deletedAt)
 	}
 }
 
@@ -218,7 +302,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{documentMember(t, tx, handbook, 1, model.ReferenceVia{Kind: "comment", ID: comment})}; !reflect.DeepEqual(references.Members, want) {
+	if want := []Member{documentMember(t, tx, handbook, model.ReferenceVia{Kind: "comment", ID: comment})}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 	citers, err := ReferencedBy(ctx, tx, model.Actor{}, handbook)
@@ -261,7 +345,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{documentMember(t, tx, handbook, 1, model.ReferenceVia{Kind: "ask", ID: ask.ID})}; !reflect.DeepEqual(references.Members, want) {
+	if want := []Member{documentMember(t, tx, handbook, model.ReferenceVia{Kind: "ask", ID: ask.ID})}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 }

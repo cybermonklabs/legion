@@ -37,9 +37,9 @@ answerTextReadsWithTheSeededText();
 /**
  * Every case of this file opens the issue's spec where an issue's room holds it: in a fragment of
  * the issue's one Yjs document named by the server, which the artifact the page is handed and the
- * artifact read both answer (INFRA-1253), never `prosemirror`. So each case passes only where the
- * page binds the fragment the server names. The other ProofDocument suites open a spec whose
- * answers name none, as a server without issue rooms answers it.
+ * artifact read both answer (the issue-tree spec), never `prosemirror`. So each case passes only
+ * where the page binds the fragment the server names. The other ProofDocument suites open a spec
+ * whose answers name none, as a server without issue rooms answers it.
  */
 const ROOM_FRAGMENT = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
 const artifact = { ...spec, fragment: ROOM_FRAGMENT };

@@ -181,9 +181,10 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
 }
 
 /** Waits until the ask of the example's block reads answered with the example's pick, which is
- *  what the block's card reads to show the answer. A person's answer is held on the ask, and the
- *  one version it writes changes only the block's `state`, answerer and time, so an approval asked
- *  for next is asked of the text the architect wrote. */
+ *  what the block's card reads to show the answer. A person's answer is held on the ask. When the
+ *  answer is the whole change of the one version it writes (Dispatch's changesAskAttributesAlone),
+ *  that version changes only the block's `state`, answerer and time, so an approval asked for next
+ *  is asked of the text the architect wrote. */
 export async function decisionAnswered(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await expect
@@ -254,8 +255,9 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
   await api.patchIssue(issue.key, { status }, DAEMON);
 }
 
-/** The reviewer approved, so the issue is in accepting: the architect posts its acceptance of the
- *  reviewed head and signs off, and the daemon moves the issue to retro. */
+/** The reviewer approved, so on the default steps the issue is in accepting: the architect posts
+ *  its acceptance of the reviewed head and signs off, and, the acceptance being the task's last
+ *  step, the daemon moves the issue to retro. */
 export async function accept(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await api.createComment(issue.key, { body: example.acceptance }, agent(issue.key, "architect"));

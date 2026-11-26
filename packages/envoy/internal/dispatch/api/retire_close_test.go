@@ -19,6 +19,7 @@ import (
 // held here with any retired document of the issue: the close and the reopen are taken, and the
 // open ask is withdrawn by the close and open again after the reopen.
 func TestAnIssueWithARetiredDocumentClosesAndReopensWithItsOpenAsk(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")

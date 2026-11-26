@@ -1,19 +1,25 @@
 import type {
+  Actor,
   AskRead,
   AskWithTrees,
   BlockPath,
   Comment,
-  CommentRead,
   GraphEdge,
   GraphReferences,
   MessageRead,
   OpenAsk,
   OpenAsksResponse,
+  PostHistoryRead,
 } from "@legion/contracts";
-import { actorActText, encodeBlockId } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
-import type { DispatchClient } from "../dispatch-http";
+import type {
+  CommentNodeAnchor,
+  CommentReadWithNodeAnchor,
+  DispatchClient,
+  WithNodeAnchor,
+} from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
@@ -42,7 +48,7 @@ export function askSummary(
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
@@ -202,22 +208,70 @@ export function formatOpenAsksSummary(
     ...waitingOnAgent.map((ask) => openAskLine(ask, linkBase)),
   ].join("\n");
 }
+/** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
+ *  the time of the last edit above it where the author replaced it. */
+function postBodyLines(post: {
+  readonly body: string;
+  readonly edited_at?: string | null;
+  readonly deleted_at?: string | null;
+  readonly deleted_by?: Actor | null;
+}): string[] {
+  if (post.deleted_at != null) return [deletedMark(post.deleted_at, post.deleted_by)];
+  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${post.body}`];
+}
+
+/**
+ * What `dispatch read --history` prints: the post's history entries, newest first, each under
+ * the time of its write and the actor that made it, and of a standing post with the body an
+ * edit replaced. A post nobody edited or deleted lists none. No read of a deleted post gives any
+ * part of its body, so its list carries the deleted mark and each entry's time and actor. Dispatch answers one page, so a full page
+ * (`POST_HISTORY_PAGE_LIMIT` rows, from `@legion/contracts`, which the server's `postHistory`
+ * reads its page at as `contracts.PostHistoryPageLimit`) ends with the route that reads the rows
+ * before its oldest time, `?before=` that time: this command has no flag that reads them.
+ */
+export function postHistorySummary(
+  kind: "Comment" | "Message",
+  ref: string,
+  id: string,
+  read: PostHistoryRead
+): string {
+  const entries = read.entries ?? [];
+  const deleted = read.deleted_at != null;
+  const oldest = entries.at(-1);
+  const route = `/api/v1/${kind === "Comment" ? "comments" : "messages"}/${id}/history`;
+  return [
+    `${kind} history: ${ref}`,
+    ...(read.deleted_at == null ? [] : [deletedMark(read.deleted_at, read.deleted_by)]),
+    ...(entries.length === 0
+      ? ["- none"]
+      : entries.flatMap((entry) => [
+          `${entry.edited_at} · ${actorText(entry.edited_by)}`,
+          ...(deleted ? [] : [`Body: ${entry.body}`]),
+        ])),
+    ...(entries.length < POST_HISTORY_PAGE_LIMIT || oldest === undefined
+      ? []
+      : [
+          `This is the newest page, and a page holds ${POST_HISTORY_PAGE_LIMIT} rows: GET ${route}?before=${oldest.edited_at} reads any older rows.`,
+        ]),
+  ].join("\n");
+}
+
 export function commentSummary(
-  { comment, replies }: CommentRead,
+  { comment, replies }: CommentReadWithNodeAnchor,
   graph: readonly string[]
 ): string {
   const root = [
     `${comment.id} · ${actorText(comment.author)}`,
     ...anchorLines(comment),
     ...replyBlockLines(comment),
-    `Body: ${comment.body}`,
+    ...postBodyLines(comment),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
     ...replyBlockLines(reply),
     ...(reply.answers != null && reply.answers !== comment.id ? [`Answers: ${reply.answers}`] : []),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     "Comment:",
@@ -228,25 +282,77 @@ export function commentSummary(
   ].join("\n");
 }
 
-/** The block of its parent a reply answers: its id and the head of its text, or that no current
- *  revision of the parent holds it. A comment or message that answers no block prints nothing. */
+/** An issue's comments, its `dispatch://KEY/comments`, in the order the route lists them: each
+ *  comment's id, author and time, its anchor, the block it replies to, the head of its thread
+ *  (`Reply to:`), the comment it answers where that is another (`Answers:`), as the reply chain of
+ *  `commentSummary` prints it, the ask it replies to (`Ask:`), and its body as every read prints a
+ *  post (`postBodyLines`): the deleted mark alone for a deleted comment. */
+export function commentsSummary(
+  issueKey: string,
+  comments: readonly WithNodeAnchor<Comment>[]
+): string {
+  return [
+    `Comments: ${issueKey}`,
+    ...(comments.length === 0
+      ? ["- none"]
+      : comments.flatMap((comment) => [
+          `${comment.id} · ${actorText(comment.author)} · ${comment.created_at}`,
+          ...anchorLines(comment),
+          ...replyBlockLines(comment),
+          ...(comment.reply_to === null ? [] : [`Reply to: ${comment.reply_to}`]),
+          ...(comment.answers != null && comment.answers !== comment.reply_to
+            ? [`Answers: ${comment.answers}`]
+            : []),
+          ...(comment.ask_id == null ? [] : [`Ask: ${comment.ask_id}`]),
+          ...postBodyLines(comment),
+        ])),
+  ].join("\n");
+}
+
+/** The block of its parent a reply answers: its id and the head of its text, that no current
+ *  revision of the parent holds it, or, where the parent is a post its author deleted, the
+ *  deleted line every read prints for one (`deletedMark`) in place of the text the delete
+ *  cleared. Where the parent stands and its author edited it (`edited_at`), the line ends with
+ *  the mark every line prints for an edited post (`editedMark`): the head is of the parent's
+ *  words as they stand, and a read of the reply does not always print the parent's own
+ *  `Edited:` line beside it (a comment's or message's read answers the post named and its
+ *  replies, never the post it quotes). A comment or message that answers no block prints
+ *  nothing. */
 function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
+  if (block.deleted_at != null) {
+    return [
+      `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
+    ];
+  }
   return [
-    block.removed
-      ? `Re: block ${block.block_id} (removed)`
-      : `Re: block ${block.block_id}: ${textHead(block.text)}`,
+    withEditedMark(
+      block.removed
+        ? `Re: block ${block.block_id} (removed)`
+        : `Re: block ${block.block_id}: ${textHead(block.text)}`,
+      block.edited_at
+    ),
   ];
 }
 
 /** An anchored record's quote, then where its block stands: the position, or why the read could
- *  not place it. A record without an anchor prints neither. */
+ *  not place it. A record without an anchor prints neither. Where the read answered the node the
+ *  anchor names (`node_anchor`), the quote's line names that node and its state too: a comment on
+ *  a lens, a finding, a risk, a constraint or a result has no document anchor to print, and a
+ *  node whose state is `gone` was deleted since the comment was written. */
 function anchorLines(
-  record: Pick<Comment, "anchor" | "anchor_block" | "anchor_block_error">
+  record: Pick<Comment, "anchor" | "anchor_block" | "anchor_block_error"> & {
+    readonly node_anchor?: CommentNodeAnchor;
+  }
 ): string[] {
+  const node = record.node_anchor;
   return [
-    ...(record.anchor?.quote === undefined ? [] : [`> ${record.anchor.quote}`]),
+    ...(node !== undefined
+      ? [`> ${node.quote} · on ${nodeAddress(node.node)} (${node.node.state})`]
+      : record.anchor?.quote === undefined
+        ? []
+        : [`> ${record.anchor.quote}`]),
     ...(record.anchor_block === undefined
       ? []
       : [`Position: ${positionText(record.anchor_block)}`]),
@@ -254,6 +360,13 @@ function anchorLines(
       ? []
       : [`Position: unavailable (${record.anchor_block_error})`]),
   ];
+}
+
+/** A node as the anchor input `node` and `/api/v1/issues/{key}/nodes/{id}` take it: a block by
+ *  its own node id, which names its owner before its `#` (`lens/<uuid>#<block id>`,
+ *  `CORE-1/spec#<block id>`), and every other node as `<kind>/<id>` (`lens/<uuid>`). */
+function nodeAddress(node: CommentNodeAnchor["node"]): string {
+  return node.kind === "block" ? node.id : `${node.kind}/${node.id}`;
 }
 
 /** Where an anchor's block stands. Every node from the top-level block down reads `type[index]`;
@@ -286,12 +399,12 @@ export function messageSummary(
   const root = [
     `${message.id} · ${actorText(message.author)}`,
     ...replyBlockLines(message),
-    `Body: ${message.body}`,
+    ...postBodyLines(message),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...replyBlockLines(reply),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     "Message:",
@@ -362,7 +475,7 @@ export async function openAnchoredThreads(
     [
       `comment ${root.id} · ${actorText(root.author)} · ${root.created_at}`,
       ...anchorLines(root),
-      `Body: ${root.body}`,
+      ...postBodyLines(root),
       ...threadReplyLines(replies.get(root.id) ?? []),
     ].join("\n")
   );
@@ -373,7 +486,7 @@ export async function openAnchoredThreads(
 function threadReplyLines(replies: readonly Comment[]): string[] {
   return replies.flatMap((reply) => [
     `reply ${reply.id} · ${actorText(reply.author)} · ${reply.created_at}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
 }
 

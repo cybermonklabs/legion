@@ -11,7 +11,7 @@ import "maps"
 func StoreWriteCallSites() map[string]string { return maps.Clone(storeWriteCallSites) }
 
 // storeWriteCallSites is every function outside the tests that calls one of graphstore's writers
-// (graphstorecopy.WriteFunctions), named as docs' register names a pass: the file, from
+// (graphstoretest.WriteFunctions), named as docs' register names a pass: the file, from
 // internal/dispatch where it lives under it, and the function, without its receiver. Beside each
 // site is the test that drives its lock steps against the order written on api/inbox_read.go's
 // markInboxReadThreads, as "<package dir>#<Test>": the package's directory, named as a site's
@@ -55,10 +55,12 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	"docs/block_index.go#causeRoomFacts":            "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it
-	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
-	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The comment path, which the comment route and the comment an issue write leaves share: the
+	// comment's node before the comments row that names it (queueCommentRow, through
+	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
+	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored).
+	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
@@ -84,17 +86,32 @@ var storeWriteCallSites = map[string]string{
 	"api/reasoning_write.go#writeReasoningPointer": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// One node's state a request writes or settles (api/node_state.go): the issue's owner lock,
 	// then one Write of the node as the store holds it but for its state, and, on a move into
-	// gone, of every node beneath it (graphstore.NodesBeneath), each as the store holds it but for
+	// gone, of every node beneath it (graphstore.WriteState), each as the store holds it but for
 	// its state: a plain write that moves the rows and appends their state tuples. It appends no
 	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
 	// owner lock writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	// An issue's own field write made for a run (api/issue_patch.go), which names the issue changed:
-	// the issue's owner lock (lockPatchOwners), the issue's row, then, on a context that carries a
-	// run alone, the issue's node as PlanChangedForRun plans it (QueueNodes), the issue's own
-	// event, and what the node states with its changed_by_run under that event (QueueCaused). api's
-	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
-	"api/issue_patch.go#patchIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// A node's move (api/node_move.go, PATCH /api/v1/issues/{key}/nodes/{id}): the owner locks of
+	// the issue and of every issue the moved node's subtree and the parent's chain stand under, in
+	// one call (lockIssueOwners), then, where the move writes the block's text, the room's lock and
+	// the version's write, and in its write phase the move's tuples alone at the sentinel
+	// (QueueWrite, no node), the block's parent_block_id, the issue's query mark and the head rows.
+	// api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds a flat move to those steps.
+	"api/node_move.go#queueNodeMove": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The node DELETE route's one transaction (api/node_delete.go's queueNodeDelete): under the
+	// owner locks of the issue and of every issue a node of the subtree stands under, then each
+	// changed document's room lock in room-id order, the direct write of each document's tree and
+	// its version, the gone state of each lens, finding, risk and constraint it takes, the
+	// retraction of every tuple out of what it takes, the orphaned node anchors, the issue's query
+	// mark and the head rows. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to them.
+	"api/node_delete.go#queueNodeDelete": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// An issue's own field write made for a run (api/issue_patch.go's writeIssue, the write core the
+	// PATCH and each step of a status change run), which names the issue changed: the issue's owner
+	// lock (lockPatchOwners), the issue's row, then, on a context that carries a run alone, the
+	// issue's node as PlanChangedForRun plans it (QueueNodes), the issue's own event, and what the
+	// node states with its changed_by_run under that event (QueueCaused). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps, through the PATCH.
+	"api/issue_patch.go#writeIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An issue's relations (R9 and R10 of this branch's spec), which its create and its PATCH state:
 	// after the issue's owner row, its row and its issue_links rows, the node of the item its
 	// filed_from names where the store held none, through Write, with a comment's row named after
@@ -117,7 +134,7 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_actions.go#editComment": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A comment's anchor block (T17b of this branch's plan), the anchored_in that
 	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
-	// orphan flag beside the comment's create (createCommentFor's caused, above): an accept or a
+	// orphan flag beside the comment's create (queueCommentCreated, above): an accept or a
 	// reject that finds a suggestion's mark gone orphans the anchor and retracts its anchored_in,
 	// after the comment's owner row and its row `for update` (lockedComment), its update, then the
 	// retraction through Write at the sentinel (api's TestEveryApiStoreWriterTakesTheStoreLockOrder);
@@ -133,6 +150,21 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_actions.go#orphanCommentAnchor":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "docs#TestTheAnchorBlockBackfillTakesTheRowThenTheTuple",
 	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "docs#TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple",
+	// R31's orphan of each comment whose node anchor names a node a delete takes
+	// (docs.NodeAnchorOrphans.Queue): the comments update and the retraction of each comment's
+	// anchored_in and part_of, in the batch of the node DELETE under the owner locks it holds.
+	"docs/anchor_refresh.go#Queue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// An edit or a delete of an issue message and a delete of a comment made for a run
+	// (api/message_corrections.go, api/comment_delete.go), which names the message or the comment
+	// changed, in the same steps: the owner lock of the message's issue, or of the comment - its
+	// issue, or the project document it is on (lockOwnerOfComment) - under which it reads the row,
+	// then, in its write phase, the row's update or its clear (clearDeletedPostBody), then, on a
+	// context that carries a run alone, its node as PlanChangedForRun plans it (QueueNodes), its
+	// own event, and what the node states with its changed_by_run under that event (QueueCaused).
+	// api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
+	"api/comment_delete.go#deleteComment":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#editMessage":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#deleteMessage": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A run of the command bar (api/going.go), which takes no owner lock: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
@@ -142,7 +174,13 @@ var storeWriteCallSites = map[string]string{
 	// writes that node first through the one writer of a run's node from its row, which the
 	// backfill shares (lockGoingRun): it takes the run's going_requests row `for no key update` and
 	// then writes in one Write, which the same test holds a frame of such a run to, step by step.
+	// The sweep states a run gone an hour after it was asked, in a transaction of its own and in
+	// the frame's order (goRunGone): the run's interaction node row `for no key update`, one
+	// WriteState of that node, its state tuple at the sentinel, then the delete of the run's
+	// going_requests row, whose foreign key cascades to its going_events rows; the same test holds
+	// it to those steps.
 	"api/going.go#appendGoingEvent":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/going.go#goRunGone":             "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/going.go#lockGoingRun":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/going.go#recordGoingRequest":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphstore/interaction.go#WriteRun": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
@@ -186,9 +224,12 @@ var storeWriteCallSites = map[string]string{
 	// any row of the document is deleted, and removeArtifact appends what it stated in the batch
 	// that appends the artifact.removed event, appendCausingEvent (api's
 	// TestARemovalStatesItsDocumentGoneInTheStoreLockOrder). Between the row's delete and that
-	// event, where a lens stands on the document's node, removeArtifact runs the stale lenses'
-	// statement for the document's address, whose order
-	// graphcensus/orphans.go#StateStaleLensesGone's own entry proves.
+	// event, where a lens stands on the document's node, removeArtifact reads the stale lenses on
+	// it (refs.StaleLensesOn) and what stands beneath each (graphstore.WriteState), under the owner
+	// lock it holds and taking none of its own, and writes those nodes in one Write in ascending
+	// (kind, id) with their state tuples at the sentinel. Its driver removes a document no lens
+	// stands on, and a document a lens with a finding stands on too, holding each step that run
+	// takes in turn, the lens's and the finding's node rows and their state tuples among them.
 	// createIssueTree is an issue's tree artifact (R5 of this branch's spec): its node and its
 	// part_of to the issue through QueueNodes before the artifacts row that names the node and
 	// the issue_trees row, queued at the head of its caller's write phase, whose transaction holds
@@ -201,6 +242,7 @@ var storeWriteCallSites = map[string]string{
 	// version 1 and that version's node, and createIssue causes what both stated under
 	// issue.created through QueueCaused. api's TestEveryObjectNodeWriterTakesTheStoreLockOrder runs
 	// createIssue born converted and holds it to those steps.
+	"api/artifact_removal.go#removeArtifact":       "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/artifact_removal.go#removedDocumentNodes": "api#TestARemovalStatesItsDocumentGoneInTheStoreLockOrder",
 	"api/artifacts.go#createIssueTree":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/broadcasts.go#writeBroadcast":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
@@ -318,6 +360,12 @@ var storeWriteCallSites = map[string]string{
 	// nodes' anchored_in read again under them, then the tuples that level the two through Write
 	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
 	"graphcensus/census_anchors.go#writeAnchorBatch": "graphcensus#TestTheAnchorBatchTakesTheStoreLockOrder",
+	// The backfill's Keep pass (R32 of this branch's spec): the owner rows the batch's Keeps stand
+	// under first, then the Keeps and their decisions' words read again under them, then the
+	// decision_keeps rows whose sum is still the one over the words with shaped, the kept_text_sum
+	// values through Write at the sentinel, and the head rows (graphcensus'
+	// TestTheKeepSumBatchTakesTheStoreLockOrder).
+	"graphcensus/census_keeps.go#writeKeepSumBatch": "graphcensus#TestTheKeepSumBatchTakesTheStoreLockOrder",
 	// The backfill's pass over the references a document makes: the owner rows the batch's
 	// documents stand under first, then the refs rows and their documents' nodes' mentions read
 	// again under them, then the mentions tuples each row owes through Write at the sentinel
@@ -340,20 +388,35 @@ var storeWriteCallSites = map[string]string{
 	"api/results_retract.go#writeCheckResultRetraction":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultBatch":           "graphcensus#TestTheResultBatchTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultRetractionBatch": "graphcensus#TestTheResultRetractionBatchTakesTheStoreLockOrder",
-	// A query's version a write appends where it moved the query's record or its document's
-	// rendering and wrote that document no version (docs.Service.ReviseQueries): once the write's
-	// own statements have run in its transaction, under the issue's owner lock and the lock of its
-	// room, both taken before the write's first statement (docs.LockQueryRooms, right after the
-	// owner's), the version's row, its node (docs/mutation.go#WriteVersionNode, above) and its
-	// version_renders row, and last the node's facts, caused by the event the write appended,
-	// through Caused. A recorded result and a retraction take it under result.recorded and
-	// result.retracted (reviseQueriesUnder), which api's TestEveryApiStoreWriterTakesTheStoreLockOrder
-	// drives through both routes, the room's lock held before their event; an issue room's
-	// settlement takes it once its write phase has run, under the last artifact.version it appended
-	// (reviseQueries), holding its room's lock from its read phase, one call of Caused after the rows
-	// its path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
-	"api/results.go#reviseQueriesUnder": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"docs/settlement.go#reviseQueries":  "refs#TestCausedTakesTheStoreLockOrder",
+	// A query's version a write owes where it moved the query's record or its document's rendering
+	// and wrote that document no version: the version's row, its node
+	// (docs/mutation.go#WriteVersionNode, above) and its version_renders row, and last the node's
+	// facts, through Caused. A recorded result, a retraction and an issue room's settlement write
+	// no such version in their own transaction: their batch marks the issue's queries owed, and the
+	// drain writes the versions in a transaction of its own once they have committed
+	// (drainQueryMark), as the block-index tick does for a mark a write left. It takes the issue's
+	// owner lock, then the lock of its room (docs.LockQueryRooms), reads, and sends one batch: the
+	// rows, the move of an open approval request, a carry, the artifact.version, the clear of the
+	// mark, then one call of Caused under the mark's event and the head rows, after the rows its
+	// path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
+	"docs/query_marks.go#drainQueryMark": "refs#TestCausedTakesTheStoreLockOrder",
+	// R2's daemon-thread step (docs.DaemonThreadStep): it reads with no lock the blocks that stand
+	// under a message of a thread the Legion daemon's session began, then takes every owner lock of
+	// their issues in one call of store.LockOwners and each of their rooms' locks in room-id order,
+	// reads each block's part_of again, and sends one batch: the retraction and the part_of to the
+	// issue's node, the query mark and the head rows.
+	"docs/daemon_thread_step.go#queueDaemonThreadMoves": "docs#TestANodeUnderADaemonThreadMovesUnderItsIssue",
+	// R6's conversion of an issue into its room (docs.ConvertIssue), one transaction an issue
+	// under its owner lock and then each room's lock in sorted order: the tree, the query nodes and
+	// the decisions query, the moves of the blocks, the asks and the pointers at the old addresses,
+	// then the facts its passes stated, caused under each document's artifact.version.
+	"docs/issue_conversion.go#writeTree":           "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#writeQueries":        "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#writeDecisionsQuery": "refs#TestCausedTakesTheStoreLockOrder",
+	"docs/issue_conversion.go#writeMoves":          "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#moveAsks":            "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#movePointers":        "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"docs/issue_conversion.go#finish":              "refs#TestCausedTakesTheStoreLockOrder",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (R9 of this branch's spec): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and
@@ -374,36 +437,27 @@ var storeWriteCallSites = map[string]string{
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder).
 	"architecture/importer.go#RetireComponents": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"architecture/importer.go#stateComponents":  "architecture#TestTheImportTakesTheStoreLockOrder",
-	// The statement that states every stale lens gone with all that stands under it, in its
-	// caller's transaction (the block-index tick's own, a document's removal's): the owner lock of
-	// each issue a stale lens's document names first, which a document's removal holds already, so
-	// for it the statement takes none; then one Write of the lenses and the nodes beneath them in
-	// ascending (kind, id) and their state tuples at the sentinel, appending no event. Its order is
-	// the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner locks
-	// writeNodeState takes first too.
-	"graphcensus/orphans.go#StateStaleLensesGone": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
-	// sides of the node, then the node's row. It takes the owner locks it writes under before that
-	// row, and its projection rows after it.
-	"grapherase/erase.go#apply": "grapherase#TestTheEraseTakesTheStoreLockOrder",
-	// The erase's end of the versions it deletes: each one's node stated gone, in the erase's
-	// transaction, under the owner rows the erase takes first (this branch's spec; grapherase's
-	// TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode).
-	"grapherase/erase.go#endErasedVersions": "grapherase#TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode",
-	// The erase's rewrite of the text values of the blocks holding the erased block, through
-	// RedactValues, in the erase's transaction and under the owner rows it takes first, beside its
-	// rewrite of those blocks' document_block_texts rows (this branch's spec; grapherase's
-	// TestTheEraseTakesTheStoreLockOrder).
-	"grapherase/redaction.go#redactBlocks": "grapherase#TestTheEraseTakesTheStoreLockOrder",
+	// The block-index tick's sweep of every stale lens, after its orphan sweep, in a transaction of
+	// its own: a read of the stale lenses with no lock, then the owner lock of each issue a stale
+	// lens's document names, then the read again under those locks, and one Write of the lenses it
+	// kept and the nodes beneath them in ascending (kind, id) and their state tuples at the sentinel,
+	// appending no event. Its driver sweeps a stale lens with a finding and a risk under it and holds
+	// each step in turn - the owner lock, the three node rows, the state tuples - and the project's
+	// row, which the sweep never takes.
+	"graphcensus/orphans.go#StateStaleLensesGone": "graphcensus#TestTheStaleLensSweepTakesTheStoreLockOrder",
 	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
 	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
 	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and
-	// TestEveryStoreWriteTakesOneLockOrder proves the order on them.
+	// TestEveryStoreWriteTakesOneLockOrder proves the order on them. WriteState runs one Write of
+	// the nodes whose state it moves, after the reads of what stands beneath those it takes gone,
+	// which take no lock, so its order is the order that test proves of Write, after the locks its
+	// caller holds.
 	"graphstore/people.go#QueueAuthored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueReached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueSessionRecorded": "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/write.go#Caused":                "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"graphstore/write.go#WriteState":            "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// Retarget moves one pointer through Write, after the row of the node it moves it out of
 	// (planRetarget, its read phase).
 	"graphstore/reasoning.go#Retarget": "graphstore#TestEveryStoreWriteTakesOneLockOrder",

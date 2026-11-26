@@ -88,10 +88,17 @@ const pruneLease = "server-processes"
 // names the other process.
 var ErrKeySetMismatch = errors.New("this process's signing key set does not match a live server process's")
 
-// CapabilityIssueRoom is the capability of a build that serves the issue room (dispatch://INFRA-1253
-// R5): it admits a converted document's socket to its issue's room and settles that room, so an
+// CapabilityIssueRoom is the capability of a build that serves the issue room (R5 of the issue-tree
+// spec): it admits a converted document's socket to its issue's room and settles that room, so an
 // issue is born converted only while every live process lists it (decision 7 of that plan).
 const CapabilityIssueRoom = "issue_room"
+
+// CapabilityTypedBlockSupertags is the capability of a build whose every writer of a block node
+// gives the node its type's supertag (R26 of the issue-tree spec, `r-block-type-supertag`): the
+// boot step that restates block_pointer_targets and block_node_listed to read a block's type from
+// its node runs only where the newest announcement that names another commit lists it, or on a
+// database the boot created from empty.
+const CapabilityTypedBlockSupertags = "typed_block_supertags"
 
 // CapabilityStoresMoved is the capability of a build that reads and writes the priority store's
 // and the workflow store's kinds in the graph store (dispatch://INFRA-1098's R32): a build of the
@@ -103,7 +110,7 @@ const CapabilityStoresMoved = "stores_moved"
 // Capabilities is what this build serves, as Register writes it into
 // server_processes.capabilities and the build's announcement lists it (refs.TupleKinds). A process
 // of a build before the column holds null there, which lists nothing.
-var Capabilities = []string{CapabilityIssueRoom, CapabilityStoresMoved}
+var Capabilities = []string{CapabilityIssueRoom, CapabilityTypedBlockSupertags, CapabilityStoresMoved}
 
 // Instance is what a process registers: the build it serves, the keys it signs and verifies with,
 // and what the decisions over the fleet read (migration 20261101030537).

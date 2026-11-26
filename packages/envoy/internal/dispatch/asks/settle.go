@@ -268,10 +268,11 @@ func leftBy(held heldAnswer, ask model.Ask, tuples []graphstore.Tuple) heldAnswe
 
 // Queue puts the change's statements on b (store.WriteBatch), in Settle's order: the node write
 // of what it states on the ask's node, then, where the change names its cause rather than holding
-// its facts for a later event, those facts under that cause, then the asks row. The row's update
-// names the state the change answers from where it names one (Change.From), and a row no longer
-// in it is refused with ErrStateMoved as the batch reads the update's result, which stops the
-// write phase there.
+// its facts for a later event, those facts under that cause, then the asks row, and last, beside
+// those facts, the ask node's head rows (graphstore.QueueHeads), the last rows a write takes. The
+// row's update names the state the change answers from where it names one (Change.From), and a
+// row no longer in it is refused with ErrStateMoved as the batch reads the update's result, which
+// stops the write phase there.
 func (s Settled) Queue(b *store.WriteBatch) error {
 	graphstore.QueueNodes(b, s.Held)
 	if s.change.Held == nil {
@@ -292,6 +293,9 @@ func (s Settled) Queue(b *store.WriteBatch) error {
 		}
 		return fmt.Errorf("settle ask %s: no such ask", s.askID)
 	})
+	if s.change.Held == nil {
+		graphstore.QueueHeads(b, graphstore.HeldHeads(s.Held))
+	}
 	return nil
 }
 

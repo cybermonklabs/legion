@@ -167,8 +167,8 @@ asking, and no person's session sees any of them at all.
 They are `DEMO_SERVICE_TOKEN`, a stored value, and two `github-app` secrets minted at the GitHub
 stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acme-org`, and
 `DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which that stand's App is installed twice
-under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
-installations and `agent-secrets --github-token` refuses it. The exports name all three
+under logins that differ only in case (`ada` and `Ada`), so a release of its profile holds two
+installations, which is no one token to hand over. The exports name all three
 `github-app` secrets, the stand's address, the route that reads back every call it was sent, and
 the route that sets what it answers each token request from then on: `ordinary`, `refuse`,
 `refuse-repository`, `refuse-permissions`, `widen`, or `fail-once`, which answers the next one
@@ -392,12 +392,13 @@ $ reread DEMO_BROKEN_APP
 The first reread wrote two lines, each `agent secret policy refused`. The copy is also a
 `github-app` secret no profile names, so the reread's load refused it `github-app-no-profile` first,
 and its value read then refused it `value-malformed`, the reason it is refused by from then on, with
-the reason it had before in `was`. The second reread wrote none, since the secret's state did not
-change ([the value read](/legion/broker/operate/#the-value-read)):
+the reason it had before in `was` and the decoder's words of what is wrong in `detail`. The second
+reread wrote none, since the secret's state did not change
+([the value read](/legion/broker/operate/#the-value-read)):
 
 ```json
-{"time":"2026-11-20T12:19:01.593649576Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"github-app-no-profile","owner":"legion-daemon","first_load":false,"detail":"no profile names it, and every GitHub App token is a profile's"}
-{"time":"2026-11-20T12:19:01.593772119Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"value-malformed","owner":"legion-daemon","first_load":false,"was":"github-app-no-profile"}
+{"time":"2026-11-20T12:19:01.593649576Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"github-app-no-profile","owner":"legion-daemon","first_load":false,"detail":"no profile names it, and every GitHub token the broker hands over is a profile's"}
+{"time":"2026-11-20T12:19:01.593772119Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"value-malformed","owner":"legion-daemon","first_load":false,"was":"github-app-no-profile","detail":"the stored value cannot be minted from: GitHub App secret needs an app_id and private_key"}
 ```
 
 ## Exchange a pod's token
@@ -485,19 +486,25 @@ the exchange's audience. The token request above, with that token as `subject_to
 `session=example-reader-session` or no `session`, mints a token that holds the OAuth scope `read`
 alone. Its introspection answer carries `"service":"example-reader"`, `"project_scope":"none"` and
 `"scope":"read"`, and no `person` and no `projects`. A request that names another session is
-refused, and one that names `scope=read` is refused `invalid_scope`: the entry decides the scope,
-and the request never does. The entry fixes its session, so the script registers no pod for it,
-and the registration route refuses one with `409 SESSION_FIXED`.
+refused. A request that adds `scope=read` gets the same token under the project scope
+`read-none`. The entry fixes its session, so the script registers no pod for it, and the
+registration route refuses one with `409 SESSION_FIXED`.
 
-Dispatch serves that token on the routes its read list names, today
-`GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every
-other route of its route table and on `GET /ws/live`. `packages/dispatch/e2e/read-token-live.ts`
-shows both against this stack. Leave the stack running. `bun run dispatch:local` runs until
-Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's exports into it
-too, as you pasted them into the second shell. A shell without them expands `$AGENT_SECRETS_URL`
-and `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In
-that new shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where
-there is no Docker, also set `DATABASE_URL` to a Postgres database of its own):
+Any other trade may ask for `read` too: add `scope=read` to the account entry's request above,
+and its token keeps the person, the session and the project `EXAMPLE`, carries the project scope
+`read-named` and holds `read`. It may add a cut, `as_of=<an RFC 3339 time>`, no later than the
+trade. Such a token writes nothing.
+
+Dispatch serves a read-only token on the GET routes it classes as reads, and answers it
+`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. It answers a
+read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but
+`GET /api/v1/whoami`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
+stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of
+its own: open a new one and paste the dev broker's exports into it too, as you pasted them into
+the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
+`$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In that new
+shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where there is no
+Docker, also set `DATABASE_URL` to a Postgres database of its own):
 
 ```console
 $ DISPATCH_E2E_AGENT_SECRETS_URL=$AGENT_SECRETS_URL DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$AGENT_SECRETS_ACCOUNT_TOKEN_FILE bun run dispatch:local
@@ -510,18 +517,34 @@ there, and run the script in the second shell, which already holds the exports, 
 
 ```console
 $ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/read-token-live.ts
-seeded EXAMPLE: architecture source example/arch, issue EXAMPLE-1
-ok   GET /api/v1/projects/EXAMPLE/architecture [read-only token]: 200 - (want 200)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+seeded EXAMPLE: issue EXAMPLE-1
+ok   GET /api/v1/issues/EXAMPLE-1 [read entry's token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [read entry's token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /ws/live [read entry's token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /api/v1/issues/EXAMPLE-1 [example entry's read token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [example entry's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /ws/live [example entry's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ok   GET /api/v1/issues/EXAMPLE-1/comments [alice]: 0 comment(s) with this run's body (want 0)
-ok   GET /api/v1/issues/EXAMPLE-1 [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [named-project token]: 201 - (want 2xx)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [example entry's token]: 201 - (want 2xx)
+ok   POST /v1/oauth/introspect [machine login's read token]: the answer machine-login (want machine-login)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token]: 200 - (want 200)
+ok   GET /ws/live [machine login's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   POST /v1/oauth/introspect [machine login's read token with a cut]: the answer machine-login-with-a-cut (want machine-login-with-a-cut)
+ok   GET /api/v1/whoami [machine login's read token with a cut]: 200 cut 2026-11-18T09:30:00.123456Z (want 200 cut 2026-11-18T09:30:00.123456Z)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
+ok   GET /ws/live [machine login's read token with a cut]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ```
 
-The script creates the project `EXAMPLE`, an architecture source and an issue in that Dispatch. It
-sends three requests with the read-only token, reads the issue's comments as alice, and then sends
-the same comment with the account entry's token, which may write `EXAMPLE`. It exits 1 when any
-answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
+The script creates the project `EXAMPLE` and an issue in that Dispatch. It trades the read entry's
+token, then the account entry's token with `scope=read`, and sends each a read, a comment and a
+`GET /ws/live`. It reads the issue's comments as alice, and then sends the same comment with the
+account entry's ordinary token, which may write `EXAMPLE`. It logs a machine in, approved through
+this stack, and trades that machine login's token with `scope=read`, then with `scope=read` and
+the cut the golden answers name. It checks each answer of the broker's introspection against
+`packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json`, sends the first token a read
+and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, a read and a
+`GET /ws/live`. It prints one line for each request, with its status and its code, and exits 1
+when any answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
 `bun run dispatch:local` started again, which empties the instance.
 
 ## Read the log and the metrics
@@ -554,12 +577,14 @@ This scrape was taken on a stack that had answered only these calls since it sta
 listener token's refusal and the `bad name` reread above, the two rereads of `DEMO_BROKEN_APP`,
 the enrolment of the pod session the banner's command makes (its key directory in `$KEYS`), and
 one release of `DEMO_GITHUB_APP` to that session, with the GitHub stand set to `fail-once` first.
-The release prints the installation id of each account it holds a token for, and no token:
+The release prints the installation id of each account it holds a token for, and no token;
+`agent-secrets` names first what the token leaves out:
 
 ```console
 $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP -- sh -c 'printf %s "$DEMO_GITHUB_APP" | jq -c ".installations | map_values(.installation_id)"'
+agent-secrets: the profile DEMO_GITHUB_APP left out issues, statuses:write, workflows for acme-org, since the installation there does not hold them
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 {"acme-org":7}
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'

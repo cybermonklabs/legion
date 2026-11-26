@@ -63,8 +63,7 @@ with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys
 // searchTermDocument is true of the artifacts row aliased alias while it is a document the counts
 // hold the words of: a doc, and no issue's decisions query (refs.DecisionsQuerySQL), whose versions
 // render a view over decision nodes and whose row is in no list of its issue's documents. An
-// issue's tree artifact is no doc. Both write versions, so both have document_search rows
-// (migration 20261101182454 puts no kind filter on it), and neither is an item: the issue holds
+// issue's tree artifact is no doc. Both write versions, and neither is an item: the issue holds
 // its spec and its other documents.
 func searchTermDocument(alias string) string {
 	return `(` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
@@ -72,23 +71,25 @@ func searchTermDocument(alias string) string {
 
 // searchTermItemsSQL selects the search vector of every searchable item of the project
 // {project} stands for, one row per item, each kind scoped exactly as searchKeywordLegsSQL scopes
-// it: an issue, each document's row in document_search (the vector of the version search reads;
+// it: an issue, each document's latest version that holds markdown (documentLatestVersionSQL;
 // searchTermDocument), a comment or an ask by its issue's project or else its document's, a
 // message by its issue's.
 //
-// The document arm reads document_search (migration 20261101182447) where it read each
-// artifact's latest version through a lateral join over artifact_versions, for two reasons.
-// Search's own document arm reads that table, so counting any other vector would give the check
-// a df for words search cannot find; and the queue's document rows are written from
-// document_search too (migration 20261101182522), so a step pass and a full build hold one
-// definition of a document's words. The two readings differ only for a document whose latest
-// version carries no markdown, which document_search does not hold and the lateral read as a
-// null vector.
+// A document's vector is the one document_search held of it (migration 20261101182447), read
+// off the document's latest version rather than off that table, which this build reads no row of
+// (R17 of the issue-tree spec): one probe of artifact_versions' unique key a document,
+// which a count of every item reads anyway. It is the vector the queue's document rows are written
+// from (migration 20261101182522's document_search_term_queue, which fires from 20261101182454's
+// trigger inside the version's own write), so a step pass and a full build hold one definition of
+// a document's words; and it is the vector search ranks a document by (searchDocumentKeywordLeg),
+// whose words search finds through the blocks that hold them (node_search). The two differ only
+// where a word stands in a version no block of the document holds yet, a version the block index
+// has still to reach.
 var searchTermItemsSQL = `
 select i.search from issues i where i.project_key = {project}
 union all
-select d.search from document_search d
-  join artifacts a on a.id = d.artifact_id
+select v.search from artifacts a
+  join lateral (` + documentLatestVersionSQL("a") + `) v on true
  where ` + searchTermDocument("a") + ` and a.project_key = {project}
 union all
 select c.search from comments c
@@ -139,11 +140,10 @@ from search_term_totals where project_key = $1 for update`
 // A row whose owner is gone names no project. No pass can tell whose counts held that item, so
 // searchTermQueueSweep drops the row, and the counts it was to correct stay as they are: a
 // project that holds a snapshot is counted by step passes alone (searchTermTotalsMode), and
-// nothing in this build but the erase (ForgetErasedTermsTx) clears a snapshot, so no full build
-// comes to repair them. Clearing the project's snapshot is what asks for one - `update
-// search_term_totals set snapshot = null where project_key = $1`, after which the next pass counts
-// every item of that project again. No production code path deletes an issue or an artifact, so
-// no row reaches this sweep today.
+// nothing in this build clears a snapshot, so no full build comes to repair them. Clearing the
+// project's snapshot is what asks for one - `update search_term_totals set snapshot = null where
+// project_key = $1`, after which the next pass counts every item of that project again. No
+// production code path deletes an issue or an artifact, so no row reaches this sweep today.
 var searchTermQueueProjectSQL = `coalesce(
            (select i.project_key from issues i where i.key = q.issue_key),
            (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or ` + searchTermDocument("a") + `)))`
@@ -165,9 +165,9 @@ var searchTermQueuedItemSQL = `
     select i.search, true as present from issues i
      where it.kind = 'issue' and i.key = it.issue_key and i.project_key = $1
     union all
-    select d.search, true from document_search d
-      join artifacts a on a.id = d.artifact_id
-     where it.kind = 'document' and d.artifact_id = it.artifact_id and ` + searchTermDocument("a") + ` and a.project_key = $1
+    select v.search, true from artifacts a
+      join lateral (` + documentLatestVersionSQL("a") + `) v on true
+     where it.kind = 'document' and a.id = it.artifact_id and ` + searchTermDocument("a") + ` and a.project_key = $1
     union all
     select c.search, true from comments c
       left join issues i on i.key = c.issue_key
@@ -297,7 +297,8 @@ returning t.items`
 // project, which is an item whose issue or artifact has been deleted, and a document row for an
 // artifact the counts hold no words of (searchTermDocument) - an issue's tree, which is no doc, and
 // its decisions query - which no project's counts ever held: migration 20261101182454 puts no kind
-// filter on document_search, deliberately, because every reader of it joins artifacts.
+// filter on document_search, deliberately, because every reader of it joins artifacts, and
+// migration 20261101182522 queues every write of that table.
 // A row is read only once its writer's transaction has committed, and that writer could not
 // have written an item whose owner it could not see, so a row naming no project here names none
 // later either.
@@ -317,21 +318,13 @@ const (
 	searchTermModeFull = "full"
 )
 
-// searchTermStatsDB is what one project's refresh begins its transaction on: the server's pool,
-// or the one connection the erase holds (grapherase.Erase), which counts again after its commit
-// the projects it took erased words out of (RefreshSearchTermStats).
-type searchTermStatsDB interface {
-	Begin(ctx context.Context) (pgx.Tx, error)
-}
-
 // refreshSearchTermStats brings the project's search_term_stats rows and its search_term_totals
 // row up to date in one transaction, and answers what that took. It applies the queued changes
 // where a pass of this build wrote the totals row last, and counts every item of the project
 // again where one did not: a project with no totals row (one created since the last pass), one no
-// pass of this build has counted, one whose refreshed_at another writer moved, and one whose
-// snapshot an erase cleared (ForgetErasedTermsTx).
-func refreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project string) (searchTermRefresh, error) {
-	tx, err := db.Begin(ctx)
+// pass of this build has counted, and one whose refreshed_at another writer moved.
+func refreshSearchTermStats(ctx context.Context, pool *store.Pool, project string) (searchTermRefresh, error) {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return searchTermRefresh{}, err
 	}
@@ -354,164 +347,13 @@ func refreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project s
 		}
 		return searchTermRefresh{Items: items, Mode: searchTermModeStep, Changes: changes}, tx.Commit(ctx)
 	}
-	items, err = rebuildSearchTermStats(ctx, tx, project)
-	if err != nil {
+	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
+		return searchTermRefresh{}, err
+	}
+	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
 		return searchTermRefresh{}, err
 	}
 	return searchTermRefresh{Items: items, Mode: searchTermModeFull, Changes: items}, tx.Commit(ctx)
-}
-
-// RefreshSearchTermStats is refreshSearchTermStats, one project of a refresh pass in a
-// transaction of its own on db, for the erase (grapherase.Erase): it runs it after its commit and
-// outside its locks for each project ForgetErasedTermsTx answered. That function cleared each
-// one's snapshot, so the pass counts the project in full from its items as the erase left them,
-// unless a pass of the project counted it so since the commit, in which case this one applies
-// what was queued after that pass.
-func RefreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project string) error {
-	_, err := refreshSearchTermStats(ctx, db, project)
-	return err
-}
-
-// rebuildSearchTermStats counts every item of project again inside tx, which holds the project's
-// totals row (searchTermTotalsMode), and answers the project's item count: the project's rows go
-// and searchTermStatsRebuild writes them again.
-func rebuildSearchTermStats(ctx context.Context, tx pgx.Tx, project string) (int, error) {
-	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
-		return 0, err
-	}
-	var items int
-	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
-		return 0, err
-	}
-	return items, nil
-}
-
-// searchTermErasedItemsSQL is true of a queue row q about an item an erase took words out of,
-// whichever transaction queued the row: an item a row of the erase's own transaction names - each
-// delete and rewrite of an item, which 20261101182522's triggers queue, and each document_search
-// row the erase deletes, which it queues itself (grapherase's restateSearch) - and a document of
-// {documents}, the documents the erase deleted versions of, whose older rows can carry the vector
-// of such a version. An item is matched by searchTermQueueItemKeySQL, as a pass groups its rows.
-const searchTermErasedItemsSQL = `(q.kind, ` + searchTermQueueItemKeySQL + `) in (
-    select own.kind, ` + searchTermQueueItemKeySQL + ` from search_term_queue own where own.xid = pg_current_xact_id()
-    union all
-    select 'document', document::text from unnest({documents}::uuid[]) document)`
-
-// searchTermErasedProjects answers, in key order, every project a queue row of an erased item
-// names (searchTermErasedItemsSQL). A row whose owner is gone names none, and no project's counts
-// can be told to hold its item (searchTermQueueProjectSQL).
-//
-// Parameters: $1 the documents the erase deleted versions of.
-var searchTermErasedProjects = `select distinct project from (
-  select ` + searchTermQueueProjectSQL + ` as project from search_term_queue q
-   where ` + strings.ReplaceAll(searchTermErasedItemsSQL, "{documents}", "$1") + `) erased
- where project is not null order by project`
-
-// searchTermTotalsForget makes the project's totals row exist and clears its snapshot, which has
-// the next pass of the project count it in full (searchTermTotalsMode), and takes the row's lock.
-// A pass of the project already running holds that lock, so the erase waits for it here, and its
-// statements after this one read what that pass committed; a pass that begins later waits for
-// the erase's commit. The insert waits as well for a first pass whose own claim of the row has not
-// committed yet.
-const searchTermTotalsForget = `insert into search_term_totals (project_key, items, refreshed_at) values ($1, 0, now())
-on conflict (project_key) do update set snapshot = null`
-
-// searchTermStatsForget deletes from the project's statistics every lexeme an erase took out of an
-// item: each lexeme of an old vector a queue row of an erased item carries
-// (searchTermErasedItemsSQL) that the item, as the erase's transaction reads it
-// (searchTermQueuedItemSQL), no longer holds. Of an item's rows the oldest carries the vector the
-// stored counts hold for it, and the erase's own the vector the item held when the erase began, so
-// the lexemes it deletes hold every lexeme the erased text put into the counts. It reads the queue,
-// each erased item by its key and the rows it deletes by theirs, and no other item of the project.
-//
-// Parameters: $1 the project key, $2 the documents the erase deleted versions of.
-var searchTermStatsForget = `
-with queued as (
-  select q.kind, ` + searchTermQueueItemKeySQL + ` as item, q.issue_key, q.artifact_id, q.item_id, q.old_search
-    from search_term_queue q
-   where ` + strings.ReplaceAll(searchTermErasedItemsSQL, "{documents}", "$2") + `
-     and ` + searchTermQueueProjectSQL + ` = $1
-),
-changed as (
-  select distinct on (kind, item) kind, item, issue_key, artifact_id, item_id from queued
-),
-held as (
-  select it.kind, it.item, u.lexeme
-    from changed it
-    cross join lateral (` + searchTermQueuedItemSQL + `
-    ) v
-    cross join lateral unnest(v.search) u
-),
-erased as (
-  select distinct u.lexeme
-    from queued it
-    cross join lateral unnest(it.old_search) u
-   where not exists (select 1 from held h where h.kind = it.kind and h.item = it.item and h.lexeme = u.lexeme)
-)
-delete from search_term_stats s where s.project_key = $1 and s.lexeme in (select lexeme from erased)`
-
-// searchTermQueueErasedDrop deletes every queue row of an erased item (searchTermErasedItemsSQL),
-// the erase's own and those queued before it.
-//
-// Parameters: $1 the documents the erase deleted versions of.
-var searchTermQueueErasedDrop = `delete from search_term_queue q where ` +
-	strings.ReplaceAll(searchTermErasedItemsSQL, "{documents}", "$1")
-
-// ForgetErasedTermsTx takes out of the term statistics, inside tx, the lexemes the erase
-// (`envoy-dispatch erase`, grapherase.Erase) took out of the items it deleted and rewrote, and
-// answers the projects it took them from, in key order, with how many queue rows it deleted.
-// documents are the documents the erase deleted versions of.
-//
-// It runs under the erase's owner locks, for a need of the erase's commit: search_term_stats
-// holds lexemes, and a lexeme of the erased text that stood in it once the erase committed would
-// be the erased words, still stored. So once tx commits no lexeme the erase removed stands in the
-// statistics of any project, and no queue row carrying one stands either. Counting each project
-// again from its items would hold that too, but it reads every item of the project
-// (searchTermStatsRebuild) while the erase still holds its owner locks (grapherase's
-// lockInStoreOrder), and all it adds is the other items' counts of the lexemes taken out, which
-// the caller counts once tx has committed, outside the locks (RefreshSearchTermStats). Each
-// statement here is bounded by the erase's own rows instead:
-//
-//   - the projects are those the queue rows of the erased items name (searchTermErasedProjects);
-//   - each project's totals row is claimed, locked and its snapshot cleared, in key order
-//     (searchTermTotalsForget), so the project's next pass counts it in full;
-//   - from each project's statistics go the lexemes the erased items no longer hold
-//     (searchTermStatsForget);
-//   - and every queue row of the erased items goes (searchTermQueueErasedDrop): any of them can
-//     carry a vector the erased text was part of, and the full count the cleared snapshot asks for
-//     needs none of them.
-//
-// Each reads the queue, which holds what changed since the last pass, the erased items and the
-// rows it deletes by their keys, and one totals row; none reads an item the erase did not change.
-//
-// What the deletes cost, until the count after the commit, is the counts of the lexemes they
-// took out that other items of the project still hold: the related-item check reads such a
-// lexeme as one the statistics do not hold and probes it live (relatedProbeLimit). A count after
-// the commit that fails leaves them so until the project's next refresh pass, which the cleared
-// snapshot makes a full one. No lexeme the erase removed comes back either way: every count after
-// the commit reads the items as the erase left them.
-func ForgetErasedTermsTx(ctx context.Context, tx pgx.Tx, documents []string) ([]string, int64, error) {
-	rows, err := tx.Query(ctx, searchTermErasedProjects, documents)
-	if err != nil {
-		return nil, 0, err
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, 0, err
-	}
-	for _, project := range projects {
-		if _, err := tx.Exec(ctx, searchTermTotalsForget, project); err != nil {
-			return nil, 0, err
-		}
-		if _, err := tx.Exec(ctx, searchTermStatsForget, project, documents); err != nil {
-			return nil, 0, err
-		}
-	}
-	tag, err := tx.Exec(ctx, searchTermQueueErasedDrop, documents)
-	if err != nil {
-		return nil, 0, err
-	}
-	return projects, tag.RowsAffected(), nil
 }
 
 // RefreshEverySearchTermStats is one pass of RunSearchTermStatsRefresh: every project, each in its
@@ -669,14 +511,14 @@ type relatedTerms struct {
 // no totals row; the caller probes those. Otherwise it is ndoc less the excluded owner's items
 // the refresh counted: those holding the lexeme that existed at refreshed_at (created at or
 // before it, the moment of the last pass that changed the project's counts), and of a document
-// the latest version created by then, which is the version document_search held for the refresh
-// to count. Issues, comments, asks and messages keep no history, so their current vector stands
-// in for the one counted; a word one gained since is subtracted though it was not counted, which
-// only lowers df (never below zero). A df lowered to zero is not taken as final
-// (pickRelatedTerms probes it): an own item whose transaction began before the pass's snapshot
-// and committed after it is subtracted though the stored count never held it - the pass leaves
-// that item's queued change for its successor, while refreshed_at has already moved past the
-// item's creation - and an item written since may hold a word only the source held then.
+// the latest version created by then, which is the version the refresh counted of it
+// (documentLatestVersionSQL). Issues, comments, asks and messages keep no history, so their
+// current vector stands in for the one counted; a word one gained since is subtracted though it
+// was not counted, which only lowers df (never below zero). A df lowered to zero is not taken as
+// final (pickRelatedTerms probes it): an own item whose transaction began before the pass's
+// snapshot and committed after it is subtracted though the stored count never held it - the pass
+// leaves that item's queued change for its successor, while refreshed_at has already moved past
+// the item's creation - and an item written since may hold a word only the source held then.
 //
 // A surface costs a to_tsvector per distinct word, so only the title's words are read for one:
 // they are what a reader recognises (Suggestions.SearchQuery), and the title is a few words where
@@ -751,8 +593,9 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 
 // relatedProbeSQL answers which of the given lexemes some item of the project holds, leaving out
 // the excluded owner's items. Each kind probes its own search index with an exists: issues, then
-// documents through document_search (migration 20261101182447), the GIN-indexed vector of each
-// document's latest version, then comments, asks and messages.
+// documents through node_search (migration 20261125160000_issue_tree_node_search), the
+// GIN-indexed vector of each block node, a block read as a block of its document
+// (refs.NodeSearchDocumentSQL), then comments, asks and messages.
 //
 // The document arm's lexeme test is a subquery of its own, which `offset 0` keeps the planner
 // from folding into the exists around it. Folded in, the arm is costed as the search for a
@@ -770,15 +613,15 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 //
 // Parameters: $1 project, $2 lexemes, $3 excluded issue key (empty for none), $4 excluded document
 // artifact id (null for none).
-const relatedProbeSQL = `
+var relatedProbeSQL = `
 with probe as (
   select l.lexeme, quote_literal(l.lexeme)::tsquery as tq from unnest($2::text[]) l(lexeme)
 )
 select p.lexeme from probe p
  where exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
     or exists (select 1
-                 from (select v.artifact_id from document_search v where v.search @@ p.tq offset 0) v
-                 join artifacts a on a.id = v.artifact_id
+                 from (select ` + refs.NodeSearchDocumentSQL("s") + ` as document from node_search s where s.search @@ p.tq offset 0) s
+                 join artifacts a on a.id = s.document
                 where a.kind = 'doc' and a.project_key = $1
                   and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid)
     or exists (select 1 from comments c

@@ -357,6 +357,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(askNode), graphstore.HeldHeads(followed)))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -480,9 +481,11 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The person this credential acts for, where it holds the `person` scope, resolved here and
 	// not at the author check below: resolving a credential reads the store, and the pool
 	// refuses a second connection inside the transaction the next line opens
-	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person.
+	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person. The same
+	// read is the writer the check of who writes an issue's spec or Verification document judges.
 	var asThePerson *model.Actor
-	if s.callerHoldsScope(r, model.ScopePerson) {
+	writer := s.specWriterOf(r, actor)
+	if writer.person {
 		person, held := s.actingPerson(w, r)
 		if !held {
 			return
@@ -577,6 +580,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The check of who writes an issue's spec or Verification document, on the block's
+		// document alone: an edit settles no copy of the ask, and a copy takes only its source's
+		// server attributes, not its wording.
+		if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, blockArtifact); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 		if input.Urgency != nil {
 			edit.Urgency = &requestedUrgency
@@ -649,7 +659,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// and plans nothing for no run). The node write is queued after the row's update and the
 	// parts the edit queued above, and what it states right after ask.edited
 	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
-	// (patchIssue).
+	// (writeIssue).
 	var askNode graphstore.Uncaused
 	if askWordsChanged(previous, ask) {
 		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
@@ -684,6 +694,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// still names ask.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)

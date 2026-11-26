@@ -68,7 +68,9 @@ func (w wireIssue) waits() []string {
 	return w.BlockedBy
 }
 
-// wireComment is the comment a comment.* event carries.
+// wireComment is the comment a comment.* event carries. DeletedAt is the delete mark Dispatch puts
+// on every event of a comment its author deleted, in place of the body it then serves none of
+// (attachPostMarks); a comment.deleted event carries it too.
 type wireComment struct {
 	ID           string        `json:"id"`
 	Body         string        `json:"body"`
@@ -81,6 +83,23 @@ type wireComment struct {
 	ResolvedAt   *string       `json:"resolved_at"`
 	ResolvedBy   *replayActor  `json:"resolved_by"`
 	CreatedAt    time.Time     `json:"created_at"`
+	DeletedAt    *time.Time    `json:"deleted_at"`
+}
+
+// deletedPostBody is the body the replay writes for a comment or a message its author has since
+// deleted: Dispatch serves every event of such a post with its delete mark and without its body,
+// and refuses a post written with an empty one (400 INVALID_COMMENT, 400 INVALID_MESSAGE). Written
+// with this text the post keeps its place, so the replies, resolves and reads that name it find
+// it; the plan sends its delete where the window holds the delete.
+const deletedPostBody = "A post its author deleted since: the replay writes this text in its place."
+
+// loggedBody is the body a replayed write of a comment or a message sends: the logged body, or
+// deletedPostBody for a post whose event carries the delete mark and so no body.
+func loggedBody(body string, deletedAt *time.Time) string {
+	if deletedAt != nil {
+		return deletedPostBody
+	}
+	return body
 }
 
 // wireAsk is the ask an ask.* event carries; an event without a state (a follower change) is not
@@ -235,7 +254,7 @@ func replayIssueAt(lg issueLog, at, until time.Time, rec *reconstruction) (repla
 				i = len(is.Comments) - 1
 			}
 			cm := &is.Comments[i]
-			cm.Body, cm.Anchor = c.Body, c.Anchor
+			cm.Body, cm.Anchor, cm.DeletedAt = loggedBody(c.Body, c.DeletedAt), c.Anchor, c.DeletedAt
 			cm.Open, cm.ResolvedAt, cm.ResolvedBy = !c.Resolved, c.ResolvedAt, c.ResolvedBy
 			if !c.Resolved {
 				cm.ResolvedAt, cm.ResolvedBy = nil, nil
@@ -304,19 +323,25 @@ func replayIssueAt(lg issueLog, at, until time.Time, rec *reconstruction) (repla
 	}
 	refs := map[string]bool{}
 	for _, ev := range window {
-		if !commentStates[ev.Type] {
+		if !commentStates[ev.Type] && ev.Type != evCommentDeleted {
 			continue
 		}
 		c, err := decodePayload[wireComment](ev)
 		if err != nil {
 			return is, nil, err
 		}
-		if ev.Type == evCommentCreated {
+		switch ev.Type {
+		case evCommentCreated:
 			if c.ReplyTo != nil {
 				refs[*c.ReplyTo] = true
 				refs[root(c.ID)] = true
 			}
-		} else {
+		case evCommentDeleted:
+			// The plan sends the delete, so the comment is seeded even in a resolved thread
+			// nothing else in the window names: its root is named with it.
+			refs[c.ID] = true
+			refs[root(c.ID)] = true
+		default:
 			refs[c.ID] = true
 		}
 	}
@@ -514,6 +539,9 @@ func stateCounts(st replayState, window []replayEvent) replayCounts {
 			}
 		}
 		for _, cm := range is.Comments {
+			if cm.DeletedAt != nil && cm.DeletedAt.Before(st.At) {
+				c.CommentsDeleted++
+			}
 			if !cm.Open {
 				c.CommentsResolved++
 				continue

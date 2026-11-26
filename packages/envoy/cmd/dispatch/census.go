@@ -31,14 +31,14 @@ import (
 //     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
 //     node; with the store-only lines of copied_from and moved_to, which no table projects,
 //     refusing a far end of either that does not resolve; with the dangling-citation counter's
-//     line and the collision census over an earlier release's restore
-//     (graphcensus.DanglingCitations, CollisionsOf); and with what is left of the decisions
-//     documents an earlier release converted (graphcensus.DecisionsCensus: the decisions
-//     documents that still stand, their unconverted sections and the specs whose answered asks
-//     left them), none of which refuses; and with the census of the versions version_renders
-//     holds (graphcensus.VersionRenderCensus), each one's stored markdown held to a render of the
-//     tree as of its row's time, which refuses on a difference. `--verbose` adds one line for
-//     each citation the counter counted.
+//     line and the collision census over an earlier release's restore (graphcensus.StoreReport's
+//     Dangling, CollisionsOf); and with what is left of the decisions documents an earlier
+//     release converted (graphcensus.DecisionsCensus: the decisions documents that still stand,
+//     their unconverted sections and the specs whose answered asks left them), none of which
+//     refuses; and with the census of the versions version_renders holds
+//     (graphcensus.VersionRenderCensus), each one's stored markdown held to a render of the tree
+//     as of its row's time, which refuses on a difference. `--verbose` adds one line for each
+//     citation the counter counted.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
@@ -50,6 +50,14 @@ import (
 //     yet, where the census says so and passes on the growth pass alone; where the store exists
 //     it also reads the store's type nodes, so that it parses each version against the block
 //     schema the store declares.
+//
+// The first two forms print, before their own report, the dry run of R2's daemon-thread step
+// (graphcensus.ReadDaemonThreadCensus, docs.DaemonThreadStep): one line holding
+// `daemon_thread_parent=<n>`, how many blocks stand under a message of a thread the Legion
+// daemon's session began or under a block of one, and one line for each naming the node the step
+// would move by its address. It is read in a read-only snapshot of its own and refuses nothing:
+// the step re-places those nodes at the first boot of the release, and the deployment reads the
+// count and the addresses before its server moves to this binary's image.
 //
 // Each keeps the one exit convention: 0 when nothing refuses, 1 when the report refuses (every
 // reason is in the report), the rehearsal's refusals of its own among them, 2 when the census could
@@ -98,6 +106,9 @@ func censusWith(ctx context.Context, args []string, databaseURL string, rehearsa
 		writeCensusFailure(errOut, err)
 		return 2
 	}
+	if !writeDaemonThreadCensus(ctx, databaseURL, out, errOut) {
+		return 2
+	}
 	report.Write(out)
 	code := 0
 	if report.Refused() {
@@ -134,8 +145,9 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 		return 2
 	}
 	if !report.Absent {
-		var decisions graphcensus.DecisionsCensus
+		var decisions graphcensus.DecisionsCensus // kept for one release: decisions-documents-fn
 		var renders graphcensus.VersionRenderCensus
+		// kept for one release: decisions-documents-fn
 		if err := inCensusSnapshot(ctx, databaseURL, "the decisions census", func(tx pgx.Tx) (err error) {
 			decisions, err = docs.ReadDecisionsCensus(ctx, tx)
 			return err
@@ -150,7 +162,11 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 			writeCensusFailure(errOut, err)
 			return 2
 		}
-		report.Decisions, report.VersionRenders = &decisions, &renders
+		report.Decisions = &decisions // kept for one release: decisions-documents-fn
+		report.VersionRenders = &renders
+	}
+	if !writeDaemonThreadCensus(ctx, databaseURL, out, errOut) {
+		return 2
 	}
 	if verbose {
 		report.WriteVerbose(out)
@@ -187,10 +203,28 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 	return 0
 }
 
+// writeDaemonThreadCensus prints to out the dry run of R2's daemon-thread step
+// (graphcensus.DaemonThreadCensus.Write), read in a read-only snapshot of its own
+// (inCensusSnapshot), so it writes no tuple, no version and no approval. It reports whether the
+// dry run was read; where it was not, errOut says why, and the census could not be taken.
+func writeDaemonThreadCensus(ctx context.Context, databaseURL string, out, errOut io.Writer) bool {
+	var dryRun graphcensus.DaemonThreadCensus
+	if err := inCensusSnapshot(ctx, databaseURL, "the daemon-thread census", func(tx pgx.Tx) (err error) {
+		dryRun, err = graphcensus.ReadDaemonThreadCensus(ctx, tx)
+		return err
+	}); err != nil {
+		writeCensusFailure(errOut, err)
+		return false
+	}
+	dryRun.Write(out)
+	return true
+}
+
 // inCensusSnapshot runs read in a read-only snapshot on a connection of its own, as the census
-// reads what only docs reads (docs.ReadDecisionsCensus, docs.ReadVersionRenderCensus); what names
-// that read in an error. The connection is store.Connect's, so it carries what every connection
-// this build opens to Dispatch's database carries.
+// reads what only docs reads (docs.ReadDecisionsCensus, docs.ReadVersionRenderCensus) and the dry
+// run of the daemon-thread step (writeDaemonThreadCensus); what names that read in an error. The
+// connection is store.Connect's, so it carries what every connection this build opens to
+// Dispatch's database carries.
 func inCensusSnapshot(ctx context.Context, databaseURL, what string, read func(pgx.Tx) error) error {
 	conn, err := store.Connect(ctx, databaseURL, "envoy-dispatch census")
 	if err != nil {

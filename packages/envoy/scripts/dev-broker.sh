@@ -102,9 +102,9 @@
 # READ_ACCOUNT is a read entry (BROKER_EXCHANGE_READ_ACCOUNTS) beside the one example entry
 # (BROKER_EXCHANGE_ACCOUNTS). The token its pod exchanges for holds the scope read alone, the
 # project scope none, the service READ_SERVICE and the session READ_SESSION, and names no person
-# and no project. Dispatch serves such a token on the routes its read list names (today GET
-# /api/v1/projects/{key}/architecture alone) and answers it 403 READ_ONLY_TOKEN on every other
-# route, which packages/dispatch/e2e/read-token-live.ts drives against this stack and a
+# and no project. Dispatch serves such a token on every GET route it classes as a read and
+# answers it 403 READ_ONLY_TOKEN on every other route, which
+# packages/dispatch/e2e/read-token-live.ts drives against this stack and a
 # `bun run dispatch:local` Dispatch. A read entry fixes its session, so its pod needs no
 # registration below, and the broker refuses one with 409 SESSION_FIXED.
 #
@@ -119,8 +119,9 @@
 # A secret request is approved on the broker's own page, <broker>/approve/<record>, by a person
 # signed in to the broker (BROKER_SIGNIN_*). The same issuer process stands in for that person's
 # identity provider: --code-flow serves the broker's sign-in client, whose secret this script
-# generates into WORK_DIR, and --sign-in-as signs every authorization in as APPROVER_LOGIN with
-# no page to fill in, so a browser on this machine approves a secret request on that page.
+# generates into WORK_DIR and whose one callback is the approval page's on loopback, taken at the
+# port the broker binds, and --sign-in-as signs every authorization in as APPROVER_LOGIN with no
+# page to fill in, so a browser on this machine approves a secret request on that page.
 #
 # Each invocation creates and drops its own isolated Postgres database (named from this run's own
 # WORK_DIR, below) and binds OS-assigned ephemeral ports for its API and its metrics
@@ -440,9 +441,9 @@ await() {
 # binds that address's port 443, where the proxy dials it (the header); what each installation
 # holds is DEV_BROKER_GITHUB_PERMISSIONS', one --installation-permissions per owner it names. ---
 STANDS_ARGS=(--dir "$STANDS_DIR"
-  --github-owner "$GITHUB_OWNER=$GITHUB_INSTALLATION"
-  --github-owner "$GITHUB_CASE_OWNER=$GITHUB_CASE_INSTALLATION"
-  --github-owner "$GITHUB_CASE_OTHER_OWNER=$GITHUB_CASE_OTHER_INSTALLATION"
+  --installation "$GITHUB_OWNER=$GITHUB_INSTALLATION"
+  --installation "$GITHUB_CASE_OWNER=$GITHUB_CASE_INSTALLATION"
+  --installation "$GITHUB_CASE_OTHER_OWNER=$GITHUB_CASE_OTHER_INSTALLATION"
   --host "github-tls=$GITHUB_PROXIED_HOST")
 if [ -n "${DEV_BROKER_PROXIED_GITHUB_IP:-}" ]; then
   STANDS_ARGS+=(--address "github-tls=$DEV_BROKER_PROXIED_GITHUB_IP:443")
@@ -564,7 +565,7 @@ echo "dev-broker: starting dev-oidc-issuer..." >&2
   --token "$EXCHANGE_AUDIENCE=$READ_ACCOUNT=$READ_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
-  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
+  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE=http://127.0.0.1/signin/callback" \
   --sign-in-as "$APPROVER_LOGIN" \
   > >(trap '' TERM INT; exec tee -a "$ISSUER_LOG" >&2) 2>&1 &
 ISSUER_PID=$!
@@ -823,7 +824,7 @@ dev-broker: ready.
   listener token:      $LISTENER_TOKEN_FILE  ($LISTENER_ACCOUNT, the caller "listener")
   exchange token:      $EXCHANGE_TOKEN_FILE  ($EXCHANGE_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE)
   pod token:           $POD_TOKEN_FILE  (the same pod, audience $BROKER_AUDIENCE: what its registration named it by)
-  read token:          $READ_TOKEN_FILE  ($READ_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: exchanges under $READ_SESSION for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)
+  read token:          $READ_TOKEN_FILE  ($READ_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: exchanges under $READ_SESSION for a token of the scope read alone, which Dispatch serves on every GET route it classes as a read and answers 403 READ_ONLY_TOKEN on every other route)
   registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE", listed to register $EXCHANGE_ACCOUNT's pods: BROKER_POD_REGISTRARS=$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT)
   registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
   github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)

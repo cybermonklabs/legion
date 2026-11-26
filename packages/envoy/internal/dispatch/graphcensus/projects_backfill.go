@@ -53,7 +53,7 @@ type objectKind struct {
 	// distinguishes replacements even when their created_at values are equal.
 	rows string
 	// owners answers, for a kind whose batch writes under its rows' owners, the owner each row of
-	// the ids $1 stands under, as (issue, document id, id): for a document the owner whose lock a
+	// the ids $1 stands under, as (issue, document id): for a document the owner whose lock a
 	// writer that deletes its row takes before anything else (api's removeArtifact takes its
 	// document's issue's), and for an issue its own row, under which the batch reads the parent its
 	// child_of names (heldRowMarks). It is empty for a kind whose batch names nothing on a row.
@@ -91,8 +91,8 @@ func nodeInAnotherProject(kind, id, project string) string {
 // not gone naming a project or parties at the row a's address that is that row's own - any such
 // node, for a row no removal takes, and for one a removal can take, one whose live statement was
 // made for it (ownLiveStatement). A node whose live statement is not the row's is a document a
-// build before this one removed and then made again at the address before the node was erased,
-// and that row is owed its own live statement as much as a row with none (classGone).
+// build before this one removed and then made again at the address, and that row is owed its own
+// live statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not ` + retiredDocument(a) + ` and not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
 		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
@@ -128,7 +128,7 @@ var objectKinds = []objectKind{
 		  or (` + issueRowUnmarked + ` and not ` + nodeInAnotherProject(graphstore.KindIssue, "i.key", "i.project_key") + `))
 		order by i.key limit $2`,
 		rows:   `select key, key from issues where key = any($1::text[])`,
-		owners: `select key, '', key from issues where key = any($1::text[])`},
+		owners: `select key, '' from issues where key = any($1::text[])`},
 	documentObjectKind,
 	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
@@ -171,7 +171,7 @@ var documentObjectKind = objectKind{kind: graphstore.KindArtifact, read: `
 		       or (a.node_kind is null and not ` + nodeInAnotherProject(graphstore.KindArtifact, "a.ref_key", "a.project_key") + `))
 		order by a.ref_key limit $2`,
 	rows:   `select ref_key, id::text from artifacts where ref_key = any($1::text[])`,
-	owners: `select coalesce(issue_key, ''), id::text, ref_key from artifacts where ref_key = any($1::text[])`}
+	owners: `select coalesce(issue_key, ''), id::text from artifacts where ref_key = any($1::text[])`}
 
 // issueRowUnmarked is the test that the issues row aliased i is one its row marker does not mark:
 // it names no node, or it names a parent its node's child_of does not name, which only the release
@@ -181,10 +181,10 @@ var documentObjectKind = objectKind{kind: graphstore.KindArtifact, read: `
 const issueRowUnmarked = `(i.node_kind is null or (i.parent_key is not null and ` + store.IssueParentMoved + `))`
 
 // ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
-// node for from its rows (objectKinds), and false for any other kind. The erase reads it to refuse
-// a node of these kinds while its row holds its text (grapherase's Erasure.read). An ask's and a
-// message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers false
-// for it rather than let the cast in objectKind.rows abort the erase's transaction.
+// node for from its rows (objectKinds), and false for any other kind. The sweep of an orphaned
+// document's node reads it under the node's lock (StateOrphanedGone). An ask's and a message's row
+// is keyed by a uuid, so an id that is no uuid names no row of them; it answers false for it rather
+// than let the cast in objectKind.rows abort its caller's transaction.
 func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {
@@ -622,7 +622,7 @@ func derefText(value *string) string {
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
 // ascending id, in runs of consecutive nodes of one cause, each run's nodes queued as one write
-// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.Caused
+// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.QueueCaused
 // under that cause, and the report counts the tuples the store appended for those runs
 // (graphstore.Counting).
 //
@@ -636,10 +636,10 @@ func derefText(value *string) string {
 // document has another UUID even when its created_at is identical; it is left for the next run,
 // which the report's remaining count names. A removal waiting for this batch removes a row whose
 // node is live, and this build's removal then states that node gone. The owner locks come first
-// and the nodes after them, the order every writer of these nodes takes (a document's create, its
-// removal, the erase). A kind no writer deletes a row of takes no lock and is read again the same
-// way, but an issue, whose batch takes its own row as its owner lock, so the parent its child_of
-// names is read under it (heldRowMarks).
+// and the nodes after them, the order every writer of these nodes takes (a document's create and
+// its removal). A kind no writer deletes a row of takes no lock and is read again the same way,
+// but an issue, whose batch takes its own row as its owner lock, so the parent its child_of names
+// is read under it (heldRowMarks).
 //
 // Beside each node it states what its kind's writer states: a document's part_of the issue that
 // owns it, with the node's time, its writer and its cause (graphstore.ArtifactPartOf), and its
@@ -648,9 +648,10 @@ func derefText(value *string) string {
 // (nameArtifactNodes); an issue's child_of to the parent its row names, as a claim
 // (issueParentClaims), so graph_edges answers that parent from the store once the row names its
 // node, and a parent the release before moved in place on a marked row replaces the one the node
-// held. Last it names each node on its issue's or document's row (node_kind and node_address),
+// held. Then it names each node on its issue's or document's row (node_kind and node_address),
 // after the node rows, as the lock order on api/inbox_read.go's markInboxReadThreads has a
-// projection row follow its node. A document retired since the batch was read is owed no live
+// projection row follow its node, and last it writes the head rows of every node it named, once
+// (graphstore.WriteHeads), the last rows a write takes. A document retired since the batch was read is owed no live
 // node, since its retirement stated it gone (retiredDocument): no node of it is written, and its
 // row, where it names no node yet, is named with the rest.
 //
@@ -763,6 +764,8 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			write = append(write, node)
 		}
 		written.Rows, written.Nodes = int64(len(write))-named, int64(len(write))-named
+		// heads is every node the batch's writes name, whose head rows it writes once, last.
+		var heads []graphstore.NodeKey
 		for start := 0; start < len(write); {
 			end := start + 1
 			for end < len(write) && write[end].SourceEvent == write[start].SourceEvent {
@@ -800,9 +803,13 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				return err
 			}
 			var appended int64
-			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), cause); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueCaused(b, graphstore.Counting(made, &appended), cause)
+				return nil
+			}); err != nil {
 				return err
 			}
+			heads = append(heads, graphstore.HeldHeads(made)...)
 			written.Tuples += appended
 			start = end
 		}
@@ -823,6 +830,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
 				return fmt.Errorf("state the parents of a batch of issues: %w", err)
 			}
+			heads = append(heads, graphstore.HeadsOfClaims(claims)...)
 			written.Tuples += parents
 			if _, err := tx.Exec(ctx, `
 				update issues set node_kind = $2, node_address = key
@@ -832,13 +840,23 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			}
 		case graphstore.KindArtifact:
 			values, err := nameArtifactNodes(ctx, tx, append(writtenIDs, retired...))
-			if err != nil || len(values) == 0 {
+			if err != nil {
 				return err
 			}
-			written.Tuples += int64(len(values))
-			return graphstore.Write(ctx, tx, nil, values)
+			if len(values) > 0 {
+				written.Tuples += int64(len(values))
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					graphstore.QueueWrite(b, nil, values)
+					return nil
+				}); err != nil {
+					return err
+				}
+				heads = append(heads, graphstore.HeadsOf(nil, values)...)
+			}
 		}
-		return nil
+		// The head rows of every node the batch named, the last rows it takes: after its node
+		// rows, its tuples and the rows that name its nodes.
+		return graphstore.WriteHeads(ctx, tx, heads)
 	}); err != nil {
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}
@@ -1092,9 +1110,9 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []str
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
 	owners := events.OwnerRows{}
-	var issue, document, id string
-	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
-		owners.Add(issue, document, kind.kind+" "+id)
+	var issue, document string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &document}, func() error {
+		owners.Add(issue, document)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
@@ -1195,7 +1213,14 @@ func writeScopeBatch(ctx context.Context, database *store.Store, kind string, sc
 		}
 		var err error
 		filled, err = graphstore.FillScopes(ctx, tx, scopes)
-		return err
+		if err != nil {
+			return err
+		}
+		scoped := make([]graphstore.NodeKey, len(scopes))
+		for index, scope := range scopes {
+			scoped[index] = graphstore.NodeKey{Kind: scope.Kind, ID: scope.ID}
+		}
+		return graphstore.WriteHeads(ctx, tx, scoped)
 	}); err != nil {
 		return 0, fmt.Errorf("fill the project of a batch of %s nodes: %w", kind, err)
 	}

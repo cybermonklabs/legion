@@ -1,16 +1,16 @@
-census: schema version 20261123120000 (schema_migrations); pending: 20261121060636_search_document_text.up.sql, 20261123134318_stores_moved.up.sql, 20261123185607_graph_nodes_artifact_id_index.up.sql
+census: schema version 20261126000200 (schema_migrations); pending: 20261121060636_search_document_text.up.sql, 20261126000300_stores_moved.up.sql, 20261126000400_graph_nodes_artifact_id_index.up.sql
 census: 20261121060636_search_document_text.up.sql touches no existing table
 census: 20261121060636_search_document_text.up.sql census (20261121060636_search_document_text.census.sql): 0
-census: 20261123134318_stores_moved.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123134318_stores_moved.up.sql touches graph_tuples: 1,023 rows, 936.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123134318_stores_moved.up.sql census (20261123134318_stores_moved.census.sql): 0
-census: 20261123185607_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123185607_graph_nodes_artifact_id_index.up.sql census (20261123185607_graph_nodes_artifact_id_index.census.sql): 0
+census: 20261126000300_stores_moved.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000300_stores_moved.up.sql touches graph_tuples: 1,023 rows, 936.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000300_stores_moved.up.sql census (20261126000300_stores_moved.census.sql): 0
+census: 20261126000400_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000400_graph_nodes_artifact_id_index.up.sql census (20261126000400_graph_nodes_artifact_id_index.census.sql): 0
 census: transactions open longer than 1m0s, or of an age the census cannot see: none
 census: ok
 census: rehearsal: it skips the pending migration 20261121060636_search_document_text.up.sql, of another tree's: it touches none of priority_nodes, priority_tuples, workflow_nodes, workflow_tuples, graph_nodes, graph_tuples
-census: rehearsal: it applies the pending migration 20261123134318_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
-census: rehearsal: it skips the pending migration 20261123185607_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run
+census: rehearsal: it applies the pending migration 20261126000300_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
+census: rehearsal: it skips the pending migration 20261126000400_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run
 census: rehearsal: its copy ended: 66 tuples of the four tables in 16ms, in batches of 200
 census: rehearsal: priority: node rows: old 4 (md5 b08b5335974fbd831e675c88cc50b8b4), moved 4 (md5 b08b5335974fbd831e675c88cc50b8b4), 0 differing
 census: rehearsal: priority: tuples: old 29 (md5 9f5516bb5f01a1cde203980da1ec9a2c), moved 29 (md5 9f5516bb5f01a1cde203980da1ec9a2c), 0 differing

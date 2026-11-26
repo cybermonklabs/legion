@@ -12,7 +12,7 @@ import (
 // The three migrations of the document-search table: 20261101182447 creates it with its GIN
 // index, 20261101182454 adds the function and the trigger that keep it at each document's latest
 // version, and 20261101182501 creates the one row that records how far the boot's fill of it has
-// got (store.FillDocumentSearch).
+// got, which a process of the release before runs and this build does not.
 const (
 	documentSearchTable    = 20261101182447
 	documentSearchTrigger  = 20261101182454
@@ -27,8 +27,8 @@ const (
 // needs no gigabyte, over a database at 20261101182447, where artifact_versions is already above
 // that.
 func TestCensusExemptsTheDocumentSearchTriggerFromTheTableLimit(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, documentSearchTable)
+	t.Parallel()
+	store := openMigratedTestStore(t, documentSearchTable)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(),
 		migrationsThrough(t, documentSearchTrigger), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -53,6 +53,7 @@ func TestCensusExemptsTheDocumentSearchTriggerFromTheTableLimit(t *testing.T) {
 // migration. The trigger's migration is the one that touches artifact_versions, and the test
 // above is why it may.
 func TestTheDocumentSearchMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name  string
 		files string

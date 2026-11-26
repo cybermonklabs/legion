@@ -53,6 +53,7 @@ func describedAnswer(answer *model.AskAnswer) string {
 // the node holds it, the open questions and every read of open asks leave the ask out, and the
 // issue's answered asks hold it.
 func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := blockAskHandlerWithDocuments(t)
 	issue, askID := seedBlockAsk(t, handler, "Readers of the ask node", "decision", transportAsk, "Which transport?")
 	ctx := context.Background()
@@ -188,6 +189,7 @@ func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
 // states each answer on the node and on the row; then the release before's reopen wrote each row
 // open again, alone.
 func TestEveryAnswerAPersonsPagesShowReadsTheAsksNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "NODES", "Answers on their nodes", "A spec")
@@ -331,6 +333,7 @@ func TestEveryAnswerAPersonsPagesShowReadsTheAsksNode(t *testing.T) {
 // askNodeAnswerTextOf and askNodeAnswerOf): an answered question of XNODE whose row the release
 // before's reopen wrote open again, alone, is still offered, with the answer alice gave.
 func TestTheAnsweredQuestionsOfOtherProjectsAreReadOffTheirNodes(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()

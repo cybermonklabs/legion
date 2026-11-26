@@ -1,13 +1,13 @@
-census: schema version 20261123120000 (schema_migrations); pending: 20261123134318_stores_moved.up.sql, 20261123185607_graph_nodes_artifact_id_index.up.sql
-census: 20261123134318_stores_moved.up.sql touches graph_nodes: 164 rows, 176.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123134318_stores_moved.up.sql touches graph_tuples: 1,023 rows, 624.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123134318_stores_moved.up.sql census (20261123134318_stores_moved.census.sql): 0
-census: 20261123185607_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 176.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123185607_graph_nodes_artifact_id_index.up.sql census (20261123185607_graph_nodes_artifact_id_index.census.sql): 0
+census: schema version 20261126000200 (schema_migrations); pending: 20261126000300_stores_moved.up.sql, 20261126000400_graph_nodes_artifact_id_index.up.sql
+census: 20261126000300_stores_moved.up.sql touches graph_nodes: 164 rows, 176.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000300_stores_moved.up.sql touches graph_tuples: 1,023 rows, 624.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000300_stores_moved.up.sql census (20261126000300_stores_moved.census.sql): 0
+census: 20261126000400_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 176.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000400_graph_nodes_artifact_id_index.up.sql census (20261126000400_graph_nodes_artifact_id_index.census.sql): 0
 census: transactions open longer than 1m0s, or of an age the census cannot see: none
 census: ok
-census: rehearsal: it applies the pending migration 20261123134318_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
-census: rehearsal: it skips the pending migration 20261123185607_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run
+census: rehearsal: it applies the pending migration 20261126000300_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
+census: rehearsal: it skips the pending migration 20261126000400_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run
 census: rehearsal: its copy ended: 61 tuples of the four tables in 17ms, in batches of 200
 census: rehearsal: priority: node rows: old 3 (md5 75b390d3cb7b05f96de57af999d5471b), moved 3 (md5 75b390d3cb7b05f96de57af999d5471b), 0 differing
 census: rehearsal: priority: tuples: old 23 (md5 223057c0069116232922403fe72cc2a9), moved 23 (md5 223057c0069116232922403fe72cc2a9), 0 differing

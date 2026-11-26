@@ -245,7 +245,7 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 	}
 	var managed bool
 	if row != nil {
-		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.parent, row.labels)
+		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.project, row.parent, row.labels)
 	} else {
 		managed, err = legionManagedStatus(ctx, walk, issueKey)
 	}
@@ -324,9 +324,12 @@ func declinedAskHead(text string) string {
 	return flat
 }
 
-// declinedAsk is the SQL predicate, on asks, that holds for an ask a person declined to answer
-// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew.
-const declinedAsk = `state = 'resolved' and resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+// declinedResolution is the SQL predicate, on resolution, an ask's resolution as its node holds it
+// (askNodeResolutionOf), that holds for an ask a person declined to answer
+// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew. The
+// resolution is read off the node, as every read of an answer reads it (R3); it is none on an ask
+// the node holds other than resolved.
+const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
 
 // readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
 // savepoint they were read on is released. Nil, not an empty list, where the issue holds no
@@ -345,9 +348,11 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 	}
 	// The note is the resolution's reason, which a person who wrote none leaves empty.
 	rows, err := tx.Query(ctx, `
-		select id::text, question, coalesce(resolution->>'reason', '') from asks
-		where issue_key = $1 and `+declinedAsk+`
-		order by created_at, id
+		select a.id::text, a.question, coalesce(r.resolution->>'reason', '')
+		from asks a
+		cross join lateral (select `+askNodeResolutionOf("a")+` as resolution) r
+		where a.issue_key = $1 and r.`+declinedResolution+`
+		order by a.created_at, a.id
 	`, issueKey)
 	if err != nil {
 		return nil, err
@@ -402,12 +407,13 @@ func (s *server) writeAdvice(
 	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, appending, opensAQuestion, nil)
 }
 
-// adviceIssueRow is the part of an issue row a write's advice reads - its parent and its labels,
-// which the walk for who owns the issue's status starts from (legionManagedStatusOfRow) - as the
-// write leaves the row.
+// adviceIssueRow is the part of an issue row a write's advice reads - its project, its parent and
+// its labels, which the walk for who owns the issue's status starts from
+// (legionManagedStatusOfRow) - as the write leaves the row.
 type adviceIssueRow struct {
-	parent *string
-	labels []string
+	project string
+	parent  *string
+	labels  []string
 }
 
 // writeAdviceBefore is writeAdvice for a write that reads its advice before it writes the issue
@@ -696,16 +702,18 @@ func (s *server) supersededApprovalAdvice(
 // out, and a project's stored list of that step alone reads as [spec], as every read of a stored
 // list does (gatedStepsWithout).
 func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
-	// kept for one release: design-gate-rows
 	rows, err := q.Query(ctx, `
 		select g.issue, g.step
 		from design_gates g
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
-		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any($2::text[])
-		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[]))
+		where g.artifact_id = $1 and not (i.status = any($3::text[]))
+		  and g.step = any($2::text[]) -- kept for one release: design-gate-rows
+		  and coalesce(g.holds, g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[])) -- kept for one release: check-narrowings
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow, model.GatedStepSpec, retiredDecisionsStep)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow,
+		// kept for one release: check-narrowings
+		model.GatedStepSpec, retiredDecisionsStep)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}
@@ -1079,15 +1087,11 @@ func (response advisedResponse) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(payload)+len(advice)+11)
-	encoded = append(encoded, payload[:len(payload)-1]...)
+	key := `"advice":`
 	if len(payload) > 2 {
-		encoded = append(encoded, ',')
+		key = "," + key
 	}
-	encoded = append(encoded, `"advice":`...)
-	encoded = append(encoded, advice...)
-	encoded = append(encoded, '}')
-	return encoded, nil
+	return slices.Concat(payload[:len(payload)-1], []byte(key), advice, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {

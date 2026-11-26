@@ -22,15 +22,15 @@ import (
 )
 
 // TestTheBackfillHangsAnOlderArtifactUnderItsIssue is the backfill's half of R16 of
-// dispatch://INFRA-1253 (T2a of its plan), under INFRA-1149's r-view-end contract. A database holds
-// the rows a build before this one wrote, by SQL in their old shape: an issue, its markdown
-// document and its image of two versions, and a project's document, none with a node or a
-// marker; and a document an INFRA-3862 build wrote, whose node stands with no part_of and whose row
-// names none. The run gives each row its node and names it on the row; each of the issue's
-// documents is part_of its issue, dated at its row's own created_at and made by its row's author,
-// at the sentinel; the project's document hangs under nothing; and the image's node holds the mime,
-// the size and the sha256 of its newest version, dated at that version. A second run writes no
-// node, no tuple and no row.
+// the issue-tree spec (T2a of its plan), under the graph-store spec's r-view-end contract. A
+// database holds the rows a build before this one wrote, by SQL in their old shape: an issue, its
+// markdown document and its image of two versions, and a project's document, none with a node or a
+// marker; and a document a build of the closed-project spec wrote, whose node stands with no
+// part_of and whose row names none. The run gives each row its node and names it on the row; each
+// of the issue's documents is part_of its issue, dated at its row's own created_at and made by its
+// row's author, at the sentinel; the project's document hangs under nothing; and the image's node
+// holds the mime, the size and the sha256 of its newest version, dated at that version. A second
+// run writes no node, no tuple and no row.
 func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -90,8 +90,8 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 		t.Fatalf("the long image's ref_key fits %t and its version's address fits %t, want the ref_key inside the bound and the version past it",
 			graphstore.AddressFits(long), graphstore.AddressFits(graphstore.VersionID(long, 1)))
 	}
-	// INFRA-3862's upload wrote the document's node before its row and named it nowhere, and stated
-	// no part_of: its row's missing marker is what the run walks.
+	// The closed-project spec's upload wrote the document's node before its row and named it
+	// nowhere, and stated no part_of: its row's missing marker is what the run walks.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.ArtifactNode("OLD-1/plan-md", "OLD", "", alice, created),
@@ -104,7 +104,7 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 		`, created)
 		return err
 	}); err != nil {
-		t.Fatalf("seed the document an INFRA-3862 build wrote: %v", err)
+		t.Fatalf("seed the document a build of the closed-project spec wrote: %v", err)
 	}
 	documents := []string{"OLD-1/notes-md", "OLD-1/shot-png", "OLD-1/plan-md", "OLD/runbook-md", long}
 	for _, refKey := range documents {
@@ -343,7 +343,7 @@ func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the removal's owner lock", early.report, early.err)
 	}
 	t.Logf("the backfill waits behind the removal at: %s", lockstep.WaitingStatement(t, database, pid))
@@ -375,7 +375,7 @@ func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 }
 
 // TestTheObjectBatchTakesTheStoreLockOrder holds writeObjectBatch, which names an issue's and a
-// document's node on its row (dispatch://INFRA-1253), to the store's lock order, as
+// document's node on its row (the issue-tree spec), to the store's lock order, as
 // TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches: the owner row the batch's
 // rows stand under first, then the node rows, then, for a document, its own artifacts row. An
 // issue's own row is its owner row, so its batch holds it from the start and names the node on it

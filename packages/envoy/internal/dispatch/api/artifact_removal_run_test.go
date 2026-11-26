@@ -64,20 +64,11 @@ func (r runDocumentRig) intoRun(t *testing.T, what string) []string {
 }
 
 // outOfDocument is each changed_by_run alice reads out of the document, its ?from= read by the
-// document's uuid as GET /api/v1/references reads it, as the `<kind>/<id>` it ends at, sorted.
+// document's uuid as GET /api/v1/references reads it, as the `<kind>/<id>` it ends at, sorted
+// (changedByRunOutOf).
 func (r runDocumentRig) outOfDocument(t *testing.T, what, documentID string) []string {
 	t.Helper()
-	edges, err := refs.Edges(context.Background(), r.database.Pool, runDocumentAuthor, refs.Query{Direction: "out", Kind: graphstore.KindArtifact, ID: documentID})
-	if err != nil {
-		t.Fatalf("%s: read alice's ?from= of document %s: %v", what, documentID, err)
-	}
-	var to []string
-	for _, edge := range edges {
-		if edge.Kind == graphstore.TupleChangedByRun {
-			to = append(to, edge.Node.Kind+"/"+edge.Node.ID)
-		}
-	}
-	slices.Sort(to)
+	to := changedByRunOutOf(t, r.database, graphstore.KindArtifact, documentID)
 	t.Logf("%s: the ?from= of document %s lists the changed_by_run edges to %v", what, documentID, to)
 	return to
 }
@@ -98,15 +89,15 @@ func (r runDocumentRig) storedNode(t *testing.T, what, refKey string) (string, [
 	return node.State, changed
 }
 
-// madeForRun makes a blank document named name on the issue under the run's header, and fails
+// madeForRun makes a blank document named notes.md on the issue under the run's header, and fails
 // unless the run is read in both directions as having made it: the run's ?to= lists the document
 // by its uuid and the document's ?from= lists the run, so what a test then reads of the document's
 // end proves something. The run's window is not moved ahead: this create is its one write, made
 // at once inside the window its record gave it, so the run's row keeps the ends_at its node
 // states and the census holds the two together.
-func (r runDocumentRig) madeForRun(t *testing.T, name string) model.Artifact {
+func (r runDocumentRig) madeForRun(t *testing.T) model.Artifact {
 	t.Helper()
-	made := requestForRun(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{"name": name}, "alice", r.run)
+	made := requestForRun(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{"name": "notes.md"}, "alice", r.run)
 	if made.Code != http.StatusCreated {
 		t.Fatalf("make the blank document under the run's header: status=%d body=%s", made.Code, made.Body.String())
 	}
@@ -132,8 +123,9 @@ func (r runDocumentRig) madeForRun(t *testing.T, name string) model.Artifact {
 // node live counted the removed document while listing it no more, and one that left its
 // changed_by_run asserted listed the new document under the run that made the old one, both ways.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.T) {
+	t.Parallel()
 	rig := newRunDocumentRig(t, "GONE")
-	document := rig.madeForRun(t, "notes.md")
+	document := rig.madeForRun(t)
 
 	removedDocument(t, rig.handler, document.ID)
 	if listed := rig.intoRun(t, "after the removal"); len(listed) != 0 {
@@ -175,8 +167,9 @@ func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.
 // is not gone (refs' liveVisibleNodeOf), so the run's ?to= and its count both leave the document
 // out, and its ?from= lists no run.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRetired(t *testing.T) {
+	t.Parallel()
 	rig := newRunDocumentRig(t, "RETIRED")
-	document := rig.madeForRun(t, "notes.md")
+	document := rig.madeForRun(t)
 
 	retireTestDocument(t, rig.database, document.ID)
 	state, changed := rig.storedNode(t, "after the retirement", document.RefKey)

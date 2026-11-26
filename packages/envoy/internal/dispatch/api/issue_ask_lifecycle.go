@@ -172,6 +172,7 @@ func (s *server) recordWithdrawnAsksTx(ledger *docs.Ledger, issueKey string, pla
 		held := planned.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 			return nil
 		}); err != nil {
 			return nil, nil, err
@@ -289,6 +290,7 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		held := restored.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 			return nil
 		}); err != nil {
 			return nil, err

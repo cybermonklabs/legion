@@ -10,9 +10,8 @@ import (
 // Connect opens one connection of its own to the database databaseURL names, outside any pool,
 // named applicationName in pg_stat_activity, so an operator reading the activity of a database
 // sees which pass holds it. It migrates nothing: an operator pass that holds one connection - the
-// store census (graphcensus), the erase (grapherase), the census's snapshots of what only docs
-// reads and the version check (CheckVersions) - works on the schema the deployment's own server
-// migrated.
+// store census (graphcensus), the census's snapshots of what only docs reads and the version check
+// (CheckVersions) - works on the schema the deployment's own server migrated.
 func Connect(ctx context.Context, databaseURL, applicationName string) (*pgx.Conn, error) {
 	config, err := connConfig(databaseURL, applicationName)
 	if err != nil {

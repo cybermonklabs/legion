@@ -29,6 +29,11 @@ const previousCLISpec = "# Decided asks\n\nThe service ships behind a flag.\n\n"
 	":::ask{#third urgency=\"med\" multiple=\"false\"}\nShip the third part?\n\n- Ship: Now.\n- Hold: Later.\n:::\n\n" +
 	":::ask{#fourth urgency=\"med\" multiple=\"false\"}\nShip the fourth part?\n\n- Ship: Now.\n- Hold: Later.\n:::\n"
 
+// answeredBeforeTheCatchUpSpec is the spec the previous build writes for the row of the window
+// before this build's catch-up: a paragraph of prose and one ask, which the previous build answers.
+const answeredBeforeTheCatchUpSpec = "# An answered ask\n\nThe service ships behind a flag.\n\n" +
+	":::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip the service?\n\n- Ship: Now.\n- Hold: Later.\n:::\n"
+
 // eightAskAttributes is any of the eight server-owned attributes of an ask block as an opening
 // line writes it.
 var eightAskAttributes = regexp.MustCompile(` (state|answered_by|answered_at|selected|answer|invalid|copied_from|copied_from_document)="`)
@@ -175,6 +180,150 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 			spec, text, number, want)
 	}
 	t.Logf("the previous build's CLI requested approval:\n%s\nthe spec's version %d:\n%s", requested, number, markdown)
+}
+
+// The window before this build's catch-up. This build's decisions step is held
+// (DISPATCH_TEST_HOLD_DECISIONS_STEP), so its catch-up never states on the ask's node an answer the
+// previous build records, as a step whose last tick ran before that answer has not. Whether the
+// row reaches that window is the previous build's to say, and the row reads which build it runs
+// beside from what that build does, before this build starts (previousStatesAnswersOnAskNodes). A
+// build from before answers on ask nodes, as a release from before this change is, records a
+// person's answer and states none on the ask's node, so the node holds no answer until a catch-up
+// states it. A build that states them, such as this tree built as the previous build in the merge
+// group's dispatch-two-builds-same, states the answer on the ask's node as it records it, so there
+// is no window and the node holds the answer throughout.
+//
+// The previous build writes the spec and a person answers its one ask there; the previous build
+// stops and leaves the fleet; through this build an agent changes one word of the spec's prose,
+// the spec's first accepted write on a fleet of one build.
+// In both cases the version that write settles into keeps on the ask's opening line the state, the
+// answerer and the time the previous build's own version stored (R10), and none of selected,
+// answer and invalid; and the previous build's CLI then requests approval of the spec against this
+// build's server and is refused nothing.
+func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatchUp(t *testing.T) {
+	ctx := context.Background()
+	builds := newTwoBuilds(t)
+	previous := builds.startPrevious(t, nil)
+	statesAnswers := previousStatesAnswersOnAskNodes(t, ctx, builds)
+	t.Logf("the %s states a person's answer on the ask's node as it records it: %t", builds.previousName(), statesAnswers)
+	current := builds.startCurrent(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"})
+	issue, spec, ship := answeredThroughThePrevious(t, ctx, builds, "PRW", "The window before the catch-up", "An answered ask")
+
+	// The previous build's version of its answer: the opener the previous build's CLI reads.
+	answeredVersion, answeredMarkdown := latestVersionOf(t, previous, spec)
+	answeredTree, err := pmdoc.ParseRendering(answeredMarkdown)
+	if err != nil {
+		t.Fatalf("read the spec's version %d: %v\n%s", answeredVersion, err, answeredMarkdown)
+	}
+	answered := askBlockOf(answeredTree, "ship")
+	if answered == nil {
+		t.Fatalf("the spec's version %d holds no ask block ship:\n%s", answeredVersion, answeredMarkdown)
+	}
+	answeredBy := stringAttr(answered, "answered_by")
+	answeredAt, answeredAtErr := time.Parse(time.RFC3339Nano, stringAttr(answered, "answered_at"))
+	if answered.Attrs["state"] != asks.StateAnswered || answeredBy == "" || answeredAtErr != nil {
+		t.Fatalf("the previous build's answer to %s settled into version %d, whose opener holds state %v, answered_by %v and answered_at %v, want the answer's:\n%s",
+			ship, answeredVersion, answered.Attrs["state"], answered.Attrs["answered_by"], answered.Attrs["answered_at"], answeredMarkdown)
+	}
+
+	stop(t, previous)
+	waitForThePreviousBuildToLeaveTheFleet(t, builds)
+	// Beside a build that states no answer on an ask's node, the window: the held step has stated
+	// no answer on it. Beside one that states answers, the node holds the answer it recorded: state
+	// answered, and the answerer and the time the previous build's own version stored.
+	nodeState, nodeAnsweredBy, nodeAnsweredAt := askNodeAnswerOf(t, ctx, builds, ship)
+	if statesAnswers {
+		if nodeState != asks.StateAnswered {
+			t.Fatalf("the %s stated the answer to the probe's ask on that ask's node, and not the answer to ask %s on its own: the node holds state %q, answered_by %q and answered_at %q, want the answer it recorded",
+				builds.previousName(), ship, nodeState, nodeAnsweredBy, nodeAnsweredAt)
+		}
+		if at, err := time.Parse(time.RFC3339Nano, nodeAnsweredAt); nodeAnsweredBy != answeredBy || err != nil || !at.Equal(answeredAt) {
+			t.Fatalf("the node of ask %s holds answered_by %q and answered_at %q, want %q and %v, which the previous build's version %d stored",
+				ship, nodeAnsweredBy, nodeAnsweredAt, answeredBy, answered.Attrs["answered_at"], answeredVersion)
+		}
+	} else if nodeState == asks.StateAnswered {
+		t.Fatalf("the node of ask %s holds the previous build's answer while this build's decisions step is held: the row does not reach the window before the catch-up", ship)
+	}
+
+	// The agent's one-word change of prose, the spec's first accepted write on one build.
+	home := t.TempDir()
+	currentCLI(t).runOK(t, current, builds.currentName(), home, "doc-edit", "--issue", issue,
+		"--ops-json", `[{"op":"replace","find":"behind a flag","with":"behind a switch"}]`)
+	waitForNoSettlementOwed(t, ctx, builds, spec)
+	number, markdown := latestVersionOf(t, current, spec)
+	if number <= answeredVersion || !strings.Contains(markdown, "behind a switch") {
+		t.Fatalf("the spec's latest version is %d, want one newer than %d that holds the agent's change:\n%s", number, answeredVersion, markdown)
+	}
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		t.Fatalf("read the spec's version %d: %v\n%s", number, err, markdown)
+	}
+	block := askBlockOf(tree, "ship")
+	if block == nil {
+		t.Fatalf("the spec's version %d holds no ask block ship:\n%s", number, markdown)
+	}
+	if block.Attrs["state"] != asks.StateAnswered {
+		t.Errorf("block ship's opener in version %d holds state %v, want %q, which the previous build's version %d stored (the ask's node holds state %q)",
+			number, block.Attrs["state"], asks.StateAnswered, answeredVersion, nodeState)
+	}
+	if block.Attrs["answered_by"] != answeredBy {
+		t.Errorf("block ship's opener in version %d holds answered_by %v, want %q, which the previous build's version %d stored", number, block.Attrs["answered_by"], answeredBy, answeredVersion)
+	}
+	if at, err := time.Parse(time.RFC3339Nano, stringAttr(block, "answered_at")); err != nil || !at.Equal(answeredAt) {
+		t.Errorf("block ship's opener in version %d holds answered_at %v, want %v, which the previous build's version %d stored", number, block.Attrs["answered_at"], answered.Attrs["answered_at"], answeredVersion)
+	}
+	for _, name := range []string{"selected", "answer", "invalid"} {
+		if value, held := block.Attrs[name]; held {
+			t.Errorf("block ship's opener in version %d holds %s=%v", number, name, value)
+		}
+	}
+
+	cli := builds.previousCLI()
+	cli.runOK(t, current, builds.currentName(), home, "claim", "--issue", issue)
+	requested := cli.run(t, current, home, "request-approval", "--issue", issue, "--summary", "The spec's one ask is answered.")
+	if requested.code != 0 {
+		t.Errorf("the previous build's CLI refused dispatch request-approval on a spec whose one ask it answered:\n%s", requested)
+	}
+	t.Logf("the previous build's CLI ran request-approval:\n%s\nthe spec's version %d, the previous build's answer:\n%s\nthe spec's version %d, after the agent's change:\n%s",
+		requested, answeredVersion, answeredMarkdown, number, markdown)
+}
+
+// previousStatesAnswersOnAskNodes answers whether the previous build states a person's answer on
+// the ask's node as it records it. Through that build it answers the one ask of a spec of a
+// project of its own (answeredThroughThePrevious), and reads the ask's node: state answered is a
+// build that states the answer there itself, and any other state, or none, a build from before
+// that. It runs while the previous build's process is the only one live, so that build is the only
+// process that can have written the node: this build has not started, so neither its boot nor its
+// decisions step, held or not, can have written it. The probe's ask stays as it is for the rest of
+// the row: no process answers it again, and this build's held step states nothing on its node.
+func previousStatesAnswersOnAskNodes(t *testing.T, ctx context.Context, builds *twoBuilds) bool {
+	t.Helper()
+	_, _, ask := answeredThroughThePrevious(t, ctx, builds, "PRP", "Whether the previous build states answers on ask nodes", "An ask the previous build answers alone")
+	state, _, _ := askNodeAnswerOf(t, ctx, builds, ask)
+	return state == asks.StateAnswered
+}
+
+// answeredThroughThePrevious makes, through the previous build, a project whose key starts with
+// prefix and whose name is projectName, and in it an issue titled issueTitle whose spec is
+// answeredBeforeTheCatchUpSpec; it waits for the ask of the spec's block ship, answers it there as
+// the test's person, and waits until the spec owes no settlement. It answers the issue, the spec
+// and the ask.
+func answeredThroughThePrevious(t *testing.T, ctx context.Context, builds *twoBuilds, prefix, projectName, issueTitle string) (issue, spec, ask string) {
+	t.Helper()
+	previous := builds.previous()
+	project := uniqueProjectKey(t, prefix)
+	previous.createProject(t, project, projectName)
+	issue, spec = previous.createIssueIn(t, project, issueTitle, answeredBeforeTheCatchUpSpec)
+	ask = settledAskOf(t, previous, issue, "ship")
+	answerThrough(t, previous, ask, "Ship", "Ship it now.")
+	waitForNoSettlementOwed(t, ctx, builds, spec)
+	return issue, spec, ask
+}
+
+// stringAttr is node's attribute name as a string, or "" where it holds none or another kind.
+func stringAttr(node *pmdoc.Node, name string) string {
+	value, _ := node.Attrs[name].(string)
+	return value
 }
 
 // settledAskOf waits for the ask settlement indexed from the ask block blockID of the issue's

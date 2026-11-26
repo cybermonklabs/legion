@@ -17,6 +17,7 @@ import {
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { decisionName } from "../issue/decision-text";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor, decisionBlockId } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
@@ -134,7 +135,7 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
+  const decisions = useQuery({ ...issueDecisionsQuery(issueKey, issueKey !== ""), ...EVENT_FRESH });
   const decision = (decisions.data?.entries ?? []).find((row) => row.ref === nodeReference);
   const blockId = decision === undefined ? undefined : decisionBlockId(decision);
   if (decision === undefined || blockId === undefined || document === undefined || isClosed) {

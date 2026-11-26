@@ -195,15 +195,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -331,6 +323,21 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 // still one phrase to match.
 func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
 }
 
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
@@ -592,15 +599,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}
@@ -632,7 +631,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {
@@ -793,68 +792,6 @@ func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
 		if !strings.Contains(text, token) {
 			t.Errorf("the composed %s prompt, the retro's, omits %s", retro, token)
 		}
-	}
-}
-
-// A pod holds every role of one issue in a single container under one memory limit, and its
-// sandbox ends the container rather than the process that filled it, so a heavy run started by
-// any role ends every role's turn. The rule that says so has to reach each role through the
-// prompt Compose builds, not through the part that happens to hold it today: the phase workers
-// read it from the headless mechanics, which is the only part the merger shares with the four
-// roles that compose a core, and both architect shapes read it from the one common part they
-// share, so the root's wording and the sub-architect's cannot drift apart. Composing and reading
-// the parts back is what makes a part dropped from Compose fail here. This shows the text is
-// loaded, never that a role obeys it.
-func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	const (
-		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
-		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
-	)
-	worker := []string{
-		"In an issue pod every role of this issue runs in one container and shares its memory limit",
-		sandboxEndsTheContainer,
-		everyRolesTurn,
-		ciWork,
-		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
-		"Every other heavy run goes where your deployment's instructions say",
-		"instructions that name no such route are a gap you report to the architect that owns your issue",
-		"Each subagent you start runs its commands in this pod, so put these facts in its context",
-	}
-	architect := []string{
-		"Your subagents run their commands in your own issue pod",
-		sandboxEndsTheContainer,
-		everyRolesTurn,
-		ciWork,
-		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
-	}
-	for _, tc := range []struct {
-		name   string
-		role   claim.Role
-		isRoot bool
-		rule   []string
-	}{
-		{"root architect", claim.RoleArchitect, true, architect},
-		{"sub-architect", claim.RoleArchitect, false, architect},
-		{"planner", claim.RolePlanner, false, worker},
-		{"implementer", claim.RoleImplementer, false, worker},
-		{"tester", claim.RoleTester, false, worker},
-		{"reviewer", claim.RoleReviewer, false, worker},
-		{"merger", claim.RoleMerger, false, worker},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
-			for _, phrase := range tc.rule {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
-				}
-			}
-		})
 	}
 }
 

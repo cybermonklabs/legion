@@ -299,6 +299,43 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 	return len(words)
 }
 
+// writeQueryNode writes the node of the document slug of issue, in project, as the query node of
+// query an issue born converted holds (graphstore.QueryNode, as api's create and upload write it),
+// part of the issue, and names it on the document's row where that row stands: a version this
+// build then writes of the document is a query version, holding its query's definition_version,
+// which a query's record covers. A test that writes a document by SQL, which writes no node, calls
+// it before the document's first version that should take a version_renders row.
+func writeQueryNode(t *testing.T, database *store.Store, project, issue, slug, query string) {
+	t.Helper()
+	ctx := context.Background()
+	refKey := graphstore.ArtifactRefKey(issue, project, "", slug)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		at, err := graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, refKey)
+		if err != nil {
+			return err
+		}
+		node := graphstore.Created(graphstore.QueryNode(refKey, project, query, renderWho, at))
+		facts := graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, issue, renderWho, at)}, node)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `update artifacts set node_kind = $2, node_address = $1 where ref_key = $1`, refKey, graphstore.KindArtifact)
+		return err
+	}); err != nil {
+		t.Fatalf("write %s as the %s query's node: %v", refKey, query, err)
+	}
+}
+
+// writeRoomQueryNodes writes the node of each of room's spec, Verification document and plan as
+// the query node of its query (writeQueryNode), as an issue born converted holds them:
+// createIssueRoom writes the rows by SQL with no node.
+func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
+	t.Helper()
+	writeQueryNode(t, database, "DOC", room.issue, "spec", graphstore.QuerySpec)
+	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugVerification, graphstore.QueryVerification)
+	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugPlan, graphstore.QueryPlan)
+}
+
 // A version this child's writer wrote renders again from the tree, in the text order its author
 // wrote. The test writes a
 // subtree of DOC-2's spec straight into the store, writes version 3 from it - its rendering and its
@@ -314,9 +351,8 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 // of one without its stored markdown's. A tuple dated before the version written before the
 // cutover moves nothing of it, though the tree at its time holds that tuple; it moves the version
 // that holds a row, which the census of the versions then reads as a difference; and with that row
-// deleted the version answers its stored bytes and says so. A version an erase deletes takes its
-// version_renders row with it, and a row a delete leaves behind is a difference of the census of
-// the rendered versions. A version whose markdown is null says it holds no bytes. The head of a
+// deleted the version answers its stored bytes and says so. A version whose markdown is null
+// says it holds no bytes. The head of a
 // spec a real settlement wrote renders as that version's stored markdown, and that settlement's
 // room pass recorded the version's row, holding its record's digest, which the census reads beside
 // DOC-2's with no difference. The census of document_block_texts reads no difference in either
@@ -333,6 +369,12 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 // place in the text is read as of the row's time. And the versions an issue room's settlement
 // writes each render their stored bytes, each block's text value being its slice of its own
 // fragment's rendering (renderStepFragments).
+//
+// Last, a version whose tree does not render as its stored markdown keeps its stored bytes, and
+// the census refuses on it, until a quiet tick restates it or closes its mark
+// (renderStepTreeMismatch), and the reconciliation's pass that states an uploaded version first
+// carries the upload's carry to it, naming the version the person approved
+// (renderStepCarryOfACarry).
 func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -351,7 +393,10 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		t.Fatalf("read DOC-2's ref_keys: %v", err)
 	}
 
-	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed.
+	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed. Its
+	// documents are query nodes, as a converted issue's are, so the version the settlement writes
+	// is a query version, which takes the row its room pass records.
+	writeRoomQueryNodes(t, database, rig.settled)
 	peer := connectPeer(t, server.URL, rig.settled.spec, "alice")
 	stored := roomUpdateCount(t, database, rig.settled.tree)
 	if _, err := peer.Send(writeParagraph(peer.Doc, rig.settled.spec, "Spec words.")); err != nil {
@@ -426,7 +471,6 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		}},
 		{"a tuple dated before the version written before the cutover moves nothing of it", renderStepBoundary},
 		{"with its row deleted a version answers its stored bytes and says so", renderStepRowDeleted},
-		{"a version an erase deletes takes its row, and a row left behind is a difference", renderStepErasedVersion},
 		{"a version whose markdown is null says it holds no bytes", renderStepNoBytes},
 		{"document_block_texts keeps the columns 0121_block_graph creates", renderStepTextColumns},
 		{"each version the real path writes renders in the text order its author wrote", func(t *testing.T, rig *renderRig) {
@@ -434,6 +478,12 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		}},
 		{"each version an issue room's settlement writes renders its own fragment's bytes", func(t *testing.T, rig *renderRig) {
 			renderStepFragments(t, rig, service, server.URL)
+		}},
+		{"a version whose tree does not render as its stored markdown keeps its stored bytes until a quiet tick repairs or closes its mark", func(t *testing.T, rig *renderRig) {
+			renderStepTreeMismatch(t, rig, service)
+		}},
+		{"the pass that states an uploaded version first carries the carry to it, naming the version the person approved", func(t *testing.T, rig *renderRig) {
+			renderStepCarryOfACarry(t, rig, service)
 		}},
 	} {
 		t.Run(step.name, func(t *testing.T) { step.run(t, rig) })
@@ -681,74 +731,6 @@ func (r *renderRig) readRenderCensus(t *testing.T) graphcensus.VersionRenderCens
 	return renders
 }
 
-// eraseVersions deletes version numbers[i] of the spec as the erase deletes a version holding
-// erased text: its version_renders row, by docs' one statement of that delete, and then the
-// version, in one transaction; with keepRows the row is left behind, as a deleter that forgot it
-// would leave it.
-func (r *renderRig) eraseVersions(t *testing.T, keepRows bool, numbers ...int32) {
-	t.Helper()
-	ctx := context.Background()
-	artifacts := make([]string, len(numbers))
-	for index := range numbers {
-		artifacts[index] = r.room.spec
-	}
-	if err := pgx.BeginFunc(ctx, r.database.Pool, func(tx pgx.Tx) error {
-		if !keepRows {
-			if _, err := ForgetVersionRenders(ctx, tx, artifacts, numbers); err != nil {
-				return err
-			}
-		}
-		_, err := tx.Exec(ctx, `
-			delete from artifact_versions where exists (
-				select 1 from unnest($1::uuid[], $2::int[]) as doomed (artifact, number)
-				where doomed.artifact = artifact_versions.artifact_id and doomed.number = artifact_versions.number)`, artifacts, numbers)
-		return err
-	}); err != nil {
-		t.Fatalf("delete versions %v of the spec: %v", numbers, err)
-	}
-}
-
-func renderStepErasedVersion(t *testing.T, rig *renderRig) {
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
-		rig.writeVersionFromTree(t, tx, 4)
-		rig.writeVersionFromTree(t, tx, 5)
-		return nil
-	}); err != nil {
-		t.Fatalf("write versions 4 and 5 from the tree: %v", err)
-	}
-	if renders := rig.readRenderCensus(t); renders.Versions != rig.settledRows+2 || renders.Differences != 0 {
-		t.Fatalf("with versions 4 and 5 written the census of the rendered versions compares %d and reads %d differences (%+v), want both beside DOC-1's %d and none",
-			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
-	}
-	rig.eraseVersions(t, false, 4)
-	if versions, renders := rig.versionRows(t, rig.database.Pool, 4); versions != 0 || renders != 0 {
-		t.Errorf("after its erase version 4 holds %d versions and %d rows, want neither", versions, renders)
-	}
-	if renders := rig.readRenderCensus(t); renders.Versions != rig.settledRows+1 || renders.Differences != 0 {
-		t.Errorf("after version 4's erase the census of the rendered versions compares %d and reads %d differences (%+v), want version 5 beside DOC-1's %d and none",
-			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
-	}
-	// The control: a delete of version 5 that leaves its row behind is read as a difference.
-	rig.eraseVersions(t, true, 5)
-	renders := rig.readRenderCensus(t)
-	if renders.Versions != rig.settledRows+1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v5") {
-		t.Errorf("with version 5 deleted and its row left behind the census of the rendered versions compares %d and reads %d differences (%+v), want the row of version 5 beside DOC-1's %d",
-			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
-	} else {
-		t.Logf("the census reads the row left behind at %s: %s", renders.Reported[0].At, renders.Reported[0].Cause)
-	}
-	if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
-		_, err := ForgetVersionRenders(ctx, tx, []string{rig.room.spec}, []int32{5})
-		return err
-	}); err != nil {
-		t.Fatalf("forget version 5's row: %v", err)
-	}
-	if renders := rig.readRenderCensus(t); renders.Versions != rig.settledRows || renders.Differences != 0 {
-		t.Errorf("with version 5's row forgotten the census of the rendered versions compares %d and reads %d differences, want DOC-1's %d and none", renders.Versions, renders.Differences, rig.settledRows)
-	}
-}
-
 // The texts of the spec of CORE-1 that renderStepTextOrder writes through the real version path,
 // each as its member's text value holds it: the first criterion, the paragraph after it, and the
 // requirement after the paragraph whose parent attribute names the criterion; the second
@@ -872,6 +854,11 @@ func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
 		values ('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U')`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
+	// The spec and the Verification document are query nodes before their first versions, as a
+	// converted issue's are, so each version the real path writes of them is a query version,
+	// which takes the row the pass that states it records. Their rows, written after, name no node.
+	writeQueryNode(t, database, "CORE", "CORE-1", "spec", graphstore.QuerySpec)
+	writeQueryNode(t, database, "CORE", "CORE-1", model.ArtifactSlugVerification, graphstore.QueryVerification)
 	treeDocument(t, database, service, "CORE-1", "verification-md", false, model.ArtifactRoleVerification, orderProof)
 	var ask string
 	if err := database.Pool.QueryRow(ctx, `
@@ -1003,6 +990,7 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 	ctx := context.Background()
 	database := rig.database
 	room := createIssueRoom(t, database, 3)
+	writeRoomQueryNodes(t, database, room)
 	documents := []struct {
 		id, query, text string
 	}{
@@ -1130,15 +1118,15 @@ func renderStepTextColumns(t *testing.T, rig *renderRig) {
 	}
 }
 
-// TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord: over a walk holding an answered ask's node
-// with a reading under it, the block that shows that ask in the spec, an ask nobody has answered
-// with a reading under its block, a decision with a reading under it, and a requirement, the
-// decisions query takes each ask's own node, the decision, the reading under the decision and the
-// reading under the answered ask's node, and nothing else: neither block of an ask nor the reading
-// in the ask nobody has answered, which is no reading yet; and a record of the decisions query is
-// refused, through ReadQueryRecord and through the walk's own builder, with the error a query no
-// definition names is refused with, so no version records its digest.
-func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
+// TestTheDecisionsQueryTakesItsNodes: over a walk holding an answered ask's node with a reading
+// under it, the block that shows that ask in the spec, an ask nobody has answered with a reading
+// under its block, a decision with a reading under it, and a requirement, the decisions query takes
+// each ask's own node, the decision, the reading under the decision and the reading under the
+// answered ask's node, and nothing else: neither block of an ask nor the reading in the ask nobody
+// has answered, which is no reading yet. Its record is built by that rule, as every query's is
+// (queryDefinitions; R14 gives the decisions query definition_version 1, and each of its versions
+// holds its record's digest, R15).
+func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: "CORE-1"}
 	ask := refs.Target{Kind: graphstore.KindAsk, ID: "5d1f6a3e-0c4b-4f7e-9b1a-2c3d4e5f6a7b"}
 	open := refs.Target{Kind: graphstore.KindAsk, ID: "6e2a7b4f-1d5c-4a8f-8c2b-3d4e5f6a7b8c"}
@@ -1170,12 +1158,7 @@ func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 		t.Errorf("the decisions query takes %v (defined %t), want %v: each ask's own node, the decision, the reading under it and the reading under the answered ask",
 			addresses, defined, want)
 	}
-
-	const refused = `the query "decisions" has no record`
-	if _, err := ReadQueryRecord(context.Background(), nil, issue.ID, graphstore.QueryDecisions, refs.TreeCut{}); err == nil || err.Error() != refused {
-		t.Errorf("ReadQueryRecord of the decisions query answers %v, want it refused: %s", err, refused)
-	}
-	if _, err := tree.QueryRecord(context.Background(), nil, graphstore.QueryDecisions); err == nil || err.Error() != refused {
-		t.Errorf("the walk's record of the decisions query answers %v, want it refused: %s", err, refused)
+	if _, built := queryDefinitions[graphstore.QueryDecisions]; !built {
+		t.Errorf("no definition builds the record of the decisions query, want its versions to hold their record's digest")
 	}
 }

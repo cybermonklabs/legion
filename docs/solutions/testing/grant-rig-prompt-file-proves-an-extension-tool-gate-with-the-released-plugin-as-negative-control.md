@@ -28,8 +28,9 @@ LEGION-45 (#1020) added a `tool_call` gate to the Legion extension. Its unit tab
 regression lock; they are not proof that a real phase worker's bash call is refused, because the
 gate's behaviour depends on what OMP actually loads into the pane — the plugin tree of the
 `legion` profile, `secretsd`'s bash replacement included (LEGION-54 was a grant that the unit
-suite delivered and the real pane dropped). The deployment's standing rule (Sami, 2026-09-13)
-requires the implementer's proof on a production-like surface before merge. The grant rig
+suite delivered and the real pane dropped). The agent that develops a change proves it on a
+production-like surface before merge.
+The grant rig
 (`packages/pi-envoy/scripts/grant-rig`, built for LEGION-12) already was that surface for grant
 delivery; its prompt was hard-coded, so it could only prove grants.
 

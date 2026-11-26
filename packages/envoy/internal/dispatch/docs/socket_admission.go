@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -227,7 +228,7 @@ func socketRoom(r *http.Request) string {
 // the socket is held: the admission reads the count of switches first and again once the socket
 // is held, and a count that moved closes it the same way (refuseSwitchedAdmission).
 //
-// The server decides the room (R5 of dispatch://INFRA-1253): the one statement that reads the
+// The server decides the room (R5 of the issue-tree spec): the one statement that reads the
 // document's issue reads its room beside it (issueOpen), the document_rooms row's room for a
 // document converted into its issue's room, else the document itself. Everything of the socket
 // from there is the room's - its place under the room cap, its admission, its load, its lock - so
@@ -457,10 +458,7 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 		return c.Conn.Write(p)
 	}
 	status += len("\r\n")
-	answer := make([]byte, 0, len(p)+len(line))
-	answer = append(answer, p[:status]...)
-	answer = append(answer, line...)
-	answer = append(answer, p[status:]...)
+	answer := slices.Concat(p[:status], line, p[status:])
 	written, err := c.Conn.Write(answer)
 	// What was written, counted in p's bytes.
 	switch {

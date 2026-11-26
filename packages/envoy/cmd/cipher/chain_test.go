@@ -64,6 +64,51 @@ type chainBroker struct {
 	ended         map[string]bool
 	signedBy      []string
 	calls         int
+	// proofInvalid makes an ended enrollment's refusal the legacy `PROOF_INVALID` "proof
+	// invalid: not live" the production broker answered on 2026-11-22, in place of
+	// ENROLLMENT_NOT_LIVE.
+	proofInvalid bool
+	// selfReads counts GET /v1/enrollments/self, the read a sign-in this machine cannot renew is
+	// checked by.
+	selfReads int
+}
+
+// writeNotLive answers the refusal of a proof that names an enrollment b ended.
+func (b *chainBroker) writeNotLive(w http.ResponseWriter) {
+	b.mu.Lock()
+	legacy := b.proofInvalid
+	b.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	if legacy {
+		_, _ = w.Write([]byte(`{"code":"PROOF_INVALID","error":"proof invalid: not live"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"code":"ENROLLMENT_NOT_LIVE","error":"this enrollment is not live"}`))
+}
+
+// answerNotLiveAsProofInvalid makes every refusal of an ended enrollment from now on the legacy
+// PROOF_INVALID one (chainBroker.proofInvalid).
+func (b *chainBroker) answerNotLiveAsProofInvalid() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.proofInvalid = true
+}
+
+// pinKey records thumbprint as the key enrollmentID was registered for, as the broker records a
+// sign-in's box key: GET /v1/enrollments/self then verifies its proof against that key, and POST
+// /v1/requests its request object, as the real broker does.
+func (b *chainBroker) pinKey(enrollmentID, thumbprint string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.thumbprints[enrollmentID] = thumbprint
+}
+
+// selfReadCount is how many GET /v1/enrollments/self the broker answered.
+func (b *chainBroker) selfReadCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.selfReads
 }
 
 // storeSettings is GET /v1/settings of a broker on store ("aws" or "gcp"), naming google as its
@@ -129,6 +174,41 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"enrollment_id": id})
 	})
+	mux.HandleFunc("GET /v1/enrollments/self", func(w http.ResponseWriter, r *http.Request) {
+		eid := proofEID(r)
+		b.mu.Lock()
+		b.selfReads++
+		ended, thumbprint := b.ended[eid], b.thumbprints[eid]
+		b.mu.Unlock()
+		// An enrollment whose key is on record is held to it, signature, method and URL, as
+		// proof.Verifier holds it; a fixture's enrollment with no key on record is not.
+		if thumbprint != "" {
+			verifier := &proof.Verifier{Skew: time.Minute,
+				Lookup: func(context.Context, string) (string, bool, error) { return thumbprint, true, nil },
+				Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+			if _, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), http.MethodGet, b.URL()+"/v1/enrollments/self", time.Now()); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": "PROOF_INVALID", "error": err.Error()})
+				return
+			}
+		}
+		if ended {
+			b.writeNotLive(w)
+			return
+		}
+		writeJSON(w, map[string]any{"enrollment_id": eid, "kind": "session", "lease_expires_at": time.Now().Add(time.Hour), "grants": []any{}})
+	})
+	mux.HandleFunc("POST /v1/enrollments/{id}/renew", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		ended := b.ended[r.PathValue("id")]
+		b.mu.Unlock()
+		if ended {
+			b.writeNotLive(w)
+			return
+		}
+		writeJSON(w, map[string]any{"lease_expires_at": time.Now().Add(time.Hour)})
+	})
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		eid := proofEID(r)
 		var body struct {
@@ -140,9 +220,7 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 		ended, thumbprint := b.ended[eid], b.thumbprints[eid]
 		b.mu.Unlock()
 		if ended {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"code":"ENROLLMENT_NOT_LIVE","error":"this enrollment is not live"}`))
+			b.writeNotLive(w)
 			return
 		}
 		// An enrollment registered here has its key on record, and the request object must be
@@ -165,12 +243,17 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 	mux.HandleFunc("POST /v1/grants/grant-chain/values", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"values": map[string]string{"TEST_KEY": chainValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
-	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The handlers read b.server (b.URL) on the server's goroutines, and the request that reaches
+	// them comes from another process, which orders nothing in this one. So b.server is set before
+	// the server serves: built unstarted, assigned, then started (Start sets its URL before it
+	// serves).
+	b.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.calls++
 		b.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
+	b.server.Start()
 	t.Cleanup(b.server.Close)
 	return b
 }
@@ -1057,6 +1140,9 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 	broker.delaySettings(500 * time.Millisecond)
 	r := newChainRig(t, binary, broker)
 	r.withMetadata()
+	// The processes run side by side, each on one P: one left to size GOMAXPROCS to the host starts
+	// a thread for each P its collector's idle mark workers take, about 80 on a 288-CPU host.
+	r.env["GOMAXPROCS"] = "1"
 
 	const processes = 4
 	failures := make(chan string, processes)
@@ -1220,8 +1306,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 }
 
 // writeSignInFixture keeps a sign-in for person in the rig's state directory, as `agent-secrets
-// login` would, holding an enrollment already made.
-func writeSignInFixture(t *testing.T, r *chainRig, person string) {
+// login` would, holding an enrollment already made, and answers its box key's thumbprint, the
+// key a broker holds that enrollment to (chainBroker.pinKey).
+func writeSignInFixture(t *testing.T, r *chainRig, person string) string {
 	t.Helper()
 	key, err := proof.NewKey()
 	if err != nil {
@@ -1240,4 +1327,5 @@ func writeSignInFixture(t *testing.T, r *chainRig, person string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return thumbprint
 }

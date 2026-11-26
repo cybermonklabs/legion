@@ -23,23 +23,30 @@ import (
 
 // goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
 // performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. Five are not, the two review routes, the settle of a
-// proposed node, the write of a node's state and the pre-mortem conversion, and their rows say why.
+// operation the bar cannot yet propose. Seven are not, the two review routes, the settle of a
+// proposed node, the write of a node's state, the pre-mortem conversion and the two routes of the
+// proven-sessions setting, and their rows say why.
 // TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
 // named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 	"DELETE /api/v1/delivery/session-groups/{id}",
+	"DELETE /api/v1/issues/{key}/nodes/{id}",
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 	"DELETE /api/v1/me/agent-tokens/{id}",
 	"DELETE /api/v1/me/asks/{id}/snooze",
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"DELETE /api/v1/projects/{key}/legion/daemon",
+	// The proven-sessions setting's two routes, which dispatch_project_update performs.
+	// goingToolRoutes gives neither a row on purpose: each turns a check of a project on or off,
+	// and the loop that proposes operations on Dispatch's graph must never propose that. Keep
+	// both here; never give either a row.
+	"DELETE /api/v1/projects/{key}/proven-sessions",
 	"PATCH /api/v1/artifacts/{id}",
-	"PATCH /api/v1/comments/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
+	"PATCH /api/v1/issues/{key}/nodes/{id}",
 	"PATCH /api/v1/me/agent-tokens/{id}",
 	"PATCH /api/v1/priorities/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
@@ -104,6 +111,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/issues/{key}/plans/{id}",
 	"PUT /api/v1/issues/{key}/role-holders",
 	"PUT /api/v1/issues/{key}/steps/{id}",
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment",
 	"PUT /api/v1/issues/{key}/steps/{id}/rating",
 	"PUT /api/v1/me/agents/{session_id}/state",
 	"PUT /api/v1/me/asks/{id}/snooze",
@@ -115,12 +123,15 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/default-repository",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
+	// The proven-sessions setting's other route, kept here for the reason its DELETE above is.
+	"PUT /api/v1/projects/{key}/proven-sessions",
 	"PUT /api/v1/settings/delivery",
 }
 
 // withThrowawayToolRoutes gives one tool a set of rows for the length of a test, so a build is
-// shown failing on a row that is no write of the table without touching the map the server
-// mounts.
+// shown failing on a row that is no write of the table. It writes those rows into goingToolRoutes,
+// the package's own map that every server reads at Register, and takes them out at the test's
+// end, so a test that calls it does not run in parallel.
 func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) {
 	t.Helper()
 	if _, held := goingToolRoutes[tool]; held {
@@ -134,6 +145,8 @@ func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) 
 // nothing else — each entry carries that spec's own description and its own argument schema,
 // unchanged — and every row an entry names is a write of the table the server mounts.
 func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
+	// Not parallel: it adds a tool's rows to goingToolRoutes (withThrowawayToolRoutes), the table every
+	// server of the package reads at Register.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	catalogue, err := buildGoingCatalogue(routes)
 	if err != nil {
@@ -225,9 +238,11 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 
 // TestTheMutatingRoutesNoToolSpecNames: the catalogue's gap, named rather than refused. A write
 // of the served table no catalogue action performs is an operation the bar cannot yet propose,
-// or, for the two review routes, one it must never propose, and the list is committed here so a
-// write added later is either given a tool or added to it.
+// or, for the two review routes and the two routes of the proven-sessions setting, one it must
+// never propose, and the list is committed here so a write added later is either given a tool or
+// added to it.
 func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
+	t.Parallel()
 	routes := (&server{}).routes()
 	performed := map[string]bool{}
 	for _, rows := range goingToolRoutes {
@@ -251,6 +266,7 @@ func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 // TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument: each entry's schema accepts
 // the call the tool spec carries, and refuses that call with any one required argument left out.
 func TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument(t *testing.T) {
+	t.Parallel()
 	catalogue, err := buildGoingCatalogue((&server{}).routes())
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
@@ -294,6 +310,7 @@ func (d *countingDoer) Do(request *http.Request) (*http.Response, error) {
 // nobody serves is refused with the caller's own error, and the client is never asked to send
 // anything. The action it does hold is the control: that one is sent.
 func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
@@ -362,6 +379,39 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 		}
 	})
 
+	// Each option of the status change is the argument that picks its route: the PATCH takes no
+	// option and would drop it. A status change with no option still takes the PATCH.
+	t.Run("an option of the status change picks its route, and a call with none the PATCH", func(t *testing.T) {
+		for _, option := range []string{optionIncludeChildren, optionUnlinkChildren, optionIncludeParent} {
+			doer := &countingDoer{}
+			caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+			arguments := map[string]any{"issue": "INFRA-1042", "status": "in_progress", option: true}
+			if _, err := caller.Do(context.Background(), "dispatch_issue_update", arguments); err != nil {
+				t.Fatalf("a status change with %s: %v", option, err)
+			}
+			sent := doer.requests[0]
+			if sent.Method != http.MethodPost || sent.URL.Path != "/api/v1/issues/INFRA-1042/status-change" {
+				t.Fatalf("a status change with %s was sent as %s %s", option, sent.Method, sent.URL.Path)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(sent.Body).Decode(&body); err != nil {
+				t.Fatalf("read the body of a status change with %s: %v", option, err)
+			}
+			if want := map[string]any{"status": "in_progress", option: true}; !reflect.DeepEqual(body, want) {
+				t.Fatalf("a status change with %s sent %v, want %v", option, body, want)
+			}
+		}
+		doer := &countingDoer{}
+		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+		if _, err := caller.Do(context.Background(), "dispatch_issue_update", map[string]any{"issue": "INFRA-1042", "status": "in_progress"}); err != nil {
+			t.Fatalf("a status change with no option: %v", err)
+		}
+		sent := doer.requests[0]
+		if sent.Method != http.MethodPatch || sent.URL.Path != "/api/v1/issues/INFRA-1042" {
+			t.Fatalf("a status change with no option was sent as %s %s", sent.Method, sent.URL.Path)
+		}
+	})
+
 	t.Run("a row addressing the calling session takes it from the caller", func(t *testing.T) {
 		doer := &countingDoer{}
 		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Doer: doer}
@@ -394,6 +444,7 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 // server can name each node the write changes as changed by that run. A caller acting for no run
 // sends no such header.
 func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
@@ -437,6 +488,8 @@ func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is
 // refused, so no entry can promise an edge the graph has no kind for.
 func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
+	// Not parallel: it adds a tool's rows to goingToolRoutes (withThrowawayToolRoutes), the table every
+	// server of the package reads at Register.
 	families := edgeFamilies()
 	for _, relation := range append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...) {
 		if !slices.Contains(families, relation) {
@@ -463,6 +516,7 @@ func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
 // TestTheGoingCatalogueIsMountedOnTheServedTable: the server builds its catalogue from the table
 // it mounts, so the route serves what the tests above check rather than a copy built elsewhere.
 func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/going/catalogue", nil, "alice")
 	if response.Code != http.StatusOK {

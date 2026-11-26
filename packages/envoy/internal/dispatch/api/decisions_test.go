@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The Decisions read reads the store alone. Its entries are held
@@ -68,6 +69,7 @@ const oldMembersSpec = ":::requirement{#r1}\nThe service answers over one transp
 // when its role is null, and none of its sections reaches `decisions`. Once it is retired,
 // `document` answers null.
 func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -155,6 +157,7 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 // created_at and then id (refs.DecisionsDocumentOf). The younger is given the lower id, so a rule
 // that took the lowest id would name it.
 func TestTheOldDocumentMemberNamesTheOldestOfAnIssuesTwoDecisionsDocuments(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -217,6 +220,7 @@ func TestAHeadingOfADecisionsDocumentIsNeverKept(t *testing.T) {
 // Each person's last read version of a document: null before they read it, the version they
 // recorded after, and a bearer may read neither route.
 func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n")
@@ -275,6 +279,7 @@ const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}
 // index recorded for its requirement, so it holds text_changed_at, and reads changed_since_tie
 // false and stale false.
 func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -337,9 +342,12 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 // The open questions are the issue's open asks whose block is in its spec, oldest first, and an
 // issue with no decisions document and no decision answers them with a null document and no
 // decisions. The two asks are written in two versions, so one is older than the other: two that one
-// settlement writes share their created_at and the order between them is their ids'.
+// settlement writes share their created_at and the order between them is their ids'. An open ask
+// whose row names the spec but a block the spec's current blocks do not hold is none of them: a
+// reopen restores such a row with no block to write, which a later settlement retracts.
 func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#decide_first}\nWhich store?\n:::\n\nA paragraph.\n")
 	view, _ := waitForOpenQuestions(t, handler, issue.Key, 1)
@@ -360,26 +368,29 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	// reading of the markdown.
 	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions",
 		"open_questions.0.question", "open_questions.0.question_tree")
+
+	if tag, err := database.Pool.Exec(context.Background(), `update asks set block_id = 'decide_gone' where issue_key = $1 and block_id = 'decide_second'`, issue.Key); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("point the second ask's row at a block the spec does not hold: %v", err)
+	}
+	if _, questions := waitForOpenQuestions(t, handler, issue.Key, 1); fmt.Sprint(questions) != "[Which store?]" {
+		t.Fatalf("open_questions = %v once the second ask's block is none the spec holds, want the first ask alone", questions)
+	}
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none.
+// spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
+// deadline (testwait.UntilPolling), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
-	questions := []string{}
-	for range 200 {
+	questions := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
 		view = readIssueDecisions(t, handler, key)
-		questions = questions[:0]
+		questions := []string{}
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		if len(questions) == want {
-			return view, questions
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("open_questions = %v, want %d of them", questions, want)
+		return questions, len(questions) == want
+	})
 	return view, questions
 }
 

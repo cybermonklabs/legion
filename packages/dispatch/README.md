@@ -685,20 +685,6 @@ DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=902
   DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
 ```
 
-`e2e/acceptance/graph-erase.sh` drives `envoy-dispatch erase`, the one statement in Dispatch that
-removes bytes: the refusal until it has listed what it would remove, the erase itself, the
-version and the review it ends, the `graph_erasures` row that holds no erased text, and the 404
-the route that does not exist answers. It takes the first three inputs, `DATABASE_URL`, the built
-`envoy-dispatch` on `PATH` (the command takes a database credential and no bearer), and
-`DEV_SIGNIN_LOGIN` optional, the person who approves the version it then erases. It refuses a
-`DATABASE_URL` whose host is not loopback, and erases only the comment it wrote itself:
-
-```bash
-DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
-  DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/graph-erase.sh
-```
-
 `e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
 by kind, every table this branch's migrations touch, where the two store tables reach in a year,
 two runs printing one report, and the block-index backlog, with the reconciliation's own drain
@@ -717,6 +703,52 @@ DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http:/
   PRODUCTION_DATABASE_ID=<gcp-project>:<cloud-sql-instance> \
   bash packages/dispatch/e2e/acceptance/graph-sizing.sh
 ```
+
+`e2e/acceptance/priority-list-production.sh` is the driver of the check `c-both-plans-production`:
+it measures how long production's server takes to answer the issue list filtered by a priority, as
+the p90 of the access log's `elapsed_ms` over 200 reads of each of three requests.
+The three are the page of 50 (`page`), `&open=true` (`open`) and the whole list (`whole`) of the
+priority with the most open issues.
+The script sends them itself, one at a time, 200 of each form in turn, each with the User-Agent
+`priority-list-production/<probe id>/<form>`, and stops after 21 reads of one form took over
+1,000 ms by curl's clock.
+It then reads their lines back from the deployment's container logs with `gcloud logging read`,
+again every 30 s for at most 10 minutes until the log holds every line the probe sent.
+A form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending order, and
+the form passes at 200 ms or under.
+Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
+`/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
+GitHub's compare (`identical` or `ahead`).
+A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
+values the next look takes, and exits 3.
+
+Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
+`DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
+Google Cloud project that holds the deployment's container logs.
+This public repository names no such project, so the driver refuses to start without it (exit 2).
+Each time it takes or prints is UTC to the second, `YYYY-MM-DDTHH:MM:SSZ`.
+A later look also takes the values the line of an earlier one names: `FLEET_SINCE` and
+`FLEET_COMMIT`, the time the three hours started and the commit they count for, so a deploy in
+between starts them over; or `PROBE_ID`, `PROBE_AT` and `PROBE_STOPPED`, all three or none, with
+which the look sends nothing and reads back that probe's lines.
+`BEFORE_DEPLOY=1` is for the check's negative control alone: the look then requires a commit that
+does not carry `MERGE_SHA`, and skips the three-hour wait.
+`gh` and `gcloud` run as the accounts they are signed in with.
+It exits 0 when every form's p90 is at most 200 ms; 1 when a form's p90 is over 200 ms, a line's
+status is not 200 or the first answer of a form holds no issue; 2 when the look cannot measure (an
+input unset or malformed, a first answer that is not 200, no line of the probe in the log after 10
+minutes, or a probe id of another build); and 3 for a look that waits.
+A look that finds a failure exits 1 even where it would also wait.
+The first look, from the repository root; each later one adds the values the last one named:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
+  MERGE_SHA=<merge commit> LOGGING_PROJECT=<project> \
+  bash packages/dispatch/e2e/acceptance/priority-list-production.sh
+```
+
+`cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
+stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
 
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
@@ -767,7 +799,7 @@ assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` 
 a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
 cut short fails a reader that reads that line.
 
-`e2e/acceptance/seed-corpus.sh` writes the corpus the upgrade checks of dispatch://INFRA-1253
+`e2e/acceptance/seed-corpus.sh` writes the corpus the issue-tree upgrade checks
 read, through the API of the release before this branch: the server `e2e/acceptance/lib-baseline.sh`
 builds from `BASELINE_SHA` and boots, so every row of it is one that release's own writers left.
 It writes a project of eight issues. The first holds a spec, a `verification.md`, a `plan.md` and
@@ -778,7 +810,8 @@ upload, comments that cite blocks, messages, asks and recorded results; the seco
 Five more serve the render boundary's two counts and the conversion's dry run: one approved at its
 newest versions, one whose approval a later version supersedes, one approved and then asked for
 changes, one closed, and one holding a spec alone. The last has the size of the largest issue
-measured, INFRA-1308: 10,842 blocks over 243 documents, 34 comments, 34 messages and no ask. It
+measured, the memory experiment's measurement: 10,842 blocks over 243 documents, 34 comments,
+34 messages and no ask. It
 prints each issue it writes and each count with the time it was taken, the boundary's two counts
 (`pre_cutover_versions` and `standing_approvals`) among them, stops the server, keeps the database,
 and ends with `PASS: seed-corpus.sh complete 5 sections`. Its inputs:
@@ -824,19 +857,22 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-Twenty-two of the twenty-five drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+Twenty-six of the thirty drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
 preamble and the check vocabulary they share: it refuses an unset input or a missing command with
 exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
 unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
-`want_status`, `expect` and `query` each of them checks with. Twenty source it themselves;
+`want_status`, `expect` and `query` each of them checks with. Twenty-four source it themselves,
+and one of those (`answer-attribute-removal.sh`) sources `lib-baseline.sh` beside it;
 `lens-schema.sh` and `node-visibility-census.sh` source `lib-processes.sh`, which sources
-`lib-baseline.sh`, which sources `lib.sh`. The other three source none of it:
-`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own, and
-`outside-path-reach.sh` is handed to a person as one file (below). `with-harness.sh` is no driver
-and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh` and
-`seed-decisions.sh` are files the drivers source, not drivers.
+`lib-baseline.sh`, which sources `lib.sh`. The other four source none of it:
+`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own,
+`outside-path-reach.sh` is handed to a person as one file (below), and `outside-edge-refusals.sh`
+is one file that sources nothing (below). `with-harness.sh` is no driver
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh`,
+`seed-decisions.sh`, `node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
+(which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
 
-The drivers of dispatch://INFRA-1253 and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
+The issue-tree drivers and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
 after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It
 holds what they share, so no driver copies it: the request as the agent or as the person
 (`tree_send`, `tree_person_send`, and `tree_want`, whose failure names the request), the dev
@@ -1037,10 +1073,38 @@ real stack: what the server decides, a read of the row's own write, a frame the 
 a clock. A stubbed row skips only inside its own body: a `describe`-level skip whose condition
 reads a worker fixture is seen by neither the row map nor the replay (`e2e/tools/row-map.ts`).
 
-A new real-stack spec file needs a line in `e2e/stub/real-stack-reasons.ts` saying what the
-server decides for its rows, and a new stub file a header comment saying why a recording can
-answer its rows. After either, `bun e2e/tools/row-map.ts --write` regenerates `e2e/row-map.md`,
-which `e2e/__tests__/row-map.test.ts` holds to a fresh generation.
+`bun e2e/tools/row-map.ts` generates the row map and prints it. Git does not keep the map.
+`--write` writes it to `e2e/row-map.md`, which git ignores, so no commit keeps the file.
+`e2e/__tests__/row-map.test.ts` generates the map on each run and fails on each refusal of the
+tool. CI generates the map in each run of `dispatch-ui`, the job that runs that test.
+
+`e2e/stub/real-stack-reasons.ts` keeps the reasons of the real-stack spec files that were there
+when its list closed. A change to one of those reasons is made in `real-stack-reasons.ts`.
+A new real-stack spec file gives its reason to `real-stack-reasons.ts` in a `/** … */` comment at
+the very start of the file. A stub file gives its reason to `e2e/tools/row-map.ts` the same way.
+A real-stack file's reason says what the server decides for its rows. A stub file's reason says
+why a recording can answer its rows.
+
+Each open part of the new issue page adds its words in `page-words-<letter>.ts`, a file of its own
+beside `web/src/features/issue-page/page-words.ts`. A part's `page-words-<letter>.ts` holds the
+tables that the part adds, each a named export that it lists in `unasked` or `answers`. Under
+`add`, it holds the part's new keys for a table that `page-words.ts` declares. The open parts are
+J, L, M, N, S, T, U, W, X, Y and Z.
+
+A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
+from any pull request. TypeScript reads the keys of a table where the table is declared. The tables
+`PRESET_NAMES`, `CHECK_WHEN_WORDS`, `RESULT_STANDS_WORDS`, `DELIVERY_STATE_WORDS` and
+`AUTHOR_KIND_WORDS` take keys only in `page-words.ts`, because a closed type fixes their keys. The
+type of a part's `add` gives each of them the type `never`, so the type check refuses words for
+one of them in a part's file whose `add` has a literal type, with or without `satisfies PartWords`.
+A case of `page-words.test.ts` refuses such a key, and a key for a table that `page-words.ts` does
+not declare, in any part's file whatever the type of its `add`, and names the file and the table
+(`page-words-parts.ts`, `PartWords.add`).
+
+A change to a word is made in place, in the file that holds it: `page-words.ts` or a part's file.
+Every other new word of a pull request that is not an open part goes in `page-words.ts`. The four
+tables of `page-structure.ts`, and code in `page-words.ts`, stay shared. A key that two files give
+fails `page-words.test.ts`, which names the key and both files.
 
 The stubbed layer reads three variables of its own, and a run that is not recording needs none
 of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write

@@ -212,7 +212,7 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 // A pointer names a block of the writing document's own issue or of an issue above it; one in a
 // sibling tree is refused, a needs naming a plan task of a sibling tree among them, and a document
 // its project holds points only inside itself. A needs names a plan task of another document of
-// its own issue or of an issue above it (dispatch://INFRA-1253/spec R10). Every refusal names the
+// its own issue or of an issue above it (R10 of the issue-tree spec). Every refusal names the
 // reference and writes nothing. The issues below the root each hold a requirement of their own,
 // so they are created unconverted, as the release before writes a child: a child born converted
 // under an issue whose requirements stand is a view, and its create with a requirement is refused.
@@ -283,6 +283,7 @@ func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 // chain, which the walk above the parent must not reach. The shipped types carry this test, a
 // plan task's `serves` pointing at requirements, so it swaps no schema.
 func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"

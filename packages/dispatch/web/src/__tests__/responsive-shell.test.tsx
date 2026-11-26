@@ -165,6 +165,7 @@ function renderShellAt(
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ];
   api.listIssueAsks = async () => [];

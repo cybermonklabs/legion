@@ -19,9 +19,10 @@ import (
 
 // slotTree is the running tree every row-rule case stands in: its root LEGION-1, its lifecycle
 // open under the workflow, and its design gate registered. approved opens that gate and leaves
-// the root in accepting, where a parent whose own phases are behind it waits. It writes no row
-// for the root: a caller that wants the root as the daemon leaves it — holding the row it took
-// at its admission — takes one with takeSlot.
+// the root in accepting, where a parent waits while its children work (in the default steps,
+// with its own other phases behind it). It writes no row for the root: a caller that wants the
+// root as the daemon leaves it — holding the row it took at its admission — takes one with
+// takeSlot.
 func slotTree(t *testing.T, pool *pgxpool.Pool, approved bool) {
 	t.Helper()
 	stands, status := phase.Admitted, "in_progress"
@@ -185,18 +186,18 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 // The daemon creates a slots row for an issue when it starts it, and the phase rule deletes that
 // row in four cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox,
 // triage or done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or
-// its work stands past its review, which is accepting, retro and merging. No other phase deletes
-// a row, so an issue keeps its place against the cap while it waits — in awaiting_person, in
-// held, and as a root standing at admitted whose design gate has opened, when it waits on no
-// other issue. What the phase rule does not
-// decide is a wait on another issue: an issue the daemon started that waits on one before its
-// review gives its row back (INFRA-3036, releaseSlotsForWaits), which is the root of the first
-// tree here.
+// it stands in accepting, retro or merging, which keep none (in the default steps, the phases
+// after the review). No other phase deletes a row, so an issue keeps its place against the cap
+// while it waits — in awaiting_person, in held, and as a root standing at admitted whose design
+// gate has opened, when it waits on no other issue. What the phase rule does not decide is a wait
+// on another issue: an issue the daemon started that waits on one in a phase that keeps a row
+// gives its row back (INFRA-3036, releaseSlotsForWaits), which is the root of the first tree
+// here.
 //
 // The first reading gives one started issue each phase and reads the rows one admission pass
-// leaves: every phase up to the review keeps its row, save the root's, which an open child holds,
-// and the three past it lose theirs on that same pass, which is the cutover a deployment taking
-// this change makes. The second reading
+// leaves: every phase that keeps a row keeps it, save the root's, which an open child holds, and
+// accepting, retro and merging lose theirs on that same pass, which is the cutover a deployment
+// taking this change makes. The second reading
 // makes the three deletions that are left — a phase of done while Dispatch still shows the
 // issue at a running status, a Dispatch status of backlog while the phase is still in the
 // workflow, and a tree whose root closed — and reads that those three rows go and no others. A
@@ -238,12 +239,12 @@ func TestSlotPerPhase(t *testing.T) {
 		{key: "LEGION-3", stands: phase.Implementing, status: "in_progress"},
 		{key: "LEGION-4", stands: phase.Testing, status: "testing"},
 		{key: "LEGION-5", stands: phase.Reviewing, status: "needs_review"},
-		// The three phases past the issue's review: each row here goes on the pass that keeps
-		// every row above it, which is the cutover a deployment taking this change makes.
+		// Accepting, retro and merging, which keep no row: each row here goes on the pass that
+		// keeps every row above it, which is the cutover a deployment taking this change makes.
 		{key: "LEGION-6", stands: phase.Accepting, status: "needs_review"},
 		{key: "LEGION-7", stands: phase.Retro, status: "retro"},
 		// A merger at work: its own merge is what ends the phase on this release, and it works
-		// it on no row, since merging stands past the issue's review.
+		// it on no row, since merging keeps none.
 		{key: "LEGION-8", stands: phase.Merging, status: "retro"},
 		{key: "LEGION-9", stands: phase.Held, status: "in_progress"},
 	} {
@@ -320,8 +321,8 @@ func TestSlotPerPhase(t *testing.T) {
 	}
 
 	// The three deletions that are left, made together and read by one pass. The phase of done
-	// is written on the reviewing member, which still holds a row: the three past the review
-	// gave theirs up on the reading above.
+	// is written on the reviewing member, which still holds a row: the three in accepting, retro
+	// and merging gave theirs up on the reading above.
 	finished := issue(t, pool, "LEGION-5")
 	finished.Phase = phase.Done
 	putIssue(t, pool, finished)
@@ -347,9 +348,9 @@ func TestSlotPerPhase(t *testing.T) {
 }
 
 // A2. The cap counts the issues whose change is still to write, so one tree holds one row for
-// each issue the daemon has started and has not carried past its review: the root, which the
+// each issue the daemon has started that stands in a phase that keeps one: the root, which the
 // fixture stands in accepting with the row it took at its admission, gives that row up because
-// its work is past its review, and each child takes one as its first phase starts.
+// accepting keeps none, and each child takes one as its first phase starts.
 //
 // The root's own work comes back when the architect sends it to a phase of its own. It holds no
 // row then, so it waits in the line among the issues whose work came back, and the row its own

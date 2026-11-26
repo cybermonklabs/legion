@@ -51,6 +51,18 @@ const (
 	// TypeGitHubApp mints one installation token for every installation of the stored GitHub App
 	// on an account its TagGitHubOwners lists.
 	TypeGitHubApp = "github-app"
+	// TypeGitHubInstallations hands over installation tokens a minter outside the broker minted
+	// ahead of any request, from an App key the broker never holds, and stores as one value:
+	// {"installations": {"<account login>": {"installation_id", "token", "expires_at",
+	// "permissions", "repository_selection" and, for a token narrowed to repositories,
+	// "repositories"}}} (secrets.ParseValue). It is served as a github-app secret is, only through
+	// profiles on the accounts its TagGitHubOwners lists, and released in the github-app release's
+	// form; the broker mints nothing for it, and a token cannot be cut once it is minted, so a
+	// release serves a profile only the token whose permissions are within the profile's and whose
+	// repositories are the profile's exactly (none, for a token the seed minter marked
+	// "all-except-protected"), and a target of it names no repository
+	// (secrets.GitHubInstallations).
+	TypeGitHubInstallations = "github-installations"
 	// TypeGoogleLogin exchanges the stored authorized-user refresh token for an access token.
 	TypeGoogleLogin = "google-login"
 	// TypeAzureLogin releases the broker's projected token with the stored Entra identity ids.
@@ -81,9 +93,10 @@ const (
 	TagDefaultGrant = "default-grant"
 	// DefaultGrantSession is the one value TagDefaultGrant takes.
 	DefaultGrantSession = "session"
-	// TagGitHubOwners lists the GitHub accounts a github-app secret mints installation tokens for
-	// (ParseGitHubOwners). A github-app secret without it is refused, since a public App can be
-	// installed by any account, and an installation on an account it does not list gets no token.
+	// TagGitHubOwners lists the GitHub accounts a github-app secret mints installation tokens for,
+	// or a github-installations secret hands stored ones over for (ParseGitHubOwners). Such a
+	// secret without it is refused, since a public App can be installed by any account, and an
+	// installation on an account it does not list gets no token.
 	TagGitHubOwners = "github-owners"
 	// TagRequesters lists who may ask for the secret at all: people by lowercase email, Google
 	// groups as group:<lowercase email>, whose members' sessions it admits, and registered
@@ -134,6 +147,14 @@ const (
 	// ReasonProjectChannelsMalformed: a value the broker cannot read names no limit it could
 	// apply, and such a secret goes to nobody rather than out unlimited.
 	ProjectChannelsSlack = "slack"
+	// TagSupersededBy names the profile source that replaces a stored secret under the stored
+	// secret's own name: a profile of that name whose source is exactly this value is served by the
+	// name, and the stored secret is not (supersededBy), whether the policy serves the stored
+	// secret, refuses it or holds it waiting for its value, so retiring the old secret's value
+	// leaves the profile served. Any other value, and a stored secret with no such tag, leaves a
+	// profile of its name refused profile-name-taken. A broker before this tag reads no such tag and
+	// refuses that profile as before, so a deployment can add the tag first.
+	TagSupersededBy = "superseded-by"
 	// typeSourcePrefix opens the Source of a type secret (TypeSource). The type and store source
 	// are frozen into a request, so changing or clearing the type ends every live grant.
 	typeSourcePrefix = "mint:"
@@ -183,7 +204,7 @@ const (
 )
 
 // Types is every value a secret's type tag may name. The broker holds a minter for each.
-var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
+var Types = []string{TypeGitHubApp, TypeGitHubInstallations, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
 
 // ValidType reports whether type is one of Types.
 func ValidType(secretType string) bool {
@@ -464,10 +485,20 @@ func TagRules(t TagSet) string {
 	return ""
 }
 
+// ServesGitHubTokens reports whether a secret of type is released as GitHub installation tokens:
+// a github-app secret, whose tokens the broker mints from the App's key, and a
+// github-installations one, whose tokens a minter outside the broker stored. Both are served only
+// through profiles with a github block on the accounts their github-owners tag lists, in the one
+// release form, and both are taken apart alike behind the airlock.
+func ServesGitHubTokens(secretType string) bool {
+	return secretType == TypeGitHubApp || secretType == TypeGitHubInstallations
+}
+
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
-// least one account. Only a github-app secret reads the tag.
+// least one account: a secret released as GitHub installation tokens (ServesGitHubTokens), whose
+// tokens are handed over for the accounts the tag lists and no other.
 func TypeNeedsGitHubOwners(secretType string) bool {
-	return secretType == TypeGitHubApp
+	return ServesGitHubTokens(secretType)
 }
 
 // GitHubOwnersFor is the github-owners rule every reader and writer of a secret's tags applies:
@@ -524,8 +555,9 @@ var ErrPendingValue = errors.New("exists and awaits its first value; ask again a
 var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
 
 // ErrProfileRefused is a request for a name the profiles file decides and the policy refuses: a
-// profile that failed against its source, or a github-app secret no profile names
-// (ReasonGitHubAppNoProfile). Evaluate's error gives the reason and its detail.
+// profile that failed against its source, or a github-app or github-installations secret no
+// profile names (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile). Evaluate's error
+// gives the reason and its detail.
 var ErrProfileRefused = errors.New("is refused by the profiles file")
 
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
@@ -562,8 +594,9 @@ type Secret struct {
 	// none (ParseMaxGrant refuses anything under a second). A value, never a pointer, so a Secret
 	// compares equal to an unchanged reread of itself (Current.RefreshOne).
 	MaxGrant time.Duration
-	// GitHubOwners is a github-app secret's github-owners tag as ParseGitHubOwners answers it, and
-	// "" for every other secret. A string, not a slice, for the same reason as MaxGrant.
+	// GitHubOwners is the github-owners tag of a secret released as GitHub installation tokens
+	// (ServesGitHubTokens) as ParseGitHubOwners answers it, and "" for every other secret. A
+	// string, not a slice, for the same reason as MaxGrant.
 	GitHubOwners string
 	// Requesters is the secret's requesters tag as ParseRequesters answers it, and "" for a secret
 	// that carries none, which every session and pod may ask for. A string, not a slice, for the
@@ -603,7 +636,11 @@ type Secret struct {
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool
-	ownership      ownerKind
+	// SupersededBy is the stored secret's superseded-by tag (TagSupersededBy) as written, "" for a
+	// secret carrying none. No rule reads it but a profile's claim on the secret's name, which is
+	// why it is not in Version: what it changes, the profile served or refused, is.
+	SupersededBy string
+	ownership    ownerKind
 }
 
 // Type is the type the secret is served as, read back from its Source (TypeSource), or "" for a
@@ -698,7 +735,8 @@ type Set struct {
 	profiles Profiles
 	// profileRefused is, for each name a request may ask for that the set refuses because of the
 	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
-	// github-app secret no profile names (ReasonGitHubAppNoProfile). Evaluate answers it
+	// github-app or github-installations secret no profile names (ReasonGitHubAppNoProfile,
+	// ReasonGitHubInstallationsNoProfile). Evaluate answers it
 	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
 	// cannot form.
 	profileRefused map[string]Refusal
@@ -731,9 +769,14 @@ type Refusal struct {
 	Owner string
 	// Detail says which part of a profile, or of the store's secret beside it, a profile reason
 	// is about (the source's own reason, the account a github block names that the source does
-	// not), and is "" for every reason that is a secret's own tag's. RefusedMessage writes it as
-	// detail.
+	// not), or, for ReasonValueMalformed, the decoder's own words of what is wrong with the value
+	// (secrets.ParseValue, which never quotes the value), and is "" for every reason that is a
+	// secret's own tag's. RefusedMessage writes it as detail.
 	Detail string
+	// SupersededBy is the refused secret's superseded-by tag (TagSupersededBy) as written, "" for
+	// none: a refused secret gives its name to the profile of that source as a served one does
+	// (supersededBy), so retiring the old secret's value leaves the profile served.
+	SupersededBy string
 }
 
 // Pending is one secret under the prefix waiting for its first value (ReasonPendingValue), as a
@@ -744,6 +787,9 @@ type Pending struct {
 	// Created is when the store created the secret, so a caller can tell the wait has ended
 	// (Current.PendingValue, pendingAt) without a reload.
 	Created time.Time
+	// SupersededBy is the secret's superseded-by tag (TagSupersededBy) as written, "" for none, as
+	// Refusal's is.
+	SupersededBy string
 }
 
 // setOf is NewSet(secrets) carrying refused, pending and versions, which NewSet's Version leaves

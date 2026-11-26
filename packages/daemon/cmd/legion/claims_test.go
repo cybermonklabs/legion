@@ -48,6 +48,8 @@ func (stillTime) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, ti
 
 func (stillTime) AfterFunc(time.Duration, func()) supervise.Cancel { return neverFires{} }
 
+func (stillTime) At(time.Time, func()) supervise.Cancel { return neverFires{} }
+
 func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type neverFires struct{}
@@ -198,45 +200,21 @@ type seenRequest struct {
 	answer                                   []byte
 }
 
-// operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
-// api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
-// request that reached it recorded.
-type operatorDaemon struct {
-	t               *testing.T
-	runtime         *fake.Runtime
-	conns           *fake.Conns
-	claimSupervisor *memoryClaims
-	url             string
-	port            int
-	tokenFile       string
+// recordingDaemon is a daemon's HTTP handler served on a loopback port, with every request that
+// reached it recorded beside what the handler answered (serveRecorded).
+type recordingDaemon struct {
+	url  string
+	port int
 
 	mu   sync.Mutex
 	seen []seenRequest
 }
 
-func newOperatorDaemon(t *testing.T) *operatorDaemon {
+// serveRecorded serves handler on a loopback port until the test ends, recording each request
+// and the handler's answer before the answer is written back.
+func serveRecorded(t *testing.T, handler http.Handler) *recordingDaemon {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	rt, conns := fake.NewRuntime(), fake.NewConns()
-	claims := &memoryClaims{ctx: ctx, machines: map[legionclaim.Token]*supervise.Machine{}, rows: map[legionclaim.Token]supervise.Claim{}}
-	tokens := api.NewBootTokens(claims)
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	claims.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
-		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
-		Timeouts: supervise.Timeouts{
-			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
-		},
-		PluginContract: api.DaemonAPIVersion,
-		RefreshGate:    supervise.NewRefreshGate(0),
-	}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
-	}).Handler
-
-	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
+	d := &recordingDaemon{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -260,6 +238,52 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	t.Cleanup(server.Close)
 	d.url = server.URL
 	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	return d
+}
+
+// requests is every request that reached the daemon, in order.
+func (d *recordingDaemon) requests() []seenRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.seen)
+}
+
+// operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
+// api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
+// request that reached it recorded.
+type operatorDaemon struct {
+	*recordingDaemon
+	t               *testing.T
+	runtime         *fake.Runtime
+	conns           *fake.Conns
+	claimSupervisor *memoryClaims
+	tokenFile       string
+}
+
+func newOperatorDaemon(t *testing.T) *operatorDaemon {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	rt, conns := fake.NewRuntime(), fake.NewConns()
+	claims := &memoryClaims{ctx: ctx, machines: map[legionclaim.Token]*supervise.Machine{}, rows: map[legionclaim.Token]supervise.Claim{}}
+	tokens := api.NewBootTokens(claims)
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	claims.deps = supervise.Deps{
+		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
+		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
+		Timeouts: supervise.Timeouts{
+			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
+		},
+		PluginContract: api.DaemonAPIVersion(),
+		RefreshGate:    supervise.NewRefreshGate(0),
+	}
+	handler := api.NewServer("127.0.0.1", 0, api.Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
+	}).Handler
+
+	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
+	d.recordingDaemon = serveRecorded(t, handler)
 	return d
 }
 
@@ -376,7 +400,7 @@ func (d *operatorDaemon) ready(token legionclaim.Token) {
 	var registered legionclaim.RegisterResponse
 	d.post("/legion/v1/claims/register", legionclaim.RegisterRequest{
 		BootToken: bootToken, SessionID: "ses_" + string(token), OmpSessionFile: "/sessions/" + string(token) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, &registered)
 	d.post("/legion/v1/claims/ready", legionclaim.ReadyRequest{
 		ClaimToken: token, SessionID: "ses_" + string(token), Secret: registered.Secret, Generation: registered.Generation,
@@ -1137,19 +1161,19 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 		{
 			name: "released",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
-				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released - 3 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "suspended by the operator",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-209-tester tester LEGION-209 suspended - 1 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "failed",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
-				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion},
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed - 2 " + thisBinarysContract + " - - - -\n",
 		},
 	} {
@@ -1222,7 +1246,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 	list := api.OperatorClaims{Claims: []api.OperatorClaim{
 		{
 			Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
-			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion,
+			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion(),
 			Budgets: api.BudgetsView{LaunchFailures: 4, Deaths: 1},
 			Failure: &api.ClaimFailureView{
 				Cause: supervise.CauseDied, Detail: "launch failures ran out", At: &failedAt,
@@ -1231,7 +1255,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 		},
 		{
 			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion,
+			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion(),
 		},
 	}}
 	answer, err := json.Marshal(list)
@@ -1269,7 +1293,7 @@ func TestTheClaimsListPrintsTheLeakCheckCause(t *testing.T) {
 		},
 		{
 			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-			State: "failed", Generation: 3, PluginContract: api.DaemonAPIVersion,
+			State: "failed", Generation: 3, PluginContract: api.DaemonAPIVersion(),
 			Budgets: api.BudgetsView{LaunchFailures: 3},
 			Failure: &api.ClaimFailureView{
 				Cause:  supervise.CauseLaunchRefused,

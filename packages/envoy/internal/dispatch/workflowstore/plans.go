@@ -24,25 +24,50 @@ var stepKeyForm = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 var planSources = []string{PlanSourceDefault, PlanSourceOwner}
 
+// planFact is the one fact of a plan that a later version replaces whole: its source, its
+// document, its version and its tasks.
+var planFact = []string{AttributeSource, AttributeArtifactID, AttributeVersion, AttributeTasks}
+
 // PutPlan writes the plan of one run of an issue inside the caller's transaction and answers its
-// node as it stands after the write. The Legion daemon writes it when the run's work starts, and
-// again where it sends the same plan again; each field is set once, so a write that runs again
-// changes nothing, and a later write of other tasks under the same id leaves the first.
+// node as it stands after the write. The Legion daemon writes it under one id for the run, when
+// the run's work starts and again at each later version of the owner's plan that Legion takes.
+// The plan's source, its document, its version and its tasks are one fact (planFact): a write of
+// a version above the one the node holds replaces all four in one write, and a write at or below
+// it leaves all four, so a write that arrives late, twice or out of order changes nothing. A plan
+// of the source default has no version and counts as version 0, so an owner's version 1 replaces
+// it and it replaces nothing. The issue, the project and the generation are each set once, by the
+// first write that states them, and the node's first writer stays its maker.
 //
 // Every write names the plan's project, its generation, its source and its tasks, and an owner's
-// plan its document and version, or it is refused ErrPlanInput and writes nothing; the project is
-// what the node is kept under (its project_key), and the read of a project finds the plan by it
-// (ProjectPlans). A default plan holds its document and version empty, so a later owner's write of
-// its id gives it neither. The write that makes the node states its `part_of` relation to the
-// issue; an id whose node is part of another issue is refused ErrPlanOtherIssue.
+// plan its document and version, or it is refused ErrPlanInput and writes nothing; so a write that
+// replaces the fact states all four of it. The project is what the node is kept under (its
+// project_key), and the read of a project finds the plan by it (ProjectPlans). A default plan
+// holds its document and version empty, so a write at or below its version 0 gives it neither, and
+// an owner's write, whose version is 1 or more, replaces the default's fact whole. The write that
+// makes the node states its `part_of` relation to the issue; an id whose node is part of another
+// issue is refused ErrPlanOtherIssue.
 func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor, at time.Time) (Plan, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
 		return Plan{}, err
 	}
-	written, err := putNode(ctx, tx, nodeWrite{
+	// A default plan states no document, so its version reads 0 (PlanWrite.Document).
+	version := write.Document.Version
+	written, _, err := putNode(ctx, tx, nodeWrite{
 		kind: KindPlan, id: id, issue: write.Issue, project: *write.Project, stated: stated, makes: true,
 		actor: actor, at: at,
+		replaces: func(held map[string]json.RawMessage) ([]string, error) {
+			heldVersion := 0
+			if raw, holds := held[AttributeVersion]; holds {
+				if err := json.Unmarshal(raw, &heldVersion); err != nil {
+					return nil, fmt.Errorf("decode the version of plan %s: %w", id, err)
+				}
+			}
+			if version > heldVersion {
+				return planFact, nil
+			}
+			return nil, nil
+		},
 	})
 	var other *nodeOfAnotherIssue
 	switch {
@@ -90,7 +115,6 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	}
 	stated = append(stated, attribute{AttributeSource, source, source})
 
-	// A document's half that is "" or 0 states nothing, as a write's empty field does.
 	document := write.Document
 	switch source {
 	case PlanSourceDefault:
@@ -100,8 +124,6 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 		if document.Version != 0 {
 			return "", nil, refusal(ErrPlanInput, "version names the version of the document an owner gave, and a plan of source %s has none", source)
 		}
-		// A default plan holds its document and version empty, so a later write of the same id
-		// that names a document finds both held and sets neither.
 		stated = append(stated,
 			attribute{AttributeArtifactID, "", ""},
 			attribute{AttributeVersion, int64(0), "0"})

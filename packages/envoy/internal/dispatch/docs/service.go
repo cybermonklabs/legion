@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -103,6 +104,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -179,7 +187,7 @@ type Service struct {
 	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
 	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
 	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
-	// before any horizon is proven (rollNow) does not set it.
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
 	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
@@ -271,9 +279,16 @@ type Service struct {
 	// describe its fork, at names where: "fork" once forkLive has brought the fork up to date,
 	// "margin", "docTree" and "capture" as a margin write (applyMargin) or a read joined to the
 	// write's transaction takes the rendering in place of reading the fork (reuseRendering), and
-	// "publish" just before publishLiveWrite releases the fork. Nil outside tests; tests use it to
-	// compare the rendering with a fresh read and render of the fork.
+	// "commit" as the commit hands the fork to the room's shadow (Ledger.commit), the last point
+	// the fork is the write's own: the room's worker measures on the shadow the browser updates
+	// the transaction's advisory lock held back (roomShadow.measure), whether the write's publish
+	// has begun or not. Nil outside tests; tests use it to compare the rendering with a fresh read
+	// and render of the fork.
 	checkRendering func(at string, write *liveWrite)
+	// beforePublish runs as a committed write's publish begins (publishLiveWrite), after the
+	// pause armed there (PauseAfterCommit) and before the publish releases the fork. Nil outside
+	// tests; tests use it to read the write and its room as the publish finds them.
+	beforePublish func(write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
 	// room in that window.
@@ -341,6 +356,10 @@ type Service struct {
 	// holder takes - the window the commit's cursors must already stand at the head for
 	// (Ledger.takeRoomCursors).
 	afterLiveCommit func(room string)
+	// fillHold, where a test set it (HoldFills), runs at the start of each fill of a record digest
+	// a write left owed (fillOwedDigests), once that write has committed and before the fill's own
+	// transaction begins. Unset outside tests.
+	fillHold atomic.Pointer[func(issueKey string)]
 	// beforeFlushMeasure runs once a flush has copied the room's shadow window and the classes it
 	// is to store under the state's lock and released that lock, and before it measures them on
 	// the shadow (Service.flushThrough, storedClasses). Nil outside tests; tests use it to drop
@@ -511,6 +530,10 @@ type Service struct {
 	// appended while the load ran, which reaches no instance of its own (roomLoad).
 	instances sync.Map
 	roomLoads sync.Map
+	// layoutMoved is the latest instant by which a transaction of this process that joined a
+	// document to an issue room had committed (noteLayoutMoved, Ledger.closeJoinedRooms), nil until
+	// one has. A room's load takes no layout a socket's admission read before it (admittedIssueRead).
+	layoutMoved atomic.Pointer[time.Time]
 	// reads holds the renderings of the documents cold reads served, each under the stored state
 	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
 	// (readBudgetFor).
@@ -928,6 +951,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{

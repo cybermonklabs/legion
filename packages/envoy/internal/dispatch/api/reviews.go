@@ -29,9 +29,11 @@ import (
 // whose text is byte for byte the approved version's with no ask block in it
 // decided since, among others; then Dispatch carries the approval to it (docs
 // writes that carry). A person's answer, resolve, decline, close or reopen of an ask writes one
-// version, whose only change is the server-owned attributes of the ask's block - `state`, and
-// `answered_by` and `answered_at` where the ask is answered - and R10's carry carries a standing
-// approval across it.
+// version. When the answer, resolve, decline, close or reopen is that version's whole change
+// (docs' changesAskAttributesAlone: text a person was editing in the browser can settle into the
+// same version), the version changes only the server-owned attributes of the ask's block -
+// `state`, and `answered_by` and `answered_at` where the ask is answered - and R10's carry
+// carries a standing approval across it.
 // A request for approval is an ask of kind "approval" with fixed options, so it reaches the
 // human through the Inbox like any question; one opened on a document with an
 // earlier approval carries that approval's version, time and approver
@@ -63,13 +65,13 @@ func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (in
 }
 
 // loadReviews is every review of the document, newest first in the order its events committed
-// (docs.ReviewOrder).
+// (model.ReviewOrder).
 func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) ([]model.ArtifactReview, error) {
-	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
+	rows, err := q.Query(ctx, `select `+docs.ReviewReadColumns+` from artifact_reviews where artifact_id = $1 order by `+model.ReviewOrder, artifactID)
 	if err != nil {
 		return nil, err
 	}
-	reviews, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.ArtifactReview, error) { return docs.ScanReview(row) })
+	reviews, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.ArtifactReview, error) { return docs.ScanReviewWithCarry(row) })
 	if err != nil {
 		return nil, err
 	}
@@ -80,11 +82,11 @@ func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) 
 }
 
 // latestReviewsStatement reads the newest review of every document in $1, one row each
-// (docs.ReviewOrder decides which); scanLatestReviews reads its rows.
+// (model.ReviewOrder decides which); scanLatestReviews reads its rows.
 const latestReviewsStatement = `
-		select distinct on (artifact_id) ` + docs.ReviewColumns + `
+		select distinct on (artifact_id) ` + docs.ReviewReadColumns + `
 		from artifact_reviews where artifact_id = any($1::uuid[])
-		order by artifact_id, ` + docs.ReviewOrder + `
+		order by artifact_id, ` + model.ReviewOrder + `
 	`
 
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
@@ -136,7 +138,7 @@ func scanLatestReviews(rows pgx.Rows, latestReviews map[string]model.ArtifactRev
 		return fmt.Errorf("load latest reviews: %w", err)
 	}
 	for rows.Next() {
-		review, err := docs.ScanReview(rows)
+		review, err := docs.ScanReviewWithCarry(rows)
 		if err != nil {
 			return err
 		}
@@ -209,6 +211,7 @@ func applyApprovals(
 			approval.Kind = review.Kind
 			approval.ContentSHA256 = review.ContentSHA256
 			approval.ContentSHA256Source = review.ContentSHA256Source
+			approval.CarriedFromVersion = review.CarriedFromVersion
 			switch {
 			case review.State == "changes_requested":
 				approval.State = "changes_requested"
@@ -559,8 +562,10 @@ type approvalRequestResponse struct {
 	Approval   artifactApprovalRead `json:"approval"`
 	// Coverage is one line per requirement of the spec with no check, as the approver reads
 	// them (coverage.go); never a missing plan task, since the plan comes after the
-	// approval, and empty for any document that is not an issue's spec. A gap refuses
-	// nothing: the request is recorded as it always was.
+	// approval, and empty for any document that is not an issue's spec. While a document of
+	// the issue owes its block index it names no requirement as lacking a check, and carries
+	// one line per such document in their place (owedGap). A gap refuses nothing: the request
+	// is recorded as it always was.
 	Coverage []string `json:"coverage"`
 	// CoverageUnread says the spec's coverage could not be read, so the empty Coverage is
 	// no answer about it. The request is recorded either way.
@@ -931,6 +936,7 @@ func (s *server) openApprovalAsk(
 	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
 		_, err := follow.Queue(b, graphstore.LatestEvent)
 		return err
 	}); err != nil {
@@ -1049,6 +1055,7 @@ func (s *server) renewApprovalAsk(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return nil, err

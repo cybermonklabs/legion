@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // seedActor is the author every seeded row carries that is not a session's. It is a user actor,
@@ -247,11 +248,18 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 				tuples = append(tuples, graphstore.IssueChildOf(issue.Key, *parent, seedAuthor, issue.CreatedAt))
 			}
 		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		// The nodes go in before the rows, which name them, and their head rows after the rows,
+		// since an issue's node is held under the issue whose row it names: one head write.
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			return nil
+		}); err != nil {
 			return fmt.Errorf("the issues' nodes: %w", err)
 		}
-		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows))
-		return err
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows)); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
 	})
 }
 

@@ -108,6 +108,30 @@ func Read(ctx context.Context, q Queryer, id string) (Node, bool, error) {
 	return node, true, nil
 }
 
+// ReadForWrite answers one live priority's node row and holds that row's lock until the caller's
+// transaction ends, for a write that compares the row with what its writer last read before it
+// writes (api/priorities.go, a patch's expected). It takes the lock every write of a priority takes
+// on its row, `for no key update` (lockedNode), so every other write of the row waits on it — a
+// second ReadForWrite and each write's own lockedNode alike — and in Postgres's read committed
+// reads the row again once the holder ends, so two writes that compare against one value cannot
+// both find it there. It refuses an id the store does not hold, and an id whose priority is gone,
+// with ErrNoPriority, as the writes do (liveRow).
+func ReadForWrite(ctx context.Context, tx pgx.Tx, id string) (Node, error) {
+	node, err := scanNode(tx.QueryRow(ctx, `
+		select `+nodeColumns+`
+		from graph_nodes
+		where kind = '`+KindPriority+`' and id = $1`+liveRow+`
+		for no key update
+	`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Node{}, fmt.Errorf("read priority %s: %w", id, ErrNoPriority)
+	}
+	if err != nil {
+		return Node{}, fmt.Errorf("read priority %s: %w", id, err)
+	}
+	return node, nil
+}
+
 // List answers every live priority with its attributes, in the order they are ranked, which is
 // the order the priorities page draws. It reads through the primary key of `graph_nodes`, whose
 // leading column, the kind, it binds, so it costs the priorities the store holds and none of the

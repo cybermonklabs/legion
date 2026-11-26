@@ -8,6 +8,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { ownTree, ownWords } from "../issue/decision-text";
+import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
@@ -38,7 +39,10 @@ import { storedReading } from "./stored-reading";
  * newest is the change the decision waits on (`decisionChanges`). The decision then waits on its
  * agent, not on the reader: it says it was changed, and it leaves the review list and every count
  * of what waits on the reader. Once the agent edits the decision, every change is older than its
- * words and the decision waits for review again.
+ * words and the decision waits for review again. A change its author deleted is no longer asked
+ * for: it stays drawn under the decision, as the deleted line (`tree-drafts.ts`'s `addTurns`), but
+ * no decision waits on it (`decisionChanges`), so a decision whose every change was deleted waits
+ * for review again.
  *
  * What a decision's block holds is every block of its document whose markdown range lies inside
  * the decision's own (`ArtifactBlock.from`, `to`), the decision's block itself among them, in the
@@ -47,8 +51,12 @@ import { storedReading } from "./stored-reading";
  * the decision: the quote alone cannot, since two decisions can hold the same words.
  */
 
-/** The fields of a comment this module reads. */
-export type ChangeComment = Pick<Comment, "anchor" | "author" | "body" | "created_at" | "id">;
+/** The fields of a comment this module reads, and when its author last edited it, which the
+ *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). */
+export type ChangeComment = Pick<
+  Comment,
+  "anchor" | "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
+>;
 
 /** The fields of a decision this module reads: an entry of the decisions read. */
 type ChangedDecision = Pick<
@@ -249,8 +257,11 @@ function sectionsOf(
 /**
  * The change each decision waits on, by the decision's own address (`DecisionEntry.ref`): the
  * newest of the changes a person asked of it (`decisionChangeComments`, which `placed` holds where
- * the caller has read it already). `documents` are the blocks of the issue's documents the page
- * has read, `undefined` where it has read none. A decision with none is not held.
+ * the caller has read it already) that its author has not deleted. A deleted change keeps its
+ * place under the decision (`decisionChangeComments` still holds it), but asks nothing any more: a
+ * decision whose every change was deleted waits for review again, as it did before the first.
+ * `documents` are the blocks of the issue's documents the page has read, `undefined` where it has
+ * read none. A decision with none is not held.
  */
 export function decisionChanges(
   decisions: Pick<IssueDecisions, "entries"> | undefined,
@@ -267,7 +278,7 @@ export function decisionChanges(
   const changes = new Map<string, ChangeComment>();
   for (const comment of comments ?? []) {
     const ref = placed.get(comment.id);
-    if (ref === undefined) continue;
+    if (ref === undefined || postDeletion(comment) !== null) continue;
     const held = changes.get(ref);
     if (held === undefined || compareTimestamps(comment.created_at, held.created_at) > 0) {
       changes.set(ref, comment);

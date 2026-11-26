@@ -14,7 +14,7 @@ name: PR Title
 # header says what a check run POSTed with `POST /repos/.../check-runs` does instead, and why
 # neither required check is posted any more. What keeps the triggers below out of this file is
 # therefore what each would cost, not the suite a pull request's head carries anyway:
-#   * no merge_group. ci.yaml's `pr-title` job runs on the group, checks the queued pull request's
+#   * no merge_group. `.github/workflows/ci.yaml#pr-title` job runs on the group, checks the queued pull request's
 #     text there (it finds the pull request the group's branch names with find-pr-payload.sh) and
 #     carries `pr-title` on the group's commit as its own check run. The queue needs that report:
 #     a required check that does not
@@ -30,7 +30,7 @@ name: PR Title
 #     check suite, before it reads one. At the draft heads f5fc75a0 and e26c2054, where every job
 #     of ci.yaml is skipped, that run still holds a suite of 30 skipped check runs
 #     (114131780811 and 113923512090) — a skipped job is a suite all the same.
-# That costs a fork's pull request nothing: ci.yaml's `pr-title` job runs on a fork's pull request
+# That costs a fork's pull request nothing: `.github/workflows/ci.yaml#pr-title` job runs on a fork's pull request
 # as on any other, and a job's check run needs no token scope, so the check lands on a fork's head
 # too. A fork's change reaches the merge queue only once a maintainer takes the branch into this
 # repository, where every event is same-repo again.
@@ -38,14 +38,14 @@ name: PR Title
 # `edited` is this workflow's for every head: ci.yaml does not run on it, so nothing else checks
 # the text an edit brings before the next push.
 #
-# A push starts no run here: ci.yaml's `pr-title` job, which runs at every push to a pull request
+# A push starts no run here: `.github/workflows/ci.yaml#pr-title` job, which runs at every push to a pull request
 # that is not a draft and when a draft is marked ready, runs the same check and carries `pr-title`
 # on the new head as its own check run, so a run of this workflow at every push would be a second
 # run of a check CI has made already. A draft's new head has no
 # `pr-title` until it is marked ready or edited, and a draft cannot merge.
 #
 # A review, a comment and a review comment start no run either (dispatch://INFRA-1825). Every run
-# reads every issue comment, review and review comment, as ci.yaml's `pr-title` job does, so the
+# reads every issue comment, review and review comment, as `.github/workflows/ci.yaml#pr-title` job does, so the
 # text a review brings is checked by the next push's run, the next edit's run and the merge
 # queue's group, and the group's run is the one the merge waits for. A run a review started
 # bought only an earlier verdict, and it delayed the merge: GitHub keys a head's checks by name,
@@ -86,8 +86,8 @@ concurrency:
   group: pr-title-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
-# The job clones the repository for check-pr-text.sh, which reads the pull request's commits
-# through the compare route (`contents: read`), its reviews and review comments
+# The job clones the repository for check-pr-text.sh, which reads through GitHub's GraphQL API the
+# pull request's commits (`contents: read`), its reviews and review comments
 # (`pull-requests: read`), and its issue comments (`issues: read`); it writes nothing.
 permissions: {}
 
@@ -111,11 +111,11 @@ jobs:
 
       # The title, body, commit messages, comments and reviews are as public as the tree
       # (check-pr-text.sh says where each lands), and the title must be a conventional commit
-      # subject. ci.yaml's `pr-title` job checks them too (that file says when it runs); this step
+      # subject. `.github/workflows/ci.yaml#pr-title` job checks them too (that file says when it runs); this step
       # checks them at every edit: an edit's run reports `pr-title` on the head too, and one that
       # skipped the title would post a passing `pr-title` over a failed one. check-pr-text.sh reads
       # the run's own payload, GITHUB_EVENT_PATH as Actions writes it, since the event here carries
-      # the pull request; find-pr-payload.sh, which ci.yaml's `pr-title` job hands it instead, is
+      # the pull request; find-pr-payload.sh, which `.github/workflows/ci.yaml#pr-title` job hands it instead, is
       # for the one event that does not, a merge group. It reads that file rather than the step's
       # environment, which the runner prints in the job log. PRIVATE_NAME_TERMS, a secret the
       # runner masks there, is the deployment's own list, which check-private-names.sh's fifth rule

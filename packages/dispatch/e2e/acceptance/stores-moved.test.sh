@@ -185,7 +185,7 @@ holds "the skipped migration of another tree" \
 is "near miss: the refused migration is not skipped" \
   "$(skipped_migration "$data/census-pending-supertags.out" 20261109051232_graph_supertags.up.sql)" ""
 is "near miss: this issue's own skipped migration is no other tree's" \
-  "$(skipped_migration "$data/census-held.out" 20261123185607_graph_nodes_artifact_id_index.up.sql)" ""
+  "$(skipped_migration "$data/census-held.out" 20261126000400_graph_nodes_artifact_id_index.up.sql)" ""
 holds "a census over the old tables prints a rehearsal" "$(rehearsal_lines "$data/census-held.out")" 'census: rehearsal: no difference'
 grep -v 'rehearsal' "$data/census-held.out" >"$scratch/no-rehearsal.out"
 is "near miss: the census without its rehearsal's lines prints none" "$(rehearsal_lines "$scratch/no-rehearsal.out")" ""

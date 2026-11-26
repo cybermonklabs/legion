@@ -1,0 +1,29 @@
+-- pgmigrate:non-transactional
+-- 20261126000400_graph_nodes_artifact_id_index.up.sql — the index a read of a document's edges by
+-- its uuid takes once graph_edges reads that uuid off the document's node.
+--
+-- A document's node holds the id of the artifacts row that projects it, its `artifact_id`
+-- (graphstore.ArtifactRow, graphstore.AttributeArtifactID). Once the boot step has deleted
+-- dispatch://INFRA-1253's arms of graph_edges (startup.IssueTreeArmsRetirement), the view names a
+-- document's mentions and its attached_to by that value rather than through the artifacts row
+-- (store.GraphEdgesViewRetired), and a read of one document's edges by its uuid - its outgoing
+-- references (refs.Outgoing), its own graph read (refs.Edges) - binds that value. Without this
+-- index each such read scans every document's node.
+--
+-- It is partial on the value being there: only a document's node and a lens's hold one, and every
+-- read keyed on it binds it, which implies the predicate. It is not partial on `kind = 'artifact'`:
+-- a read of one node by its kind and id would then take this index for its kind alone and filter
+-- its id, where graph_nodes' primary key serves it.
+--
+-- It is a performance index: no constraint and no later migration depends on it. A failed
+-- concurrent build leaves an INVALID index of this name, which the runner drops with DROP INDEX
+-- CONCURRENTLY and builds again on the next attempt.
+--
+-- Its version stands after 20261126000300_stores_moved, whose supertag nodes are bounded inserts
+-- into graph_nodes: the census admits such an insert into a table above its limit only where no
+-- earlier pending migration touches that table with more than bounded writes, and a concurrent
+-- index build is more. It also stands after every migration of this tree's children that a
+-- deployment of this tree applies with it. No deployment recorded the version it first took, so
+-- it moved to this one with no `replaces` line.
+create index concurrently if not exists graph_nodes_artifact_id
+    on graph_nodes ((attributes->>'artifact_id')) where (attributes->>'artifact_id') is not null;

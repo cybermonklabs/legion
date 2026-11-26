@@ -312,6 +312,44 @@ func askNodeAnsweredAtOf(ask string) string {
 		askNodeValueOf(ask, graphstore.TupleAnsweredAt) + `)::timestamptz end`
 }
 
+// askNodeResolutionOf is the resolution of the ask aliased ask as applyTo lays it over the row, as
+// jsonb: the resolution value its node holds on an ask the node holds resolved, none on any other
+// the node holds, and the row's own where the row names no node. The write advice's declined asks
+// read a decline through it (readDeclinedAsks), as every read of an answer reads the node (R3).
+func askNodeResolutionOf(ask string) string {
+	return `case when ` + ask + `.node_kind is null then ` + ask + `.resolution when ` +
+		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateResolved + `' then (` +
+		askNodeValueOf(ask, graphstore.TupleResolution) + `)::jsonb end`
+}
+
+// askNodeAnswerWordsOf is the answer of the ask aliased ask as applyTo lays it over the row, as
+// jsonb of asks.answer's shape, the one ask_search_suffix reads the words of: the answer and
+// selection values its node holds on an ask the node holds answered, null on any other the node
+// holds, and the row's own answer where the row names no node.
+func askNodeAnswerWordsOf(ask string) string {
+	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer when ` +
+		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `' then jsonb_build_object('text', ` +
+		askNodeValueOf(ask, graphstore.TupleAnswer) + `, 'selected', (` + askNodeValueOf(ask, graphstore.TupleSelected) + `)::jsonb) end`
+}
+
+// askSearchTextOf is the text of the ask aliased ask that a search hit shows (search's txt
+// lateral) and an answer is given to read for the hit (goingItemTextQuery): its question, a space,
+// and ask_search_suffix of its options and of its answer as its node holds it
+// (askNodeAnswerWordsOf), as every read of an answer reads the node (R3).
+//
+// The vector search ranks the ask by is still built from its row (asks_search, over asks.answer:
+// migrations 0087 and 20261120021308). The row is the node's projection, which the one writer of
+// an answer state writes in the same transaction (asks.Settle), so the two hold the same words but
+// in two cases: inside a roll's window, where a process of the release before wrote the row alone
+// and the decisions step's catch-up has not stated it on the node yet, and on an ask its node holds
+// resolved, whose row keeps the answer it held, which no read shows. A query can match such words,
+// and the hit then shows the question and the options without them; the vector ranks and shows no
+// answer, and moving it onto the node would take a trigger over graph_tuples and a rewrite of every
+// ask's vector, a migration of its own.
+func askSearchTextOf(ask string) string {
+	return ask + `.question || ' ' || ask_search_suffix(` + ask + `.options, ` + askNodeAnswerWordsOf(ask) + `)`
+}
+
 // nodeFact is one value or relation of a node as a statement aggregates it: its kind, the kind
 // of its far end, and that far end, the value itself for a value.
 type nodeFact struct {

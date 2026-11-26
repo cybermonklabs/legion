@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -29,6 +28,13 @@ import (
 // settlement takes them, and a room's own writers take no owner lock, so this joins no lock cycle.
 // After both it writes the document's node, whose every writer takes the owner's lock first (the
 // store's order, written on markInboxReadThreads).
+//
+// Every lock it waits for after the owner's lock waits at most artifactRemovalLockTimeout: the
+// room's, and each lock its reads and its deletes take, among them the checks of the foreign keys
+// to artifacts (id) that the delete of the artifact row runs, each such check a probe of an index
+// led by its key's column (this issue's spec R7). A wait past it ends the statement, the
+// transaction rolls back with nothing removed, and the route answers as it answers any statement
+// that failed.
 //
 // Five refusals read the artifact row alone: the kind, the role, the issue's spec, a document of
 // an issue room and a project's document (artifactRowIsUntouched). The removal answers them from
@@ -66,18 +72,20 @@ import (
 // Each lens invoked on the document records the row it stood on (graphstore.AttributeArtifactID),
 // so the delete of that row leaves it stale (refs.StaleSQL), and every read answers it, and all
 // that stands under it at every depth, as gone at once. In the transaction that deletes the row,
-// after the delete, the removal states each of them gone through the statement the orphan sweep
-// runs, for the document's address (graphcensus.StateStaleLensesGone): its findings, its risks and
-// the lenses on those, those the person may not see among them, each written again as the store
-// holds it but for its state, keeping its cause, with one state tuple at the sentinel signed by the
-// person at the removal's time (spec requirement r-proposed). The removal takes no person check of
-// its own for them: it is the person's already (routeScopes), and the cascade is part of the
+// after the delete, the removal states each of them gone as the block-index tick's sweep states
+// every stale lens gone (graphcensus's StateStaleLensesGone): it reads the stale lenses on the
+// document's node (refs.StaleLensesOn) and states them gone as graphstore.PlanState answers them,
+// which takes what stands beneath each with it, its findings, its risks and the lenses on those, those
+// the person may not see among them, each written again as the store holds it but for its state,
+// keeping its cause, with one state tuple at the sentinel signed by the person at the removal's
+// time, in one batch with their head rows (spec requirement r-proposed). The removal takes no person check
+// of its own for them: it is the person's already (routeScopes), and the cascade is part of the
 // delete. It reads, with the rest of what it reads before its first write, whether any lens stands
-// on the document's node, and runs the statement only where one does, so a document nothing stands
-// on holds its transaction id no longer than before. No lens stands on a block of the document,
-// since a document the removal takes holds no block, and the statement reads what it takes under
-// the issue's owner lock, which every writer of a lens, a finding or a risk takes first
-// (lockIssueOwner), and which the removal holds, so the statement takes no lock of its own.
+// on the document's node, and reads the stale lenses only where one does, so a document nothing
+// stands on holds its transaction id no longer than before. No lens stands on a block of the
+// document, since a document the removal takes holds no block, and the removal reads what it takes
+// under the issue's owner lock, which every writer of a lens, a finding or a risk takes first
+// (lockIssueOwner), and which the removal holds, so it takes no lock for them.
 //
 // The document's node is addressed by its ref_key, which a later document of the same issue and
 // slug takes again: that document's create finds the node gone and states it live under its own
@@ -92,7 +100,9 @@ import (
 // there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is
-// left as it is, rather than moved live at a created_at that may predate its gone statement.
+// left as it is, rather than moved live at a created_at that may predate its gone statement. The
+// first node stays for good: a rollback to any earlier release, and a write an older build makes
+// in any later roll, still reach it.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -124,6 +134,13 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
+	// From here on each lock the removal waits for, the room's first, waits at most
+	// artifactRemovalLockTimeout; the owner's lock above was waited for as every writer of the
+	// issue waits for it.
+	if _, err := tx.Exec(r.Context(), artifactRemovalLockTimeout); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("bound the lock waits of the removal of %s: %w", artifact.ID, err))
+		return
+	}
 	// The document's room, taken after the owner's lock and before anything of the document is
 	// read: an append that commits between the read of its stored updates and their delete
 	// would be deleted with the document, and one still in flight at the artifact's own delete
@@ -140,8 +157,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The document's node and its versions' nodes, stated gone, the document's with each
 	// changed_by_run it states now retracted, in the store's order: the node rows before any row of
-	// the document goes, as the erase takes a node's row before the rows that project it, and their
-	// facts in the batch that appends artifact.removed below (removedDocumentNodes,
+	// the document goes, and their facts in the batch that appends artifact.removed below
+	// (removedDocumentNodes,
 	// appendCausingEvent). What that node write reads, and whether a lens stands on the document's
 	// node, is read first, under the locks and before the transaction's first write, so no read of
 	// it runs while the transaction holds an id (#2468's write phase): the owner's lock and the
@@ -171,10 +188,22 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every lens on the document is stale from the delete on, since the row it recorded no longer
 	// stands at the address; each goes gone with all that stands under it, by the person who removed
-	// the document at the same time, through the statement the orphan sweep runs, in this
-	// transaction (spec requirement r-proposed).
+	// the document at the same time, in this transaction (spec requirement r-proposed), and the head
+	// rows of each node it stated move with it, in the same batch.
 	if removed.lensed {
-		if _, err := graphcensus.StateStaleLensesGone(r.Context(), tx, artifact.RefKey, removed.at, actor); err != nil {
+		lenses, err := refs.StaleLensesOn(r.Context(), tx, artifact.RefKey)
+		var gone []graphstore.Node
+		if err == nil {
+			gone, err = graphstore.PlanState(r.Context(), tx, lenses, graphstore.StateGone, removed.at.UTC(), actor)
+		}
+		if err == nil && len(gone) > 0 {
+			err = store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+				graphstore.QueueWrite(b, gone, nil)
+				graphstore.QueueHeads(b, graphstore.HeadsOf(gone, nil))
+				return nil
+			})
+		}
+		if err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the lenses on the removed document %s gone: %w", artifact.ID, err))
 			return
 		}
@@ -208,8 +237,29 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// artifactRemovalLockTimeout bounds each lock wait of a removal once it holds the issue's owner
+// lock (this issue's spec R7): the document's room, the tables and rows its reads and deletes take,
+// and the check of each foreign key to artifacts (id) that the delete of the artifact row runs.
+// Every comment, ask and upload of the issue queues behind that owner lock, so a removal that
+// meets a lock it cannot take gives up rather than hold them for as long as the lock's holder
+// lives: Postgres ends the waiting statement with lock_not_available (55P03), the transaction
+// rolls back with nothing removed, and the route answers 500 INTERNAL, as it answers any statement
+// that failed (writeHandlerError). The document stands as it was, and the removal sent again once
+// the holder lets go removes it.
+//
+// It is set after the owner lock, which it leaves unbounded: every writer of the issue waits its
+// turn for that lock, and its holder writes and commits. It is five seconds, the bound the store's
+// rename pass gives a statement that waits on a row a request holds (repoRenameLockTimeout) and
+// the migration runner gives every migration (pgmigrate.LockTimeout), and not the 200 ms of a
+// search's progress read (embeddingProjectKeysFilledLockWait), whose answer that search can do
+// without. The removal waits on purpose for a room's own writer - a batch of browser updates, a
+// compaction, a snapshot - to let the room's lock go, so that it reads what that writer stored
+// and refuses (artifactIsUntouched), and 200 ms would refuse a removal behind any such writer
+// that ran longer.
+const artifactRemovalLockTimeout = `set local lock_timeout = '5s'`
+
 // removedDocumentNodes states the removed document's node gone, and the node of each version of it
-// the store holds (R16 of dispatch://INFRA-1253: a document and its versions are nodes of its
+// the store holds (R16 of the issue-tree spec: a document and its versions are nodes of its
 // issue's tree, and one removed is no longer present in it), as the block index states a block a
 // version no longer holds gone (refs.IndexBlocks): through the store's own node write, a restating
 // write of each node whose state is gone, which moves the state and keeps the visibility, and
@@ -233,8 +283,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 //
 // It reads, too, whether a lens stands on the document's node, so removeArtifact states each lens
 // on it gone, with all that stands under it at every depth, once the delete of the row leaves it
-// stale (graphcensus.StateStaleLensesGone), and only where one does; a version's node, which
-// stands beneath the document's too, is no lens, and is stated gone here, once.
+// stale (refs.StaleLensesOn, graphstore.PlanState), and only where one does; a version's node,
+// which stands beneath the document's too, is no lens, and is stated gone here, once.
 //
 // Everything it reads - whether the store holds the node, the time, the changed_by_run tuples,
 // the versions' nodes and the part_of tuples into the document's node - it reads before its first
@@ -310,7 +360,12 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 		if artifact.IssueKey != nil {
 			partOf = []graphstore.Tuple{graphstore.ArtifactPartOf(artifact.RefKey, *artifact.IssueKey, artifact.CreatedBy, artifact.CreatedAt)}
 		}
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{made}, graphstore.AttributeFacts(partOf, made)); err != nil {
+		facts := graphstore.AttributeFacts(partOf, made)
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, []graphstore.Node{made}, facts)
+			graphstore.QueueHeads(b, graphstore.HeadsOf([]graphstore.Node{made}, facts))
+			return nil
+		}); err != nil {
 			return removedNodes{}, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err)
 		}
 	}
@@ -345,9 +400,9 @@ type removedNodes struct {
 //
 // A document of an issue room, whose document_rooms row names the issue's tree
 // (model.Artifact.Room), is refused too. Only the spec, the Verification document and the plan
-// join the room (documentJoinsIssueRoom), and the role test already refuses each of them, but a
-// role document reads no role once an operator erases its query node (`envoy-dispatch erase`), so
-// this test keeps every document of the room out of the removal. Every writer of a document_rooms
+// join the room (documentJoinsIssueRoom), and the role test already refuses each of them; this
+// test keeps every document of the room out of the removal whatever its role reads. Every writer
+// of a document_rooms
 // row takes the issue's owner lock first (createConvertedIssueRoom, queueIssueRoomJoin), so the row read here
 // stands until the removal commits.
 func artifactRowIsUntouched(artifact model.Artifact) error {
@@ -541,9 +596,10 @@ func (c artifactClear) run(ctx context.Context, tx pgx.Tx) error {
 // do cascade are left to the artifact row's own delete, and the reference rows, which carry no
 // key either, to package refs
 // (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
-// artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
-// the document, and the boot's fill reads that row every time, so deleting it when the cursor
-// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
+// artifact_id: that id is the keyset cursor of the search fill a process of the release before
+// runs at each boot, a position in the fill and not a row of the document, and deleting it when
+// the cursor named the removed document left no such process able to start
+// (#4224).
 //
 // document_search's rows are cleared only while that table stands (artifactClear.table): the boot
 // step that retires document search drops it, and a removal that named it once it was gone would

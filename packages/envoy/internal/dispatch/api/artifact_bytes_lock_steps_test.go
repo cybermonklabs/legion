@@ -20,7 +20,7 @@ import (
 
 // TestALaterVersionStatesItsBytesInTheStoreLockOrder holds statedVersionBytes (api/artifacts.go),
 // the write of the bytes of an image's or a file's later version on the node its row names
-// (dispatch://INFRA-1253), to the store's lock order, with the machinery
+// (the issue-tree spec), to the store's lock order, with the machinery
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the creates with: a second version of an
 // issue's image takes the issue's owner lock, then reads its own artifacts row under it, locking
 // no row, then appends the artifact.version event, then the bytes under it.
@@ -100,7 +100,7 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 				_, err := graphcensus.Backfill(context.Background(), backfiller, io.Discard)
 				backfilled <- err
 			}()
-			if early, done := storetest.WaitForQueuedBehind(t, holder, backfillPID, backfilled, storeStepWait); done {
+			if early, done := storetest.WaitForQueuedBehind(t, holder, backfillPID, backfilled); done {
 				t.Fatalf("the backfill answered (%v) without reaching its commit over %s", early, refKey)
 			}
 
@@ -149,9 +149,9 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 }
 
 // TestARemovalStatesItsDocumentGoneInTheStoreLockOrder holds the removal of an issue's document
-// (removeArtifact), which states the document's node gone (removedDocumentNode, dispatch://INFRA-1253),
-// to the store's lock order with the same machinery: the issue's owner lock, then the node, then
-// the delete of the document's row, then the artifact.removed event and the state it caused
+// (removeArtifact), which states the document's node gone (removedDocumentNode, the issue-tree
+// spec), to the store's lock order with the same machinery: the issue's owner lock, then the node,
+// then the delete of the document's row, then the artifact.removed event and the state it caused
 // (documentRemoval, which TestEveryObjectNodeWriterTakesTheStoreLockOrder runs too). The room's
 // lock the removal takes after the issue's owner lock is an advisory lock, which no table step
 // shows.

@@ -15,6 +15,11 @@ import (
 // decisionType is the block type whose server-owned attributes settlement holds to the store.
 const decisionType = "decision"
 
+// readingType is the type of an agent's reading block, which the issue conversion moves with its
+// author as it moves a decision (issue_conversion.go). It was declared beside the decisions step's
+// restore, which this build no longer holds.
+const readingType = "reading"
+
 // decisionServerAttribute is one server-owned attribute of the decision type: its name in the
 // markdown, and kind, the store name its value or its relation is kept under
 // (schemanodes.StoreName).

@@ -196,6 +196,7 @@ func nodeArm(first int, states bool) string {
 	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `,
 	       project_key, string_to_array(parties, ' ')
 	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
+	where ` + KeptHeadRows + `
 	order by kind, id
 	on conflict (kind, id) do nothing
 	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
@@ -213,7 +214,7 @@ graph_node_attributes as (
 		('` + AttributeVisibility + `', written.visibility), ('` + AttributeState + `', written.state),
 		('` + AttributeProject + `', written.project_key), ('` + AttributeParties + `', array_to_string(written.parties, ' ')))
 		as attribute(kind, value)
-	where attribute.value is not null
+	where attribute.value is not null and ` + KeptHeadRows + `
 	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
 )`
 }
@@ -339,7 +340,7 @@ graph_claims_written as (
 		)) over (partition by stated.position) as restated
 		from graph_claims_stated stated
 	) stated
-	where not stated.restated` + where + `
+	where not stated.restated and ` + KeptHeadRows + where + `
 	order by position, step` + relationRepeatKey + `
 )`
 }
@@ -383,13 +384,15 @@ func nodeArrays(first int) string {
 // where is a condition the rows are read under, or empty for none: a tuple arm of WriteArms
 // passes nodesWrittenFirst.
 func tupleInsert(first int, where string) string {
+	condition := KeptHeadRows
 	if where != "" {
-		where = "\n\twhere " + where
+		condition += " and " + where
 	}
 	return `insert into graph_tuples (` + tupleWriteColumns + `)
 	select ` + tupleSelect + `
 	from unnest(` + tupleArrays(first) + `)
-		with ordinality as tuple(` + tupleWriteColumns + `, position)` + where + `
+		with ordinality as tuple(` + tupleWriteColumns + `, position)
+	where ` + condition + `
 	order by position`
 }
 
@@ -463,15 +466,8 @@ func nodeParams(nodes []Node) ([]any, error) {
 		supertags[index], visibilities[index], states[index] = node.Supertag, node.Visibility, node.State
 		attributes[index], madeAts[index], madeBys[index] = encoded, node.MadeAt, madeBy
 		sourceEvents[index] = node.SourceEvent
-		if node.Project != "" {
-			projects[index] = &nodes[index].Project
-		}
-		value, err := PartiesValue(node.Parties)
-		if err != nil {
+		if projects[index], parties[index], err = scopeColumns(&nodes[index].Project, node.Parties); err != nil {
 			return nil, fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
-		}
-		if value != "" {
-			parties[index] = &value
 		}
 	}
 	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents, projects, parties}, nil

@@ -153,9 +153,9 @@ chmod +x "${fake_bin_dir}/psql"
 # that gives a profile a proxy block, 1<PID> standing in for its proxy's port, as the real broker
 # binds a proxy only for a deployment whose profiles hold one, and then stays alive as the
 # backgrounded "server" process dev-broker.sh waits on and kills during cleanup. The
-# dev-oidc-issuer stub writes each --token's file, logs the
-# --code-flow client, the mode of the secret file it would read and the --sign-in-as person, then
-# logs "issuer listening url=..." as the real one does, its own PID standing in for its port the
+# dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the mode of the
+# secret file it would read, its callback and the --sign-in-as person, then logs
+# "issuer listening url=..." as the real one does, its own PID standing in for its port the
 # same way, and stays alive until cleanup kills it. The dev-airlock-stands stub serves its stands
 # and its front mode alike (below). Each build names its package in the caller's own
 # DEV_BROKER_TEST_GO_CALL_FILE, so a run that builds no broker of its own says so. ---
@@ -182,7 +182,7 @@ DEVRELAY
   */dev-oidc-issuer)
     cat >"$out" <<'ISSUER'
 #!/usr/bin/env bash
-client="" secret_file="" sign_in_as=""
+client="" secret_file="" redirect_uri="" sign_in_as=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
@@ -198,7 +198,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --code-flow)
       client="${2%%=*}"
-      secret_file="${2#*=}"
+      secret_and_uri="${2#*=}"
+      secret_file="${secret_and_uri%%=*}"
+      redirect_uri="${secret_and_uri#*=}"
       ;;
     --sign-in-as) sign_in_as="$2" ;;
     *)
@@ -214,7 +216,7 @@ secret_mode="empty-or-missing"
 if [[ -s "$secret_file" ]]; then
   secret_mode="$(stat -c %a "$secret_file")"
 fi
-echo "fake issuer: code-flow client=$client secret-file=$secret_file secret-mode=$secret_mode sign-in-as=$sign_in_as" >&2
+echo "fake issuer: code-flow client=$client secret-file=$secret_file secret-mode=$secret_mode redirect-uri=$redirect_uri sign-in-as=$sign_in_as" >&2
 echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
@@ -244,7 +246,7 @@ held=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) dir="$2" ;;
-    --github-owner) owners="${owners}${owners:+ }$2" ;;
+    --installation) owners="${owners}${owners:+ }$2" ;;
     --host) hosts="${hosts}${hosts:+ }$2" ;;
     --address) addresses="${addresses}${addresses:+ }$2" ;;
     --installation-permissions) held="${held}${held:+ }$2" ;;
@@ -632,7 +634,7 @@ assert_instance_isolated() {
   workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log_file" | head -n1 | cut -d' ' -f3 || true)"
   signin_file="${workdir}/signin-client-secret"
   if [[ -z "$workdir" ]] \
-    || ! grep -qF "fake issuer: code-flow client=dev-broker secret-file=${signin_file} secret-mode=600 sign-in-as=ada@example.com" "$log_file" \
+    || ! grep -qF "fake issuer: code-flow client=dev-broker secret-file=${signin_file} secret-mode=600 redirect-uri=http://127.0.0.1/signin/callback sign-in-as=ada@example.com" "$log_file" \
     || ! grep -qF "fake broker: sign-in issuer=${issuer} client=dev-broker secret-file=${signin_file} domain=example.com" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's issuer and broker do not share one sign-in client with a 0600 secret in ${workdir:-its workdir}" >&2
@@ -658,7 +660,7 @@ assert_instance_isolated() {
   local read_token="${workdir}/read-token"
   if [[ "$(cat "$read_token" 2>/dev/null)" != "fake-token-for-${reader}" ]] \
     || ! grep -qF "dev-oidc-issuer: ${read_token} holds ${reader}'s token for audience legion-broker-exchange (pod pod-uid-of-${reader##*:})" "$log_file" \
-    || ! grep -qF "  read token:          ${read_token}  (${reader}'s pod, audience legion-broker-exchange: exchanges under example-reader-session for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)" "$log_file"; then
+    || ! grep -qF "  read token:          ${read_token}  (${reader}'s pod, audience legion-broker-exchange: exchanges under example-reader-session for a token of the scope read alone, which Dispatch serves on every GET route it classes as a read and answers 403 READ_ONLY_TOKEN on every other route)" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's issuer does not write the read entry's pod token at the exchange's audience into ${read_token}, or its banner does not name that file and what its token may do" >&2
     exit 1

@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// INFRA-1150, review round 1: a retired document takes no new text (docs' joinLiveWrite refuses a
+// Review round 1 of this change: a retired document takes no new text (docs' joinLiveWrite refuses a
 // live write into it), and a comment thread anchored in one stays a thread. Its resolve, its
 // reopen, the edit of one of its comments and a reply to it change the thread's own rows and write
 // nothing into the retired document: the thread's margin record reads the retirement under the
@@ -140,6 +140,7 @@ func (f retiredThreads) commentRow(t *testing.T, id string) (bool, string) {
 }
 
 func TestAThreadInARetiredDocumentResolvesAndWritesTheDocumentNothing(t *testing.T) {
+	t.Parallel()
 	f := newRetiredThreads(t, false)
 	for _, thread := range f.threads {
 		if !f.taken(t, thread, "the resolve", http.StatusOK,
@@ -153,6 +154,7 @@ func TestAThreadInARetiredDocumentResolvesAndWritesTheDocumentNothing(t *testing
 }
 
 func TestAThreadInARetiredDocumentReopensAndWritesTheDocumentNothing(t *testing.T) {
+	t.Parallel()
 	f := newRetiredThreads(t, true)
 	for _, thread := range f.threads {
 		if !f.taken(t, thread, "the reopen", http.StatusOK,
@@ -166,6 +168,7 @@ func TestAThreadInARetiredDocumentReopensAndWritesTheDocumentNothing(t *testing.
 }
 
 func TestACommentOfAThreadInARetiredDocumentTakesAnEditAndWritesTheDocumentNothing(t *testing.T) {
+	t.Parallel()
 	f := newRetiredThreads(t, false)
 	const edited = "Which census, the corpus one?"
 	for _, thread := range f.threads {
@@ -182,6 +185,7 @@ func TestACommentOfAThreadInARetiredDocumentTakesAnEditAndWritesTheDocumentNothi
 // A reply posts on its thread's owner: an issue's thread on POST /api/v1/issues/{key}/comments, a
 // project document's on POST /api/v1/artifacts/{id}/comments.
 func TestAReplyToAThreadInARetiredDocumentIsTakenAndWritesTheDocumentNothing(t *testing.T) {
+	t.Parallel()
 	f := newRetiredThreads(t, false)
 	for _, thread := range f.threads {
 		response := dispatchRequest(t, f.handler, http.MethodPost, thread.replyRoute, map[string]any{
@@ -204,6 +208,7 @@ func TestAReplyToAThreadInARetiredDocumentIsTakenAndWritesTheDocumentNothing(t *
 // naming the issue's spec for its decisions.md, and not 500. Neither the ask nor the document is
 // written.
 func TestARewordOfABlockAskInARetiredDocumentIsRefusedAsAnEditOfItIs(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -275,6 +280,7 @@ func refusedOnRetired(t *testing.T, handler http.Handler, database *store.Store,
 // naming the issue's spec for its decisions.md, on each route that names a version: by the
 // document's id, by an issue document's slug and by a project document's slug.
 func TestANamedVersionOfARetiredDocumentIsRefusedAndWritesNoVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
@@ -304,6 +310,7 @@ func TestANamedVersionOfARetiredDocumentIsRefusedAndWritesNoVersion(t *testing.T
 // document's stored history is made to fail its next load, the one state a rebuild repairs, so the
 // retirement is what refuses it, and the history stays as it was.
 func TestARebuildOfARetiredDocumentIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	var broken *invalidLoadOnceStore
 	handler, database, deps := newTestServer(t, testServerOptions{
 		settle: time.Hour,

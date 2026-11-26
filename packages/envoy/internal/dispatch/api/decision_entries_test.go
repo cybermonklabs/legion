@@ -229,6 +229,7 @@ func requireEntriesReadOwnDocuments(t *testing.T, database *store.Store, key str
 // choices.md holds the decision that shaped three requirements (d1). A second issue's spec of
 // 2,001 blocks, above docs.deferBlockIndexBlocks, holds one decision whose block index never runs.
 func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -561,6 +562,7 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 // writes stamped none, and a person, carry no title at all. The decided_by members are read as
 // the response holds them, so an empty title the answer spelled would fail as a title it held.
 func TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped(t *testing.T) {
+	t.Parallel()
 	const (
 		titledSession = "session-titled-0123456789"
 		title         = "Legion planner · CORE-1"
@@ -682,6 +684,7 @@ const (
 // (a2); the agent's choices.md holds its decision d1 and a replaced decision d2. Every write
 // below is the agent's unless it names a person.
 func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -1026,6 +1029,7 @@ func versionMarkdownAt(t *testing.T, database *store.Store, artifactID string, n
 // `shaped` pointer, as the conversion does, each move the block's row and leave the ask at the
 // version that wrote it.
 func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttributes(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1071,6 +1075,7 @@ func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttri
 // A document no pass ever indexed reads its newest version's words too, not those of the version
 // that first wrote its node.
 func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1134,6 +1139,7 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 // document is edited in (the document itself, or its issue's room for a converted one), and its
 // entry names no document: no block of it holds the ask.
 func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1167,6 +1173,7 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 // that deleted the answered ask q-kept and put a callout with the id q-kept in its place left the
 // entry naming SEED-1/spec#q-kept, the callout, until the next tick restored the ask.
 func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1198,6 +1205,7 @@ func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *test
 // `:::ask{#q-drive urgency="med" multiple="false"}`, and `dispatch artifact --force` refused that
 // text naming the ask's line.
 func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackUnchanged(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1236,13 +1244,14 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 	agentUploadAs(t, handler, issue.Key, "asks.md", read.Markdown, nil)
 }
 
-// INFRA-1150, test round 2, the defect INFRA-1152's implementer found at 44f1abef1605 and the
+// Test round 2 of this change, the defect a sibling change's implementer found at 44f1abef1605 and the
 // architect sent to this round: the release before answered the text of a document with no ask
 // block with no asks member at all, and this build adds "asks":[]. The field carries omitzero,
 // which leaves out a nil slice and keeps an empty one, so a writer that fills the field with an
 // empty slice changes the shape of every such read, which the basebuild store census reads as the
 // two builds answering differently. A document with an ask block still answers its asks member.
 func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1282,6 +1291,7 @@ func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
 // decision and the reading under another leaves both out of the Decisions read, and one that holds
 // no typed block at all leaves the last decision out, before any block-index reconciliation.
 func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")

@@ -259,7 +259,9 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			// The answer is held on the ask's node alone. While a process of the release before
 			// serves, whose page reads it from the block, the block is kept in step with it.
+			// kept for one release: stored-ask-state
 			ask.State, ask.Answer = asks.StateAnswered, &answer
+			// kept for one release: stored-ask-state
 			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
 	})
@@ -361,9 +363,16 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
+	// Read before closeAsk opens its transaction (specWriterOf), for the check in Apply.
+	writer := s.specWriterOf(r, actor)
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
+			// The check of who writes an issue's spec or Verification document, on the block's
+			// document and each copy of the ask, before the first document call.
+			if err := s.refuseSpecWriterOfAsk(ctx, tx, writer, ask); err != nil {
+				return model.Ask{}, err
+			}
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
@@ -391,7 +400,9 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 	if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 		return err
 	}
+	// kept for one release: stored-ask-state
 	ask.State = asks.StateResolved
+	// kept for one release: stored-ask-state
 	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }
 
@@ -532,6 +543,7 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// What the transition stated on the ask's node learns the event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return model.Ask{}, nil, err

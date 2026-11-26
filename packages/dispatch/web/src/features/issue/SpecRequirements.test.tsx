@@ -97,6 +97,51 @@ test("a requirement with a check and no plan task carries no flag before the iss
   expect(screen.queryByTestId("spec-requirement-gap")).toBeNull();
 });
 
+// While a document of the issue owes its block index the server flags no requirement and writes
+// one line per such document in the coverage's own gaps, which the tab draws over the list in its
+// own words; a requirement's own line is drawn on the requirement alone.
+test("an owed document's line is drawn over the requirements, which carry no flag", async () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const { getIssueCoverage, view } = renderRequirements({
+    gaps: [owed],
+    has_plan: true,
+    issue: "CORE-1",
+    owed_documents: [{ artifact_id: "artifact-1", version: 12 }],
+    requirements: [requirement("r1", "Every issue page shows a Plan tab.", 0, 0)],
+    spec_artifact_id: "artifact-1",
+  });
+  restore = () => {
+    getIssueCoverage.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("spec-requirements");
+  expect(screen.getAllByTestId("spec-requirements-note").map((note) => note.textContent)).toEqual([
+    owed,
+  ]);
+  expect(screen.queryByTestId("spec-requirement-gap")).toBeNull();
+});
+
+test("a requirement's own gap line is drawn on it and not over the list", async () => {
+  const { getIssueCoverage, view } = renderRequirements({
+    gaps: ["r1 has no check"],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [requirement("r1", "Every issue page shows a Plan tab.", 0, 0, ["has no check"])],
+    spec_artifact_id: "artifact-1",
+  });
+  restore = () => {
+    getIssueCoverage.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("spec-requirements");
+  expect(screen.queryByTestId("spec-requirements-note")).toBeNull();
+  expect(screen.getAllByTestId("spec-requirement-gap").map((flag) => flag.textContent)).toEqual([
+    "has no check",
+  ]);
+});
+
 test("a spec that marks no requirements says so", async () => {
   const { getIssueCoverage, view } = renderRequirements({
     gaps: ["the spec marks no requirements"],

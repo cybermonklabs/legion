@@ -18,13 +18,28 @@ import (
 // storesRehearsalDatabase is a database every migration but dispatch://INFRA-1098's own built, as
 // production's stands before this issue's deploy, with the four tables of the priority store and
 // the workflow store still tables: its pending migrations are this issue's own
-// (storesmove.OwnMigrations), which sort after every other.
+// (storesmove.OwnMigrations), which sort after every other. It migrates through the newest
+// embedded migration below this issue's first, since store.MigrateThrough takes only a version a
+// migration carries.
 func storesRehearsalDatabase(t *testing.T) *store.Store {
 	t.Helper()
 	first, _, _ := strings.Cut(storesmove.OwnMigrations()[0], "_")
-	version, err := strconv.Atoi(first)
+	own, err := strconv.Atoi(first)
 	if err != nil {
 		t.Fatalf("read the version of this issue's first migration: %v", err)
+	}
+	migrations, err := store.Migrations()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	before := 0
+	for _, migration := range migrations {
+		if migration.Version < own && migration.Version > before {
+			before = migration.Version
+		}
+	}
+	if before == 0 {
+		t.Fatalf("no embedded migration sorts before this issue's first, %s", storesmove.OwnMigrations()[0])
 	}
 	return storetest.OpenFrom(t, "every migration before dispatch://INFRA-1098's own", func(url string) error {
 		ctx := context.Background()
@@ -33,7 +48,7 @@ func storesRehearsalDatabase(t *testing.T) *store.Store {
 			return err
 		}
 		defer database.Pool.Close()
-		return database.MigrateThrough(ctx, version-1)
+		return database.MigrateThrough(ctx, before)
 	})
 }
 
@@ -95,11 +110,11 @@ func TestThePreDeployCensusRehearsesTheMoveAndChangesNothing(t *testing.T) {
 			t.Fatalf("the census exited %d, want 0", code)
 		}
 		for _, want := range []string{
-			"census: rehearsal: it applies the pending migration 20261122200000_graph_edges_retirements.up.sql, of this issue's own",
-			"census: rehearsal: it skips the pending migration 20261123120000_graph_edges_one_tuple_arm.up.sql, of this issue's own",
-			"census: rehearsal: it applies the pending migration 20261123134318_stores_moved.up.sql, of this issue's own",
-			"census: rehearsal: it skips the pending migration 20261123185607_graph_nodes_artifact_id_index.up.sql, of this issue's own",
-			"census: rehearsal: it skips the pending migration 20261125093000_graph_tuples_workflow_inbound_index.up.sql, of this issue's own",
+			"census: rehearsal: it applies the pending migration 20261126000100_graph_edges_retirements.up.sql, of this issue's own",
+			"census: rehearsal: it skips the pending migration 20261126000200_graph_edges_one_tuple_arm.up.sql, of this issue's own",
+			"census: rehearsal: it applies the pending migration 20261126000300_stores_moved.up.sql, of this issue's own",
+			"census: rehearsal: it skips the pending migration 20261126000400_graph_nodes_artifact_id_index.up.sql, of this issue's own",
+			"census: rehearsal: it skips the pending migration 20261126000500_graph_tuples_workflow_inbound_index.up.sql, of this issue's own",
 			"census: rehearsal: its copy ended: " + strconv.Itoa(priorityTuples+workflowTuples) + " tuples of the four tables in ",
 			"census: rehearsal: priority: tuples: old " + strconv.Itoa(priorityTuples) + " ",
 			"census: rehearsal: workflow: tuples: old " + strconv.Itoa(workflowTuples) + " ",

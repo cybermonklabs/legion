@@ -452,7 +452,7 @@ test("the decisions view is a query over the issue own nodes", async ({ browser 
   const copied = [named(corpus, "acme-1115.issue"), named(corpus, "acme-1042.issue")];
   const openAsk = (await asksOf(seeded)).get(named(corpus, "model.ask_open"));
   const person = openAsk?.waiting_on_person ?? openAsk?.asked_of ?? "";
-  expect(person, "the seeded open ask waits on nobody").not.toBe("");
+  expect(person, "the seeded open ask names the person it is asked of").not.toBe("");
 
   // A third ask of the seeded issue, which that person declines.
   const third = await createAsk(

@@ -1,5 +1,11 @@
 package textcheck
 
+// The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
+// it moved here because it walks every .go file of the module, test files included, and a row
+// keyed on a file of internal/workflow would put every test file of packages/daemon - this
+// package's and the live tests' among them - on daemon-go's filter (dispatch://INFRA-1413).
+//ci:reads packages/daemon/**/*.go walks every .go file under packages/daemon (../..,) and TestEveryReaderOfRoleForLeavesTheArchitectUnchanged parses each one
+
 import (
 	"go/ast"
 	"go/parser"
@@ -42,11 +48,19 @@ type roleForReader struct {
 // not work, and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
 // no role works, the words it wrote before RoleFor named the architect there. Every other site
 // reaches its answer through a guard that starts, resumes or reports no architect as a phase
-// worker, or names the role an admitted root's entry numbers are of, or answers the issue's own
-// phase for the architect's completion there, as its reader took the issue's phase while RoleFor
-// named no role (phase.Of), or never reads admitted at all because a check before it refuses that
-// phase, which is what each named test holds it to. The owner walk reads no role: where it starts
-// is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// worker, or names the role an admitted root's entry numbers are of, or names the architect in the
+// notice of a task its owner stopped in the architect's phase, where the stop ends no process
+// (Engine.taskStopped, at admitted as at accepting), or answers the issue's own phase for the
+// architect's completion there, as its reader took the issue's phase while RoleFor named no role
+// (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
+// and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
+// plan.Supported holds every task to an implementer step with each tester, reviewer and
+// acceptance step after it),
+// or reads the retro's own phase and the phase of the last step of a parent's task, neither of
+// which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
+// before its retro for the issues beneath it), or never reads admitted at all because a check
+// before it refuses that phase, which is what each named test holds it to. The owner walk reads no
+// role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -73,11 +87,17 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
+	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
+	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}:            {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
+	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:            {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:               {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:       {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:      {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
+	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:              {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:        {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:                  {calls: 1, test: "TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                 {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:              {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "endOfTransition"}:                   {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},

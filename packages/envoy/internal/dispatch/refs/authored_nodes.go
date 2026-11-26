@@ -170,7 +170,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		placement := b
 		var stated []graphstore.UncausedTuple
 		var standing map[string]blockFarEnd
-		if _, stated, standing, err = placement.planBlockParents(ctx, q, index, record, nodes, fits, fragments, nil, only, sources); err != nil {
+		if _, stated, standing, err = placement.planBlockParents(ctx, q, index, record, nodes, fits, fragments, askPlacements{}, only, sources); err != nil {
 			return DecisionIndexing{}, err
 		}
 		for at := range placement.placedIDs {
@@ -240,7 +240,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		if kept {
 			joined = stored.joined
 		}
-		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: addresses[at], document: documents[at]}
+		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: addresses[at], supertag: TypeSupertag(block.Type), document: documents[at]}
 		changed[at], inserted[at] = true, !kept
 		version := b.versionOf(block.ID)
 		b.ids, b.types, b.sums = append(b.ids, block.ID), append(b.types, block.Type), append(b.sums, hexSum)

@@ -18,10 +18,12 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
 import type {
@@ -55,7 +57,7 @@ import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
-import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
+import { framesByHand, readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -556,41 +558,6 @@ async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
   requestAnimationFrame(() => frame.resolve());
   await act(async () => frame.promise);
-}
-
-/** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
- *  still asked for - as the next frame would; a frame cancelled first is not run. `asked` names
- *  the frames asked for and not run yet, and `restore` gives the frames back to happy-dom. */
-function framesByHand(): {
-  readonly asked: () => number[];
-  readonly restore: () => void;
-  readonly run: (frames?: readonly number[]) => Promise<void>;
-} {
-  const asked = new Map<number, FrameRequestCallback>();
-  let last = 0;
-  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-    last += 1;
-    asked.set(last, callback);
-    return last;
-  });
-  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
-    asked.delete(frame);
-  });
-  return {
-    asked: () => [...asked.keys()],
-    restore: () => {
-      request.mockRestore();
-      cancel.mockRestore();
-    },
-    run: (frames = [...asked.keys()]) =>
-      act(async () => {
-        for (const frame of frames) {
-          const callback = asked.get(frame);
-          asked.delete(frame);
-          callback?.(performance.now());
-        }
-      }),
-  };
 }
 
 /** Stands in for the browser's size observers, since happy-dom lays nothing out and observes no
@@ -8773,6 +8740,63 @@ test("a node whose words are only a bare address is named by its short form, in 
   expect(crumbs[1]?.textContent, "the crumb names the node by its address as written").toBe(short);
 });
 
+// R2 and R3 of dispatch://INFRA-1523: a crumb draws a node's one line where its own row is not
+// drawn, so it holds a corrected post's marks, as a filter's parent line does (`ParentLink`): a
+// deleted comment is drawn as its deleted line, from the delete, never as the model's text holds
+// it with the time as stored; an edited one says ` · edited` after its line.
+test("a crumb of a deleted comment draws its deleted line, and an edited one's says edited", async () => {
+  setViewport(1000);
+  const user = userEvent.setup();
+  const deletedAt = "2026-11-05T12:00:00Z";
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "comment-3", text: "Under it.", type: "comment" })],
+            editedAt: "2026-11-05T13:00:00Z",
+            held: 1,
+            id: "comment-2",
+            text: "Ship it.",
+            type: "comment",
+          }),
+        ],
+        deletedAt,
+        deletedBy: { id: "alice", kind: "user" },
+        held: 2,
+        id: "comment-1",
+        text: `Deleted by alice · ${deletedAt}`,
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    text: `${KEY} The issue's own title`,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  for (const next of ["comment-2", "comment-3"]) {
+    await user.keyboard(".");
+    await waitFor(() => expect(rowsFor(view.container, next)).toHaveLength(1));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(next));
+  }
+  await user.keyboard(".");
+  const crumbs = await waitFor(() => {
+    const found = [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")];
+    if (found.length < 3) throw new Error("the breadcrumb holds no crumb of both comments");
+    return found;
+  });
+  const deleted = crumbs[1];
+  expect({
+    deletedLine: deleted
+      ?.querySelector("[data-post-deleted]")
+      ?.textContent?.startsWith("Deleted by alice · "),
+    edited: crumbs[2]?.textContent,
+    storedTime: deleted?.textContent?.includes(deletedAt),
+  }).toEqual({ deletedLine: true, edited: "Ship it. · edited", storedTime: false });
+});
+
 /** Seeds `client` with the reader and every read the body's tree is built from (`slots/body.tsx`),
  *  each answered empty, but the comments', which answer `comments` and are left unread where
  *  none are given. */
@@ -9034,7 +9058,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
   ];
   const sent = () => reads.reduce((all, read) => all + read.mock.calls.length, 0);
-  // The reader, whom the rows read under the app's `staleTime`, and the names, answered so that
+  // The reader, whom the rows read with the tree's freshness, and the names, answered so that
   // neither reaches the network.
   const others = [
     spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
@@ -11666,6 +11690,78 @@ test("a Retry whose read answers that the id names several items leaves the focu
         "the list of matches, drawn in place of the Retry the reader pressed, left the focus on the page's body"
       ).toBe(list)
     );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// Census row 8.54 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// list of an id's matches stays drawn while its read runs again (`Following.settled`), and what it
+// draws then is the refusal the cache holds, which every correction is written into
+// (`markCorrectedPost`), never a list kept from before one. A match deleted while the list is
+// drawn is drawn deleted, with none of its first line, while a later read is out; and so is one
+// deleted while that read is out, which TanStack holds no refusal for: the delete gives the read
+// up, writes its mark into the refusal that puts back, and holds it beside the read it asks again.
+test("a match deleted after the list of an id's matches was drawn is drawn deleted while the list's read runs again", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const short = GONE_COMMENT.slice(0, 8);
+  const other = `${short}-0000-4000-8000-000000000002`;
+  const third = `${short}-0000-4000-8000-000000000003`;
+  const match = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: KEY,
+    kind: "comment",
+    ref: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+  });
+  const read = spyOn(api, "getReferences").mockRejectedValueOnce(
+    new ApiError(409, {
+      candidates: [
+        match(GONE_COMMENT, "The first note"),
+        match(other, "The other note"),
+        match(third, "The third note"),
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${short}" names 3 items; write more of the id`,
+    })
+  );
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: short, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const { container } = body.view;
+    const drawn = () => ({
+      deleted: container.querySelectorAll("[data-post-deleted]").length,
+      list: container.textContent?.includes("Several items match that link"),
+      words: ["The first note", "The other note", "The third note"].filter((words) =>
+        container.textContent?.includes(words)
+      ),
+    });
+    await waitFor(() => expect(container.textContent).toContain("The first note"));
+
+    act(() => markCorrectedPost(body.client, correction("comment", GONE_COMMENT, false)));
+    await waitFor(() => expect(container.textContent).not.toContain("The first note"));
+    // The read runs again, as window focus reads a read in error again, and stays out.
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise as never);
+    act(() => {
+      void body.client.refetchQueries({ queryKey: ["references", "to"] });
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const whileOut = drawn();
+
+    const asked = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(asked.promise as never);
+    act(() => markCorrectedPost(body.client, correction("comment", other, false)));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(container.textContent).not.toContain("The other note"));
+    expect({ whileOut, deletedWhileOut: drawn() }).toEqual({
+      whileOut: { deleted: 1, list: true, words: ["The other note", "The third note"] },
+      deletedWhileOut: { deleted: 2, list: true, words: ["The third note"] },
+    });
   } finally {
     names.mockRestore();
     read.mockRestore();

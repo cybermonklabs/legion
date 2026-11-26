@@ -18,9 +18,11 @@ import (
 // nothing. Dispatch carries the document's newest approval to that version in the transaction
 // that writes it (docs.carryApproval), so the approval reads approved there, the write reports no
 // approval it superseded, and a request for approval finds nothing to ask. A person's answer is
-// held on the ask's node, and the one version it writes changes only the server-owned attributes
-// of the ask's block (R3), which R10's case carries an approval across, so text restored around a
-// block answered since still carries the approval. Text one character away from the approved text
+// held on the ask's node. When the answer is the whole change of the one version it writes (docs'
+// changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+// version), that version changes only the server-owned attributes of the ask's block (R3), which
+// R10's case carries an approval across, so text restored around a block answered since still
+// carries the approval. Text one character away from the approved text
 // is a change, and a version holding the approved text around a changed ask block is judged by the
 // carry's cases (docs.carryVerdict), which carry no question's words.
 
@@ -90,6 +92,7 @@ var waveBlock = map[string]string{"wave": "How many regions take the first wave?
 // before version 3's own artifact.version. The undo supersedes no approval, so its advice names
 // none, and a request for approval returns the approval and opens nothing.
 func TestAVersionRestoringTheApprovedTextCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenChange(t, handler, "Restore the approved text", "", nil)
 	artifactID := document.artifactID
@@ -143,6 +146,7 @@ func TestAVersionRestoringTheApprovedTextCarriesTheApproval(t *testing.T) {
 // undo's version, and the restore then answers it Approve in alice's name with the restore's
 // reason, so the review names it and she is asked nothing.
 func TestAnOpenApprovalRequestIsAnsweredByTheVersionRestoringTheApprovedText(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := approveThenChange(t, handler, "Request open at the undo", "", nil).artifactID
 	request := requestApproval(t, handler, artifactID)
@@ -165,6 +169,7 @@ func TestAnOpenApprovalRequestIsAnsweredByTheVersionRestoringTheApprovedText(t *
 // A version written over an approved document that changed nothing - a named version, which the
 // versions route writes whatever changed - holds the approved text, so the approval stays current.
 func TestANamedVersionThatChangesNothingKeepsTheApprovalCurrent(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Name an unchanged version", restoreSpec)
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
@@ -182,6 +187,7 @@ func TestANamedVersionThatChangesNothingKeepsTheApprovalCurrent(t *testing.T) {
 // restores an approval as the edit route does: an agent that undoes its edit by uploading the
 // approved text again gets version 3 approved in alice's name, and the upload supersedes nothing.
 func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenChange(t, handler, "Upload the approved text again", "", nil)
 
@@ -257,6 +263,7 @@ func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *s
 // approval to it, and answers the approval request the agent opened at version 3; the settlement
 // after it writes the block's kept state back, and her approval is carried to that version too.
 func TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenOthersAnswer(t, handler, database, "Approved text over a decided block")
 	request := requestApproval(t, handler, document.artifactID)
@@ -272,6 +279,7 @@ func TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
 // upload of version 1's text over the block bob decided since restores the approved text, and
 // carries alice's approval.
 func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenOthersAnswer(t, handler, database, "Uploaded approved text over a decided block")
 
@@ -289,6 +297,7 @@ func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *te
 // mark, which is a change, so the approval stays stale, the undo supersedes nothing (the approval
 // was already stale) and a request for approval opens one.
 func TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := approveThenChange(t, handler, "Nearly restore the approved text", "", nil).artifactID
 
@@ -312,6 +321,7 @@ func TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale(t *testin
 // the server-owned attributes of an ask block and no word of its question: an agent's reword of
 // the open block is a change, so the approval stays stale.
 func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := approveThenChange(t, handler, "Restore around a reworded block", "\n"+waveAsk, waveBlock).artifactID
 
@@ -327,6 +337,7 @@ func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale
 // agent then restores the paragraph. Version 4 is version 1's text but for what a version keeps of
 // her answer - the block's state, answerer and time - so R10's case carries her approval to it.
 func TestARestoredTextAroundTheApproversOwnAnswerIsTheApprovedText(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenChange(t, handler, "Restore around her answer", "\n"+waveAsk, waveBlock)
 	artifactID := document.artifactID

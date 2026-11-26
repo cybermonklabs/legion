@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,7 +46,7 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 // marked is whether artifacts carries the node columns (carriesNodeMarker), which is whether the
 // database is this release's or the one before it. On this release's, the document's row names its
 // node, its node hangs under its issue, and each version is the projection of a version node, as
-// this release's server writes them (dispatch://INFRA-1253). On the one before, each is written as
+// this release's server writes them (the issue-tree spec). On the one before, each is written as
 // that release's server writes it, a document's node and nothing of the tree, so the backfill this
 // release runs over the data set writes the rest, and the sizing reads what it will write.
 func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marked bool) error {
@@ -63,7 +64,9 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// storeArtifact); the seed records no event of a document, so what the node write states
 	// carries the sentinel. On this release's database the node holds the row's id and
 	// created_at and states them as its values (graphstore.ArtifactRow, AttributeFacts), as the
-	// upload's does; the release before's names none.
+	// upload's does; the release before's names none. Every node and tuple the document's write
+	// states has its head rows written once, at the end (heads, below), once every row they read
+	// stands.
 	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
 	var row graphstore.ArtifactRow
 	if marked {
@@ -74,7 +77,11 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	if marked && issueKey != nil {
 		facts = append(facts, graphstore.ArtifactPartOf(refKey, *issueKey, seedAuthor, created))
 	}
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, graphstore.AttributeFacts(facts, node)); err != nil {
+	facts = graphstore.AttributeFacts(facts, node)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, []graphstore.Node{node}, facts)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("artifact node: %w", err)
 	}
 	columns := "id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq"
@@ -151,13 +158,19 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	}
 	// The seed records no event of a document's version, so what the index stated in the node
 	// and tuple store carries the sentinel, the cause of a write no event recorded.
-	if err := graphstore.Caused(ctx, tx, blockWrite, graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, blockWrite, graphstore.NoEvent)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("record what the block index stated: %w", err)
 	}
 	// Each version's node, after the block nodes so the transaction's node rows stay in ascending
 	// (kind, id), as the server's version write orders them (docs.WriteVersionNode).
 	if len(versionNodes) > 0 {
-		if err := graphstore.Write(ctx, tx, versionNodes, versionFacts); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, versionNodes, versionFacts)
+			return nil
+		}); err != nil {
 			return fmt.Errorf("version nodes: %w", err)
 		}
 	}
@@ -202,9 +215,17 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 		if err != nil {
 			return fmt.Errorf("index references: %w", err)
 		}
-		if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueCaused(b, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent)
+			return nil
+		}); err != nil {
 			return fmt.Errorf("record what the references stated: %w", err)
 		}
+	}
+	heads := slices.Concat(graphstore.HeadsOf([]graphstore.Node{node}, facts), graphstore.HeldHeads(blockWrite),
+		graphstore.HeadsOf(versionNodes, versionFacts))
+	if err := graphstore.WriteHeads(ctx, tx, heads); err != nil {
+		return fmt.Errorf("write the head rows of the document: %w", err)
 	}
 	if document.Primary {
 		if err := docs.RecordTaskProgressMarkdown(ctx, tx, document.ID, latest); err != nil {

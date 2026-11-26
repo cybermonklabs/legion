@@ -52,6 +52,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testbaseline"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -165,7 +166,7 @@ const movedCostShapeSlack = 0.05
 // movedCostNeverRan is the condition, on an issue i, that it is a finished issue of one of projects
 // that Legion never ran: one that no run is part_of.
 func movedCostNeverRan(projects []string) string {
-	return `(i.project_key in (` + sqlStringList(projects) + `) and i.status = 'done' and not exists (
+	return `(i.project_key in (` + store.QuoteLiterals(projects) + `) and i.status = 'done' and not exists (
 		select 1 from workflow_tuples w
 		where w.from_kind = 'step' and w.kind = 'part_of' and w.to_kind = 'issue' and w.to_id = i.key))`
 }
@@ -225,13 +226,13 @@ var movedCostShapeQuery = `with recursive never_ran as (
 	union all select 'issues done', count(*) from production where status = 'done'
 	union all select 'issues in backlog', count(*) from production where status = 'backlog'
 	union all select 'issues in todo', count(*) from production where status = 'todo'
-	union all select 'issues in flight', count(*) from production where status in (` + sqlStringList(priorityInFlightStatuses) + `)
+	union all select 'issues in flight', count(*) from production where status in (` + store.QuoteLiterals(priorityInFlightStatuses) + `)
 	union all select 'issues in triage or icebox', count(*) from production where status in ('triage', 'icebox')
 	union all select 'unplaced issues', count(*) from production i
-		where i.closed_at is null and i.status in (` + sqlStringList(priorityInFlightStatuses) + `)
+		where i.closed_at is null and i.status in (` + store.QuoteLiterals(priorityInFlightStatuses) + `)
 		  and not exists (select 1 from pairs p where p.key = i.key)
 	union all select 'parked issues', count(distinct key) from pairs
-		where closed_at is null and status in (` + sqlStringList(priorityParkedStatuses) + `)
+		where closed_at is null and status in (` + store.QuoteLiterals(priorityBacklogStatuses) + `)
 	union all select '` + movedCostNeverRanName + `' || project_key, count(*) from never_ran group by project_key`
 
 // movedCostNeverRanName names, before a project's key, the shape's count of the finished issues
@@ -264,9 +265,9 @@ var movedCostEventsQuery = `with written as (
 	       coalesce(percentile_disc(0.99) within group (order by events), 0),
 	       coalesce(max(events), 0),
 	       count(*) filter (where events = last_seq and (low = 1 and high = last_seq or beside and events = 0)),
-	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `)),
-	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved is not null),
-	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved < last_seq)
+	       count(*) filter (where status in (` + store.QuoteLiterals(priorityBacklogStatuses) + `)),
+	       count(*) filter (where status in (` + store.QuoteLiterals(priorityBacklogStatuses) + `) and moved is not null),
+	       count(*) filter (where status in (` + store.QuoteLiterals(priorityBacklogStatuses) + `) and moved < last_seq)
 	from counted
 	group by beside
 	order by beside`

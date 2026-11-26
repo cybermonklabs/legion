@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -111,8 +112,10 @@ func (s *server) readIssueChain(ctx context.Context, who model.Actor, key, at st
 		return model.IssueChain{}, fmt.Errorf("open the chain read of %s: %w", key, err)
 	}
 	defer tx.Rollback(ctx)
-	chain := &chainRead{tree: &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key}}
-	if err := chain.tree.build(0); err != nil {
+	// The chain reads the whole tree, as the tree read reads it for a view, but every node it
+	// holds rather than one query's, in one page (issueTreeBuilder.whole).
+	chain := &chainRead{tree: &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, whole: true, pageSize: math.MaxInt}}
+	if err := chain.tree.build(0, ""); err != nil {
 		return model.IssueChain{}, err
 	}
 	chain.take()
@@ -191,7 +194,7 @@ func (c *chainRead) readServes() error {
 			}
 		}
 	}
-	seen, err := refs.Nodes(c.tree.ctx, c.tree.q, c.tree.who, true, unread)
+	seen, err := refs.Nodes(c.tree.ctx, c.tree.q, c.tree.who, unread)
 	if err != nil {
 		return err
 	}
@@ -245,11 +248,11 @@ func (c *chainRead) readChecks() error {
 	var documents []string
 	for index, target := range c.checks {
 		row := c.tree.blocks[target.ID]
-		check, held := read[[2]string{row.document, row.blockID}]
+		check, held := read[[2]string{row.Document, row.BlockID}]
 		if !held {
 			_, blockID, _ := strings.Cut(target.ID, "#")
 			check = model.CheckBlock{
-				BlockID: blockID, IssueKey: c.issueOf(target), ArtifactID: row.document, Version: row.version, SHA256: row.sum,
+				BlockID: blockID, IssueKey: c.issueOf(target), ArtifactID: row.Document, Version: row.ChangedVersion, SHA256: row.TextSHA256,
 				Text: typedBlockWords(c.tree.facts[target].Values[graphstore.AttributeText], graphstore.BlockTypeCheck),
 			}
 		}
@@ -309,14 +312,16 @@ func (c *chainRead) readChecks() error {
 	return nil
 }
 
-// judge answers each check's standing as the results read answers it: the result a check CI proves
-// derives from its run, read for the checks of each issue at that issue's pull request head
-// (deriveCIResults) over every result recorded against it, as the results read reads it; then,
-// with the results the reader may not see taken out, what each check is compared with, where each
-// result's commit stands, whether the check's words moved since, and whether a pass of it stands
-// (comparisonReader), with every head learned before the first check is answered.
+// judge answers each check's standing as the results read answers it: what each check is compared
+// with is learned first (comparisonReader.learn), as the results read learns it, so the result a
+// check CI proves derives from its run at the pull request head that read learned, read for the
+// checks of each issue (deriveCIResults) over every result recorded against it; then, with the
+// results the reader may not see taken out, where each result's commit stands, whether the
+// check's words moved since, and whether a pass of it stands (comparisonReader.answer).
 func (c *chainRead) judge(s *server, at string) error {
 	ctx := c.tree.ctx
+	reader := newComparisonReader(ctx, s, at)
+	reader.learn(ctx, c.blocks)
 	var issues []string
 	byIssue := map[string][]int{}
 	for index, check := range c.blocks {
@@ -330,7 +335,7 @@ func (c *chainRead) judge(s *server, at string) error {
 		for place, index := range byIssue[issue] {
 			group[place] = c.blocks[index]
 		}
-		if err := s.deriveCIResults(ctx, issue, group); err != nil {
+		if err := s.deriveCIResults(ctx, reader, issue, group); err != nil {
 			return err
 		}
 		for place, index := range byIssue[issue] {
@@ -342,8 +347,6 @@ func (c *chainRead) judge(s *server, at string) error {
 			return c.hidden[result.ID]
 		})
 	}
-	reader := newComparisonReader(s, at)
-	reader.learn(ctx, c.blocks)
 	for index := range c.blocks {
 		reader.answer(ctx, &c.blocks[index])
 	}
@@ -379,7 +382,7 @@ func (c *chainRead) answer(at string) model.IssueChain {
 			Decisions: []string{}, Checks: []string{}, PlanTasks: []string{},
 		}
 		requirement.Ref, _ = text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: c.tree.key, ID: cmp.Or(c.tree.blocks[target.ID].slug, "spec"), Block: node.BlockID,
+			Kind: "block", IssueKey: c.tree.key, ID: cmp.Or(c.tree.blocks[target.ID].Slug, "spec"), Block: node.BlockID,
 		})
 		required[target.ID] = len(chain.Requirements)
 		chain.Requirements = append(chain.Requirements, requirement)
@@ -417,7 +420,7 @@ func (c *chainRead) answer(at string) model.IssueChain {
 			Serves: c.serves[target],
 		}
 		task.Ref, _ = text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: task.Issue, ID: c.tree.blocks[target.ID].slug, Block: node.BlockID,
+			Kind: "block", IssueKey: task.Issue, ID: c.tree.blocks[target.ID].Slug, Block: node.BlockID,
 		})
 		if countsInChain(task.State) {
 			for _, id := range task.Serves {

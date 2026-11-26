@@ -24,6 +24,7 @@ import (
 // architect's own included, is told the root's architect, as before. Every other part of the
 // sentence is the one a claim was always told.
 func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())

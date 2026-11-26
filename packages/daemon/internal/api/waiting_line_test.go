@@ -1,5 +1,18 @@
 package api
 
+// The three checks main's #2989 put under packages/daemon, and the waiting-line block check
+// main's #3718 brought, read no text outside it any more: each is held to a copy committed
+// beside its own package, and the row above is what holds those copies to the texts, in the
+// text-check job, where a documentation edit is the run that should start
+// (dispatch://INFRA-1413). cmd/legion/main_test.go is left with no row at all -
+// awaiting_summary_extract.txt and waiting_line_block_extract.txt stand in its own directory
+// - and what is left of the two rows below is what each reads of packages/daemon outside its
+// own package, which daemon_go_tests covers with the module itself.
+//ci:reads packages/daemon/cmd/legion/main.go readContractTexts reads every name of its list under the root it joins
+//ci:reads packages/daemon/cmd/legion/main_test.go readContractTexts reads every name of its list under the root it joins
+//ci:reads packages/daemon/internal/projection/project.go readContractTexts reads every name of its list under the root it joins
+//ci:reads packages/daemon/internal/projection/project_test.go readContractTexts reads every name of its list under the root it joins
+
 import (
 	"encoding/json"
 	"fmt"
@@ -104,7 +117,7 @@ func issueKeyServed(t *testing.T, body []byte, name string) map[string]json.RawM
 // holding a slot and an issue the line does not name are served no `waitingLine` key at all.
 func TestTheWaitingLinePlaceIsServedOnEachIssue(t *testing.T) {
 	state := waitingLineState()
-	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	line, served := state.Admission.Waiting, waitingLinesServed(t, body)
 
 	if blocked := state.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != "LEGION-30" ||
@@ -165,9 +178,9 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 		t.Fatalf("waitingLineContract = %d, want %d, the contract whose entry in version.go added each waiting issue's place in the line",
 			waitingLineContract, addedWaitingLine)
 	}
-	if waitingLineContract > DaemonAPIVersion {
+	if waitingLineContract > DaemonAPIVersion() {
 		t.Fatalf("waitingLineContract = %d, above DaemonAPIVersion %d: no caller could be served the field",
-			waitingLineContract, DaemonAPIVersion)
+			waitingLineContract, DaemonAPIVersion())
 	}
 }
 
@@ -275,9 +288,9 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
 			mergeWaitContract, addedMergeWait)
 	}
-	if mergeWaitContract > DaemonAPIVersion {
+	if mergeWaitContract > DaemonAPIVersion() {
 		t.Fatalf("mergeWaitContract = %d, above DaemonAPIVersion %d: no caller could be served the object",
-			mergeWaitContract, DaemonAPIVersion)
+			mergeWaitContract, DaemonAPIVersion())
 	}
 }
 

@@ -106,9 +106,9 @@ func TestGoogleServiceAccountMintImpersonatesTheStoredAccount(t *testing.T) {
 }
 
 // TestGoogleServiceAccountMintNamesGooglesVerdict: an IAM refusal, which is what a broker that may
-// not impersonate the account gets, is refused at its first attempt; an outage is the upstream's,
-// asked three times under the Retry, so an operator reads the class and knows whether to fix an
-// IAM binding or wait.
+// not impersonate the account gets, is refused at its first attempt; an outage, a 5xx or a 408 that
+// times the request out, is the upstream's, asked three times under the Retry, so an operator
+// reads the class and knows whether to fix an IAM binding or wait.
 func TestGoogleServiceAccountMintNamesGooglesVerdict(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -119,6 +119,7 @@ func TestGoogleServiceAccountMintNamesGooglesVerdict(t *testing.T) {
 	}{
 		{"refused", http.StatusForbidden, `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"caller does not have permission"}}`, "refused", 1},
 		{"outage", http.StatusServiceUnavailable, `{"error":{"code":503,"status":"UNAVAILABLE","message":"backend unavailable"}}`, "upstream", 3},
+		{"timeout", http.StatusRequestTimeout, `{"error":{"code":408,"status":"UNAVAILABLE","message":"backend unavailable"}}`, "upstream", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {

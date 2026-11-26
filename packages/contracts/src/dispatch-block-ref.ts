@@ -1,4 +1,5 @@
 import type { BlockItemKind } from "./block-schema.generated";
+import { readAskBlocks } from "./dispatch-block-reader";
 import { hasControlCharacter } from "./dispatch-href";
 import { referenceTargetFits, utf8Bytes } from "./dispatch-text-rules";
 import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
@@ -147,8 +148,8 @@ const ITEM_BLOCK_REFERENCE = new RegExp(
  * fragment. Go's validator reads the value through `text.ParseRef`, which first ends it at a
  * character no reference holds (`referenceEnd`: `'`, `"`, `<`, `>`, a backtick, `[`, `]`, `|` or
  * whitespace) and trims trailing punctuation, so such a value may be refused here with a different
- * reason than Go gives; both refuse it. A message never changes, so a pinned message block is no
- * reference.
+ * reason than Go gives; both refuse it. A message records no revisions, so a pinned message block
+ * is no reference.
  */
 function itemBlockKind(value: string): "ask" | "comment" | "message" | undefined {
   const match = ITEM_BLOCK_REFERENCE.exec(value);
@@ -836,6 +837,92 @@ export function typedBlockIdAttribute(id: string): string {
     .replaceAll("\n", "&#xA;")
     .replaceAll("\r", "&#xD;");
   return `id="${value}"`;
+}
+
+/**
+ * A typed block's opening line as pmdoc's ParseTypedDirectiveOpen frames it: three colons or
+ * more, a name of letters, digits, `_` and `-`, then `{` at once, and a line that ends with `}`.
+ * Its attributes are not read: a stored document holds no opener whose attributes pmdoc refuses.
+ */
+const TYPED_OPENER = /^(:{3,})([A-Za-z0-9_-]+)\{.*\}$/s;
+
+/**
+ * Each line of `markdown` that opens an ask block, from the opener's first colon on, as pmdoc's
+ * parser reads the canonical rendering a text route serves: a typed block named `ask` (three
+ * colons or more, `ask{`, and a line that ends with `}`, as TYPED_OPENER frames it), outside
+ * fenced and indented code and outside the front matter a document opens with. It reads the
+ * document's blocks with readAskBlocks (dispatch-block-reader.ts), the one reader of a document's
+ * blocks, which follows goldmark and pmdoc. packages/envoy-client's askgate-new-asks.ts reads its
+ * ask blocks with the same reader.
+ *
+ * The web's reader of a live text of the release before, and the CLI's reader of a live text and
+ * its check of a version for open ask blocks before an approval request, all read openers here.
+ * So none takes a line that a document's writer quoted for a state or an answer that Dispatch
+ * recorded. Go's twin is refs.questionBlocks.
+ */
+export function askOpenerLines(markdown: string): string[] {
+  const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
+  const typedOpener = (text: string) => {
+    // Both groups are in each match, so they are undefined only where `text` does not match.
+    const [, colons, name] = TYPED_OPENER.exec(text) ?? [];
+    return colons === undefined || name === undefined ? undefined : { colons: colons.length, name };
+  };
+  return readAskBlocks(lines, { frontMatter: true, bodies: false, typedOpener }).map(
+    (block) => block.opener
+  );
+}
+
+/** The character references `typedBlockIdAttribute` writes in a quoted id, each with its character. */
+const ID_REFERENCES: Readonly<Record<string, string>> = {
+  "&amp;": "&",
+  "&#x22;": '"',
+  "&#xA;": "\n",
+  "&#xD;": "\r",
+};
+
+/**
+ * The block id that `line`, an ask block's opener as `askOpenerLines` gives it, names: the
+ * attribute right after the directive's `{`, written as `typedBlockIdAttribute` writes an id, then
+ * a space or the closing brace. A `#id` runs to the first TYPED_BLOCK_ID_SHORTCUT_EXCLUDED
+ * character, so a no-break space, a line separator (U+2028) or an ideographic space stays in the
+ * id. An `id="…"` names the id that its `&amp;`, `&#x22;`, `&#xA;` and `&#xD;` read back to, where
+ * the renderer writes that id so. Undefined where the line writes its id in no spelling that the
+ * renderer writes. `askOpeners` reads ids here, and so does the CLI's reader of an opener's
+ * attributes.
+ */
+export function askOpenerBlockId(line: string): string | undefined {
+  // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
+  const attributes = line.slice(line.indexOf("{") + 1);
+  let id: string;
+  let end: number;
+  if (attributes.startsWith("#")) {
+    end = 1;
+    while (
+      end < attributes.length &&
+      !TYPED_BLOCK_ID_SHORTCUT_EXCLUDED.includes(attributes.charAt(end))
+    ) {
+      end++;
+    }
+    id = attributes.slice(1, end);
+  } else if (attributes.startsWith('id="')) {
+    end = attributes.indexOf('"', 'id="'.length) + 1;
+    if (end === 0) return undefined;
+    id = attributes
+      .slice('id="'.length, end - 1)
+      .replace(/&(?:amp|#x22|#xA|#xD);/g, (reference) => ID_REFERENCES[reference] ?? reference);
+  } else {
+    return undefined;
+  }
+  const after = attributes.charAt(end);
+  if (after !== " " && after !== "}") return undefined;
+  return typedBlockIdAttribute(id) === attributes.slice(0, end) ? id : undefined;
+}
+
+/** The lines of `openers`, a version's ask block openers as `askOpenerLines` gives them, that
+ *  open the ask block `blockId`: the lines whose id (`askOpenerBlockId`) is `blockId`. The web's
+ *  and the CLI's readers of one block's opening line both take it here. */
+export function askOpeners(openers: readonly string[], blockId: string): string[] {
+  return openers.filter((line) => askOpenerBlockId(line) === blockId);
 }
 
 /** Each typed block id and how its opening line writes it (`typedBlockIdAttribute`). */

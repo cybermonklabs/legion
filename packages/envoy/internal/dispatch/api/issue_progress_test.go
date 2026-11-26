@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // progressOf reads an issue's progress object off GET /api/v1/issues/{key}.
@@ -43,10 +43,24 @@ func wantNull(t *testing.T, what string, got *model.ProgressCount) {
 	}
 }
 
+// reconcileTaskProgress runs one task progress reconciliation pass of service and answers what it
+// returned. The pass runs on a goroutine of its own, on a context the test's cleanup cancels, and
+// the wait for its return has one bound, the test binary's deadline less testwait's margin, so a
+// pass that never returns fails the test by name and is then stopped.
+func reconcileTaskProgress(t *testing.T, service *docs.Service) (driftLeft bool) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	returned := make(chan bool, 1)
+	go func() { returned <- service.ReconcileTaskProgress(ctx) }()
+	return testwait.Receive(t, "the task progress reconciliation pass to return", returned)
+}
+
 // The issue read carries the task counts of the spec seeded at creation, nested items included,
 // and null for a spec with no task list; a spec with no task item at all counts the same as one
 // never counted.
 func TestIssueProgressCountsSeededSpecTasks(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	withTasks := createInteractionIssue(t, handler, "TEST", "With tasks",
 		"Plan\n\n- [x] one\n- [ ] two\n  - [x] nested\n- plain item\n")
@@ -64,6 +78,7 @@ func TestIssueProgressCountsSeededSpecTasks(t *testing.T) {
 // box instead of writing `[x]` as text, and the settlement that versions the edit recounts the
 // issue; a `[x] ` written over a plain list item or a paragraph stays literal text.
 func TestIssueProgressFollowsReplaceThatTicksAnItem(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ticking", "- [ ] write it\n- [ ] test it\n\nA paragraph.\n\n- plain\n")
 	wantCount(t, "tasks before", progressOf(t, handler, issue.Key).Tasks, 0, 2)
@@ -118,6 +133,7 @@ func TestIssueProgressFollowsReplaceThatTicksAnItem(t *testing.T) {
 
 // An upload that replaces the spec recounts the issue in the upload's own transaction.
 func TestIssueProgressFollowsSpecUpload(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Uploaded", "- [ ] one\n")
 	wantCount(t, "tasks before", progressOf(t, handler, issue.Key).Tasks, 0, 1)
@@ -144,6 +160,7 @@ func TestIssueProgressFollowsSpecUpload(t *testing.T) {
 // and follows a child's status at once; a grandchild counts toward its parent alone. The list,
 // the page and the pinned list carry the same object.
 func TestIssueProgressCountsDirectChildren(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	root := createInteractionIssue(t, handler, "TEST", "Root", "- [ ] root task\n")
 	createChild := func(title, parent string) string {
@@ -213,6 +230,7 @@ func TestIssueProgressCountsDirectChildren(t *testing.T) {
 // wrote no count (the task a deploy replaces); it leaves current rows alone and finds nothing on
 // a second pass.
 func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	counted := createInteractionIssue(t, handler, "TEST", "Counted", "- [x] a\n- [ ] b\n")
 	uncounted := createInteractionIssue(t, handler, "SECOND", "Uncounted", "- [x] c\n- [x] d\n- [ ] e\n")
@@ -271,9 +289,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	wantNull(t, "uncounted tasks before the pass", progressOf(t, handler, uncounted.Key).Tasks)
 	wantCount(t, "stale tasks before the pass", progressOf(t, handler, stale.Key).Tasks, 0, 1)
 
-	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	reconcileTaskProgress(t, deps.Docs.(*docs.Service))
 
 	wantCount(t, "counted", progressOf(t, handler, counted.Key).Tasks, 1, 2)
 	wantCount(t, "uncounted", progressOf(t, handler, uncounted.Key).Tasks, 2, 3)
@@ -290,13 +306,14 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("drifted issues after the pass = %d, want 0", remaining)
 	}
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	reconcileTaskProgress(t, deps.Docs.(*docs.Service))
 	wantCount(t, "uncounted after a second pass", progressOf(t, handler, uncounted.Key).Tasks, 2, 3)
 }
 
 // A pass drains a backlog wider than one batch: the first start after the deploy finds every
 // issue uncounted, and more than taskProgressBatch of them must not wait five minutes per fifty.
 func TestIssueProgressReconciliationDrainsMoreThanOneBatch(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	// 60 issues with a one-item task list; a batch is 50, so one pass needs two batches. Created
@@ -333,9 +350,7 @@ func TestIssueProgressReconciliationDrainsMoreThanOneBatch(t *testing.T) {
 		t.Fatalf("cleared rows = %d, want %d", drifted, issues)
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	reconcileTaskProgress(t, deps.Docs.(*docs.Service))
 
 	var remaining int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from issues where project_key = 'MANY' and tasks_version is null`).Scan(&remaining); err != nil {

@@ -1,25 +1,53 @@
 import { expect, test } from "bun:test";
 import { randomInt } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 import {
   bounds,
+  eventually,
   execPause,
   type Listed,
   listedOf,
   masked,
   maxReads,
   named,
+  ownUnknown,
+  processTableYielding,
+  procTreeAt,
   rowLimit,
   runBounded,
   stopTree,
+  stopTreeYielding,
   whether,
 } from "./bounded-subprocess";
 
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
+
+/** Whether `path` exists: false only where it is missing (ENOENT), as `/proc` is on a machine that
+ *  lists its processes with `ps`. Any other failure of the check, EACCES among them, throws, so a
+ *  file whose rows need the path fails where it cannot read it, rather than skipping those rows
+ *  as a machine without it would. */
+function present(path: string): boolean {
+  try {
+    statSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
 
 /** The command line of every process on the machine, by pid, with its words joined by spaces; or
  *  undefined where neither `/proc` nor `ps` lists processes. Without `/proc`, one `ps` lists them,
@@ -27,7 +55,7 @@ const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.me
  *  stated edge: Linux lists its processes under `/proc` and never runs it. */
 function commandLines(): Map<number, string> | undefined {
   const lines = new Map<number, string>();
-  if (existsSync("/proc/self/cmdline")) {
+  if (present("/proc/self/cmdline")) {
     for (const entry of readdirSync("/proc")) {
       if (!/^\d+$/.test(entry)) continue;
       try {
@@ -147,7 +175,7 @@ test.skipIf(commandLines() === undefined)(
 // The token match reads each process's environment under `/proc`. Where `/proc` is missing,
 // `ps` lists no environment, and nothing finds a process a child left once that child exited,
 // so this row has nothing to hold there.
-test.skipIf(!existsSync("/proc/self/stat"))(
+test.skipIf(!present("/proc/self/stat"))(
   "a bounded child that exits leaves no process it started behind",
   async () => {
     // A number of seconds no other process on the machine sleeps for, so every process whose
@@ -223,64 +251,96 @@ const sibling: Listed = {
   unknown: false,
 };
 
-/** `stopTree` of `scriptedChild`, standing as `child` says, driven over `tables`, a scripted
- *  process table: read n answers `tables[n - 1]`, and each read after the last answers the last
- *  again. `procfs` tells the kill whether its table comes from `/proc`, so a row runs either path
- *  whatever this machine has, and the signal of a pid in `gone` throws, as `process.kill` throws
- *  for a process that has ended. It answers what the kill did, in order: each call of `read`,
- *  `pause`, `signal` and `child.kill`, written as the stand-in's name and then every argument it
- *  was given. So `read` and `pause`, which are given none, write their name alone, a signal
- *  writes `signal <pid>`, and the kill of a running child writes `child.kill SIGKILL`. No clock
- *  runs and no process is started or signalled: the pause, the signal and `child.kill` only
- *  record, and act on no process. Its loop is synchronous, so a loop that lost its `maxReads`
- *  bound would spin past every row clock; a read past `maxReads` throws instead. */
-function scriptedKill(
+/** One turn of this process's event loop, on a `setImmediate`. */
+function nextTurn(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  return promise;
+}
+
+/** The child of a kill of `scriptedChild`, standing as `child` says, and the collaborators that
+ *  drive it over `tables`, a scripted process table: read n answers `tables[n - 1]`, and each
+ *  read after the last answers the last again. `procfs` tells the kill whether its table comes
+ *  from `/proc`, so a row runs either path whatever this machine has, and the signal of a pid in
+ *  `gone` throws, as `process.kill` throws for a process that has ended. `did` records what the
+ *  kill did, in order: each call of `read`, `pause`, `signal` and `child.kill`, written as the
+ *  stand-in's name and then every argument it was given. So `read` and `pause`, which are given
+ *  none, write their name alone, a signal writes `signal <pid>`, and the kill of a running child
+ *  writes `child.kill SIGKILL`. No clock runs and no process is started or signalled: the pause,
+ *  the signal and `child.kill` only record, and act on no process. A read past `maxReads`
+ *  throws, so a loop that lost that bound ends rather than spinning past every row clock. */
+function scripted(
   tables: readonly (readonly Listed[] | undefined)[],
   {
     child = exitedByCode,
     gone = [],
     procfs = true,
-  }: { child?: ChildState; gone?: readonly number[]; procfs?: boolean } = {}
-): string[] {
+  }: { child?: ChildState; gone?: readonly number[]; procfs?: boolean }
+) {
   const did: string[] = [];
   // A call of the stand-in `name`, given `args`: its name, then each argument.
   const record = (name: string, args: readonly unknown[]): void => {
     did.push([name, ...args].map(String).join(" "));
   };
   let reads = 0;
-  stopTree(
-    {
-      child: {
-        ...child,
-        kill: (...args: unknown[]) => record("child.kill", args),
-        pid: scriptedChild.pid,
-      },
-      start: scriptedChild.start,
-      token: scriptedChild.token,
+  const run = {
+    child: {
+      ...child,
+      kill: (...args: unknown[]) => record("child.kill", args),
+      pid: scriptedChild.pid,
     },
-    {
-      pause: (...args: unknown[]) => record("pause", args),
-      procfs,
-      read: (...args: unknown[]) => {
-        reads += 1;
-        if (reads > maxReads) {
-          throw new Error(`the kill read the table ${reads} times, past maxReads of ${maxReads}`);
-        }
-        record("read", args);
-        return tables[Math.min(reads, tables.length) - 1];
-      },
-      signal: (pid: number, ...more: unknown[]) => {
-        record("signal", [pid, ...more]);
-        if (gone.includes(pid)) {
-          throw Object.assign(new Error(`kill ${pid}: no such process`), { code: "ESRCH" });
-        }
-      },
-    }
-  );
-  return did;
+    start: scriptedChild.start,
+    token: scriptedChild.token,
+  };
+  const collaborators = {
+    pause: (...args: unknown[]) => record("pause", args),
+    procfs,
+    read: (...args: unknown[]) => {
+      reads += 1;
+      if (reads > maxReads) {
+        throw new Error(`the kill read the table ${reads} times, past maxReads of ${maxReads}`);
+      }
+      record("read", args);
+      return tables[Math.min(reads, tables.length) - 1];
+    },
+    signal: (pid: number, ...more: unknown[]) => {
+      record("signal", [pid, ...more]);
+      if (gone.includes(pid)) {
+        throw Object.assign(new Error(`kill ${pid}: no such process`), { code: "ESRCH" });
+      }
+    },
+  };
+  return { collaborators, did, run };
 }
 
-test("a kill reads again, after a pause, while a process started since the child reads unknown", () => {
+/** What a kill of `scriptedChild` did over `tables` (`scripted`), run by each kill in turn:
+ *  `stopTree`, in one synchronous pass, and `stopTreeYielding`, whose read and pause each answer a
+ *  turn of the event loop later. `runBounded` runs the second and the exit listeners the first,
+ *  and both must do the same, in the same order: a kill that differs fails here, naming the one
+ *  that turns. */
+async function scriptedKill(
+  tables: readonly (readonly Listed[] | undefined)[],
+  options: { child?: ChildState; gone?: readonly number[]; procfs?: boolean } = {}
+): Promise<string[]> {
+  const once = scripted(tables, options);
+  stopTree(once.run, once.collaborators);
+  const turning = scripted(tables, options);
+  await stopTreeYielding(turning.run, {
+    ...turning.collaborators,
+    pause: async () => {
+      await nextTurn();
+      turning.collaborators.pause();
+    },
+    read: async () => {
+      await nextTurn();
+      return turning.collaborators.read();
+    },
+  });
+  expect(turning.did, "stopTreeYielding, against what stopTree did").toEqual(once.did);
+  return once.did;
+}
+
+test("a kill reads again, after a pause, while a process started since the child reads unknown", async () => {
   // One of the child's processes, started in the child's own clock tick, which `start` counts as
   // since the child, and caught in its exec at read 1, its environment read empty; carrying the
   // child's token at read 2, once the exec has loaded, after the outer child's, as the processes
@@ -294,7 +354,7 @@ test("a kill reads again, after a pause, while a process started since the child
     unknown: false,
   };
   expect(
-    scriptedKill([
+    await scriptedKill([
       [sibling, execing, init],
       [sibling, loaded, init],
       [sibling, loaded, init],
@@ -302,7 +362,7 @@ test("a kill reads again, after a pause, while a process started since the child
   ).toEqual(["read", "pause", "read", `signal ${pid}`, "read"]);
 });
 
-test("an unknown process that started before the child ends a kill at its first read", () => {
+test("an unknown process that started before the child ends a kill at its first read", async () => {
   const older: Listed = {
     pid: process.pid + 2,
     ppid: 1,
@@ -310,10 +370,10 @@ test("an unknown process that started before the child ends a kill at its first 
     tokens: [],
     unknown: true,
   };
-  expect(scriptedKill([[init, older, sibling]])).toEqual(["read"]);
+  expect(await scriptedKill([[init, older, sibling]])).toEqual(["read"]);
 });
 
-test("a process started since the child that stays unknown ends a kill's reads at maxReads", () => {
+test("a process started since the child that stays unknown ends a kill's reads at maxReads", async () => {
   // Beside it stands an unknown process that started before the child, which alone ends the
   // reads at once (the row above): last in one table and first in the other, the stuck process
   // at the other end. So a kill that read only one end of the table, or only its first or its
@@ -327,15 +387,15 @@ test("a process started since the child that stays unknown ends a kill's reads a
   };
   const older: Listed = { ...stuck, pid: process.pid + 3, start: scriptedChild.start - 1 };
   const everyRead = Array.from({ length: maxReads }, () => ["read", "pause"]).flat();
-  expect(scriptedKill([[stuck, init, sibling, older]]), "the stuck process first").toEqual(
+  expect(await scriptedKill([[stuck, init, sibling, older]]), "the stuck process first").toEqual(
     everyRead
   );
-  expect(scriptedKill([[older, sibling, init, stuck]]), "the stuck process last").toEqual(
+  expect(await scriptedKill([[older, sibling, init, stuck]]), "the stuck process last").toEqual(
     everyRead
   );
 });
 
-test("an unknown process the kill signalled already ends its reads", () => {
+test("an unknown process the kill signalled already ends its reads", async () => {
   // A process of a bounded child that the child started, which carries at read 1 the child's
   // token, then that inner child's own, and is exiting at read 2, its memory gone, so its
   // environment reads empty.
@@ -349,14 +409,14 @@ test("an unknown process the kill signalled already ends its reads", () => {
   };
   const exiting: Listed = { ...carrying, tokens: [], unknown: true };
   expect(
-    scriptedKill([
+    await scriptedKill([
       [carrying, init, sibling],
       [exiting, init, sibling],
     ])
   ).toEqual(["read", `signal ${pid}`, "read"]);
 });
 
-test("a kill takes a running child through child.kill, and what it started by parent pid", () => {
+test("a kill takes a running child through child.kill, and what it started by parent pid", async () => {
   // The child, caught in an exec at read 1, its environment read empty, and two processes it
   // started that took the tokens' variable out of their environment, as `env -u` does, so the
   // child's pid alone finds each: the first in the table, and the last, which ended already.
@@ -381,7 +441,7 @@ test("a kill takes a running child through child.kill, and what it started by pa
     unknown: false,
   });
   expect(
-    scriptedKill(
+    await scriptedKill(
       [
         [below(left), init, child, sibling, below(ended)],
         [init, sibling],
@@ -391,7 +451,7 @@ test("a kill takes a running child through child.kill, and what it started by pa
   ).toEqual(["read", "child.kill SIGKILL", `signal ${ended}`, `signal ${left}`, "read"]);
 });
 
-test("a child that has ended is found by its token alone, though a process holds its pid", () => {
+test("a child that has ended is found by its token alone, though a process holds its pid", async () => {
   // Once the runtime reaped the child, one of the child's own processes took its pid; it carries
   // the token, and the kill signals it as it would any other. The child itself gets nothing. The
   // process belongs to a bounded child that the child started, where the child runs inside
@@ -407,15 +467,13 @@ test("a child that has ended is found by its token alone, though a process holds
     [exitedByCode, "exited 0"],
     [endedBySignal, "ended by SIGTERM"],
   ] as const) {
-    expect(scriptedKill([[init, sibling, holder]], { child }), `a child that ${how}`).toEqual([
-      "read",
-      `signal ${scriptedChild.pid}`,
-      "read",
-    ]);
+    expect(await scriptedKill([[init, sibling, holder]], { child }), `a child that ${how}`).toEqual(
+      ["read", `signal ${scriptedChild.pid}`, "read"]
+    );
   }
 });
 
-test("a kill takes each process whose tokens hold the child's, first, last or in the middle", () => {
+test("a kill takes each process whose tokens hold the child's, first, last or in the middle", async () => {
   // `runBounded` writes the tokens of every bounded child a process runs inside, the outermost
   // first, so the child's token stands anywhere in a list: last in the child's own processes
   // where the child runs inside another bounded child, first in those of a bounded child the
@@ -431,7 +489,7 @@ test("a kill takes each process whose tokens hold the child's, first, last or in
     unknown: false,
   });
   expect(
-    scriptedKill([
+    await scriptedKill([
       [
         carrying(own, [outerToken, scriptedChild.token]),
         init,
@@ -443,7 +501,7 @@ test("a kill takes each process whose tokens hold the child's, first, last or in
   ).toEqual(["read", `signal ${ofBoth}`, `signal ${ofInner}`, `signal ${own}`, "read"]);
 });
 
-test("where `/proc` is missing, a kill reads once, and not at all for a child that ended", () => {
+test("where `/proc` is missing, a kill reads once, and not at all for a child that ended", async () => {
   // `ps` lists a pid and its parent, and no token, no start and nothing unknown. The process the
   // child started stands between pid 1 and the child.
   const below = process.pid + 2;
@@ -459,20 +517,20 @@ test("where `/proc` is missing, a kill reads once, and not at all for a child th
     psListed(below, scriptedChild.pid),
     psListed(scriptedChild.pid, process.pid),
   ];
-  expect(scriptedKill([table], { child: stillRunning, procfs: false })).toEqual([
+  expect(await scriptedKill([table], { child: stillRunning, procfs: false })).toEqual([
     "read",
     "child.kill SIGKILL",
     `signal ${below}`,
   ]);
   // A `ps` that fails lists nothing, and the running child is killed all the same.
-  expect(scriptedKill([undefined], { child: stillRunning, procfs: false })).toEqual([
+  expect(await scriptedKill([undefined], { child: stillRunning, procfs: false })).toEqual([
     "read",
     "child.kill SIGKILL",
   ]);
-  expect(scriptedKill([table], { procfs: false })).toEqual([]);
+  expect(await scriptedKill([table], { procfs: false })).toEqual([]);
 });
 
-test("a kill never signals this process, even where its table reads it as one of the child's", () => {
+test("a kill never signals this process, even where its table reads it as one of the child's", async () => {
   const self: Listed = {
     pid: process.pid,
     ppid: 1,
@@ -480,20 +538,21 @@ test("a kill never signals this process, even where its table reads it as one of
     tokens: [outerToken, scriptedChild.token],
     unknown: false,
   };
-  expect(scriptedKill([[self, init, sibling]])).toEqual(["read"]);
+  expect(await scriptedKill([[self, init, sibling]])).toEqual(["read"]);
 });
 
-test("a kill with its own signal and pause sends SIGKILL through process.kill and waits execPause", () => {
-  // Every scripted row above hands `stopTree` a stand-in `signal` and `pause`, so none of them
-  // reaches the defaults, which call `process.kill` and `Bun.sleepSync`. The setsid row above
-  // reaches them through `runBounded`, but its `sleep` dies of SIGTERM as of SIGKILL. This row
-  // hands `read` and `procfs` alone, and stands in for those two globals while the kill runs,
-  // each recording every argument it is given. Its table is that of the first scripted row: a
-  // process started since the child, unknown at read 1 and carrying the child's token at read
-  // 2, here between an unknown process older than the child and a process of the sibling. Every
-  // pid its table lists is above 2 ** 22, Linux's `PID_MAX_LIMIT` and the most
-  // `/proc/sys/kernel/pid_max` can hold, so no process holds one, and a stand-in that failed to
-  // take its global's place would signal nothing real.
+test("a kill with its own signal and pause sends SIGKILL through process.kill and waits execPause", async () => {
+  // Every scripted row above hands each kill a stand-in `signal` and `pause`, so none of them
+  // reaches the defaults, which call `process.kill`, and `Bun.sleepSync` in `stopTree` and
+  // `Bun.sleep` in `stopTreeYielding`. The setsid row above reaches the yielding kill's through
+  // `runBounded`, but its `sleep` dies of SIGTERM as of SIGKILL. This row hands each kill `read`
+  // and `procfs` alone, and stands in for those three globals while the kills run, each recording
+  // every argument it is given. Its table is that of the first scripted row: a process started
+  // since the child, unknown at read 1 and carrying the child's token at read 2, here between an
+  // unknown process older than the child and a process of the sibling. Every pid its table lists
+  // is above 2 ** 22, Linux's `PID_MAX_LIMIT` and the most `/proc/sys/kernel/pid_max` can hold,
+  // so no process holds one, and a stand-in that failed to take its global's place would signal
+  // nothing real.
   const pid = 2 ** 30 + 2;
   const older: Listed = {
     pid: 2 ** 30 + 1,
@@ -513,54 +572,114 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
     [older, execing, ofSibling],
     [older, loaded, ofSibling],
   ];
-  const childKills: unknown[][] = [];
-  const reads: unknown[][] = [];
-  const kills: unknown[][] = [];
-  const sleeps: unknown[][] = [];
+  // What one kill did through its child and the three globals, and the child and the read it is
+  // handed.
+  const records = () => {
+    const did = {
+      childKills: [] as unknown[][],
+      reads: [] as unknown[][],
+      kills: [] as unknown[][],
+      sleepSyncs: [] as unknown[][],
+      sleeps: [] as unknown[][],
+    };
+    const run = {
+      child: {
+        ...exitedByCode,
+        kill: (...args: unknown[]) => did.childKills.push(args),
+        pid: scriptedChild.pid,
+      },
+      start: scriptedChild.start,
+      token: scriptedChild.token,
+    };
+    const read = (...args: unknown[]) => {
+      did.reads.push(args);
+      if (did.reads.length > maxReads) {
+        throw new Error(`the kill read the table ${did.reads.length} times, past maxReads`);
+      }
+      return tables[Math.min(did.reads.length, tables.length) - 1];
+    };
+    return { did, read, run };
+  };
+  const once = records();
+  const turning = records();
   const realKill = process.kill;
-  const realSleep = Bun.sleepSync;
+  const realSleepSync = Bun.sleepSync;
+  const realSleep = Bun.sleep;
+  // The kill that runs now records into its own `did`.
+  let current = once.did;
   try {
     Object.assign(process, {
       kill: (...args: unknown[]) => {
-        kills.push(args);
+        current.kills.push(args);
         return true;
       },
     });
-    Object.assign(Bun, { sleepSync: (...args: unknown[]) => sleeps.push(args) });
-    expect(process.kill, "process.kill is not the stand-in").not.toBe(realKill);
-    expect(Bun.sleepSync, "Bun.sleepSync is not the stand-in").not.toBe(realSleep);
-    stopTree(
-      {
-        child: {
-          ...exitedByCode,
-          kill: (...args: unknown[]) => childKills.push(args),
-          pid: scriptedChild.pid,
-        },
-        start: scriptedChild.start,
-        token: scriptedChild.token,
+    Object.assign(Bun, {
+      sleepSync: (...args: unknown[]) => current.sleepSyncs.push(args),
+      sleep: (...args: unknown[]) => {
+        current.sleeps.push(args);
+        return Promise.resolve();
       },
-      {
-        procfs: true,
-        read: (...args: unknown[]) => {
-          reads.push(args);
-          if (reads.length > maxReads) {
-            throw new Error(`the kill read the table ${reads.length} times, past maxReads`);
-          }
-          return tables[Math.min(reads.length, tables.length) - 1];
-        },
-      }
-    );
+    });
+    expect(process.kill, "process.kill is not the stand-in").not.toBe(realKill);
+    expect(Bun.sleepSync, "Bun.sleepSync is not the stand-in").not.toBe(realSleepSync);
+    expect(Bun.sleep, "Bun.sleep is not the stand-in").not.toBe(realSleep);
+    stopTree(once.run, { procfs: true, read: once.read });
+    current = turning.did;
+    await stopTreeYielding(turning.run, { procfs: true, read: turning.read });
   } finally {
     Object.assign(process, { kill: realKill });
-    Object.assign(Bun, { sleepSync: realSleep });
+    Object.assign(Bun, { sleepSync: realSleepSync, sleep: realSleep });
   }
-  expect({ childKills, reads, kills, sleeps }).toEqual({
-    childKills: [],
-    reads: [[], [], []],
-    kills: [[pid, "SIGKILL"]],
+  const each = { childKills: [], reads: [[], [], []], kills: [[pid, "SIGKILL"]] };
+  expect(once.did, "stopTree").toEqual({ ...each, sleepSyncs: [[execPause]], sleeps: [] });
+  expect(turning.did, "stopTreeYielding").toEqual({
+    ...each,
+    sleepSyncs: [],
     sleeps: [[execPause]],
   });
 });
+
+// The kill `runBounded` runs once a child ends reads each process's files under `/proc` through
+// `Bun.file` (`processTableYielding`), whose read waits off this process's event loop, so a server
+// this process runs, as the origin stand-ins of `outside-edge.test.ts` do, answers while it reads;
+// the slow-read row below holds that such a read holds no timer. This row stands in for
+// `Bun.file` and counts the files under `/proc` it is asked for while one bounded `true` runs and
+// its kill reads the table. A kill that read the table synchronously, as `stopTree` does, asks for
+// none. The row skips where `/proc` is missing. It counts the processes just before the child
+// starts, and not when the file loads: the rows run in random order, and a count taken minutes
+// before the kill's read, on a machine whose processes come and go by the thousand, could hold
+// many more processes than that read finds.
+test.skipIf(!present("/proc/self/stat"))(
+  "a bounded child's kill hands this process's event loop back while it reads the process table",
+  async () => {
+    const realFile = Bun.file;
+    let asked = 0;
+    let procProcesses = 0;
+    try {
+      Object.assign(Bun, {
+        file: (...args: unknown[]) => {
+          if (typeof args[0] === "string" && args[0].startsWith("/proc/")) asked += 1;
+          return Reflect.apply(realFile, Bun, args);
+        },
+      });
+      expect(Bun.file, "Bun.file is not the stand-in").not.toBe(realFile);
+      procProcesses = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).length;
+      await runBounded({ argv: ["true"], bound: "short", from: import.meta.url });
+    } finally {
+      Object.assign(Bun, { file: realFile });
+    }
+    // At least one file, its stat, for every two of the processes this row counted, so a kill
+    // that read half the table synchronously fails too, while the table may have lost processes
+    // between this row's count and the kill's read. A count of none would hold nothing.
+    expect(procProcesses, "processes this row counted under /proc").toBeGreaterThan(0);
+    expect(
+      asked,
+      `files the kill read through Bun.file, of ${procProcesses} processes under /proc`
+    ).toBeGreaterThanOrEqual(Math.floor(procProcesses / 2));
+  },
+  rowLimit("short")
+);
 
 /** The pid, parent and start time of the process the rows of `listedOf` below read. */
 const readProcess = { pid: 4_242, ppid: 4_200, start: 9_183_936 };
@@ -604,6 +723,211 @@ test("the table lists a process whose environment reads empty, in state R and no
     unknown: true,
   });
 });
+
+test("an unknown process stays unknown in this process's cgroup alone, and not where it is gone", () => {
+  const unknown = listedOf(readProcess.pid, statText(), "");
+  if (unknown === undefined) throw new Error("listedOf listed no process");
+  const own = "0::/user.slice/user-1000.slice/app.slice/run-u1.scope\n";
+  const other = "0::/user.slice/user-1000.slice/app.slice/run-u2.scope\n";
+  // One of the child's, caught in its exec: it starts where the child does.
+  expect(ownUnknown(unknown, own, own)).toEqual(unknown);
+  // Another session's program started with `env -i`, which reads unknown for as long as it runs.
+  expect(ownUnknown(unknown, other, own)).toEqual({ ...unknown, unknown: false });
+  // A process whose cgroup cannot be read is gone.
+  expect(ownUnknown(unknown, undefined, own)).toEqual({ ...unknown, unknown: false });
+  // Where this process's cgroup cannot be read, every unknown process stays unknown.
+  expect(ownUnknown(unknown, other, undefined)).toEqual(unknown);
+});
+
+// The kill `runBounded` runs reads the table through `processTableYielding`, whose `entryReads`
+// hands the cgroup of each unknown process to `ownUnknown`. The row above holds `ownUnknown`
+// alone, and the systemd-run row below holds the real table's entry for a process of another
+// cgroup, where this machine can start one there: CI's runners can, and a pod cannot, so it skips
+// in a pod. This row lays out a `/proc` of its own in a
+// scratch directory, a `self` in one cgroup and one process whose environment reads empty and
+// which started at the child's start, and drives the yielding kill over it with `runBounded`'s
+// read, handed that directory. With the process in another cgroup than `self`'s, it is listed as
+// not unknown and the kill reads once; in the same cgroup, which shows the kill read this
+// directory and can wait on it, it is listed as unknown and the kill waits after every read until
+// `maxReads`. No process is signalled: the process carries no token, its parent is no child, and
+// the signal and the child's `kill` only record.
+test("a kill reads a /proc whose process of another cgroup reads empty, and does not wait on it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "bounded-proc-"));
+  try {
+    const own = "0::/user.slice/user-1000.slice/app.slice/run-u1.scope\n";
+    const other = "0::/user.slice/user-1000.slice/app.slice/run-u2.scope\n";
+    mkdirSync(join(root, "self"));
+    writeFileSync(join(root, "self", "cgroup"), own);
+    const entry = join(root, String(readProcess.pid));
+    mkdirSync(entry);
+    writeFileSync(join(entry, "stat"), statText());
+    writeFileSync(join(entry, "environ"), "");
+    const tree = procTreeAt(root);
+    expect(tree.own, "the cgroup of the tree's self").toBe(own);
+    // What the yielding kill's read lists, and what the kill did, with the process in `cgroup`.
+    const readAndKill = async (cgroup: string) => {
+      writeFileSync(join(entry, "cgroup"), cgroup);
+      const table = await processTableYielding(tree);
+      const did: string[] = [];
+      await stopTreeYielding(
+        {
+          child: {
+            ...exitedByCode,
+            kill: () => {
+              did.push("child.kill");
+            },
+            pid: scriptedChild.pid,
+          },
+          start: readProcess.start,
+          token: scriptedChild.token,
+        },
+        {
+          pause: () => {
+            did.push("pause");
+          },
+          procfs: true,
+          read: () => {
+            did.push("read");
+            return processTableYielding(tree);
+          },
+          signal: (pid) => {
+            did.push(`signal ${pid}`);
+          },
+        }
+      );
+      return { did, table };
+    };
+    expect(await readAndKill(other), "the process in another cgroup").toEqual({
+      did: ["read"],
+      table: [{ ...readProcess, tokens: [], unknown: false }],
+    });
+    expect(await readAndKill(own), "the process in this cgroup").toEqual({
+      did: Array.from({ length: maxReads }, () => ["read", "pause"]).flat(),
+      table: [{ ...readProcess, tokens: [], unknown: true }],
+    });
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+/** Whether this machine runs a user service manager that starts a command in a scope, a cgroup, of
+ *  its own (`systemd-run --user --scope`), as a dev box many sessions share does, and as CI's
+ *  runners do (job 137301512515 ran the row below on `ubuntu-24.04-arm`). The row below needs one
+ *  to start a process outside this process's cgroup, and skips where there is none, as in a pod,
+ *  where the two rows above hold the rule: `ownUnknown` alone, and the kill over a `/proc` laid
+ *  out with a process in another cgroup. */
+const userScopes =
+  present("/proc/self/cgroup") &&
+  Bun.which("systemd-run") !== null &&
+  present(join(process.env.XDG_RUNTIME_DIR ?? "/nonexistent", "systemd", "private"));
+
+test.skipIf(!userScopes)(
+  "the table a kill reads lists a process of another cgroup whose environment reads empty as not unknown",
+  async () => {
+    // Another session's program, as on a shared dev box: a `sleep` with an empty environment, in
+    // a scope of its own, carrying no token. A number of seconds no other process sleeps for, so
+    // the row finds it by its command line. It is this row's to stop, and outlives every wait of
+    // the row.
+    const seconds = `${rowLimit("short", "short") / 1000}.${randomInt(10_000_000, 100_000_000)}`;
+    const stranger = Bun.spawn(
+      ["systemd-run", "--user", "--scope", "--quiet", "env", "-i", "sleep", seconds],
+      { detached: true, stderr: "ignore", stdout: "ignore" }
+    );
+    try {
+      const listed = () => holding(seconds).find(([, line]) => line.startsWith("sleep "));
+      await eventually("the other cgroup's sleep, listed", () => listed() !== undefined);
+      const [pid] = listed() ?? [0];
+      expect(readFileSync(`/proc/${pid}/environ`, "utf8"), "its environment").toBe("");
+      expect(readFileSync(`/proc/${pid}/cgroup`, "utf8"), "its cgroup").not.toBe(
+        readFileSync("/proc/self/cgroup", "utf8")
+      );
+      // The kill waits only on a process its table lists as unknown (`killSteps`), which the row
+      // above holds over a laid-out `/proc`. This row reads the real table the kill reads and
+      // decides on the sleep's own entry, so another process of this process's cgroup whose
+      // environment reads empty changes nothing here: under `bun test --parallel` every worker
+      // stands in one cgroup, and the shapes row of `outside-agent-acceptance.test.ts` starts an
+      // `env -i sleep` there, which reads unknown for as long as it runs.
+      const table = await processTableYielding();
+      expect(
+        table?.find((one) => one.pid === pid),
+        "the sleep, as the kill's table lists it"
+      ).toMatchObject({ pid, unknown: false });
+    } finally {
+      kill(-stranger.pid, "SIGKILL");
+    }
+  },
+  rowLimit("short", "short")
+);
+
+// A read of one `/proc/<pid>/environ` can take seconds by itself on a machine of many processes,
+// and the kill reads every process's. This row lays out a `/proc` of its own whose one process's
+// `environ` is a named pipe, which a read waits on until a writer opens it and closes it. The
+// writer, a bounded child, waits for a file that this row's timer, due 50 ms after the read
+// begins, writes, and opens the pipe once the file is there, or after 10 s without it. So where
+// the read holds no timer of this process, the timer fires and the read ends after it; a read
+// that held the loop, as a synchronous one does, ends after the writer's 10 s with the timer not
+// yet fired. The table it reads is held too: the process, whose environment read empty, in this
+// tree's cgroup, so unknown.
+test(
+  "a kill's read of the process table holds no timer of this process while a read of /proc waits",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "bounded-proc-"));
+    try {
+      const own = "0::/user.slice/user-1000.slice/app.slice/run-u1.scope\n";
+      mkdirSync(join(root, "self"));
+      writeFileSync(join(root, "self", "cgroup"), own);
+      const entry = join(root, String(readProcess.pid));
+      mkdirSync(entry);
+      writeFileSync(join(entry, "stat"), statText());
+      writeFileSync(join(entry, "cgroup"), own);
+      const environ = join(entry, "environ");
+      const go = join(root, "go");
+      await runBounded({ argv: ["mkfifo", environ], bound: "short", from: import.meta.url });
+      const writing = runBounded({
+        argv: [
+          "sh",
+          "-c",
+          'i=0; while [ ! -e "$1" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done; : > "$2"',
+          "writer",
+          go,
+          environ,
+        ],
+        bound: "short",
+        from: import.meta.url,
+      });
+      const started = performance.now();
+      let firedAt = Number.POSITIVE_INFINITY;
+      // A real timer, not a fake clock: what the row holds is whether this process's event loop
+      // runs a timer while a read of the table waits, which only the loop itself can answer.
+      const timer = setTimeout(() => {
+        firedAt = performance.now() - started;
+        writeFileSync(go, "");
+      }, 50);
+      // The writer's exit, or what its wait threw.
+      let wrote: unknown;
+      try {
+        const table = await processTableYielding(procTreeAt(root));
+        const endedAt = performance.now() - started;
+        expect(table, "the table").toEqual([{ ...readProcess, tokens: [], unknown: true }]);
+        expect(
+          firedAt,
+          `ms to the timer due at 50 ms, against the read's end at ${Math.round(endedAt)} ms`
+        ).toBeLessThan(endedAt);
+      } finally {
+        clearTimeout(timer);
+        writeFileSync(go, "");
+        wrote = await writing.then(
+          ({ code }) => code,
+          (error: unknown) => error
+        );
+      }
+      expect(wrote, "the writer's exit").toBe(0);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+  rowLimit("short", "short", "short")
+);
 
 test("the table lists a zombie whose environment reads empty as not unknown", () => {
   expect(listedOf(readProcess.pid, statText({ state: "Z" }), "")).toEqual({
@@ -679,10 +1003,11 @@ test("the table lists the parent and start of a process whose command name holds
 });
 
 // Were the walk's cycle guard, the `found.has` of `treeOf`, to regress, the walk would take this
-// loop for ever and the row would hang: no row clock stops a synchronous loop, so only the job's
-// limit would end it. The rows run in random order (packages/dispatch/bunfig.toml), so the rows
-// of this file that had not run by then would not report either.
-test("a kill's walk by parent pid ends where its table lists two processes as each other's parent", () => {
+// loop for ever and the row would hang: no row clock stops a synchronous loop, and `stopTree`
+// walks it in one pass, so only the job's limit would end it. The rows run in random order
+// (packages/dispatch/bunfig.toml), so the rows of this file that had not run by then would not
+// report either.
+test("a kill's walk by parent pid ends where its table lists two processes as each other's parent", async () => {
   // `processTable` reads one process at a time, so where a pid is reused between two of its
   // reads, a table can list a process as the parent of its own parent.
   const [one, other] = [process.pid + 2, process.pid + 3];
@@ -698,8 +1023,43 @@ test("a kill's walk by parent pid ends where its table lists two processes as ea
     sibling,
     { pid: other, ppid: one, start: scriptedChild.start + 2, tokens: [], unknown: false },
   ];
-  expect(scriptedKill([table])).toEqual(["read", `signal ${one}`, `signal ${other}`, "read"]);
+  expect(await scriptedKill([table])).toEqual(["read", `signal ${one}`, `signal ${other}`, "read"]);
 });
+
+// A machine can list one parent with tens of thousands of children: on a dev box of 288 CPUs on
+// 2026-11-22, pid 2, which starts the kernel's threads, had about 36,000. A walk that built each
+// parent's list of children by copying the list for every child it added would take time that
+// grows with the square of that count: at a load average of about 2,150 there, 2.6 s for 36,000
+// children and 13.5 s for 100,000, against 2.4 ms when each child is pushed onto its parent's list.
+// Each kill below walks the table twice and `scriptedKill` runs both kills, so four walks over
+// 300,000 children end far inside the row's limit when the lists grow in place, and take minutes
+// when they are copied. `stopTree` walks in one synchronous pass, so the row clock fires only after
+// the first kill has ended.
+test(
+  "a kill's walk by parent pid takes a parent's many children without copying its list for each",
+  async () => {
+    // The child's own process, which carries its token, and 300,000 kernel threads of pid 2, which
+    // carry none. Every thread's pid is above 2 ** 22, Linux's `PID_MAX_LIMIT`, so no process holds
+    // one.
+    const own: Listed = {
+      pid: process.pid + 2,
+      ppid: 1,
+      start: scriptedChild.start + 1,
+      tokens: [scriptedChild.token],
+      unknown: false,
+    };
+    const threads = Array.from(
+      { length: 300_000 },
+      (_, at): Listed => ({ pid: 2 ** 23 + at, ppid: 2, start: 2, tokens: [], unknown: false })
+    );
+    expect(await scriptedKill([[init, own, sibling, ...threads]])).toEqual([
+      "read",
+      `signal ${own.pid}`,
+      "read",
+    ]);
+  },
+  rowLimit("short")
+);
 
 test("a child's name hides each password libpq reads and keeps the rest", () => {
   // Each URL that carries a password is built from its parts, as replace-blocks-guard.test.ts

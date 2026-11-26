@@ -27,6 +27,7 @@ import (
 // own. The answer's write keeps who answered in the block, as a version keeps it (keptAskState),
 // and the version without the repeat must show it.
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := seededRegionDocument(t, time.Second)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 

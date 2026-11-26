@@ -96,7 +96,7 @@ type loopSeedProposal struct {
 
 // loopSeedPart is one part document of a proposal: the id a read addresses it by and the file name
 // the issue document route resolves it by (GET /api/v1/issues/{key}/artifacts/{slug}/text takes a
-// slug or an unambiguous filename, internal/dispatch/api/routes_table.go:335).
+// slug or an unambiguous filename, internal/dispatch/api/routes_table.go:671).
 type loopSeedPart struct {
 	Index      int    `json:"index"`
 	ArtifactID string `json:"artifact_id"`

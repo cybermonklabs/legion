@@ -221,16 +221,21 @@ type scratchReview struct {
 // personHandoverRig is one proof's rig: the scratch Dispatch, the daemon's configuration and
 // database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
 // writes. The spec document every issue is created with gives its primary document a settled
-// version 1 to approve.
+// version 1 to approve. experimentSource, set before boot, is the random source the booted daemon
+// draws a `random` experiment with; nil is the daemon's own. daemonLog, set before boot, also
+// receives the daemon's log, as a live proof keeps it for its evidence; nil keeps it in logs
+// alone.
 type personHandoverRig struct {
-	t       *testing.T
-	baseURL string
-	cfg     config.Config
-	pool    *store.Pool
-	logs    *syncBuffer
-	github  string
-	rt      *fake.Runtime
-	d       *daemon
+	t                *testing.T
+	baseURL          string
+	cfg              config.Config
+	pool             *store.Pool
+	logs             *syncBuffer
+	github           string
+	rt               *fake.Runtime
+	d                *daemon
+	experimentSource func(uint64) (uint64, error)
+	daemonLog        io.Writer
 }
 
 // personHandoverSpec is the spec every issue of these proofs is created with.
@@ -244,9 +249,20 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
-	natsURL := testnats.URL(t)
-	baseURL, token := startScratchDispatchWithNATS(t, natsURL)
-	cfg := workflowConfig(t, natsURL)
+	return newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, admissionCap)
+}
+
+// newPersonHandoverRigOn is newPersonHandoverRig over the scratch Dispatch dispatch describes,
+// whose events go to dispatch.natsURL, a NATS server the caller holds: the package's own, or the
+// one a live proof's script runs. The daemon consumes Dispatch's events from that server.
+func newPersonHandoverRigOn(t *testing.T, dispatch scratchDispatchOptions, admissionCap int) *personHandoverRig {
+	t.Helper()
+	if dispatch.natsURL == "" {
+		t.Fatal("newPersonHandoverRigOn was given no NATS server, and the daemon reads Dispatch's events off one")
+	}
+	scratch := startScratchDispatchOn(t, dispatch)
+	baseURL, token := scratch.base, scratch.token
+	cfg := workflowConfig(t, dispatch.natsURL)
 	// Dispatch takes a project key of at most ten characters; workflowConfig's is longer.
 	cfg.Project = "P" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
@@ -289,8 +305,13 @@ func (r *personHandoverRig) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
+	o.experimentSource = r.experimentSource
 	r.rt = rt
-	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	var logged io.Writer = r.logs
+	if r.daemonLog != nil {
+		logged = io.MultiWriter(r.logs, r.daemonLog)
+	}
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // create creates an issue of the rig's project through Dispatch's API as identity, with fields
@@ -416,8 +437,11 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 	return listed
 }
 
-// editDocument applies ops to artifactID as a session through Dispatch's edits route, which
-// versions the document in the route's own transaction, and answers the version it wrote.
+// editDocument applies ops to artifactID as the person through Dispatch's edits route, which
+// versions the document in the route's own transaction, and answers the version it wrote. Each
+// document it edits is the spec of a labelled root. Once the daemon's role-holder publications
+// have marked the project, Dispatch refuses such a write from a session that is no architect of
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these parked roots.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
 	var edited struct {
@@ -425,14 +449,14 @@ func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]st
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asPerson)
 	if edited.Version == nil {
 		r.t.Fatalf("the edit of %s wrote no version", artifactID)
 	}
 	return edited.Version.Number
 }
 
-// revise replaces find with with in artifactID as a session and answers the new version.
+// revise replaces find with with in artifactID as the person and answers the new version.
 func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	r.t.Helper()
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
@@ -456,11 +480,11 @@ func (r *personHandoverRig) uploadDocument(key, name, content string) string {
 }
 
 // personHandoverBlock is the ask block the carried case writes into a spec, the option the
-// person answers it with, and the reading of that answer a session then writes inside the block.
+// person answers it with, and the reading of that answer then written inside the block.
 const (
 	personHandoverBlock   = ":::ask{#wave urgency=\"med\" multiple=\"false\"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n"
 	personHandoverAnswer  = "Two"
-	personHandoverReading = "The session reads the answer as the two quietest regions first."
+	personHandoverReading = "The answer reads as the two quietest regions first."
 )
 
 // blockAsk waits for Dispatch's settlement to index the ask block blockID of key's document
@@ -494,17 +518,18 @@ func (r *personHandoverRig) answerBlock(askID, selected string) {
 }
 
 // addReading writes reading inside the answered ask block blockID of key's document
-// artifactID, after the block's own content, as a session's upload of the whole document - the
+// artifactID, after the block's own content, as the person's upload of the whole document - the
 // write that places a reading after a block's options - and answers the version it wrote. The
-// upload replaces the version the session read, so it names that version's token, as every
-// replacement does.
+// person writes it, as editDocument does, since Dispatch refuses a spec write of a labelled root
+// from a session that is no architect of it. The upload replaces the version it read, so it names
+// that version's token, as every replacement does.
 func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string) int {
 	r.t.Helper()
 	var text struct {
 		Markdown string `json:"markdown"`
 		Token    string `json:"token"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, &text, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, &text, asPerson)
 	opening := ":::ask{#" + blockID + " "
 	start := strings.Index(text.Markdown, opening)
 	end := -1
@@ -523,9 +548,9 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 		} `json:"version"`
 	}
 	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
-		map[string]any{"name": "spec.md", "content": markdown, "precondition": map[string]string{"document": text.Token}}, &uploaded, asSession)
+		map[string]any{"name": "spec.md", "content": markdown, "precondition": map[string]string{"document": text.Token}}, &uploaded, asPerson)
 	if uploaded.Version.Number == 0 {
-		r.t.Fatalf("the session's upload of %s's document with its reading wrote no version", key)
+		r.t.Fatalf("the upload of %s's document with its reading wrote no version", key)
 	}
 	return uploaded.Version.Number
 }
@@ -535,7 +560,7 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 // and 0 where its latest version is not approved.
 func (r *personHandoverRig) approvedLatest(artifactID string) int {
 	r.t.Helper()
-	approval, err := dispatch.New(r.baseURL, scratchAgentToken).Approval(r.t.Context(), artifactID)
+	approval, err := dispatch.New(r.baseURL, dispatch.BearerTransport(scratchAgentToken, nil)).Approval(r.t.Context(), artifactID)
 	if err != nil {
 		r.t.Fatalf("read the approval of %s as the daemon's design gate reads it: %v", artifactID, err)
 	}
@@ -836,6 +861,7 @@ func (r *personHandoverRig) cleaned(key string) {
 //     retitle's own sequence, no handover row is queued, and the one queue of step 2 is all the log
 //     holds.
 func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 
@@ -920,18 +946,19 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a parked labelled child, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root a session writes an ask block into the spec;
+//  7. the carried case: on a parked labelled root the person writes an ask block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
 //     person then answers the block, which writes one version that changes only the block's
-//     server-owned attributes, and Dispatch carries their approval to it in their name; a session
-//     then writes its reading of the answer inside the answered block, and Dispatch carries the
-//     approval on to the version that reading wrote: the daemon applies each carry writing nothing;
-//  8. the recorded parked root of step 1, its spec revised by a session, is approved by the person
+//     server-owned attributes, and Dispatch carries their approval to it in their name; a reading
+//     of the answer is then written inside the answered block, and Dispatch carries the approval
+//     on to the version that reading wrote: the daemon applies each carry writing nothing;
+//  8. the recorded parked root of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, parked again by the person and its spec revised by a session, is approved
-//     again by the person at the new version: todo again, a second queue.
+//  9. the root of step 3, parked again by the person and its spec revised by the person, is
+//     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
@@ -973,8 +1000,10 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A parked labelled child.
-	child := r.create(asSession, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
+	// 5. A parked labelled child. The person files it: Dispatch refuses a session that is no
+	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
+	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
+	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
 	r.setStatus(child.Key, "backlog")
 	review = r.approve(child.PrimaryArtifactID)
 	r.applied(r.newestEvent(child.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
@@ -995,9 +1024,9 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 
 	// 7. The carried case: the person's answer writes one version, which changes only the
 	// server-owned attributes of the ask's block - its state, who answered and when - and Dispatch
-	// carries the person's approval across it; a session's reading of the answer inside the
-	// answered block carries it on to the version the reading writes. The daemon applies each
-	// carried approval writing nothing.
+	// carries the person's approval across it; a reading of the answer inside the answered block
+	// carries it on to the version the reading writes. The daemon applies each carried approval
+	// writing nothing.
 	carried := r.create(asSession, "Regional wave decision pending", labelled)
 	r.setStatus(carried.Key, "backlog")
 	blockVersion := r.editDocument(carried.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": personHandoverBlock})
@@ -1019,7 +1048,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == answerCarry.Version }))
 	readingVersion := r.addReading(carried.Key, carried.PrimaryArtifactID, "wave", personHandoverReading)
 	if readingVersion != answerCarry.Version+1 {
-		t.Fatalf("the session's reading wrote version %d of %s's spec; want %d, the version after the one the answer wrote",
+		t.Fatalf("the reading wrote version %d of %s's spec; want %d, the version after the one the answer wrote",
 			readingVersion, carried.Key, answerCarry.Version+1)
 	}
 	carry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
@@ -1029,7 +1058,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	}
 	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == carry.Version }))
 	r.notQueued(carried.Key, "backlog", 1)
-	t.Logf("the person's answer to the ask block of %s wrote version %d, which carried their approval of version %d (%q), and the session's reading inside it carried it on to version %d (%q); the daemon queued nothing for either",
+	t.Logf("the person's answer to the ask block of %s wrote version %d, which carried their approval of version %d (%q), and the reading inside it carried it on to version %d (%q); the daemon queued nothing for either",
 		carried.Key, answerCarry.Version, approved.Version, *answerCarry.Reason, carry.Version, *carry.Reason)
 
 	// 8. The recorded parked root with a gate from its earlier run, approved at a new version.
@@ -1076,6 +1105,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 // It shows the boot path. It does not show a daemon down for longer than the event stream keeps a
 // message.
 func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 
 	// 1. The person's label falls while no daemon runs.
@@ -1151,6 +1181,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 //     todo under the daemon's own actor, admission.waiting names it, the daemon logged the one
 //     queue from source approval and left no handover row in its outbox.
 func TestPersonHandoverIsQueuedForAnApprovalMadeWithThePersonsTokenAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}

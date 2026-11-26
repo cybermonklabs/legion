@@ -42,6 +42,7 @@ import (
 // node write skipped (docs/ask_blocks.go createAskBlock): either way the test fails, naming the
 // ask the create left without a node.
 func TestEveryCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	rig := newStoreWriterRig(t)
 	ctx := context.Background()
 	fixture := seedEveryKind(t, rig)
@@ -88,7 +89,8 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 // everyKindFixture is the object of each kind the routes address: the rig's issue and project
 // document, an ask on the issue, a comment a session's mention answered, a suggestion on the
 // issue's spec whose replacement is a new ask block, a direct message a session was sent, and a
-// document of the issue whose stored history does not load, the one document a rebuild takes.
+// document of the issue whose stored history does not load, the one document a rebuild takes. The
+// issue also has an open child, which a status change's include_children moves.
 type everyKindFixture struct {
 	issue, project, document, documentSlug string
 	ask, comment, suggestion, message      string
@@ -142,6 +144,14 @@ func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
 	corrupted := makeDocumentUnloadable(t, repairFixture{handler: rig.handler, database: rig.database, documents: documents}, fixture.unloadable)
 	if corrupted == 0 {
 		t.Fatal("the unloadable document holds no stored update to corrupt")
+	}
+	// A status change leaves its comments only when an option moves an issue (status_change.go), so
+	// the issue gets an open child for the call's include_children to move.
+	child := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "LOCK", "title": "The child a status change moves", "parent": rig.issue,
+	}, "alice")
+	if child.Code != http.StatusCreated {
+		t.Fatalf("file the issue's child: status=%d body=%s", child.Code, child.Body.String())
 	}
 	return fixture
 }
@@ -292,8 +302,9 @@ func settledAskBlocks(t *testing.T, rig *storeWriterRig, blocks []string) map[st
 }
 
 // postCalls is how every POST row of writeClasses is called. The creates make one object each of
-// the kinds whose node names its project, and the writes of a document's text one ask block each;
-// every other row creates none.
+// the kinds whose node names its project, the writes of a document's text one ask block each, and
+// the status change, whose include_children moves the fixture's child, a comment of Dispatch's
+// system actor on the child and one on the issue it names; every other row creates none.
 var postCalls = map[string]postCall{
 	"POST /api/v1/issues":                       {succeeds: true, body: map[string]any{"project": "LOCK", "title": "Every create stores its node", "spec": "A spec.\n"}},
 	"POST /api/v1/issues/{key}/artifacts":       {succeeds: true, body: map[string]any{"name": "notes.md", "content": "# Notes\n"}},
@@ -301,6 +312,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/asks":            {succeeds: true, body: map[string]any{"question": "Does the issue's ask name its project?"}},
 	"POST /api/v1/artifacts/{id}/asks":          {succeeds: true, body: map[string]any{"question": "Does the document's ask name its project?"}},
 	"POST /api/v1/issues/{key}/comments":        {succeeds: true, body: map[string]any{"body": "A remark on the issue."}},
+	"POST /api/v1/issues/{key}/status-change":   {succeeds: true, body: map[string]any{"status": "in_progress", "include_children": true}},
 	"POST /api/v1/artifacts/{id}/comments":      {succeeds: true, body: map[string]any{"body": "A remark on the document."}},
 	"POST /api/v1/issues/{key}/messages":        {succeeds: true, body: map[string]any{"body": "A message on the issue."}},
 	"POST /api/v1/agents/{session_id}/messages": {succeeds: true, body: map[string]any{"body": "Another direct message.", "delivery": "btw"}},
@@ -327,7 +339,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/results/dry-run":  noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}": noObject,
 	"POST /api/v1/results/{id}/retract":          noObject,
-	// The reasoning nodes, a node's state and the pre-mortem conversion:
+	// The reasoning nodes, a node's state, a node's move and the pre-mortem conversion:
 	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
 	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each
 	// is called with the empty body and refused.
@@ -338,6 +350,8 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers":                        noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/state":                           noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":                          noObject,
+	"PATCH /api/v1/issues/{key}/nodes/{id}":                                noObject,
+	"DELETE /api/v1/issues/{key}/nodes/{id}":                               noObject,
 	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert":         noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                noObject,

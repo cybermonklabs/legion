@@ -8,7 +8,7 @@
 //
 // The move is no migration: the pre-deploy census refuses a migration that writes rows of a table
 // above pgmigrate.CensusTableLimit unless each write is bounded, and a copy of the four tables is
-// not. Migration 20261123134318_stores_moved writes what the move needs that is bounded: its
+// not. Migration 20261126000300_stores_moved writes what the move needs that is bounded: its
 // record, stores_moved_seqs, and the supertag nodes priority, step and plan.
 //
 // It runs in four steps, each on the move's own connection (store.Connect), which carries the

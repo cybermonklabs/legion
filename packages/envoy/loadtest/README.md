@@ -103,7 +103,7 @@ same step before and after its change, and compares the two rows.
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `oidc-issuer.yaml` (the copy's own token issuer, Dispatch's identity at the copy's listener, below), `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml`, `cluster/nats-2.15.1.tgz` | The render of `manifests/nats.yaml` from the chart's archive, vendored here so that no render downloads it and checked against its published sha256 before helm reads it, and from its values, with every image pinned by digest |
 | `cluster/replay-residual.md` | What the replay on the copy does not reproduce: `loadgen codepaths -residual-notes` lists it under each replay's residual |
-| `cluster/cluster.test.sh` | The test of `cluster.sh`. It fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`, `hostname` and `sleep` and needs no cluster: `cd packages/envoy && bash loadtest/cluster/cluster.test.sh`. When `go` is on PATH, its section (h) also renders `manifests/nats.yaml` again with that `go`, which runs helm v3.20.2 through `go run` and so needs go's module proxy. With no network the test fails at (h); when helm is in your module cache, run it with `GOPROXY=file://$(go env GOMODCACHE)/cache/download` |
+| `cluster/cluster.test.sh` | The test of `cluster.sh`. It fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`, `hostname` and `sleep` and needs no cluster: `cd packages/envoy && bash loadtest/cluster/cluster.test.sh`. When `go` is on PATH, its section (h) also renders `manifests/nats.yaml` again. That render runs the `helm` on PATH where it answers the version `render-nats.sh`'s `HELM` pins (v3.20.2; CI installs it with `.github/actions/install-helm`), and needs no network then; otherwise it runs that helm through `go run` and so needs go's module proxy. With no network and no such helm the test fails at (h); when helm is in your module cache, run it with `GOPROXY=file://$(go env GOMODCACHE)/cache/download` |
 | `vm/vm.sh` | The load test on the deployment of virtual machines (Running on the deployment, below) |
 | `vm/sample.sh` | The sampler that runs on a load-test VM: one reading per watched container from its cgroup v2 files, and one for the machine from `/proc`, every `-i` seconds. `loadgen vm-sample` embeds it and sends it on ssh's standard input, so a VM needs nothing installed. |
 | `vm/vm.test.sh` | The test of `vm.sh`. It fakes `ssh`, `docker`, `curl`, `psql`, `nc`, `loadgen`, `sleep` and the profiling tunnel's `ssh -N -L`, and needs no VM, no instance and no network: `cd packages/envoy && bash loadtest/vm/vm.test.sh` |
@@ -783,7 +783,11 @@ no second object either. Only a failure of the id map itself stops a run, since 
 resume would write everything again. A refusal is data, not a failure: a 413, a 400
 `CAP_EXCEEDED` or any other non-2xx answer is counted by route and error code, and every object
 it left unwritable that the map does not already hold is counted as skipped — so what a run
-reports as skipped is what the plan still lacks, and the run goes on.
+reports as skipped is what the plan still lacks, and the run goes on. A write that landed with no
+answer to give (`409 KEY_COMMITTED`, or a replayed 2xx reading `ANSWER_NOT_KEPT`) is no refusal:
+the run reads what it made back from its route's own list (the project's issues, the issue's
+documents or comments) by its title, name or body, records it and counts it written. Only one
+that read finds nothing is counted, as `LANDED_UNREAD`.
 
 **The map is a table of `public`, and every statement of this package names the schema of every
 Dispatch table it reads.** Postgres's default `search_path` is `"$user", public`, so a schema
@@ -1425,7 +1429,10 @@ mapped to its local one in `public.loadtest_replay_ids` as it goes, so a killed 
   each kind. Largest in the 2026-10-26 bundle: a padding edit of 623,266 bytes (a 623,138-byte
   version change), a restore of 637,584 bytes, a replay upload of 665,020 bytes.
 - **Comments.** Every open thread in creation order, and every resolved thread a window event
-  refers to (created, then resolved). The other resolved threads are not recreated.
+  refers to (created, then resolved). The other resolved threads are not recreated. A comment
+  its author deleted since is served by every event without its body, so it is written with a
+  placeholder body (`deletedPostBody`) and keeps its place; one deleted before 22:55 stays live
+  in the seed, since 35efd326 has no delete route (`comments_deleted` in `bundle.meta.json`).
 - **Anchors** (`chooseAnchor`). Most logged blocks no longer exist in today's block maps, so an
   anchor lands by the first rule that applies. `bundle.meta.json`'s `anchor_rules` counts the
   state's and the window's anchors by rule:
@@ -1445,7 +1452,7 @@ dump as `seed-check.json`, and in `seed.meta.json` and the manifest's `seed.chec
 | Field | What it is |
 | --- | --- |
 | `documents` | Documents checked. |
-| `differences` | Differences from the bundle: a document with no local one, another version, another number of open anchored items, or another text. |
+| `differences` | Differences from the bundle: a document with no local one, another version, another number of open anchored items, another text (each ask block's server-owned attributes aside, as the text route serves it), or another answer of an answered or resolved typed ask block, read as its ask's node holds it. |
 | `version_size_mismatches` | Versions whose stored size change is neither production's nor its negative. |
 | `anchors_outside_logged_block` | Anchored items with no recorded rule or stored quote, or whose stored quote is not unique in the text or lies outside the span its rule chose. |
 | `anchor_rules` | `logged_quote`, `in_logged_block`, `nearest_surviving_block`: anchors seeded by each rule. |
@@ -1645,8 +1652,16 @@ one action of one kind:
 | markdown artifact created | `doc-create` | `POST /issues/{key}/artifacts` with its `created-docs/` version 1 |
 | file artifact created, file version | `file-create`, `file-version` | multipart `POST /issues/{key}/artifacts` with deterministic bytes of the logged size |
 | comment resolved | `resolve` | `POST /comments/{id}/resolve` |
+| comment deleted | `comment-delete` | `DELETE /comments/{id}` as its author |
+| message deleted | `message-delete` | `DELETE /messages/{id}` as its author; a message no planned write creates (one written before the window: the seed writes none) is not sent (`unseeded_message`) |
 | ask opened, answered, resolved; issue claimed | `ask-open`, `ask-answer`, `ask-resolve`, `claim` | `POST /issues/{key}/asks`; `GET /asks/{id}` -> `POST /asks/{id}/answer` as the answering person (`X-Dispatch-User`, with the ask's `edited_at`); `POST /asks/{id}/resolve`; `POST /issues/{key}/claim` |
 | `child.status`, `comment.anchor_refreshed`, `comment.reopened`, `issue.closed` beside its `issue.updated`, `message.delivery`/`accepted`, `user_state.*` | not sent | derived by the server |
+
+A comment or a message its author deleted since is served by every event of it without its body
+(`deleted_at` and `deleted_by` in its place), and Dispatch refuses a post with an empty body (`400
+INVALID_COMMENT`, `400 INVALID_MESSAGE`), so its create is sent with a placeholder body
+(`deletedPostBody`), counted by event type in `deleted_bodies`; the post keeps its place, and its
+delete is sent where the window holds it.
 
 All paths are under `/api/v1`. The client keeps each document's text (the build's own text, below;
 its own edits; the created documents), so an upload sends the current text with no read. Every edit

@@ -128,6 +128,7 @@ func answerSearchAsk(t *testing.T, handler http.Handler, askID string, body map[
 }
 
 func TestSearchAskHitsCarryTheirAnswerState(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Orrery restoration", "Gear notes.")
 

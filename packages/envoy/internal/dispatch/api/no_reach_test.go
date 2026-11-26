@@ -60,6 +60,7 @@ const (
 // reach: a new read that answers more than the read it stands beside, or an old read that
 // quietly answers something else. Each sub-test holds one half of that.
 func TestTheStoreAddsNoReachAndNoReadChangesShape(t *testing.T) {
+	t.Parallel()
 	t.Run("the person read is one route and takes no kind, filter or traversal", onePersonRead)
 	t.Run("the person read admits a person and nobody else", personReadReach)
 	t.Run("every route the table held before this child keeps the shape the contracts declare", declaredShapesUnchanged)
@@ -653,10 +654,6 @@ func threeBadRequests(t *testing.T) {
 				route.Method+" "+target, why)
 		}
 	}
-	if len(reasoning) > 0 {
-		t.Fatalf("the table holds no row of %v, so the request about another project each was written for went to no route",
-			slices.Sorted(maps.Keys(reasoning)))
-	}
 	// A removal that answered 404 but deleted the source all the same would pass the check
 	// above, so the source the probe sent under another project's key must still be listed.
 	if sources := listSources(t, handler, "TEST"); !slices.ContainsFunc(sources, func(source architectureSourceResponse) bool {
@@ -664,6 +661,10 @@ func threeBadRequests(t *testing.T) {
 	}) {
 		t.Errorf("GET /api/v1/projects/TEST/architecture-sources lists %q after the probe, without the source %s it sent under OTH",
 			sourceStrings(sources), owned.architectureSource)
+	}
+	if len(reasoning) > 0 {
+		t.Fatalf("the table holds no row of %v, so the request about another project each was written for went to no route",
+			slices.Sorted(maps.Keys(reasoning)))
 	}
 	if len(probed) < 5 {
 		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", len(probed))
@@ -686,8 +687,8 @@ func threeBadRequests(t *testing.T) {
 	// two reads (growingReads) is walked under a parameter it declares that holds it to the
 	// rows its plain read answered, so the two answers differ only where the walk did.
 	//
-	// The event log answers only the events at or below the server's safe horizon, which a
-	// transaction open anywhere on the Postgres instance holds back (events.Horizon): under
+	// The event log answers only the events at or below the server's safe horizon, which an
+	// event write of the server's database holds back while it is open (events.Horizon): under
 	// load its first read can answer none of the seeded events and its next read every one of
 	// them. Awaiting a horizon proven after the seed puts every seeded event at or below it
 	// before the log is read, and the horizon never falls, so its plain read answers them all
@@ -799,10 +800,10 @@ func routeProbeQueries(owned crossProject) map[string]string {
 // hold it to. All three read the event log. The server's own background work appends to it after
 // the request that caused the work has been answered (a document's settlement, a keyed write
 // whose client left), and the whole log is read only up to the safe horizon, which moves on
-// whenever a transaction open on the Postgres instance ends. Every other read the probe walks
-// either lists rows that only a write request adds - the inbox's open asks, an issue's comments,
-// messages and asks, the broadcasts - and the probe sends only reads, or answers an object,
-// whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
+// whenever an event write of the server's database that held it ends. Every other read the probe
+// walks either lists rows that only a write request adds - the inbox's open asks, an issue's
+// comments, messages and asks, the broadcasts - and the probe sends only reads, or answers an
+// object, whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
 // search, the replies, the answers, a person's nodes, the related checks.
 var growingReads = map[string]func(answered []byte) (string, bool){
 	"GET /api/v1/events/log":            eventLogBound,
@@ -957,10 +958,10 @@ func (node lensOrConstraint) storeAddress() string {
 // constraint, an architecture source, and the Legion daemon it names with a read of it; a second
 // project with an issue, which the cross-project probe addresses them under; and one priority,
 // which belongs to neither project and is read at its own id. Under the second project's key the
-// probe sends each route the object of the first its path names (crossProjectPath): design.md to
-// a route of an issue document, the project document to a route of a project document, the
-// message to the message read, the run of a step to the step write, the retro's run to the rating
-// write and the architecture source's repository to the source's removal and its sync.
+// probe sends each route the object of the first its path names (crossProjectPath): design.md to a
+// route of an issue document, the project document to a route of a project document, the message
+// to the message read, the run of a step to the step write, the retro's run to the rating write
+// and the architecture source's repository to the source's removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -1105,7 +1106,7 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //   - {number} beside either: 1, the first version, which each of the two documents holds;
 //   - {id} of /issues/{key}/messages/{id}: the issue's message;
 //   - {id} of /issues/{key}/steps/{id}: the run of a step of the issue its project's daemon
-//     wrote;
+//     wrote, which the experiment write's path, /issues/{key}/steps/{id}/experiment, takes too;
 //   - {id} of /issues/{key}/steps/{id}/rating: the run of the issue's retro its project's daemon
 //     wrote, the one kind of run the rating write rates;
 //   - {id} of /issues/{key}/plans/{id}: the plan of a run of the issue its project's daemon
@@ -1174,9 +1175,9 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 	return pattern, true
 }
 
-// reasoningRequest is one request a route of cybermonklabs/legion#4193 is sent under another
+// reasoningProbe is one request a route of cybermonklabs/legion#4193 is sent under another
 // project's issue: its target and its body, and what it must answer.
-type reasoningRequest struct {
+type reasoningProbe struct {
 	target string
 	body   map[string]any
 	// refused is the code of the 404 the route must refuse the request with, where the request
@@ -1189,17 +1190,19 @@ type reasoningRequest struct {
 }
 
 // reasoningCrossProject is the request each route of cybermonklabs/legion#4193 under /issues/{key}
-// is sent under the other project's issue, about owned's objects. Every route
+// is sent under the other project's issue, about owned's objects, and so is the move of a node
+// (PATCH /api/v1/issues/{key}/nodes/{id}, R7 of the issue-tree spec). Every route
 // that pull request adds gets one, so each gets all three of threeBadRequests' requests
 // (Verification's c-no-reach): crossProjectPath answers none of the routes that take only {key}
 // and gives a /nodes/{id} route a bare uuid, which decodeNodeAddress refuses before any issue is
 // compared. Each request here is well formed and names a node or a document that exists - a node
 // by its store address, as /nodes/{id} takes one, or by its dispatch:// address in a body - so
-// the only thing wrong with it is the issue.
-func reasoningCrossProject(owned crossProject) map[string]reasoningRequest {
+// the only thing wrong with it is the issue. The move's request names no If-Match, which it reads
+// only once the node is found under the issue.
+func reasoningCrossProject(owned crossProject) map[string]reasoningProbe {
 	under := "/api/v1/issues/" + owned.otherIssue
 	node := func(of lensOrConstraint, route string) string { return under + nodePath(of.storeAddress(), route) }
-	return map[string]reasoningRequest{
+	return map[string]reasoningProbe{
 		"POST /api/v1/issues/{key}/lenses": {target: under + "/lenses", refused: "NOT_FOUND",
 			body: map[string]any{"on": "dispatch://" + owned.issue + "/spec", "kind": "trade-off"}},
 		"POST /api/v1/issues/{key}/risks": {target: under + "/risks", refused: "NOT_FOUND", body: map[string]any{
@@ -1213,6 +1216,9 @@ func reasoningCrossProject(owned crossProject) map[string]reasoningRequest {
 			body: map[string]any{"state": graphstore.StateOvertaken}},
 		"POST /api/v1/issues/{key}/nodes/{id}/settle": {target: node(owned.tradeoff, "settle"), refused: "NOT_FOUND",
 			body: map[string]any{}},
+		"PATCH /api/v1/issues/{key}/nodes/{id}": {target: strings.TrimSuffix(node(owned.tradeoff, ""), "/"), refused: "NOT_FOUND",
+			body: map[string]any{"parent": "issue/" + owned.otherIssue}},
+		"DELETE /api/v1/issues/{key}/nodes/{id}": {target: strings.TrimSuffix(node(owned.tradeoff, ""), "/") + "?dry_run=true", refused: "NOT_FOUND"},
 		"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
 			target: under + "/artifacts/" + owned.slug + "/premortem-convert", refused: "ARTIFACT_NOT_FOUND",
 			body: map[string]any{"prevented_by": []any{}, "dry_run": true},
@@ -1226,7 +1232,7 @@ func reasoningCrossProject(owned crossProject) map[string]reasoningRequest {
 
 // probeAcrossProjects sends route its request under the other project's issue as alice, who may
 // read and write both projects, and holds the answer to what the request says it must be.
-func probeAcrossProjects(t *testing.T, handler http.Handler, route string, request reasoningRequest, owned crossProject) {
+func probeAcrossProjects(t *testing.T, handler http.Handler, route string, request reasoningProbe, owned crossProject) {
 	t.Helper()
 	method, _, _ := strings.Cut(route, " ")
 	var body any
@@ -1270,12 +1276,13 @@ func ownedNamed(answer string, owned crossProject) string {
 // object, so what refuses it is the object and not the caller or the body. Every route is sent
 // as alice, a person, with its probe body (routeProbeBody), but these:
 //
-//   - the step write, its rating and the plan write each record only for the session of the
-//     Legion daemon of the key's project and refuse any other writer 403 STEP_WRITER before they
-//     read the id (putIssueStep, the rating's and putIssuePlan's requireIssueDaemon), so each is
-//     sent over the deployment's shared agent credential, which proves no session, naming the
-//     session of the other project's daemon, with a body each accepts: the rating carries one,
-//     and the plan write the default plan of a run (defaultPlanBody);
+//   - the step write, its rating, its experiment and the plan write each record only for the
+//     session of the Legion daemon of the key's project and refuse any other writer 403
+//     STEP_WRITER before they read the id (putIssueStep, the rating's, the experiment's and
+//     putIssuePlan's requireIssueDaemon), so each is sent over the deployment's shared agent
+//     credential, which proves no session, naming the session of the other project's daemon, with
+//     a body each accepts: the rating carries one, the experiment write an experiment and its
+//     variant, and the plan write the default plan of a run (defaultPlanBody);
 //   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
 //     it reads the slug (createNamedVersion), so its body carries one.
 func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, target string, owned crossProject) *httptest.ResponseRecorder {
@@ -1286,6 +1293,10 @@ func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, tar
 	case "PUT /api/v1/issues/{key}/steps/{id}/rating":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{
 			"actor": daemonSessionOf(owned.otherKey), "rating": 3, "rating_reason": "A rating under another project's key.",
+		})
+	case "PUT /api/v1/issues/{key}/steps/{id}/experiment":
+		return sessionRequest(t, handler, route.Method, target, map[string]any{
+			"actor": daemonSessionOf(owned.otherKey), "experiment": "planning", "variant": "b",
 		})
 	case "PUT /api/v1/issues/{key}/plans/{id}":
 		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))
@@ -1431,6 +1442,11 @@ var readRelations = map[string][]string{
 // is, so a field the answer drops fails naming its path however deep it sits, where a check of
 // the top level alone, or of the fields the document requires, passes a nested field and one Go
 // leaves out where it is empty (`omitempty`).
+//
+// Four paths are not the fork point's, and each is named where it stands: deleted_at and
+// deleted_by of the comment and of its replies, which pull request #3512 (INFRA-1523) adds to
+// every comment by its R3 and not this child. Every other path is the fork point's, so a field
+// the store adds to either read still fails here as one the read did not answer.
 var readAnswerPaths = map[string][]string{
 	"GET /api/v1/comments/{id}": {
 		"comment",
@@ -1444,6 +1460,11 @@ var readAnswerPaths = map[string][]string{
 		"comment.answers", "comment.artifact_id", "comment.ask_id",
 		"comment.author", "comment.author.id", "comment.author.kind", "comment.author.proven",
 		"comment.body", "comment.created_at",
+		// INFRA-1523's R3, not #3178: the delete mark every read of a comment carries
+		// (model.Comment's DeletedAt and DeletedBy, no omitempty). A comment that stands, as this
+		// seed's does, answers each as null, and answerWalk.object counts a field it carries as
+		// null.
+		"comment.deleted_at", "comment.deleted_by",
 		"comment.deliveries", "comment.deliveries[].attempt", "comment.deliveries[].comment_id",
 		"comment.deliveries[].created_at", "comment.deliveries[].delivery", "comment.deliveries[].duplicate",
 		"comment.deliveries[].envelope_id", "comment.deliveries[].error", "comment.deliveries[].reply_id",
@@ -1459,6 +1480,9 @@ var readAnswerPaths = map[string][]string{
 		"replies[].anchor", "replies[].answers", "replies[].artifact_id", "replies[].ask_id",
 		"replies[].author", "replies[].author.id", "replies[].author.kind", "replies[].author.proven",
 		"replies[].body", "replies[].created_at", "replies[].deliveries", "replies[].edited_at", "replies[].id",
+		// INFRA-1523's R3, not #3178: the reply's delete mark, null on this seed's reply, as
+		// comment.deleted_at and comment.deleted_by above.
+		"replies[].deleted_at", "replies[].deleted_by",
 		"replies[].issue_key", "replies[].mentions", "replies[].reply_block", "replies[].reply_to",
 		"replies[].resolved", "replies[].resolved_at", "replies[].resolved_by", "replies[].suggestion",
 		"replies[].turn",

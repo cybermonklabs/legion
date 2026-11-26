@@ -75,8 +75,8 @@ func (r *queryDigestRig) result(t *testing.T, check, verdict, commit string) str
 	return decodeBody[recordedResult](t, recorded).Result.ID
 }
 
-// resultAddress is the store address of the result node id.
-func resultAddress(id string) string { return graphstore.KindResult + ":" + id }
+// resultNodeAddress is the store address of the result node id.
+func resultNodeAddress(id string) string { return graphstore.KindResult + ":" + id }
 
 // recordNode is one node of a query's record read back field by field: its address, its type,
 // its parent's address and its rank; each of its values, a name and a value, in the order the
@@ -183,11 +183,11 @@ func splitAddress(t *testing.T, address string) (string, string) {
 }
 
 // latestReview is the newest review of the document artifactID, in the order their events
-// committed (docs.ReviewOrder), and false where it holds none.
+// committed (model.ReviewOrder), and false where it holds none.
 func latestReview(t *testing.T, r *queryDigestRig, artifactID string) (model.ArtifactReview, bool) {
 	t.Helper()
 	review, err := docs.ScanReview(r.database.Pool.QueryRow(context.Background(),
-		`select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder+` limit 1`, artifactID))
+		`select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+model.ReviewOrder+` limit 1`, artifactID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ArtifactReview{}, false
 	}
@@ -197,10 +197,10 @@ func latestReview(t *testing.T, r *queryDigestRig, artifactID string) (model.Art
 	return review, true
 }
 
-// versionRender is what version_renders records of version number of the document: the digest of
-// the record the version was written with, and the cut that record was read at, and false where
-// the version holds no row.
-func versionRender(t *testing.T, r *queryDigestRig, artifactID string, number int) (string, refs.TreeCut, bool) {
+// recordedVersionRender is what version_renders records of version number of the document: the
+// digest of the record the version was written with, and the cut that record was read at, and
+// false where the version holds no row.
+func recordedVersionRender(t *testing.T, r *queryDigestRig, artifactID string, number int) (string, refs.TreeCut, bool) {
 	t.Helper()
 	var digest string
 	var cut refs.TreeCut
@@ -320,7 +320,7 @@ func queryDigestStepRecord(t *testing.T, rig *queryDigestRig) {
 	c1, c2, r1 := rig.block("c1"), rig.block("c2"), rig.block("r1")
 	record := rig.record(t)
 	// The fixture states the order: c1, the result under it, then c2, c1's sibling after it.
-	want := []string{blockAddress(c1), resultAddress(result), blockAddress(c2)}
+	want := []string{blockAddress(c1), resultNodeAddress(result), blockAddress(c2)}
 	if got := walkAddresses(record.Nodes); !slices.Equal(got, want) {
 		t.Errorf("the verification query returns %v, want the checks and the results under them in the walk of the tree: %v", got, want)
 	}
@@ -496,7 +496,7 @@ func queryDigestStepMoves(t *testing.T, rig *queryDigestRig) {
 			t.Errorf("the results %s and %s exchanged under c1 read one digest for both, %s: the record holds the order of the walk, siblings in the order the store holds",
 				earlier, later, before.Digest)
 		}
-		if a, b := slices.Index(walkAddresses(after.Nodes), resultAddress(earlier)), slices.Index(walkAddresses(after.Nodes), resultAddress(later)); a < b {
+		if a, b := slices.Index(walkAddresses(after.Nodes), resultNodeAddress(earlier)), slices.Index(walkAddresses(after.Nodes), resultNodeAddress(later)); a < b {
 			t.Errorf("after the exchange the query returns %v, want %s after %s", walkAddresses(after.Nodes), earlier, later)
 		}
 	})
@@ -610,7 +610,7 @@ func queryDigestStepApproval(t *testing.T, rig *queryDigestRig) {
 			t.Errorf("version %d of the Verification document is a %s holding definition_version %s, want a query version holding %d",
 				approved.Version, supertag, nullable(definition), graphstore.QueryDefinitionVersion)
 		}
-		digest, cut, rendered := versionRender(t, rig, rig.verification, approved.Version)
+		digest, cut, rendered := recordedVersionRender(t, rig, rig.verification, approved.Version)
 		if !rendered {
 			t.Errorf("version %d of the Verification document holds no version_renders row, so the approval records no read sequence and no record: "+
 				"this tree's version write writes none (docs.QueueVersionRender has no caller), and the approval's content_sha256 %s is the sha256 of the stored markdown, not of the verification query's record (%s)",
@@ -700,7 +700,7 @@ func queryDigestStepApproval(t *testing.T, rig *queryDigestRig) {
 			t.Fatalf("the approval %s reads version %d and digest %s after the retarget, want it as it was: version %d and digest %s",
 				approved.ID, still.Version, nullable(still.ContentSHA256), approved.Version, nullable(approved.ContentSHA256))
 		}
-		_, cut, rendered := versionRender(t, rig, rig.verification, approved.Version)
+		_, cut, rendered := recordedVersionRender(t, rig, rig.verification, approved.Version)
 		if !rendered {
 			t.Errorf("version %d holds no version_renders row, so no read sequence lets the approval answer for the revision it covered after the retarget", approved.Version)
 			return
@@ -755,7 +755,7 @@ func queryDigestStepApproval(t *testing.T, rig *queryDigestRig) {
 		`, rig.verification).Scan(&markdown, &answered); err != nil {
 			t.Fatalf("read version 1 of the Verification document: %v", err)
 		}
-		if _, _, rendered := versionRender(t, rig, rig.verification, 1); rendered {
+		if _, _, rendered := recordedVersionRender(t, rig, rig.verification, 1); rendered {
 			t.Skip("version 1 of the Verification document holds a version_renders row, so it is no version written before the cutover")
 		}
 		sum := sha256.Sum256([]byte(markdown))

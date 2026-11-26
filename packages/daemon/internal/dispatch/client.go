@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,22 +19,59 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
+// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
+// transport it was made with (New).
 type HTTPClient struct {
 	baseURL    string
-	token      string
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
-func New(baseURL, token string) *HTTPClient {
+// New creates a client for one Dispatch server whose every request goes through transport, which
+// presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
+// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
+// client sets no Authorization of its own.
+func New(baseURL string, transport http.RoundTripper) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		token:      token,
 		timeout:    requestTimeout,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: transport},
 	}
+}
+
+// BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
+// when nil) with `Authorization: Bearer <token>` and changes nothing else, so a request goes on the
+// wire as it did when the client set the header itself. A redirect to another host name than the
+// request was made to is sent without it, as Go's client sent no Authorization header its caller
+// set on such a redirect: the bearer reaches Dispatch's host and no other. Go's client also kept
+// it on a redirect to a subdomain of that host; this does not.
+func BearerTransport(token string, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return bearerTransport{authorization: "Bearer " + token, base: base}
+}
+
+type bearerTransport struct {
+	authorization string
+	base          http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	if strings.EqualFold(r.URL.Hostname(), firstRequest(r).URL.Hostname()) {
+		presented.Header.Set("Authorization", b.authorization)
+	}
+	return b.base.RoundTrip(presented)
+}
+
+// firstRequest is the request the caller made that r is a redirect of, or r itself: Go's client
+// sets each redirect's Response to the answer that redirected it, whose Request is the one before.
+func firstRequest(r *http.Request) *http.Request {
+	for r.Response != nil && r.Response.Request != nil {
+		r = r.Response.Request
+	}
+	return r
 }
 
 // ListIssues reads GET /api/v1/issues?project=<project>. Dispatch accepts one status filter, so
@@ -65,6 +103,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Status:       issue.Status,
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
+			Priority:     issue.Priority,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
@@ -242,14 +281,37 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 	}, nil)
 }
 
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          daemonActor(key),
+	}, nil)
+}
+
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
 // issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
-// the route takes a plan of the issue from. The write appends no event and notifies nobody, and
-// Dispatch sets each field once, so a plan sent again changes nothing. Dispatch answers 400
-// PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other writer, 404
-// ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id that is a plan
-// of another issue; a Dispatch older than the route answers its router's 404 (NoRoute), which the
-// outbox's row waits on until the server release that has it.
+// the route takes a plan of the issue from. The write appends no event and notifies nobody. The
+// plan's source, document, version and tasks are one fact: a write whose version is above the
+// version Dispatch holds replaces all four, and a write at or below it changes nothing, a version
+// left out (the source default) counting as 0, so a plan sent again or late changes nothing.
+// Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other
+// writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id
+// that is a plan of another issue; a Dispatch older than the route answers its router's 404
+// (NoRoute), which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
 		PlanWrite: plan,
@@ -328,7 +390,8 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
 // the shape its durable stream carries, so the boot catch-up applies each through the live
-// decoder, with its own sequence.
+// decoder, with its own sequence. A page that holds an event that does not decode, or whose seq is
+// not above the sequence read before it, fails the read with an *EventLogError naming that event.
 func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
 	events := []json.RawMessage{}
 	for {
@@ -344,10 +407,11 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 				Seq int64 `json:"seq"`
 			}
 			if err := json.Unmarshal(raw, &event); err != nil {
-				return nil, fmt.Errorf("page issue events for %s: %w", key, err)
+				return nil, &EventLogError{Event: len(events) + 1, Err: fmt.Errorf("page issue events for %s: %w", key, err)}
 			}
 			if event.Seq <= after {
-				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
+				return nil, &EventLogError{Event: len(events) + 1, Seq: event.Seq,
+					Err: fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)}
 			}
 			after = event.Seq
 			events = append(events, raw)
@@ -358,13 +422,31 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 	}
 }
 
+// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
+// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
+// decode, or whose seq is not above the sequence read before it. The intake's walk of the log
+// (walkIssueEvents in internal/intake) gives it for an event that it cannot decode. Event is the
+// event's place in the log read, counted from 1. Seq is the event's sequence where the event
+// decoded, and 0 where it did not. Err names the cause and, from EventsAfter, the issue; Error
+// returns its text.
+type EventLogError struct {
+	Event int
+	Seq   int64
+	Err   error
+}
+
+func (e *EventLogError) Error() string { return e.Err.Error() }
+func (e *EventLogError) Unwrap() error { return e.Err }
+
 const eventPageLimit = 200
 
 // MessageBodiesSince reads newest-first issue events until the bounded outbox recovery window.
 // Message bodies are carried by message.created events, which hold at most the first part of a
 // long body (contracts.DispatchEventBodyMax) and say so with body_truncated; the whole of such a
 // body is read from GET /api/v1/issues/{key}/messages/{id}, since the outbox's marker closes a
-// body and the cut would drop it.
+// body and the cut would drop it. A message its author deleted keeps its message.created event,
+// whose every read carries deleted_at and no body: it is no notice the outbox posted, so the read
+// passes over it, and any other event with no body is still refused.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
@@ -391,12 +473,16 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				continue
 			}
 			var message struct {
-				ID            string `json:"id"`
-				Body          string `json:"body"`
-				BodyTruncated bool   `json:"body_truncated"`
+				ID            string          `json:"id"`
+				Body          string          `json:"body"`
+				BodyTruncated bool            `json:"body_truncated"`
+				DeletedAt     json.RawMessage `json:"deleted_at"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
 				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
+			}
+			if len(message.DeletedAt) > 0 && string(message.DeletedAt) != "null" {
+				continue
 			}
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
@@ -487,6 +573,55 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// PlanDocument reads one version of a document with its typed blocks: GET
+// /api/v1/artifacts/{id}/versions/{version}?blocks=true, whose blocks Dispatch reads from that
+// version's own text, then GET /api/v1/artifacts/{id} for the issue carrying it. Each block's
+// text is its body, cut from the markdown of the same answer at the block's byte range, without
+// its opening line and its closing fence. A Dispatch that answers no blocks key predates that read
+// and gives ErrNoBlocks. An answer for another version, or a block whose range is not a fenced
+// block of its markdown, is an error naming it; a refusal of Dispatch's passes through (Missing).
+func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error) {
+	if version < 1 {
+		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
+	}
+	var response versionBlocksResponse
+	path := "/api/v1/artifacts/" + url.PathEscape(artifactID) + "/versions/" + strconv.Itoa(version) + "?blocks=true"
+	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return DocumentVersion{}, err
+	}
+	if response.Blocks == nil {
+		return DocumentVersion{}, ErrNoBlocks
+	}
+	if response.Number != version {
+		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: Dispatch answered version %d", artifactID, version, response.Number)
+	}
+	document := DocumentVersion{ArtifactID: artifactID, Version: version, Blocks: make([]DocumentBlock, 0, len(*response.Blocks))}
+	for _, block := range *response.Blocks {
+		if block.From < 0 || block.To < block.From || block.To > len(response.Markdown) {
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s spans %d to %d of %d bytes", artifactID, version, block.ID, block.From, block.To, len(response.Markdown))
+		}
+		rendering := response.Markdown[block.From:block.To]
+		_, rest, opened := strings.Cut(rendering, "\n")
+		closing := strings.LastIndexByte(rest, '\n')
+		if !opened || closing < 0 {
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s is %q, not a fenced block", artifactID, version, block.ID, rendering)
+		}
+		attributes := make(map[string]string, len(block.Attributes))
+		for _, attribute := range block.Attributes {
+			attributes[attribute.Name] = attribute.Value
+		}
+		document.Blocks = append(document.Blocks, DocumentBlock{ID: block.ID, Type: block.Type, Attributes: attributes, Text: rest[:closing]})
+	}
+	var artifact artifactResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &artifact); err != nil {
+		return DocumentVersion{}, err
+	}
+	if artifact.IssueKey != nil {
+		document.IssueKey = *artifact.IssueKey
+	}
+	return document, nil
+}
+
 // ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
 // between versions from and to, both positive and from below to, as Dispatch answers them (a pair
 // from 0 has no earlier version to compare, and Dispatch refuses it). A 404 ARTIFACT_NOT_FOUND is
@@ -563,6 +698,16 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
+// it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
+func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
+		return Caller{}, err
+	}
+	return caller, nil
+}
+
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -580,7 +725,6 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -675,6 +819,7 @@ type issueSummaryResponse struct {
 	Status       string         `json:"status"`
 	Parent       *string        `json:"parent"`
 	Rank         string         `json:"rank"`
+	Priority     *int           `json:"priority"`
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
@@ -689,6 +834,7 @@ type issueResponse struct {
 	Status            string         `json:"status"`
 	Parent            *string        `json:"parent"`
 	Rank              string         `json:"rank"`
+	Priority          *int           `json:"priority"`
 	Labels            []string       `json:"labels"`
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
@@ -706,6 +852,7 @@ func (r issueResponse) issue() Issue {
 		Status:            r.Status,
 		Parent:            r.Parent,
 		Rank:              r.Rank,
+		Priority:          r.Priority,
 		Labels:            r.Labels,
 		HandedOver:        CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID: r.PrimaryArtifactID,
@@ -753,6 +900,27 @@ type artifactResponse struct {
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`
+}
+
+// versionBlocksResponse is a document version as GET …/versions/{n}?blocks=true answers it: its
+// markdown, its number, and its typed blocks, nil when Dispatch sent no blocks key.
+type versionBlocksResponse struct {
+	Markdown string                `json:"markdown"`
+	Number   int                   `json:"number"`
+	Blocks   *[]versionBlockAnswer `json:"blocks"`
+}
+
+// versionBlockAnswer is one block of that answer: its id, type, byte range in the answer's
+// markdown and attributes, each a name and the value its opening line writes.
+type versionBlockAnswer struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	From       int    `json:"from"`
+	To         int    `json:"to"`
+	Attributes []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"attributes"`
 }
 
 type approvalResponse struct {
@@ -854,6 +1022,14 @@ type stepWrite struct {
 type stepRatingWrite struct {
 	StepWrite
 	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
+// variant, and the daemon's actor.
+type stepExperimentWrite struct {
+	StepWrite
+	StepExperiment
 	Actor actor `json:"actor"`
 }
 

@@ -15,9 +15,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,8 +32,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -41,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -90,6 +95,28 @@ const (
 // that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names. Every
 // Rig's BROKER_POD_REGISTRARS lists DaemonAccount as a registrar of its pods.
 const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
+
+// The third account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a Legion daemon's own pod, whose
+// entry fixes DaemonExchangeSession, the session a daemon of ExchangeProject writes Dispatch
+// under, and names the Rig's approver (Operator) as its person, since Dispatch refuses every
+// write of a token that names none (SIGN_IN_REQUIRED). It is an account of its own rather than
+// DaemonAccount, which a Rig lists for no exchange: the registration route refuses a pod token of
+// an account the exchange does not list (POD_ACCOUNT_NOT_LISTED), and a test of that refusal
+// presents the daemon's own login token.
+const (
+	DaemonExchangeAccount = "system:serviceaccount:legion-system:legion-daemon-exchange"
+	DaemonExchangeSession = "legion-daemon:" + ExchangeProject
+)
+
+// The fourth account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a pod of a second project,
+// OtherProject, whose entry fixes OtherProjectSession and names the Rig's approver as its person,
+// so a test holds a token that Dispatch serves for its person and that names a project other
+// than ExchangeProject.
+const (
+	OtherProjectAccount = "system:serviceaccount:other-ns:other-project-worker"
+	OtherProject        = "OTHER"
+	OtherProjectSession = "other-project-worker"
+)
 
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
@@ -159,12 +186,14 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease      time.Duration
-	maxConns   int
-	minters    map[string]requests.Minter
-	personPods []personPod
-	profiles   string
-	edge       bool
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
+	projectAccess  projectaccess.Access
+	personPods     []personPod
+	profiles       string
+	edge           bool
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
 	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
 	edgeDeviceLimit *ratelimit.Limit
@@ -221,6 +250,23 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProjectAccess gives the broker access, a client of Dispatch's project access, as
+// BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch in cmd/cipherd/main.go: every token
+// exchange is held to what access answers about the projects its token names, and the enrollment
+// and the request machine ask it, the machine login reading it through that enrollment. By
+// default the broker checks no project, and so refuses every trade that names one, as on a broker
+// with that setting unset. The rig's secrets carry no project tag, so its policy is the same
+// either way.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projectAccess = access }
+}
+
 // WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
 // names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
 // of a deployment that lists it does. Every github-app secret the policy serves is a profile's
@@ -255,11 +301,12 @@ func WithPersonPod(account, service, person string) Option {
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
 // on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
 // no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
-// (storetest.Open's own contract).
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset, and fails it
+// when the calling package's TestMain does not run its tests through storetest.Main or
+// storetest.Run (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
 	}
@@ -326,6 +373,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -339,10 +387,10 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -404,14 +452,25 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
+// DeviceLifetime is how long a device code and its user code the rig broker issues wait for a
+// person's decision (oauth.Config.DeviceLifetime), as long as cmd/cipherd's pending machine login.
+const DeviceLifetime = 15 * time.Minute
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// ExchangeAudience, and a workflow run's, for githubAudience — and lists the four accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
-// one, and an unlisted one to be refused as.
+// one, a daemon's fixed session, a second project's, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
+	t.Helper()
+	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
+}
+
+// newOAuthProvider is NewOAuthProvider whose access tokens live accessLifetime and whose trades
+// are held to what access answers, nil for no project check.
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -423,6 +482,8 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		[]exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession},
+			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession},
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
@@ -439,12 +500,13 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
 			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+			Projects:   access,
 		},
 	}, oauthStore)
 	if err != nil {
@@ -453,9 +515,13 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 	return provider
 }
 
-// request issues method against baseURL+path through client, with an optional body (marshaled to
-// JSON) and headers, and answers the status and the body bytes. It asserts no status itself: a
-// caller does that, so a mismatch names the actual body.
+// request issues method against baseURL+path through client on ctx, with an optional body
+// (marshaled to JSON) and headers, and answers the status and the body bytes. It asserts no
+// status itself: a caller does that, so a mismatch names the actual body.
+//
+// ctx carries the request's one bound, the test binary's deadline less testwait's margin
+// (testwait.Context): a broker a loaded machine slows is waited for, and one that never answers
+// fails the test there.
 //
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
 // name, the client they go out on, and at — the process a failure is about, " (at host:port)"
@@ -463,6 +529,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 // has one broker and so nothing to tell apart.
 func request(
 	t *testing.T,
+	ctx context.Context,
 	client *http.Client,
 	baseURL, method, path string,
 	headers map[string]string,
@@ -478,7 +545,7 @@ func request(
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -505,7 +572,7 @@ func request(
 // caller does that so a mismatch names the actual body.
 func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, http.DefaultClient, r.URL, method, path, headers, body, "")
+	return request(t, testwait.Context(t), http.DefaultClient, r.URL, method, path, headers, body, "")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -514,6 +581,33 @@ func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, 
 func (r *Rig) UI(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 	return r.Req(t, method, path, map[string]string{"Authorization": "Bearer " + r.UIToken}, body)
+}
+
+// Introspect is what the broker's introspection reads token back as, asked as the Envoy listener
+// asks it: POST /v1/oauth/introspect with the token in a form, presenting ListenerToken. It fails
+// t on any answer but 200.
+func (r *Rig) Introspect(t *testing.T, token string) oauthwire.Introspection {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, r.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	if err != nil {
+		t.Fatalf("build the introspection request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+r.ListenerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/oauth/introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the answer of POST /v1/oauth/introspect: %v", err)
+	}
+	var read oauthwire.Introspection
+	if err := json.Unmarshal(body, &read); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /v1/oauth/introspect = %d %s, want 200 and an introspection (%v)", resp.StatusCode, body, err)
+	}
+	return read
 }
 
 // NewSession inserts a live session enrollment of operator's, under a launcher credential of its

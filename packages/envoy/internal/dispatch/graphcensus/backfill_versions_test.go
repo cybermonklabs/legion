@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestTheVersionBatchTakesTheStoreLockOrder holds writeVersionBatch (dispatch://INFRA-1253) to the
+// TestTheVersionBatchTakesTheStoreLockOrder holds writeVersionBatch (the issue-tree spec) to the
 // store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches: the
 // owner row its version's document stands under, the issue's row, first, then the version's node
 // row. A version's row names no node in a column of its own, so the batch writes no projection row.
@@ -83,11 +83,12 @@ func TestTheVersionBatchTakesTheStoreLockOrder(t *testing.T) {
 	}
 }
 
-// TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes closes the rolling deploy of
-// dispatch://INFRA-1253: an erase took a document's newest version, stating its node gone in the
-// transaction that deleted its row, and an older build, which writes no version node, then wrote
-// the next version at the freed number. That row stands at the address of a node held gone, which
-// the census reads as a row naming a node the store holds gone; the backfill counts it owed
+// TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes closes a rolling deploy: this
+// build's removal took an untouched document, stating its node and its version's node gone in the
+// transaction that deleted its rows, and an older build, which writes no node, then made a
+// document of the same issue and name, which takes the same address, and its first version at the
+// same number. That version's row stands at the address of a node held gone, which the census
+// reads as a row naming a node the store holds gone; the backfill counts it owed
 // (presentVersionNode) and restates the node live with the row's number and created_at, after
 // which the census reads zero and a second run writes nothing.
 func TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes(t *testing.T) {
@@ -97,15 +98,16 @@ func TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes(t *testing.T) {
 	const refKey = "FREE-1/notes-md"
 	owner := graphstore.VersionOwner{RefKey: refKey, Project: "FREE"}
 	var document string
-	var node graphstore.Node
+	var node, documentNode graphstore.Node
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('FREE', 'Freed', 'alice')`); err != nil {
 			return err
 		}
+		documentNode = graphstore.ArtifactNode(refKey, "FREE", "", alice, now)
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("FREE-1", "FREE", alice, now),
-			graphstore.ArtifactNode(refKey, "FREE", "", alice, now),
+			documentNode,
 		}, []graphstore.Tuple{graphstore.ArtifactPartOf(refKey, "FREE-1", alice, now)}); err != nil {
 			return err
 		}
@@ -136,26 +138,38 @@ func TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the document and its first version's node: %v", err)
 	}
-	// The erase of the version's text: its node stated gone, its row deleted, in one transaction.
+	// This build's removal of the untouched document: its node and its version's node stated gone,
+	// and its rows deleted, in one transaction.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		gone := node
-		gone.State, gone.MadeAt = graphstore.StateGone, time.Now().UTC()
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{gone}, nil); err != nil {
+		now := time.Now().UTC()
+		goneVersion, goneDocument := node, documentNode
+		goneVersion.State, goneVersion.MadeAt = graphstore.StateGone, now
+		goneDocument.State, goneDocument.MadeAt = graphstore.StateGone, now
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{goneDocument, goneVersion}, nil); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `delete from artifact_versions where artifact_id = $1 and number = 1`, document)
+		if _, err := tx.Exec(ctx, `delete from artifact_versions where artifact_id = $1`, document); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `delete from artifacts where id = $1`, document)
 		return err
 	}); err != nil {
-		t.Fatalf("end the first version as an erase does: %v", err)
+		t.Fatalf("remove the document as this build's removal does: %v", err)
 	}
-	// An older build's next version, at the freed number, with no node of its own.
+	// An older build's document of the same issue and name, at the same address, and its first
+	// version at the same number, with no node of either.
 	var at time.Time
 	if err := database.Pool.QueryRow(ctx, `
+		with made as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ('FREE-1', 'FREE', 'notes-md', 'notes.md', 'doc', '{"kind":"user","id":"alice"}')
+			returning id
+		)
 		insert into artifact_versions (artifact_id, number, markdown, authors)
-		values ($1, 1, 'Written by an older build.', '[{"kind":"user","id":"alice"}]')
+		select id, 1, 'Written by an older build.', '[{"kind":"user","id":"alice"}]' from made
 		returning created_at
-	`, document).Scan(&at); err != nil {
-		t.Fatalf("write the older build's version at the freed number: %v", err)
+	`).Scan(&at); err != nil {
+		t.Fatalf("make the document again as an older build does: %v", err)
 	}
 	if versions := censusKind(t, storeCensusOf(t, database), graphstore.KindVersion); versions.RowDifferences != 1 {
 		t.Fatalf("before the backfill the census reads %d version row difference(s) %+v, want the one row at the gone node's address",

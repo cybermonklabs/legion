@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr4392
+body: |-
+  The Dispatch client through which the session accepts and reads a person's message, command,
+  pick or BTW now trades at the secrets broker under the session's own id, as the client of a
+  delivery's reply does. Before, its trade named no session, and in a pod, which sets no
+  `AGENT_SECRETS_SESSION`, its token then wrote under no session at all.

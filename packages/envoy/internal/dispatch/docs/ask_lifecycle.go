@@ -77,7 +77,9 @@ func isLifecycleWrite(ctx context.Context) bool {
 // written from the ask's node as this transaction's commit leaves it (readIssueAskStateWrites), so
 // the settlement this write leaves owed writes a version showing it. So asks carry the state the
 // caller wants shown: resolved for an issue's close, open for its reopen, and each writes one
-// version (R3), whose only change is those attributes: the close's comes from a settlement on the
+// version (R3). When the close or the reopen is that version's whole change
+// (changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+// version), the version changes only those attributes: the close's comes from a settlement on the
 // closed issue, which moves no approval request and carries no approval
 // (versionWrite.closedIssue), so a standing approval reads stale until the reopen; the reopen's
 // settlement carries it by R10's case. Every other block is left as it is - the blocks of other

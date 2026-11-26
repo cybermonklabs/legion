@@ -312,7 +312,7 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
-	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": repo}, nil)
 	fixture()
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
@@ -540,7 +540,7 @@ func (r *versionNewsLive) connect(member *versionNewsIssue, role claim.Role, bef
 		return state == string(supervise.StateShimConnected), "state " + state
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.fail("register %s = %d %s, want 200", token, status, body)

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // discardingCache is a kvwatch.Cache that keeps nothing: these tests read the watcher's consumers,
@@ -32,17 +33,13 @@ func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string) (*kvwat
 	}
 	watcher := kvwatch.New("drain-test", kv, discardingCache{})
 	watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: the first scan can end late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if err := watcher.WaitReady(ctx); err != nil {
 		t.Fatalf("wait for the watcher: %v", err)
 	}
 	admin := testnats.Connect(t, uri)
-	adminJS, err := admin.JetStream()
-	if err != nil {
-		t.Fatalf("admin JetStream: %v", err)
-	}
-	consumers := func() []string { return consumerNames(adminJS, "KV_"+bucket) }
+	consumers := func() []string { return consumerNames(t, admin, "KV_"+bucket) }
 	if got := consumers(); len(got) != 1 {
 		t.Fatalf("consumers before the drain = %v, want the watcher's one", got)
 	}
@@ -67,7 +64,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 				return func() {
 					proxy.refuse.Store(true)
 					proxy.drop()
-					waitFor(t, 5*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+					waitFor(t, "the client to start reconnecting", client.Conn.IsReconnecting)
 				}
 			},
 		},
@@ -117,7 +114,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 			if got, want := strings.Join(records, ", "), "WARN drain-test watcher's consumer was left to the server: the connection was lost before its delete"; got != want {
 				t.Fatalf("the drain logged %q, want %q", got, want)
 			}
-			waitFor(t, 15*time.Second, "the server to delete the consumer it lost interest in", func() bool { return len(consumers()) == 0 })
+			waitFor(t, "the server to delete the consumer it lost interest in", func() bool { return len(consumers()) == 0 })
 		})
 	}
 }

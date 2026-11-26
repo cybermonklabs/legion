@@ -31,16 +31,17 @@ func seedStarted(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, s
 // Two waits count. A Dispatch blocker of the issue that is not done — in_progress, parked, or an
 // issue the daemon holds no mirror row of at all, which is the safe reading
 // (blockers.Unfinished) — and an open Dispatch child the issue's own first phase waits for
-// (record.LineFacts.ChildWaits). The phase the issue stands in does not enter it short of the
-// review: an issue in testing and one held from its implementing each gives its row back, as one
-// in implementing does.
+// (record.LineFacts.ChildWaits). The phase the issue stands in does not enter it while that phase
+// keeps a slot: an issue in testing and one held from its implementing each gives its row back,
+// as one in implementing does.
 //
-// Past the review the phase rule decides first (record.KeepsSlot, dispatch://INFRA-2560): an
-// issue in merging or in accepting holds no row however it waits, so the pass's ordinary release
-// takes the row it was seeded with (admit's releaseSlots), no mark of a release for a wait is
-// written, because such an issue waits on nothing (blockers.waitsOf), and the issue stands in no
-// waiting line at all, since it needs no slot (record.Waiting asks record.NeedsSlot before it
-// places an issue as LineWaitingOnIssue).
+// In accepting, retro or merging the phase rule decides first (record.KeepsSlot,
+// dispatch://INFRA-2560): those phases keep no slot (in the default steps, the phases after the
+// review), so an issue in merging or in accepting holds no row however it waits, the pass's
+// ordinary release takes the row it was seeded with (admit's releaseSlots), no mark of a release
+// for a wait is written, because such an issue waits on nothing (blockers.waitsOf), and the issue
+// stands in no waiting line at all, since it needs no slot (record.Waiting asks record.NeedsSlot
+// before it places an issue as LineWaitingOnIssue).
 //
 // Three started issues keep theirs though a wait names them. A root in awaiting_person waits on a
 // person, and the row it holds is what its resume takes back. A tree's own root whose design
@@ -98,8 +99,8 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 		seedStarted(t, pool, waiting.key, waiting.at, waiting.shape)
 		seedMirror(t, pool, waiting.key, "in_progress", blocker)
 	}
-	// The issues past their review that a link holds as well: each was started on a row, and its
-	// phase holds none.
+	// The issues in merging and in accepting that a link holds as well: each was started on a
+	// row, and its phase holds none.
 	for _, past := range []struct {
 		key string
 		at  phase.Phase
@@ -174,14 +175,14 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 			t.Errorf("%s stands in the waiting line %v, want it out of the line: it holds its slot and waits for none", key, line)
 		}
 	}
-	// The issues past their review gave their rows back to the phase rule and not to the wait:
-	// no mark, and no place in the line, since an issue there needs no slot to wait for.
+	// The issues in merging and in accepting gave their rows back to the phase rule and not to the
+	// wait: no mark, and no place in the line, since an issue there needs no slot to wait for.
 	for _, key := range []string{merging, accepting} {
 		if marked := issue(t, pool, key).ReleasedForWaitAt; marked != nil {
-			t.Errorf("%s carries a release for a wait at %v, want none: past its review it holds no slot, so the wait has none to take", key, marked)
+			t.Errorf("%s carries a release for a wait at %v, want none: in accepting or merging it holds no slot, so the wait has none to take", key, marked)
 		}
 		if slices.Contains(line, key) {
-			t.Errorf("%s stands in the waiting line %v, want it out of the line: past its review it needs no slot", key, line)
+			t.Errorf("%s stands in the waiting line %v, want it out of the line: in accepting or merging it needs no slot", key, line)
 		}
 	}
 
@@ -247,10 +248,11 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 }
 
 // A started issue released for a wait goes on working (releaseSlotsForWaits stops nothing), so
-// its work can pass its review while the wait still stands. Past the review it holds no slot by
-// the phase rule (record.KeepsSlot), so the wait has no slot to keep from it: the ordinary
-// release clears the mark (releaseSlots, which reads record.NeedsSlot over every marked issue),
-// and the issue leaves the waiting line rather than standing in it for a slot it does not need.
+// its work can pass its review while the wait still stands. Once it stands in accepting, where an
+// approval moves it in the default steps, it holds no slot by the phase rule (record.KeepsSlot),
+// so the wait has no slot to keep from it: the ordinary release clears the mark (releaseSlots,
+// which reads record.NeedsSlot over every marked issue), and the issue leaves the waiting line
+// rather than standing in it for a slot it does not need.
 func TestAReleasedIssueThatPassesItsReviewLeavesTheLine(t *testing.T) {
 	const (
 		key     = "LEGION-40"
@@ -268,7 +270,7 @@ func TestAReleasedIssueThatPassesItsReviewLeavesTheLine(t *testing.T) {
 			key, released, holdsSlot(t, pool, key))
 	}
 	if line := waitingLine(t, pool, testProject, nil); !slices.Contains(line, key) {
-		t.Fatalf("the waiting line is %v, want %s in it while it waits before its review", line, key)
+		t.Fatalf("the waiting line is %v, want %s in it while it waits in reviewing", line, key)
 	}
 
 	accepted := issue(t, pool, key)
@@ -277,10 +279,10 @@ func TestAReleasedIssueThatPassesItsReviewLeavesTheLine(t *testing.T) {
 	tick(t, pool, admission, "past-review")
 
 	if got := issue(t, pool, key); got.ReleasedForWaitAt != nil || holdsSlot(t, pool, key) {
-		t.Fatalf("%s = %+v holding a slot %t, want no mark and no slot: past its review it holds none, so no wait keeps one from it",
+		t.Fatalf("%s = %+v holding a slot %t, want no mark and no slot: in accepting it holds none, so no wait keeps one from it",
 			key, got, holdsSlot(t, pool, key))
 	}
 	if line := waitingLine(t, pool, testProject, nil); slices.Contains(line, key) {
-		t.Fatalf("the waiting line is %v, want %s out of it: past its review it needs no slot", line, key)
+		t.Fatalf("the waiting line is %v, want %s out of it: in accepting it needs no slot", line, key)
 	}
 }

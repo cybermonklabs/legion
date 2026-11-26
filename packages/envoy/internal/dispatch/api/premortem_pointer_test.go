@@ -18,6 +18,7 @@ import (
 // retract of the second issue's check answers 200 and leaves risk 8 prevented by nothing. A
 // prevented_by the conversion writes and no route can move is a pointer nobody can correct.
 func TestAConvertedRisksCheckOfAnotherIssueIsRetargetedAndRetractedThroughThePointerRoute(t *testing.T) {
+	t.Parallel()
 	// converted is a rig whose pre-mortem is converted, and the store id of its risk 8, prevented
 	// by the second issue's check alone.
 	converted := func(t *testing.T) (premortemRig, string, string) {

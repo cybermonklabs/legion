@@ -20,7 +20,7 @@ import {
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import type { Artifact, Ask, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -47,6 +47,7 @@ import {
   CLOSED_ISSUE_UPLOAD_REFUSAL,
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
+import { issueAsksQuery } from "../issue-page/useIssueTree";
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
@@ -88,7 +89,7 @@ import { carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import { type AskBlockHost, liveAskOf, type ServedAsk, servedAskOf } from "./typed-block-drawing";
+import { type AskBlockHost, type ServedAsk, servedAskOfBlock } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -112,6 +113,22 @@ export const liveTextQueryOptions = (artifactId: string) =>
     queryKey: ["artifact", artifactId, "text"],
     queryFn: () => api.getArtifactText(artifactId),
   });
+
+/** The asks of the document `artifactId`'s owner, in every state: the issue's, under the key and
+ * with the read the issue page takes them from (`issueAsksQuery`), or, where `issueKey` is null,
+ * the document's own, as a project document's are. A rendered ask block reads who asked from
+ * these, and the server's read of its ask (`servedAskOfBlock`). The issue's read answers rows that
+ * carry more than an ask, so the options take either read's key and fetch and read both as asks. */
+export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | null) => {
+  const { queryKey, queryFn } =
+    issueKey === null
+      ? {
+          queryKey: ["artifact", artifactId, "asks"],
+          queryFn: () => api.listArtifactAsks(artifactId),
+        }
+      : issueAsksQuery(issueKey);
+  return queryOptions<Ask[], Error, Ask[], string[]>({ queryKey, queryFn });
+};
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
@@ -426,11 +443,9 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
-    queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
-    queryFn: () =>
-      owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
-  });
+  const asksQuery = useQuery(
+    ownerAsksQueryOptions(artifact.id, owner.kind === "issue" ? owner.key : null)
+  );
   /** Every ask indexed from a typed block of this document, in every state — the rendered blocks
    * read who asked from these, and an answered block still names its asker. */
   const blockAsks = useMemo(
@@ -442,16 +457,15 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
-  // The server's read of the ask the block `blockId` shows: its row among the owner's asks, else
-  // what the live text answers for the block in its asks, which is the one read of a copy's
-  // source on a project document: the document's own asks hold no row of another document's.
+  // The server's read of the ask the block `blockId` shows (`servedAskOfBlock`).
   const servedAsk = (blockId: string): ServedAsk | undefined =>
-    servedAskOf(
+    servedAskOfBlock(
       asksQuery.data ?? [],
+      liveTextQuery.data,
       artifact.id,
       blockId,
       owner.kind === "issue" ? undefined : owner.project
-    ) ?? liveAskOf(liveTextQuery.data, blockId);
+    );
   // The server's read of the ask each mounted block shows, by block id, read once per render for
   // the cards below and for the editor's refusal of a reading in an open ask, which reads the
   // answer states at each edit: a ref, so the editor made once reads the latest asks read.
@@ -546,7 +560,9 @@ export function ProofDocument({
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
   // versions) refresh once it lands, since the server's ask node now holds the outcome the block
   // shows and the answer writes one version, which changes only the block's server-owned
-  // attributes, and a host that selected the question hears of its answer too.
+  // attributes when the answer is that version's whole change (the server's
+  // changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+  // version), and a host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });

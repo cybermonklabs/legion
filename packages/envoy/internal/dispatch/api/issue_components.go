@@ -10,12 +10,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
-
-const maxIssueComponents = 50
 
 // componentsInput is the decoded `components` field of an issue write. Mode "inherit" deletes
 // the issue's own row (the default state); "explicit" replaces it with IDs; "none" records a
@@ -58,8 +57,8 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 		if input.IDs == nil || len(*input.IDs) == 0 {
 			return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "components.ids must name at least one component for mode explicit")
 		}
-		if len(*input.IDs) > maxIssueComponents {
-			return nil, true, countExceededError("COMPONENTS_INPUT", "components.ids", len(*input.IDs), maxIssueComponents)
+		if len(*input.IDs) > contracts.MaxIssueComponents {
+			return nil, true, countExceededError("COMPONENTS_INPUT", "components.ids", len(*input.IDs), contracts.MaxIssueComponents)
 		}
 		seen := make(map[string]struct{}, len(*input.IDs))
 		for _, raw := range *input.IDs {
@@ -90,7 +89,7 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 // id that is unknown (never imported, or retired by a re-import) and each that is external.
 //
 // Each component the issue holds as its own is an affects tuple from the issue's node to the
-// component's (dispatch://INFRA-1253 R9), which its issue_component_members row projects, naming
+// component's (R9 of the issue-tree spec), which its issue_component_members row projects, naming
 // the issue's node. It answers the affects tuples the write appends and retracts, which it reads
 // against the ones the issue's node states now so it states only what moved, dated at the time its
 // issue_components row records, at for a write that leaves the issue inheriting, held for the
@@ -175,9 +174,12 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 
 // issueComponentsTerms resolve the effective attachment of every issue of `subjects`, the
 // one-column term of issue keys each statement that splices these defines before them: for each
-// of those issues the nearest issue on its parent chain (itself first) with an issue_components
-// row of either mode, that row's members split into ids still in the project's component model
-// and ids a re-import retired. One walk climbs every subject's chain together and one grouped
+// of those issues the nearest issue of its own project on its parent chain (itself first) with an
+// issue_components row of either mode, that row's members split into ids still in the project's
+// component model and ids a re-import retired. The walk carries the subject's project and climbs
+// only to a parent of that project, so it ends at the first ancestor of another project as at a
+// root: component ids belong to one project's model, and a parent of another project passes on
+// no attachment. One walk climbs every subject's chain together and one grouped
 // read splits every owner's members, so a listing pays one set of joins rather than a walk and
 // two subqueries per row; `comp` holds a row for each issue an ancestor chose for, and
 // issueComponentsJoin leaves the columns null for an issue none chose for, as the per-row lateral
@@ -186,11 +188,11 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 // its depth, so no two rows of one chain are equal and `union`'s distinct step would remove
 // nothing.
 var issueComponentsTerms = `comp_chain as (
-		select s.key as start, i.key, i.parent_key, 0 as depth
+		select s.key as start, i.project_key, i.key, i.parent_key, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
-		select c.start, p.key, p.parent_key, c.depth + 1
-		from comp_chain c join issues p on p.key = c.parent_key
+		select c.start, c.project_key, p.key, p.parent_key, c.depth + 1
+		from comp_chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 		where c.depth < ` + parentDepthCapSQL + `
 	), comp_owner as (
 		select distinct on (c.start) c.start as key, c.key as owner_key, ic.mode, ic.reason

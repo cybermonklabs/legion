@@ -87,6 +87,10 @@ type readDisplayText struct {
 	tree   json.RawMessage
 	fields []*model.DisplayTree
 	into   []func(json.RawMessage)
+	// exact are the fields told whether Parse takes text whole (textExact), and verdict is that
+	// answer once resolve has it.
+	exact   []**bool
+	verdict bool
 }
 
 // readDisplayTrees is the reader of a request that answers stored texts in the latest mode,
@@ -147,6 +151,22 @@ func (r *displayTreeReader) textOf(field *model.DisplayTree, markdown *string) {
 	r.text(field, *markdown)
 }
 
+// textExact is text for a text a reader may edit, whose answer also says whether Parse takes it
+// whole (pmdoc.DisplayExact): resolve points exact at that verdict where it fills field, and
+// leaves it nil - out of the answer - where the text has no tree. The verdict is what tells the
+// dashboard whether a writer's editor may be filled from the markdown or must show the tree
+// read-only: a tree Parse did not take whole, written back, writes its reading over the text.
+// It says nothing more of the tree, which resets the attributes the server owns either way.
+// exact must stand where field does, for the reason text gives.
+func (r *displayTreeReader) textExact(field *model.DisplayTree, exact **bool, markdown string) {
+	if r == nil || markdown == "" {
+		return
+	}
+	slot := r.slotOf(markdown)
+	slot.fields = append(slot.fields, field)
+	slot.exact = append(slot.exact, exact)
+}
+
 // textInto registers assign to be given the tree of markdown, for a tree that stands somewhere
 // no field can be pointed at: an event's trees are a map keyed by the payload path, whose values
 // have no address. assign is called once, by resolve, and never for a text with no tree.
@@ -193,6 +213,14 @@ func (r *displayTreeReader) slotOf(markdown string) *readDisplayText {
 //     use, exactly as every read did before there was a table, and stored afterwards on a
 //     connection of its own and outside any transaction of the caller's.
 //
+// A text registered with textExact is then judged, where it has a tree: whether Parse takes it
+// whole (pmdoc.DisplayExact). A verdict this process holds already is taken here, by the sum the
+// text was registered under (pmdoc.HeldDisplayExact), as a held tree is; the rest are judged on as
+// many processors as the builds, each text once however many requests ask for it at the same
+// moment (judgedDisplayExact). The verdict is kept by the text's sum, however its tree reached
+// this read, so a text is parsed to judge it only while this process holds no verdict of it, and
+// a list read again parses nothing.
+//
 // A caller still holding a pooled connection reads nothing from the table and stores nothing: a
 // document load and a compaction shape their answers inside read-only transactions
 // (docs/persistence.go, docs/compaction.go), and a second connection taken while one is held is
@@ -227,16 +255,35 @@ func (r *displayTreeReader) resolve() {
 		slot := &r.texts[missing[at]]
 		slot.tree = builtDisplayTree(slot.sum, slot.text, r.mode)
 	})
+	var judged []int
 	for index := range r.texts {
-		tree := r.texts[index].tree
-		if tree == nil {
+		slot := &r.texts[index]
+		if len(slot.exact) == 0 || slot.tree == nil {
 			continue
 		}
-		for _, field := range r.texts[index].fields {
-			*field = model.DisplayTree(tree)
+		if exact, held := pmdoc.HeldDisplayExact(slot.sum); held {
+			slot.verdict = exact
+			continue
 		}
-		for _, assign := range r.texts[index].into {
-			assign(tree)
+		judged = append(judged, index)
+	}
+	buildDisplayTrees(len(judged), func(at int) {
+		slot := &r.texts[judged[at]]
+		slot.verdict = judgedDisplayExact(slot.sum, slot.text)
+	})
+	for index := range r.texts {
+		slot := &r.texts[index]
+		if slot.tree == nil {
+			continue
+		}
+		for _, field := range slot.fields {
+			*field = model.DisplayTree(slot.tree)
+		}
+		for _, assign := range slot.into {
+			assign(slot.tree)
+		}
+		for _, exact := range slot.exact {
+			*exact = &slot.verdict
 		}
 	}
 	r.storeOf(missing)
@@ -269,7 +316,7 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 //
 // It runs on the request's context detached from its cancellation (context.WithoutCancel), since
 // a reader who goes away must not leave the saving to the next one, and bounded by
-// StoreTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
+// storeTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
 // the goroutine's own (store.ForConcurrentWorker), as the fill's connections are marked and as
 // every other detached run of this server is: the request's mark is still in use when the
 // handler returns - keyedWrites settles the Idempotency-Key on it - and the pool refuses a
@@ -295,7 +342,7 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	}
 	storing := store.ForConcurrentWorker(context.WithoutCancel(r.ctx))
 	r.server.detached.goDetached(func() {
-		ctx, cancel := context.WithTimeout(storing, StoreTreesTimeout)
+		ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
 		defer cancel()
 		if err := texttrees.For(r.server.deps.Store).StoreTrees(ctx, r.mode, built); err != nil {
 			// Nothing the request carried is named here. The subject a route had at hand was
@@ -308,13 +355,11 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	})
 }
 
-// StoreTreesTimeout bounds the store of a read's own trees, which runs detached from the request
+// storeTreesTimeout bounds the store of a read's own trees, which runs detached from the request
 // that read them and so from every cancellation that would otherwise end it. It is generous
 // because the work is one INSERT of a page's trees and the only cost of losing it is the next
-// reader's reading, and it is bounded at all because shutdown waits for this goroutine. It is
-// exported for `envoy-dispatch erase`, which waits it out after its commit and then deletes again
-// the trees it deleted, since a read that began before that commit can store one of them back.
-const StoreTreesTimeout = 30 * time.Second
+// reader's reading, and it is bounded at all because shutdown waits for this goroutine.
+const storeTreesTimeout = 30 * time.Second
 
 // storeEventDisplayTrees stores the display trees of every stored text the published events carry
 // in their payloads, keyed as every other tree is by the text alone. The event log and a live

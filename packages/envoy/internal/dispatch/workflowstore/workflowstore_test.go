@@ -625,7 +625,7 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 	if pid == 0 {
 		t.Fatalf("begin the second end: %v", <-answered)
 	}
-	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered, 30*time.Second); early {
+	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered); early {
 		t.Fatalf("the second end answered %v before it waited for the first", err)
 	}
 	if err := first.Commit(ctx); err != nil {
@@ -956,6 +956,63 @@ func TestARetroOrAMergeTakesNoType(t *testing.T) {
 			}
 			if step := stepOf(t, pool, "LEG-1", id); step.Type != "" {
 				t.Errorf("the %s holds type %q, want none", kind, step.Type)
+			}
+		})
+	}
+}
+
+// A run keeps the experiment its issue was drawn into and the variant drawn, as it keeps every
+// field, once: a start that names them sets both, an end that names none keeps them, and a later
+// write naming another variant changes nothing and appends nothing. The two are stated together:
+// a write naming one alone is refused, and so is a name outside the daemon's rule for the names its
+// settings declare; each refusal names the field and writes nothing.
+func TestAStepKeepsItsVariant(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id := uuid.NewString()
+	variant := StepExperiment{Experiment: "planning", Variant: "b"}
+	named := func(write StepWrite, experiment StepExperiment) StepWrite {
+		write.Experiment = &experiment
+		return write
+	}
+
+	if started := put(t, pool, named(startOf(implementer(id), minute(0)), variant), minute(0)); started.Experiment == nil || *started.Experiment != variant {
+		t.Fatalf("the start answers the variant %+v, want %+v", started.Experiment, variant)
+	}
+	put(t, pool, endOf(implementer(id), ResultPassed, minute(5)), minute(5))
+	if step := stepOf(t, pool, "LEG-1", id); step.Experiment == nil || *step.Experiment != variant {
+		t.Fatalf("after an end that names none the run holds the variant %+v, want %+v", step.Experiment, variant)
+	}
+	before := wholeLog(t, pool)
+	again := put(t, pool, named(implementer(id), StepExperiment{Experiment: "planning", Variant: "a"}), minute(9))
+	if again.Experiment == nil || *again.Experiment != variant {
+		t.Fatalf("a second variant answers %+v, want the first, %+v", again.Experiment, variant)
+	}
+	if after := wholeLog(t, pool); len(after) != len(before) {
+		t.Fatalf("a second variant appended %d tuples, want none", len(after)-len(before))
+	}
+	if steps := issueSteps(t, pool, "LEG-1"); len(steps) != 1 || steps[0].Experiment == nil || *steps[0].Experiment != variant {
+		t.Fatalf("the read lists %+v, want the one run with the variant %+v", steps, variant)
+	}
+
+	const together = "experiment and variant are stated together or not at all"
+	for _, tc := range []struct {
+		name       string
+		experiment StepExperiment
+		refusal    string
+	}{
+		{"an experiment without its variant", StepExperiment{Experiment: "planning"}, together},
+		{"a variant without its experiment", StepExperiment{Variant: "b"}, together},
+		{"an experiment outside the name rule", StepExperiment{Experiment: "Bad", Variant: "b"}, `experiment "Bad" must match ^[a-z0-9-]{1,32}$`},
+		{"a variant outside the name rule", StepExperiment{Experiment: "planning", Variant: "b:c"}, `variant "b:c" must match ^[a-z0-9-]{1,32}$`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := wholeLog(t, pool)
+			_, err := tryPut(pool, named(startOf(implementer(uuid.NewString()), minute(0)), tc.experiment), minute(0))
+			if !errors.Is(err, ErrStepInput) || !strings.Contains(err.Error(), tc.refusal) {
+				t.Fatalf("the write answered %v, want %v naming %q", err, ErrStepInput, tc.refusal)
+			}
+			if after := wholeLog(t, pool); len(after) != len(before) {
+				t.Fatalf("the refused write appended %d tuples, want none", len(after)-len(before))
 			}
 		})
 	}

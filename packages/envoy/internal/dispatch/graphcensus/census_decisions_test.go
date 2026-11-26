@@ -150,10 +150,13 @@ func TestTheCensusLeavesOutAMovedToIntoADocumentThatOwesItsBlockIndex(t *testing
 	}
 }
 
-// writeCensusLens writes the lens id at state under CORE-1 through the store's writer, with the
-// tuples beside it: its first write states its part_of, and a write of a lens the store holds moves
-// its state alone, as the state route's write does.
-func writeCensusLens(t *testing.T, database *store.Store, id, state string, tuples ...graphstore.Tuple) {
+// censusLens is the lens writeCensusLens writes.
+const censusLens = "00000000-0000-4000-8000-0000000004a1"
+
+// writeCensusLens writes the lens censusLens at state under CORE-1 through the store's writer,
+// with the tuples beside it: its first write states its part_of, and a write of a lens the store
+// holds moves its state alone, as the state route's write does.
+func writeCensusLens(t *testing.T, database *store.Store, state string, tuples ...graphstore.Tuple) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -162,14 +165,14 @@ func writeCensusLens(t *testing.T, database *store.Store, id, state string, tupl
 	}
 	defer tx.Rollback(ctx)
 	at := time.Now().UTC()
-	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, id)
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, censusLens)
 	if err != nil {
-		t.Fatalf("read the lens %s: %v", id, err)
+		t.Fatalf("read the lens %s: %v", censusLens, err)
 	}
 	if !held {
-		node = graphstore.Node{Kind: graphstore.KindLens, ID: id, Supertag: graphstore.KindLens,
+		node = graphstore.Node{Kind: graphstore.KindLens, ID: censusLens, Supertag: graphstore.KindLens,
 			Visibility: graphstore.VisibilityProject, Project: "CORE"}
-		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TuplePartOf,
+		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: censusLens, Kind: graphstore.TuplePartOf,
 			ToKind: graphstore.KindIssue, ToID: "CORE-1"})
 	}
 	node.State, node.MadeAt, node.MadeBy, node.SourceEvent = state, at, censusWriter, graphstore.NoEvent
@@ -178,7 +181,7 @@ func writeCensusLens(t *testing.T, database *store.Store, id, state string, tupl
 		tuples[index].At, tuples[index].Who, tuples[index].SourceEvent, tuples[index].Asserted = at, censusWriter, graphstore.NoEvent, true
 	}
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
-		t.Fatalf("write the lens %s %s: %v", id, state, err)
+		t.Fatalf("write the lens %s %s: %v", censusLens, state, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the lens's write: %v", err)
@@ -194,10 +197,9 @@ func writeCensusLens(t *testing.T, database *store.Store, id, state string, tupl
 func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedAgreeingStore(t, database)
-	const lens = "00000000-0000-4000-8000-0000000004a1"
-	writeCensusLens(t, database, lens, graphstore.StateLive, graphstore.Tuple{
+	writeCensusLens(t, database, graphstore.StateLive, graphstore.Tuple{
 		FromKind: graphstore.KindArtifact, FromID: seeded.document.refKey, Kind: graphstore.TupleMovedTo,
-		ToKind: graphstore.KindLens, ToID: lens,
+		ToKind: graphstore.KindLens, ToID: censusLens,
 	})
 
 	report := storeCensusOf(t, database)
@@ -210,7 +212,7 @@ func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
 			moved, report.Differences(), report.Refused(), line, printed.String())
 	}
 
-	writeCensusLens(t, database, lens, graphstore.StateGone)
+	writeCensusLens(t, database, graphstore.StateGone)
 	report = storeCensusOf(t, database)
 	moved = storeOnlyKind(t, report, graphstore.TupleMovedTo)
 	if moved.Tuples != 1 || moved.Unresolved != 1 || !report.Refused() {

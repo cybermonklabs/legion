@@ -22,6 +22,7 @@ import (
 // the shared bearer one 404 NOT_FOUND, byte for byte once the address is substituted, and the
 // issue itself still answers its lenses.
 func TestALensReadOnAKindNoLensStandsOnAnswersWhatANodeNobodyHoldsAnswers(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	// Alice's lens writes her person node (writeReasoningNodes, graphstore.AuthorFacts), which the

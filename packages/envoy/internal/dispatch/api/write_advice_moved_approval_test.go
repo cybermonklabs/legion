@@ -65,6 +65,7 @@ func unchangedEdit(t *testing.T, handler http.Handler, artifactID, find string) 
 // spec, the issue's primary document, in no role and at the version the request asks about, and
 // the Verification document in its role, one version above the version the request asks about.
 func TestMovedApprovalRequestNamesTheAskTheOwnerAndEveryDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "MOVED", "Moved onto the agent")
 
@@ -90,6 +91,7 @@ func TestMovedApprovalRequestNamesTheAskTheOwnerAndEveryDocument(t *testing.T) {
 // column was written - and the report still names the role, because it asks documentPlays and
 // not the column (documentRoleOf).
 func TestMovedApprovalRequestReadsTheRoleTheSlugDecides(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	state := openMovedApprovalRequest(t, handler, "ROLELESS", "Written before the role column")
 	if _, err := database.Pool.Exec(context.Background(),
@@ -115,6 +117,7 @@ func TestMovedApprovalRequestReadsTheRoleTheSlugDecides(t *testing.T) {
 // route writes its version itself and moves the request itself (storeArtifact), so it owes its
 // writer the same report.
 func TestMovedApprovalRequestComesFromTheReplaceRoute(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "UPMOVED", "Moved by an upload")
 
@@ -148,6 +151,7 @@ func TestMovedApprovalRequestComesFromTheReplaceRoute(t *testing.T) {
 // failed, which is how the edit route answers one too
 // (TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails).
 func TestMovedApprovalRequestRidesTheUploadAdviceWhenIssueAdviceFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	state := openMovedApprovalRequest(t, handler, "UPFAILED", "Moved by an upload whose issue advice failed")
 
@@ -193,6 +197,7 @@ func TestMovedApprovalRequestRidesTheUploadAdviceWhenIssueAdviceFails(t *testing
 // report, so its edit's whole advice is the document report (documentWriteAdvice): the moved
 // request rides it there, naming the project its document belongs to and no issue.
 func TestMovedApprovalRequestRidesTheProjectDocumentAdvice(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "PROJMOVED")
 	document := uploadDocument(t, handler, "/api/v1/projects/PROJMOVED", "notes.md", "# Notes\n\nOne.\n")
@@ -237,6 +242,7 @@ func TestMovedApprovalRequestRidesTheProjectDocumentAdvice(t *testing.T) {
 // nothing back from anybody, so its answer names no request: the field exists to tell a writer
 // what their write just did, and this write did none of it.
 func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "UNASKED")
 	spec := "# Draft\n\nNobody has been asked to approve this.\n"
@@ -254,6 +260,7 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
 // the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.)
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)
@@ -280,6 +287,7 @@ func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.
 // is stored. Nothing moved, and the writer hears nothing: the report is of the move this write
 // made, not of the state the document is in.
 func TestMovedApprovalRequestIsAbsentWhenTheEditStoredNoVersion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "NOVERSION", "Moved, then an edit that changes nothing")
 	if moved := editAdviceDocument(t, handler, state.verification, "A line the agent added.").MovedApprovalRequest; moved == nil {
@@ -301,6 +309,7 @@ func TestMovedApprovalRequestIsAbsentWhenTheEditStoredNoVersion(t *testing.T) {
 // quiet-move rule, which wakes the person's side only on the first move - every write that takes
 // the request further from the person tells its own writer.
 func TestMovedApprovalRequestComesAgainOnTheNextVersion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "AGAIN", "Moved twice")
 	if moved := editAdviceDocument(t, handler, state.verification, "A line the agent added.").MovedApprovalRequest; moved == nil {
@@ -327,6 +336,7 @@ func TestMovedApprovalRequestComesAgainOnTheNextVersion(t *testing.T) {
 // nothing back. (The row above is a write with no version while the request has already moved;
 // this one is a write with no version while it has not.)
 func TestMovedApprovalRequestIsAbsentWhileTheRequestStandsWhereItWasHandedOver(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "HANDEDOVER", "Still with the person")
 
@@ -345,6 +355,7 @@ func TestMovedApprovalRequestIsAbsentWhileTheRequestStandsWhereItWasHandedOver(t
 // version the write stored: so the person who moved the request onto the agent's turn is told so
 // too.
 func TestMovedApprovalRequestReachesAPersonsWrite(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "BYPERSON", "Moved by a person")
 
@@ -369,6 +380,7 @@ func TestMovedApprovalRequestReachesAPersonsWrite(t *testing.T) {
 // document takes it further from him, and the report names that document as the one standing
 // above the version the request asks about.
 func TestMovedApprovalRequestNamesTheDocumentACarryLeftBehind(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried one half", "Context\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
@@ -403,6 +415,7 @@ func TestMovedApprovalRequestNamesTheDocumentACarryLeftBehind(t *testing.T) {
 // --include-verification flag of the hand-back it prints, so both halves are asserted where it
 // reads them.
 func TestMovedApprovalRequestNamesThePrimaryDocumentAndTheVerificationRole(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	state := openMovedApprovalRequest(t, handler, "INCLUDEVER", "The pair the flag is read from")
 

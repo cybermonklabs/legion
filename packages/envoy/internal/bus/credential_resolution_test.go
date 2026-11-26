@@ -17,6 +17,7 @@ import (
 // or as this VM's Google identity token. A service token beside any other credential is refused
 // naming both, since a process connects as one identity; none set is no credential.
 func TestCredentialResolution(t *testing.T) {
+	t.Parallel()
 	seed, _ := testnats.User(t)
 	dir := t.TempDir()
 	write := func(name, text string) string {

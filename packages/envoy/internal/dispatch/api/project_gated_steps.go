@@ -1,13 +1,11 @@
 package api
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -108,12 +106,6 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -128,24 +120,36 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// failing one of the two (`deadlock detected`, 500). The lock assigns no transaction id; the
 	// update is the first statement that writes, and one that finds the list unchanged writes
 	// nothing.
-	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project.Key)); err != nil {
+	key := r.PathValue("key")
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(key)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := tx.QueryRow(r.Context(), `
+	// The row is read under the owner lock, which every writer of the row takes first, so the
+	// event carries the row as this write leaves it. The read comes before the update, which
+	// assigns the transaction id, so it adds no statement to the window an open transaction id
+	// holds (TestXidWindowRouteTable). An unknown project is 404 PROJECT_NOT_FOUND here, before
+	// anything is written.
+	project, err := s.loadProject(r.Context(), tx, key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	written, err := tx.Exec(r.Context(), `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2
-		returning gated_steps
-	`, project.Key, steps).Scan(&project.GatedSteps); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The deployment published the list the row already holds. Nothing changed, so
-			// nothing is written and no event is appended; the answer is still the stored row.
-			WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
-			return
-		}
+	`, key, steps)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if written.RowsAffected() == 0 {
+		// The deployment published the list the row already holds. Nothing changed, so
+		// nothing is written and no event is appended; the answer is still the stored row.
+		WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
+		return
+	}
+	project.GatedSteps = steps
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
 	if err != nil {
 		s.writeHandlerError(w, err)

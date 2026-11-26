@@ -24,7 +24,7 @@ import (
 // ControllerStore is the project's controller record: the capability `legion controller start`
 // was last issued, and the session that registered with it (`store.Store`).
 type ControllerStore interface {
-	MintController(ctx context.Context, project string, capabilityHash []byte) (uint64, error)
+	MintControllerThen(ctx context.Context, project string, capabilityHash []byte, onCommit func(generation uint64)) (uint64, error)
 	Controller(ctx context.Context, project string) (controller.Record, bool, error)
 	RegisterController(ctx context.Context, project string, generation uint64, session string, secretHash []byte, at time.Time, pluginContract int) (bool, error)
 }
@@ -144,30 +144,37 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	if req.PluginContract != DaemonAPIVersion {
+	if req.PluginContract != DaemonAPIVersion() {
 		s.log.Warn("api: refused a controller secret: legion controller start holds the plugin to another daemon API contract",
-			"pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
+			"pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion())
 		named := "names no daemon API contract"
 		if req.PluginContract != 0 {
 			named = fmt.Sprintf("holds the controller's pi-legion to daemon API contract %d", req.PluginContract)
 		}
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
 			"legion controller start %s; this daemon requires %d: run the legion built with this daemon",
-			named, DaemonAPIVersion))
+			named, DaemonAPIVersion()))
 		return
 	}
 	secret := rand.Text()
 	s.controllerMu.Lock()
 	defer s.controllerMu.Unlock()
-	generation, err := s.controller.MintController(context.WithoutCancel(r.Context()), s.project, capabilityHash(secret))
-	if err != nil {
+	// The controller store runs the revocation as the mint's commit hook, fenced by the generation
+	// it confirms: a lost reply whose commit landed still revokes replaced grants once the store
+	// says so, and an older confirmation leaves a newer mint's grants standing.
+	if _, err := s.controller.MintControllerThen(context.WithoutCancel(r.Context()), s.project, capabilityHash(secret), s.revokeReplacedControllers); err != nil {
 		s.log.Error("api: mint a controller capability", "error", err)
 		s.refuse(w, r, http.StatusInternalServerError, "controller secret failed: the daemon could not record it")
 		return
 	}
-	s.grants.RevokeControllers()
-	s.log.Info("api: minted a controller capability; the previous controller's registration and grants are revoked", "generation", generation)
 	s.writeUnparsedAnswer(w, r, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps})
+}
+
+// revokeReplacedControllers is a controller mint's commit hook: it ends every controller grant of
+// a generation below the one the mint committed, and says so.
+func (s *server) revokeReplacedControllers(generation uint64) {
+	s.grants.RevokeControllersBelow(generation)
+	s.log.Info("api: minted a controller capability; the previous controller's registration and grants are revoked", "generation", generation)
 }
 
 // controllerGitHubCredential is `legion controller start`'s refresh call: proving the current
@@ -315,11 +322,11 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
-	if req.PluginContract != DaemonAPIVersion {
+	if req.PluginContract != DaemonAPIVersion() {
 		s.log.Warn("api: refused a controller registration: its plugin speaks another daemon API contract",
-			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
+			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion())
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
-			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion))
+			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion()))
 		return
 	}
 	secret := rand.Text()
@@ -368,13 +375,12 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 		s.claimFailure(w, r, "register", launch.Claim, err)
 		return
 	}
-	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
+	generation, err := s.controller.MintControllerThen(ctx, s.project, controller.UnheldCapability(), s.revokeReplacedControllers)
 	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
 		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not record its controller")
 		return
 	}
-	s.grants.RevokeControllers()
 	registered, err := s.controller.RegisterController(ctx, s.project, generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil || !registered {
 		s.logFailure("api: record the launched controller's registration", "claim", launch.Claim, "registered", registered, "error", err)
@@ -411,7 +417,13 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 	if s.refuseIfStaleController(w, r, stored) {
 		return
 	}
-	grant, err := s.grants.MintController(req.SessionID)
+	grant, err := s.grants.MintController(req.SessionID, stored.Generation)
+	if errors.Is(err, credential.ErrReplaced) {
+		// A mint confirmed since the read above replaced the session's capability: the session
+		// is no longer registered, as the next read of the record says.
+		s.writeFailure(w, r, http.StatusForbidden, "INVALID_SESSION_SECRET", claim.InvalidSecret.Message)
+		return
+	}
 	s.writeControllerGrant(w, r, grant, err)
 }
 
@@ -435,11 +447,11 @@ func controllerSessionRegistered(stored controller.Record, session, secret strin
 // whenever its recorded contract differs at all.
 func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request, stored controller.Record) bool {
 	if !s.controllerLaunched {
-		if stored.PluginContract == DaemonAPIVersion {
+		if stored.PluginContract == DaemonAPIVersion() {
 			return false
 		}
 		s.logStaleRefusal(r, "session", stored.Session, stored.PluginContract)
-		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion)
+		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion())
 		s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 		return true
 	}
@@ -453,7 +465,7 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	s.logStaleRefusal(r, "session", stored.Session, got)
-	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
+	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 	return true
 }

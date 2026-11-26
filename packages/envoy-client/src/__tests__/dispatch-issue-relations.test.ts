@@ -6,8 +6,8 @@ import { runDispatchCli } from "../dispatch-cli";
 import { fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 
-// An issue's relations as the `dispatch` command writes and reads them (dispatch://INFRA-1253 R9,
-// R10). A wait is one relation, needs, the one spelling Dispatch reads and answers
+// An issue's relations as the `dispatch` command writes and reads them (R9, R10 of the issue-tree
+// spec). A wait is one relation, needs, the one spelling Dispatch reads and answers
 // (dispatch://INFRA-1098 R27): the create and the update send it alone, and
 // dispatch-needs-spelling.test.ts holds that no request carries blocked_by.
 

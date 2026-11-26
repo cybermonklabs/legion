@@ -176,7 +176,7 @@ readonly convert_limit=300 owed_limit=300
 
 # R21's closed list of supertags: the thirty-one of spec version 117, handoff among them, the query
 # and query version nodes R28's approval row points at, and priority, step and plan, which R32 adds
-# (20261123134318_stores_moved).
+# (20261126000300_stores_moved).
 readonly -a r21_supertags=(issue document "document version" block callout ask requirement plan_task check result
   decision reading criterion lens lens_kind constraint risk comment message person session role page interaction
   delivery_attempt component supertag attribute handoff query "query version" priority step plan)

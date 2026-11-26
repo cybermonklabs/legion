@@ -1,4 +1,4 @@
-census: schema version 20261123120000 (schema_migrations); pending: 20261109051232_graph_supertags.up.sql, 20261123134318_stores_moved.up.sql, 20261123185607_graph_nodes_artifact_id_index.up.sql
+census: schema version 20261126000200 (schema_migrations); pending: 20261109051232_graph_supertags.up.sql, 20261126000300_stores_moved.up.sql, 20261126000400_graph_nodes_artifact_id_index.up.sql
 census: 20261109051232_graph_supertags.up.sql touches ask_followers through a foreign key with graph_nodes: 40.0 KiB; locks held by other sessions: none
 census: 20261109051232_graph_supertags.up.sql touches asks through a foreign key with graph_nodes: 136.0 KiB; locks held by other sessions: none
 census: 20261109051232_graph_supertags.up.sql touches block_refs through a foreign key with graph_nodes: 64.0 KiB; locks held by other sessions: none
@@ -7,14 +7,14 @@ census: 20261109051232_graph_supertags.up.sql touches document_blocks through a 
 census: 20261109051232_graph_supertags.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
 census: 20261109051232_graph_supertags.up.sql touches graph_tuples: 1,023 rows, 936.0 KiB (limit 1.0 GiB); locks held by other sessions: none
 census: 20261109051232_graph_supertags.up.sql census (20261109051232_graph_supertags.census.sql): 0
-census: 20261123134318_stores_moved.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123134318_stores_moved.up.sql touches graph_tuples: 1,023 rows, 936.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123134318_stores_moved.up.sql census (20261123134318_stores_moved.census.sql): 0
-census: 20261123185607_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
-census: 20261123185607_graph_nodes_artifact_id_index.up.sql census (20261123185607_graph_nodes_artifact_id_index.census.sql): 0
+census: 20261126000300_stores_moved.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000300_stores_moved.up.sql touches graph_tuples: 1,023 rows, 936.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000300_stores_moved.up.sql census (20261126000300_stores_moved.census.sql): 0
+census: 20261126000400_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 232.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261126000400_graph_nodes_artifact_id_index.up.sql census (20261126000400_graph_nodes_artifact_id_index.census.sql): 0
 census: transactions open longer than 1m0s, or of an age the census cannot see: none
 census: ok
 census: the rehearsal refuses the pending migration 20261109051232_graph_supertags.up.sql
 census: rehearsal: it refuses the pending migration 20261109051232_graph_supertags.up.sql, of another tree's: it touches graph_nodes, graph_tuples, which the rehearsal reads and writes
-census: rehearsal: it applies the pending migration 20261123134318_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
-census: rehearsal: it skips the pending migration 20261123185607_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run
+census: rehearsal: it applies the pending migration 20261126000300_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
+census: rehearsal: it skips the pending migration 20261126000400_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run

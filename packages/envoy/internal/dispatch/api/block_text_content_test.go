@@ -22,6 +22,7 @@ import (
 // answered as it stands. The documents' texts are slices of a rendering, as the block index
 // stores them; the items' texts are as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
+	t.Parallel()
 	// kind is what a row's text is the block of, and how its content is read past its bytes.
 	type kind int
 	const (

@@ -54,6 +54,7 @@ func retireDuring(t *testing.T, database *store.Store, artifactID string, write 
 // again under it; an issue's upload finds its document under its issue's lock, the lock the
 // retirement takes, and reads the retirement there.
 func TestAWriteRacingItsDocumentsRetirementIsRefusedUnderTheOwnersLock(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "RACE", "Retirement races", "A spec\n")
 	ops := map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "More."}}, "summary": "edit"}

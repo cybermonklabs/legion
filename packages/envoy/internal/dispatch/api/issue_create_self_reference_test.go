@@ -51,6 +51,7 @@ func namesReference(references []model.ChangedReference, kind, id string) bool {
 // artifact, which indexes the room as one document (T12a of this branch's plan), so the edge is
 // read from the room the spec is edited in (refs.DocumentRoomSQL), the spec itself otherwise.
 func TestIssueCreateSpecCitingTheIssueItOpensStoresAndCountsIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

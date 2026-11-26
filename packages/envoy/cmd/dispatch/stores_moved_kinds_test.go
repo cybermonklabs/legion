@@ -95,7 +95,7 @@ func writeEveryMovedShape(t *testing.T, pool *store.Pool) {
 }
 
 // TestTheMovedKindsAttributeNodesMatchTheirWriters holds the attribute nodes that
-// 20261123134318_stores_moved declares under the supertags priority, step and plan to the writers
+// 20261126000300_stores_moved declares under the supertags priority, step and plan to the writers
 // of those kinds: over a migrated database it writes one node of every shape each writer has
 // (writeEveryMovedShape), collects the attribute names of their value tuples less the base
 // attributes, and compares, for each kind, that set with the attribute nodes whose attribute_of

@@ -678,10 +678,11 @@ func (s acceptedScenario) deferred() []writtenBlock {
 
 // writeAcceptedVersions writes, in deferral, a spec with requirements (r3 and criterionChain), a
 // Verification with checks serving them (headingCheck among them) and a plan with plan tasks
-// serving them, by uploads, and in a room left owed by edits too, each write checked right after it
-// (acceptedFixture.accept); and, in a deferral by size, a second issue whose create writes its
-// spec's requirement r9 past the bound. A create cannot leave a room owed: the room it creates holds
-// only what it seeds.
+// serving them, by uploads, and a check of the Verification and a requirement of the spec by edits
+// too - in a deferral by size the edit route defers its version past the bound as the upload does
+// (docs.WithDeferredBlockIndex) - each write checked right after it (acceptedFixture.accept); and,
+// in a deferral by size, a second issue whose create writes its spec's requirement r9 past the
+// bound. A create cannot leave a room owed: the room it creates holds only what it seeds.
 func writeAcceptedVersions(t *testing.T, deferral acceptedDeferral) acceptedScenario {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: deferral.leftOwed})
@@ -711,6 +712,8 @@ func writeAcceptedVersions(t *testing.T, deferral acceptedDeferral) acceptedScen
 		fixture.upload(t, "spec", deferral.spec, spec...)
 		fixture.upload(t, "verification.md", deferral.verification, checks...)
 		fixture.upload(t, "plan.md", deferral.plan, acceptedPlanTask("t1", "r1"), acceptedPlanTask("t2", "r1", "r2"))
+		fixture.edit(t, fixture.documentNamed(t, "verification.md"), acceptedCheck("c3", "r1"))
+		fixture.edit(t, issue.PrimaryArtifactID, acceptedRequirement("r4"))
 	}
 	scenario := acceptedScenario{handler: handler, database: database, deps: deps, fixture: fixture, specKey: blockKeyOf(t, database, issue.PrimaryArtifactID)}
 	if !deferral.leftOwed {

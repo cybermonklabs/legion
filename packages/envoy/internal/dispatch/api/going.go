@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -31,33 +31,32 @@ import (
 // (recordGoingRequest, appendGoingEvent), so no row stands without its node and no frame without
 // its value. The stream reads the rows, as it always did: they are the cache it reads at speed.
 //
-// A run is kept, its row, its frames and its node, until `envoy-dispatch erase --node
-// interaction:<uuid>` erases all three in one transaction (grapherase): a node of the store is
-// removed by erasure alone (spec requirement r-interaction). Nothing here deletes a
-// run. During a roll, and after a rollback, a process of the release before still deletes a run
-// an hour old (contracts.GoingRequestTTL, which this build reads nowhere); the backfill states its
-// node gone (graphcensus's backfillGoneRuns).
+// A run is readable for one hour, by its going_requests row's created_at
+// (contracts.GoingRequestTTL), as the release before kept it; then the sweep states its node gone
+// and removes its rows, and the node, its words and its frames stay in the store
+// (sweepGoingRequests). No statement here deletes a row of graph_nodes or of graph_tuples. During
+// a roll, and after a rollback, a process of the release before deletes a run's rows an hour old
+// and leaves its node live; the sweep states that node gone too, as the backfill does
+// (graphcensus's backfillGoneRuns).
 //
 // The window a run has belongs to the record: going_requests.ends_at, written by the POST. A pod
 // that dies mid-run stores no terminal frame, so a reader on another pod ends the stream itself
-// once the run is past that moment with nothing terminal stored (readGoingStream),
-// sweepGoingRequests ends the runs nobody reads, each in the day after its deadline
-// (goingSweepWindow), and the boot pass, once at each boot of a process, every older one
-// (EndGoingRunsOverdueAtBoot). At the deadline the running answer, a reader and a pass may each
-// try to end one run, so which of them ends it is settled by the table (the going_events_terminal
-// index of migration 20261105152945) and never by whichever is first: every terminal write is an
-// insert that does nothing on a conflict, and the writer that loses reads the stored terminal
-// frame and reports that one (endGoingRun).
+// once the run is past that moment with nothing terminal stored (readGoingStream), and
+// sweepGoingRequests ends the runs nobody reads. At the deadline the running answer, a reader and
+// the sweep may each try to end one run, so which of them ends it is settled by the table (the
+// going_events_terminal index of migration 20261105152945) and never by whichever is first: every
+// terminal write is an insert that does nothing on a conflict, and the writer that loses reads the
+// stored terminal frame and reports that one (endGoingRun).
+//
+// What a run gave its model is part of the record too: each comment and issue message whose text
+// the run read for its model is a going_request_posts row (recordGoingPosts), so a reader on any
+// pod ends the stream at the delete of one of them (goingWithdrawal).
 
 // goingRequestColumns is the going_requests select list scanGoingRequest reads, in scan order.
 const goingRequestColumns = `id::text, author, project, words, created_at, ends_at`
 
 // goingEventColumns is the going_events select list scanGoingEvent reads, in scan order.
 const goingEventColumns = `sequence, name, data`
-
-// goingTerminalNames are the two frame names that end a stream (going.Event.Terminal), the pair
-// the going_events_terminal index holds as literals.
-var goingTerminalNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
 
 // goingTerminalWrites bounds how many sequences one terminal write tries. Every frame this build
 // writes of a run queues at the run's interaction node (appendGoingEvent), so a terminal write
@@ -68,11 +67,12 @@ var goingTerminalNames = []string{contracts.GoingEventEnd, contracts.GoingEventE
 // cannot spin, not because a third attempt is expected to be needed.
 const goingTerminalWrites = 3
 
-// errGoingRunGone is a frame of a run the record no longer holds: one nobody asked, one an erase
-// removed, or one a process of the release before deleted an hour old during a roll, whose node
-// may still stand. It stores nothing. It wraps pgx.ErrNoRows, which is what a frame the record
-// stores none of answers its writer, so an answer still writing reads its run as over either way;
-// endGoingRun answers it rather than trying another sequence, and the sweep passes over it.
+// errGoingRunGone is a frame of a run the record no longer holds: one nobody asked, or one whose
+// rows went an hour after it was asked - the sweep's removal, which states its node gone with
+// them, or a process of the release before's delete during a roll, whose node may still stand
+// then. It stores nothing. It wraps pgx.ErrNoRows, which is what a frame the record stores none of
+// answers its writer, so an answer still writing reads its run as over either way; endGoingRun
+// answers it rather than trying another sequence, and the sweep passes over it.
 var errGoingRunGone = fmt.Errorf("the record holds no such run: %w", pgx.ErrNoRows)
 
 // goingRequest is one answer run as the record holds it: the question a reader asked, and the
@@ -94,16 +94,18 @@ type goingEvent struct {
 }
 
 // goingRunState is what a reader needs to decide whether a stream is over: the sequence of the
-// run's one terminal frame, 0 while the run has stored none, and whether it is past its ends_at,
-// after which a run that stored none is ended by whoever reads it. The terminal frame is a
-// sequence and not a bool because a reader ends its stream on having been written that frame and
-// not on the run having stored one: a terminal frame committed between a reader's read of the
-// frames and its read of this state would otherwise close a stream that never carried it. The
-// going_events_terminal index holds that there is at most one such frame, so one sequence says
-// all of it.
+// run's one terminal frame, 0 while the run has stored none, whether it is past its ends_at,
+// after which a run that stored none is ended by whoever reads it, and whether it is withdrawn,
+// after which a reader is written goingWithdrawal's frame and nothing else. The terminal frame is
+// a sequence and not a bool because a reader ends its stream on having been written that frame
+// and not on the run having stored one: a terminal frame committed between a reader's read of
+// the frames and its read of this state would otherwise close a stream that never carried it.
+// The going_events_terminal index holds that there is at most one such frame, so one sequence
+// says all of it.
 type goingRunState struct {
 	Terminal     int
 	PastDeadline bool
+	Withdrawn    bool
 }
 
 // recordGoingRequest records one question: the asking actor, the project it was asked under (the
@@ -160,9 +162,10 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 }
 
 // readGoingRequest is one run by id, pgx.ErrNoRows when the record holds none: a run that was
-// never asked, one an erase removed, or one a process of the release before deleted. What a run
-// the caller does not own answers is the caller's to decide, which is why the row carries its
-// Author: model.Actor.SameCredential compares it with the reader's.
+// never asked, or one whose rows went an hour after it was asked (sweepGoingRequests, or a process
+// of the release before). What a run the caller does not own answers is the caller's to decide,
+// which is why the row carries its Author: model.Actor.SameCredential compares it with the
+// reader's.
 func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest, error) {
 	return scanGoingRequest(s.deps.Store.Pool.QueryRow(ctx, `
 		select `+goingRequestColumns+` from going_requests where id = $1::uuid
@@ -190,23 +193,19 @@ func (s *server) readLiveGoingRun(ctx context.Context, id string) (model.Actor, 
 	return author, live, nil
 }
 
-// goingTerminalNamesSQL is goingTerminalNames as the SQL list the going_events_terminal index's
-// predicate writes, `'end', 'error'`: a read that names the two as literals is one the planner
-// proves that partial index answers, where a bound array leaves a prepared statement's generic
-// plan nothing to prove it by.
-var goingTerminalNamesSQL = `'` + strings.Join(goingTerminalNames, `', '`) + `'`
-
 // goingNextFrame reads what a frame of the run $1 takes, once the run's node is held: the next
-// sequence, the frame's value at that sequence (graphstore.FrameValueSQL over the frame's name $2
-// and its JSON $3), whether the run has stored a terminal frame, and the transaction's now(), which
-// the frame's going_events row takes as its created_at. The sequence and the ending are one index
-// probe each, never a read of every frame the run holds: its newest sequence, read backward on the
-// (request_id, sequence) key, and its one terminal frame on going_events_terminal, which the
-// literal names (goingTerminalNamesSQL) let the planner use (TestTheNextFrameReadsTwoIndexProbes).
+// sequence (graphstore.RunNextSequenceSQL), the frame's value at that sequence
+// (graphstore.FrameValueSQL over the frame's name $2 and its JSON $3), whether the run has stored a
+// terminal frame, and the transaction's now(), which the frame's going_events row takes as its
+// created_at. The sequence and the ending are one index probe each, never a read of every frame the
+// run holds: its newest sequence, read backward on the (request_id, sequence) key, and its one
+// terminal frame on going_events_terminal (graphstore.RunEndingSQL), whose literal names let the
+// planner use it (TestTheNextFrameReadsTwoIndexProbes).
 // It takes the run's going_requests row `for key share`, the lock the frame's own row's foreign
-// key would take, so a delete of the run - an erase's, or a process of the release before deleting
-// it an hour old - waits for the frame rather than failing its insert; a run the record no longer
-// holds answers no row.
+// key would take, so a delete of the run's row an hour on by a process of the release before,
+// which takes no node lock, waits for the frame rather than failing its insert; the sweep's own
+// removal takes the run's node first and so is never under way when a frame of this build reaches
+// this read. A run the record no longer holds answers no row.
 var goingNextFrame = `
 	select next.sequence,
 	       ` + graphstore.FrameValueSQL("next.sequence", "$2::text", "$3::jsonb") + `,
@@ -214,9 +213,8 @@ var goingNextFrame = `
 	       now()
 	from going_requests r
 	cross join lateral (
-		select coalesce((select max(e.sequence) from going_events e where e.request_id = r.id), 0) + 1 as sequence,
-		       exists (select 1 from going_events e
-		               where e.request_id = r.id and e.name in (` + goingTerminalNamesSQL + `)) as ended
+		select ` + graphstore.RunNextSequenceSQL("r.id") + ` as sequence,
+		       ` + graphstore.RunEndingSQL("r.id") + ` is not null as ended
 	) next
 	where r.id = $1::uuid
 	for key share of r`
@@ -332,10 +330,12 @@ func beginGoingFrame(ctx context.Context, pool *store.Pool, requestID string) (p
 
 // errGoingRunNodeHeld is lockGoingRun's answer for a run whose node another write committed after
 // the frame found none, and which another transaction holds: the frame holds the run's
-// going_requests row by then, and the erase of a run takes the node's row and then the run's
-// (grapherase's lockProjectionRows), so a frame that waited for that node there would wait on the
-// erase while the erase waited on it. appendGoingEvent begins the frame again, which takes the
-// node's row first and nothing before it.
+// going_requests row by then, and appendGoingEvent begins the frame again, which takes the node's
+// row first and nothing before it; the sweep passes such a run over, and its next pass takes it.
+// The sweep holds a run's node and then deletes the run's row (goRunGone), which waits on that
+// hold of the row, so a frame that waited for the node while it held the row could wait on the
+// sweep as the sweep waits on it; letting the transaction go is what keeps that from happening,
+// and it costs such a frame one more transaction.
 var errGoingRunNodeHeld = errors.New("the run's interaction node is held by another transaction")
 
 // goingRunNodeTaken is graphstore.NodeRowLockSQL taken without waiting: a row another transaction
@@ -343,17 +343,18 @@ var errGoingRunNodeHeld = errors.New("the run's interaction node is held by anot
 const goingRunNodeTaken = graphstore.NodeRowLockSQL + ` skip locked`
 
 // lockGoingRun takes the interaction node row of the run requestID names `for no key update`
-// (graphstore.LockInteraction), the first lock of every frame's transaction, so a frame takes a
-// node's row before the run's going_requests row, the order the erase of a run takes them in. A
-// run a pod of the release before recorded during a roll has no node yet: its node is written
-// first, from its going_requests row, by the one writer of a run's node from its row, which the
-// backfill shares (graphstore.WriteRun): it takes that row `for no key update` and also states a
-// frame value of every frame that pod stored, and the node is then taken. The node it writes is
-// this transaction's own, which no other can see until it commits, let alone hold. A node another
+// (graphstore.LockInteraction), the first lock of every frame's transaction and of the sweep's
+// transaction of a run past the hour (goRunGone), so each takes a node's row before the run's
+// going_requests row, and frames and the sweep of one run queue at the node. A run a pod of the
+// release before recorded during a roll has no node yet: its node is written first, from its
+// going_requests row, by the one writer of a run's node from its row, which the backfill shares
+// (graphstore.WriteRun): it takes that row `for no key update` and also states a frame value of
+// every frame that pod stored, and the node is then taken. The node it writes is this
+// transaction's own, which no other can see until it commits, let alone hold. A node another
 // write committed in between is taken without waiting (goingRunNodeTaken), and where another
-// transaction holds it the answer is errGoingRunNodeHeld, which the caller begins again on, so no
-// frame waits on a node's row while it holds the run's. A run the record does not hold is
-// errGoingRunGone.
+// transaction holds it the answer is errGoingRunNodeHeld, which a frame begins again on and the
+// sweep passes over, so nothing waits on a node's row while it holds the run's. A run the record
+// holds neither a row nor a node of is errGoingRunGone.
 func lockGoingRun(ctx context.Context, tx pgx.Tx, requestID string) error {
 	locked, err := graphstore.LockInteraction(ctx, tx, requestID)
 	if err != nil || locked {
@@ -415,8 +416,8 @@ func readGoingTerminalEvent(ctx context.Context, pool *store.Pool, requestID str
 	return scanGoingEvent(pool.QueryRow(ctx, `
 		select `+goingEventColumns+`
 		from going_events
-		where request_id = $1::uuid and name = any($2::text[])
-	`, requestID, goingTerminalNames))
+		where request_id = $1::uuid and name in (`+graphstore.TerminalFrameNamesSQL+`)
+	`, requestID))
 }
 
 // goingEventsAfter is every frame of one run past a sequence, in stream order: $1 the run, $2
@@ -428,29 +429,32 @@ const goingEventsAfter = `
 	where request_id = $1::uuid and sequence > $2
 	order by sequence`
 
-// goingRunStateOf reads one run's state, $1 the run and $2 the terminal frame names: the
-// sequence of its terminal frame, 0 while it has stored none, and whether now is past its
-// ends_at. Queued beside goingEventsAfter, for the reason it is named.
-const goingRunStateOf = `
-	select coalesce(
-	         (select e.sequence from going_events e where e.request_id = r.id and e.name = any($2::text[])),
-	         0
-	       ),
-	       now() >= r.ends_at
+// goingRunStateOf reads one run's state, $1 the run: the sequence of its terminal frame, 0 while it
+// has stored none (graphstore.RunEndingSQL), whether now is past its ends_at, and whether a post the
+// run gave its model no longer stands (goingWithdrawal), by the one test of that
+// (graphstore.RunWithdrawnSQL), which the graph read of the run's own address reads too. Queued
+// beside goingEventsAfter, for the reason it is named.
+var goingRunStateOf = `
+	select coalesce(` + graphstore.RunEndingSQL("r.id") + `, 0),
+	       now() >= r.ends_at,
+	       ` + graphstore.RunWithdrawnSQL("r.id") + `
 	from going_requests r
 	where r.id = $1::uuid`
 
 // readGoingStream is what one poll of an open stream reads: the frames past after, and the run's
 // state, in one round trip (store.Pool.SendBatch), where a poll of a stream costs two. Either
 // statement failing is the whole read's failure, which ends the stream, and pgx.ErrNoRows is the
-// run deleted under its reader, by an erase or by a process of the release before.
+// run's rows removed under its reader an hour after it was asked, by the sweep or by a process of
+// the release before.
 //
 // The two statements take their own snapshots, each at its own moment, so a frame committed
-// between them is in one answer and not the other. Which order they run in therefore settles
-// nothing, and it is immaterial: a terminal frame in the frames ends the stream on being
-// written, and a terminal sequence in the state ends it only once the reader has reached that
-// sequence (streamGoingAnswer), so neither order can close a stream that never carried its
-// ending.
+// between them is in one answer and not the other. For the run's ending that order settles
+// nothing: a terminal frame in the frames ends the stream on being written, and a terminal
+// sequence in the state ends it only once the reader has reached that sequence
+// (streamGoingAnswer), so neither order can close a stream that never carried its ending. For
+// the withdrawal it does, which is why the state is queued second: the verdict is then never
+// older than the frames it is read beside, so a poll whose frames were read after a delete
+// committed is answered withdrawn, and the stream writes none of them (goingWithdrawal).
 func (s *server) readGoingStream(ctx context.Context, requestID string, after int) ([]goingEvent, goingRunState, error) {
 	var frames []goingEvent
 	var state goingRunState
@@ -462,13 +466,91 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 		frames = collected
 		return err
 	})
-	batch.Queue(goingRunStateOf, requestID, goingTerminalNames).QueryRow(func(row pgx.Row) error {
-		return row.Scan(&state.Terminal, &state.PastDeadline)
+	batch.Queue(goingRunStateOf, requestID).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&state.Terminal, &state.PastDeadline, &state.Withdrawn)
 	})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, goingRunState{}, err
 	}
 	return frames, state, nil
+}
+
+// goingWithdrawal is the one frame a reader of a withdrawn run is written, and all a reader of it
+// is written from then on. A run is withdrawn once a comment or an issue message whose text it
+// gave its model (recordGoingPosts) no longer stands - its author deleted it, or its row is gone
+// - since the run's answer may quote that post. Every read of the stream after the delete, from
+// the start or from a Last-Event-ID before the run's ending, therefore gives none of the run's
+// stored frames, no text and no item among them, and ends on an error frame carrying
+// contracts.GoingErrorAnswerWithdrawn; a read resumed at or past the ending's sequence is written
+// nothing (the last paragraph). The stored frames are left as they are, as an event Dispatch
+// already wrote keeps its stored text while every read of the log masks it (attachPostMarks), and
+// a frame a reader was written before the delete was a delivery already sent. A run given no post
+// that was deleted streams as it always has.
+//
+// The verdict is read at stream time, on every poll (goingRunStateOf), and not written by the
+// delete: the delete then knows nothing of answer runs, and the one read covers every frame
+// alike - those stored before the delete, those a run still running stores after it, and the
+// ending the run, a reader at the deadline or the sweep stored. A run still running is let past
+// it by nothing: the poll that finds the run withdrawn writes none of the frames it read beside
+// the verdict, and a run with no ending stored yet is ended here with the withdrawal
+// (endGoingRun), so the answer stores nothing after it (appendGoingEvent) and stops at the next
+// frame it tries to store.
+//
+// The frame takes the sequence of the run's one ending, the one stored or the one this call
+// stored, so a reader is written exactly one ending, in the ending's place: a reader that
+// already holds that sequence was written the run's ending, and streamGoingAnswer writes it
+// nothing more.
+//
+// The read of the run's own address, `dispatch://interaction/<uuid>`, is a second view of the same
+// frames, and answers what this does rather than deciding it again (refs' interactionFrames): for a
+// run the same test calls withdrawn (graphstore.RunWithdrawnSQL), the node's frames are this one
+// frame, the one value both read (graphstore.RunWithdrawal), at the sequence of the run's stored
+// ending, or, where the run has stored none, at the sequence this call would store it at
+// (graphstore.RunNextSequenceSQL), and none of the frames the run stored. That read writes
+// nothing.
+func (s *server) goingWithdrawal(ctx context.Context, requestID string, state goingRunState) (goingEvent, error) {
+	ending := state.Terminal
+	if ending == 0 {
+		stored, err := endGoingRun(ctx, s.deps.Store.Pool, requestID, graphstore.RunWithdrawal)
+		if err != nil {
+			return goingEvent{}, err
+		}
+		ending = stored.Sequence
+	}
+	return goingEvent{Sequence: ending, Event: graphstore.RunWithdrawal}, nil
+}
+
+// recordGoingPosts records, as the run's, each comment and issue message among hits that texts
+// holds a body for: the posts whose text the run is about to give its model, which is what a
+// later delete of one withdraws the run's answer by (goingWithdrawal). It is called with the
+// bodies and before they are handed on (goingBodies), so a post's row is committed before any
+// frame its text can be in is stored, and a reader that reads such a frame reads the row too. A
+// body the answerer then leaves out for the run's rune budget is recorded all the same, since
+// only the answerer knows which it kept, and a post two searches of one run both found is two
+// rows, which the verdict reads as one.
+func (s *server) recordGoingPosts(ctx context.Context, requestID string, hits []going.Hit, texts map[string]string) error {
+	var comments, messages []string
+	for _, hit := range hits {
+		if _, given := texts[hit.Key()]; !given {
+			continue
+		}
+		switch refs.ItemKind(hit.Kind) {
+		case refs.ItemComment:
+			comments = append(comments, hit.ID)
+		case refs.ItemMessage:
+			messages = append(messages, hit.ID)
+		}
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	_, err := s.deps.Store.Pool.Exec(ctx, `
+		insert into going_request_posts (request_id, comment_id, message_id)
+		select $1::uuid, post, null::uuid from unnest($2::uuid[]) as post
+		union all
+		select $1::uuid, null::uuid, post from unnest($3::uuid[]) as post
+	`, requestID, comments, messages)
+	return err
 }
 
 // scanGoingRequest decodes one goingRequestColumns row.
@@ -498,122 +580,263 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 	return event, nil
 }
 
-// goingSweepWindow is how far back from now the sweep reads a run's ends_at (goingOverdueRuns): a
-// run whose deadline passed longer ago than this is not read by it at all. The window exists
-// because a run is kept until an erase removes it, so going_requests holds every run ever asked
-// and grows with each, and the sweep reads that table once a maintenance pass, every minute
-// (MaintenanceSweepInterval). Read over every overdue run, its cost would grow with the whole of
-// that history; bounded, it reads through going_requests_ends_at (migration
-// 20261116232634_going_requests_ends_at_index) the runs whose deadline passed in the last day,
-// however many runs are kept. A day is far longer than the sweep needs to reach a run: a run past
-// its ends_at is inside the window for some 1,440 passes, any one of which ends it. A run that
-// leaves the window with no ending is one no pass ended in that day, every process of the
-// deployment down for as long, and what ends it then is the boot pass, at the next boot of any
-// process (EndGoingRunsOverdueAtBoot), or its reader, if one reads it first: the stream ends a
-// run past its ends_at with no terminal frame stored when it reads it (streamGoingAnswer, on
-// readGoingStream's PastDeadline).
-const goingSweepWindow = 24 * time.Hour
-
-// goingOverdueRead is the read of the runs a pass ends, $1 the terminal frame names: every run
-// whose ends_at has passed, within bound, with no terminal frame stored, oldest deadline first.
-// Each pass's read is named rather than written inline so that its plan is held to
-// going_requests_ends_at (TestTheOverdueReadsGoThroughTheEndsAtIndex).
-func goingOverdueRead(bound string) string {
-	return `
+// goingOverdueRuns is the sweep's read of the runs it ends: every run whose ends_at has passed
+// with no terminal frame stored (graphstore.RunEndingSQL), oldest deadline first. Once the sweep
+// runs, going_requests holds about an hour of runs, since the sweep removes a run's rows an hour
+// after it was asked (contracts.GoingRequestTTL, goRunsPastTheHour), so the read is of that hour.
+var goingOverdueRuns = `
 	select r.id::text
 	from going_requests r
-	where r.ends_at <= now()` + bound + `
-	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
+	where r.ends_at <= now()
+	  and ` + graphstore.RunEndingSQL("r.id") + ` is null
 	order by r.ends_at, r.id`
-}
 
-// goingOverdueRuns is the sweep's read of the runs it ends, $2 goingSweepWindow in seconds: every
-// run whose ends_at passed within that window of now. Both bounds key going_requests_ends_at, so
-// the read is that index's range for the last day and not a scan of every run kept; an older run
-// is the boot pass's (goingEveryOverdueRun).
-var goingOverdueRuns = goingOverdueRead(`
-	  and r.ends_at > now() - make_interval(secs => $2)`)
-
-// goingEveryOverdueRun is the boot pass's read of the runs it ends (EndGoingRunsOverdueAtBoot):
-// every run whose ends_at has passed, at any age. It is goingOverdueRuns without the window's
-// lower bound, so it reads going_requests_ends_at from its first entry up to now, every run kept
-// whose deadline has passed, which is why it runs once at a boot and never once a pass.
-var goingEveryOverdueRun = goingOverdueRead("")
-
-// sweepGoingRequests ends every run whose ends_at passed within goingSweepWindow of now with no
-// terminal frame stored, with the deadline's error (contracts.GoingErrorAnswerDidNotArrive), once
-// a maintenance pass (RunMaintenanceSweep). Ending those runs is what nothing else does: the pod
-// that was answering one may have died, and nobody may be reading it. An older run is the boot
-// pass's, or its reader's, as goingSweepWindow says.
-// It deletes no run: a run is kept, row, frames and node, until an erase removes it
-// (spec requirement r-interaction), where the release before deleted every run past
-// contracts.GoingRequestTTL. That value is read nowhere in this build.
-func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
-	_, err := endOverdueGoingRuns(ctx, pool, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
-	return err
-}
-
-// EndGoingRunsOverdueAtBoot is the boot pass: once at each boot of a process, before the first
-// tick of RunMaintenanceSweep (cmd/dispatch runs the two in that order on one goroutine), it ends
-// every run past its ends_at with no terminal frame stored, at any age (goingEveryOverdueRun),
-// with the deadline's error, through the loop the sweep ends its runs through. The sweep reads the
-// last day alone (goingSweepWindow), so a run whose window passed while every process of the
-// deployment was down for longer is ended here, at the next boot, whether or not anybody reads
-// it. It takes no lease: every process that boots runs it once,
-// and endGoingRun does nothing to a run that already holds a terminal frame, so two processes
-// booting together still end each run once. It logs one line, how many runs it ended and how long
-// it took; a failure is that line at warn, with the error, and stops nothing else: the sweep's
-// ticks still run, and a run the pass could not end is left to its reader.
-func EndGoingRunsOverdueAtBoot(ctx context.Context, pool *store.Pool) {
-	started := time.Now()
-	ended, err := endOverdueGoingRuns(ctx, pool, goingEveryOverdueRun, goingTerminalNames)
-	if err != nil {
-		slog.Warn("dispatch: the boot pass over the overdue answer runs failed",
-			"ended", ended, "duration", time.Since(started), "error", err)
-		return
-	}
-	slog.Info("dispatch: the boot pass ended the overdue answer runs", "ended", ended, "duration", time.Since(started))
-}
-
-// endOverdueGoingRuns ends every run the read overdue answers, run with args, with the
-// deadline's error (contracts.GoingErrorAnswerDidNotArrive), and answers how many of them it
-// ended: the one loop of the sweep (sweepGoingRequests) and the boot pass
-// (EndGoingRunsOverdueAtBoot), which differ only in what they read.
+// sweepGoingRequests is the sweep of the runs of the command bar, once a maintenance pass
+// (RunMaintenanceSweep), in two steps.
 //
-// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so neither
-// pass holds a second copy of how a frame is written: the ids are read first, oldest deadline
-// first, then each run is ended in a transaction of its own. A run a reader, the answer itself or
-// another pass ended between the read and the write keeps that frame, which endGoingRun answers,
-// and is counted ended. A run deleted between the read and the write - by an erase, or during a
-// roll by a process of the release before, which still deletes a run an hour old - stores nothing
-// (errGoingRunGone) and is passed over, and any other failure of one run's ending is kept and
-// answered once the pass is done, so one run neither fails the pass nor costs the runs read after
-// it their ending. A pass whose context ends - the process shutting down - stops at the next run
-// and answers that once, rather than failing every run left at its first statement.
-func endOverdueGoingRuns(ctx context.Context, pool *store.Pool, overdue string, args ...any) (int, error) {
-	rows, err := pool.Query(ctx, overdue, args...)
+// It first ends every run past its ends_at with no terminal frame stored, with the deadline's
+// error (contracts.GoingErrorAnswerDidNotArrive), as it always did (endOverdueGoingRuns). Ending
+// those runs is what nothing else does: the pod that was answering one may have died, and nobody
+// may be reading it.
+//
+// Then it takes the runs past contracts.GoingRequestTTL, an hour by the run's created_at
+// (goRunsPastTheHour): a run is readable for one hour, as the release before kept it, and then the
+// sweep states its interaction node gone and removes its going_requests and going_events rows.
+// The node then reads gone, so no read answers it - not its address, not its stream, not an edge
+// at it - and the node, its words value, its frame values and every tuple into it, a
+// changed_by_run among them, stay in the store: no statement of the sweep deletes a row of
+// graph_nodes or of graph_tuples. It also states gone the node of a run whose rows a process of the
+// release before deleted an hour old, which leaves the node live.
+//
+// A failure of either step is answered once both have run, so a run one step could not reach
+// costs the other step nothing.
+func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
+	return errors.Join(endOverdueGoingRuns(ctx, pool), goRunsPastTheHour(ctx, pool))
+}
+
+// endOverdueGoingRuns ends every run goingOverdueRuns answers with the deadline's error
+// (contracts.GoingErrorAnswerDidNotArrive), through the sweep's one loop over runs (eachGoingRun).
+// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so the
+// sweep holds no second copy of how a frame is written. A run a reader, the answer itself or
+// another pass ended between the read and the write keeps that frame, which endGoingRun answers.
+// A run whose rows went between the read and the write - an hour after it was asked, by another
+// process's sweep or, during a roll, by a process of the release before - stores nothing
+// (errGoingRunGone) and is passed over.
+func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
+	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
+	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, nil, func(id string) error {
+		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
+			return err
+		}
+		return nil
+	})
+}
+
+// eachGoingRun is the one loop of the sweep over runs, which both its steps take
+// (endOverdueGoingRuns, goRunsPastTheHour): it reads the ids of the runs statement answers, run
+// with args, and then calls take with each in the order the statement answers them, each run in a
+// transaction of its own, which take begins. A failure of the read is answered alone, named by
+// read. A run's failure is kept and answered once the loop is done, joined with the others, so one
+// run neither fails the loop nor costs the runs read after it their turn. A loop whose context
+// ends - the process shutting down - stops at the next run and answers that once, joined with the
+// runs' failures before it, rather than failing every run left at its first statement. A loop
+// begun on a context that has already ended fails at its read, which answers that end named by
+// read, as goRunsPastTheHour's second read does after a shutdown during its first.
+func eachGoingRun(ctx context.Context, pool *store.Pool, read, statement string, args []any, take func(id string) error) error {
+	rows, err := pool.Query(ctx, statement, args...)
 	if err != nil {
-		return 0, err
+		return fmt.Errorf("%s: %w", read, err)
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return 0, err
+		return fmt.Errorf("%s: %w", read, err)
 	}
-	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
-	ended := 0
 	var failed []error
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
-			failed = append(failed, err)
-			break
+			return errors.Join(append(failed, err)...)
 		}
-		_, err := endGoingRun(ctx, pool, id, deadline)
-		switch {
-		case err == nil:
-			ended++
-		case !errors.Is(err, errGoingRunGone):
+		if err := take(id); err != nil {
 			failed = append(failed, err)
 		}
 	}
-	return ended, errors.Join(failed...)
+	return errors.Join(failed...)
+}
+
+// goingGoneBatch bounds how many runs each read of goRunsPastTheHour answers in one pass. Once the
+// sweep runs, each read answers the runs asked in about one minute an hour back, far fewer than
+// this; the bound is what keeps a pass short after a backlog - every process down, or every pass
+// failing, for a while - whose rest the passes after it take, a batch a pass.
+const goingGoneBatch = 200
+
+// goingSweepActor is who the sweep states a run's node gone as: the server's sweep, which acts
+// for no person, as graphstore.FrameWriter, which states the frame it ends a run with, acts for
+// none. The run's author asked the question; its end an hour on is none of their writing.
+var goingSweepActor = model.Actor{Kind: "system", ID: "going-sweep"}
+
+// goingRunsPastTheHour is the sweep's first read of the runs past the hour, $1
+// contracts.GoingRequestTTL in seconds and $2 goingGoneBatch: the runs the record holds whose
+// going_requests row was written longer ago than that, oldest first, at most $2 of them, each
+// with no interaction node or one of the source going_requests (graphstore.SourceGoingRequests).
+// Once the sweep runs, the table holds about an hour of runs, so the read is of that hour and no
+// more; no index keys created_at, and a table that small needs none. Each run's node is read by a
+// probe of graph_nodes' primary key keyed by the run's id, which ends in an offset 0: without it
+// the planner turns the test into an anti-join over every interaction node the store holds, the
+// gone ones among them, which grow with every run asked, as it did over an empty database
+// (TestTheSweepReadsOfTheRunsPastTheHourAreBounded).
+var goingRunsPastTheHour = `
+	select r.id::text
+	from going_requests r
+	where r.created_at < now() - make_interval(secs => $1)
+	  and not exists (
+	        select 1 from graph_nodes n
+	        where n.kind = '` + graphstore.KindInteraction + `' and n.id = r.id::text
+	          and n.attributes->>'` + graphstore.AttributeSource + `' is distinct from '` + graphstore.SourceGoingRequests + `'
+	        offset 0)
+	order by r.created_at, r.id
+	limit $2`
+
+// goingRowlessRuns is the sweep's second read, $1 contracts.GoingRequestTTL in seconds and $2
+// goingGoneBatch: the runs whose rows a process of the release before deleted, leaving the node
+// live (graphstore.RowlessRunSQL), made longer ago than that, oldest first, at most $2 of them.
+// The gone nodes grow with every run asked, so the read binds the predicate's literals, which
+// graph_nodes_interaction_live is partial on (migration 20261122230407), and reads that index's
+// range of made_at, the moment the run was asked, which holds about an hour of runs, and never
+// every interaction ever written (TestTheSweepReadsOfTheRunsPastTheHourAreBounded).
+var goingRowlessRuns = `
+	select n.id
+	from graph_nodes n
+	where ` + graphstore.RowlessRunSQL + `
+	  and n.made_at < now() - make_interval(secs => $1)
+	order by n.made_at
+	limit $2`
+
+// goRunsPastTheHour states gone every run past contracts.GoingRequestTTL, an hour, and removes its
+// rows, through two reads, each bounded at goingGoneBatch runs a pass: the runs whose
+// going_requests row is more than an hour old (goingRunsPastTheHour), and then the interaction
+// nodes, not gone and more than an hour old, whose row a process of the release before deleted
+// (goingRowlessRuns). Each run either read answers is taken by goRunGone through the sweep's one
+// loop over runs (eachGoingRun). Both reads always run: a pass whose context ended fails the read
+// that comes after, under that read's name, so a shutdown during the first read's loop can name
+// the end twice, once from that loop and once from the second read. It logs one line where it did
+// anything: how many runs of the first read and nodes of the second it stated gone, and how many
+// runs' rows it removed.
+func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
+	var runsStated, rowlessStated, removed int
+	var failed []error
+	reads := []struct {
+		name      string
+		statement string
+		stated    *int
+	}{
+		{"read the runs past the hour", goingRunsPastTheHour, &runsStated},
+		{"read the runs past the hour whose rows are gone", goingRowlessRuns, &rowlessStated},
+	}
+	for _, read := range reads {
+		err := eachGoingRun(ctx, pool, read.name, read.statement, []any{contracts.GoingRequestTTL.Seconds(), goingGoneBatch}, func(id string) error {
+			done, err := goRunGone(ctx, pool, id)
+			if done.stated {
+				*read.stated++
+			}
+			if done.removed {
+				removed++
+			}
+			return err
+		})
+		if err != nil {
+			failed = append(failed, err)
+		}
+	}
+	if runsStated+rowlessStated+removed > 0 {
+		slog.Info("dispatch: the going sweep stated the runs past the hour gone",
+			"runs_stated_gone", runsStated, "rows_removed", removed, "rowless_nodes_stated_gone", rowlessStated)
+	}
+	return errors.Join(failed...)
+}
+
+// goingRunGone is what goRunGone did of one run: whether it stated the run's interaction node
+// gone, and whether it removed the run's rows.
+type goingRunGone struct {
+	stated, removed bool
+}
+
+// goRunGone states one run past the hour gone and removes its rows, in a transaction of its own,
+// and answers what it did. Its id comes from either read of goRunsPastTheHour, each of which has
+// found the run more than an hour old already, by its row or by its node, which no write makes
+// younger, so nothing here reads the run's age again.
+//
+// It takes the locks in the order every other writer of a run takes them: the run's interaction
+// node row first, `for no key update` (lockGoingRun, through graphstore.LockInteraction); then the
+// run's going_requests row, which its delete takes `for update`; and then, through that row's
+// foreign key, which cascades, the run's going_events rows - the order a frame takes them in
+// (appendGoingEvent: the node, the run's row `for key share`, the frame's row). No writer waits on
+// it the other way. No writer of this build holds a run's row before its node but
+// graphstore.WriteRun, for a run with no node yet: it writes that node in its own transaction,
+// where no other can see it, let alone hold it, and takes a node another write committed
+// meanwhile without waiting, letting its transaction go where another holds it (lockGoingRun,
+// errGoingRunNodeHeld). A process of the release before takes no node lock at all: its frame or
+// its delete may hold the run's row, which this then waits for, and neither waits on a lock this
+// holds.
+//
+// Under the node's lock it reads the node, and states it gone where it is not (graphstore.WriteState)
+// as the sweep (goingSweepActor), now, with no event, as no node of a run appends one: the node row
+// moves to gone and one state tuple is appended, and every other tuple of the node or into it
+// stays. It then deletes the run's going_requests row, and its going_events rows with it. A run
+// the record holds with no node yet - one a process of the release before recorded during a roll,
+// which no frame of this build and no backfill has reached - has its node written first, from its
+// row, by the one writer of a run's node from its row (graphstore.WriteRun, which lockGoingRun
+// calls), and then stated gone and its rows removed, all in this one transaction. Passing it over
+// until the backfill wrote its node would leave the census reading its row, with no node, as a
+// difference for as long; written and stated gone with its rows removed, it is a gone node with no
+// row, which the census reads as none.
+//
+// A node of any source but going_requests is passed over, as is a run the record holds neither a
+// row nor a node of, a run whose node another process stated gone and removed between the read and
+// the write (another pass), and a run whose node another transaction holds by the time this takes
+// it (errGoingRunNodeHeld), which the next pass takes. A run whose rows a process of the release
+// before deleted between the read and the write is a node whose row is gone, which this states
+// gone, as the second read would.
+func goRunGone(ctx context.Context, pool *store.Pool, id string) (goingRunGone, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return goingRunGone{}, fmt.Errorf("begin the end of run %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	err = lockGoingRun(ctx, tx, id)
+	if errors.Is(err, errGoingRunGone) || errors.Is(err, errGoingRunNodeHeld) {
+		return goingRunGone{}, nil
+	}
+	if err != nil {
+		return goingRunGone{}, err
+	}
+	// lockGoingRun answers nil only where this transaction holds the node's row, so the read below
+	// finds it.
+	node, _, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
+	if err != nil {
+		return goingRunGone{}, err
+	}
+	if node.Attributes[graphstore.AttributeSource] != graphstore.SourceGoingRequests {
+		return goingRunGone{}, nil
+	}
+	var done goingRunGone
+	if node.State != graphstore.StateGone {
+		if _, err := graphstore.WriteState(ctx, tx, []graphstore.Node{node}, graphstore.StateGone, time.Now().UTC(), goingSweepActor); err != nil {
+			return goingRunGone{}, fmt.Errorf("state run %s gone: %w", id, err)
+		}
+		done.stated = true
+	}
+	// A node id of any shape but the one Postgres writes a uuid in names no row (goingRowlessRuns),
+	// and is read as none rather than cast, so the node is still stated gone.
+	removed, err := tx.Exec(ctx, `delete from going_requests where id = `+store.CanonicalUUID("$1::text"), id)
+	if err != nil {
+		return goingRunGone{}, fmt.Errorf("remove the rows of run %s: %w", id, err)
+	}
+	done.removed = removed.RowsAffected() > 0
+	if done == (goingRunGone{}) {
+		return done, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return goingRunGone{}, fmt.Errorf("commit the end of run %s: %w", id, err)
+	}
+	return done, nil
 }

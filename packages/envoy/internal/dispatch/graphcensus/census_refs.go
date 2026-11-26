@@ -142,15 +142,21 @@ var heldMentions = graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind,
 // orphanedReferences is the statement shape of the mentions a present document node states now
 // whose refs row is gone: a row a process of the release before deleted, which retracts nothing.
 // The census reads each as a tuple no row projects (refProjections), whose holders are the present
-// nodes of the kind, so the node is held to be one.
+// nodes of the kind, so the node is held to be one. The test that the row is gone is a scalar
+// subquery with a limit, which Postgres runs for each mention by refs_pkey rather than pulling it up
+// into an anti-join: as a `not exists`, the planner took nearly every mention to have its row, as
+// most have, and read every document past the walk's cursor for each batch of
+// orphanedReferenceTuplesStatement under a custom plan, sorting them, however many it owed
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
 var orphanedReferences = `
 		from artifacts a
 		join graph_nodes node on node.kind = a.node_kind and node.id = a.node_address and node.state <> '` + graphstore.StateGone + `'
 		cross join lateral (` + heldMentions + `) held
-		where held.asserted and not exists (
-		  select 1 from refs r
+		where held.asserted and coalesce((
+		  select false from refs r
 		  where r.from_kind = '` + graphstore.KindArtifact + `' and r.from_id = a.id::text
-		    and r.to_kind = held.to_kind and r.to_id = held.to_id)`
+		    and r.to_kind = held.to_kind and r.to_id = held.to_id
+		  limit 1), true)`
 
 // owedReferenceMoves is every move that levels a document node's mentions with its refs rows, one
 // row each as (document, to_kind, to_id, issue, node, created_at, source_seq, asserted): the
@@ -188,43 +194,40 @@ type referenceMove struct {
 // row that release deleted, retracting nothing, is retracted, dated at the run's time, as the
 // anchor pass retracts an anchored_in its row no longer names (backfillAnchoredIn). The refs table
 // takes no marker column, so the tuple itself is the marker (anchorProjections): the pass finds a
-// move owed by comparing the rows with the node's current mentions, walking the moves batch by
-// batch in the order of the triple they move, and a second run reads no move a first one made. It
-// appends no event: every tuple it states carries the sentinel and is written by the run
-// (backfillActor).
+// move owed by comparing the rows with the node's current mentions, in two walks, each batch by
+// batch from the last batch's key (referenceWalks): the rows that owe their assertion, then the
+// tuples that owe their retraction. A second run reads no move a first one made. It appends no
+// event: every tuple it states carries the sentinel and is written by the run (backfillActor).
 func backfillReferences(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: referenceProjectionKind}
-	var after referenceMove
-	for {
-		rows, err := database.Pool.Query(ctx, `
-			select owed.document, owed.to_kind, owed.to_id, owed.issue from (`+owedReferenceMoves+`) owed
-			where (owed.document, owed.to_kind, owed.to_id) > ($1, $2, $3)
-			order by owed.document, owed.to_kind, owed.to_id
-			limit $4
-		`, after.document, after.toKind, after.toID, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the references their documents' nodes do not state: %w", err)
-		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (referenceMove, error) {
-			var move referenceMove
-			err := row.Scan(&move.document, &move.toKind, &move.toID, &move.issue)
-			return move, err
-		})
-		if err != nil {
-			return done, fmt.Errorf("read the references their documents' nodes do not state: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1]
-		written, err := writeReferenceBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
-		}
-		done.Rows += written
-		done.Tuples += written
-		if len(batch) < backfillBatch {
-			break
+	for _, walk := range referenceWalks {
+		var after referenceMove
+		for {
+			rows, err := database.Pool.Query(ctx, walk, after.document, after.toKind, after.toID, backfillBatch)
+			if err != nil {
+				return done, fmt.Errorf("read the references their documents' nodes do not state: %w", err)
+			}
+			batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (referenceMove, error) {
+				var move referenceMove
+				err := row.Scan(&move.document, &move.toKind, &move.toID, &move.issue)
+				return move, err
+			})
+			if err != nil {
+				return done, fmt.Errorf("read the references their documents' nodes do not state: %w", err)
+			}
+			if len(batch) == 0 {
+				break
+			}
+			after = batch[len(batch)-1]
+			written, err := writeReferenceBatch(ctx, database, batch)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += written
+			done.Tuples += written
+			if len(batch) < backfillBatch {
+				break
+			}
 		}
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) from (`+owedReferenceMoves+`) owed`).Scan(&done.Remaining); err != nil {
@@ -234,10 +237,33 @@ func backfillReferences(ctx context.Context, database *store.Store) (KindBackfil
 	return done, nil
 }
 
+// owedReferenceRowsStatement and orphanedReferenceTuplesStatement are backfillReferences' two
+// walks, each a selection of at most $4 moves past the triple ($1, $2, $3), in the order of the
+// triple, each with the document's issue: the rows of owedReferences, which read refs_pkey from the
+// triple on, and the tuples of orphanedReferences, which read artifacts_id_text from the document
+// on and each document's mentions through graph_tuples_as_of_out. Each walk has a cursor of its
+// own, so a run reads each row and each document once however many batches it takes. One walk of
+// both kinds of move in one order (owedReferenceMoves) read every row and every document past its
+// cursor for each batch, and every document's mentions with them, since an order across the two
+// parts is one no index keeps (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var (
+	owedReferenceRowsStatement = `
+	select r.from_id, r.to_kind, r.to_id, coalesce(a.issue_key, '')` + owedReferences + `
+	  and (r.from_id, r.to_kind, r.to_id) > ($1, $2, $3)
+	order by r.from_id, r.to_kind, r.to_id
+	limit $4`
+	orphanedReferenceTuplesStatement = `
+	select a.id::text, held.to_kind, held.to_id, coalesce(a.issue_key, '')` + orphanedReferences + `
+	  and a.id::text >= $1 and (a.id::text, held.to_kind, held.to_id) > ($1, $2, $3)
+	order by a.id::text, held.to_kind, held.to_id
+	limit $4`
+	referenceWalks = []string{owedReferenceRowsStatement, orphanedReferenceTuplesStatement}
+)
+
 // writeReferenceBatch makes one batch's moves in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's documents stand under
 // first, each once, in ascending key (events.LockOwnerRows), then the batch's moves read again
-// under them, then the tuples (graphstore.Write, which writes no node: each document's node is the
+// under them, then the tuples (graphstore.QueueWrite, which writes no node: each document's node is the
 // object pass's or its writer's). Every writer of a document's refs rows on this build holds the
 // document's owner row - its version index (docs' lockArtifactOwner) and rebuild-refs (refs'
 // lockDocumentOwner) - and states the tuple of each row it inserts and the retraction of each it
@@ -256,7 +282,7 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 			if move.issue == "" {
 				owner = move.document
 			}
-			owners.Add(move.issue, owner, "the references of document "+move.document)
+			owners.Add(move.issue, owner)
 			if len(documents) == 0 || documents[len(documents)-1] != move.document {
 				documents = append(documents, move.document)
 			}
@@ -275,7 +301,11 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 		if len(tuples) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(tuples))

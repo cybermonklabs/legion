@@ -394,6 +394,101 @@ test("a copy on a saved version that records no answer state finds its source as
   }
 });
 
+// A saved version of an answered ask. One this build writes keeps on the block's opening line its
+// state and who answered it when, and never the words or the options chosen (the server's
+// `keptAskState`), so the block reads its answer from the server's read of the ask, as the live
+// card does. One the release before wrote records the answer too, and is read as it was written.
+test.each([
+  {
+    answer: "Ship on Friday.",
+    attrs: { answered_at: "2026-11-16T09:00:00Z", answered_by: "bob", state: "answered" },
+    // The options are Ship and Hold, in that order: the row of the option chosen is the one marked.
+    chosen: ["true", "false"],
+    name: "one this build writes, from the ask",
+    opener:
+      ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z"}',
+  },
+  {
+    answer: "Hold for the review.",
+    attrs: {
+      answer: "Hold for the review.",
+      answered_at: "2026-11-16T09:00:00Z",
+      answered_by: "bob",
+      selected: ["Hold"],
+      state: "answered",
+    },
+    chosen: ["false", "true"],
+    name: "one the release before wrote, as it records it",
+    opener:
+      ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[&#x22;Hold&#x22;]" answer="Hold for the review."}',
+  },
+])("a saved version of an answered ask draws who answered and the answer: $name", async ({
+  answer,
+  attrs,
+  chosen,
+  opener,
+}) => {
+  const answered: Ask = {
+    ...blockAsk,
+    answer: {
+      at: "2026-11-16T09:00:00Z",
+      selected: ["Ship"],
+      text: "Ship on Friday.",
+      user: "bob",
+    },
+    state: "answered",
+  };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [answered]);
+  issueAskRows = [{ ...answered, last_reply: null }];
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
+    authors: [{ id: "alice", kind: "user" }],
+    created_at: "2026-11-16T09:01:00Z",
+    markdown: `${opener}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n`,
+    markdown_tree: {
+      content: [{ content: [{ text: "The saved version", type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
+    named: false,
+    number: 1,
+    summary: null,
+  });
+  const { editors, rerender, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    rerender({ version: 1 });
+    await waitFor(() => expect(editors).toHaveLength(2));
+    const editor = editors[1];
+    if (editor === undefined) throw new Error("the version's editor is missing");
+    const nodeViews = editor.viewProps.nodeViews as Record<
+      string,
+      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+    >;
+    const construct = nodeViews.ask;
+    if (construct === undefined) throw new Error("the ask node view was not installed");
+    act(() => {
+      editor.root.append(construct(askNode({ ...attrs, urgency: "high" })).dom);
+    });
+    const section = editor.root.querySelector("section[data-dispatch-ask-block]");
+    if (section === null) throw new Error("the ask block shell was not mounted");
+    expect(section.closest('[data-testid="version-view"]')).not.toBeNull();
+    const block = within(section as HTMLElement);
+    expect(await block.findByText("Answered by bob")).toBeDefined();
+    expect(section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(answer);
+    // A row's label draws later, through `MarkdownBody`; which row is marked is drawn at once.
+    expect(
+      [...section.querySelectorAll("[data-selected]")].map((row) =>
+        row.getAttribute("data-selected")
+      )
+    ).toEqual([...chosen]);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the open-decision link names its block as encodeBlockId writes it, in its href and in the hash it sets", async () => {
   const user = userEvent.setup();
   const decision: Ask = { ...blockAsk, block_id: "ship_it" };

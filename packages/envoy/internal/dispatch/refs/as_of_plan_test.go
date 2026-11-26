@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -151,20 +152,25 @@ type asOfRead struct {
 }
 
 // asOfReads are the walk's reads over the seed: the head's cut, the children of two nodes in rank
-// order, the values and the relations out of nodes, the rows of nodes, the moves of old
-// addresses, and the nodes of a child placed under its parent's tree, each at the seed's seq; and
-// the reads a render makes as of a time inside the seed's history of text (TreeCut.Dated): the
-// children, the values - a block's text_rank among them - the relations - its text_parent among
-// them - and the blocks of a document. A read of one value out of a node is served
-// by graph_tuples_values as by graph_tuples_as_of_out, each keyed on the node and the attribute,
-// and a read of the part_of or the moved_to out of a node by graph_tuples_current as by
-// graph_tuples_as_of_out, each keyed on the node and the kind: the planner takes whichever it
-// costs lower.
+// order, the values and the relations out of every block of SEED-1's tree in one read, the rows of
+// nodes, the moves of old addresses, and the nodes of a child placed under its parent's tree, each
+// at the seed's seq; and the reads a render makes as of a time inside the seed's history of text
+// (TreeCut.Dated): the children, the values and the relations - a block's text_rank and its
+// text_parent among them - and the blocks of a document. A read of the part_of or the moved_to out
+// of a node is served by graph_tuples_current as by graph_tuples_as_of_out, each keyed on the node
+// and the kind: the planner takes whichever it costs lower. The values and relations read takes a
+// lateral read of each node's tuples, keyed on the node, over a tree's every block, where a join
+// of the nodes to the tuples is planned as one scan of the whole table.
 func asOfReads(seed asOfSeed) []asOfRead {
 	parents := []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}, {Kind: BlockNodeKind, ID: "SEED-1/spec#b1"}}
 	parentKinds, parentIDs := targetColumns(parents)
 	blocks := []Target{{Kind: BlockNodeKind, ID: "SEED-1/spec#b7"}, {Kind: BlockNodeKind, ID: "SEED-1/spec#b300"}}
 	blockKinds, blockIDs := targetColumns(blocks)
+	tree := make([]Target, asOfSeedBlocks)
+	for index := range tree {
+		tree[index] = Target{Kind: BlockNodeKind, ID: "SEED-1/spec#b" + strconv.Itoa(index+1)}
+	}
+	treeKinds, treeIDs := targetColumns(tree)
 	seq, open := TreeCut{ReadSeq: seed.readSeq}.bounds()
 	unbounded, at := TreeCut{At: time.Now().Add(-24*time.Hour + 30*time.Minute), Dated: true}.bounds()
 	return []asOfRead{
@@ -175,14 +181,10 @@ func asOfReads(seed asOfSeed) []asOfRead {
 			[]any{parentKinds, parentIDs, unbounded, at}, []string{"graph_tuples_as_of_in"}},
 		{"the subtrees of nodes the walk of SEED-1 enters, every level in one read, at a time", treeSubtreesStatement,
 			[]any{parentKinds, parentIDs, seq, open, "SEED-1"}, []string{"graph_tuples_as_of_in"}},
-		{"the values out of a node at a time", treeValuesStatement,
-			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
-		{"the values out of a node as of a render's time", treeValuesStatement,
-			[]any{blockKinds, blockIDs, unbounded, at}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
-		{"the relations out of a node at a time", treeRelationsStatement,
-			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out"}},
-		{"the relations out of a node as of a render's time, its text_parent among them", treeRelationsStatement,
-			[]any{blockKinds, blockIDs, unbounded, at}, []string{"graph_tuples_as_of_out"}},
+		{"the values and the relations out of every block of a tree at a time", treeFactsStatement,
+			[]any{treeKinds, treeIDs, seq, open}, []string{"graph_tuples_as_of_out"}},
+		{"the values and the relations out of every block of a tree as of a render's time, a text_rank and a text_parent among them", treeFactsStatement,
+			[]any{treeKinds, treeIDs, unbounded, at}, []string{"graph_tuples_as_of_out"}},
 		{"the rows of nodes", treeNodesStatement,
 			[]any{blockKinds, blockIDs}, []string{"graph_nodes_pkey"}},
 		{"the moved_to resolve at a time", treeMovedToStatement,
@@ -339,10 +341,16 @@ var asOfTupleInsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b`
 // asOfUpsert is an insert into the tuple table whose conflict clause updates the row it meets.
 var asOfUpsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`)
 
+// asOfCreateTrigger is a create trigger, which writes no row of its table and runs only on later
+// writes, never on the rows already there (pgmigrate's catalogOnlyStatements): the head
+// projection's trigger on graph_tuples (20261123180100_issue_tree_head) writes none of its rows.
+var asOfCreateTrigger = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n\s*)*create\s+(or\s+replace\s+)?(constraint\s+)?trigger\b`)
+
 // requireTypeMigrationsAloneWriteTheTupleTable reads every migration of this child and every type
 // migration (store.TypeMigrations) as pgmigrate.TouchedTables reads them: a statement that writes
 // graph_tuples is an insert of a type migration, with no conflict clause that updates, and no
-// other migration of this child writes graph_tuples at all.
+// other migration of this child writes graph_tuples at all. A create trigger on the table writes
+// none of its rows (asOfCreateTrigger).
 func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 	t.Helper()
 	migrations, err := pgmigrate.Load(os.DirFS("../store"), "migrations")
@@ -361,8 +369,8 @@ func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 			continue
 		}
 		read++
-		for _, statement := range pgmigrate.Statements(migration.SQL) {
-			if !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
+		for _, statement := range pgmigrate.CensusStatements(migration.SQL) {
+			if asOfCreateTrigger.MatchString(statement) || !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
 				continue
 			}
 			beside := asOfTupleInsert.ReplaceAllString(statement, "insert into the_type_insert")

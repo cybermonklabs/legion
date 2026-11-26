@@ -62,6 +62,9 @@ type routeShape struct {
 	// `query:"<key>"`; nil for a route that reads none. Path parameters are not here: they are
 	// read off the pattern.
 	Params any
+	// Headers are the request headers the route reads beyond the ones every route reads, each with
+	// whether a request must send it, which the emitter declares as header parameters.
+	Headers []routeHeader
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
@@ -80,6 +83,32 @@ type routeShape struct {
 	OpaqueRequest string
 }
 
+// routeHeader is one request header a route reads (routeShape.Headers): its name, whether a
+// request must send it, and what it carries.
+type routeHeader struct {
+	Name        string
+	Required    bool
+	Description string
+}
+
+// placementIfMatch is the If-Match header of a node's move: the node's placement_seq as the tree
+// read answers it, as a quoted entity tag, compared strongly (RFC 9110 section 13.1.1).
+var placementIfMatch = routeHeader{
+	Name: "If-Match", Required: true,
+	Description: `the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a ` +
+		`quoted entity tag ("123"): none is 428 PRECONDITION_REQUIRED, and a tag that is no longer the node's ` +
+		`placement_seq is 412 PRECONDITION_FAILED`,
+}
+
+// deleteIfMatch is the If-Match header of a node's delete: the placement_seq of the node, as the
+// move names it (placementIfMatch), which the delete itself must send and its dry run reads not.
+var deleteIfMatch = routeHeader{
+	Name: "If-Match",
+	Description: `the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a ` +
+		`quoted entity tag ("123"), which the delete itself must send: none is 428 PRECONDITION_REQUIRED, and a tag that is ` +
+		`no longer the node's placement_seq is 412 PRECONDITION_FAILED; the dry run (dry_run=true) reads none`,
+}
+
 // --- the query-parameter structs -------------------------------------------------------------
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
@@ -95,6 +124,18 @@ type routeShape struct {
 type projectArtifactsQuery struct {
 	// Unlinked, `true`, lists only the project's documents that belong to no issue.
 	Unlinked bool `query:"unlinked"`
+}
+
+// nodeDeleteQuery is DELETE /api/v1/issues/{key}/nodes/{id}'s query (node_delete.go).
+type nodeDeleteQuery struct {
+	// DryRun, `true`, writes nothing and answers {count}, the number of nodes the delete would take
+	// that a read of the issue's tree returns to the caller, after every refusal the delete reads
+	// before it writes; any value but true or false is 400 DELETE_INPUT.
+	DryRun bool `query:"dry_run"`
+	// ExpectedCount is the count the dry run answered, which the delete itself must name (400
+	// DELETE_INPUT without it) and takes or refuses: a count that has moved since is 409
+	// DELETE_COUNT_MOVED, carrying the count now. The dry run reads none.
+	ExpectedCount int `query:"expected_count"`
 }
 
 // relatedQuery is GET /api/v1/projects/{key}/related's query: the related-item check an issue
@@ -199,6 +240,12 @@ type issueListQuery struct {
 	// issue above them states, over every project; `none` lists those that advance no live
 	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Own, `true`, keeps, of the issues the Advances values answer, those whose own row names a
+	// priority a value matches and no issue above them carries it: a child that only inherits a
+	// priority, or restates one an issue above it carries, is left out, and `none`, which
+	// matches no priority, keeps nothing. Without an Advances value it filters nothing.
+	// `advances=any&own=true` over backlog and icebox is the second fault of GET /api/v1/priorities.
+	Own bool `query:"own"`
 	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
 	// the issue was moved there and who moved it. A listing without it reads neither.
 	Moved bool `query:"moved"`
@@ -314,6 +361,15 @@ type messageReplyQuery struct {
 	// the attempt is answered; false or absent posts nothing, any other value is 400
 	// MESSAGE_INPUT.
 	FollowUp bool `query:"follow_up"`
+}
+
+// postHistoryQuery is the query GET /api/v1/comments/{id}/history and
+// GET /api/v1/messages/{id}/history share: where the page after the first one starts.
+type postHistoryQuery struct {
+	// Before answers the rows written strictly before this RFC3339 time, which is how the
+	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
+	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
+	Before string `query:"before"`
 }
 
 // inboxQuery is GET /api/v1/inbox's query.
@@ -487,6 +543,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
@@ -503,6 +566,14 @@ type openAsksQuery struct {
 type issueCommentsQuery struct {
 	// Artifact scopes the comments to one document of the issue.
 	Artifact string `query:"artifact"`
+	// NodeAnchor asks for each comment's node_anchor (R31 of the issue-tree spec).
+	NodeAnchor bool `query:"node_anchor"`
+}
+
+// commentReadQuery is GET /api/v1/comments/{id}'s query.
+type commentReadQuery struct {
+	// NodeAnchor asks for the comment's node_anchor (R31 of the issue-tree spec).
+	NodeAnchor bool `query:"node_anchor"`
 }
 
 // credentialApproverQuery is the query GET /api/v1/credential-requests and
@@ -607,6 +678,13 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
+	// Both answer the project as GET /api/v1/projects lists it (project_proven_sessions.go). A
+	// bearer names its session in the PUT's actor; the DELETE reads its person off the
+	// credential and takes no body.
+	"PUT /api/v1/projects/{key}/proven-sessions": {
+		Status: http.StatusOK, Response: model.Project{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	"DELETE /api/v1/projects/{key}/proven-sessions": {Status: http.StatusOK, Response: model.Project{}},
 	"PUT /api/v1/projects/{key}/default-repository": {
 		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
 	},
@@ -694,17 +772,34 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues": {
 		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},
 		// A ref whose external issue already has a Dispatch issue answers that issue, 200.
-		Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
+		// A 409 is a possible duplicate, or, with DISPATCH_PARENT_STATUS_RULE on, a create under a
+		// done parent (parent_status_rule.go).
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: issueDuplicateError{}},
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
 	},
 	"GET /api/v1/issues/resolve":       {Status: http.StatusOK, Response: issueRefResolved{}, Params: issueResolveQuery{}},
 	"GET /api/v1/issues/{key}":         {Status: http.StatusOK, Response: issueDetail{}},
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
-		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
-		// over an open child of another project (refuseOpenForeignChildren).
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
+		Refusals: []routeAnswer{
+			// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+			// over an open child of another project (refuseOpenForeignChildren).
+			{Status: http.StatusConflict, Body: foreignChildOpenError{}},
+			// With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that breaks the rule.
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
+	},
+	"POST /api/v1/issues/{key}/status-change": {
+		Status: http.StatusOK, Response: statusChangeAnswer{}, Request: statusChangeInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: statusChangeConflict{}},
+			{Status: http.StatusConflict, Body: statusChangeRefusal{}},
+			{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
+		},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -771,9 +866,9 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	// The reasoning nodes under an issue (reasoning_routes.go). Each
-	// write answers the node it wrote, carrying its state and visibility, so an author reads
-	// `author` on the node reserved for her in the answer to her own write.
+	// The reasoning nodes under an issue (reasoning_routes.go, constraint_routes.go and
+	// pointer_routes.go). Each write answers the node it wrote, carrying its state and visibility,
+	// so an author reads `author` on the node reserved for her in the answer to her own write.
 	"POST /api/v1/issues/{key}/lenses": {
 		Status: http.StatusCreated, Response: lensInvoked{}, Request: lensInvocationInput{},
 	},
@@ -799,6 +894,19 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/nodes/{id}/settle": {
 		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
 	},
+	// The move of a node (node_move.go): its parent and its place among its siblings, answered with
+	// the parent, the sibling it follows and the new placement_seq.
+	"PATCH /api/v1/issues/{key}/nodes/{id}": {
+		Status: http.StatusOK, Response: nodeMoved{}, Request: nodeMoveInput{},
+		Headers: []routeHeader{placementIfMatch},
+	},
+	// The delete of a node and its subtree, and its dry run (node_delete.go): the count, and the
+	// count now where the expected_count it confirms has moved.
+	"DELETE /api/v1/issues/{key}/nodes/{id}": {
+		Status: http.StatusOK, Response: nodeDeleted{}, Request: actorInput{}, OptionalRequest: true,
+		Params: nodeDeleteQuery{}, Headers: []routeHeader{deleteIfMatch},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: deleteCountMoved{}}},
+	},
 	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
 	// The pre-mortem conversion (premortem_convert.go): the map from each
 	// risk to its checks, read entry by entry, and the report the command prints too.
@@ -809,11 +917,15 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/issues/{key}/legion":       {Status: http.StatusOK, Response: legionIssueResponse{}},
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},
 	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
+	},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepExperimentInput{},
 	},
 	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
 	"PUT /api/v1/issues/{key}/plans/{id}": {
@@ -825,6 +937,13 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/messages/{id}/history": {
+		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
+	},
+	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"DELETE /api/v1/messages/{id}": {
+		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -915,15 +1034,16 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
 	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
-		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
+		Status: http.StatusOK, Response: []nodeAnchoredComment{}, Params: issueCommentsQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
-	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
+	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: nodeAnchoredCommentRead{}, Params: commentReadQuery{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
@@ -938,6 +1058,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"DELETE /api/v1/comments/{id}": {
+		Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {

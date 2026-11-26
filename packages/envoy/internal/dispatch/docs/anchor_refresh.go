@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -271,8 +272,8 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 			if err := s.events.QueueAppend(b, event, sink); err != nil {
 				return fmt.Errorf("append anchor refresh event: %w", err)
 			}
-			if tuple, held := anchoredIn[index]; held {
-				stateRefreshedAnchoredIn(b, tuple)
+			if tuples, held := anchoredIn[index]; held {
+				stateRefreshedAnchoredIn(b, tuples)
 			}
 		}
 		return nil
@@ -326,19 +327,20 @@ func (s *Service) anchorRefreshEvent(
 	return func() (model.Event, error) { return event, nil }, nil
 }
 
-// refreshedAnchoredIn is, by index into changed, the anchored_in that keeps each comment whose
-// anchor the refresh orphans or finds again level with that anchor (graphstore.AnchoredIn): a
-// retraction of the block an anchor it orphans stood in, and the block an anchor it finds again
-// stands in, each caused by that comment's own comment.anchor_refreshed, which the write phase
-// appends right before it (graphstore.LatestEvent, stateRefreshedAnchoredIn). The block is read
-// off the comment's row in the read phase: the refresh's update writes only the anchor's quote and
-// orphan flag, which the block's address does not read, and the one writer of its block id, the
-// backfill, takes the row's owner lock, which the refresh's version write holds
+// refreshedAnchoredIn is, by index into changed, the anchored_in and, for a comment that answers
+// nothing, the part_of that keep each comment whose anchor the refresh orphans or finds again level
+// with that anchor (graphstore.AnchorTuples, this issue's spec R31): a retraction of both to the
+// block an anchor it orphans stood in, and both to the block an anchor it finds again stands in,
+// each caused by that comment's own comment.anchor_refreshed, which the write phase appends right
+// before them (graphstore.LatestEvent, stateRefreshedAnchoredIn). The block and whether the comment
+// answers nothing are read off the comment's row in the read phase: the refresh's update writes
+// only the anchor's quote and orphan flag, which neither reads, and the one writer of its block id,
+// the backfill, takes the row's owner lock, which the refresh's version write holds
 // (BackfillAnchorBlocks), so the row read here is the row the update leaves. A comment the store
 // holds no node of, one this transaction has only queued, which the table does not hold yet, and a
 // block past the store's bound, which is no node, state nothing; a change of the quote alone moves
 // no block.
-func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor, actor model.Actor) (map[int]graphstore.Tuple, error) {
+func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor, actor model.Actor) (map[int][]graphstore.Tuple, error) {
 	ids := make([]string, 0, len(changed))
 	positions := make(map[string]int, len(changed))
 	for index, anchor := range changed {
@@ -352,7 +354,7 @@ func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `
-		select c.id::text, `+graphstore.AnchorBlockAddressSQL("c")+`
+		select c.id::text, `+graphstore.AnchorBlockAddressSQL("c")+`, `+graphstore.CommentAnswersNothingSQL("c")+`
 		from comments c
 		where c.id = any($1::uuid[]) and c.node_kind is not null
 		order by c.id
@@ -362,16 +364,18 @@ func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor
 	}
 	defer rows.Close()
 	now := time.Now().UTC()
-	tuples := make(map[int]graphstore.Tuple, len(ids))
+	tuples := make(map[int][]graphstore.Tuple, len(ids))
 	for rows.Next() {
 		var id string
 		var block *string
-		if err := rows.Scan(&id, &block); err != nil {
+		var answersNothing bool
+		if err := rows.Scan(&id, &block, &answersNothing); err != nil {
 			return nil, fmt.Errorf("read the block of a refreshed comment anchor: %w", err)
 		}
 		if block != nil && graphstore.AddressFits(*block) {
 			index := positions[id]
-			tuples[index] = graphstore.AnchoredIn(id, *block, !changed[index].refreshed.Orphaned, actor, now, graphstore.LatestEvent)
+			tuples[index] = graphstore.AnchorTuples(nil, id, refs.BlockNodeKind, *block, answersNothing,
+				!changed[index].refreshed.Orphaned, actor, now, graphstore.LatestEvent)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -380,11 +384,238 @@ func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor
 	return tuples, nil
 }
 
-// stateRefreshedAnchoredIn queues on b the anchored_in refreshedAnchoredIn read of one refreshed
-// comment, right after that comment's comment.anchor_refreshed, whose id it carries
+// stateRefreshedAnchoredIn queues on b the anchored_in and part_of refreshedAnchoredIn read of one
+// refreshed comment, right after that comment's comment.anchor_refreshed, whose id they carry
 // (graphstore.LatestEvent): nothing is appended between the two.
-func stateRefreshedAnchoredIn(b *store.WriteBatch, tuple graphstore.Tuple) {
-	graphstore.QueueWrite(b, nil, []graphstore.Tuple{tuple})
+func stateRefreshedAnchoredIn(b *store.WriteBatch, tuples []graphstore.Tuple) {
+	graphstore.QueueWrite(b, nil, tuples)
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+}
+
+// CommentAnchorInBlock is a comment's document anchor whose occurrence a read asks for
+// (AnchorOccurrences): the id of the mark it names, the block it names, and its quote as stored.
+type CommentAnchorInBlock struct {
+	MarkID, BlockID, Quote string
+}
+
+// AnchorOccurrences is, by index into anchors, the zero-based occurrence of each comment's anchor
+// on artifactID's document within the block it names (this issue's spec R31): the number of that
+// block's matches of its quote that start before its mark, the occurrence
+// pmdoc.QuoteFinder.FindInBlock takes for the mark (QuoteFinder.OccurrenceInBlock). The document is
+// read as a read of its text reads it (documentTree), with no lock taken and no room loaded, and
+// every mark is found in one walk of it (pmdoc.FindMarks). A comment's mark is a comment mark or,
+// for a suggestion, a suggestion mark (commentMarkType), and an anchor names its id alone, so each
+// is looked up as either. An anchor whose mark the document no longer holds, or holds outside the
+// block it names, has no occurrence, nor has any anchor on a document with no state.
+func (s *Service) AnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) (map[int]int, error) {
+	tree, err := s.documentTree(ctx, artifactID)
+	if err != nil || tree == nil {
+		return nil, err
+	}
+	keys := make([]pmdoc.MarkRef, 0, 2*len(anchors))
+	for _, anchor := range anchors {
+		keys = append(keys, pmdoc.MarkRef{Type: string(MarkComment), ID: anchor.MarkID}, pmdoc.MarkRef{Type: string(MarkSuggestion), ID: anchor.MarkID})
+	}
+	found := pmdoc.FindMarks(tree, keys)
+	finder := pmdoc.NewQuoteFinder(tree)
+	occurrences := make(map[int]int, len(anchors))
+	for index, anchor := range anchors {
+		mark, held := found[keys[2*index]]
+		if !held {
+			if mark, held = found[keys[2*index+1]]; !held {
+				continue
+			}
+		}
+		occurrence, inside, err := finder.OccurrenceInBlock(anchor.Quote, anchor.BlockID, mark.Range.From)
+		if err != nil {
+			return nil, fmt.Errorf("count the matches of the quote of mark %s in block %s of %s: %w", anchor.MarkID, anchor.BlockID, artifactID, err)
+		}
+		if inside {
+			occurrences[index] = occurrence
+		}
+	}
+	return occurrences, nil
+}
+
+// NodeAnchorOrphans is what one write orphans of the node anchors on the nodes it writes
+// (comments.node_anchor, this issue's spec R31): each comment whose node anchor names one of
+// those nodes and is not orphaned, whose anchor the write marks orphaned, with the retraction of
+// its anchored_in to that node and, for a comment that answers nothing, of its part_of to it
+// (graphstore.AnchorTuples), each dated and signed by the write, at the sentinel. It is read in
+// the write's read phase (ReadGoneNodeAnchors, RefreshNodeAnchors) and queued in its one batch
+// (Queue). Its zero value orphans nothing.
+type NodeAnchorOrphans struct {
+	ids    []string
+	issues []string
+	tuples []graphstore.Tuple
+}
+
+// Issues is the issue of each comment o orphans, each once, in ascending key: the owners whose
+// lock the write holds, so a caller confirms it locked each before it queues o.
+func (o NodeAnchorOrphans) Issues() []string { return slices.Clone(o.issues) }
+
+// Queue queues on b what o orphans: the orphaned mark of each comment's node anchor, written as
+// the one key it decides, and the retractions, with the head rows they move
+// (graphstore.QueueHeads). The comments' update moves no value a head row reads, so it keeps the
+// issue's mark (graphstore.KeptHeadRows).
+func (o NodeAnchorOrphans) Queue(b *store.WriteBatch) {
+	if len(o.ids) == 0 {
+		return
+	}
+	b.Queue("orphan comments node_anchor", `
+		update comments set node_anchor = jsonb_set(node_anchor, '{orphaned}', to_jsonb(true))
+		where id = any($1::uuid[]) and `+graphstore.KeptHeadRows, o.ids)
+	if len(o.tuples) > 0 {
+		graphstore.QueueWrite(b, nil, o.tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, o.tuples))
+	}
+}
+
+// nodeAnchorsOnStatement is every comment whose node anchor names one of the nodes the kinds $1
+// and the ids $2 pair up, as graph_nodes keys them, and is not orphaned: its id, its issue, the
+// node, the quote and its occurrence, whether it answers nothing (graphstore.CommentAnswersNothingSQL),
+// and whether the store holds its node, in id order. It reads comments_node_anchor_node
+// (migration 20261125140001), whose expressions and predicate are its own.
+var nodeAnchorsOnStatement = `
+	select c.id::text, coalesce(c.issue_key, ''), c.node_anchor->>'node_kind', c.node_anchor->>'node_id',
+	       coalesce(c.node_anchor->>'quote', ''), coalesce((c.node_anchor->>'occurrence')::int, 0),
+	       ` + graphstore.CommentAnswersNothingSQL("c") + `, c.node_kind is not null
+	from unnest($1::text[], $2::text[]) as named (kind, id)
+	join comments c on c.node_anchor is not null
+	  and (c.node_anchor->>'node_kind') = named.kind and (c.node_anchor->>'node_id') = named.id
+	where not coalesce((c.node_anchor->>'orphaned')::boolean, false)
+	order by c.id`
+
+// nodeAnchored is one comment nodeAnchorsOnStatement reads.
+type nodeAnchored struct {
+	id, issue, kind, node, quote string
+	occurrence                   int
+	answersNothing, stored       bool
+}
+
+// readNodeAnchors reads, through q, every comment whose node anchor names one of nodes and is not
+// orphaned (nodeAnchorsOnStatement).
+func readNodeAnchors(ctx context.Context, q Queryer, nodes []graphstore.NodeKey) ([]nodeAnchored, error) {
+	if len(nodes) == 0 {
+		return nil, nil
+	}
+	kinds, ids := make([]string, len(nodes)), make([]string, len(nodes))
+	for index, node := range nodes {
+		kinds[index], ids[index] = node.Kind, node.ID
+	}
+	rows, err := q.Query(ctx, nodeAnchorsOnStatement, kinds, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the comments anchored on %d nodes: %w", len(nodes), err)
+	}
+	anchored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (nodeAnchored, error) {
+		var comment nodeAnchored
+		err := row.Scan(&comment.id, &comment.issue, &comment.kind, &comment.node, &comment.quote, &comment.occurrence,
+			&comment.answersNothing, &comment.stored)
+		return comment, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the comments anchored on %d nodes: %w", len(nodes), err)
+	}
+	return anchored, nil
+}
+
+// orphansOf is what orphaning each of anchored writes (NodeAnchorOrphans), dated at at and signed
+// by who: a comment the store holds no node of retracts nothing.
+func orphansOf(anchored []nodeAnchored, who model.Actor, at time.Time) NodeAnchorOrphans {
+	var orphans NodeAnchorOrphans
+	for _, comment := range anchored {
+		orphans.ids = append(orphans.ids, comment.id)
+		if comment.issue != "" {
+			orphans.issues = append(orphans.issues, comment.issue)
+		}
+		if comment.stored {
+			orphans.tuples = graphstore.AnchorTuples(orphans.tuples, comment.id, comment.kind, comment.node,
+				comment.answersNothing, false, who, at, graphstore.NoEvent)
+		}
+	}
+	slices.Sort(orphans.issues)
+	orphans.issues = slices.Compact(orphans.issues)
+	return orphans
+}
+
+// NodeAnchorIssues is the issue of each comment whose node anchor names one of nodes and is not
+// orphaned, each once, in ascending key, read through q: the owners a write that takes those nodes
+// gone locks beside its own before it reads them again (ReadGoneNodeAnchors), since a comment keeps
+// its row's issue when a PATCH moves the node it is on under another issue.
+func NodeAnchorIssues(ctx context.Context, q Queryer, nodes []graphstore.NodeKey) ([]string, error) {
+	anchored, err := readNodeAnchors(ctx, q, nodes)
+	if err != nil {
+		return nil, err
+	}
+	return orphansOf(anchored, model.Actor{}, time.Time{}).Issues(), nil
+}
+
+// ReadGoneNodeAnchors is what the write that takes nodes gone - the node DELETE of this issue's
+// spec R7 - orphans of the node anchors on them, in its own transaction (R31): every comment whose
+// node anchor names one of nodes, as graph_nodes keys them, and is not orphaned, read through q in
+// the write's read phase, dated at at and signed by who. The caller holds the owner lock of each
+// issue its Issues names and queues it in its one batch.
+func ReadGoneNodeAnchors(ctx context.Context, q Queryer, nodes []graphstore.NodeKey, who model.Actor, at time.Time) (NodeAnchorOrphans, error) {
+	anchored, err := readNodeAnchors(ctx, q, nodes)
+	if err != nil {
+		return NodeAnchorOrphans{}, err
+	}
+	return orphansOf(anchored, who, at), nil
+}
+
+// RefreshNodeAnchors is the node-anchor refresh (this issue's spec R31): what the write that
+// appends text, a new text value, to node orphans of the node anchors on that node, in the write's
+// own transaction, as the refresh of document marks orphans a document anchor (refreshAnchors).
+// Each comment whose node anchor names node and is not orphaned, read through q in the write's read
+// phase, is orphaned where text no longer holds its quote at its occurrence (NodeTextHolds), dated
+// at at and signed by who. No read orphans a node anchor: every read answers the stored mark. A
+// lens, a finding, a risk and a constraint take their text once, from the route that creates them,
+// and a result never changes (R12), so at this head no route calls it; each later write that
+// appends such a text value calls it under the owner lock of each issue its Issues names and
+// queues it in its one batch.
+func RefreshNodeAnchors(ctx context.Context, q Queryer, node graphstore.NodeKey, text string, who model.Actor, at time.Time) (NodeAnchorOrphans, error) {
+	anchored, err := readNodeAnchors(ctx, q, []graphstore.NodeKey{node})
+	if err != nil {
+		return NodeAnchorOrphans{}, err
+	}
+	dropped := anchored[:0]
+	for _, comment := range anchored {
+		if !NodeTextHolds(text, comment.quote, comment.occurrence) {
+			dropped = append(dropped, comment)
+		}
+	}
+	return orphansOf(dropped, who, at), nil
+}
+
+// NodeTextHolds is whether text, a node's text, holds quote at the zero-based occurrence
+// (FindNodeQuote).
+func NodeTextHolds(text, quote string, occurrence int) bool {
+	if quote == "" || occurrence < 0 {
+		return false
+	}
+	_, err := FindNodeQuote(text, quote, &occurrence)
+	return err == nil
+}
+
+// FindNodeQuote is the zero-based occurrence of quote in text, a node's text (this issue's spec
+// R31): the text read as markdown (pmdoc.Parse), as a block's text is, and the quote's matches in
+// it counted as a quote beside block_id counts its matches in one block (pmdoc.QuoteFinder, R8):
+// the occurrence named where one is, else the one match the text holds. A text that holds the
+// quote nowhere, or not at that occurrence, is pmdoc's miss (pmdoc.ErrTargetNotFound); one that
+// holds it in several places where none is named is its ambiguity (pmdoc.ErrTargetAmbiguous); a
+// text that does not parse is the parse's error.
+func FindNodeQuote(text, quote string, occurrence *int) (int, error) {
+	doc, err := pmdoc.Parse(text)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := pmdoc.FindQuote(doc, quote, occurrence, nil); err != nil {
+		return 0, err
+	}
+	if occurrence != nil {
+		return *occurrence, nil
+	}
+	return 0, nil
 }
 
 // loadAnchorRefreshedAsks reads each ask of ids as its refresh event carries it, by id, in one
@@ -491,12 +722,16 @@ type anchorArtifactPlace struct{ name, projectKey, slug string }
 
 // loadAnchorRefreshedComments reads each comment of ids with its mentions and deliveries, by id,
 // and the place of the artifact each anchored comment's anchor is on, by comment id, for the
-// comments whose anchor names an artifact that exists. Every id must name a comment.
+// comments whose anchor names an artifact that exists. Every id must name a comment. A deleted
+// comment carries its delete mark (model.DeletedPostMark), as every other read of it does: the
+// event this builds is stored as built, and a reader that takes the stored payload unmasked
+// would otherwise read a comment with an empty body and no mark as one that stands.
 func loadAnchorRefreshedComments(ctx context.Context, tx pgx.Tx, ids []string) (map[string]model.Comment, map[string]anchorArtifactPlace, error) {
 	comments := make(map[string]model.Comment, len(ids))
 	places := make(map[string]anchorArtifactPlace, len(ids))
 	rows, err := tx.Query(ctx, `
 		select c.id::text, c.issue_key, c.artifact_id::text, c.author, c.body, c.anchor, c.reply_to::text, c.ask_id::text, c.turn, c.resolved, c.resolved_by, c.resolved_at, c.edited_at, c.suggestion, c.created_at,
+			c.deleted_at, c.deleted_by,
 			aa.name, coalesce(aa.project_key, ''), aa.slug
 		from comments c
 		left join artifacts aa on aa.id = `+store.CastableUUID(`c.anchor->>'artifact_id'`)+`
@@ -508,18 +743,21 @@ func loadAnchorRefreshedComments(ctx context.Context, tx pgx.Tx, ids []string) (
 	defer rows.Close()
 	for rows.Next() {
 		var comment model.Comment
-		var author, anchor, resolvedBy, suggestion []byte
-		var resolvedAt, editedAt *time.Time
+		var author, anchor, resolvedBy, suggestion, deletedBy []byte
+		var resolvedAt, editedAt, deletedAt *time.Time
 		var anchorName, anchorSlug *string
 		var anchorProject string
 		if err := rows.Scan(
 			&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-			&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt,
+			&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &deletedAt, &deletedBy,
 			&anchorName, &anchorProject, &anchorSlug,
 		); err != nil {
 			return nil, nil, fmt.Errorf("load refreshed comments: %w", err)
 		}
 		id := comment.ID
+		if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return nil, nil, fmt.Errorf("refreshed comment %q: %w", id, err)
+		}
 		if err := json.Unmarshal(author, &comment.Author); err != nil {
 			return nil, nil, fmt.Errorf("decode refreshed comment %q author: %w", id, err)
 		}

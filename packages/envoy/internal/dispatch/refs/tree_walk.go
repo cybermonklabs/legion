@@ -80,6 +80,29 @@ func HeadCut(ctx context.Context, q Queryer) (TreeCut, error) {
 	return cut, nil
 }
 
+// jitOffStatement turns Postgres' JIT compiler off for the rest of the transaction it is sent in,
+// and is allowed in a read-only one. The walk's reads probe the tuple table once a node, and
+// Postgres costs a custom plan of such a read over a tree of thousands of nodes in the millions -
+// it costs the relations read's probe of graph_tuples_as_of_out at about 8,650 a node - far above
+// jit_above_cost, so with JIT on it compiled 70 to 460 ms of code for 50 to 130 ms of work, and a
+// new connection plans its first executions of a statement that way.
+const jitOffStatement = `set local jit = off`
+
+// TurnJITOff sends jitOffStatement through q: the first statement of each transaction whose reads
+// walk an issue's tree - the tree read, the coverage read over the tuples and the readers of a
+// query's record. Sent outside a transaction it changes nothing, as Postgres warns.
+func TurnJITOff(ctx context.Context, q Queryer) error {
+	rows, err := q.Query(ctx, jitOffStatement)
+	if err != nil {
+		return fmt.Errorf("turn the JIT compiler off for the walk of a tree: %w", err)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("turn the JIT compiler off for the walk of a tree: %w", err)
+	}
+	return nil
+}
+
 // asOfValue is a lateral's body reading, at the cut the SQL predicate bound names (cutBound), the
 // value of attribute out of the node whose kind and id the SQL kind and id name: the newest value
 // tuple of that name, by its time and then its seq, as held where it asserts and null where it
@@ -360,6 +383,39 @@ func TreeNodeType(kind, supertag, opening string) string {
 	return supertag
 }
 
+// trimContainerMarkers drops the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or
+// a number and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with
+// a label that is not blank), each with the spaces and tabs after it, that a block nested in a
+// quote, a list item or a footnote is written after. The renderer writes the first block of a list
+// item or of a footnote's definition on the marker's or the label's line, so a typed block's
+// opening line can start with them.
+func trimContainerMarkers(line string) string {
+	for {
+		line = strings.TrimLeft(line, " \t")
+		switch {
+		case strings.HasPrefix(line, ">"):
+			line = line[1:]
+		case len(line) > 1 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && (line[1] == ' ' || line[1] == '\t'):
+			line = line[2:]
+		case strings.HasPrefix(line, "[^"):
+			label, rest, closed := strings.Cut(line[2:], "]")
+			if !closed || !strings.HasPrefix(rest, ":") || strings.TrimSpace(label) == "" {
+				return line
+			}
+			line = rest[1:]
+		default:
+			digits := 0
+			for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+				digits++
+			}
+			if digits == 0 || digits+1 >= len(line) || (line[digits] != '.' && line[digits] != ')') || (line[digits+1] != ' ' && line[digits+1] != '\t') {
+				return line
+			}
+			line = line[digits+2:]
+		}
+	}
+}
+
 // documentMembers is a lateral's body reading, at the cut the SQL predicate bound names, the
 // blocks whose in_document names the document whose ref_key the SQL refKey names: of each block's
 // in_document tuples into it, read into the document through graph_tuples_as_of_in, the newest,
@@ -477,33 +533,30 @@ func TreeMembers(ctx context.Context, q Queryer, refKey string, cut TreeCut) ([]
 	return members, nil
 }
 
-// treeValuesStatement is, at the cut whose bounds $3 and $4 are, every value out of each node $1
-// and $2 name: the newest value tuple of each attribute, kept while it asserts.
-var treeValuesStatement = `
-	select node.position, newest.kind, newest.to_id
-	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
-	cross join lateral (
-		select distinct on (t.kind) t.kind, t.to_id, t.asserted
-		from graph_tuples t
-		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind = '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
-		order by t.kind, t.at desc, t.seq desc
-	) newest
-	where newest.asserted
-	order by node.position`
+// treeFactFarEnd is what tells two tuples of one kind out of a node apart in the facts read
+// (treeFactsStatement): the far end, its kind and its id, of a relation, and nothing of a value,
+// whose newest tuple of its attribute is its value, compared byte for byte.
+const treeFactFarEnd = `t.to_kind collate "C", (case when t.to_kind = '` + graphstore.KindValue + `' then '' else t.to_id end) collate "C"`
 
-// treeRelationsStatement is, at the cut whose bounds $3 and $4 are, every relation out of each
-// node $1 and $2 name: the newest tuple of each kind and far end, kept while it asserts.
-var treeRelationsStatement = `
-	select node.position, newest.kind, newest.to_kind, newest.to_id
+// treeFactsStatement is, at the cut whose bounds $3 and $4 are, every value and every relation out
+// of each node $1 and $2 name, in one read of the tuples out of each node through
+// graph_tuples_as_of_out: the newest tuple of each attribute's values and of each relation, its
+// kind and its far end (treeFactFarEnd), kept while it asserts, a value marked as one. The read of
+// one node groups its tuples byte for byte, which makes the groups the database's own collation
+// makes at less cost, so the answer is ordered by the node's position and then by kind, far end
+// kind and far end id in the database's collation: the order the relations of a node have always
+// been answered in, which a read that keeps the last part_of in order relies on.
+var treeFactsStatement = `
+	select node.position, newest.to_kind = '` + graphstore.KindValue + `', newest.kind, newest.to_kind, newest.to_id
 	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
 	cross join lateral (
-		select distinct on (t.kind, t.to_kind, t.to_id) t.kind, t.to_kind, t.to_id, t.asserted
+		select distinct on (t.kind, ` + treeFactFarEnd + `) t.kind, t.to_kind, t.to_id, t.asserted
 		from graph_tuples t
-		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
-		order by t.kind, t.to_kind, t.to_id, t.at desc, t.seq desc
+		where t.from_kind = node.kind and t.from_id = node.id and ` + cutBound(`$3`, `$4`) + `
+		order by t.kind, ` + treeFactFarEnd + `, t.at desc, t.seq desc
 	) newest
 	where newest.asserted
-	order by node.position`
+	order by node.position, newest.kind, newest.to_kind, newest.to_id`
 
 // TreeRelation is one relation out of a node: its kind and its far end.
 type TreeRelation struct {
@@ -512,14 +565,19 @@ type TreeRelation struct {
 }
 
 // TreeFacts is what a node states at a cut: each attribute's value, by its name, and each
-// relation, in the order the read answers them.
+// relation, by its kind and then its far end's kind and id, in the database's collation.
 type TreeFacts struct {
 	Values    map[string]string
 	Relations []TreeRelation
 }
 
-// TreeFactsOf is what each of nodes states at cut, keyed by the node: a node that states nothing
-// has no entry.
+// TreeFactsOf is what each of nodes states at cut, keyed by the node, read in one statement
+// (treeFactsStatement): a node that states nothing has no entry. The statement is planned with its
+// values on every call (QueryExecModeDescribeExec), never under the generic plan Postgres takes
+// for a statement a connection has prepared from its sixth execution on: that plan, which knows
+// neither the cut's seq nor the nodes, reads graph_tuples by its primary key over every seq at or
+// below the cut once a node, and read the 2,009 nodes of the read-cost corpus's tree in 31.5 s
+// against 144 ms for the plan made with the values, through graph_tuples_as_of_out.
 func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, cut TreeCut) (map[Target]TreeFacts, error) {
 	facts := make(map[Target]TreeFacts, len(nodes))
 	if len(nodes) == 0 {
@@ -527,47 +585,32 @@ func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, cut TreeCut) (m
 	}
 	kinds, ids := targetColumns(nodes)
 	seq, at := cut.bounds()
-	rows, err := q.Query(ctx, treeValuesStatement, kinds, ids, seq, at)
+	rows, err := q.Query(ctx, treeFactsStatement, pgx.QueryExecModeDescribeExec, kinds, ids, seq, at)
 	if err != nil {
-		return nil, fmt.Errorf("read the values of %d nodes %s: %w", len(nodes), cut, err)
-	}
-	for rows.Next() {
-		var position int
-		var attribute, value string
-		if err := rows.Scan(&position, &attribute, &value); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read a value %s: %w", cut, err)
-		}
-		node := nodes[position-1]
-		held := facts[node]
-		if held.Values == nil {
-			held.Values = map[string]string{}
-		}
-		held.Values[attribute] = value
-		facts[node] = held
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the values of %d nodes %s: %w", len(nodes), cut, err)
-	}
-	rows, err = q.Query(ctx, treeRelationsStatement, kinds, ids, seq, at)
-	if err != nil {
-		return nil, fmt.Errorf("read the relations of %d nodes %s: %w", len(nodes), cut, err)
+		return nil, fmt.Errorf("read the values and relations of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var position int
+		var valued bool
 		var relation TreeRelation
-		if err := rows.Scan(&position, &relation.Kind, &relation.To.Kind, &relation.To.ID); err != nil {
-			return nil, fmt.Errorf("read a relation %s: %w", cut, err)
+		if err := rows.Scan(&position, &valued, &relation.Kind, &relation.To.Kind, &relation.To.ID); err != nil {
+			return nil, fmt.Errorf("read a value or a relation %s: %w", cut, err)
 		}
 		node := nodes[position-1]
 		held := facts[node]
-		held.Relations = append(held.Relations, relation)
+		switch {
+		case !valued:
+			held.Relations = append(held.Relations, relation)
+		case held.Values == nil:
+			held.Values = map[string]string{relation.Kind: relation.To.ID}
+		default:
+			held.Values[relation.Kind] = relation.To.ID
+		}
 		facts[node] = held
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the relations of %d nodes %s: %w", len(nodes), cut, err)
+		return nil, fmt.Errorf("read the values and relations of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	return facts, nil
 }

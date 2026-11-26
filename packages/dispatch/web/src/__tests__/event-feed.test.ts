@@ -12,6 +12,7 @@ import {
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   advancesIssuesQuery,
+  agentMessagesQuery,
   architectureSourcesQuery,
   askThreadQuery,
   inboxQuery,
@@ -46,8 +47,7 @@ import {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
-  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
-  // row and the priority's own page.
+  // The work under one priority, as a scoped issues table reads it: the priority's own page.
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
   // icebox, with its move there, as that page's Issues table reads it.
@@ -67,6 +67,9 @@ const READS = {
   // The work under another priority, which a delete of linkage-closure leaves where it is.
   otherAdvancesWork: { key: advancesIssuesQuery({ advances: "oss-verify" }, true).queryKey },
   agentsPicker: { key: ["agents", "issue-picker"] },
+  // The Agents page's conversation with session planner, which lists the issue messages aimed at
+  // it.
+  agentConversation: { key: agentMessagesQuery("planner").queryKey },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
   ask: { key: askQuery("ask-1").queryKey },
@@ -178,10 +181,17 @@ const READS = {
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
   referencePicker: { key: ["issues", "CORE"] },
+  // The names `referenceTargetsQuery` keeps under the set of references it was asked for.
+  referenceTargets: {
+    key: ["reference-targets", ["dispatch://CORE-1/comment/comment-1", "dispatch://CORE-1/spec"]],
+  },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
   replies: { key: myRepliesCountQuery().queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
   rootMessage: { key: messageQuery("CORE-1", "message-0").queryKey },
+  // An answer the search palette keeps under the words typed and the request it sent: the
+  // keystroke's keyword leg, with no chip set (`useTieredSearch.ts`, `SearchRequest`).
+  searchAnswer: { key: ["search", "zarquon", { keywords_only: true }] },
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
   // version 2, by another link.
   specBlock: {
@@ -192,6 +202,8 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-intro@v2").queryKey,
   },
+  // CORE-1's spec itself, as its document page reads it (`ProofDocument`).
+  specDocument: { key: ["artifact", "artifact-3"] },
   // CORE-1's spec, one document, opened on two spellings of its address.
   specPanel: {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
@@ -1100,6 +1112,11 @@ const rules: Record<string, Rule> = {
     refreshes: ["documentPanel", "comment"],
     spares: ["specPanel", "issuePanel", "inbox"],
   },
+  "a delete of a comment a project document owns refreshes that document's panel": {
+    event: event("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }, documentOwner),
+    refreshes: ["documentPanel", "comment"],
+    spares: ["specPanel", "issuePanel", "inbox"],
+  },
   "an edit of a comment refreshes every read of its blocks, pinned or not, and no other block": {
     event: event("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
     refreshes: ["commentBlock", "commentBlockPinned", "comment"],
@@ -1467,6 +1484,35 @@ const rules: Record<string, Rule> = {
       ],
       spares: ["projectDefaultAssignees", "inbox"],
     },
+  // A message's correction names the logins with a row on its thread, as its create does: a
+  // viewer it does not name, and who did not write it, reads no thread row again.
+  "a correction of a message in a thread the viewer has no row in leaves the viewer's Inbox thread rows alone":
+    {
+      event: event("message.edited", { id: "message-0", target: null, thread_logins: ["bob"] }),
+      refreshes: ["conversationMessages", "messageBlock"],
+      spares: ["inboxThreads", "replies"],
+    },
+  // A comment's correction names them too (`commentCorrectionPayload` in the server's
+  // comment_projection.go), as its create does.
+  "a correction of a comment in a thread the viewer has no row in leaves the viewer's Inbox thread rows alone":
+    {
+      event: event("comment.edited", {
+        anchor: null,
+        ask_id: null,
+        id: "comment-1",
+        reply_to: "root-1",
+        thread_logins: ["bob"],
+      }),
+      refreshes: ["comment", "rootComment", "comments"],
+      spares: ["inboxThreads", "replies"],
+    },
+  // The answers page lists the viewer's answers and replies on asks: a comment on no ask is none
+  // of them, and neither is the ask list or the Inbox row of an ask.
+  "a delete of a comment on no ask leaves the answers page and every ask read alone": {
+    event: event("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }),
+    refreshes: ["comment", "comments"],
+    spares: ["answers", "asks", "inbox", "projectInbox"],
+  },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {
@@ -1481,6 +1527,111 @@ test.each(Object.entries(rules))("%s", (_name, rule) => {
     expect({ read: name, refreshed: refreshed.includes(name) }).toEqual({
       read: name,
       refreshed: false,
+    });
+  }
+});
+
+type Correction = "comment.edited" | "comment.deleted" | "message.edited" | "message.deleted";
+
+/** One edit and one delete of each kind of post of CORE-1: comment-1, a reply to root-1 in ask-1's
+ *  thread, anchored in CORE-1's spec; and message-0, a root aimed at session planner. Alice has a
+ *  row on both threads, and each correction names her in `thread_logins`, as the post's create
+ *  did. */
+const corrections: Record<Correction, DispatchEvent> = {
+  "comment.edited": event("comment.edited", {
+    anchor: { artifact_id: "artifact-3" },
+    ask_id: "ask-1",
+    id: "comment-1",
+    reply_to: "root-1",
+    thread_logins: ["alice"],
+  }),
+  "comment.deleted": event("comment.deleted", {
+    anchor: { artifact_id: "artifact-3" },
+    ask_id: "ask-1",
+    id: "comment-1",
+    reply_to: "root-1",
+    thread_logins: ["alice"],
+  }),
+  "message.edited": event("message.edited", {
+    id: "message-0",
+    target: "session:planner",
+    thread_logins: ["alice"],
+  }),
+  "message.deleted": event("message.deleted", {
+    id: "message-0",
+    target: "session:planner",
+    thread_logins: ["alice"],
+  }),
+};
+
+const commentCorrections: readonly Correction[] = ["comment.edited", "comment.deleted"];
+const messageCorrections: readonly Correction[] = ["message.edited", "message.deleted"];
+
+/** Each read that prints a post - its body, a part of it, or its edit and delete marks - with the
+ *  corrections of the posts it prints. The last row is two reads no create refreshes, and only a
+ *  correction does: the search palette's answers, every one of them (`POST_CORRECTIONS`), and
+ *  the reference-target names whose key names an address of the post's issue, here CORE-1's
+ *  comment-1 (`referenceNameTargets`, `api/event-refresh.ts`). */
+const correctedReads: readonly (readonly [string, readonly Correction[], readonly ReadName[]])[] = [
+  [
+    "the Inbox's thread rows and their count",
+    [...commentCorrections, ...messageCorrections],
+    ["inboxThreads", "replies"],
+  ],
+  ["the issue's References tab", [...commentCorrections, ...messageCorrections], ["referencesTab"]],
+  [
+    "the issue's comments, which the margin and the Conversation draw",
+    commentCorrections,
+    ["comments"],
+  ],
+  [
+    "the issue's ask lists and the Inbox rows of the ask the comment replies on",
+    commentCorrections,
+    ["asks", "askThreads", "inbox", "projectInbox"],
+  ],
+  ["the document the comment is anchored in", commentCorrections, ["specDocument"]],
+  [
+    "the comment's read, its root's, and its ask's read and thread",
+    commentCorrections,
+    ["comment", "rootComment", "ask", "thread"],
+  ],
+  [
+    "every read of the comment's blocks",
+    commentCorrections,
+    ["commentBlock", "commentBlockPinned"],
+  ],
+  ["the answers page", commentCorrections, ["answers"]],
+  ["every read of the message's blocks", messageCorrections, ["messageBlock"]],
+  [
+    "the Agents page's conversation the message is aimed at",
+    messageCorrections,
+    ["agentConversation"],
+  ],
+  [
+    "the issue's message reads, which the Conversation and every reference to a message draw",
+    messageCorrections,
+    ["conversationMessages", "message", "rootMessage"],
+  ],
+  [
+    "every answer the search palette keeps, and every set of reference-target names naming an address of the post's issue",
+    [...commentCorrections, ...messageCorrections],
+    ["searchAnswer", "referenceTargets"],
+  ],
+];
+
+// R2 and R3 of dispatch://INFRA-1523: a page open across a post's edit or delete marks the post
+// edited, or says it is deleted and prints no part of it, without a reload, so every read that
+// prints a post reads again on its corrections, whether or not its create refreshes it.
+test.each(
+  correctedReads.flatMap(([page, types, names]) =>
+    types.map((type) => [type, page, names] as const)
+  )
+)("%s refreshes %s", (type, _page, names) => {
+  const refreshed = refreshedReads(corrections[type]);
+  for (const name of names) {
+    expect({ read: name, refreshed: refreshed.includes(name) }).toEqual({
+      read: name,
+      refreshed: true,
     });
   }
 });
@@ -1706,6 +1857,13 @@ test("a priority.updated of a deleted priority refetches no issue read that does
   ]);
 });
 
+// No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
+// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
+// every query.
+test("a project.access_changed refreshes no read", () => {
+  expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1748,6 +1906,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "comment.answered": event("comment.answered", { anchor: null, id: "comment-1" }),
   "comment.created": event("comment.created", { anchor: null, id: "comment-1" }),
   "comment.delivery": event("comment.delivery", { comment_id: "comment-1" }),
+  "comment.deleted": event("comment.deleted", { anchor: null, id: "comment-1" }),
   "comment.edited": event("comment.edited", { anchor: null, id: "comment-1" }),
   "comment.reopened": event("comment.reopened", { anchor: null, id: "comment-1" }),
   "comment.resolved": event("comment.resolved", { anchor: null, id: "comment-1" }),
@@ -1770,11 +1929,18 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "message.accepted": event("message.accepted", { target: "session:planner" }),
   "message.answered": event("message.answered", { id: "message-2" }),
   "message.created": event("message.created", { id: "message-2" }),
+  "message.deleted": event("message.deleted", { id: "message-2" }),
+  "message.edited": event("message.edited", { id: "message-2" }),
   "message.delivery": event("message.delivery", { target: "session:planner" }),
   "priority.updated": event(
     "priority.updated",
     { change: "updated", id: "linkage-closure" },
     { issue_key: null, project: undefined }
+  ),
+  "project.access_changed": event(
+    "project.access_changed",
+    { change: "owner", project: "PROJ" },
+    { issue_key: null, project: "PROJ" }
   ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),

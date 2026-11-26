@@ -187,7 +187,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "c.author", "c.created_at") + `
+		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) else null::uuid end,
          coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
@@ -199,7 +199,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
@@ -207,7 +207,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
          false, ` + rank("m.search") + `
     from messages m join issues i on i.key = m.issue_key, q
    where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "m.author", "m.created_at")
+		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
 }
 
 // searchRowFilters is the status, author and date filter every leg of every search narrows by,
@@ -219,9 +219,14 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
 // the rows of the issues in that status and such a row belongs to none. author is the jsonb
 // actor that wrote the item the row names, matched on its id, which is a person's login or a
 // session's id; every kind has one, an issue and a document their creator. written is when the
-// item itself was last written, which the date filter reads in place of the recency the row is
-// ordered by: an issue's updated_at moves whenever anything on it moves, and a comment written
-// last year on an issue touched today is not a comment from today.
+// item's text was last written: a comment, an ask and a message each record an edit of their own
+// (comments.edited_at, asks.edited_at, messages.edited_at), and an edit rewrites the row's search
+// vector, so each of those arms passes coalesce(edited_at, created_at) and a search that finds an
+// edit's text does not drop the row for the date the text it replaced was written. The arms whose
+// table records no edit pass the one time they have: an issue's updated_at, and a document
+// version's created_at, the moment that version's text was written. The date filter reads that in
+// place of the recency the row is ordered by: an issue's updated_at moves whenever anything on it
+// moves, and a comment written last year on an issue touched today is not a comment from today.
 func searchRowFilters(status, author, written string) string {
 	return `
      and (q.status_filter = '' or ` + status + ` = q.status_filter)
@@ -234,29 +239,74 @@ func searchRowFilters(status, author, written string) string {
 // cost of every statement that unions it, and a cost that small is legible only when the arm is
 // read apart from theirs.
 //
-// It reads document_search (migration 20261101182447), one row per document holding its latest
-// version's vector under a GIN index, rather than a lateral over artifact_versions: that table's
-// search column has no index and can have none (0010 left it out, and its 5.2 GiB is above what
-// the pre-deploy census lets a migration touch), so an arm reading it tests every document's
-// latest version in turn. The rows are the same ones - 20261101182454's trigger holds
-// document_search at each document's latest version with markdown - and the join to artifacts
-// decides the arm's project, kind and issue.
+// It reads node_search (migration 20261125160000_issue_tree_node_search), one row per block node
+// holding its text's vector under a GIN index, and answers the node that matched (R17 of
+// the issue-tree spec): each matching node is read as a block of its document
+// (refs.NodeSearchDocumentSQL), the document's row carries the blocks that matched as its covers,
+// best first by each node's own rank and at most searchKeywordBlocks of them, and the page names
+// the one of them a reader may see whose text ranks highest for the query, as it names the block a
+// meaning hit's window covers (searchPageAndTailSQL). A word is found where one block holds it,
+// and a query whose words stand in two blocks of a document, matching neither alone, finds the
+// document by meaning or not at all. The row is ranked by its document's latest version
+// (documentLatestVersionSQL), the vector document_search held of it, so the rank a document
+// takes among the other kinds is the one it took before. node_search's index is what finds the
+// words: artifact_versions.search has no index and can have none (0010 left it out, and its
+// 5.2 GiB is above what the pre-deploy census lets a migration touch), so the version is read
+// only for the documents a node matched, one probe of its unique key each. This build reads no
+// row of document_search, which its trigger keeps for a process of the release before.
+//
+// The join to artifacts decides the arm's project, kind and issue, as it did over
+// document_search: a block of an issue room's own fragment is the tree artifact's, no doc, and
+// answers nothing here, as the tree's row of document_search did not.
 //
 // The text carries no newline of its own at either end: searchKeywordLegs joins it to its
 // neighbours with the union the arms are separated by, and a caller running the arm by itself
 // wraps it in a select of its own.
 func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
 	return `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
-         null::text, null::text[],
+         null::text, matched.covers,
          i.title, i.status, p.key, a.slug, a.name,
          coalesce(i.updated_at, v.created_at),
          false, ` + rank("v.search") + `
-    from document_search v
-    join artifacts a on a.id = v.artifact_id
+    from (
+      select held.document,
+             (array_agg(held.block order by held.r desc, held.block))[1:` + strconv.Itoa(searchKeywordBlocks) + `] as covers
+        from (
+          select ` + refs.NodeSearchDocumentSQL("s") + ` as document, ` + refs.NodeSearchBlockSQL("s") + ` as block,
+                 ts_rank_cd(s.search, q.tsq, 32) as r
+            from node_search s, q
+           where s.search @@ q.tsq
+        ) held
+       where held.document is not null
+       group by held.document
+    ) matched
+    join artifacts a on a.id = matched.document
     left join issues i on i.key = a.issue_key
-    join projects p on p.key = a.project_key, q
-   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2)` +
+    join projects p on p.key = a.project_key
+    join lateral (` + documentLatestVersionSQL("a") + `) v on true, q
+   where a.kind = 'doc' and ($2 = '' or p.key = $2)` +
 		searchRowFilters("i.status", "a.created_by", "v.created_at")
+}
+
+// searchKeywordBlocks is how many of a document's matching nodes its keyword row names as covers,
+// best first by each node's own rank (searchDocumentKeywordLeg): the page ranks each covered
+// block's text again to name the one hit, so the arm hands it the ten its own ranking puts first,
+// past any the reader may not see, rather than every block of a long document that holds a common
+// word.
+const searchKeywordBlocks = 10
+
+// documentLatestVersionSQL is a lateral's body over the artifacts row aliased alias answering its
+// latest version that holds markdown, as search and created_at: the version
+// 20261101182454's trigger holds document_search at for that document (`when (new.markdown is not
+// null)`, and the guard that keeps the highest number), read off artifact_versions' unique key, one
+// probe a document. Every reader of a document's own vector reads it here, where the release
+// before read document_search: search's document arm ranks by it, the related-item check counts a
+// document's words from it (searchTermItemsSQL, searchTermQueuedItemSQL), and the near-copy gate
+// compares a spec's lexemes with it (duplicateEqualLexemesQuery).
+func documentLatestVersionSQL(alias string) string {
+	return `select v.search, v.created_at from artifact_versions v
+		where v.artifact_id = ` + alias + `.id and v.markdown is not null
+		order by v.number desc limit 1`
 }
 
 // searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
@@ -312,15 +362,23 @@ var searchFusedSQL = fmt.Sprintf(`fused as (
 
 // windowOwnerUUID and windowItemUUID read the item a window belongs to out of the window's own
 // id, "<owner key>#<the first block it covers>": the owner key is the id up to the first #, and
-// it is the artifact id for a document's window and "<kind>/<uuid>" for a comment's, a message's
-// or an ask's (refs.ItemKind.WindowOwnerKey). Each meaning arm joins its item on that item's
-// primary key through one of these, so the planner reaches the row through the key rather than
-// reading the whole table to compare a text it computes per row. The cast is guarded
-// (store.CanonicalUUID) so a window id in any other shape resolves to no item instead of
-// answering SQLSTATE 22P02 for the whole search.
+// it is the room a document is edited in for a document's window (refs.DocumentWindowOwner) and
+// "<kind>/<uuid>" for a comment's, a message's or an ask's (refs.ItemKind.WindowOwnerKey). Each
+// meaning arm joins its item on that item's primary key through one of these, so the planner
+// reaches the row through the key rather than reading the whole table to compare a text it
+// computes per row. The cast is guarded (store.CanonicalUUID) so a window id in any other shape
+// resolves to no item instead of answering SQLSTATE 22P02 for the whole search.
+//
+// windowDocumentUUID is the document a document window covers blocks of, read off its owner and
+// its first block (refs.WindowDocumentSQL): the document whose fragment of an issue room holds
+// that block, for a window under the room's tree artifact, the owner itself for a document that
+// is its own room, and none for a window a converted document's own artifact id still keys, which
+// this build's search reads none of (R17 of the issue-tree spec), so a block that moved
+// into its issue's room answers once, from the window of its current owner.
 var (
-	windowOwnerUUID = store.CanonicalUUID(`split_part(e.id, '#', 1)`)
-	windowItemUUID  = store.CanonicalUUID(`split_part(split_part(e.id, '#', 1), '/', 2)`)
+	windowOwnerUUID    = store.CanonicalUUID(`split_part(e.id, '#', 1)`)
+	windowItemUUID     = store.CanonicalUUID(`split_part(split_part(e.id, '#', 1), '/', 2)`)
+	windowDocumentUUID = refs.WindowDocumentSQL(windowOwnerUUID, `e.covers[1]`)
 )
 
 // searchPageAndTailSQL is the "page the fused ranking, then stitch back the snippet" tail shared
@@ -339,16 +397,17 @@ var (
 // number alone names one issue of each project (searchOwnIssueKeys), and their ids are their
 // keys, so ordering them by id is ordering them by project key.
 //
-// The page also names the block a meaning hit matched (hit.block_id, INFRA-370). A meaning leg
-// matched one window of an owner's blocks, and that window covers a run of them (r.covers); the
-// block named is the covered block whose own text ranks highest for the query by ts_rank_cd over
-// the configuration the keyword legs are built with ('english' over search_text), ties broken by
-// the block's place in the window, and so the window's first block when no covered block shares a
-// term with the query. A search for the text of a one-line ask option therefore names the option,
-// not the question that gives the option its context and stands in the same window. The rank runs
-// in the page's own lateral join, over the rows of one page and the few blocks each window covers,
-// never over every candidate; a keyword row and an issue carry no covers, so the join answers
-// nothing for them.
+// The page also names the block a hit matched (hit.block_id, #2679). A meaning leg matched one
+// window of an owner's blocks, and that window covers a run of them (r.covers); the document
+// keyword arm matched nodes of the document's blocks, and carries the best of them as its covers
+// (searchDocumentKeywordLeg). The block named is the covered block whose own text ranks highest
+// for the query by ts_rank_cd over the configuration the keyword legs are built with ('english'
+// over search_text), ties broken by the block's place in the covers, and so the first covered
+// block when no covered block shares a term with the query. A search for the text of a one-line
+// ask option therefore names the option, not the question that gives the option its context and
+// stands in the same window. The rank runs in the page's own lateral join, over the rows of one
+// page and the few blocks each row covers, never over every candidate; any other keyword row and
+// an issue carry no covers, so the join answers nothing for them.
 //
 // A covered block is named only where the acting person may see it, by the registry's own
 // predicate over the block's node (refs.VisibleEnd, bound at seen, the parameter the acting
@@ -391,13 +450,15 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- column); the two must stay in sync. issue reuses r.issue_title, already carried from the
   -- same issues row by kinds, rather than re-reading it. ask reads the text its search vector is
   -- built from (asks_search: the question, then ask_search_suffix's option labels and
-  -- descriptions, answer text and selected labels), so its snippet shows what the query matched.
+  -- descriptions, answer text and selected labels), so its snippet shows what the query matched,
+  -- with the answer read from the ask's node (askSearchTextOf, which says why the vector is the
+  -- row's).
   left join lateral (
     select case r.kind
       when 'issue' then r.issue_title
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1) -- re-resolves the latest version kinds already found once; accepted, bounded by the page size
       when 'comment' then (select c.body from comments c where c.id = r.id::uuid)
-      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
+      when 'ask' then (select %[4]s from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
@@ -406,9 +467,10 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- block texts are kept per version or revision, the latest being the current text. A
   -- document's are read where the block index keeps them, in the room the document is edited in
   -- (refs.DocumentRoomTextsSQL): an issue born converted keeps its documents' text rows under its
-  -- tree artifact. A message is never edited and keeps no text table (refs/item_blocks.go's
-  -- table map), so its block is ranked on the excerpt its row holds, the block's first
-  -- refs.BlockExcerptRunes runes.
+  -- tree artifact. A message records no revisions, so it keeps no text table
+  -- (refs/item_blocks.go's table map) and its block is ranked on the excerpt its row holds, the
+  -- block's first refs.BlockExcerptRunes runes, which an edit of the message rewrites with the
+  -- block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
@@ -432,7 +494,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, visibleBlock, refs.DocumentRoomTextsSQL("x", "r.artifact_id"))
+`, legsSource, visibleBlock, refs.DocumentRoomTextsSQL("x", "r.artifact_id"), askSearchTextOf("k"))
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -685,9 +747,11 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // Four of the five arms read windows of neighbouring blocks (INFRA-370: kinds document_block,
 // comment_block, message_block and ask_part), where an issue's arm still reads the issue's one
 // whole-text row. A window's id is "<owner key>#<suffix>", so the item it belongs to is
-// split_part(id, '#', 1) - the artifact id for a document, "<kind>/<uuid>" for a comment, a
-// message or an ask - and each arm projects the item's own kind and id, so fusion still ranks
-// one row per item however many of its windows the index hands back. A window arm takes
+// split_part(id, '#', 1) - the room a document is edited in for a document, whose window is read
+// as a window of the document whose fragment holds its first block (windowDocumentUUID), and
+// "<kind>/<uuid>" for a comment, a message or an ask - and each arm projects the item's own kind
+// and id, so fusion still ranks one row per item however many of its windows the index hands
+// back. A window arm takes
 // searchWindowCandidates of them, ten times the items any arm keeps, because one long
 // document's windows would otherwise fill an arm of contracts.SearchKindDepth and leave every
 // other document of the page out. Each arm then keeps the item's
@@ -834,7 +898,7 @@ meaning_document_candidates as (
          coalesce(i.updated_at, v.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
-    join artifacts a on a.id = ` + windowOwnerUUID + `
+    join artifacts a on a.id = ` + windowDocumentUUID + `
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
@@ -865,7 +929,7 @@ meaning_ask_candidates as (
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
      and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -886,7 +950,7 @@ meaning_message_candidates as (
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
      and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) +
-		searchRowFilters("i.status", "m.author", "m.created_at") + `
+		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -942,10 +1006,13 @@ totals as (
 // where main's arm drops it inside the ordered select. So 1,001 windows of comments that no longer
 // exist, nearer than a project's three comments, would answer that project with none of them,
 // where main answers all three (measured on such a corpus, INFRA-988). It loses no row today
-// because no path deletes a comment row: no route deletes a comment, and nothing outside the
-// tests runs `delete from comments`. A change that adds comment deletion (dispatch://INFRA-1523)
-// must delete the comment's windows in the same transaction, or move this join back inside the
-// limit.
+// because no path deletes a comment row: a comment's delete (deleteComment, dispatch://INFRA-1523)
+// keeps the row and clears its body, and nothing outside the tests runs `delete from comments`.
+// That delete drops the comment's windows in its own transaction (clearDeletedPostBody,
+// refs.TombstoneItem), so no window of a deleted comment is left for this join to read; one
+// left behind by some later defect would join here, and its hit carries the comment's delete
+// mark (stampSearchPostMarks), which is the backstop for that case. A change that deletes comment rows must delete the comment's
+// windows in the same transaction, or move this join back inside the limit.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
@@ -1023,7 +1090,7 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "c.created_at") + `
+   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
 }
@@ -1087,7 +1154,7 @@ func searchMeaningCommentArmJoined(seen int) string {
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
      and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
-		searchRowFilters("i.status", "c.author", "c.created_at") + `
+		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -1191,11 +1258,16 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// text: runSearch stamps that on the response itself, true only where the fallback ran.
 	response.Query.Operators = reading.operators()
 	response.Filters = searchAppliedFilters(parameters)
-	// Where each ask hit stands is read for this route alone: the write-time suggestions
-	// (relatedSearch) rank the same bodies but never show it. TookMS counts the read.
+	// Where each ask hit stands, and who wrote each comment, message and ask hit, is read for this
+	// route alone: the write-time suggestions (relatedSearch) rank the same bodies but never show
+	// either. TookMS counts the reads.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := attachItemAuthors(r.Context(), s.deps.Store.Pool, response.Results); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1223,12 +1295,14 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // keystroke is the cost it exists to avoid.
 //
 // The query as typed is what it runs, however many words that query holds: one statement, and
-// for every query matching anything the only statement a search runs, so the common path costs
-// what it cost before there was a fallback at all. A query that matches nothing - no row of any
-// kind, which is what the answer's own total says - is run a second time over its rarest words
-// (searchRarestWords, searchBroadenWords), and that second answer alone is stamped broadened.
-// The query's embedding is taken once and both runs share it, so a broadened search still costs
-// one model-service call.
+// for every query matching anything the only search statement a search runs, so the common path
+// costs what it cost before there was a fallback at all. A query that matches nothing - no row of
+// any kind, which is what the answer's own total says - is run a second time over its rarest
+// words (searchRarestWords, searchBroadenWords), and that second answer alone is stamped
+// broadened. The query's embedding is taken once and both runs share it, so a broadened search
+// still costs one model-service call. The page answered is then stamped with the edit times and
+// the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
+// page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
@@ -1260,27 +1334,96 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	}
 	started := time.Now()
 	response, err := run(ctx, parameters)
-	if err != nil || response.Total > 0 {
-		return response, err
-	}
-	words, err := s.searchRarestWords(ctx, parameters)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
-	if len(words) == 0 {
-		return response, nil
+	if response.Total == 0 {
+		words, err := s.searchRarestWords(ctx, parameters)
+		if err != nil {
+			return model.SearchResponse{}, err
+		}
+		if len(words) > 0 {
+			parameters.broaden = words
+			parameters.excluded = parameters.queryReading().excludedWords()
+			if response, err = run(ctx, parameters); err != nil {
+				return model.SearchResponse{}, err
+			}
+			response.Query.Broadened = true
+			// What the caller waited for is all three reads: the query as typed, its words' df,
+			// and the fallback itself.
+			response.TookMS = time.Since(started).Milliseconds()
+		}
 	}
-	parameters.broaden = words
-	parameters.excluded = parameters.queryReading().excludedWords()
-	broadened, err := run(ctx, parameters)
-	if err != nil {
+	if err := s.stampSearchPostMarks(ctx, response.Results); err != nil {
 		return model.SearchResponse{}, err
 	}
-	broadened.Query.Broadened = true
-	// What the caller waited for is all three reads: the query as typed, its words' df, and the
-	// fallback itself.
-	broadened.TookMS = time.Since(started).Milliseconds()
-	return broadened, nil
+	return response, nil
+}
+
+// stampSearchPostMarks sets the marks of each comment and message hit of results whose author
+// edited or deleted it since it was written: EditedAt, and DeletedAt with DeletedBy as
+// model.DeletedPostMark reads them, so every reader of a hit can say the post was edited or is
+// deleted. It is one read by id of the page's own posts, made after the search statement rather
+// than inside it: the search and meaning statements end in one column shape that the oracles of
+// their arms compare row for row with earlier releases' (document_search_oracle_test.go), and the
+// page is at most searchMaxLimit rows. A page with no comment or message reads nothing.
+//
+// A delete clears the post's body, so the keyword arm drops the post with it: its search vector
+// follows the body. The meaning arm drops it too, since the delete drops the post's windows in
+// its own transaction (clearDeletedPostBody, refs.TombstoneItem). This stamp is the backstop
+// for a hit of a deleted post all the same, which no path of this build produces: it carries the
+// empty snippet the cleared body gives, and the mark is what tells its reader the post is deleted.
+func (s *server) stampSearchPostMarks(ctx context.Context, results []model.SearchResult) error {
+	var comments, messages []string
+	for _, result := range results {
+		switch result.Kind {
+		case "comment":
+			comments = append(comments, result.ID)
+		case "message":
+			messages = append(messages, result.ID)
+		}
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select 'comment', c.id::text, c.edited_at, c.deleted_at, c.deleted_by from comments c
+		where c.id = any($1::uuid[]) and (c.edited_at is not null or c.deleted_at is not null)
+		union all
+		select 'message', m.id::text, m.edited_at, m.deleted_at, m.deleted_by from messages m
+		where m.id = any($2::uuid[]) and (m.edited_at is not null or m.deleted_at is not null)`, comments, messages)
+	if err != nil {
+		return fmt.Errorf("read the marks of the search's posts: %w", err)
+	}
+	defer rows.Close()
+	type postMarks struct {
+		editedAt, deletedAt *time.Time
+		deletedBy           *model.Actor
+	}
+	marked := make(map[[2]string]postMarks)
+	for rows.Next() {
+		var kind, id string
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		if err := rows.Scan(&kind, &id, &editedAt, &deletedAt, &deletedBy); err != nil {
+			return fmt.Errorf("scan the marks of a search's post: %w", err)
+		}
+		marks := postMarks{editedAt: editedAt}
+		if marks.deletedAt, marks.deletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return fmt.Errorf("the %s %s: %w", kind, id, err)
+		}
+		marked[[2]string{kind, id}] = marks
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the marks of the search's posts: %w", err)
+	}
+	for index := range results {
+		if marks, found := marked[[2]string{results[index].Kind, results[index].ID}]; found {
+			results[index].EditedAt = marks.editedAt
+			results[index].DeletedAt, results[index].DeletedBy = marks.deletedAt, marks.deletedBy
+		}
+	}
+	return nil
 }
 
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on

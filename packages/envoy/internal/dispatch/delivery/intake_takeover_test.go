@@ -42,7 +42,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 		t.Fatalf("connect the process's intake: %v", err)
 	}
 	t.Cleanup(client.Close)
-	intake := newIntake(client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
+	intake := newIntake(tuningFor(t), client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	t.Cleanup(func() {
 		stopping, cancel := context.WithTimeout(context.Background(), intakeStopBudget)
@@ -63,6 +63,7 @@ func (a *takeOverAttempt) delivers() string { return a.intake.subject }
 // (TestTwoProcessesPollingOneDurableNeverBothBindIt in #2913), asked of the mechanism that
 // replaced it.
 func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
+	t.Parallel()
 	t.Run("back to back", func(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedDeliverySettings(t, ctx, pool)
@@ -183,7 +184,8 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 // the step that replaced it: there is no confirmation read any more, because the create's own
 // answer is the confirmation.
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

@@ -18,12 +18,12 @@ import (
 
 // versionProjections are the census's kinds of the documents of an issue, a project or a
 // conversation, the queries that replace a document, and their versions (projections; R16 of
-// dispatch://INFRA-1253): the artifacts table against the artifact nodes, a document's and a
+// the issue-tree spec): the artifacts table against the artifact nodes, a document's and a
 // query's alike, and artifact_versions against the version nodes, each in both directions.
 //
 // A document's row names its node in the pair 20261116092210 added, so a row that names none is a
 // difference until the backfill names it (backfillObjectNodes). A version's row names no node in a
-// column of its own (decision 8 of dispatch://INFRA-1253's plan): its node is the one its document's
+// column of its own (decision 8 of the issue-tree plan): its node is the one its document's
 // ref_key and its number address (graphstore.VersionID), so a version whose node is missing reads
 // as a row naming a node the store does not hold. A document or a version a removal took out of the
 // tree is a node the store holds gone, which no row projects (api's removedDocumentNodes), so it is
@@ -294,10 +294,10 @@ func writeArtifactRowBatch(ctx context.Context, database *store.Store, refKeys [
 
 // presentVersionNode is the predicate that a version node the store holds present, at any state but
 // gone, stands at the address of the artifact_versions row v of the document a. A node held gone
-// is no present node: a removal or an erase states it gone in the transaction that deletes its
-// row, so a row standing at a gone node's address is a later row at a freed address - the next
-// version after an erase took the newest, or the first version of a document made again under a
-// removed one's name - that an older build wrote with no node of its own.
+// is no present node: a removal states it gone in the transaction that deletes its row, so a row
+// standing at a gone node's address is a later row at a freed address - the first version of a
+// document made again under a removed one's name - that an older build wrote with no node of its
+// own.
 const presentVersionNode = `exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindVersion +
 	`' and n.id = ` + versionAddress + ` and n.state <> '` + graphstore.StateGone + `')`
 
@@ -318,8 +318,8 @@ type versionKey struct {
 }
 
 // backfillVersions writes the node of every version an older build stored with none, under
-// INFRA-1149's r-view-end contract. artifact_versions takes no marker column (decision 8 of
-// dispatch://INFRA-1253's plan), so the node itself is the marker: the pass finds a version owed by
+// the graph-store spec's r-view-end contract. artifact_versions takes no marker column (decision 8
+// of the issue-tree plan), so the node itself is the marker: the pass finds a version owed by
 // an anti-join on graph_nodes, walking the rows batch by batch on (artifact_id, number), the
 // table's own unique key, and a second run reads no row a first one gave its node. A row standing
 // at the address of a node held gone is owed its node too (presentVersionNode), and the write
@@ -358,15 +358,10 @@ func backfillVersions(ctx context.Context, database *store.Store) (KindBackfill,
 	return done, nil
 }
 
-// readVersionBatch reads the next batch of versions with no node after after, in the order of
-// artifact_versions' unique key.
+// readVersionBatch reads the next batch of versions with no node after after
+// (missingVersionKeysStatement).
 func readVersionBatch(ctx context.Context, database *store.Store, after versionKey) ([]versionKey, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select v.artifact_id::text, a.ref_key, v.number `+missingVersionsSQL+`
-		  and (v.artifact_id, v.number) > ($1::uuid, $2)
-		order by v.artifact_id, v.number
-		limit $3
-	`, after.artifactID, after.number, backfillBatch)
+	rows, err := database.Pool.Query(ctx, missingVersionKeysStatement, after.artifactID, after.number, backfillBatch)
 	if err != nil {
 		return nil, fmt.Errorf("read the versions with no node: %w", err)
 	}
@@ -377,11 +372,22 @@ func readVersionBatch(ctx context.Context, database *store.Store, after versionK
 	})
 }
 
+// missingVersionKeysStatement is backfillVersions' selection: at most $3 of the versions whose node
+// the store does not hold present (missingVersionsSQL), past the key ($1, $2), in the order of
+// artifact_versions' unique key, each with its document's ref_key. Each batch reads
+// artifact_versions_artifact_id_number_key from the key on, so a run reads each row once however
+// many batches it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var missingVersionKeysStatement = `
+	select v.artifact_id::text, a.ref_key, v.number ` + missingVersionsSQL + `
+	  and (v.artifact_id, v.number) > ($1::uuid, $2)
+	order by v.artifact_id, v.number
+	limit $3`
+
 // writeVersionBatch writes one batch's version nodes in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner locks the batch's documents stand under
 // first (lockObjectOwners), then it reads the batch's rows again under them, with what each one's node
 // needs of its document (owedVersionNodes), and writes the nodes and facts of the rows
-// still there and still with no present node, and no others (graphstore.Write takes their rows in
+// still there and still with no present node, and no others (graphstore.QueueWrite takes their rows in
 // ascending (kind, id)). A row the removal of its document deleted meanwhile is gone, since the
 // removal takes its issue's owner lock first (api's removeArtifact) and states the node gone in the
 // transaction that deletes the row, and a row a live write or another run gave its node meanwhile
@@ -425,7 +431,11 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 		if len(nodes) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written, stated = int64(len(nodes)), statedOf(nodes)+int64(len(tuples))
@@ -486,8 +496,8 @@ type MissingVersionNodes struct {
 // room the tree artifact's issue, which every document of the room stands under), from before the
 // read to its commit, and every writer of a version node of theirs takes that lock before it: a
 // version's insert (docs.WriteVersionNode, under the owner lock its write holds), the version pass
-// (writeVersionBatch, through lockObjectOwners, the same lock), a removal (api's removeArtifact,
-// the issue's) and the erase (the owner locks it takes first). So while the caller holds the lock
+// (writeVersionBatch, through lockObjectOwners, the same lock) and a removal (api's
+// removeArtifact, the issue's). So while the caller holds the lock
 // no other transaction holds one of these version node rows or waits to take one: a row the read
 // finds with no present node keeps none until the caller commits, and the node rows the queued
 // write takes after the nodes of the caller's own pass wait on no transaction that waits on the
@@ -521,6 +531,7 @@ func (m MissingVersionNodes) Queue(b *store.WriteBatch) {
 		return
 	}
 	graphstore.QueueWrite(b, m.nodes, m.tuples)
+	graphstore.QueueHeads(b, graphstore.HeadsOf(m.nodes, m.tuples))
 }
 
 // owedVersionNodes reads, through q, the artifact_versions rows v the join rows names, bound to
@@ -598,18 +609,31 @@ func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, li
 	return nodes, tuples, rowsRead, nil
 }
 
-// VersionRenderCensus is what the census reads of the versions version_renders holds: how many
-// rows it read, each version rendered from the tree as of the time its row records, and how many
+// VersionRenderCensus is what the census reads of the versions version_renders holds: how many of
+// them it rendered, each from the tree as of the time its row records, and how many
 // are differences, the first reportedDifferences of them each at the version's address with its
 // cause. A version whose stored markdown is not its render is one: the stored markdown of such a
 // version is the rendering cache, and the render is what the version is, so the two agree byte for
-// byte. A row whose version the store no longer holds is one too: every delete of a version row
-// deletes its version_renders row beside it (docs.ForgetVersionRenders), and a row left behind
-// would render a version that is gone, or one written later at its number. A version that holds no
-// row answers its stored bytes, which no render describes, and is none of this census.
+// byte. A row whose version the store no longer holds is one too: no path deletes a version row
+// while its document stands (a removal takes the version_renders rows with the document by their
+// foreign key), and a row left behind would render a version that is gone, or one written later
+// at its number. A version that holds no row answers its stored bytes, which no render describes,
+// and is none of this census.
+//
+// A row that holds no time renders nothing, and the census counts it in a class of its own (R15,
+// R16): Deferred, a version no pass has stated yet, or one a later version replaced before its
+// pass, the first reportedDifferences of them each named at its address (DeferredAt); and
+// TreeMismatch, a version whose pass found the rendering of its tree is not its stored markdown,
+// which is never counted as deferred and is a difference too, so the census refuses while that
+// class holds a row. A repair that closes a mark leaves a row with no time, which is deferred for
+// good. TreeMismatchRepaired is how many rows a repair cleared the mark of, whatever they hold now.
 type VersionRenderCensus struct {
 	Versions, Differences int64
 	Reported              []Difference
+	Deferred              int64
+	DeferredAt            []string
+	TreeMismatch          int64
+	TreeMismatchRepaired  int64
 }
 
 // VersionMarkdownAt renders the document artifactID from the tree as of at, through q. docs'
@@ -622,10 +646,13 @@ type VersionMarkdownAt func(ctx context.Context, q graphstore.Queryer, artifactI
 const versionRenderBatch = 50
 
 // versionRendersStatement is the rows of version_renders after the version $2 of the document $1,
-// by document and number, at most $3: each one's document, number, its time, the address of its
-// version node, whether the store holds that version, and the version's stored markdown.
+// by document and number, at most $3: each one's document, number, its time, null where it holds
+// none, whether it is marked tree_mismatch and whether a repair cleared such a mark, the address
+// of its version node, whether the store holds that version, and the version's stored markdown
+// where the row holds a time.
 var versionRendersStatement = `
-	select r.artifact_id::text, r.number, r.at, a.ref_key || '@v' || r.number, v.artifact_id is not null, v.markdown
+	select r.artifact_id::text, r.number, r.at, r.tree_mismatch, r.tree_mismatch_repaired_at is not null,
+	       a.ref_key || '@v' || r.number, v.artifact_id is not null, case when r.at is not null then v.markdown end
 	from version_renders r
 	join artifacts a on a.id = r.artifact_id
 	left join artifact_versions v on v.artifact_id = r.artifact_id and v.number = r.number
@@ -635,16 +662,18 @@ var versionRendersStatement = `
 
 // versionRenderRow is one row versionRendersStatement answers.
 type versionRenderRow struct {
-	artifactID, address string
-	number              int
-	at                  time.Time
-	held                bool
-	markdown            *string
+	artifactID, address  string
+	number               int
+	at                   *time.Time
+	mismatched, repaired bool
+	held                 bool
+	markdown             *string
 }
 
 // CompareVersionRenders holds each row version_renders holds to its version: to a version the
 // store holds, whose stored markdown it compares with render, the tree as of the time the row
-// records, through q; a row whose version the store does not hold is a difference unrendered. It
+// records, through q; a row whose version the store does not hold is a difference unrendered. A
+// row that holds no time it counts as tree_mismatch or deferred, and renders nothing of it. It
 // reads them in batches of versionRenderBatch.
 func CompareVersionRenders(ctx context.Context, q graphstore.Queryer, render VersionMarkdownAt) (VersionRenderCensus, error) {
 	var census VersionRenderCensus
@@ -656,19 +685,35 @@ func CompareVersionRenders(ctx context.Context, q graphstore.Queryer, render Ver
 		}
 		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (versionRenderRow, error) {
 			var version versionRenderRow
-			err := row.Scan(&version.artifactID, &version.number, &version.at, &version.address, &version.held, &version.markdown)
+			err := row.Scan(&version.artifactID, &version.number, &version.at, &version.mismatched, &version.repaired,
+				&version.address, &version.held, &version.markdown)
 			return version, err
 		})
 		if err != nil {
 			return VersionRenderCensus{}, fmt.Errorf("read the versions version_renders holds: %w", err)
 		}
 		for _, version := range batch {
-			census.Versions++
-			cause := "the row names a version the store does not hold"
-			if version.held {
-				rendered, err := render(ctx, q, version.artifactID, version.at)
+			if version.repaired {
+				census.TreeMismatchRepaired++
+			}
+			cause := ""
+			switch {
+			case version.mismatched:
+				census.TreeMismatch++
+				cause = "the pass that stated the version found its tree does not render as its stored markdown (tree_mismatch)"
+			case version.at == nil:
+				census.Deferred++
+				if len(census.DeferredAt) < reportedDifferences {
+					census.DeferredAt = append(census.DeferredAt, "version "+version.address)
+				}
+			case !version.held:
+				census.Versions++
+				cause = "the row names a version the store does not hold"
+			default:
+				census.Versions++
+				rendered, err := render(ctx, q, version.artifactID, *version.at)
 				if err != nil {
-					return VersionRenderCensus{}, fmt.Errorf("render %s as of %s: %w", version.address, version.at, err)
+					return VersionRenderCensus{}, fmt.Errorf("render %s as of %s: %w", version.address, *version.at, err)
 				}
 				cause = renderDifference(version.markdown, rendered)
 			}
@@ -704,16 +749,24 @@ func renderDifference(stored *string, rendered string) string {
 		len(*stored), len(rendered), at)
 }
 
-// writeVersionRenders prints the census of the rendered versions, each difference on a line of
-// its own.
+// writeVersionRenders prints the census of the rendered versions, its classes on its first line,
+// each difference on a line of its own, and each deferred version it names on a line of its own.
 func writeVersionRenders(w io.Writer, census VersionRenderCensus) {
-	fmt.Fprintf(w, "census: versions rendered_from_tree=%s differences=%s (each version version_renders holds, its stored markdown against a render of the tree as of its row's time; a version with no row answers its stored bytes and is none of these)\n",
-		pgmigrate.Thousands(census.Versions), pgmigrate.Thousands(census.Differences))
+	fmt.Fprintf(w, "census: versions rendered_from_tree=%s differences=%s deferred=%s tree_mismatch=%s tree_mismatch_repaired=%s (each version version_renders holds, its stored markdown against a render of the tree as of its row's time; a row with no time is deferred, or tree_mismatch where its pass found its tree does not render as its stored markdown, which is a difference too; a version with no row answers its stored bytes and is none of these)\n",
+		pgmigrate.Thousands(census.Versions), pgmigrate.Thousands(census.Differences), pgmigrate.Thousands(census.Deferred),
+		pgmigrate.Thousands(census.TreeMismatch), pgmigrate.Thousands(census.TreeMismatchRepaired))
 	for _, difference := range census.Reported {
 		fmt.Fprintf(w, "census: versions difference at %s: %s\n", difference.At, difference.Cause)
 	}
 	if census.Differences > int64(len(census.Reported)) {
 		fmt.Fprintf(w, "census: versions and %s more difference(s) not printed\n",
 			pgmigrate.Thousands(census.Differences-int64(len(census.Reported))))
+	}
+	for _, at := range census.DeferredAt {
+		fmt.Fprintf(w, "census: versions deferred at %s: no pass has stated it\n", at)
+	}
+	if census.Deferred > int64(len(census.DeferredAt)) {
+		fmt.Fprintf(w, "census: versions and %s more deferred version(s) not printed\n",
+			pgmigrate.Thousands(census.Deferred-int64(len(census.DeferredAt))))
 	}
 }

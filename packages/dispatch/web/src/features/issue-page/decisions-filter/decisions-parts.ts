@@ -112,7 +112,9 @@ interface EntryBase {
   /** The node, as the whole tree holds it at the place it is edited. */
   readonly node: TreeNode;
   /** The node's parent in the conversation as one line on its row (R2), since no row of this
-   *  filter stands under another; absent for a node that hangs under the issue itself. */
+   *  filter stands under another, with its address and a comment's or a message's marks, as a
+   *  filter's parent line holds them (`presets.ts`); absent for a node that hangs under the
+   *  issue itself. */
   readonly parent?: ParentLine;
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
@@ -135,6 +137,10 @@ export interface DecisionChange {
   /** What the person wrote, as stored. */
   readonly body: string;
   readonly by: Actor;
+  /** When the person last edited what they wrote (`Comment.edited_at`), which the row says
+   *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null for a change nobody
+   *  edited. */
+  readonly editedAt: string | null;
   /** The comment's own id, which is its node's in the conversation. */
   readonly id: string;
   /** The comment's address in the conversation. */
@@ -317,6 +323,7 @@ export function decisionsParts({
               at: asked.created_at,
               body: asked.body,
               by: asked.author,
+              editedAt: asked.edited_at,
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
             },
@@ -367,8 +374,9 @@ interface Placement {
 }
 
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
- *  is edited (`TreeNode.transcluded`), with the parent it hangs under there. The issue itself is
- *  no parent a row names: the page is the issue. */
+ *  is edited (`TreeNode.transcluded`), with the parent it hangs under there: its one line, its
+ *  address and its author's corrections of it, as the outline's filters give a row's parent
+ *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. */
 export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
@@ -381,6 +389,14 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
               parent: {
                 id: above.id,
                 line: lineOf(above),
+                // The parent's own address, which makes a parent's line with words the link a
+                // reader follows to it (R18); a wordless parent is its kind word, with no link.
+                ...(above.reference === undefined ? {} : { reference: above.reference }),
+                // A comment's or a message's marks, which its child's row draws with the line
+                // (INFRA-1523, R2 and R3).
+                ...(above.deletedAt === undefined ? {} : { deletedAt: above.deletedAt }),
+                ...(above.deletedBy === undefined ? {} : { deletedBy: above.deletedBy }),
+                ...(above.editedAt === undefined ? {} : { editedAt: above.editedAt }),
                 type: above.type,
               },
             }),

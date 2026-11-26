@@ -38,9 +38,10 @@ type setting struct {
 
 // settings is every Dispatch setting, in the order an operator meets them: storage, identity,
 // where the server listens and how many document rooms and connections it holds, NATS, the Envoy
-// listener, projects and the issues the search bar files, the GitHub App, cookies,
-// service-account tokens, the secrets broker, meaning search's model service, the model the
-// server generates text with, the dashboard, and local and test runs.
+// listener, projects, the issues the search bar files and the rule between a parent's status and
+// its children's, the GitHub App, cookies, service-account tokens, the secrets broker, meaning
+// search's model service, the model the server generates text with, the dashboard, and local and
+// test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
@@ -110,10 +111,14 @@ var settings = []setting{
 		Description: "How long after its last registration a session counts as live, as a positive Go duration. Dispatch judges a role route's holder by it, as the Envoy listener judges every session: within it the holder is live and the event is forwarded. Give the listeners of a deployment and Dispatch the same value, or Dispatch calls a holder the listener still serves lapsed, and the other way round. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
 	{Name: "ENVOY_SESSION_GONE_HORIZON", Default: "`1h`", Required: "no",
 		Description: "How long after its last registration a session reads unresponsive before it reads gone, as a positive Go duration. Dispatch holds a role-routed event pending for an unresponsive holder, with its claim untouched, and counts the route reached with nothing sent only for a gone one. Give the listeners of a deployment and Dispatch the same value: with a horizon only the listener carries, Dispatch marks an event sent to nobody while the listener still calls that holder unresponsive and keeps its role, so the event reaches it never. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
+	{Name: "DISPATCH_PROJECT_OWNER_FALLBACK", Required: "when a project has no owner: the boot refuses to serve while one has none",
+		Description: "The lowercase email of a full member who has signed in, whom the boot makes the owner of every project with no owner: a project whose default assignee had never signed in when migration `20261116015736_project_access` gave each project its default assignee as owner. Unset, or naming nobody who is a full member, the boot refuses to start naming each such project and both repairs, this setting and `envoy-dispatch project-owner <KEY> <email>`. A value that is not a lowercase email refuses startup."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
 	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
 		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
+	{Name: "DISPATCH_PARENT_STATUS_RULE", Default: "`off`", Required: "no",
+		Description: "`on` refuses a write that leaves a parent's status out of line with its children's, and runs the one-time fix of the pairs that break it at boot. Turn it on only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs the releases with the daemon's side of the rule, which send the options of `POST /api/v1/issues/{key}/status-change`. Second, each project's instructions retry a failed root architect with a status write of `todo` alone, not `backlog` and then `todo`, and that project's daemon and controller have read them. The rule refuses that `backlog` while an issue under the root is in work. Turn it on by a rollout that stops every process of the earlier setting first. The fix runs once per database, so turning the setting off and on again runs nothing: a parent and a child that came to break the rule while it was off still break it once it is on again. The rule judges each status change of such a child against its parent, a move within a group too, so a daemon's move of the child from `in_progress` to `testing` under a `done` parent is refused with `409 PARENT_STATUS_CONFLICT` until a person takes the child off that parent (`dispatch issue-update <child> --parent \"\"`, or another parent) or closes it. A value other than `on` or `off` refuses startup."},
 	{Name: "DISPATCH_APP_CLIENT_ID", Required: "no",
 		Description: "GitHub App client ID, which names the App in the JWT its private key signs. Set, the App comes from the `DISPATCH_APP_*` variables instead of `~/.local/share/dispatch/app.json`."},
 	{Name: "DISPATCH_APP_PEM_B64", Required: "no",
@@ -122,6 +127,8 @@ var settings = []setting{
 		Description: "The GitHub App's numeric ID."},
 	{Name: "DISPATCH_REVIEWER_APP_ID", Required: "no",
 		Description: "The review App's numeric ID, the App that posts the `tester` and `architect` verdict check runs, which the CI reconcile pass compares a check run's `app.id` against; unset, the pass records no verdict check run."},
+	{Name: "DISPATCH_VERDICT_APP_ID", Required: "no",
+		Description: "The verdict App's numeric ID, the App that writes the `legion-verdict` check run: the CI reconcile pass leaves that App's check suites out of the record, as the listener does under `ENVOY_VERDICT_APP_ID`, so its completed suite does not publish a settled head a second time. Give it the listener's value; unset, the pass records every App's completed suite."},
 	{Name: "DISPATCH_APP_SLUG", Required: "no",
 		Description: "The GitHub App's slug."},
 	{Name: "DISPATCH_APP_NAME", Required: "no",
@@ -140,8 +147,10 @@ var settings = []setting{
 		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
 		Description: "File holding Dispatch's own projected Kubernetes service-account token, which every call to the secrets broker presents; the broker verifies it and reads the caller from `BROKER_API_ACCOUNTS`. In the cluster it is the projected-token volume's path (`/var/run/secrets/…/token`), which the kubelet rewrites in place; the file is read at call time, so a rotation needs no restart, and a local run writes a token into a file of its own and names that."},
+	{Name: "DISPATCH_PROOF_ORIGINS", Default: "`DISPATCH_SERVER_URL`'s origin alone", Required: "no",
+		Description: "Comma-separated origins Dispatch is reached at beside `DISPATCH_SERVER_URL`, such as the in-cluster address pods and daemons call: a secrets-broker access token's DPoP proof may name any of them, or `DISPATCH_SERVER_URL`'s origin, in its `htu`, and is spent once whichever it names. Each entry is an absolute http(s) URL with no path, query, fragment or user; any other entry refuses startup, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once."},
 	{Name: "DISPATCH_SEARCH_FILL", Default: "`on`", Required: "no",
-		Description: "`on` starts the keyword fill, which writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log while the server serves; `off` defers it: the process starts no fill, takes no hold and writes no row of that table or its cursor, and logs `dispatch: the keyword fill is deferred` once at boot. No route reads the table yet, so search answers alike either way. Read once at boot; any other value refuses startup."},
+		Description: "`on` starts the keyword fill, which writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log while the server serves; `off` defers it: the process starts no fill, takes no hold and writes no row of that table or its cursor, and logs `dispatch: the keyword fill is deferred` once at boot, with whether that table and its cursor each hold a row (`none`, `some`, or `unknown` with the read's error, which never stops the boot). No route reads the table yet, so search answers alike either way. Read once at boot; any other value refuses startup."},
 	{Name: "DISPATCH_EMBEDDER", Default: "`bedrock`", Required: "no",
 		Description: "Where meaning search reaches Cohere Embed v4: `bedrock` (AWS Bedrock, on the AWS SDK's own region and credentials; with no region, search is keyword-only) or `azure` (Azure AI Foundry, configured by the `DISPATCH_AZURE_EMBED_*` settings, each of which `bedrock` refuses, and by the shared Azure sign-in, which `DISPATCH_ANSWERER=azure` reads too)."},
 	{Name: "DISPATCH_AZURE_EMBED_ENDPOINT", Required: "when `DISPATCH_EMBEDDER` is `azure`",
@@ -208,6 +217,8 @@ var settings = []setting{
 		Description: "Set to `1` so the server builds no embedder whatever `DISPATCH_EMBEDDER` and the AWS SDK's own variables would have built: meaning search answers keyword-only and says so, and the embedding queue does nothing, for an end-to-end test process whose AWS variables address a file store rather than a model service. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_RECONCILE_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the delivery reconcile's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP", Required: "no",
+		Description: "Set to `1` so a test process never starts the issue room step - the conversion of each issue in flight into its issue room once every live process announces the issue room - at boot or on its tick, so a test driver's own command (`envoy-dispatch convert-issues`) makes the first move. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HOLD_BLOCK_INDEX", Required: "no",
 		Description: "Set to `1` so a test process never starts the block-index reconciliation - its tick, which marks the documents the event log names, and its pass over the documents owed a block index - while it serves every request as before, so a test driver can let a build of an earlier rule of the block index reach a document this build's backfill marked first. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HOLD_BOOT_BACKFILL", Required: "no",

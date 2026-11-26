@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -126,14 +127,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so an ask block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so an ask block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -1052,8 +1056,9 @@ const relatedCheckInsert = `
 // (persistSuggestions). Every source with a project and an owner gets one related_checks row: its
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
-// write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
-// so an edit's ask blocks beyond decisionBlockCheckLimit, however many, cost one.
+// write, since the row belongs to a project. The rows go in one transaction of the same few round
+// trips however many there are (insertRelatedChecks), so an edit's ask blocks beyond
+// decisionBlockCheckLimit, however many, cost no more than one.
 //
 // related_checks rows the first attempt could not write are tried once more in the background
 // (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
@@ -1126,17 +1131,27 @@ func (s *server) retryRecord(err error, write func(context.Context) error, messa
 	})
 }
 
-// insertRelatedChecks writes inserts' related_checks rows in one round trip. A batch is built for
-// each attempt: pgx keeps what it learned of a statement on the batch's queued queries, which
-// belongs to the connection that sent it. The rows are no write of the request that ran the
-// check: they record a write that has already committed and marked its key, so they are made
-// outside its transaction, and a failure is only logged.
+// insertRelatedChecks writes inserts' related_checks rows in a transaction of its own, in one
+// round trip between its BEGIN and its COMMIT. A batch is built for each attempt: pgx keeps what it
+// learned of a statement on the batch's queued queries, which belongs to the connection that sent
+// it. The rows are no write of the request that ran the check: they record a write that has
+// already committed and marked its key, so they are made outside its transaction, under a context
+// with the request's commit step taken off (store.WithoutBeforeCommit), so that the record never
+// marks the request's Idempotency-Key, and a failure is only logged.
 func (s *server) insertRelatedChecks(ctx context.Context, inserts [][]any) error {
+	tx, err := s.deps.Store.Pool.Begin(store.WithoutBeforeCommit(ctx))
+	if err != nil {
+		return fmt.Errorf("begin the related_checks rows: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
 	batch := &pgx.Batch{}
 	for _, args := range inserts {
 		batch.Queue(relatedCheckInsert, args...)
 	}
-	return s.deps.Store.Pool.SendBatch(ctx, batch).Close()
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // relatedRecordRetryable says whether a related_checks insert that failed may succeed when tried

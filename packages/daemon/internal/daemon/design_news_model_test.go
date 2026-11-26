@@ -114,9 +114,10 @@ import (
 // (newsModelReplacementSeed). LEGION_NEWS_MODEL_SEED runs one seed,
 // LEGION_NEWS_MODEL_RUNS runs seeds 1 to that many (1 runs seed 1 alone), LEGION_NEWS_MODEL_STEPS
 // sets the steps each drives, and LEGION_NEWS_MODEL_TRACE prints each seed's steps and the state each
-// left. A seed's steps are its own: every step waits for the machines before the next, and the
-// machines' timers fire only when a step fires them.
+// left. A seed's steps are its own: every step waits for the machines before the next (wait), and
+// the machines' timers fire only when a step fires them.
 func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
+	t.Parallel()
 	steps := keptPropertyEnv(t, "LEGION_NEWS_MODEL_STEPS", 40)
 	seeds := []int64{newsModelCISeed, newsModelReplacementSeed}
 	if named := os.Getenv("LEGION_NEWS_MODEL_SEED"); named != "" {

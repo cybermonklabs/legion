@@ -20,8 +20,8 @@ import (
 // dropper is who makes a write that may take an ask block out of its document: whether the write
 // is a person's own (writtenByPerson), and so may take an answered ask's block out, and, for such
 // a write, the person whose removal it records on each answered ask it takes out
-// (graphstore.TupleRemovedBy), "" where it records none - the erase's, an operator's write no
-// person made. actor is the write's own actor, which the removal's tuple names as its writer.
+// (graphstore.TupleRemovedBy), "" where it records none. actor is the write's own actor, which
+// the removal's tuple names as its writer.
 type dropper struct {
 	person  bool
 	remover string
@@ -60,18 +60,19 @@ type heldRemoval struct {
 }
 
 // answerDroppedAnsweredAsks answers the answered asks of holder (documentAsksOf, roomAsksOf) whose
-// block a write loses (lost; after is the tree the write leaves). A write that is not a person's
-// own is refused for them (refuseDroppedAnsweredAsks). A person's own write is taken, and holds each
-// as that person's removal on the transaction's ledger, under the document holding the ask's block
+// block a write loses (lost). A person's own write is taken, and holds each as that person's
+// removal on the transaction's ledger, under the document holding the ask's block
 // (refs.AskBlockDocumentSQL), which the version the write leaves of that document states on the
-// ask's node (removalsOf). standing narrows the removals, and the refusal, to the asks whose block
-// the block index holds as an ask block, for a write that replaces the document whole and so has
-// no tree of its own to say what the document held before it: an ask whose block an earlier write
-// took out - a person's removal, or an agent's drop the restore still owes - is lost to no write of
-// this one.
-func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, after *pmdoc.Node, lost func(blockID string) bool, by dropper, standing bool) error {
+// ask's node (removalsOf); a removal the transaction holds already stays as the write that held it
+// first held it. A write that is not a person's own holds none: each text path refuses it on its own
+// where it changes a person's decision, an answered ask's block among them
+// (refuseDroppedAnsweredAsks). standing narrows the removals to the asks whose block the block
+// index holds as an ask block, for a write that replaces the document whole and so has no tree of
+// its own to say what the document held before it: an ask whose block an earlier write took out -
+// a person's removal, or an agent's drop the restore still owes - is lost to no write of this one.
+func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, lost func(blockID string) bool, by dropper, standing bool) error {
 	if !by.person {
-		return refuseDroppedAnsweredAsks(ctx, q, holder, after, lost, standing)
+		return nil
 	}
 	ledger := ledgerFrom(ctx)
 	if by.remover == "" || !graphstore.AddressFits(by.remover) || ledger == nil {
@@ -102,6 +103,9 @@ func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder,
 			continue
 		}
 		document := ask[2]
+		if _, held := ledger.removals[document][ask[0]]; held {
+			continue
+		}
 		if ledger.removals == nil {
 			ledger.removals = map[string]map[string]heldRemoval{}
 		}
@@ -113,23 +117,36 @@ func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder,
 	return nil
 }
 
-// holdSettledRemovals holds, for the version a settlement writes of artifactID from settled, the
-// removal of each answered ask whose block the document's block index held and settled does not
-// hold as an ask block, as the person the version's authors name (versionPerson). No writer but a
+// holdRoomRemovals holds, for a version that takes room's live text, the removal of each answered
+// ask whose block the document's block index holds and live, the room as that version reads it,
+// does not hold as an ask block, as the person authors names (versionPerson): the authors of the
+// room's edits no version has listed, which a settlement's version lists. No writer but a
 // person's own editor takes an answered ask's block out of a document in the room: every other
 // write comes through a route that refuses it (refuseDroppedAnsweredAsks) and writes a version of
 // its own. So the browser's deletion is that person's removal, as the same deletion over HTTP is
 // at once (answerDroppedAnsweredAsks), and it stays taken: the version's index pass states it on
 // the ask's node (removalsOf). An answer's own version names its answerer too, since the answer
 // writes the ask's state into its block in her name (KeepAskBlockInStep), so a deletion settled
-// into that version is hers as well. A version whose authors name no person holds none.
-func holdSettledRemovals(ctx context.Context, q Queryer, artifactID string, settled *pmdoc.Node, authors []model.Actor) error {
+// into that version is hers as well.
+//
+// The settlement that versions the room holds it (settlement.go), and so does each write that
+// versions the room in a settlement's place, before the settlement runs: an upload (ReplaceText),
+// whose version lists the uploader alone and clears the room's pending authors, and a snapshot or
+// a named version (SnapshotVersion, NamedVersion), whose version lists them beside its writer.
+// live is the room as it stood before the transaction's own operations (roomReadTree): what those
+// took out is theirs to hold (answerDroppedAnsweredAsks) or refuse (refuseDroppedAnsweredAsks),
+// and a nil live, a room no read of the transaction's records, holds nothing. Authors that name no
+// person hold none, and a removal the transaction holds already stays as its write held it.
+func holdRoomRemovals(ctx context.Context, q Queryer, artifactID string, live *pmdoc.Node, authors []model.Actor) error {
+	if live == nil {
+		return nil
+	}
 	person, author := versionPerson(authors, "")
 	if person == "" {
 		return nil
 	}
-	held := openAskBlockIDs(settled)
-	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), settled, func(blockID string) bool {
+	held := openAskBlockIDs(live)
+	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), func(blockID string) bool {
 		_, kept := held[blockID]
 		return !kept
 	}, dropper{person: true, remover: person, actor: author}, true)
@@ -247,6 +264,19 @@ func askBlockIn(tree *pmdoc.Node, id string) *pmdoc.Node {
 		return held == nil
 	})
 	return held
+}
+
+// roomReadTree is the room a version of artifactID takes, as holdRoomRemovals compares it with the
+// block index: versioned, the tree the version takes, where the transaction holds no write to the
+// document or one that has changed nothing, and otherwise the tree that write read before its
+// first operation (liveWrite.readTree), nil where its first operation recorded none (a margin
+// write's), which holds nothing.
+func roomReadTree(ctx context.Context, artifactID string, versioned *pmdoc.Node) *pmdoc.Node {
+	write := joinedLiveWrite(ctx, artifactID)
+	if write == nil || len(write.updates) == 0 {
+		return versioned
+	}
+	return write.readTree
 }
 
 // removalsOf is what a version of artifactID states of the removals a person's own write of this

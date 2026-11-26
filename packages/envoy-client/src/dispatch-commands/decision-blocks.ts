@@ -1,5 +1,5 @@
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
-import { typedBlockIdAttribute } from "@legion/contracts";
+import { askOpenerLines, askOpeners } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -9,7 +9,7 @@ import {
   parseDispatchRef,
 } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
-import { liveTextAsks } from "./text-asks";
+import { liveTextAsks, openerAsks } from "./text-asks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -25,14 +25,6 @@ async function blockAsks(
     (ask): ask is AskWithTrees & { readonly block_id: string } =>
       typeof ask.block_id === "string" && ask.block_artifact?.id === resolved.artifact.id
   );
-}
-
-/** The lines of `lines` that open the ask block `blockId`: `:::ask{<id> …}`, the id as the
- *  renderer writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut
- *  cannot hold). A line that quotes the opener (in code, say) is one of them too. */
-function askOpeners(lines: readonly string[], blockId: string): string[] {
-  const id = typedBlockIdAttribute(blockId);
-  return lines.filter((line) => line.includes(`ask{${id} `) || line.includes(`ask{${id}}`));
 }
 
 /**
@@ -56,9 +48,11 @@ function askOpeners(lines: readonly string[], blockId: string): string[] {
  * already carries its own record, so no edit is needed for that; a waiver carries none, so the
  * agent's next edit is where the human's decision gets written into the text. A block whose every
  * opening line records the state the server's ask holds, or that records none, is judged without
- * asking which release serves, since both read it alike, so a line quoting the opener (in code,
- * say) can add an open block but never hide one. The live text is read once, and only for a block
- * that needs it.
+ * asking which release serves, since both read it alike. Only a real opening line counts
+ * (`askOpenerLines`): a line that quotes the opener in fenced or indented code or in front matter
+ * is the document's own text, and so is a later line of an inline code span that stands four
+ * columns or more past its containers. A quote records no state and neither opens a block nor
+ * hides one. The live text is read once, and only for a block that needs it.
  *
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
@@ -80,19 +74,24 @@ export async function refuseOpenDecisionBlocks(
     client.docRead(artifact.id, latest),
   ]);
   const asks = new Map(documentAsks.map((ask) => [ask.block_id, ask]));
-  const lines = version.markdown.split("\n");
+  const openerLines = askOpenerLines(version.markdown);
   // The live text's asks, read once, the first time a block needs them: a Dispatch of this release
   // answers `asks`, and one of the release before sends none and writes them on each opening line.
   let live: Promise<{ readonly served: boolean; readonly asks: readonly TextAsk[] }> | undefined;
   const liveText = () =>
     (live ??= client.docRead(artifact.id).then((text) => ({
+      // kept for one release: release-before-text
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
+  // The state a version's opening line records for its block, which decides a block only against
+  // a Dispatch of the release before, whose live text sends no `asks`.
+  // kept for one release: release-before-text
   const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
   // A version of the release before shows open a block whose ask is answered or closed until the
   // version its settlement writes the answer into; a waived one (resolved) gets the decision
   // written in.
+  // kept for one release: release-before-text
   const stillOpen = (named: string, state: string): string =>
     state === "answered"
       ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
@@ -129,24 +128,34 @@ export async function refuseOpenDecisionBlocks(
       ask === undefined
         ? `block ${block.id}`
         : `${JSON.stringify(ask.question)} (block ${block.id}, ask ${ask.id})`;
-    const openers = askOpeners(lines, block.id);
+    const openers = askOpeners(openerLines, block.id);
     const states = openers.map(stateOf);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
+    // kept for one release: release-before-text
     const recordsOpen = states.includes("open");
+    // kept for one release: release-before-text
     const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
     if (ask !== undefined) {
       const open = ask.state === "open";
+      // A Dispatch of this release sends `asks`, and the ask's own state decides. One of the
+      // release before sends none, and there a version that records the block open while its ask
+      // is not waits for the version that holds the answer.
+      // kept for one release: release-before-text
       if ((!recordsOpen && !recordsSettled) || recordsOpen === open || (await liveText()).served) {
         return open ? named : undefined;
       }
+      // kept for one release: release-before-text
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
-    // A copy, judged by its source.
+    // A copy, judged by its source, which is read off the block's own opening lines alone
+    // (openerAsks over `openers`, the version's real openers of the block): a line that quotes it
+    // (in code, a fence opened on a footnote's label line included, or in front matter) names no
+    // ask Dispatch recorded.
     const text = await liveText();
+    // kept for one release: release-before-text
     if (!text.served && recordsSettled) return undefined;
-    if (!text.served && recordsOpen) {
-      return openCopy(named, liveTextAsks({ markdown: openers.join("\n") }));
-    }
+    // kept for one release: release-before-text
+    if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =
       copies.length > 0 &&
@@ -177,11 +186,11 @@ export async function refuseOpenDecisionBlocks(
  * approval request made after it names a version with no open block for
  * `refuseOpenDecisionBlocks` to find. An `insert` in the same batch that carries the block's id
  * does not exempt it: telling a block written back from an opener quoted in code needs the
- * server's parser, so the executor fails closed, as `refuseOpenDecisionBlocks` does for a quoted
- * opener. An open block is reworded with `replace`, moved with `move`, or, when this session asked
- * it, has its question, options, urgency or multiple changed with `dispatch_edit_ask`; each keeps
- * it. Costs nothing for an edit with no such operation, then one
- * `GET /artifacts/{id}/blocks`, and the owner's asks only when an operation reaches an `ask` block.
+ * server's parser, so the executor fails closed. An open block is reworded with `replace`, moved
+ * with `move`, or, when this session asked it, has its question, options, urgency or multiple
+ * changed with `dispatch_edit_ask`; each keeps it. Costs nothing for an edit with no such
+ * operation, then one `GET /artifacts/{id}/blocks`, and the owner's asks only when an operation
+ * reaches an `ask` block.
  */
 export async function refuseRemovingOpenDecisionBlocks(
   client: DispatchClient,

@@ -39,17 +39,17 @@ func CensusOfEveryMigration(ctx context.Context, databaseURL string, options pgm
 // MigrateWithout is Migrate over every embedded migration but those named, which it leaves
 // pending, through the runner, which records each version it applies.
 func (s *Store) MigrateWithout(ctx context.Context, names []string) error {
-	return s.migrate(ctx, migrationsWithout{FS: migrationFiles, names: names})
+	return s.migrate(ctx, migrationsLeftOut{FS: migrationFiles, names: names})
 }
 
-// migrationsWithout is the embedded set less the files of names and theirs (a migration's census
+// migrationsLeftOut is the embedded set less the files of names and theirs (a migration's census
 // and rollback script share its version and name).
-type migrationsWithout struct {
+type migrationsLeftOut struct {
 	fs.FS
 	names []string
 }
 
-func (m migrationsWithout) ReadDir(name string) ([]fs.DirEntry, error) {
+func (m migrationsLeftOut) ReadDir(name string) ([]fs.DirEntry, error) {
 	entries, err := fs.ReadDir(m.FS, name)
 	if err != nil {
 		return nil, err

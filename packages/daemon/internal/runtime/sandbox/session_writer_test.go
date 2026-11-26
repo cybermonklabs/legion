@@ -329,6 +329,60 @@ func TestTheControllersPodRunsTheRolesDirFormUnderAWriterAudience(t *testing.T) 
 	}
 }
 
+// Under a writer audience the controller's pod runs the roles-dir form in the project's sandbox, as
+// the single-role form does (INFRA-4567). In a microVM whose block names the metadata endpoint,
+// its launcher is told --microvm and the endpoint's pool and identity provider, and the endpoint's
+// token is mounted read-only once, in the controller's container, at WorkloadIdentityDir: the
+// workload-identity directory under the --roles-dir it is told, where the roles-dir form's launcher
+// reads the token (the launcher's servedMetadata), and under RolesDir, which no role's namespace
+// shows. A gVisor controller pod in that form carries none of them, whether the project names no
+// sandbox or names gVisor beside a microvm block that names the endpoint.
+func TestTheControllersRolesDirPodIsToldItsMicroVMAndMountsTheMetadataTokenUnderRolesDir(t *testing.T) {
+	writer := func(o *Options) { o.SessionStore = cloudSQLWriterStore }
+	rolesDirCommand := func(t *testing.T, pod corev1.PodSpec) ([]string, string) {
+		t.Helper()
+		command := containerNamed(t, pod, runtime.ControllerPodContainer).Command
+		rolesDir, ok := flagValue(command, "--roles-dir")
+		if !ok {
+			t.Fatalf("the controller's launcher runs %q, not the roles-dir form, so this case proves nothing", command)
+		}
+		return command, rolesDir
+	}
+	t.Run("in a microVM", func(t *testing.T) {
+		r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, writer)
+		pod := podOf(t, r, controllerSpec(t))
+		command, rolesDir := rolesDirCommand(t, pod)
+		if !slices.Contains(command, "--microvm") {
+			t.Errorf("the controller's launcher runs %q, want --microvm", command)
+		}
+		for flag, value := range map[string]string{"--metadata-workload-pool": testWorkloadPool, "--metadata-identity-provider": testIdentityProvider} {
+			if got, ok := flagValue(command, flag); !ok || got != value {
+				t.Errorf("the controller's launcher runs %q, want %s %s", command, flag, value)
+			}
+		}
+		if read := filepath.Join(rolesDir, launcher.WorkloadIdentityDirName); read != WorkloadIdentityDir {
+			t.Fatalf("the roles-dir launcher reads the token under %s, and the pod mounts it at %s", read, WorkloadIdentityDir)
+		}
+		want := []string{runtime.ControllerPodContainer + " " + WorkloadIdentityDir + " read-only"}
+		if got := mountsNamed(pod, workloadIdentityTokenVolume); !slices.Equal(got, want) {
+			t.Errorf("%s is mounted at %v, want %v", workloadIdentityTokenVolume, got, want)
+		}
+	})
+	for name, block := range map[string]SandboxConfig{
+		"in a project that names no sandbox":      {},
+		"in gVisor beside an inert microvm block": {Type: SandboxGVisor, MicroVM: testMicroVM()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := sandboxRuntime(t, block, writer)
+			pod := podOf(t, r, controllerSpec(t))
+			if command, _ := rolesDirCommand(t, pod); slices.Contains(command, "--microvm") {
+				t.Errorf("the gVisor controller's launcher runs %q, with --microvm", command)
+			}
+			checkNoMetadataEndpoint(t, pod)
+		})
+	}
+}
+
 // The goldens pin every byte of the two Sandboxes a writer audience changes: an issue pod, which
 // gains the writer token and its launcher the audience, and the controller's pod, which runs the
 // roles-dir form. Each is sent in fields the CRD declares. The controller goldens without the
@@ -460,7 +514,7 @@ func TestCheckPodRefusesTheSessionWriterTokensName(t *testing.T) {
 	for name, store := range map[string]ompsessions.Store{
 		"postgres": postgresStore, "cloudsql-iam": cloudSQLImpersonatingStore, "cloudsql-iam with a writer audience": cloudSQLWriterStore,
 	} {
-		if err := CheckPod(pod, nil, testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, store, false); err == nil || err.Error() != want {
+		if err := CheckPod(pod, nil, testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, store, NoExchange); err == nil || err.Error() != want {
 			t.Errorf("under %s, CheckPod = %v, want %q", name, err, want)
 		}
 	}

@@ -2,6 +2,7 @@ import { DESIGN_GATE_STEPS } from "@legion/contracts";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type { Artifact, IssueDetails, Project } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 
 /** A design-gate step this build draws: the steps a deployment gates. */
 type DesignGateStep = (typeof DESIGN_GATE_STEPS)[number];
@@ -34,12 +35,19 @@ function stepDocument(issue: IssueDetails, step: DesignGateStep): Artifact | und
   }
 }
 
+/** Whether the issue is a root of its own project, the issue that stands in the design gate: it
+ *  has no parent, or its parent is an issue of another project (`issueProject`, the one
+ *  key-to-project rule), which passes nothing on, so the issue is its own project's root. */
+export function isProjectRoot(issue: { parent: string | null; project: string }): boolean {
+  return issue.parent === null || issueProject(issue.parent) !== issue.project;
+}
+
 /**
  * The design-gate steps the issue's header draws, one for each step the project's deployment
  * gates, in the order the deployment published them. It is empty - which leaves the header its
  * one chip for the issue's primary document - until the project and the issue are both read, for
- * a project whose deployment gates nothing, and for an issue that is not its tree's root, since
- * only a root issue stands in the gate.
+ * a project whose deployment gates nothing, and for an issue that is not a root of its project
+ * (`isProjectRoot`), since only a root issue stands in the gate.
  *
  * A step word this build does not draw is left out rather than drawn without a name: a Dispatch
  * newer than this build may gate another step.
@@ -52,7 +60,7 @@ export function gatedStepEntries(
   if (steps === undefined || steps === null || steps.length === 0) {
     return [];
   }
-  if (issue === undefined || issue.parent !== null) {
+  if (issue === undefined || !isProjectRoot(issue)) {
     return [];
   }
   return steps

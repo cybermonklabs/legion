@@ -538,11 +538,12 @@ func (k *proofKey) verify(r *http.Request, publicURL string) error {
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
 // stdout/stderr and exit code (0 for a clean exit). extraEnv, when non-nil, is appended after the
 // fixed AGENT_SECRETS_* variables, so a test can set an inherited variable the CLI must not let
-// leak into (or shadow) a granted secret.
+// leak into (or shadow) a granted secret. The binary runs in a world of its own (hostIsolation),
+// so a person's sign-in or settings file on the machine running the tests is not a source.
 func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
-	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
@@ -556,6 +557,21 @@ func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []str
 	}
 	t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, err, out.String(), errOut.String())
 	return "", "", -1
+}
+
+// hostIsolation is the environment a binary runAgentSecrets runs gets over the test process's own,
+// before the test's extraEnv: a home, a config, a state and a runtime directory of its own, and
+// no sign-in store, machine identity or helper socket, as the harness of startCall gives them. So
+// a developer's own sign-in (`agent-secrets login`), settings file, machine cache or helper on the
+// machine running the tests is no source a test's command takes; a test that wants one names it
+// in extraEnv.
+func hostIsolation(t *testing.T) []string {
+	t.Helper()
+	env := []string{"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY=", "AGENT_SECRETS_HELPER_SOCK="}
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
+		env = append(env, name+"="+shortTempDir(t))
+	}
+	return env
 }
 
 // oneJSONObject parses stdout as exactly one JSON object (one line, nothing else) and returns
@@ -746,7 +762,7 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 				defer release()
 
 				cmd := exec.Command(binary, name, "--wait", "200ms", "--", "sh", "-c", "echo ran-the-child")
-				cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
+				cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
 					"AGENT_SECRETS_APPROVE_URL="+approveURL)
 				c := startCall(t, cmd)
 				want := "agent-secrets: request " + requestID + " to " + fakeSourceText(broker) + " is waiting for approval; waiting up to 200ms\n" +
@@ -1243,16 +1259,14 @@ func (c *call) end(t *testing.T) int {
 }
 
 // startExecForm starts the exec form of GRANT_ME against broker from keyDir with no helper to
-// fall back to (the runtime dir is empty and AGENT_SECRETS_HELPER_SOCK is empty). extraEnv comes
-// last, so it can override any of that. Its home and state directory are the test's own, so no
-// sign-in or machine cache of the machine running the test answers for a key dir a row leaves
-// empty.
+// fall back to (hostIsolation: an empty runtime dir and no AGENT_SECRETS_HELPER_SOCK). extraEnv
+// comes last, so it can override any of that. Its home, config and state directories are the
+// test's own, so no sign-in or machine cache of the machine running the test answers for a key
+// dir a row leaves empty.
 func startExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) *call {
 	t.Helper()
 	cmd := exec.Command(binary, "GRANT_ME", "--", "sh", "-c", "exit 0")
-	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir,
-		"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir(), "XDG_STATE_HOME="+t.TempDir(),
-		"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY="), extraEnv...)
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
 	return startCall(t, cmd)
 }
 

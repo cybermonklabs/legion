@@ -1,5 +1,7 @@
 package graphcensus
 
+//ci:builds packages/envoy ./cmd/dispatch-seed seedRunDrives cmdtest.BuildCommand . in ../../../cmd/dispatch-seed, whose binary TestTheSizingCountsEveryTupleTheWritersAppend runs as the seed's three store writers
+
 import (
 	"context"
 	"encoding/json"
@@ -24,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
 	"github.com/sjawhar/envoy/internal/dispatch/storesmove/storesmovetest"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // StoredKind is one kind of tuple a writer of the store appends: the kind of the node the tuple is
@@ -32,7 +35,8 @@ type StoredKind struct{ From, Kind string }
 
 // StoreDrive is one run of writers of the store whose tuples TestTheSizingCountsEveryTupleTheWritersAppend
 // reads off graph_tuples (writeTheStore). It is exported, with its fields, for this package's
-// external test (imported_drives_test.go), which drives the sites whose packages import this one.
+// external test (imported_drives_test.go), which drives the sites of the API and the document
+// service.
 type StoreDrive struct {
 	// Name is the drive as a failure names it: the site it drives, and what it drives that site
 	// over where the test drives one site twice.
@@ -54,12 +58,10 @@ type StoreDrive struct {
 }
 
 // ImportedDrives builds the drives this package's external test package runs on one rig: the
-// API's, the document service's and the erase's. The erase's package imports this one (its
-// readBlockers reads ProvedSessionComments), so it cannot be imported by this package's internal
-// tests, and the erase's drive takes a comment the API's drives wrote on that rig. Its value is
-// set by this package's external test package as it starts (imported_drives_test.go), and
-// writeTheStore runs the drives it builds beside its own; while it is nil, every site only those
-// drives run is listed and not driven, and the test fails naming it.
+// API's and the document service's. Its value is set by this package's external test package as
+// it starts (imported_drives_test.go), and writeTheStore runs the drives it builds beside its own;
+// while it is nil, every site only those drives run is listed and not driven, and the test fails
+// naming it.
 var ImportedDrives func(*testing.T) []StoreDrive
 
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that
@@ -217,15 +219,17 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	}}
 }
 
-// The drives of the lens catalogue's writer and of the backfill's passes over what a process of
-// the release before leaves of a run and of a prevented_by, each a site no drive over the seeded
-// history or the API runs.
+// The drives of the lens catalogue's writer, of the backfill's passes over what a process of the
+// release before leaves of a run and of a prevented_by, and of the block-index tick's sweep of the
+// lenses such a process leaves stale when it removes a document, each a site no drive over the
+// seeded history or the API runs.
 const (
 	addLensKindDrive      = "graphstore/lens_catalogue.go#AddLensKind"
 	owedRunDrive          = "graphcensus/backfill_runs.go#writeOwedRun"
 	runFramesDrive        = "graphcensus/backfill_runs.go#writeRunFrames"
 	goneRunDrive          = "graphcensus/backfill_runs.go#writeGoneRun"
 	endedPreventionsDrive = "graphcensus/backfill_preventions.go#writeEndedPreventions"
+	staleLensSweepDrive   = "graphcensus/orphans.go#StateStaleLensesGone"
 )
 
 // runAndCatalogueDrives are those drives, over a database of their own, one after another: a kind
@@ -236,9 +240,11 @@ const (
 // its one frame, which the terms interaction and frame count, and the node of its asker, the first
 // write of alice in this database, which the term person counts; the value of a frame it appended
 // to a run this build gave its node, which the term frame counts; and the gone state of a run whose
-// row it deleted, which the term interaction_gone counts. Last, the backfill's retraction of the
+// row it deleted, which the term interaction_gone counts. Then the backfill's retraction of the
 // prevented_by at a check of a document that process retired and at a check its version dropped
-// (seedEndedPreventions), which the term risk counts.
+// (seedEndedPreventions), which the term risk counts. Last, the block-index tick's sweep of the
+// stale lenses (StateStaleLensesGone) over one lens on a document that process removed, stating
+// nothing (seedOrphan): the lens's gone state, which the term lens counts.
 func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	database := storetest.Open(t)
@@ -289,6 +295,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:      {graphstore.KindPerson},
@@ -319,9 +326,21 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 	}, {
 		Name: endedPreventionsDrive, Sites: []string{endedPreventionsDrive},
 		Database: database,
-		Ready:    func(t *testing.T) { seedEndedPreventions(t, database, "PREV") },
+		Ready:    func(t *testing.T) { seedEndedPreventions(t, database) },
 		Drive:    pass(backfillEndedPreventions),
 		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
+	}, {
+		Name: staleLensSweepDrive, Sites: []string{"graphcensus/orphans.go#StateStaleLensesGone", "graphstore/write.go#WriteState"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			seedOrphan(t, database, "lensed-md", "00000000-0000-4000-8000-0000000005a1")
+		},
+		Drive: func(t *testing.T) {
+			if stated, err := StateStaleLensesGone(ctx, database); err != nil || stated != 1 {
+				t.Fatalf("the sweep of the stale lenses stated %d nodes gone (%v), want the one stale lens", stated, err)
+			}
+		},
+		Counts: map[StoredKind][]string{{graphstore.KindLens, graphstore.AttributeState}: {graphstore.KindLens}},
 	}}
 }
 
@@ -605,7 +624,8 @@ const (
 // 0.000001, with one issue, its issue links index past the issues it has.
 const seedScale = "0.0002"
 
-// seedWait bounds each wait on the seed: for it to queue behind a hold, and for it to exit.
+// seedWait bounds the wait for the seed to exit once it is let go; its waits to queue behind a
+// hold end on the queue itself (queuedAt).
 const seedWait = 2 * time.Minute
 
 // seedStatementSpace is a run of whitespace in a statement, which the seed's waits fold.
@@ -650,17 +670,18 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	// any statement but one that starts as statement does.
 	queuedAt := func(t *testing.T, holder pgx.Tx, table, statement string) {
 		t.Helper()
-		deadline := time.Now().Add(seedWait)
-		for storetest.WaitForLockWaiters(t, holder, 1, 100*time.Millisecond) < 1 {
+		testwait.UntilPolling(t, 10*time.Millisecond, "the seed to queue behind the hold on "+table+" (the backends queued last read)", func() (int, bool) {
 			select {
 			case <-process.Exited:
 				t.Fatalf("the seed exited before it queued behind the hold on %s; it wrote:\n%s", table, process.Output.String())
 			default:
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the seed never queued behind the hold on %s within %s; it wrote:\n%s", table, seedWait, process.Output.String())
+			waiters, err := storetest.LockWaiters(ctx, holder)
+			if err != nil {
+				t.Fatalf("count the backends queued behind the hold on %s: %v", table, err)
 			}
-		}
+			return waiters, waiters >= 1
+		})
 		var waited string
 		if err := database.Pool.QueryRow(ctx, `
 			select query from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
@@ -781,8 +802,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 		},
 		// The comments, as the comment path states one, in their project, each anchored one's
-		// anchored_in its anchor's block, their one author's node, and the messages' nodes, which
-		// the seed writes after its comments.
+		// anchored_in its anchor's block and, for one that answers nothing, its part_of there (R31),
+		// their one author's node, and the messages' nodes, which the seed writes after its comments.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
@@ -790,6 +811,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleAnchoredIn}:     {"anchor_block"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:         {"anchor_block"},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},

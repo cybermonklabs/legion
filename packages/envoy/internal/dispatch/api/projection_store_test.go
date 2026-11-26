@@ -27,11 +27,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -55,6 +56,7 @@ var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 // they insert with its node and its tuples from the transaction that inserted the row, and an
 // update of a column a tuple projects carries the transaction of the tuple it appended.
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sources := readProjectionWriters(t)
 	t.Run("every write of a projected row or a projected column sits on the store writer's call path", func(t *testing.T) {
@@ -143,14 +145,13 @@ var (
 
 // storeWriters are the store's own writers as a call names them: every function of graphstore a
 // write of graph_nodes and graph_tuples from outside it goes through
-// (graphstorecopy.WriteFunctions), the one list graphstore's register of the store's write sites
+// (graphstoretest.WriteFunctions), the one list graphstore's register of the store's write sites
 // reads too (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row
-// follows (Write, QueueWrite, QueueNodes), the append of what a write stated under its event
-// (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete
-// of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
+// follows (Write, QueueWrite, QueueNodes) and the append of what a write stated under its event
+// (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq.
 var storeWriters = func() []string {
 	var calls []string
-	for _, name := range graphstorecopy.WriteFunctions() {
+	for _, name := range graphstoretest.WriteFunctions() {
 		calls = append(calls, "func:graphstore."+name)
 	}
 	return calls
@@ -286,7 +287,7 @@ func (s *projectionSources) read(fset *token.FileSet, file *ast.File, name strin
 				if err != nil {
 					literal = found.Value
 				}
-				for _, clause := range projectionClauses(literal) {
+				for _, clause := range projectionClauses(literal, projectedColumns) {
 					// A raw literal spans lines, so a statement in it is named by the line its head
 					// is on; an interpreted literal is one line.
 					line := fset.Position(found.Pos()).Line
@@ -316,16 +317,17 @@ type matchedClause struct {
 }
 
 // projectionClauses finds every statement of text that writes a projected table. An insert and
-// a delete are held, and an update is held when it sets a column a tuple projects or when the
-// scan cannot read what it sets.
-func projectionClauses(text string) []matchedClause {
+// a delete are held, and an update is held when it sets a column projected holds - the columns a
+// tuple projects (projectedColumns), or those it projected when a migration ran (projectedAt) - or
+// when the scan cannot read what it sets.
+func projectionClauses(text string, projected map[string]map[string]string) []matchedClause {
 	var found []matchedClause
 	for _, match := range projectionWriteHead.FindAllStringSubmatchIndex(text, -1) {
 		verb := strings.ToLower(strings.Join(strings.Fields(text[match[2]:match[3]]), " "))
 		clause := matchedClause{table: strings.ToLower(text[match[4]:match[5]]), offset: match[0], held: true}
 		clause.text = verb + " " + clause.table
 		if verb == "update" {
-			clause.text, clause.held = updateClause(clause.table, text[match[1]:])
+			clause.text, clause.held = updateClause(projected, clause.table, text[match[1]:])
 		}
 		found = append(found, clause)
 	}
@@ -333,10 +335,10 @@ func projectionClauses(text string) []matchedClause {
 }
 
 // updateClause reads what an update of table sets, rest being the statement after the table's
-// name, and answers how the scan names the update and whether it sets a column a tuple
-// projects (updateSets).
-func updateClause(table, rest string) (string, bool) {
-	named, held := updateSets(table, rest)
+// name, and answers how the scan names the update and whether it sets a column projected holds
+// (updateSets).
+func updateClause(projected map[string]map[string]string, table, rest string) (string, bool) {
+	named, held := updateSets(projected, table, rest)
 	return updateText(table, named), held
 }
 
@@ -350,10 +352,10 @@ func updateText(label string, named []string) string {
 }
 
 // updateSets reads the set list of an update of table, rest being the statement after the
-// table's name: each assignment as the scan names it, and whether one sets a column a tuple
-// projects (projectedColumns, read for that table). An assignment the scan cannot read is held
-// as one that does, and so is a set list it cannot find, for which it answers no names.
-func updateSets(table, rest string) ([]string, bool) {
+// table's name: each assignment as the scan names it, and whether one sets a column projected
+// holds for that table. An assignment the scan cannot read is held as one that does, and so is a
+// set list it cannot find, for which it answers no names.
+func updateSets(projected map[string]map[string]string, table, rest string) ([]string, bool) {
 	set := updateSet.FindStringIndex(rest)
 	if set == nil {
 		return nil, true
@@ -370,13 +372,13 @@ func updateSets(table, rest string) ([]string, bool) {
 			continue
 		}
 		for _, column := range columns {
-			states, projected := projectedColumns[table][column]
+			states, isProjected := projected[table][column]
 			switch {
 			case table == "comments" && column == "anchor" && len(columns) == 1:
 				write, projects := anchorWrite(value)
 				named = append(named, write)
 				held = held || projects
-			case projected:
+			case isProjected:
 				named = append(named, column+" ("+states+")")
 				held = true
 			default:
@@ -508,13 +510,12 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/dispatch/docs/anchor_refresh.go#docs.*Service.refreshAnchors: update update.table": {
 		tables: []string{"comments"}, sets: []string{"the anchor's orphaned and quote keys"},
 	},
-	// The erase, beside its delete of the node and its tuples (graphstore.EraseNode): first the
-	// rows whose foreign key into a projection row is required, which are a comment's mentions,
-	// deliveries and its blocks' tables and no projected table (grapherase's referencesTo), then
-	// the node's projection rows themselves.
-	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply: delete from reference.Table": {},
-	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply: delete from held.Table": {
-		tables: []string{"block_refs", "comments", "document_blocks"},
+	// A conversion's renaming of a block id in the anchors on the issue's documents (docs'
+	// issueConversion.moveAsks), over asks and comments: the anchor's block_id key alone, which
+	// keeps its artifact; the anchored_in at the block moves to its node in the room beside it
+	// (movePointers).
+	"packages/envoy/internal/dispatch/docs/issue_conversion.go#docs.*issueConversion.moveAsks: update table": {
+		tables: []string{"comments"}, sets: []string{"the anchor's block_id key"},
 	},
 	// The block index of a comment, a message and an ask, over the item's own tables (refs'
 	// itemTables): its block state, blocks, block texts and block links, none of them projected.
@@ -527,6 +528,14 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs":    {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs":    {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state":                 {},
+	// The tombstone of a deleted comment or message (refs.TombstoneItem): each block's stored
+	// excerpt and each text a revision recorded, over the item's own blocks and block texts
+	// tables, none of them projected.
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.blocks": {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.texts":  {},
+	// A delete's settle of its post's pending send attempts (queueDeletedPostSettlement):
+	// comment_deliveries or message_deliveries, neither of them projected.
+	"packages/envoy/internal/dispatch/api/post_history.go#api.queueDeletedPostSettlement: update read.table": {},
 	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
 	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
 	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},
@@ -537,6 +546,13 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/daemon/internal/record/store.go#record.*Postgres.MoveKeptClaims: update table":      {},
 	"packages/daemon/internal/store/kept_decisions.go#store.tellKeptDecisions: delete from table": {},
 	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
+	// The repository rename pass (store.RewriteRenamedRepositories): it writes a renamed repository's
+	// name or URL into the issues, projects, check, delivery, pull request head, branch commit,
+	// architecture source and CI reconcile tables, and deletes the rows the new name would
+	// collide with in them, none of which is projected.
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.nameWrite: update table":       {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.urlWrite: update table":        {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.collisions: delete from table": {},
 	// A migration runner's version table, which its caller names: schema_migrations for
 	// Dispatch's store (store.versionTable) and the broker's own for the broker. pgmigrate records
 	// each migration it applies and fills the identity of a row an earlier runner wrote; its test
@@ -548,6 +564,19 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.RunIdentityChecks: update table":                   {},
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.CheckVersionsOfAnEarlierRunner: update table":      {},
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.CheckVersionsOfAnEarlierRunner: insert into table": {},
+	// The writer hold's tables in cipher's own database (natshold.Store, created by
+	// internal/cipher/store/migrations/0044_nats_hold.up.sql), each named by its schema at runtime
+	// (Store.table): nats_hold and its log, the hold records and their deletes, and the cutover
+	// rows, none of which is projected.
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Move: update s.table(\"nats_hold\")":                             {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Move: insert into s.table(\"nats_hold_log\")":                    {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Restore: insert into s.table(\"nats_hold\")":                     {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Restore: insert into s.table(\"nats_hold_log\")":                 {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.PutRecord: insert into s.table(\"nats_hold_records\")":           {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.PutRecord: update s.table(\"nats_hold_records\")":                {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.DeleteCohort: delete from s.table(\"nats_hold_records\")":        {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.DeleteCohort: insert into s.table(\"nats_hold_record_deletes\")": {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.PutCutover: insert into s.table(\"nats_cutover\")":               {},
 }
 
 // runtimeTableHead matches a literal that ends where a write's table begins, the expression
@@ -705,7 +734,7 @@ func (s *projectionSources) runtimeTableWrites(t *testing.T) ([]projectionWrite,
 			clause, held := write.verb+" "+label, true
 			if write.verb == "update" {
 				var named []string
-				named, held = updateSets(table, write.rest)
+				named, held = updateSets(projectedColumns, table, write.rest)
 				if !slices.Equal(named, site.sets) {
 					t.Errorf("%s:%d update %s inside %s: runtimeTableSites says it sets %q in %s, and the scan reads it setting %q there",
 						write.file, write.line, write.table, write.inside, site.sets, table, named)
@@ -831,10 +860,10 @@ func receiverName(fields *ast.FieldList) string {
 // A statement whose table is built at runtime is held as the projected tables runtimeTableSites
 // says it reaches (runtimeTableWrites), and fails where the list does not name its site.
 //
-// The writers of comments are held to the seven commentsRowWriters names, each by the function
-// the scan reports its statement in: an eighth function that makes, unmakes or sets a projected
-// column of a comments row fails, even where a store write reaches it, and so does one of the
-// seven the scan no longer finds there. The seed's is one of them, the one writer of comments
+// The writers of comments are held to the commentsRowWriters names, each by the function the
+// scan reports its statement in: another function that makes, unmakes or sets a projected column
+// of a comments row fails, even where a store write reaches it, and so does a name of the list
+// the scan no longer finds there. The seed's is one of them, the one writer of comments
 // outside internal/dispatch, so a scan that read less of the repository than it should fails
 // too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
@@ -893,20 +922,22 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 
 // commentsRowWriters are the functions whose statements make or unmake a comments row or set a
 // column of it a tuple projects, by the file each is in and the function that issues the
-// statement, as the scan names a write: the comment create, the comment reply, the seed's
-// batches of comments, each beside the nodes the batch's rows project, the comment write of the
-// backfill and of the block-index tick, and the erase (c-projection-write, Verification v108);
-// and this branch's two: the node an issue's filed_from names, written through graphstore.Write
-// before the comment's row names it (stateFiledFromNode), and the anchor block a comment's anchor
-// is pinned to, whose anchored_in the same write states (pinCommentAnchorBlock).
+// statement, as the scan names a write: the comment create's row, which the comment route and the
+// comment an issue write leaves both queue (queueCommentRow), the comment reply, the seed's
+// batches of comments, each beside the nodes the batch's rows project, and the comment write of
+// the backfill and of the block-index tick (c-projection-write, Verification v108); and this
+// branch's three: the node an issue's filed_from names, written through graphstore.Write before the
+// comment's row names it (stateFiledFromNode), the anchor block a comment's anchor is pinned
+// to, whose anchored_in the same write states (pinCommentAnchorBlock), and the orphaned mark of a
+// node anchor, whose anchored_in and part_of the same batch retracts (docs' NodeAnchorOrphans.Queue).
 var commentsRowWriters = []string{
-	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
+	"packages/envoy/internal/dispatch/api/comment_create.go#api.queueCommentRow",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
-	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply",
 	"packages/envoy/internal/dispatch/api/issue_relations.go#api.stateFiledFromNode",
 	"packages/envoy/internal/dispatch/docs/anchor_blocks.go#docs.*Service.pinCommentAnchorBlock",
+	"packages/envoy/internal/dispatch/docs/anchor_refresh.go#docs.NodeAnchorOrphans.Queue",
 }
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was
@@ -958,9 +989,11 @@ func (s *projectionSources) path(from map[string]string, key string) []string {
 }
 
 // requireNoMigrationWritesAProjection reads every migration of the schema: none of them makes
-// or unmakes a row of a projected table or sets a column a tuple projects, so no row of one and
-// no such column was ever written outside a writer. An update of another column, which restates
-// nothing the store holds, is listed.
+// or unmakes a row of a projected table or sets a column a tuple projected when it ran
+// (projectedAt), so no row of one and no such column was ever written outside a writer. An update
+// of another column, which restates nothing the store holds, is listed, and so is one of a column
+// a tuple projects only from a later migration (projectedFrom). Each column projectedFrom names
+// must be one a tuple projects, from a migration the directory holds.
 func requireNoMigrationWritesAProjection(t *testing.T) {
 	t.Helper()
 	entries, err := os.ReadDir("../store/migrations")
@@ -968,39 +1001,86 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 		t.Fatalf("read the migrations: %v", err)
 	}
 	read := 0
+	versions := map[int64]bool{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
+		prefix, _, _ := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			t.Fatalf("migration %s names no version before its first _: %v", entry.Name(), err)
+		}
+		versions[version] = true
 		body, err := os.ReadFile(filepath.Join("../store/migrations", entry.Name()))
 		if err != nil {
 			t.Fatalf("read migration %s: %v", entry.Name(), err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(string(body))) {
-			if !clause.held {
+		text := pgmigrate.WithoutComments(string(body))
+		now := projectionClauses(text, projectedColumns)
+		for index, clause := range projectionClauses(text, projectedAt(version)) {
+			switch {
+			case clause.held:
+				t.Errorf("migration %s writes %s: %s", entry.Name(), clause.table, clause.text)
+			case now[index].held:
+				t.Logf("migration %s: %s: it ran before the migration from which a tuple projects what it sets (projectedFrom)", entry.Name(), now[index].text)
+			default:
 				t.Logf("migration %s: %s: no column it sets is one a tuple projects", entry.Name(), clause.text)
-				continue
 			}
-			t.Errorf("migration %s writes %s: %s", entry.Name(), clause.table, clause.text)
 		}
 	}
 	if read == 0 {
 		t.Fatal("no migration was read, so nothing was checked")
 	}
-	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projects", read)
-}
-
-// withoutSQLComments drops the line comments of a SQL file, so a clause written in prose is no
-// statement.
-func withoutSQLComments(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if cut := strings.Index(line, "--"); cut >= 0 {
-			lines[index] = line[:cut]
+	for _, table := range slices.Sorted(maps.Keys(projectedFrom)) {
+		for _, column := range slices.Sorted(maps.Keys(projectedFrom[table])) {
+			from := projectedFrom[table][column]
+			if _, projected := projectedColumns[table][column]; !projected {
+				t.Errorf("projectedFrom names %s.%s, which no tuple projects (censustest.ProjectedColumns): the list names only columns a tuple projects", table, column)
+			}
+			if !versions[from] {
+				t.Errorf("projectedFrom has a tuple project %s.%s from migration %d, which the migrations directory does not hold", table, column, from)
+			}
 		}
 	}
-	return strings.Join(lines, "\n")
+	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projected when it ran", read)
+}
+
+// projectedFrom names, of each column a tuple projects that no tuple projected until a migration
+// after the one that made its table a projection (projectedTables), the version of that
+// migration: a migration before it that sets the column restated nothing the store held when it
+// ran. Whether a comment answers something - a comment in answers or reply_to, an ask in ask_id -
+// decides only whether its node anchor states a part_of beside its anchored_in
+// (censustest.ProjectedColumns), and a comment holds a node anchor from the migration that adds
+// comments.node_anchor on; migrations 0043 and 0044 moved replies from reply_to into ask_id long
+// before it.
+var projectedFrom = map[string]map[string]int64{
+	"comments": {
+		"answers":  nodeAnchorMigration,
+		"reply_to": nodeAnchorMigration,
+		"ask_id":   nodeAnchorMigration,
+	},
+}
+
+// nodeAnchorMigration is the version of the migration that adds comments.node_anchor
+// (20261125140000_issue_tree_comment_node_anchor.up.sql).
+const nodeAnchorMigration int64 = 20261125140000
+
+// projectedAt is projectedColumns as tuples projected them when the migration of version ran:
+// without each column projectedFrom names a later migration for.
+func projectedAt(version int64) map[string]map[string]string {
+	at := make(map[string]map[string]string, len(projectedColumns))
+	for table, columns := range projectedColumns {
+		at[table] = make(map[string]string, len(columns))
+		for column, states := range columns {
+			if from, later := projectedFrom[table][column]; later && version < from {
+				continue
+			}
+			at[table][column] = states
+		}
+	}
+	return at
 }
 
 // --- the fixture the Postgres halves run on ---------------------------------------------
@@ -1155,7 +1235,7 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 			t.Fatalf("read a row of the catalogue: %v", err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(body)) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(body), projectedColumns) {
 			if !clause.held {
 				t.Logf("%s: %s: no column it sets is one a tuple projects", name, clause.text)
 				continue
@@ -1923,10 +2003,10 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 // projection backs, and the four kinds whose nodes name the project a read is limited by - an
 // issue, a document, an ask and a message, each written at its own create site, beside the rows it
 // writes. An issue's and a document's row names its node in the node columns migration
-// 20261116092210 added (dispatch://INFRA-1253); an ask's and a message's carries none. Beside them
-// stands the node of every version a write inserts (dispatch://INFRA-1253), which
+// 20261116092210 added (the issue-tree spec); an ask's and a message's carries none. Beside them
+// stands the node of every version a write inserts (the issue-tree spec), which
 // artifact_versions projects with no node column of its own, and the two kinds of the lens
-// catalogue its migrations seed (20261116123354), a lens kind and the constraint that holds its
+// catalogue its migrations seed (20261123174710), a lens kind and the constraint that holds its
 // source.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()

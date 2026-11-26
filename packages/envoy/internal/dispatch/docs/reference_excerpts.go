@@ -127,11 +127,17 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	// part_of, its row and its serves, in the transaction that accepts it, whatever the size of its
 	// document, and a typed block the version removes is gone in it (indexDeferredVersion).
 	if held := len(rendered.offsets); rendered.tree != nil && held > deferBlockIndexBlocks {
-		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
-			"artifact", artifactID, "version", version, "blocks", held, "bound", deferBlockIndexBlocks)
+		logDeferredVersion(artifactID, version, held)
 		return s.indexDeferredVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered)
 	}
 	return s.indexDocument(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered, nil)
+}
+
+// logDeferredVersion logs a version of artifactID, a document that is its own room, whose write
+// left its blocks, held of them, to the block-index reconciliation (deferBlockIndexBlocks).
+func logDeferredVersion(artifactID string, version, held int) {
+	slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
+		"artifact", artifactID, "version", version, "blocks", held, "bound", deferBlockIndexBlocks)
 }
 
 // indexDeferredVersion indexes one document version whose blocks its write leaves to the
@@ -338,18 +344,48 @@ func removalsOfVersions(ctx context.Context, versions refs.Versions) graphstore.
 	return graphstore.Joined(held...)
 }
 
+// deferredBlockIndexKey marks the context of a write whose version defers its block index above
+// deferBlockIndexBlocks (WithDeferredBlockIndex).
+type deferredBlockIndexKey struct{}
+
+// WithDeferredBlockIndex marks ctx, a document write's context, as a write whose version leaves its
+// blocks to the block-index reconciliation where the document, or its issue room, holds more of
+// them than a write indexes in its own request, as an upload's and an issue create's do
+// (IndexDocumentReferences): SnapshotVersion, NamedVersion and RebuildDocument read the mark into
+// the version's write (versionWrite.deferLarge). A route marks it where nothing in its transaction
+// reads the version's block index or its record after the version write: the edit route, an
+// anchored comment's or ask's pin, the accept of a suggestion, the named-version route and the
+// rebuild. A settlement's version and the decisions step's are written unmarked.
+func WithDeferredBlockIndex(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deferredBlockIndexKey{}, true)
+}
+
+// deferredBlockIndex reports whether the route marked ctx (WithDeferredBlockIndex).
+func deferredBlockIndex(ctx context.Context) bool {
+	marked, _ := ctx.Value(deferredBlockIndexKey{}).(bool)
+	return marked
+}
+
 // indexVersion is indexDocument for a version of artifactID its writer wrote outside an issue
 // room's settlement (writeVersionTx): the document's own pass where it is a room of its own with
 // no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom).
-func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+// Where deferLarge is set (versionWrite.deferLarge), a version of a document that is its own room
+// holding more blocks than a write indexes in its own request leaves them to the block-index
+// reconciliation, its references and typed nodes indexed here (indexDeferredVersion), as
+// IndexDocumentReferences leaves an upload's, and the room's pass defers as it does for an upload.
+func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources, deferLarge bool) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	room, layout, err := indexedRoom(ctx, tx, artifactID)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	if len(layout) == 0 {
-		return s.indexDocument(ctx, tx, artifactID, versions, markdown, rendered, settled)
+	if len(layout) > 0 {
+		return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, deferLarge)
 	}
-	return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, false)
+	if held := len(rendered.offsets); deferLarge && rendered.tree != nil && held > deferBlockIndexBlocks {
+		logDeferredVersion(artifactID, versions[artifactID].Number, held)
+		return s.indexDeferredVersion(ctx, tx, artifactID, versions, markdown, rendered)
+	}
+	return s.indexDocument(ctx, tx, artifactID, versions, markdown, rendered, settled)
 }
 
 // indexDocumentInRoom indexes, in tx, the issue room room, of layout, after a version of document -
@@ -374,7 +410,8 @@ func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string
 // the settlement that versions that edit, indexes the room. Only document's typed blocks are
 // written then, where its writer's tree renders as its version (indexRoomLeftOwed). What the pass
 // stated of every document is answered together, for the event the writer appends. Where
-// deferLarge is set - an upload's or a create's write (IndexDocumentReferences) - and the room holds
+// deferLarge is set - an upload's or a create's write (IndexDocumentReferences), or a version write
+// its route marked (WithDeferredBlockIndex, indexVersion) - and the room holds
 // more blocks than a write indexes in its own request (deferBlockIndexBlocks), the blocks are left
 // to the block-index reconciliation, which indexes the room whole (indexOwedRoom), and the room's
 // references and typed nodes are indexed here, as one document's deferred version's are
@@ -605,7 +642,11 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, indexing, err := planBlockIndex(ctx, tx, s.markingRule, artifactID, record, versions, markdown, blocks, located, pointers, facts, removalsOfVersions(ctx, versions))
+	moved, indexing, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
+		ArtifactID: artifactID, Record: record, Versions: versions,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
+		Typed: facts, Beside: removalsOfVersions(ctx, versions),
+	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -618,10 +659,11 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	stated := indexing.Stated()
 	// A pass that states a requirement node of the issue marks the issue's spec its own where the
 	// issue is no view (markOwnSpecIndexed), whatever wrote the requirement. A plan that lost the
-	// revision fence states nothing, so it marks nothing. A pass that wins it states each version
-	// it covers, whose version_renders row its transaction writes once its write phase has run
-	// (recordStatedVersions): the request's pass, a room's pass for every fragment's newest version,
-	// and the reconciliation's.
+	// revision fence states nothing, so it marks nothing. A pass that wins it records each version
+	// it covers (recordStatedVersions), whose version_renders row its transaction writes once its
+	// write phase has run where that version is a query version this build's version write made
+	// (readCovered): the request's pass, a room's pass for every fragment's newest version, and the
+	// reconciliation's.
 	if indexing.Won() {
 		if err := markOwnSpecIndexed(ctx, tx, record.Issue, blocks); err != nil {
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
@@ -750,31 +792,19 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, recor
 	})
 }
 
-// planBlockIndex plans the block index of artifactID at versions, its block pointers and its typed
-// nodes included (refs.PlanBlocks, over facts, the typed-node pass's facts read from record), at
-// the marking rule rule of the build planning it, with beside, a write planned for the same event
-// that no index pass of its own carries - the removals of answered asks' blocks a person's own
-// write made (removalsOfVersions) - planned into it. It returns the targets it moves, the cited
-// blocks it changes included (refs.BlockIndexing.Cited), and the plan: its Queue writes it, its
-// Stated is what it states in the node and tuple store, held for the event the caller appends for
-// the version, and its Won and Marked say whether it won the revision fence and drains this
-// build's mark. It plans against what the index holds (heldBlockIndex), and records what this one
-// leaves for a later indexing of the same document (recordBlockIndex).
-func planBlockIndex(
-	ctx context.Context,
-	tx pgx.Tx,
-	rule int,
-	artifactID string,
-	record refs.IndexedVersion,
-	versions refs.Versions,
-	markdown string,
-	blocks []model.ArtifactBlock,
-	located []text.Located,
-	pointers []refs.Pointer,
-	facts refs.TypedFacts,
-	beside graphstore.Uncaused,
-) ([]refs.Target, refs.BlockIndexing, error) {
-	index, err := heldBlockIndex(ctx, tx, artifactID)
+// planBlockIndex plans the block index of version, the versions of a document with its block
+// pointers and its typed nodes (refs.PlanBlocks, over version.Typed, the typed-node pass's facts
+// read from version.Record), at the marking rule rule of the build planning it, with
+// version.Beside, a write planned for the same event that no index pass of its own carries - the
+// removals of answered asks' blocks a person's own write made (removalsOfVersions) - planned into
+// it. It returns the targets it moves, the cited blocks it changes included
+// (refs.BlockIndexing.Cited), and the plan: its Queue writes it, its Stated is what it states in
+// the node and tuple store, held for the event the caller appends for the version, and its Won
+// and Marked say whether it won the revision fence and drains this build's mark. It plans against
+// what the index holds (heldBlockIndex), and records what this one leaves for a later indexing of
+// the same document (recordBlockIndex).
+func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, refs.BlockIndexing, error) {
+	index, err := heldBlockIndex(ctx, tx, version.ArtifactID)
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
@@ -782,11 +812,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
-	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, refs.VersionBlocks{
-		ArtifactID: artifactID, Record: record, Versions: versions,
-		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
-		Typed: facts, Beside: beside,
-	})
+	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, version)
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
@@ -794,20 +820,27 @@ func planBlockIndex(
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
-	recordBlockIndex(ctx, tx, artifactID, indexing.Held())
+	recordBlockIndex(ctx, tx, version.ArtifactID, indexing.Held())
 	return slices.Concat(indexing.Moved(), cited), indexing, nil
 }
 
 // heldBlockIndex is what artifactID's block index holds as a plan of it reads it: as the
 // transaction's own queued indexing of the document leaves it, when there is one
-// (recordBlockIndex), else as read in tx.
+// (recordBlockIndex), else as read in tx; either holding the blocks a move of the node route
+// placed in the transaction (Ledger.storedBlocks), whose own facts the store holds only once the
+// write phase has run.
 func heldBlockIndex(ctx context.Context, tx pgx.Tx, artifactID string) (refs.BlockIndex, error) {
-	if ledger := queueFor(ctx, tx); ledger != nil {
+	ledger := queueFor(ctx, tx)
+	if ledger != nil {
 		if index, held := ledger.blockIndexes[artifactID]; held {
-			return index, nil
+			return index.WithStored(ledger.storedBlocks), nil
 		}
 	}
-	return refs.ReadBlockIndex(ctx, tx, artifactID)
+	index, err := refs.ReadBlockIndex(ctx, tx, artifactID)
+	if err != nil || ledger == nil {
+		return index, err
+	}
+	return index.WithStored(ledger.storedBlocks), nil
 }
 
 // recordBlockIndex records index as what artifactID's block index holds once the plan this

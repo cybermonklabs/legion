@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // catchupBucket is the bucket the rows below create on a cluster, one per row.
@@ -117,6 +118,7 @@ func (b *behindMember) created() []error {
 // answers and the handle each program opens. A row whose misses were not all taken would hold
 // nothing: the start never met the member behind.
 func TestASecondStartOpensABucketAMemberHasNotAppliedYet(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	first, firstJS := memberJetStream(t, cluster, 0)
 	second, secondJS := memberJetStream(t, cluster, 1)
@@ -249,6 +251,7 @@ func (r *raiseWatcher) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.Stre
 // first two reads after the raise. Without the wait the start answers while they are outstanding,
 // which is what this row fails on; with it, every one is read and the start answers after them.
 func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
@@ -276,6 +279,7 @@ func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
 // read limit of the caller's whole wait (countedReads), so a read a loaded machine answers late is
 // not counted twice.
 func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	config := &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3}
@@ -284,9 +288,9 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 	}
 	const unlimited = 1 << 30
 	watcher := newRaiseWatcher(js, 3, unlimited, nil)
-	// A hang guard: a start that waited for the copies would wait until this context ended.
-	ctx, cancel := context.WithTimeout(countedReads(t.Context()), time.Minute)
-	defer cancel()
+	// A hang guard: a start that waited for the copies would wait until this context ended. It has
+	// no span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := countedReads(testwait.Context(t))
 	if _, err := EnsureKeyValue(ctx, conn, watcher, config); err != nil {
 		t.Fatalf("ensure the bucket a start raises nothing on: %v", err)
 	}
@@ -299,6 +303,7 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 // three-member cluster: the row above makes the wait happen, this one shows the bucket the wait
 // hands over is the one the caller reads keys from.
 func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	created, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1})
@@ -326,6 +331,7 @@ func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
 // context.DeadlineExceeded as its cause, once the start has read a copy as behind, so the row reads
 // no clock and no load can end the context before the raise.
 func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {

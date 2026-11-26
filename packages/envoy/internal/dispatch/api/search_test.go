@@ -14,6 +14,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // searchRequestOn is one search sent to one of the two paths the search handler serves
@@ -96,7 +99,35 @@ func searchResponse(t *testing.T, handler http.Handler, query string) model.Sear
 	return searchResponseOn(t, handler, "/api/v1/search", query)
 }
 
+// countRows answers the one count statement asks of the test's database, with the arguments it
+// names.
+func countRows(t *testing.T, database *store.Store, statement string, args ...any) int64 {
+	t.Helper()
+	var count int64
+	if err := database.Pool.QueryRow(context.Background(), statement, args...).Scan(&count); err != nil {
+		t.Fatalf("%s: %v", statement, err)
+	}
+	return count
+}
+
+// blockHolding is the id of the one block of the document artifactID whose text holds word, which
+// a keyword hit on the document names as the node that matched (searchDocumentKeywordLeg).
+func blockHolding(t *testing.T, handler http.Handler, artifactID, word string) string {
+	t.Helper()
+	var held []string
+	for blockText, id := range blockIDsByText(t, handler, artifactID) {
+		if strings.Contains(strings.ToLower(blockText), word) {
+			held = append(held, id)
+		}
+	}
+	if len(held) != 1 {
+		t.Fatalf("document %s holds %q in the blocks %v, want one", artifactID, word, held)
+	}
+	return held[0]
+}
+
 func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedSearchCorpus(t, handler)
 
@@ -107,7 +138,7 @@ func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 		href  string
 		mark  string
 	}{
-		{"astrolabe", "document", corpus.primaryArtifactID, "/issues/" + corpus.issueKey + "/spec?q=astrolabe", "<mark>astrolabe</mark>"},
+		{"astrolabe", "document", corpus.primaryArtifactID, "/issues/" + corpus.issueKey + "/spec?q=astrolabe#b-" + text.EncodeBlockID(blockHolding(t, handler, corpus.primaryArtifactID, "astrolabe")), "<mark>astrolabe</mark>"},
 		{"sextant", "comment", corpus.commentID, "/issues/" + corpus.issueKey + "/comments/" + corpus.commentID, "<mark>sextant</mark>"},
 		{"quadrant", "ask", corpus.askID, "/issues/" + corpus.issueKey + "/asks/" + corpus.askID, "<mark>quadrant</mark>"},
 		{"alidade", "ask", corpus.askID, "/issues/" + corpus.issueKey + "/asks/" + corpus.askID, "<mark>alidade</mark>"},
@@ -143,7 +174,63 @@ func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 	}
 }
 
+// A comment's, a message's and an ask's hit names who wrote it, so a reader of the hit alone can
+// say who said it, where before the hit named nobody and the reader had to read the item too. An
+// issue's hit and a document's carry no author.
+func TestSearchNamesWhoWroteACommentAMessageAndAnAsk(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "# Instruments\n\nThe astrolabe measures altitude.\n")
+	written := func(path string, body map[string]any) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+path, body, "bob")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("POST %s: status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		return decodeBody[struct {
+			ID string `json:"id"`
+		}](t, response).ID
+	}
+	comment := written("/comments", map[string]any{"body": "Replace the sextant diagram."})
+	message := written("/messages", map[string]any{"body": "Compass calibration done."})
+	ask := written("/asks", map[string]any{"question": "Keep the quadrant?", "options": []map[string]string{{"label": "Yes"}}})
+	for _, row := range []struct{ query, kind, id, author string }{
+		{"sextant", "comment", comment, "bob"},
+		{"compass", "message", message, "bob"},
+		{"quadrant", "ask", ask, "bob"},
+		{"instruments", "issue", issue.Key, ""},
+		{"astrolabe", "document", issue.PrimaryArtifactID, ""},
+	} {
+		response := searchRequest(t, handler, "q="+row.query)
+		if response.Code != http.StatusOK {
+			t.Fatalf("search %q: status=%d body=%s", row.query, response.Code, response.Body.String())
+		}
+		type authoredHit struct {
+			Kind   string       `json:"kind"`
+			ID     string       `json:"id"`
+			Author *model.Actor `json:"author"`
+		}
+		var hit *authoredHit
+		for _, result := range decodeBody[struct {
+			Results []authoredHit `json:"results"`
+		}](t, response).Results {
+			if result.Kind == row.kind && result.ID == row.id {
+				hit = &result
+			}
+		}
+		switch {
+		case hit == nil:
+			t.Errorf("search %q answered no %s %s: %s", row.query, row.kind, row.id, response.Body.String())
+		case row.author == "" && hit.Author != nil:
+			t.Errorf("the %s hit names the author %+v, want none", row.kind, *hit.Author)
+		case row.author != "" && (hit.Author == nil || hit.Author.ID != row.author):
+			t.Errorf("the %s hit names the author %+v, want %s, who wrote it", row.kind, hit.Author, row.author)
+		}
+	}
+}
+
 func TestSearchLinksAnchoredIssueItemsToTheirDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "# Instruments\n\nThe astrolabe measures altitude.\n")
 
@@ -211,6 +298,7 @@ func TestSearchLinksAnchoredIssueItemsToTheirDocument(t *testing.T) {
 }
 
 func TestSearchDocumentSnippetWindowsAroundADeepMatch(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Navigation", strings.Repeat("Filler ", 2_000)+"The astrolabe measures altitude.")
 
@@ -225,6 +313,7 @@ func TestSearchDocumentSnippetWindowsAroundADeepMatch(t *testing.T) {
 }
 
 func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Instruments", "The astrolabe measures altitude.\n")
 
@@ -236,20 +325,13 @@ func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the edit's second version of the document (the versions last counted)", func() (int, bool) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)
 		}
-		if versions >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("waiting for second artifact version")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return versions, versions >= 2
+	})
 
 	// The issue carries its primary document's words too (20261105145242), so neither it nor the
 	// document may answer the word the edit replaced, and both answer the word that replaced it.
@@ -266,6 +348,7 @@ func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
 }
 
 func TestSearchRanksTitleHitsAboveBodyHits(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	first := createInteractionIssue(t, handler, "SRCH", "Astrolabe", "Nothing here.")
 	second := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -286,6 +369,7 @@ func TestSearchRanksTitleHitsAboveBodyHits(t *testing.T) {
 // issue list ahead of a hit only a spec makes, because the spec rides at weight C and the key and
 // the title at A (store/migrations/20261105145242_issues_search_spec.up.sql).
 func TestSearchFindsAnIssueByItsSpecBelowATitleHit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	bySpec := createInteractionIssue(t, handler, "SRCH", "Tide tables for the equinox",
 		"The rhumb lines of the Tyrrhenian portolan cross at Capo Testa.\n")
@@ -345,6 +429,7 @@ func createSearchIssue(t *testing.T, handler http.Handler, project, title, spec 
 // The scores say the order is the score's: a title hit ranks 1 before normalisation and
 // searchKeywordWeight * 0.5 / (searchFusionK + 1) after it, a one-word body hit a fifth of that.
 func TestSearchScoresEveryKindOnOneList(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// No spec holds the term, so no document and no ask answers and the two kinds in play are the
 	// crowded one and the lonely one.
@@ -404,6 +489,7 @@ func TestSearchScoresEveryKindOnOneList(t *testing.T) {
 // An issue's key searched alone lists that issue first, though ts_rank_cd scores the key no
 // higher than the title of an issue created after it that cites it.
 func TestSearchListsAnIssueFirstForItsOwnKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	cited := createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "")
 	citing := createSearchIssue(t, handler, "SRCH", cited.Key+" follow-up", "")
@@ -425,6 +511,7 @@ func TestSearchListsAnIssueFirstForItsOwnKey(t *testing.T) {
 // reachable the rows the pages can return. Consecutive offsets walk those rows in one order, and
 // an offset past them answers no rows with the same counts.
 func TestSearchPagesTheFusedOrderAndCountsEveryMatch(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Navigation", "")
 	for i := range contracts.SearchKindDepth + 1 {
@@ -476,6 +563,7 @@ func TestSearchPagesTheFusedOrderAndCountsEveryMatch(t *testing.T) {
 }
 
 func TestSearchFiltersByProjectAndHonoursLimit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	first := createInteractionIssue(t, handler, "SRCH", "Astrolabe", "An astrolabe measures altitude.")
 	second := createInteractionIssue(t, handler, "OTHER", "Astrolabe", "An astrolabe measures altitude.")
@@ -505,6 +593,7 @@ func TestSearchFiltersByProjectAndHonoursLimit(t *testing.T) {
 }
 
 func TestSearchFindsStandaloneProjectDocumentsAndTheirDiscussions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, project := range []map[string]string{
 		{"key": "CORE", "name": "Core"},
@@ -550,7 +639,7 @@ func TestSearchFindsStandaloneProjectDocumentsAndTheirDiscussions(t *testing.T) 
 		id    string
 		href  string
 	}{
-		{"astrolabe", "document", document.ID, "/projects/CORE/documents/" + document.Slug + "?q=astrolabe"},
+		{"astrolabe", "document", document.ID, "/projects/CORE/documents/" + document.Slug + "?q=astrolabe#b-" + text.EncodeBlockID(blockHolding(t, handler, document.ID, "astrolabe"))},
 		{"quadrant", "ask", ask.ID, "/projects/CORE/documents/" + document.Slug + "?ask=" + ask.ID},
 		{"alidade", "comment", comment.ID, "/projects/CORE/documents/" + document.Slug + "?comment=" + comment.ID},
 	}
@@ -587,6 +676,7 @@ func TestSearchFindsStandaloneProjectDocumentsAndTheirDiscussions(t *testing.T) 
 // result.issue.{key,status,title}. The server keeps emitting that object beside owner until no
 // installed client predates the change; a project-document hit never had one and must not gain one.
 func TestSearchIssueOwnedHitsCarryTheLegacyIssueField(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedSearchCorpus(t, handler)
 	document := createProjectDocument(t, handler, "SRCH", "Standalone chart", "# Chart\nThe astrolabe on its own page.\n")
@@ -645,6 +735,7 @@ func TestSearchIssueOwnedHitsCarryTheLegacyIssueField(t *testing.T) {
 }
 
 func TestSearchOnlyReturnsServerInsertedMarks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Navigation", "No search term here.")
 	comment := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]string{
@@ -669,6 +760,7 @@ func TestSearchOnlyReturnsServerInsertedMarks(t *testing.T) {
 }
 
 func TestMarkSnippetEscapesMarkupBeforeInjectingSearchMarks(t *testing.T) {
+	t.Parallel()
 	snippet := markSnippet("<script>alert(1)</script> " + markStart + "astrolabe" + markEnd + " <mark>x</mark>")
 	if !strings.Contains(snippet, "&lt;script&gt;") || !strings.Contains(snippet, "&lt;mark&gt;x&lt;/mark&gt;") {
 		t.Fatalf("snippet %q did not escape user markup", snippet)
@@ -679,6 +771,7 @@ func TestMarkSnippetEscapesMarkupBeforeInjectingSearchMarks(t *testing.T) {
 }
 
 func TestSearchReturnsEmptyResultsForStopWordOnlyQueries(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	for _, query := range []string{"down", "up", "is", "the"} {
@@ -695,6 +788,7 @@ func TestSearchReturnsEmptyResultsForStopWordOnlyQueries(t *testing.T) {
 // rule GET /api/v1/issues already applies (shared via parseQueryInt in server.go): a caller that
 // sent two values almost certainly meant one of them, and guessing which is worse than saying so.
 func TestSearchRejectsInvalidQueries(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	cases := map[string]string{
 		"q=a":                           "INVALID_QUERY",
@@ -727,6 +821,7 @@ func TestSearchRejectsInvalidQueries(t *testing.T) {
 // the server holds the same line in the same unit, so a query the command accepts is never refused
 // here, and a longer one from any other client is refused by name.
 func TestSearchRefusesAQueryOverTheLimit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	search := func(q string) *httptest.ResponseRecorder {
 		return searchRequest(t, handler, url.Values{"q": {q}}.Encode())
@@ -748,6 +843,7 @@ func TestSearchRefusesAQueryOverTheLimit(t *testing.T) {
 // refused by name instead of answering an empty result; an empty project still searches every
 // project, and a key is read after trimming, as q is.
 func TestSearchRefusesAProjectThatIsNotAKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seedSearchCorpus(t, handler)
 	search := func(project string) *httptest.ResponseRecorder {
@@ -776,6 +872,7 @@ func TestSearchRefusesAProjectThatIsNotAKey(t *testing.T) {
 }
 
 func TestSearchAuthentication(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	unauthenticated := dispatchRequest(t, handler, http.MethodGet, "/api/v1/search?q=astrolabe", nil, "")
@@ -798,6 +895,7 @@ func TestSearchAuthentication(t *testing.T) {
 }
 
 func TestFirstTermSkipsOperators(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"astrolabe":         "astrolabe",
 		"-daemon astrolabe": "astrolabe",

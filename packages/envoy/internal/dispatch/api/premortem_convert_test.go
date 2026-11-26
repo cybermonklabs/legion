@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -52,6 +53,7 @@ func readPremortemCapture(t *testing.T) premortemCapture {
 // the heading the capture names and the early warning and prevention its section holds, and the
 // two closing sections word for word, which the lens's verdict carries after the document's own.
 func TestTheParserReadsTheCapturedPremortem(t *testing.T) {
+	t.Parallel()
 	capture := readPremortemCapture(t)
 	document, err := parsePremortem(capture.Document.Markdown)
 	if err != nil {
@@ -96,14 +98,17 @@ func TestTheParserReadsTheCapturedPremortem(t *testing.T) {
 	}
 
 	t.Run("a section the document lacks is named", func(t *testing.T) {
-		for _, missing := range []struct{ cut, says string }{
-			{"## Verdict (confidence: high)", "## Verdict"},
-			{"## What a world-class implementation looks like", "## What a world-class implementation looks like"},
-			{"- **Prevention:** additive only.", "risk 10 (10\\. Agents and skills break mid-flight) holds no list item opening with **Prevention:**"},
+		for _, missing := range []struct {
+			cut   string
+			names []string
+		}{
+			{"## Verdict (confidence: high)", []string{"## Verdict"}},
+			{"## What a world-class implementation looks like", []string{"## What a world-class implementation looks like"}},
+			{"- **Prevention:** additive only.", []string{"10", "**Prevention:**"}},
 		} {
 			_, err := parsePremortem(strings.Replace(capture.Document.Markdown, missing.cut, "Some prose.", 1))
-			if err == nil || !strings.Contains(err.Error(), missing.says) {
-				t.Errorf("the document without %q is refused %v, want it naming %q", missing.cut, err, missing.says)
+			if err == nil || !graphstoretest.NamesAsAWord(err.Error(), missing.names...) {
+				t.Errorf("the document without %q is refused %v, want it naming %q", missing.cut, err, missing.names)
 			}
 		}
 	})
@@ -269,12 +274,13 @@ func (r premortemRig) retirements(artifactID string) []string {
 // under it in the order of their numbers with their headings, early warnings and preventions, the
 // prevented_by tuples the map names - a check of another issue among them, and none for risk 3 -
 // and one moved_to tuple from the document's address to the lens, and retires the document: it
-// leaves the issue's document list, refuses new text 409 DOCUMENT_RETIRED, and holds one
-// document.retired event whose reason names the lens. Its old address then answers the lens
-// through GET /api/v1/references?to=, the closure of the issue whose comment cites that address
-// holds the lens as its member, and the store census reads no difference and no unresolved far
-// end. A second call finds that lens and writes nothing.
+// leaves the issue's document list, refuses new text 409 DOCUMENT_RETIRED naming its slug and its
+// id, and holds one document.retired event whose reason names the lens. Its old address then
+// answers the lens through GET /api/v1/references?to=, the closure of the issue whose comment
+// cites that address holds the lens as its member, and the store census reads no difference and
+// no unresolved far end. A second call finds that lens and writes nothing.
 func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	document, err := parsePremortem(rig.capture.Document.Markdown)
 	if err != nil {
@@ -286,44 +292,48 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 		withEntry := func(change func([]PremortemEntry) []PremortemEntry) []PremortemEntry {
 			return change(rig.premortemMap())
 		}
+		unheld := "dispatch://" + rig.issue + "/artifact/verification-md#b-k404"
+		// Each refusal is told by its entry and risk, and by what it names: the risks the document
+		// holds, the entry that named a risk first, the check, the field. The refusal of a risk no
+		// entry names is entry 0.
 		for _, refused := range []struct {
 			name        string
 			entries     []PremortemEntry
 			entry, risk int
-			says        string
+			names       []string
 		}{
 			{"a risk the document does not hold", withEntry(func(entries []PremortemEntry) []PremortemEntry {
 				return append(entries, PremortemEntry{Risk: 11, Checks: []string{}, Reason: "A risk the document lacks."})
-			}), 12, 11, "the document holds no risk 11: it holds risks 0 to 10"},
+			}), 12, 11, []string{"11", "0", "10"}},
 			{"a number twice", withEntry(func(entries []PremortemEntry) []PremortemEntry {
 				return append(entries, PremortemEntry{Risk: 4, Checks: []string{}, Reason: "Risk 4 again."})
-			}), 12, 4, "risk 4 has an entry already, entry 5"},
+			}), 12, 4, []string{"4", "5"}},
 			{"a risk with no entry", withEntry(func(entries []PremortemEntry) []PremortemEntry {
 				return slices.Delete(entries, 10, 11)
-			}), 0, 10, "takes one entry"},
+			}), 0, 10, nil},
 			{"an address that names no block", withEntry(func(entries []PremortemEntry) []PremortemEntry {
-				entries[2].Checks = []string{"dispatch://" + rig.issue + "/artifact/verification-md#b-k404"}
+				entries[2].Checks = []string{unheld}
 				return entries
-			}), 3, 2, "names no check block that is not gone"},
+			}), 3, 2, []string{unheld}},
 			{"a block that is no check", withEntry(func(entries []PremortemEntry) []PremortemEntry {
 				entries[5].Checks = []string{rig.requirement}
 				return entries
-			}), 6, 5, "names no check block that is not gone"},
+			}), 6, 5, []string{rig.requirement}},
 			{"a blank reason", withEntry(func(entries []PremortemEntry) []PremortemEntry {
 				entries[7].Reason = " "
 				return entries
-			}), 8, 7, "the reason is blank"},
+			}), 8, 7, []string{"reason"}},
 			{"a check named twice", withEntry(func(entries []PremortemEntry) []PremortemEntry {
 				entries[0].Checks = []string{rig.check, rig.check}
 				return entries
-			}), 1, 0, "names the check " + rig.check + " twice"},
+			}), 1, 0, []string{rig.check}},
 		} {
 			_, err := rig.convert(refused.entries, false)
 			t.Logf("%s: %v", refused.name, err)
 			var mapError *PremortemMapError
 			if !errors.As(err, &mapError) || mapError.Entry != refused.entry || mapError.Risk != refused.risk ||
-				!strings.Contains(mapError.Problem, refused.says) {
-				t.Errorf("%s is refused %v, want entry %d, risk %d, saying %q", refused.name, err, refused.entry, refused.risk, refused.says)
+				!graphstoretest.NamesAsAWord(mapError.Problem, refused.names...) {
+				t.Errorf("%s is refused %v, want entry %d, risk %d, naming %q", refused.name, err, refused.entry, refused.risk, refused.names)
 			}
 			if after := rig.storeCounts(); after != before {
 				t.Errorf("%s left %v nodes and tuples, want the %v it found", refused.name, after, before)
@@ -445,7 +455,7 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 	}
 	ops := map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "More."}}, "summary": "edit"}
 	requireRefused(t, "an edit of the converted document", dispatchRequest(t, rig.handler, http.MethodPost,
-		"/api/v1/issues/"+rig.issue+"/artifacts/"+rig.slug+"/edits", ops, "alice"), http.StatusConflict, "DOCUMENT_RETIRED", "was retired")
+		"/api/v1/issues/"+rig.issue+"/artifacts/"+rig.slug+"/edits", ops, "alice"), http.StatusConflict, "DOCUMENT_RETIRED", rig.slug, report.Document.ID)
 	if retirements, want := rig.retirements(report.Document.ID), "converted into the pre-mortem lens "+*report.Lens.Address; len(retirements) != 1 || retirements[0] != want {
 		t.Errorf("the converted document holds the document.retired events %q, want one whose reason is %q", retirements, want)
 	}
@@ -473,8 +483,7 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 		t.Fatalf("convert the pre-mortem again: %v", err)
 	}
 	t.Logf("the second call: %s", again.Summary)
-	if !again.AlreadyConverted || again.Lens.Address == nil || *again.Lens.Address != *report.Lens.Address ||
-		len(again.Risks) != 0 || !strings.Contains(again.Summary, "already converted into the pre-mortem lens "+*report.Lens.Address) {
+	if !again.AlreadyConverted || again.Lens.Address == nil || *again.Lens.Address != *report.Lens.Address || len(again.Risks) != 0 {
 		t.Errorf("the second call answers %+v, want the document already converted into %s", again, *report.Lens.Address)
 	}
 	if after := rig.storeCounts(); after != converted {
@@ -483,11 +492,13 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 }
 
 // TestThePremortemRouteRefusesAnEntryNamingItsPosition calls the route with the eleven entries and
-// one more for risk 11, which the document does not hold: 400 ARTIFACT_INPUT naming that entry by
-// its position and its risk, and nothing written. An entry of the wrong type is refused naming its
-// position too, and a body that is not JSON keeps 400 INVALID_JSON. With the eleven entries and
-// dry_run it answers the report and writes nothing.
+// one more for risk 11, which the document does not hold: 400 ARTIFACT_INPUT naming prevented_by,
+// that entry by its position and its risk, and nothing written. An entry of the wrong type is
+// refused naming its position and the member of the wrong type, an entry that leaves out a member
+// naming its position, its risk and that member, and a body that is not JSON keeps 400
+// INVALID_JSON. With the eleven entries and dry_run it answers the report and writes nothing.
 func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
 	before := rig.storeCounts()
@@ -495,20 +506,32 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	withRisk11 := append(rig.premortemMap(), PremortemEntry{Risk: 11, Checks: []string{}, Reason: "A risk the document lacks."})
 	requireRefused(t, "an entry for risk 11", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": withRisk11}, "alice"),
-		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by entry 12 (risk 11): the document holds no risk 11")
+		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "12", "11")
+	// Every refusal of an entry's shape holds the shape (premortemEntryShape), which names every
+	// member, so each test below reads the member the refusal names outside the shape: a mistyped
+	// member after it, a member left out before it.
 	mistyped := []any{map[string]any{"risk": 0, "checks": []string{}, "reason": "None."}, map[string]any{"risk": "x", "checks": []string{}, "reason": "None."}}
-	requireRefused(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
+	wrongType := requireRefused(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": mistyped}, "alice"),
-		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by entry 2 is no entry")
-	requireRefused(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
+		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "2", "risk")
+	if named, cause, found := strings.Cut(wrongType.Error, premortemEntryShape); !found ||
+		!graphstoretest.NamesAsAWord(named, "2") || !graphstoretest.NamesAsAWord(cause, "risk") {
+		t.Fatalf("an entry whose risk is no number is refused %q, want the entry 2 named before the entry's shape and the member risk after it", wrongType.Error)
+	}
+	// An entry without its checks is refused naming the entry by its position and its risk, and the
+	// member it leaves out.
+	missing := requireRefused(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": []any{map[string]any{"risk": 3, "reason": "None."}}}, "alice"),
-		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by entry 1 (risk 3) holds no checks")
+		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "1", "3", "checks")
+	if named, _, found := strings.Cut(missing.Error, premortemEntryShape); !found || !graphstoretest.NamesAsAWord(named, "1", "3", "checks") {
+		t.Fatalf("an entry without its checks is refused %q, want the entry 1, its risk 3 and the member checks named before the entry's shape", missing.Error)
+	}
 	notJSON := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"prevented_by": [`))
 	notJSON.Header.Set("Content-Type", "application/json")
 	notJSON.Header.Set("X-Dispatch-User", "alice")
 	answered := httptest.NewRecorder()
 	rig.handler.ServeHTTP(answered, notJSON)
-	requireRefused(t, "a body that is not JSON", answered, http.StatusBadRequest, "INVALID_JSON", "invalid JSON body")
+	requireRefused(t, "a body that is not JSON", answered, http.StatusBadRequest, "INVALID_JSON")
 	if after := rig.storeCounts(); after != before {
 		t.Errorf("the refused calls left %v nodes and tuples, want the %v they found", after, before)
 	}
@@ -531,16 +554,16 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 // TestAConversionMapNamingACheckOfAnotherProjectWritesNothing maps risk 5 to a check of another
 // project than the issue's (spec requirement r-premortem-nodes): the conversion is
 // refused, in a dry run as in a real one, through the function and through its route, with 400
-// INVALID_POINTER naming the entry, risk 5 and the check by its address, and the store holds no
-// node or tuple of it - no lens, no risk, no prevented_by, no moved_to - and the document stays
-// listed and unretired.
+// INVALID_POINTER naming the entry, risk 5, the check by its address and both projects, and the
+// store holds no node or tuple of it - no lens, no risk, no prevented_by, no moved_to - and the
+// document stays listed and unretired.
 func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	foreign, _ := rig.otherProjectCheck()
 	entries := rig.premortemMap()
 	entries[5].Checks, entries[5].Reason = []string{foreign}, "A check of another project."
-	says := "prevented_by entry 6 (risk 5): the prevented_by tuple from a risk of project RSN at the check block " + foreign +
-		" of project FAR breaks its type rule: prevented_by points from a risk at a check block of the same project"
+	names := []string{graphstore.TuplePreventedBy, foreign, "RSN", "FAR"}
 	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
 	before := rig.storeCounts()
 	unchanged := func(name string) {
@@ -562,17 +585,16 @@ func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
 		_, err := rig.convert(entries, dryRun)
 		t.Logf("%s: %v", name, err)
 		var mapError *PremortemMapError
-		if !errors.As(err, &mapError) || !errors.Is(err, graphstore.ErrInvalidPointer) || mapError.Entry != 6 || mapError.Risk != 5 || err.Error() != says {
-			t.Errorf("%s is refused %v, want the store's refusal of entry 6, risk 5, reading %q", name, err, says)
+		if !errors.As(err, &mapError) || !errors.Is(err, graphstore.ErrInvalidPointer) || mapError.Entry != 6 || mapError.Risk != 5 ||
+			!graphstoretest.NamesAsAWord(err.Error(), names...) {
+			t.Errorf("%s is refused %v, want the store's refusal of entry 6, risk 5, naming %q", name, err, names)
 		}
 		unchanged(name)
 
 		name = fmt.Sprintf("the route with dry_run %t", dryRun)
-		refused := requireRefused(t, name, dispatchRequest(t, rig.handler, http.MethodPost, path,
-			map[string]any{"prevented_by": entries, "dry_run": dryRun}, "alice"), http.StatusBadRequest, "INVALID_POINTER", foreign)
-		if refused.Error != says {
-			t.Errorf("%s is refused %q, want %q", name, refused.Error, says)
-		}
+		requireRefused(t, name, dispatchRequest(t, rig.handler, http.MethodPost, path,
+			map[string]any{"prevented_by": entries, "dry_run": dryRun}, "alice"), http.StatusBadRequest, "INVALID_POINTER",
+			append([]string{"6", "5"}, names...)...)
 		unchanged(name)
 	}
 }

@@ -11,9 +11,6 @@
       "dist/skills"
     ]
   },
-  "legion": {
-    "daemonApiVersion": 216
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cybermonklabs/legion"
@@ -27,7 +24,7 @@
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 300000",
+    "test": "bun test --parallel --timeout 300000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

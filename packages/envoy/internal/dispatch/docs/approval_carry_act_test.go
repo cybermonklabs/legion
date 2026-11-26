@@ -12,13 +12,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // An answer an agent made for its person under an act - the agent's session and the scopes its
 // credential held - is held on the ask's node and its row like any other answer, and writes one
-// version, whose only change is the server-owned attributes of the ask's block that a version
-// keeps (keptAskState: the state, who answered and when), so R10's case carries the person's
-// approval across it, whatever the act holds. The release before carried an approval to the
+// version. When the answer is that version's whole change (changesAskAttributesAlone: text a
+// person was editing in the browser can settle into the same version), the version changes only
+// the server-owned attributes of the ask's block that a version keeps (keptAskState: the state,
+// who answered and when), so R10's case carries the person's approval across it, whatever the act
+// holds. The release before carried an approval to the
 // version an answer wrote, and read the act's scopes to decide whether it could; that carry is
 // gone, and no carry reads an act: R10's case compares the two renderings and each ask with its
 // node alone (carryVerdict, TestCarryVerdictOverTheApprovedAndTheNewVersion).
@@ -44,7 +47,7 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.ScheduleSettlement(artifactID)
 	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {

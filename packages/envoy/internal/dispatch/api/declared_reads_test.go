@@ -314,7 +314,7 @@ func requireNoCallerChosenQuery(t *testing.T, table []apiRoute, before map[strin
 
 // requireEveryAddedReadDeclared holds each read this tree adds to its declaration: a row of its
 // own with a description no other row shares, an authentication mode that is not public, and a
-// scope row, the row of routeScopes or readScopeRoutes that says who may read it.
+// scope row, the row of routeScopes or readClasses that says who may read it.
 func requireEveryAddedReadDeclared(t *testing.T, added []apiRoute) {
 	if len(added) == 0 {
 		t.Fatal("the table holds no read this tree adds, so nothing was read")
@@ -323,7 +323,7 @@ func requireEveryAddedReadDeclared(t *testing.T, added []apiRoute) {
 	for _, route := range added {
 		name := route.Method + " " + route.Pattern
 		_, scoped := routeScopes[name]
-		listed := slices.Contains(readScopeRoutes, name)
+		_, listed := readClasses[name]
 		t.Logf("%s: auth %s, scopes %v, read list %v", name, route.Auth, []string(route.OAuthScopes), listed)
 		if strings.TrimSpace(route.Description) == "" {
 			t.Errorf("%s carries no description", name)
@@ -337,7 +337,7 @@ func requireEveryAddedReadDeclared(t *testing.T, added []apiRoute) {
 			t.Errorf("%s is %q, which is no authentication mode of its own", name, route.Auth)
 		}
 		if !scoped && !listed {
-			t.Errorf("%s has no scope row: neither routeScopes nor readScopeRoutes names it, so nothing in the table says whose rows it may answer", name)
+			t.Errorf("%s has no scope row: neither routeScopes nor readClasses names it, so nothing in the table says whose rows it may answer", name)
 		}
 	}
 }

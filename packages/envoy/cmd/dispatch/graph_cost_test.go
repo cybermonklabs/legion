@@ -4,13 +4,13 @@
 
 package main
 
-// Three cost measurements share this file. c-write-cost of cybermonklabs/legion#3178 is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost of
-// cybermonklabs/legion#3178 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), and c-read-cost of cybermonklabs/legion#4193 is
-// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go). What they
-// share is the pair of arms they compare, the corpus writer that seeds each arm through that
-// arm's own API, the clock, the order statistic and the table every reading is printed in.
+// The harness a cost tool of this tag builds on: the pair of arms it compares, the corpus writer
+// that seeds each arm through that arm's own API, the clock, the order statistic and the table
+// every reading is printed in. #3178's two cost checks that first used it, c-write-cost and
+// c-read-cost, are gone from main; the readers they used stay in read_cost_test.go and
+// write_cost_test.go, and the INFRA-1098 tree's branches build their own cost tools on this file.
+// cybermonklabs/legion#4193's c-read-cost, TestThePredicateAndTheLensReadsGetNoSlower
+// (predicate_lens_read_cost_test.go), is one.
 //
 // # The two arms, and why each has a database of its own
 //
@@ -43,10 +43,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,10 +56,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
 const (
@@ -75,15 +75,6 @@ const (
 	// statement on a fresh connection pays for the pages every run after it finds cached, and
 	// a measurement of a corpus is not a measurement of a cold cache (measureDismissedScale).
 	costWarmUp = 1
-	// costBudget is what c-write-cost and c-read-cost hold every path to: a path whose p99
-	// rises by more than this much above the same path at the commit before this child fails.
-	costBudget = 100 * time.Millisecond
-	// writeCostEditBudget is what the edit of one block of a 1,999-block document carries
-	// instead of costBudget. Placement is a tuple and a projected column now, and the pass
-	// reads every block's placement to find the ones that moved, because a block that moved
-	// without its text changing is found no other way. Measured at +174.0 ms on this pod after
-	// the allocation cut; the rest is margin for this pod's own swing.
-	writeCostEditBudget = 250 * time.Millisecond
 	// writeCostRewriteRowBudget is what each store row of a whole-document rewrite may cost.
 	// The rewrite makes every block of the document new to the index, so it writes about 14,000
 	// rows the commit before this child writes none of: a total would refuse the model, where a
@@ -125,7 +116,9 @@ func (a *costArm) ready(t *testing.T) {
 // that build migrates at boot, and both delivering to one stub Envoy listener, so a delivery costs
 // the same transport on either arm. It answers them in the order they are measured in, this child
 // first. The base arm is named "the base build" and not "the commit before this child":
-// BASELINE_SHA may name a commit that already holds some of this child's own bases.
+// BASELINE_SHA may name a commit that already holds some of this child's own bases. It sets no
+// setting on either arm's database (startCostArmsWith with none), and the base build's server is
+// given no environment beyond its ENVOY_URL.
 //
 // This child's arm holds its boot's run of the backfill (DISPATCH_TEST_HOLD_BOOT_BACKFILL): the
 // read cost's run takes the store off the corpus and reads the rows that then name no node before
@@ -133,12 +126,23 @@ func (a *costArm) ready(t *testing.T) {
 // goroutine of their own, would name those rows' nodes behind it.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
+	return startCostArmsWith(t, envoyURL, nil)
+}
+
+// startCostArmsWith is startCostArms with each of settings, a Postgres setting's name and value,
+// set on each arm's database before that arm's pool or server opens a session on it
+// (startCostArm), for a setting both builds have to run under. A setting on the database is the
+// value every session opened after it starts with, whichever client opens it - the server's, the
+// test's own pool's, and a connection a later step opens - unless that client names a value of its
+// own as it connects.
+func startCostArmsWith(t *testing.T, envoyURL string, settings map[string]string) (*costArm, *costArm) {
+	t.Helper()
 	older := baseBuild(t)
-	head := startCostArm(t, "this child", true, dispatchOptions{
+	head := startCostArm(t, "this child", true, settings, dispatchOptions{
 		SigningKey: costSigningKey,
 		Env:        map[string]string{"ENVOY_URL": envoyURL, "DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"},
 	})
-	base := startCostArm(t, "the base build", false, dispatchOptions{
+	base := startCostArm(t, "the base build", false, settings, dispatchOptions{
 		Binary:     older,
 		SigningKey: costSigningKey,
 		Env:        map[string]string{"ENVOY_URL": envoyURL},
@@ -148,12 +152,15 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	return head, base
 }
 
-// startCostArm starts one arm on an empty database of its own. The database is empty rather
-// than storetest's clone of a migrated template, because each build has to run its own
-// migrations on it: that is what makes the older arm the older schema.
-func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
+// startCostArm starts one arm on an empty database of its own, carrying settings
+// (setCostDatabase), which are set after censusDatabase makes the database and before the arm's
+// pool or server opens any session on it. The database is empty rather than storetest's clone of a
+// migrated template, because each build has to run its own migrations on it: that is what makes
+// the older arm the older schema.
+func startCostArm(t *testing.T, name string, head bool, settings map[string]string, options dispatchOptions) *costArm {
 	t.Helper()
 	databaseURL := censusDatabase(t)
+	setCostDatabase(t, name, databaseURL, settings)
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
@@ -162,6 +169,30 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 	server := startDispatchProcessWith(t, databaseURL, options)
 	server.waitHealthy(t)
 	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool}
+}
+
+// setCostDatabase sets each of settings on the database databaseURL names, arm name's, with
+// `alter database <the database> set <name> = <value>` on a connection of its own, which it
+// closes before it returns. The database's name and each setting's name are quoted as identifiers
+// and each value as a literal. With no settings it opens no connection.
+func setCostDatabase(t *testing.T, name, databaseURL string, settings map[string]string) {
+	t.Helper()
+	if len(settings) == 0 {
+		return
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("%s: connect to set its database's settings: %v", name, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	database := pgx.Identifier{conn.Config().Database}.Sanitize()
+	for setting, value := range settings {
+		statement := "alter database " + database + " set " + pgx.Identifier{setting}.Sanitize() + " = '" + strings.ReplaceAll(value, "'", "''") + "'"
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %s: %v", name, statement, err)
+		}
+	}
 }
 
 // costDatabaseName is the database a URL names, for the line that says which arm served which.
@@ -302,7 +333,7 @@ func (a *costArm) timed(t *testing.T, method, path, body string, want int) (time
 }
 
 // timedAnswer is timed without the status check, for a read whose caller takes one refusal as a
-// reading (predicateCostRead's cutAtBase) and checks the status itself.
+// reading (predicateCostRead's cutAt) and checks the status itself.
 func (a *costArm) timedAnswer(t *testing.T, method, path, body string) (time.Duration, httpAnswer) {
 	t.Helper()
 	start := time.Now()
@@ -325,17 +356,47 @@ func (a *costArm) count(t *testing.T, statement string, args ...any) int64 {
 	return counted
 }
 
+// documentUpload is the JSON body of an upload of content as the document issue holds under name,
+// sent as login. An upload replacing a document names the token of the version it replaces, which
+// docs.ReplaceText checks under the write's own locks, refusing a token behind the live document
+// 409 PRECONDITION_FAILED, so the body names the token the document carries now; a document's
+// first version replaces nothing and names none.
+func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, login string) string {
+	t.Helper()
+	upload := map[string]any{"name": name, "content": content}
+	answer := p.send(t, http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+url.PathEscape(name)+"/text", "", asUser(login))
+	switch answer.status {
+	case http.StatusNotFound:
+	case http.StatusOK:
+		var document struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(answer.body, &document); err != nil || document.Token == "" {
+			t.Fatalf("read the token of %s's document %s: %v: %s", issue, name, err, answer)
+		}
+		upload["precondition"] = map[string]string{"document": document.Token}
+	default:
+		t.Fatalf("read %s's document %s: %s", issue, name, answer)
+	}
+	body, err := json.Marshal(upload)
+	if err != nil {
+		t.Fatalf("encode the upload of %s: %v", name, err)
+	}
+	return string(body)
+}
+
 // costTableOf prints every reading of a measurement: the summary line of each path on each arm,
-// then every reading it took. Both are printed for every path, because a reader has to see the
-// spread a percentile came out of - and for the write paths, whose 20 readings make the p99
-// their maximum, that spread is the whole of what a single swinging reading means.
+// its nearest-rank p50, p95 and p99, then every reading it took. Both are printed for every path,
+// because a reader has to see the spread a percentile came out of - and for the write paths,
+// whose 20 readings make the p99 their maximum, that spread is the whole of what a single
+// swinging reading means.
 func costTableOf(t *testing.T, readings []costReading) {
 	t.Helper()
-	t.Log("reading\tshape\tarm\tp50 ms\tp99 ms\truns")
+	t.Log("reading\tshape\tarm\tp50 ms\tp95 ms\tp99 ms\truns")
 	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%d",
-			reading.operation, costShapeName(reading.shape), reading.arm,
-			costMilliseconds(reading.p50()), costMilliseconds(reading.p99()), len(reading.runs))
+		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%d",
+			reading.operation, costShapeName(reading.shape), reading.arm, costMilliseconds(reading.p50()),
+			costMilliseconds(reading.percentile(0.95)), costMilliseconds(reading.p99()), len(reading.runs))
 	}
 	t.Log("every reading, in the order it was taken, in milliseconds:")
 	for _, reading := range readings {
@@ -386,59 +447,16 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	}
 }
 
-// costLeaseNamespace is the first key every loop lease is taken under - duty's leaseNamespace,
-// which stays unexported - the four bytes of "LOOP". The second key is the lease's own name,
-// which Postgres hashes with hashtext. memory_harness_test.go states the same two for the same
-// lease, behind the `memory` build tag, which these two measurements do not carry.
-const costLeaseNamespace int32 = 0x4C4F4F50
-
 // costLeaseWait bounds the wait for the block-index lease. A pass reads one batch of each queue
 // it serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
 const costLeaseWait = 5 * time.Minute
 
 // costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease).
+// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease,
+// block_index_lease_test.go).
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	t.Helper()
-	return holdBlockIndexLease(t, arm.name, arm.pool, arm.server)
-}
-
-// holdBlockIndexLease takes the block-index pass's own lease over pool, the test's own connections
-// to the database server serves, and answers the call that gives it back. It is
-// memory_harness_test.go's memoryServer.holdBlockIndexLease over any pool: duty.Exclusive takes
-// that lease before every pass and skips the pass where another session holds it. name is what a
-// failure calls the build, and server's output is printed where the lease stays held too long.
-func holdBlockIndexLease(t *testing.T, name string, pool *pgxpool.Pool, server *dispatchProcess) func() {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("%s: take a connection for the block-index lease: %v", name, err)
-	}
-	deadline := time.Now().Add(costLeaseWait)
-	for {
-		var held bool
-		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
-			conn.Release()
-			t.Fatalf("%s: take the block-index lease: %v", name, err)
-		}
-		if held {
-			break
-		}
-		if time.Now().After(deadline) {
-			conn.Release()
-			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				name, docs.BlockIndexLease, costLeaseWait, server.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("%s: give the block-index lease back: %v", name, err)
-		}
-	}
+	return holdBlockIndexLease(t, arm.pool, arm.name, costLeaseWait, arm.server.Output.String)
 }
 
 // costRunBackfill runs `envoy-dispatch backfill-graph-store` on this child's arm and waits for

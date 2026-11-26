@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -19,11 +20,18 @@ import (
 // later read of the issue must all name the sequence that event took, which a count of the events
 // the route itself queued answers short. The close writes each withdrawn ask's state into its
 // blocks as a version keeps it, and the reopen takes it off again (docs.WriteIssueAskStates,
-// keptAskState): the write that refreshes the stale anchor. The reopen moves the issue the close
-// left done, so the two moves run in order against the one issue, not as subtests a reader could
-// run alone, and each failure names the move it came from.
+// keptAskState): the write that refreshes the stale anchor. That write also arms each document's
+// room settlement, and a settlement that ran between the patch and the read of the issue would
+// append its own artifact.version and block.repaired events on the issue and move its last_seq
+// past the status event. The settle delay is an hour, so no room timer runs while the test does:
+// the test runs each settlement itself (SettleIssueDocuments) after the move's checks, as
+// TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem does, and the reopen starts from
+// the settled documents the timer would have left. The reopen moves the issue the close left done,
+// so the two moves run in order against the one issue, not as subtests a reader could run alone,
+// and each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
-	f := newCloseAsksFixture(t)
+	t.Parallel()
+	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
 		"anchor": map[string]any{"artifact": "spec", "quote": "Context"},
@@ -55,6 +63,10 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 			t.Fatalf("%s answered last_seq %d and stored %s at seq %d with payload last_seq %d, and a read of the issue answers %d: want all four at %d, the sequence the write phase committed",
 				move.name, response.LastSeq, move.eventType, event.seq, event.payloadLastSeq, detail.LastSeq, event.seq)
 		}
+		// The settlement the move's write left owed, which the room timer would run.
+		if err := f.documents.SettleIssueDocuments(context.Background(), f.issue); err != nil {
+			t.Fatalf("%s: settle the issue's documents: %v", move.name, err)
+		}
 	}
 }
 
@@ -64,6 +76,7 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 // session's own again. Both read their advice in the patch's read phase, before the withdrawal
 // and the restoration are written, so the rows the read finds are the ones the patch moves.
 func TestCloseAndReopenAdviceDescribeTheAsksThePatchLeaves(t *testing.T) {
+	t.Parallel()
 	f := newCloseAsksFixture(t)
 	closed := sessionRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{
 		"status": "done", "actor": sessionActor(),

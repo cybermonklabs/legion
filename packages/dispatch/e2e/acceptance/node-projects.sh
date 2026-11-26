@@ -19,8 +19,8 @@
 # zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
 # creates a document's row at the removed document's address, which the census names `gone` and
 # the backfill gives a live node, then removes that row, which leaves the live node with no row:
-# the census names it `orphaned`, the backfill leaves it, and `envoy-dispatch erase` removes it, so
-# the run leaves its database complete.
+# the census names it `orphaned`, with no in-band cure, and the backfill leaves it, and the run
+# ends there.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
@@ -29,7 +29,7 @@
 # writes, which an agent's bearer may not make), DATABASE_URL (the database that server serves,
 # which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on PATH. It reads
 # this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
-# not loopback, and the nodes it deletes are the ask's this run made and the orphaned document's.
+# not loopback, and the node it deletes is the ask's this run made.
 #
 # Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
 # DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
@@ -144,7 +144,7 @@ printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # Under the harness the driver makes what its inputs would otherwise name (the header says what).
-# The census, the backfill and the erase it runs are this checkout's: it builds envoy-dispatch and
+# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and
 # puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
 # the one under test.
 if [[ -n "$harness" ]]; then
@@ -177,9 +177,21 @@ if [[ -n "$harness" ]]; then
   pass setup "made project $project and agent session $AGENT_SESSION on the harness"
 fi
 
+# quotable SECTION WHAT VALUE...: fails unless each VALUE holds no single quote, the one character
+# that ends the SQL string literal a statement names it in, as the checks below name an id or a
+# party.
+quotable() {
+  local section="$1" what="$2" value
+  shift 2
+  for value in "$@"; do
+    [[ "$value" != *"'"* ]] || fail "$section" "$what" "'$value' holds a single quote, which would end the SQL string that names it"
+  done
+}
+
 # node_names_project SECTION KIND ID: the node KIND/ID is in the project, and its `project` value
 # tuple says so.
 node_names_project() {
+  quotable "$1" "the $2 node of $3 names $project" "$3"
   query "$1" "the $2 node of $3 names $project" \
     "select coalesce((select project_key from graph_nodes where kind = '$2' and id = '$3'), '(no node)')"
   [[ "$answer" == "$project" ]] || fail "$1" "the $2 node of $3 names $project" "it names '$answer'"
@@ -195,6 +207,7 @@ node_names_parties() {
   local section="$1" kind="$2" id="$3" want
   shift 3
   want="$(printf '%s\n' "$@" | LC_ALL=C sort -u | paste -sd' ' -)"
+  quotable "$section" "the $kind node of $id is between $want" "$id" "$want"
   query "$section" "the $kind node of $id is between $want" \
     "select coalesce((select coalesce(project_key, '-') || '|' || coalesce(array_to_string(parties, ' '), '-') from graph_nodes where kind = '$kind' and id = '$id'), '(no node)')"
   [[ "$answer" == "-|$want" ]] || fail "$section" "the $kind node of $id is between $want" "it holds '$answer' (project|parties)"
@@ -229,6 +242,13 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
   '{project: $p, title: "Every node names its project", spec: "First paragraph.\n\nSecond paragraph.\n", actor: $a}')"
 want_status 201 "$section" "create an issue"
 key="$(jq -r .key "$work/body")"
+# Each value read from the server's answer goes into the SQL text query passes to psql, or into a
+# request's path, so each is checked before a statement or a path names it: the issue key, the
+# ask's id and the empty document's id and address are held to their shapes, and
+# node_names_project, node_names_parties and sender_party refuse an id or a party that holds a
+# single quote (quotable).
+readonly uuid_shape='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+[[ "$key" =~ ^[A-Z][A-Z0-9]{1,9}-[0-9]+$ ]] || fail "$section" "create an issue" "the answer's key is '$key', not an issue key"
 pass "$section" "created $key"
 node_names_project "$section" issue "$key"
 node_names_project "$section" artifact "$key/spec"
@@ -248,6 +268,7 @@ node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 send POST "/api/v1/issues/$key/asks" "$(jq -cn --argjson a "$(actor)" '{question: "Does every node name its project?", actor: $a}')"
 want_status 201 "$section" "open an ask"
 ask="$(jq -r .id "$work/body")"
+[[ "$ask" =~ $uuid_shape ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
 node_names_project "$section" ask "$ask"
 
 send POST "/api/v1/issues/$key/comments" "$(jq -cn --argjson a "$(actor)" '{body: "A remark.", actor: $a}')"
@@ -281,6 +302,7 @@ node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 # the server stored for them, lower-cased and trimmed as graphstore.AuthorOf reads it - into
 # $answer. It reads the row the create wrote, not the node under test.
 sender_party() {
+  quotable "$section" "read the sender of $1" "$1"
   query "$section" "read the sender of $1" \
     "select case when author->>'kind' = 'user' then 'person:' || lower(btrim(author->>'id')) else '(not a person)' end from messages where id = '$1'"
 }
@@ -305,6 +327,9 @@ send_as_person POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "Scratch $
 want_status 201 "$section" "$person makes an empty document"
 scratch="$(jq -r .artifact.id "$work/body")"
 scratch_ref="$(jq -r .artifact.ref_key "$work/body")"
+[[ "$scratch" =~ $uuid_shape ]] || fail "$section" "$person makes an empty document" "the answer's id is '$scratch', not a uuid"
+[[ "$scratch_ref" =~ ^"$key"/[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+  fail "$section" "$person makes an empty document" "the answer's ref_key is '$scratch_ref', not a document address of $key"
 send_as_person DELETE "/api/v1/artifacts/$scratch"
 want_status 204 "$section" "$person removes the empty document"
 query "$section" "the removed document's node is gone" \
@@ -413,25 +438,7 @@ for run in census backfill; do
   line="$(census_line artifact)"
   [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
     fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
-  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; remove it with: envoy-dispatch erase --node artifact:$scratch_ref" "$work/census" ||
-    fail "$section" "the census after the $run names $scratch_ref orphaned, with the erase that removes it" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned, with no in-band cure" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 done
-pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with the erase that removes it, and the backfill leaves it"
-
-# erase_node ARGS...: `envoy-dispatch erase ARGS`, the command the census's orphaned line printed,
-# with the database credential and no bearer, its output in $work/erase and its exit status in
-# $erase_code.
-erase_node() {
-  erase_code=0
-  env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
-    envoy-dispatch erase "$@" >"$work/erase" 2>&1 || erase_code=$?
-}
-erase_node --node "artifact:$scratch_ref"
-[[ "$erase_code" == 1 ]] || fail "$section" "list the orphaned node's erase" "exited $erase_code: $(<"$work/erase")"
-digest="$(sed -n 's/^  listing digest: \([0-9a-f]\{64\}\)$/\1/p' "$work/erase")"
-[[ -n "$digest" ]] || fail "$section" "read the orphaned node's listing digest" "$(<"$work/erase")"
-erase_node --node "artifact:$scratch_ref" --confirm "$digest"
-[[ "$erase_code" == 0 ]] || fail "$section" "erase the orphaned node" "exited $erase_code: $(<"$work/erase")"
-query "$section" "no node of $scratch_ref remains" "select count(*) from graph_nodes where kind = 'artifact' and id = '$scratch_ref'"
-[[ "$answer" == 0 ]] || fail "$section" "the erase removes the node of $scratch_ref" "$answer node(s) remain"
-census_complete "$section" "after the erase of $scratch_ref"
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with no in-band cure, and the backfill leaves it"

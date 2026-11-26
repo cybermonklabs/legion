@@ -13,12 +13,12 @@ import (
 
 // storesMovedMigration is the migration that writes the supertags of the moved stores' kinds by
 // bounded inserts into graph_nodes and graph_tuples.
-const storesMovedMigration = "20261123134318_stores_moved.up.sql"
+const storesMovedMigration = "20261126000300_stores_moved.up.sql"
 
 // artifactIndexName is the name, after its version, of this issue's concurrent build of
-// graph_nodes_artifact_id, 20261123185607_graph_nodes_artifact_id_index, which sorts after
+// graph_nodes_artifact_id, 20261126000400_graph_nodes_artifact_id_index, which sorts after
 // storesMovedMigration, and workflowInboundIndexName that of its concurrent build of
-// graph_tuples_workflow_inbound, 20261125093000_graph_tuples_workflow_inbound_index, which sorts
+// graph_tuples_workflow_inbound, 20261126000500_graph_tuples_workflow_inbound_index, which sorts
 // after both. The test finds each by its name, so a version that sorts one before the supertag
 // migration fails on the order and not on a missing name.
 const (
@@ -38,8 +38,8 @@ const (
 // pending migration touched it with more than bounded writes (changedBy).
 //
 // It also reads the names of this issue's own migrations and asserts that each concurrent build,
-// graph_nodes_artifact_id (20261123185607_graph_nodes_artifact_id_index) and
-// graph_tuples_workflow_inbound (20261125093000_graph_tuples_workflow_inbound_index), sorts after
+// graph_nodes_artifact_id (20261126000400_graph_nodes_artifact_id_index) and
+// graph_tuples_workflow_inbound (20261126000500_graph_tuples_workflow_inbound_index), sorts after
 // the supertag migration, printing the order. The order no longer rests on a refusal of a
 // concurrent build: dispatch://INFRA-1950's 59fc9e43, which da4952b0e3 of dispatch://INFRA-1150's
 // cybermonklabs/legion#4173 carries word for word, makes the census read one non-unique concurrent

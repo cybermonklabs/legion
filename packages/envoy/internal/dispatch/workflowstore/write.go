@@ -24,11 +24,14 @@ import (
 // no plan (taskRule); a role and a type are a word of lowercase letters, digits and hyphens
 // (roleRule), and so is the role a plan's step names before its key. The agent, the session and
 // the model are printable ASCII with no space, at most 128 characters
-// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces.
+// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces. An
+// experiment and its variant are a name the daemon's settings declare, under the daemon's rule for
+// those names.
 var (
 	taskForm      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
+	nameForm      = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 )
 
 // taskRule and roleRule are taskForm and roleForm as a refusal states them.
@@ -41,6 +44,16 @@ var (
 	stepKinds   = []string{StepKindStep, StepKindRetro, StepKindMerge}
 	stepResults = []string{ResultPassed, ResultFailed, ResultStopped}
 )
+
+// RunsChannel is the Postgres notification channel a write of a run signals its issue on, with the
+// issue's key as its payload. A run's write appends no event (NoEvent), so no event a page follows
+// comes with a run: the live hub listens on this channel to mark an open view of the issue's Legion
+// state owed, whose body carries the count IssueRunsRevision reads. PutStep sends it inside the
+// write's own transaction, so Postgres delivers it at the commit, to every Dispatch process that
+// listens, and never for a write rolled back; and only where the write appended a tuple, so a write
+// sent again, which sets nothing, sends nothing, and each signal comes with a rise of that count. A
+// plan's write (PutPlan) sends nothing: a plan is no run.
+const RunsChannel = "dispatch_workflow_runs"
 
 // PutStep writes one run of one step inside the caller's transaction and answers its node as it
 // stands after the write. It sets each field the write states that the node does not hold yet,
@@ -61,13 +74,16 @@ var (
 // against the kind the write names and against the kind the node holds (typeOfKind,
 // ratingOfKind), so a run made as a step never takes a rating, whatever kind a later write calls
 // it.
+//
+// A write that appends a tuple signals its issue on RunsChannel inside tx, so the signal goes at
+// the commit and a write rolled back sends none; a write that sets nothing sends nothing.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
 		return Step{}, err
 	}
 	missing := write.missingIdentity()
-	written, err := putNode(ctx, tx, nodeWrite{
+	written, appended, err := putNode(ctx, tx, nodeWrite{
 		kind: KindStep, id: id, issue: write.Issue, project: *write.Project, stated: stated, makes: len(missing) == 0,
 		actor: actor, at: at,
 		check: func(held map[string]json.RawMessage) error {
@@ -117,6 +133,11 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	case err != nil:
 		return Step{}, err
 	}
+	if appended {
+		if _, err := tx.Exec(ctx, `select pg_notify($1, $2)`, RunsChannel, write.Issue); err != nil {
+			return Step{}, fmt.Errorf("signal the runs of %s: %w", write.Issue, err)
+		}
+	}
 	return stepFrom(id, written)
 }
 
@@ -132,8 +153,12 @@ type nodeWrite struct {
 	// check judges the write against the attributes the node holds before it ({} for the node
 	// this write makes); a refusal is answered as it is. Nil takes every write.
 	check func(held map[string]json.RawMessage) error
+	// replaces judges the write against the attributes the node holds before it and answers the
+	// attributes of its own it sets whether the node holds them or not, one fact the write
+	// replaces whole; an error is answered as it is. Nil, or an answer of none, replaces nothing.
+	replaces func(held map[string]json.RawMessage) ([]string, error)
 	// sets says whether the write sets the attribute called name, which the node does not hold
-	// yet, given the attributes the node holds before it. Nil sets each.
+	// yet or the write replaces, given the attributes the node holds before it. Nil sets each.
 	sets func(held map[string]json.RawMessage, name string) bool
 	// relations are the relation tuples the write states beside its attributes and its
 	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
@@ -152,14 +177,15 @@ type nodeOfAnotherIssue struct{ issue string }
 func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " + other.issue }
 
 // putNode is the one write of a node, a run's or a plan's, inside the caller's transaction, and
-// answers the node's attributes as they stand after it. It sets each attribute the write states
-// that the node does not hold yet and the write sets (sets), appending one value tuple for each,
-// and leaves each the node holds, appending nothing for it; the write that makes the node states
-// its `part_of` relation to the issue. A refusal comes before anything is appended, but the node a
-// refused write made is the caller's to roll back with its transaction. Every write goes through
-// the store's one writer (graphstore.Write), as a node it restates (Node.Restates): the row keeps
-// its visibility, its state and every attribute this write does not set, and takes the ones it
-// sets laid over them.
+// answers the node's attributes as they stand after it, and whether it appended a tuple, which a
+// write that sets nothing does not. It sets each attribute the write states that the node does not
+// hold yet or that the write replaces (nodeWrite.replaces), where the write sets it
+// (nodeWrite.sets), appending one value tuple for each, and leaves every other the node holds,
+// appending nothing for it; the write that makes the node states its `part_of` relation to the
+// issue. A refusal comes before anything is appended, but the node a refused write made is the
+// caller's to roll back with its transaction. Every write goes through the store's one writer
+// (graphstore.Write), as a node it restates (Node.Restates): the row keeps its visibility, its
+// state and every attribute this write does not set, and takes the ones it sets laid over them.
 //
 // It takes the node's row before it appends a tuple of that node, so the tuples of one node commit
 // in the order of their seq: it reads the row `for update` (lockNode), and where the store holds
@@ -172,43 +198,49 @@ func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " 
 // committed and locks it, and its read answers everything the first wrote. So a node whose row
 // holds no issue is the node this write made: every write states the issue, and the node holds
 // none until the write that made it sets it.
-func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
+func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, bool, error) {
 	heldText, found, err := lockNode(ctx, tx, write.kind, write.id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !found {
 		if !write.makes {
-			return nil, errNoNode
+			return nil, false, errNoNode
 		}
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{write.node(nil, write.project)}, nil); err != nil {
-			return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
+			return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 		}
 		if heldText, found, err = lockNode(ctx, tx, write.kind, write.id); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if !found {
-			return nil, fmt.Errorf("write %s %s: the store holds no row of the node it wrote", write.kind, write.id)
+			return nil, false, fmt.Errorf("write %s %s: the store holds no row of the node it wrote", write.kind, write.id)
 		}
 	}
 	var held map[string]json.RawMessage
 	if err := json.Unmarshal(heldText, &held); err != nil {
-		return nil, fmt.Errorf("decode the attributes of %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("decode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
 	_, issued := held[AttributeIssue]
 	made := !issued
 	if !made {
 		issue, err := heldString(held, AttributeIssue)
 		if err != nil {
-			return nil, fmt.Errorf("decode the issue of %s %s: %w", write.kind, write.id, err)
+			return nil, false, fmt.Errorf("decode the issue of %s %s: %w", write.kind, write.id, err)
 		}
 		if issue != write.issue {
-			return nil, &nodeOfAnotherIssue{issue: issue}
+			return nil, false, &nodeOfAnotherIssue{issue: issue}
 		}
 	}
 	if write.check != nil {
 		if err := write.check(held); err != nil {
-			return nil, err
+			return nil, false, err
+		}
+	}
+	var replaced []string
+	if write.replaces != nil {
+		if replaced, err = write.replaces(held); err != nil {
+			return nil, false, err
 		}
 	}
 
@@ -216,7 +248,7 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 	texts := map[string]string{}
 	var tuples []graphstore.Tuple
 	for _, attribute := range write.stated {
-		if _, holds := held[attribute.name]; holds {
+		if _, holds := held[attribute.name]; holds && !slices.Contains(replaced, attribute.name) {
 			continue
 		}
 		if write.sets != nil && !write.sets(held, attribute.name) {
@@ -237,7 +269,7 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		}
 	}
 	if len(setting) == 0 {
-		return heldText, nil
+		return heldText, false, nil
 	}
 
 	// A node that holds no project yet takes the write's as its project_key too, which the store
@@ -247,20 +279,20 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		project = write.project
 	}
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{write.node(setting, project)}, tuples); err != nil {
-		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
 	for name, value := range setting {
 		encoded, err := json.Marshal(value)
 		if err != nil {
-			return nil, fmt.Errorf("encode the %s of %s %s: %w", name, write.kind, write.id, err)
+			return nil, false, fmt.Errorf("encode the %s of %s %s: %w", name, write.kind, write.id, err)
 		}
 		held[name] = encoded
 	}
 	written, err := json.Marshal(held)
 	if err != nil {
-		return nil, fmt.Errorf("encode the attributes of %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("encode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
-	return written, nil
+	return written, true, nil
 }
 
 // lockNode reads the attributes of the node kind id and holds its row `for update` until the
@@ -310,7 +342,8 @@ type attribute struct {
 // attributes checks every field the write states against its form and answers the write's id in
 // its canonical spelling with the fields it states, in one order whatever order they were given
 // in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it; a
-// rating and its reason are stated together, of a retro, or neither is.
+// rating and its reason are stated together, of a retro, or neither is; an experiment and its
+// variant are stated together, or neither is.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
@@ -431,7 +464,11 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	return id, append(stated, rated...), nil
+	drawn, err := write.experiment()
+	if err != nil {
+		return "", nil, err
+	}
+	return id, append(append(stated, rated...), drawn...), nil
 }
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
@@ -459,6 +496,29 @@ func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	return []attribute{
 		{AttributeRating, int64(rating), strconv.Itoa(rating)},
 		{AttributeRatingReason, reason, reason},
+	}, nil
+}
+
+// experiment checks the experiment and the variant a write states, and answers their two
+// attributes, or none where the write states no experiment. Both are stated, and each is a name of
+// the daemon's rule (nameForm).
+func (write StepWrite) experiment() ([]attribute, error) {
+	if write.Experiment == nil {
+		return nil, nil
+	}
+	experiment, variant := write.Experiment.Experiment, write.Experiment.Variant
+	if experiment == "" || variant == "" {
+		return nil, refusal(ErrStepInput, "experiment and variant are stated together or not at all: a run names the experiment its issue was drawn into with the variant drawn")
+	}
+	if !nameForm.MatchString(experiment) {
+		return nil, refusal(ErrStepInput, "experiment %q must match %s", experiment, nameForm)
+	}
+	if !nameForm.MatchString(variant) {
+		return nil, refusal(ErrStepInput, "variant %q must match %s", variant, nameForm)
+	}
+	return []attribute{
+		{AttributeExperiment, experiment, experiment},
+		{AttributeVariant, variant, variant},
 	}, nil
 }
 
@@ -544,10 +604,14 @@ type stepAttributes struct {
 	Report       string     `json:"report"`
 	Rating       int        `json:"rating"`
 	RatingReason string     `json:"rating_reason"`
+	Experiment   string     `json:"experiment"`
+	Variant      string     `json:"variant"`
 }
 
 // stepFrom reads one node row's attributes as the step they hold. A rating of 0 is a run that
-// holds none, since a write sets a rating and its reason together or neither.
+// holds none, since a write sets a rating and its reason together or neither, and an experiment of
+// "" is a run that holds none, since a write sets an experiment and its variant together or
+// neither.
 func stepFrom(id string, attributes []byte) (Step, error) {
 	var held stepAttributes
 	if err := json.Unmarshal(attributes, &held); err != nil {
@@ -561,6 +625,9 @@ func stepFrom(id string, attributes []byte) (Step, error) {
 	}
 	if held.Rating != 0 {
 		step.Rating = &StepRating{Rating: held.Rating, Reason: held.RatingReason}
+	}
+	if held.Experiment != "" {
+		step.Experiment = &StepExperiment{Experiment: held.Experiment, Variant: held.Variant}
 	}
 	return step, nil
 }

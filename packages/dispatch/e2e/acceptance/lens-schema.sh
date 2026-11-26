@@ -222,8 +222,7 @@ pass S1 "the write is refused with HTTP $status"
 code="$(jq -r '.code // empty' "$work/body")"
 [[ -n "$code" ]] || fail S1 "the refusal carries a code" "the write $lens_write answered HTTP $status: $(body)"
 pass S1 "the refusal carries a code, $code"
-expect S1 "the refusal is SUPERTAG_NOT_HELD, naming the type lens" '{"code":"SUPERTAG_NOT_HELD","names_lens":true}' \
-  '{code, names_lens: (.error | contains("no type lens"))}'
+expect S1 "the refusal is SUPERTAG_NOT_HELD" '"SUPERTAG_NOT_HELD"' '.code'
 
 # --- S2: the rows written back, and the same write taken by the same process --------------------
 

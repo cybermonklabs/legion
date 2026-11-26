@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"maps"
 	"net/http"
@@ -121,6 +122,24 @@ type movedInPlace struct {
 // rollbackRelationTables are the tables graph_edges reads an issue's and a component's relations
 // out of: each old arm reads its own, and the tuple arm probes the one whose row projects an edge.
 var rollbackRelationTables = []string{"issues", "issue_links", "components", "component_depends", "issue_component_members"}
+
+// explainRollbackRead is statement's plan made for its arguments, run under EXPLAIN (ANALYZE,
+// BUFFERS, FORMAT JSON), which the checks read, inside a transaction it rolls back; its text, which
+// a failure prints, is explainDismissedScaleText's.
+func explainRollbackRead(t *testing.T, connection *pgx.Conn, name, statement string, args []any) json.RawMessage {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := connection.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the explain of %s: %v", name, err)
+	}
+	defer tx.Rollback(ctx)
+	var planJSON []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, args...).Scan(&planJSON); err != nil {
+		t.Fatalf("explain %s: %v", name, err)
+	}
+	return explaintest.OnePlan(t, planJSON)
+}
 
 // seedRollbackScale writes into project ROLL, by SQL, 500 issues, ROLL-1001 to ROLL-1500, each but
 // the first a child of the issue at half its number and each waiting on the 100 issues after it,
@@ -281,7 +300,8 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 			t.Fatalf("the %s read of %s sends %d statements over graph_edges, want one", direction, issue, len(reads))
 		}
 		name := "the " + direction + " read of " + issue
-		plan, text := explainDismissedScale(t, connection.Conn(), name, reads[0].sql, reads[0].args)
+		plan := explainRollbackRead(t, connection.Conn(), name, reads[0].sql, reads[0].args)
+		text := explainDismissedScaleText(t, connection.Conn(), name, reads[0].sql, reads[0].args)
 		for _, table := range rollbackRelationTables {
 			if explaintest.SeqScansRelation(t, plan, table) {
 				t.Errorf("%s reads %s by a Seq Scan, want each of its rows the read reaches reached through an index:\n%s", name, table, text)
@@ -290,7 +310,7 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 	}
 }
 
-// TestGraphEdgesKeepsEveryRelationAcrossARollback holds the arms of dispatch://INFRA-1253's split
+// TestGraphEdgesKeepsEveryRelationAcrossARollback holds the arms of the issue-tree spec's split
 // of the issue relations and of a component's (c-view-arms): the arms over issues (child_of),
 // issue_links (blocked_by), artifacts (attached_to), components (part_of), component_depends
 // (depends_on) and issue_component_members (affects) answer the rows that name no node, and the
@@ -311,7 +331,7 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 // row's own created_at, a component's snapshot's imported_at, an issue's components' updated_at -
 // and the old arms answer none of them: each moved relation reads once through the tuple arm, and
 // the store holds its new value alone, the old one retracted. The cases of an artifact's citations
-// and the deletion of dispatch://INFRA-1149's four arms are T8c's and T9's.
+// and the deletion of the graph-store spec's four arms are T8c's and T9's.
 //
 // A document's citations, T8c's: the release before's document, naming no node, cites the target
 // by a refs row that release wrote, which the arm over refs answers once before the backfill and

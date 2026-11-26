@@ -1,5 +1,7 @@
 package docs
 
+//ci:reads packages/contracts/fixtures/decision-blocks/* decisionBlockFixture
+
 import (
 	"context"
 	"errors"
@@ -18,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut uses
@@ -251,6 +254,7 @@ func TestWithoutAskServerAttributesTakesTheEightOffEveryAskBlock(t *testing.T) {
 // and the stored tree of the version he approved are both read through it; a tree that repeats a
 // block id, which settlement reads no block under, is not read at all.
 func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *testing.T) {
+	t.Parallel()
 	tree, err := pmdoc.Parse(decisionBlockFixture(t, "answered.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -430,6 +434,7 @@ func approveStoredVersion(t *testing.T, database *store.Store, artifactID string
 // created_at, its transaction's start, says the opposite. A request that carries a sequence is
 // after an approval that carries none, and the time and id decide only when neither does.
 func TestChangesRequestedSinceFollowsTheOrderTheReviewsCommitted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	early := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
@@ -525,10 +530,11 @@ func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID strin
 // the rows and not the block:
 // a node no row of this document backs refuses it, and alice's approval stays at version 1.
 func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 
@@ -603,7 +609,7 @@ func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Se
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads.
 	service.ScheduleSettlement(artifactID)
@@ -639,6 +645,7 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // without the repeat differs from the approved one in the block's server-owned attributes alone,
 // which R10's case carries.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
@@ -1123,6 +1130,7 @@ func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) 
 // them that the parser no longer reads fails here rather than leaving every carried review to
 // read as a person's own.
 func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
+	t.Parallel()
 	carry := func(version int) string {
 		return fmt.Sprintf(carriedReasonPrefix, version) + readingCase.change + carriedReasonEnd
 	}
@@ -1158,11 +1166,12 @@ func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
 // the carry for the first version, returning the latest version where the live text has not
 // moved, so the versions are named.
 func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(ctx) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(ctx) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// The approved version is one this service wrote, so the version named below restores its

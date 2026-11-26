@@ -346,7 +346,9 @@ func decodeAttributes(raw []byte) (map[string]any, error) {
 // stated values first (graphstore.QueueWrite), then the moved tuples in the order of their old
 // seq, then the record of their old seqs. graphstore appends a write's relations ahead of its value
 // tuples, so the moved tuples go in as runs of one class each, relations or values, one write a
-// run, and each node's tuples keep the order of their old seq.
+// run, and each node's tuples keep the order of their old seq. Last come the head rows of every node
+// the batch wrote or appended a tuple out of (graphstore.QueueHeads), as every writer of the store
+// writes them: an `advances` tuple is a relation out of an issue's node, whose head row holds it.
 func writeBatch(ctx context.Context, tx pgx.Tx, old oldStore, nodes []graphstore.Node, stated, tuples []graphstore.Tuple, seqs []int64) error {
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if len(nodes) > 0 || len(stated) > 0 {
@@ -360,6 +362,7 @@ func writeBatch(ctx context.Context, tx pgx.Tx, old oldStore, nodes []graphstore
 			graphstore.QueueWrite(b, nil, tuples[start:end])
 			start = end
 		}
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, slices.Concat(stated, tuples)))
 		b.Queue("record the tuples the stores' move copied", `
 			insert into stores_moved_seqs (store, seq) select $1, unnest($2::bigint[])
 		`, old.name, seqs)

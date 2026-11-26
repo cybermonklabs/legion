@@ -69,8 +69,9 @@ func TestTheSaveOfARetiredDocumentsTypingKeepsItAndWritesNoVersion(t *testing.T)
 }
 
 // A live write into a retired document (an edit, an ask block's write, a comment's mark) is
-// refused with ErrDocumentRetired, and logged naming the document, where it takes the document
-// owner's lock (joinLiveWrite), the lock the retirement takes: it writes no version and no update.
+// refused with ErrDocumentRetired, and logged at Info naming the document - a refusal a route
+// answers 409 for in ordinary use, not a fault - where it takes the document owner's lock
+// (joinLiveWrite), the lock the retirement takes: it writes no version and no update.
 func TestALiveWriteIntoARetiredDocumentIsRefusedUnderItsOwnersLock(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -105,8 +106,9 @@ func TestALiveWriteIntoARetiredDocumentIsRefusedUnderItsOwnersLock(t *testing.T)
 	if markdown, err := renderTree(stored); err != nil || strings.Contains(markdown, "Written after the retirement.") {
 		t.Fatalf("the stored document reads %q (%v), want nothing of the refused write", markdown, err)
 	}
-	if line := logs.Lines(artifactID); !strings.Contains(line, "refuse a write into a retired document") {
-		t.Fatalf("the refusal logged %q, want its line naming the retired document", line)
+	if line := logs.Lines(artifactID); !strings.Contains(line, "refuse a write into a retired document") ||
+		!strings.Contains(line, "level=INFO") || strings.Contains(line, "level=WARN") {
+		t.Fatalf("the refusal logged %q, want its line naming the retired document at Info, as an input a route answers 409 for", line)
 	}
 }
 

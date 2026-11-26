@@ -30,8 +30,16 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		return nil, "", nil, nil
 	}
 	artifactRef := strings.TrimSpace(input.Artifact)
-	if artifactRef == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor artifact is required")
+	switch named := strings.TrimSpace(input.Node) != ""; {
+	case artifactRef != "" && named:
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR",
+			"anchor names both artifact and node: an anchor is on a document's text by artifact or on a node's text by node, never both")
+	case named:
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR",
+			"anchor node is taken by a comment's write alone: an ask anchors on a document's text by artifact")
+	case artifactRef == "":
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR",
+			"anchor names neither artifact nor node: name the document by artifact or, for a comment, the node by node")
 	}
 	quotePath := input.Quote != nil && input.MarkID == nil
 	markPath := input.Quote == nil && input.MarkID != nil && input.Occurrence == nil
@@ -54,7 +62,10 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	if err != nil {
 		return nil, "", nil, err
 	}
-	if artifact.Kind != "doc" {
+	// An issue's tree artifact is read as a document (R8): its own fragment of the room holds the
+	// blocks written into the issue rather than into a document, and a comment on one of them
+	// stands under that block (R31).
+	if artifact.Kind != "doc" && artifact.Kind != "tree" {
 		return nil, "", nil, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "anchors require a document artifact")
 	}
 
@@ -108,7 +119,11 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		anchor.BlockID = &anchored.BlockID
 	}
 
-	snapshot, err := s.deps.Docs.SnapshotVersion(ctx, artifact.ID, actor)
+	// Nothing the pin's transaction does after this version reads its block index or its record:
+	// the anchor's block id came from the rendering the mark was written into (docs.Anchored), so a
+	// version above the bound leaves its blocks to the block-index reconciliation, and a carry to it
+	// pins its stored markdown's digest (docs.WithDeferredBlockIndex).
+	snapshot, err := s.deps.Docs.SnapshotVersion(docs.WithDeferredBlockIndex(ctx), artifact.ID, actor)
 	if err != nil {
 		return &anchor, artifact.Name, nil, err
 	}

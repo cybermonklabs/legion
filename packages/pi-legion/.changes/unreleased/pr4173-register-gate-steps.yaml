@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    `register_gate` takes the step `criteria` or `spec`; the `decisions` step is gone. The plugin declares daemon API contract 216.
+    `register_gate` takes the step `criteria` or `spec`; the `decisions` step is gone. The plugin pairs with the daemon API contract entry decisions-step-gone (id 20261125170054).
 time: 2026-11-17T17:20:07.000000000Z
 custom:
     Issue: pr4173

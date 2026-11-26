@@ -86,9 +86,10 @@ about. It shows as a card with its urgency and the word **Decision**, and its op
 can pick. It is an ask like any other: it appears in your Inbox too, and an answer or **Ask back**
 made in either place shows in both. Your answer is kept on the ask, not in the document's text:
 no version of the document holds your words or the options you chose. Answering, resolving or
-declining the ask, or closing or reopening its issue, writes one version of the document, whose
-only change is the ask block's `state` and, where the ask is answered, `answered_by` and
-`answered_at`. The block of an open ask holds no `state`.
+declining the ask, or closing or reopening its issue, writes one version of the document. When the
+answer, resolve, decline, close or reopen is that version's whole change, the version changes only
+the ask block's `state` and, where the ask is answered, `answered_by` and `answered_at`. The block
+of an open ask holds no `state`.
 
 To edit an ask block's options, click into its question. The option list appears for that block,
 and folds away again when you click elsewhere.
@@ -126,9 +127,13 @@ shows what changed between that version and the one you are asked to approve, wi
 block left out of both, so you read what changed outside the questions you already answered; the
 agent's summary names it in a sentence.
 
-Your answer to an ask block writes one version, whose only change is the ask block's `state` and,
-where you answered, `answered_by` and `answered_at`, and Dispatch carries your approval across it;
-it carries no approval of its own. Dispatch carries your approval to a later version only when that version's
+Your answer to an ask block writes one version. When your answer is that version's whole change,
+the version changes only the ask block's `state` and, where you answered, `answered_by` and
+`answered_at`, and Dispatch carries your approval across it; it carries no approval of its own.
+The version carries the approval only when the person's answer, resolve or decline is its whole
+change. If text that a person was editing in the browser is settled into the same version, the
+approval does not carry, and the request goes back to its agent.
+Dispatch carries your approval to a later version only when that version's
 text is the text you approved, such as an edit undone exactly, or when every change in it is one
 of these, none of which changes a decision:
 

@@ -76,6 +76,7 @@ func approvalStateOf(t *testing.T, handler http.Handler, artifactID string) stri
 // approved; each of its versions still reads; and the issue's document list and its summary leave
 // it out. A second retirement of it is refused.
 func TestRetireDocument(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -166,6 +167,7 @@ func TestRetireDocument(t *testing.T) {
 // its retirement and to the issue KEY after it (refs' loadArtifactNodes), through refs.Node and
 // GET /api/v1/references alike; read by its id, the retired document is still the document.
 func TestARetiredDocumentsAddressResolvesToItsIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -207,6 +209,7 @@ func TestARetiredDocumentsAddressResolvesToItsIssue(t *testing.T) {
 // its slug, a create of a document under its name, and an edit by its slug and by its id. A
 // document of another name is still taken.
 func TestAWriteToARetiredDocumentIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "The spec.\n")
@@ -241,6 +244,7 @@ func TestAWriteToARetiredDocumentIsRefused(t *testing.T) {
 // joinLiveWrite, docs.RetiredDocumentError), and api answers that refusal as it answers an edit of
 // the retired document (documentRetiredRefusal): 409 DOCUMENT_RETIRED naming the document, not 500.
 func TestACommentsMarkOnARetiredDocumentIsRefusedAsItsEditIs(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")

@@ -91,6 +91,18 @@ func collectViewChain(rows pgx.Rows, key string) ([]chainIssue, error) {
 	return chain, nil
 }
 
+// chainAncestors is the keys of the issues above the issue a chain read from it up (readViewChain)
+// holds, parent first: refs.IssueAncestors' answer, which climbs the same parent_key links to the
+// same depth (refs.IssueDepthCap) in the same order, and [] where the store holds no row of the
+// issue.
+func chainAncestors(chain []chainIssue) []string {
+	ancestors := make([]string, 0, max(len(chain)-1, 0))
+	for index := 1; index < len(chain); index++ {
+		ancestors = append(ancestors, chain[index].key)
+	}
+	return ancestors
+}
+
 // ViewOf is the issue whose requirements the issue issueKey is a view of, read through q, and ""
 // where it is no view. An issue is a view where all three hold: its row of issue_views says it was
 // born converted, or converted by the conversion with the conversion's view mark; its row holds no

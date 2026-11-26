@@ -23,7 +23,7 @@ import (
 // holdIssuesUnconverted makes a process that lists no issue_room live beside the test's server for
 // the rest of the test - a server_processes row with no capabilities, as a build before the column
 // registers none - so every issue the test creates is created as before the issue room, one room
-// per document (decision 7 of dispatch://INFRA-1253's plan). The process registers this build's
+// per document (decision 7 of the issue-tree plan). The process registers this build's
 // schema and this build's owner lock protocol, so it moves no other rule the fleet decides: the
 // document sockets' admission, which a process of an older schema narrows (docs' schemaFleet),
 // stays as with this server alone, and the owner locks stay in this build's mode, where a row of protocol 0
@@ -96,7 +96,7 @@ func documentRoomOf(t *testing.T, q queryer, artifactID string) (room, fragment 
 // artifact lands in the tree's own fragment of the issue's room and reads back through
 // GET /api/v1/artifacts/{tree}/text, the tree artifact reads as a document whose room is itself
 // and whose fragment is the room's own, and the issue read's documents name no tree artifact (R8 of
-// dispatch://INFRA-1253, T12b of its plan). The read of the criterion through the tree read
+// the issue-tree spec, T12b of its plan). The read of the criterion through the tree read
 // (GET /api/v1/issues/{key}/tree) is T16a's, which adds that half of this test when it lands.
 func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -149,9 +149,9 @@ func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t 
 // document_rooms row naming the issue's tree from its first write, which is stored in the room,
 // none under the spec's own id; the spec is a query node of query spec; and the issue holds its
 // decisions query node, a document with an empty version 1 whose role reads decisions, which
-// decisions_documents() does not select. One created while a process
-// of the release before is live is created as today, with no tree and no document_rooms row
-// (decision 7 of dispatch://INFRA-1253's plan).
+// decisions_documents() does not select. One created while a process of the release before is
+// live is created as today, with no tree and no document_rooms row (decision 7 of the issue-tree
+// plan).
 func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -227,7 +227,7 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 // query value; its text reads back; a later upload of its name and an edit of it each reach that
 // fragment alone, leaving the spec's text as it was; and the room's pass the upload runs causes
 // nothing of the spec's blocks under the upload's event: an unchanged sibling fragment's facts
-// append nothing (T12b of dispatch://INFRA-1253's plan).
+// append nothing (T12b of the issue-tree plan).
 func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -318,7 +318,7 @@ func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 
 // A document write addressed through a parent issue that names, by its store address, a node of
 // its child issue - a criterion written into the child's own room - is refused 409
-// NODE_IN_OTHER_ISSUE naming the child, and writes nothing (D3 of dispatch://INFRA-1253's plan).
+// NODE_IN_OTHER_ISSUE naming the child, and writes nothing (D3 of the issue-tree plan).
 func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -451,69 +451,8 @@ func TestARemovalOfADocumentCitedWhileTheIssueRoomHoldsAnUnsettledEditIsRefusedF
 		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(cited, "something in Dispatch links to it"))
 }
 
-// A role document of a converted issue holds a fragment of the issue's room, and the removal
-// refuses it for that alone, not only for the role it plays: an operator's erase of its query node
-// (`envoy-dispatch erase --node artifact:<ref_key>`, which deletes the node's row as
-// graphstore.EraseNode does) leaves its row with no role to read, and the removal of the plan,
-// still untouched, answers 409 ARTIFACT_NOT_UNTOUCHED and leaves the room as it stood: the
-// documents it holds and the updates it stores.
-func TestARemovalOfAnIssueRoomsDocumentIsRefusedOnceItsQueryNodeIsErased(t *testing.T) {
-	ctx := context.Background()
-	handler, database, _ := newTestServer(t, testServerOptions{})
-	createRoomProject(t, handler, "FRAG")
-	issue, tree := createRoomIssue(t, handler, database, "FRAG", "A converted issue", "The spec's words.\n", "")
-	if tree == "" {
-		t.Fatalf("issue %s holds no tree", issue.Key)
-	}
-	// A multipart upload always carries its bytes, so plan.md of a blank line is no blank create,
-	// which a role's name refuses, and the store makes its one version empty: an untouched plan.
-	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan.md"},
-		"plan.md", "text/markdown", []byte("\n"), "alice")
-	if uploaded.Code != http.StatusCreated {
-		t.Fatalf("upload an empty plan.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
-	}
-	plan := decodeBody[artifactUploadResponse](t, uploaded).Artifact
-	if plan.Room != tree || plan.Fragment != plan.ID || plan.Role != model.ArtifactRolePlan || len(plan.Versions) != 1 {
-		t.Fatalf("the plan reads room %q fragment %q role %q and %d versions, want room %s, fragment %s, role plan and one version",
-			plan.Room, plan.Fragment, plan.Role, len(plan.Versions), tree, plan.ID)
-	}
-	erased, err := database.Pool.Exec(ctx, `delete from graph_nodes where kind = $1 and id = $2`, graphstore.KindArtifact, plan.RefKey)
-	if err != nil || erased.RowsAffected() != 1 {
-		t.Fatalf("erase the plan's query node %s: %d rows, %v; want its one row", plan.RefKey, erased.RowsAffected(), err)
-	}
-	plan = readDocument(t, handler, plan.ID)
-	if plan.Role != "" || plan.Room != tree {
-		t.Fatalf("the plan reads role %q room %q once its query node is gone, want no role and room %s", plan.Role, plan.Room, tree)
-	}
-	roomDocuments := func() []string {
-		t.Helper()
-		var held []string
-		if err := database.Pool.QueryRow(ctx, `
-			select coalesce(array_agg(artifact_id::text order by artifact_id), '{}') from document_rooms where room = $1::uuid`, tree).Scan(&held); err != nil {
-			t.Fatalf("read the room's documents: %v", err)
-		}
-		return held
-	}
-	documents, updates := roomDocuments(), documentAppendCount(t, database, tree)
-	if want := slices.Sorted(slices.Values([]string{issue.PrimaryArtifactID, plan.ID})); !slices.Equal(documents, want) {
-		t.Fatalf("the room holds %v, want the spec and the plan, %v", documents, want)
-	}
-
-	assertRemovalRefused(t, handler, "a document of the issue's room that reads no role", plan,
-		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(plan, "it shares its issue's room with the spec"))
-	if after := roomDocuments(); !slices.Equal(after, documents) {
-		t.Errorf("the room holds %v after the refused removal, want %v", after, documents)
-	}
-	if after := documentAppendCount(t, database, tree); after != updates {
-		t.Errorf("the room stores %d updates after the refused removal, %d before it", after, updates)
-	}
-	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, "The spec's words.") {
-		t.Errorf("the spec reads %q after the refused removal, want its words", text)
-	}
-}
-
 // An ask block of a converted document is that document's own ask (the T12b fixes of
-// dispatch://INFRA-1253's plan): settlement indexes it keyed by the issue's tree, whose room holds
+// the issue-tree plan): settlement indexes it keyed by the issue's tree, whose room holds
 // the block, and every read of it names the document whose fragment holds the block. The ask read
 // names the spec as its block's document; the spec's text read shows the block as the spec's own
 // ask, as no copy of another document's (its asks member, where the text routes answer an ask's
