@@ -181,7 +181,7 @@ func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
 	cmd := exec.Command(legionCopy(t), "-h")
 	cmd.Env = append(os.Environ(), testMainEnv+"=1")
 	out, err := cmd.CombinedOutput()
-	if want := newRoot(io.Discard, io.Discard).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+	if want := newRoot(io.Discard, io.Discard, processWorkspace()).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
 		t.Fatalf("a copy started as legion with -h: %v, want exit 0 and legion's help, which starts %q\n%s", err, want, out)
 	}
 }
@@ -190,6 +190,7 @@ func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
 // testMainEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
 // what holds the refusal.
 func TestAProcessStartedAsLegionStartsNoCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv).
 	fixtureenv.Unset(t, testMainEnv)
 	if err := legionCopyRefusal(); err != nil {
 		t.Fatalf("with %s unset: %v, want no refusal", testMainEnv, err)
@@ -620,7 +621,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+		for _, command := range newRoot(io.Discard, io.Discard, processWorkspace()).Commands() {
 			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
 				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}

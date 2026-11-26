@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -276,9 +277,8 @@ func TestGitRefusalReadsAsRefused(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closedURL := closed.URL
-	closed.Close()
+	// A port the test holds and nothing listens on: git's dial to it is refused.
+	closedURL := "http://" + testport.Refused(t)
 	home := t.TempDir()
 	refusal := "fatal: could not read Username for '" + server.URL + "': terminal prompts disabled"
 	for name, tc := range map[string]struct {

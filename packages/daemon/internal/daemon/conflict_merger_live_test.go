@@ -578,11 +578,13 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 // retro as `to` while it stands held. No other write of an issue's phase logs the line: a failed
 // claim's hold (claimFailed) and its release (retryPhase); a stopped task's hold (stopTask), its
 // restart at its first step (restartTask) and its wait for that step again (waitForFirstStep); a
-// held parent's start of its retro (startHeldRetro); a lingering tree's member closed at its merge
+// held parent's start of its retro (StartHeldRetro); a lingering tree's member closed at its merge
 // (closeMerged); a leave that writes done (endTaskWithLeave) and a member an adoption parks at done
 // (moveIntoTree); a root's move into awaiting_person (enterAwaiting) and admission's move of it
-// back to admitted once its wait is answered; and the record of an issue at admitted: a new root's,
-// a re-admitted root's and the record of a child that enters its tree (enterChild).
+// back to admitted once its wait is answered; a parent's move into awaiting_children
+// (awaitChildren) and its return once no child is open (ReturnFromChildren); and the record of an
+// issue at admitted: a new root's, a re-admitted root's and the record of a child that enters its
+// tree (enterChild).
 //
 // The run moves no phase through any of them. Its root is seeded in accepting with no child, and
 // the driver sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge closes the root

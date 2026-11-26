@@ -987,8 +987,8 @@ func TestTwoBrokers(t *testing.T) {
 		const (
 			// drain is this broker's BROKER_DRAIN_SECONDS: long enough to get both observations
 			// out inside the window, short enough that the row pays for no budget it does not
-			// use. The window runs from the broker's own mark of the signal (drainBegan), and the
-			// row ends it itself, with a second signal, once it has both.
+			// use. The window runs from the broker's own mark of the signal (drainBegan). The
+			// drain must end on its own timer once it has both observations.
 			drain = 5 * time.Second
 			// oldShutdownBudget is what main.go's shutdownTimeout was before it became the
 			// write timeout: the figure this row exists to outlive.
@@ -1063,9 +1063,8 @@ func TestTwoBrokers(t *testing.T) {
 			t.Fatalf("GET /v1/settings at %s, %s into its drain, = %d %s; want 200 — a draining broker serves every route but its health check",
 				solo.Process.Addr, time.Since(began).Round(time.Millisecond), status, body)
 		}
-		// Both observations fell inside the drain; a second signal ends it, as an operator's
-		// "stop it now" does, and the broker goes on to finish the refresh it holds.
-		solo.Process.Terminate(t)
+		// Both observations fell inside the drain. Do not signal again: this row holds the drain
+		// to ending on its own timer while its refresh remains in flight.
 
 		// This wait IS the experiment, and it is the only bare sleep in this file: the claim is
 		// about a request still in flight when the old ten-second shutdown budget would have run

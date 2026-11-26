@@ -28,8 +28,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -166,7 +166,7 @@ func (l *planRatingsLive) readScript(issue string) (string, int) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := testexec.WriteFile(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun "+shellprefix.Literal(cli)+" \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun "+shellprefix.Literal(cli)+" \"$@\"\n"), 0o700); err != nil {
 		t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
 	out, code := l.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},

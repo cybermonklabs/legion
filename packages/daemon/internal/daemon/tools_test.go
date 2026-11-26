@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 func executable(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := testexec.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -26,7 +26,7 @@ func executable(t *testing.T, dir, name string) string {
 func binary(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := testexec.WriteFile(path, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -39,7 +39,7 @@ const currentJJ = "jj 0.46.0-sami.20261120-120102-996da512bf688570cc3eaf9c325281
 func fakeJJ(t *testing.T, dir, version string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jj")
-	if err := testexec.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+version+"'\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+version+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -139,7 +139,7 @@ func TestResolveToolsRefusesAScriptAsTheRealGh(t *testing.T) {
 	fakeJJ(t, bin, currentJJ)
 	real := binary(t, bin, "gh")
 	shim := filepath.Join(shims, "gh")
-	if err := testexec.WriteFile(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o755); err != nil {
+	if err := execfile.Write(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{"PATH": shims + ":" + bin}
@@ -220,7 +220,7 @@ func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	jj := filepath.Join(dir, "jj")
-	if err := testexec.WriteFile(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
+	if err := execfile.Write(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkJJVersion(jj); err != nil {

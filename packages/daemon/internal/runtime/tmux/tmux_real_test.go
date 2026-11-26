@@ -540,7 +540,10 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	r.rt = r.newRuntime(adjust...)
 	t.Cleanup(func() {
 		_, _ = r.tmux("kill-server")
-		_ = watchdog.Process.Kill()
+		// The watchdog is its own session and process-group leader (armOrphanWatchdog), and it
+		// runs `sleep 3` as a child of that group. Killing the shell alone orphans that sleep,
+		// which then outlives the test binary by up to three seconds. Kill the whole group.
+		_ = syscall.Kill(-watchdog.Process.Pid, syscall.SIGKILL)
 		r.stream.listener.Close()
 		r.daemon.server.Close()
 	})

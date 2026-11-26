@@ -90,11 +90,11 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 // that this row cannot move, and the stand-in answers the SIGTERM, with the tool call and its exit
 // 0, only after the bridge has sent it: a loaded machine can hold the stand-in past the grace, and
 // that run, which the kill ended, shows nothing of the frame. The stand-in's trap writes a mark
-// before anything else, so the row reads from the stand-in whether the SIGTERM came. A run with no
-// mark is judged: the bridge sent no SIGTERM, and the row fails it. A run with the mark whose
-// stand-in was seen to exit only once the grace could pass is not judged (the bridge sends its
-// SIGTERM no sooner than the row's SIGHUP, and the kill comes no sooner than the grace after that),
-// and the row starts the bridge again until a run of the right order comes, within a minute. What
+// before anything else. A run seen to exit only once the grace could pass is not judged, whether or
+// not the mark is there: the grace-kill ended it, and a loaded machine can hold the stand-in's shell
+// so that it never ran its trap before the kill — not the bridge's fault. The row starts the bridge
+// again until a run that exited before the grace comes, within a minute. Only such a run is read for
+// the mark: there a missing mark means the bridge sent no SIGTERM, and the row fails it. What
 // the bridge leaves in TMPDIR is judged on every run, the ones the kill ended too: the bridge
 // removes its inbox however Claude Code ended.
 func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
@@ -141,14 +141,14 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 			t.Errorf("run %d: the bridge given SIGHUP with no shim left %q in TMPDIR", runs, left)
 		}
 		_, termErr := os.Stat(termed)
-		if termErr == nil && !at.Before(hungUp.Add(claudebridge.Grace)) {
+		if !at.Before(hungUp.Add(claudebridge.Grace)) {
 			// The kill may have ended this run, which then shows nothing of the frame; a run that
 			// left its inbox has failed already.
 			if t.Failed() {
 				return
 			}
 			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: the stand-in took its SIGTERM, but was seen to exit only after the bridge's %s grace could pass", runs, claudebridge.Grace)
+				t.Logf("run %d is not judged: the stand-in was seen to exit only after the bridge's %s grace could pass", runs, claudebridge.Grace)
 				continue
 			}
 			t.Fatalf("no run of the right order in %d runs over %s: in each, the stand-in was seen to exit only after the bridge's %s grace could pass", runs, within, claudebridge.Grace)

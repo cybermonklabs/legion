@@ -24,10 +24,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
@@ -1015,7 +1015,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 		"  AGENT_KEY:--no-request) echo '{\"key\":\"AGENT_KEY\",\"tier\":\"agent\"}' ;;\n" +
 		"  AGENT_KEY:--value) echo 'agent-value' ;;\n" +
 		"  *) exit 9 ;;\nesac\n"
-	if err := testexec.WriteFile(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	o := fakeRuntime(fake.NewRuntime(), &built{})
@@ -1260,6 +1260,12 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model"}},
+		// Every member of the error object the machine decides on, Oh My Pi's class of the
+		// failure among them: a cyber_policy code dropped here is a refusal the ladder re-sends.
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+				HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
