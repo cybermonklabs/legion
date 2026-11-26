@@ -14,7 +14,7 @@ import {
 import { MARGIN_ANSWERS, MARGIN_WORDS } from "../web/src/features/issue-page/page-words-margin";
 import { treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { buildIssuePath } from "../web/src/features/refs/routes";
-import { deleteComment, editArtifact, getComment, listComments } from "./api";
+import { createComment, deleteComment, editArtifact, getComment, listComments } from "./api";
 import {
   closeDetails,
   contentsPane,
@@ -3079,4 +3079,223 @@ test("a Change stands in the margin and Decisions keeps Changed by", async ({
     "PART_U",
     "COMPOSER"
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The tester's rows (INFRA-5706, testing at 3a39e128e8cb).
+// ---------------------------------------------------------------------------------------------
+
+// c-write (3) and c-address, R5 and R8: a card that takes the focus in the column stands where
+// the reader sees it. On the running build of 3a39e128e8cb, a press of Comment on words far down
+// the page scrolled the window to the page's top: the composer took the focus while it stood at
+// the column's top, before the stack placed it (`takeFocus` and the composer's `autoFocus`), so
+// the window followed it there, and the composer, the new thread after the send and the thread
+// an address names each had the focus out of the window.
+test("a card that takes the focus in the column stands in the window", async ({ browser }) => {
+  test.setTimeout(300_000);
+  if (!onBase("a card that takes the focus in the column stands in the window", "COMPOSER")) {
+    return;
+  }
+  await phase(browser, seedMarginIssue, async (page, seeded) => {
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "conversation");
+    const node = blockNode(seeded.specSlug, seeded.pagedChildren[39] ?? "");
+    await selectWords(page, node, "own row", 0);
+    await framesPass(page);
+    const control = commentControl(page);
+    await expect(control, "Comment stands beside the selection in note 40").toBeVisible();
+    const rowTop = await stageRow(page, node)
+      .first()
+      .evaluate((element) => element.getBoundingClientRect().top + window.scrollY);
+    expect(rowTop, "note 40 stands below the page's first screen").toBeGreaterThan(900);
+    await control.click();
+    const field = composerField(page);
+    await expect(field, "the composer that Comment opens has the focus").toBeFocused();
+    await framesPass(page);
+    await expect(field, "the composer that Comment opens stands in the window").toBeInViewport();
+    await expect(
+      stageRow(page, node).first(),
+      "the row of the selected words stays in the window while the composer opens"
+    ).toBeInViewport();
+    await field.fill("A comment on note 40, far down the page.");
+    const written = page.waitForResponse(commentWrite);
+    await field.press("ControlOrMeta+Enter");
+    const answer: unknown = await (await written).json();
+    const id =
+      typeof answer === "object" && answer !== null && "id" in answer ? String(answer.id) : "";
+    await expect(threadCard(page, id), "the root of the new thread has the focus").toBeFocused();
+    await framesPass(page);
+    await expect(
+      threadCard(page, id),
+      "the new thread that takes the focus after the send stands in the window"
+    ).toBeInViewport();
+    await gotoIssue(page, `${buildIssuePath(seeded.key)}/comments/${seeded.pagedChildThread}`);
+    await expect(
+      threadCard(page, seeded.pagedChildThread),
+      "the address of the thread on note 55 puts the focus in that thread"
+    ).toBeFocused();
+    await framesPass(page);
+    await expect(
+      threadCard(page, seeded.pagedChildThread),
+      "the thread that the address of the thread on note 55 focuses stands in the window"
+    ).toBeInViewport();
+  });
+});
+
+// c-margin (1), R2: a thread stands beside its own node. The Spec view cuts a statement that has
+// no focus at six lines (`CutWords`). On the running build of 3a39e128e8cb a thread on words past
+// that cut stood at the top of its hidden words, beside the statement after it, and its quoted
+// words were hidden.
+test("a thread on words the Spec view's cut hides stands beside its own statement", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  if (
+    !onBase(
+      "a thread on words the Spec view's cut hides stands beside its own statement",
+      "COMPOSER"
+    )
+  ) {
+    return;
+  }
+  await phase(browser, seedMarginIssue, async (page, seeded) => {
+    const sentence = (index: number) =>
+      `Sentence ${index} of the long statement keeps the reader on the same page for a while.`;
+    const words = [
+      ...Array.from({ length: 16 }, (_, index) => sentence(index + 1)),
+      "The closing marker ends it.",
+    ];
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${seeded.orphanStatement}`,
+          markdown: `:::requirement{#r-long}\n${words.join(" ")}\n:::`,
+          op: "insert",
+        },
+      ],
+    });
+    const comment = await createComment(seeded.key, {
+      anchor: { artifact: seeded.specArtifactId, block_id: "r-long", quote: "closing marker" },
+      body: "A comment on the closing words of the long statement.",
+    });
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "spec");
+    const node = blockNode(seeded.specSlug, "r-long");
+    const row = page.getByTestId("issue-column").locator(`[data-node-row][data-node-id="${node}"]`);
+    await expect(row, "the Spec view draws the long statement as one row").toHaveCount(1);
+    // The view measures a row's cut while the row stands within one screen of the window but
+    // wholly outside it (`useClamp`), so the window comes down to it as a reader's scroll does:
+    // first to one screen above it, then to it.
+    await row.evaluate((element) => {
+      const top = element.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({ behavior: "instant", top: Math.max(0, top - window.innerHeight * 1.5) });
+    });
+    await framesPass(page);
+    await row.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "start" })
+    );
+    await framesPass(page);
+    await expect(
+      row.locator("[data-node-more]"),
+      "the Spec view cuts the long statement, with its control that says how many words are left"
+    ).toBeVisible();
+    const box = threadBox(page, comment.id);
+    await expect(
+      box,
+      "the thread on the closing words stands by the long statement"
+    ).toHaveAttribute("data-text-thread-node", node);
+    await framesPass(page);
+    const [rowBox, threadTop] = await Promise.all([
+      row.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return { bottom: rect.bottom + window.scrollY, top: rect.top + window.scrollY };
+      }),
+      box.evaluate((element) => element.getBoundingClientRect().top + window.scrollY),
+    ]);
+    expect(
+      threadTop,
+      "the thread on words the cut hides stands beside its own statement's row, not past its end"
+    ).toBeLessThanOrEqual(rowBox.bottom);
+    expect(
+      threadTop,
+      "the thread stands no higher than its statement's row"
+    ).toBeGreaterThanOrEqual(rowBox.top - 2);
+  });
+});
+
+// c-write, R5: the control opens a composer the reader sees, or does not stand. Below 1024 px the
+// composer opens in the node's sheet (`NodeThreads.tsx`), whose mount in each row waits for the
+// part that last reshapes that row (R12). On the running build of 3a39e128e8cb, at 1000 px and at
+// 390 px, "Comment" stood beside a selection in a statement and in a result, and a press of it,
+// or `$mod+Alt+m`, opened no composer anywhere.
+test("below 1024 px a Comment that stands opens a composer", async ({ browser }) => {
+  test.setTimeout(300_000);
+  if (!onBase("below 1024 px a Comment that stands opens a composer", "COMPOSER")) return;
+  await phase(browser, seedMarginIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: 800, width: 1000 });
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "spec");
+    const node = blockNode(seeded.specSlug, seeded.statementS1);
+    await selectWords(page, node, "beside the words", 0);
+    await framesPass(page);
+    const control = commentControl(page);
+    if (await control.isVisible()) {
+      await control.click();
+      await expect(
+        composerField(page),
+        "the Comment that stands beside a selection at 1000 px opens a composer the reader sees"
+      ).toBeVisible();
+      await expect(composerField(page), "the composer it opens has the focus").toBeFocused();
+      await page.keyboard.press("Escape");
+    }
+    await selectWords(page, node, "beside the words", 0);
+    await framesPass(page);
+    const standing = await control.isVisible();
+    await page.keyboard.press("ControlOrMeta+Alt+m");
+    await framesPass(page);
+    expect(
+      await composerField(page).isVisible(),
+      "at 1000 px `$mod+Alt+m` opens a composer exactly where Comment stands beside the selection"
+    ).toBe(standing);
+  });
+});
+
+// c-thread-acts (3), R4 and R7: a press on a control of a thread acts, wherever the stack placed the
+// thread. A thread the stack pushed under the one above it moves level with its words when it takes
+// the focus (R2). On the running build of 3a39e128e8cb the card moved on the press's pointer down,
+// so the pointer's release landed outside the control: Resolve on such a thread resolved nothing,
+// and Edit opened no field. Row 4 gives its Resolve the focus before its click, which a pointer
+// cannot do.
+test("a press on a control of a thread the stack pushed down acts", async ({ browser }) => {
+  test.setTimeout(300_000);
+  if (!onBase("a press on a control of a thread the stack pushed down acts", "COMPOSER")) return;
+  await phase(browser, seedMarginIssue, async (page, seeded) => {
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "conversation");
+    const id = seeded.threadsS2[0] ?? "";
+    const node = blockNode(seeded.specSlug, seeded.statementS2);
+    const card = threadCard(page, id);
+    await expect(card, "the thread on S2's first words is drawn").toBeVisible();
+    await card.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
+    );
+    await framesPass(page);
+    const words = await wordsAt(page, node, "first", 0);
+    const box = await threadBox(page, id).boundingBox();
+    if (box === null) throw new Error("the thread on S2's first words has no box");
+    expect(
+      box.y,
+      "the stack pushes the thread on S2's first words under its words (S1's threads stand above it)"
+    ).toBeGreaterThan(words.first.top + 8);
+    await card.getByRole("button", { exact: true, name: "Resolve" }).click();
+    await expect
+      .poll(async () => (await getComment(id)).comment.resolved, {
+        message: "a press on Resolve of a thread the stack pushed down resolves it",
+      })
+      .toBe(true);
+    await expect(
+      card.getByRole("button", { exact: true, name: "Reopen" }),
+      "the thread a press resolved draws Reopen"
+    ).toBeVisible();
+  });
 });
