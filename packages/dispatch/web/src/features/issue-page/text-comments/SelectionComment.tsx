@@ -135,11 +135,9 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
     () => selectedIn(now.current.view, now.current.issue, now.current.placed),
     []
   );
-  // A selection that stands while the composer's place changes - the window crosses 1024 px, a
-  // sheet is drawn or goes - draws its control, or loses it, with no change of the selection.
-  useEffect(() => {
-    setSelected(selectedIn(now.current.view, now.current.issue, placed));
-  }, [placed]);
+  // The one read of the selection a frame makes, which the listeners' effect makes ready: what a
+  // change of the selection, a press, and a change of the composer's place all ask for.
+  const reread = useRef<(() => void) | undefined>(undefined);
 
   // The selection is read again at most once in an animation frame, however often it changes, and
   // not while a pointer button is down: the control is a later element of the page than the rows,
@@ -167,11 +165,13 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
       pressed = false;
       changed();
     };
+    reread.current = changed;
     document.addEventListener("selectionchange", changed);
     document.addEventListener("pointerdown", press, true);
     document.addEventListener("pointerup", release, true);
     document.addEventListener("pointercancel", release, true);
     return () => {
+      reread.current = undefined;
       document.removeEventListener("selectionchange", changed);
       document.removeEventListener("pointerdown", press, true);
       document.removeEventListener("pointerup", release, true);
@@ -179,6 +179,19 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
       if (frame !== undefined) cancelAnimationFrame(frame);
     };
   }, [find]);
+
+  // A selection that stands while the composer's place changes - the window crosses 1024 px, a
+  // sheet is drawn or goes - draws its control, or loses it, with no change of the selection. The
+  // place changes once for each sheet, and a window that crosses 1024 px draws a sheet in each row
+  // of the view, so where no selection stands there is nothing to read, and where one does this
+  // only asks for the frame's one read above, under its press gate. It sets no state itself: a
+  // state set from an effect is a default-priority update that React keeps pending until its next
+  // task and counts in every commit that comes before it, so one set for each sheet took the page
+  // down with React's error 185 (maximum update depth).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `placed` is the trigger, not a read
+  useEffect(() => {
+    if (document.getSelection()?.isCollapsed === false) reread.current?.();
+  }, [placed]);
 
   // The chord reads the selection as it stands when pressed.
   useEffect(() => {
