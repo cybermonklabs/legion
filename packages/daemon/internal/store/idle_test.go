@@ -658,15 +658,17 @@ func TestAStartQueuedForNewsAloneHoldsNoPodAndCancelsNoRelease(t *testing.T) {
 // back waits in the admission line for as long as its blocker stays open or the line is ahead of
 // it: hours, and for a blocked issue days. A pod held for it would stand idle all that time. Once
 // the slot comes the start runs, and it wakes the claim a release suspended as any start does. So
-// with the slot given, the same row holds the pod and cancels a release at its boundary, as any
-// start that carries a task does.
+// with the slot given, the same row holds the pod and cancels a release, at its boundary and at
+// its teardown, as any start that carries a task does: a start left out at the boundary that has
+// come due since is the pod about to be used again.
 func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
-	if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
-		Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+	architect := supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+		Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}
+	if err := st.PutClaim(ctx, architect); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
@@ -678,10 +680,22 @@ func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 	if view := idleViewOf(t, st, rootIssue); view.Waiting {
 		t.Fatal("the view reads a row waiting for a role of the pod, though the only one queued is a start that waits for an admission slot the issue does not hold")
 	}
-	_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
 	decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
 	if err != nil || decision.Act != ReleaseActs {
 		t.Fatalf("the boundary = %s for %s, %v with only a start waiting for its slot queued, want %s", decision.Act, decision.Cause, err, ReleaseActs)
+	}
+	// The release's check and its role stop have run: the claim is suspended as released.
+	if _, err := st.Pool().Exec(ctx, `delete from outbox where id in ($1, $2)`, first, boundary); err != nil {
+		t.Fatal(err)
+	}
+	architect.State, architect.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+	if err := st.PutClaim(ctx, architect); err != nil {
+		t.Fatal(err)
+	}
+	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	if decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow); err != nil || decision.Act != ReleaseActs {
+		t.Fatalf("the teardown = %s for %s, %v with only a start waiting for its slot queued, want %s", decision.Act, decision.Cause, err, ReleaseActs)
 	}
 
 	if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
@@ -693,6 +707,10 @@ func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 	decision, err = st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
 	if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
 		t.Fatalf("the boundary = %s for %s, %v once the slot came, want %s for %s", decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
+	}
+	decision, err = st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
+	if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+		t.Fatalf("the teardown = %s for %s, %v once the slot came after the boundary, want %s for %s", decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
 	}
 }
 
