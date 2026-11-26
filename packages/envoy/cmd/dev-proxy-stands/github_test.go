@@ -7,11 +7,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -19,11 +21,14 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds: --installation-permissions
@@ -68,9 +73,10 @@ func TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds(t *testing.T)
 
 // TestTheInstallationPermissionsFlagRefusesWhatItCannotRead: each malformed value, an owner
 // named twice, and an owner no --installation installs the App on are usage errors, exit 2, each
-// naming what it refuses, before any stand is served. A run is killed only with 30 s left of the
-// test binary's deadline, so a loaded machine that starts the binary late kills no run that would
-// have refused on its own.
+// naming what it refuses, before any stand is served, within refusalLimit of when the kernel made
+// the command's process. The limit counts from that start, not from the call, so a loaded machine
+// that starts the binary late kills no run that would have refused on its own; a run still going
+// with 30 s left of the test binary's deadline is killed too.
 func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 	binary := buildStands(t)
 	for _, c := range []struct {
@@ -90,16 +96,62 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, 30*time.Second))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary, append([]string{"--dir", t.TempDir()}, c.args...)...)
-			output, err := cmd.CombinedOutput()
+			var output bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &output, &output
+			overran, err := runFromItsStart(t, cmd, refusalLimit)
+			if overran {
+				t.Fatalf("the command did not exit within %s of when the kernel made its process and was killed; want exit %d\n%s", refusalLimit, exitUsageError, output.Bytes())
+			}
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != exitUsageError {
-				t.Fatalf("the command exited %v; want exit %d\n%s", err, exitUsageError, output)
+				t.Fatalf("the command exited %v; want exit %d\n%s", err, exitUsageError, output.Bytes())
 			}
-			if !strings.Contains(string(output), c.want) {
-				t.Errorf("the command said %q; want it to name %q", output, c.want)
+			if !strings.Contains(output.String(), c.want) {
+				t.Errorf("the command said %q; want it to name %q", output.Bytes(), c.want)
 			}
 		})
 	}
+}
+
+// refusalLimit bounds a run that refuses its flags, from when the kernel made its process to its
+// exit: the command reads its flags before it serves any stand.
+const refusalLimit = 30 * time.Second
+
+// runFromItsStart starts cmd and waits for it, and kills it once it has run bound from when the
+// kernel made its process, read right after Start (testexec.ProcStart), not from this call. Each of
+// the two times it compares, that start and the time since boot it reads to set the kill, can read
+// up to a tick early, so the kill waits two ticks more: no run is killed before it has run bound.
+// overran says the bound ended the run: the kill had been sent, and the run's own exit status says
+// a SIGKILL ended it, so a run that exited before the kill reached it did not overrun. A start the
+// kernel dates more than two ticks before the call is no start at all, and the row says it cannot
+// read when its run started, as testexec.StartedAfter does, rather than judge it.
+func runFromItsStart(t *testing.T, cmd *exec.Cmd, bound time.Duration) (overran bool, err error) {
+	t.Helper()
+	called := testexec.SinceBoot(t)
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	started, err := testexec.ProcStart(cmd.Process.Pid)
+	if err == nil && started < called-2*testexec.ClockTick {
+		err = fmt.Errorf("the kernel made it %s before the call, which no start can be: this machine's /proc/uptime and its processes' start times are not one clock", called-started)
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("read when the kernel made the process of %s: %v", cmd.Path, err)
+	}
+	var sent atomic.Bool
+	kill := time.AfterFunc(started+bound+2*testexec.ClockTick-testexec.SinceBoot(t), func() {
+		sent.Store(true)
+		_ = cmd.Process.Kill()
+	})
+	err = cmd.Wait()
+	kill.Stop()
+	if !sent.Load() || cmd.ProcessState == nil {
+		return false, err
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL, err
 }
 
 // TestTheGitHubStandsServeOneStandInOverPlainAndTLS: a token minted at the plain github stand,
