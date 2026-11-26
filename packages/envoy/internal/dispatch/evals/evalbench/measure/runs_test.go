@@ -39,7 +39,7 @@ func TestEachRunOfTheFirstPaintIsHeldToItsBudget(t *testing.T) {
 		}
 		judged := &report{prefix: "RESULT"}
 		judgeRuns(judged, recorded, 8)
-		return judged.failed
+		return len(judged.fails)
 	}
 	steady := func(int) (float64, float64) { return 40, 70 }
 	if failed := judge(t, 8, steady); failed != 0 {
