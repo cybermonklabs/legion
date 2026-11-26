@@ -93,16 +93,14 @@ controller posts a report on what Legion finished, closed and is running. That s
 daemon's status repair, which puts back the Dispatch status of any issue Legion works whose status
 is not the status of the phase it stands in, so a longer interval slows that repair as well. A free
 slot is never a reason for the controller to take an issue: it takes only what a person hands over
-and the clear defects Legion's agents report that no tree owns.
+and the clear defects Legion's agents report.
 
 No Legion agent files an issue for a problem it finds outside its own issue. The agent fixes a
 defect with a clear fix itself, in its own pull request or a separate pull request of its tree, in
-whichever repository the defect is. It writes the defect to the architect of the tree whose code it
-is, as a Dispatch comment that mentions that architect's role, only when its fix would collide with
-that tree's open pull request or its token does not reach the repository. Only when no tree owns
-that code does the controller file the issue with the `legion` label, so Legion works it without
+whichever repository the defect is. When its token does not reach the repository, the controller
+files the issue with the `legion` label, so Legion works it without
 asking you; the controller passes no message from one agent to another. A problem that needs a
-decision of yours goes into a Dispatch ask on Legion's daily report issue instead, naming the
+decision of yours goes into a Dispatch ask instead, naming the
 issue it came from and where the fix belongs (the repository or layer, and saying so when it is
 not Legion), with its evidence and a recommendation, and you decide whether it needs an issue.
 The controller files that issue, with the `legion` label only when your answer asks Legion to work
@@ -714,11 +712,9 @@ that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
 look whether or not production carries the merge, or a defect, naming the issue, the pull
-request, the merge commit, what it drove and what failed. A defect with a clear fix goes to its
-owner, as a Dispatch comment that mentions the architect of the tree whose code it is, or to the
-controller, which files an issue only when no tree owns that code.
-Only one that needs a decision is a Dispatch ask on Legion's
-daily report issue, so you decide whether it needs an issue.
+request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
+controller, which files an issue.
+Only one that needs a decision is a Dispatch ask, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
 stored microseconds unchanged. That field alone selects a report on that check: without it,

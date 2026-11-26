@@ -31,7 +31,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 1. Read `STRATEGY.md` where the repository has one, and its design principles (`AGENTS.md` here).
    Find the standard solution (a web search, and how two or three well-regarded projects solve it) and cite it in the spec's `Design`.
-   Ask a person only what neither settles, as `skill://dispatch/SKILL.md#asks-and-ask-blocks` says.
+   Ask a person only what neither settles.
 
 2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
 

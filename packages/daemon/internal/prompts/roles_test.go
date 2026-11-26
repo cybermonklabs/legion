@@ -210,8 +210,8 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 }
 
 // A finding outside the tree takes the paths of skill://legion-worker/references/findings.md: the
-// tree fixes a clear defect itself, writes it to its owner only when the fix would collide or the
-// repository is out of reach, and to the project's coordinator to file only when nobody owns it;
+// tree fixes a clear defect itself, and writes it to the project's coordinator to file only when
+// the repository is out of reach;
 // a finding that needs a decision is an ask. The headless fragment composed into the same planner
 // prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {
@@ -220,7 +220,6 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
 		"A clear defect is this tree's to fix, in its own pull request or a separate one of the tree, in whichever repository it is.",
-		"It goes to the owner of that code, with its evidence, only when the fix would collide with the owner's open work or your access does not reach that repository, and to whoever coordinates the project's work, to file, only when nobody owns that code.",
 		"A defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a decision, is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {

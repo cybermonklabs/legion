@@ -29,7 +29,7 @@ A directive is a direct Dispatch message to you: answer it, carry it out, record
 
 ## Answering controller deliveries
 
-Read every delivery against live Dispatch and daemon state. You decide labels, `todo`, `backlog`, `icebox` and board order. Answer a scope question from the weekly plan and the deployment instructions. Answer a routing request with the owner the one-owner map names and how to reach it (its role token or session), so the asker writes to it: you forward no message to another session. Never merge or enqueue a pull request, whatever credential you hold: a request to merge one goes to the architect of the tree that owns it (`skill://legion-controller/references/operations.md#a-request-to-another-session`).
+Read every delivery against live Dispatch and daemon state. You decide labels, `todo`, `backlog`, `icebox` and board order. Answer a scope question from the weekly plan and the deployment instructions. Answer a routing request with the owner the one-owner map names and how to reach it (its role token or session), so the asker writes to it: you forward no message to another session. Never merge or enqueue a pull request, whatever credential you hold: a request to merge one goes to the architect of its tree (`skill://legion-controller/references/operations.md#a-request-to-another-session`).
 
 ## The owner audit
 

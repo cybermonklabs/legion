@@ -3257,7 +3257,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 });
 
 // The controller files a clear defect only on a repository both role GitHub Apps are installed on
-// (finding-asks.md, step 1 of "File a clear defect no tree owns"), and its role prompt tells it
+// (finding-asks.md, step 1 of "File a clear defect"), and its role prompt tells it
 // that the summary prints the repository lines an operator's `legion state` prints
 // (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
 // repositories, so the summary prints, after the capabilities, cmd/legion's repositoryLines for
