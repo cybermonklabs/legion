@@ -218,6 +218,109 @@ test("a run's reference the batch answers gone or with no name reads as its auth
   }
 });
 
+/** Draws Details' run row for a run whose question is `question`, with the batched read answering
+ *  `targets`, and answers the excerpt it draws once that read has answered, beside the reads of
+ *  one target of their own that the row sent. */
+async function questionOnceAnswered(
+  question: string,
+  targets: readonly ReferenceTarget[],
+  settled: string
+): Promise<{ readonly drawn: string; readonly ownReads: number }> {
+  const batch = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [...targets] });
+  const comments = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
+  const blocks = spyOn(api, "getReferences").mockRejectedValue(new ApiError(404, {}));
+  const issue = issueDetails();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    issueTreeQuery(issue.key).queryKey,
+    treeOf(
+      [ISSUE_NODE, commentNode(COMMENT), runNode(RUN, ASKED_AT, question)],
+      [changedBy(COMMENT, RUN)]
+    )
+  );
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(ReferenceNamesProvider, null, children)
+    );
+  function Questions(): ReactNode {
+    const { rows } = useRunRows(issue, false);
+    return createElement(NamedRunRows, {
+      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
+      issue,
+      rows,
+    });
+  }
+  const { container, unmount } = render(createElement(Questions), { wrapper });
+  try {
+    // The case's named reference draws its name once the batch has answered.
+    await screen.findByText(settled);
+    expect(batch).toHaveBeenCalledTimes(1);
+    const drawn = [...container.querySelectorAll("p")].map((row) => row.textContent ?? "");
+    return {
+      drawn: drawn.join("\n"),
+      ownReads: comments.mock.calls.length + blocks.mock.calls.length,
+    };
+  } finally {
+    unmount();
+    client.clear();
+    batch.mockRestore();
+    comments.mockRestore();
+    blocks.mockRestore();
+  }
+}
+
+/** The short form `reference` draws where no name and no written words stand for it. */
+function shortFormOf(reference: string): string {
+  const route = parseNodeReference(reference);
+  if (route === undefined) throw new Error(`${reference} names no node`);
+  return shortForm(route);
+}
+
+// Decision 350: a short reference whose id two or more targets carry names none of them. The
+// batched read answers it ambiguous (`ReferenceTarget.ambiguous`), and the question draws it as
+// its asker wrote it, never by a short form and never read again.
+test("a run's reference the batch answers ambiguous reads as its author wrote it", async () => {
+  const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
+  const ambiguous = "dispatch://CORE-2/spec#b-abcd1234";
+  const question = `Does ${named} answer ${ambiguous}?`;
+  const settled = `Does Warm the cache first answer ${ambiguous}?`;
+  const { drawn, ownReads } = await questionOnceAnswered(
+    question,
+    [
+      { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
+      { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
+    ],
+    settled
+  );
+  expect(drawn).toBe(settled);
+  expect(drawn).not.toContain(shortFormOf(ambiguous));
+  expect(ownReads, "a read of one target of its own").toBe(0);
+});
+
+// Decision 350: the batched read answers a target the reader may not see as gone, as it answers
+// one nothing addresses (`reference_targets.go`), so the reader learns nothing of it. The question
+// draws it as its asker wrote it, never by a short form and never read again.
+test("a run's reference the reader may not see reads as its author wrote it", async () => {
+  const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
+  // A comment of an issue the reader may not see.
+  const hidden = "dispatch://SECRET-1/comment/6c8e0a2d-4f6b-4c8e-0a2d-4f6b8c0e2a3c";
+  const question = `Does ${named} wait on ${hidden}?`;
+  const settled = `Does Warm the cache first wait on ${hidden}?`;
+  const { drawn, ownReads } = await questionOnceAnswered(
+    question,
+    [
+      { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
+      { gone: true, kind: "comment", name: "", ref: hidden },
+    ],
+    settled
+  );
+  expect(drawn).toBe(settled);
+  expect(drawn).not.toContain(shortFormOf(hidden));
+  expect(ownReads, "a read of one target of its own").toBe(0);
+});
+
 test("one run is one row however many writes it made", () => {
   const rows = runRows([
     treeOf(
