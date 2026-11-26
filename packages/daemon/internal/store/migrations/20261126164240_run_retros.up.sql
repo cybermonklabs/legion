@@ -73,7 +73,8 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
 -- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
--- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The three deletes of
+-- release before starts, through PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v
+-- ON_ERROR_STOP=1 (docs/kubernetes.md, "Reaching the daemon's database by hand"). The three deletes of
 -- queued rows are owed to the release before: it decodes an outbox payload strictly
 -- (record.DecodeOutboxPayload, DisallowUnknownFields) and knows neither the kind retro_bound, nor a
 -- supervise row's retroRun or retroWake, nor a linger_close row's retrosEnded, so it would fail

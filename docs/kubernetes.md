@@ -3228,7 +3228,7 @@ A `linger_close` row that carries `retrosEnded` is the close a tree past its lin
 The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind `retro_bound`, nor a `supervise` row's `retroRun` or `retroWake`, nor a `linger_close` row's `retrosEnded`.
 So it fails each such row at every attempt, and its issue's lifecycle lane behind it.
 That release names neither the table nor the two columns in any read or write, so it boots with them standing.
-Run the way back below with every daemon of the database stopped and before the release before starts, in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session:
+Run the way back below with every daemon of the database stopped and before the release before starts, in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session, with the database as [Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand) gives it:
 
 ```sql
 begin;
