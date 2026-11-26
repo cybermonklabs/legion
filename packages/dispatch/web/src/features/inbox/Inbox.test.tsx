@@ -5,10 +5,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
-  type Commits,
   drawnPick,
   type HeldNotifications,
   holdNotifications,
@@ -29,16 +28,12 @@ import type {
   CredentialPendingRow,
   InboxRow,
   Issue,
-  IssueDetails,
 } from "../../api/types";
 import { QUIET_MS } from "../doc/refocus-when-settled";
-import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
-import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
-import { READING_PANE_QUERY } from "../shell/useDialog";
 import { replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
@@ -49,6 +44,20 @@ import {
   mockAskReads,
   withWaitingOnPerson,
 } from "./inbox-fixture";
+import {
+  address,
+  headings,
+  inboxIssue,
+  mockIssueReads,
+  movableReadingPaneWidth,
+  narrowIssueOf,
+  RouteProbe,
+  renderInbox,
+  rowIds,
+  selectedIds,
+  shortRow,
+  soon,
+} from "./inbox-page-fixture";
 import { SnoozeControl } from "./SnoozeControl";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -102,55 +111,6 @@ function artifactAsk(projectDefault: string | null = FIXTURE_PROJECT_DEFAULT): I
   return withWaitingOnPerson(row, projectDefault);
 }
 
-function inboxIssue(
-  id: string,
-  key: string,
-  question: string,
-  overrides: Partial<InboxRow> = {}
-): InboxRow {
-  return issueAsk({
-    id,
-    issue: { assignee: "alice", key, title: `${key} title` },
-    issue_key: key,
-    question,
-    ...overrides,
-  });
-}
-
-/** The narrow `Issue` a PATCH answers with, for an inbox row's issue. */
-function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
-  return {
-    advances: [],
-    advances_revision: 0,
-    assignee,
-    claim: null,
-    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-    closed_at: null,
-    created_at: row.created_at,
-    created_by: { id: "alice", kind: "user" },
-    external_links: [],
-    key: row.issue_key ?? "",
-    labels: [],
-    last_seq: 2,
-    number: 3,
-    parent: null,
-    blocked_by: [],
-    plan_artifact_id: "artifact-plan",
-    decisions_artifact_id: "",
-    primary_artifact_id: "artifact-3",
-    priority: null,
-    project: "CORE",
-    rank: "U",
-    route: null,
-    repo: null,
-    resolved_repo: null,
-    status: "todo",
-    title: row.issue?.title ?? "",
-    updated_at: row.created_at,
-    verification_artifact_id: "artifact-verification",
-  };
-}
-
 test("a cold Inbox hydrates every ask thread from its one list response", async () => {
   const rows = Array.from({ length: 20 }, (_, index) => {
     const row = issueAsk({
@@ -198,7 +158,7 @@ test("a cold Inbox hydrates every ask thread from its one list response", async 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -265,7 +225,7 @@ test("an unchanged old Inbox cache does not refetch every thread on remount", as
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -389,7 +349,7 @@ test("Inbox keeps rows waiting on agents below Waiting on you without duplicatin
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -444,7 +404,7 @@ test("Inbox keeps an agent's latest reply on its Waiting-on-you row", async () =
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -486,7 +446,7 @@ test("Inbox partitions by waiting_on: an agent's progress note keeps its ask und
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -543,7 +503,7 @@ test("Inbox preserves server priority order within Waiting on you", async () => 
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on&sort=priority"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -597,7 +557,7 @@ test("j enters a band at its first row instead of its heading", async () => {
   const rows = [above, first, second];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-first");
@@ -626,7 +586,7 @@ test("k enters a band at its last row instead of its heading", async () => {
   const rows = [first, second, below];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-first");
@@ -960,7 +920,7 @@ test("a row being typed into stays under Waiting on you when an agent's note fli
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1089,7 +1049,7 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
     return reply;
   });
   const geometry = stackRows();
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-b");
@@ -1182,7 +1142,7 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1262,7 +1222,7 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1313,7 +1273,7 @@ test("a priority pick that takes the row under the reader's hand out of the prio
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]', "CORE-1"));
-  const { queryClient, unmount } = renderInbox("/?priority=P1", { commits });
+  const { queryClient, unmount } = renderInbox("/?priority=P1", { commits, pane: false });
   let notifications: HeldNotifications | undefined;
   try {
     await screen.findByText("Ship it at P1?");
@@ -1416,7 +1376,7 @@ test("a server edit that takes the row under the reader's hand out of the typed 
   const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
   const getAsk = mockAskReads([askA, askB]);
-  const { queryClient, unmount } = renderInbox("/?q=ship");
+  const { queryClient, unmount } = renderInbox("/?q=ship", { pane: false });
   try {
     const card = await screen.findByTestId("ask-ask-a");
     const draft = within(card).getByLabelText("Your answer");
@@ -1455,7 +1415,7 @@ test("a priority pick on a row held after a server edit took it out of the typed
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]', "CORE-1"));
-  const { queryClient, unmount } = renderInbox("/?q=ship", { commits });
+  const { queryClient, unmount } = renderInbox("/?q=ship", { commits, pane: false });
   let notifications: HeldNotifications | undefined;
   try {
     await screen.findByTestId("ask-ask-p1");
@@ -1504,7 +1464,7 @@ test("a row held after a server edit took it out of the typed search goes once t
   const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
   const getAsk = mockAskReads([askA, askB]);
-  const { queryClient, unmount } = renderInbox("/?q=ship");
+  const { queryClient, unmount } = renderInbox("/?q=ship", { pane: false });
   try {
     await screen.findByTestId("ask-ask-a");
     // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
@@ -1554,7 +1514,7 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1611,7 +1571,7 @@ test("an ask card offers backlinks only when the batched count says it has some"
   const rows = [cited, uncited];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     const citedCard = await screen.findByTestId("ask-ask-cited");
@@ -1636,7 +1596,7 @@ test("an unavailable backlink list stays quiet beside an ask card", async () => 
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([row]);
   const getAsk = mockAskReads([row]);
   mocks.getReferences.mockRejectedValue(new Error("offline"));
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-backlink");
@@ -1650,63 +1610,6 @@ test("an unavailable backlink list stays quiet beside an ask card", async () => 
     getInbox.mockRestore();
   }
 });
-
-/** The address the Inbox is on, and a way back through the history it has written. */
-function RouteProbe() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  return (
-    <>
-      <output data-testid="location">{`${location.pathname}${location.search}`}</output>
-      <button onClick={() => navigate(-1)} type="button">
-        History back
-      </button>
-    </>
-  );
-}
-
-/** `route` is the whole history when it is a list, the last entry being where the reader is:
- *  whether a filter change replaces its entry or pushes one is only visible from a history that
- *  has something underneath it. `runtime` is for the tests whose reading column opens a
- *  document: that column mounts `ProofDocument`, which wants the document runtime and the
- *  margin the app shell gives it, and every other test's column shows a card and needs
- *  neither. `commits` records each commit of the Inbox; it has no one value a host passes, so
- *  each commit's `host` is null. */
-function renderInbox(
-  route: string | readonly string[] = "/",
-  { commits, runtime }: { commits?: Commits<null>; runtime?: DocumentRuntimeValue } = {}
-) {
-  const entries = typeof route === "string" ? [route] : [...route];
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const inbox = (
-    <KeymapProvider>
-      <RouteProbe />
-      {commits === undefined ? (
-        <Inbox />
-      ) : (
-        <commits.Recorded host={null}>
-          <Inbox />
-        </commits.Recorded>
-      )}
-    </KeymapProvider>
-  );
-  const view = render(
-    <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
-      <QueryClientProvider client={queryClient}>
-        {runtime === undefined ? (
-          inbox
-        ) : (
-          <DocumentRuntime.Provider value={runtime}>
-            <MarginProvider>{inbox}</MarginProvider>
-          </DocumentRuntime.Provider>
-        )}
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, unmount: view.unmount };
-}
 
 /** Who the filter's popover lists: `GET /users`, read on its first open. */
 function mockPeople() {
@@ -1735,17 +1638,6 @@ async function toggleAssignee(user: UserEvent, option: RegExp) {
   if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
   const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
   await user.click(await within(listbox).findByRole("option", { name: option }));
-}
-
-function headings(): string[] {
-  return screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent ?? "");
-}
-
-/** The rows' ask ids in DOM order: the order the reader sees. */
-function rowIds(): string[] {
-  return [...document.querySelectorAll("[data-inbox-row]")].map(
-    (row) => row.getAttribute("data-inbox-row") ?? ""
-  );
 }
 
 const ROW_HEIGHT = 200;
@@ -2031,7 +1923,7 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
   const getAsk = mockAskReads(rows);
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { unmount } = renderInbox("/?assignee=unassigned");
+  const { unmount } = renderInbox("/?assignee=unassigned", { pane: false });
   try {
     await screen.findByText("Orphan question?");
     await user.click(screen.getByRole("button", { name: "Assign CORE-3 to me" }));
@@ -2091,7 +1983,7 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
     attempts += 1;
     return attempts === 1 ? firstSave.promise : narrowIssueOf(orphan, "alice");
   });
-  const { unmount } = renderInbox("/?assignee=unassigned");
+  const { unmount } = renderInbox("/?assignee=unassigned", { pane: false });
   try {
     await screen.findByText("Orphan question?");
     await user.click(screen.getByRole("button", { name: "Assign CORE-3 to me" }));
@@ -2159,7 +2051,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
     attempts += 1;
     return attempts === 1 ? firstHandOn.promise : handedBack;
   });
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
   try {
     await screen.findByText("Hand this on?");
     await user.selectOptions(
@@ -2226,7 +2118,7 @@ test("a sibling ask of the same issue leaving the list does not drop an in-fligh
   const getAsk = mockAskReads(rows);
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount } = renderInbox("/?assignee=everyone");
+  const { queryClient, unmount } = renderInbox("/?assignee=everyone", { pane: false });
   try {
     await screen.findByText("Question A?");
     const rowA = () => screen.getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
@@ -2321,11 +2213,6 @@ test("Blocked on you counts the reader's own questions, and does not move when t
   }
 });
 
-/** An hour from now, as the server stores it: inside any snooze window the reader can pick. */
-function soon(hours = 3): string {
-  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-}
-
 test("Snooze folds a row into Later until the reader un-snoozes it", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
@@ -2347,7 +2234,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
   const getAsk = mockAskReads([askA, askB]);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     expect(headings()).toEqual(["Waiting on you (2)"]);
@@ -2398,7 +2285,7 @@ test("an agent's reply on a snoozed row leaves it in Later and off Waiting on yo
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([snoozed]);
   const getAsk = mockAskReads([snoozed]);
-  const { queryClient, unmount } = renderInbox();
+  const { queryClient, unmount } = renderInbox("/", { pane: false });
   try {
     await waitFor(() => expect(headings()).toEqual(["Later (1)"]));
     expect(rowIds()).toEqual([]);
@@ -2477,7 +2364,7 @@ test("a snooze still saving says Snoozing…, not Un-snoozing…, in the band it
       })
   );
   const getAsk = mockAskReads([row]);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
   try {
     await screen.findByText("Which format?");
     await user.selectOptions(screen.getByLabelText("Snooze CORE-1: Which format?"), "tomorrow");
@@ -2518,7 +2405,7 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
     new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
   );
   const getAsk = mockAskReads([row]);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     await user.selectOptions(screen.getByLabelText("Snooze CORE-1: Which format?"), "tomorrow");
@@ -2547,7 +2434,7 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
     new NetworkError("/api/v1/me/asks/ask-b/snooze", new TypeError("Failed to fetch"))
   );
   const getAsk = mockAskReads([row]);
-  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     jest.useFakeTimers();
@@ -2656,9 +2543,10 @@ test("a snooze out when the control is drawn for another ask holds the row of th
 });
 
 // ----------------------------------------------------------------------------------------
-// The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px,
-// where the Inbox is the list of cards it has always been - the Inbox below 1280 px, which the
-// spec keeps unchanged - so the tests below say where they stand by widening the window first.
+// The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px:
+// those that drive a card in its row render the list of cards the drawer draws (`pane: false`),
+// since the page reads one row at a time at every width. The tests below widen the window to
+// the column; the reading view below its width is `Inbox.reading-view.test.tsx`'s.
 // ----------------------------------------------------------------------------------------
 
 /** The width the Inbox shows its reading column from (`READING_PANE_QUERY`, 1280 px). happy-dom
@@ -2671,71 +2559,6 @@ function widenToReadingPane(): () => void {
   const was = window_.innerWidth;
   window_.happyDOM.setViewport({ width: 1440 });
   return () => window_.happyDOM.setViewport({ width: was });
-}
-
-/** A width the test can move while the Inbox is mounted, which `widenToReadingPane` cannot:
- *  happy-dom answers `matchMedia` from its own window, but it delivers no `change` to a list
- *  made before `setViewport`, so a column already standing never hears the viewport narrow.
- *  This is the stub `__tests__/responsive-shell.test.tsx` installs - one object per query,
- *  answering `matches` for the query it was asked - with the one addition a move needs: it keeps
- *  the listeners `useMediaQuery` registers, so `setWidth` delivers the `change` a browser sends.
- */
-function movableReadingPaneWidth(width: number): {
-  restore: () => void;
-  setWidth: (next: number) => void;
-} {
-  const originalMatchMedia = window.matchMedia;
-  const changeListeners = new Set<(event: Event) => void>();
-  let now = width;
-  window.matchMedia = ((query: string) =>
-    ({
-      addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
-        if (type === "change" && typeof listener === "function") changeListeners.add(listener);
-      },
-      addListener: () => {},
-      dispatchEvent: () => true,
-      get matches() {
-        return query === READING_PANE_QUERY && now >= 1280;
-      },
-      media: query,
-      onchange: null,
-      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
-        if (type === "change" && typeof listener === "function") changeListeners.delete(listener);
-      },
-      removeListener: () => {},
-    }) as MediaQueryList) as typeof window.matchMedia;
-  return {
-    restore: () => {
-      window.matchMedia = originalMatchMedia;
-    },
-    setWidth: (next: number) => {
-      now = next;
-      for (const listener of changeListeners) listener(new Event("change"));
-    },
-  };
-}
-
-/** One row by its ask id: a short row holds no card, so there is no `ask-<id>` to find it by. */
-function shortRow(askId: string): HTMLElement {
-  const row = document.querySelector<HTMLElement>(`[data-inbox-row="${askId}"]`);
-  if (row === null) throw new Error(`${askId} row missing`);
-  return row;
-}
-
-/** The ask ids of the rows marked selected: exactly one, or the test has found a second. */
-function selectedIds(): string[] {
-  return [...document.querySelectorAll('[data-inbox-selected="true"]')].map(
-    (row) => row.getAttribute("data-inbox-row") ?? ""
-  );
-}
-
-function address(): string {
-  return screen.getByTestId("location").textContent ?? "";
-}
-
-/** The pane reads one field of the question's issue: whether it is closed. */
-function mockIssueReads() {
-  return spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails);
 }
 
 test("from 1280 px the Inbox is two columns: short rows in the list, the question in the pane", async () => {
@@ -2774,25 +2597,6 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
-  }
-});
-
-test("below 1280 px the Inbox is today's Inbox: the card in the row, no pane and no ?item=", async () => {
-  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
-
-  try {
-    const card = await screen.findByTestId("ask-ask-a");
-    expect(card.closest("[data-inbox-row]")).toBe(shortRow("ask-a"));
-    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
-    expect(selectedIds()).toEqual([]);
-    expect(address()).toBe("/");
-  } finally {
-    unmount();
-    getAsk.mockRestore();
-    getInbox.mockRestore();
   }
 });
 
@@ -4239,7 +4043,7 @@ test("a question the server withdraws drops the record: Escape lands on the one 
   }
 });
 
-test("the column going when the Inbox narrows drops the record, where nothing else can", async () => {
+test("the column going when the Inbox narrows drops the record, where nothing else can, and the row it showed is read in place of the list", async () => {
   const user = userEvent.setup();
   const width = movableReadingPaneWidth(1440);
   const rows = [
@@ -4264,13 +4068,16 @@ test("the column going when the Inbox narrows drops the record, where nothing el
     await user.keyboard("l");
     expect(scroller()).toHaveFocus();
 
-    // Below the column's width the Inbox is the list of cards it has always been. The selection
-    // stands - the address still names it - so no question changed and the layout effect drops
-    // nothing; the scroller goes with the column, taking the focus to the body with no blur and
-    // no `focusin` behind it, so neither focus drop reads anything either. The wrapper's own
-    // unmount is the only report there is, which makes this `holdPane`'s row alone.
+    // Below the column's width the row the column showed is read in place of the list. The
+    // selection stands - the address still names it - so no question changed and the layout
+    // effect drops nothing; the scroller goes with the column, taking the focus to the body with
+    // no blur and no `focusin` behind it, so neither focus drop reads anything either. The
+    // column wrapper's own unmount is the only report there is, which makes this `holdPane`'s
+    // row alone.
     act(() => width.setWidth(1279));
-    await waitFor(() => expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument());
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(within(view).getByTestId("ask-ask-b")).toBeTruthy();
+    expect(screen.getByTestId("inbox-list").closest("[hidden]")).not.toBeNull();
     expect(address()).toBe("/?item=ask-b");
     expect(document.body).toHaveFocus();
 
@@ -4912,7 +4719,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
   });
   const handOn = Promise.withResolvers<InboxRow>();
   const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
   try {
     const row = await waitFor(() => {
       const found = document.querySelector<HTMLElement>('[data-inbox-row="reply:ask-theirs"]');

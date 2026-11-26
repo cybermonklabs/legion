@@ -1,10 +1,11 @@
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { EditedMark } from "../refs/PostMarks";
+import { isPlainClick } from "../refs/picture-lightbox";
 import { PlainText } from "../refs/plain-text";
 import { deletedLineText, postDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
@@ -56,14 +57,16 @@ export function ThreadLine({
  * they read in the thread itself. `fullTitle` gives a pointer reader the same line as plain
  * text, from the same reader; a deleted root's hover text is the deleted line's words.
  *
- * Both layouts draw it: the short row beside the reading column, where it is the link `o`
- * follows (`data-inbox-owner`), and the card below that width, where **Open** is that link and
- * the title is plain text. Each host sizes its own line, as the three-site owner line does
- * (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what unread looks like is this one place.
+ * The short row draws it as the link `o` follows to the thread's own page at every width
+ * (`data-inbox-owner`); below 1280 px a plain click on it opens the row in place instead
+ * (`onOpen`). The drawer's card draws it as plain text, beside its **Open**. Each host sizes its
+ * own line, as the three-site owner line does (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what
+ * unread looks like is this one place.
  */
 export function ThreadTitle({
   className,
   href,
+  onOpen,
   thread,
 }: {
   /** The classes the host's line gives the title; the unread weight is added to them. The host
@@ -72,9 +75,20 @@ export function ThreadTitle({
   className: string;
   /** Where the title links, for the host that draws it as a link; plain text without one. */
   href?: string;
+  /** What a plain click on the link does instead of following it: below 1280 px the Inbox opens
+   *  the row in place. A click with a modifier or another button still follows the link. */
+  onOpen?: () => void;
   thread: MyReplyRow;
 }): ReactNode {
   const agentText = useAgentText();
+  const openInPlace =
+    onOpen === undefined
+      ? undefined
+      : (event: MouseEvent<HTMLAnchorElement>) => {
+          if (!isPlainClick(event.nativeEvent)) return;
+          event.preventDefault();
+          onOpen();
+        };
   const deleted = postDeletion(thread);
   const deletedWords = deleted === null ? undefined : deletedLineText(deleted, agentText);
   const text = `${className} ${
@@ -107,7 +121,13 @@ export function ThreadTitle({
         // link inside it and is none. The link keeps the row's own classes, the weight that
         // says the thread is unread among them, as it did when it drew the words itself.
         <ReferenceHostIs host="control">
-          <a className={text} data-inbox-owner="" href={href} title={deletedWords}>
+          <a
+            className={text}
+            data-inbox-owner=""
+            href={href}
+            onClick={openInPlace}
+            title={deletedWords}
+          >
             {line}
           </a>
         </ReferenceHostIs>
