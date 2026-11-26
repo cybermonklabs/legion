@@ -2454,3 +2454,4 @@ READ_SETS = {
 # moved keeps when it merges main.
 GATES, EXCLUDED = load_gate_files(globals())
 RULES, DIRECTIVES = load_directives(list(repository_files()), READ_SETS)
+# (merge-base control.)

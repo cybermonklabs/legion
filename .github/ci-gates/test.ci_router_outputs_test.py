@@ -18,3 +18,4 @@ GATE = harness("ci_router_outputs_test", "Test the router outputs' label terms",
     (f"{SCRIPTS}/ci_ts_listing.py", "check-ci-filters.sh's generate mode imports it and starts the listings"),
     (f"{SCRIPTS}/ci_ts_programs.py", "ci_ts_listing.start() reads the pairs it lists"),
 ])
+# (merge-base control.)

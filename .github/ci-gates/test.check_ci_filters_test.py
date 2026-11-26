@@ -20,3 +20,4 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     (FORCED_ORDER, "check-ci-filters.test.sh reads its go flags, which must pass -tags odatrace, the one name "
                    "beyond the toolchain's that go_build_tags.py leaves out of every vet"),
 ])
+# (merge-base control.)

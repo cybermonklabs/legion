@@ -727,3 +727,4 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
+# (merge-base control.)

@@ -3451,3 +3451,5 @@ could replace those files (no such line in job 138205905583, run 45323050174). g
 fills in a job of its own, envoy-test, which restores first and then builds the listener and
 natsd as the envoy job does and the test binaries, so its entry still holds go-envoy's objects,
 built on its own entry, and the chmod step is gone. A run-time check would pass both jobs.
+
+(Merge-base control.)

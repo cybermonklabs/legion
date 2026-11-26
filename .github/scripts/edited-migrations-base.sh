@@ -124,3 +124,4 @@ while :; do
 done
 echo "edited-migrations base: $base, the merge base of HEAD $sha with main $main_sha: this workflow_dispatch run on $ref names no migration-base, and a branch lands onto main" >&2
 echo "$base"
+# (merge-base control.)

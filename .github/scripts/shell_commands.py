@@ -180,3 +180,4 @@ def command_of(words: list[str]) -> list[list[str]]:
         if flag.endswith(("o", "O")) and words:
             words.pop(0)
     return command_of(words)
+# (merge-base control.)

@@ -726,3 +726,4 @@ if problems and mode == "generate":
             pass
 sys.exit(1 if problems else status)
 '
+# (merge-base control.)

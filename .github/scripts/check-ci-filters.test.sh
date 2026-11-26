@@ -6147,3 +6147,4 @@ check "fails" "$(is "$status" 1)"
 check "names the version it could not have" "$(contains "$out" 'go1\.999\.0')"
 
 summary "check-ci-filters.sh computes each filter from its job's Go closure and reads, and holds its table to ci.yaml"
+# (merge-base control.)

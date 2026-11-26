@@ -64,3 +64,4 @@ GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter ci_filters held packages/daemon/** by hand before the filters were computed: it selected 808 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/**', "filter ci_filters held packages/envoy/** by hand before the filters were computed: it selected 1536 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])
+# (merge-base control.)

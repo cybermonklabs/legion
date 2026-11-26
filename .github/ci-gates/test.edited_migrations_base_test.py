@@ -3,3 +3,4 @@ GATE = harness("edited_migrations_base_test", "Test the edited-migrations check'
         f"{SCRIPTS}/edited-migrations-base.test.sh", [
     (EDITED_MIGRATIONS_BASE, "the script under test"),
 ])
+# (merge-base control.)

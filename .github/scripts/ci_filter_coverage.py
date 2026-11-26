@@ -3784,3 +3784,4 @@ def main() -> int:
         traceback.print_exc(file=sys.stdout)
         print(f"::{token}::", flush=True)
         return 1
+# (merge-base control.)
