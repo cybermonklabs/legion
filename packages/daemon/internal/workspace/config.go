@@ -25,7 +25,7 @@ import (
 // CommandTimeout is the slow-command budget both runtimes' provisioning gives every command it
 // runs — a fetch, a jj operation, or a git configuration edit — each bounded independently. The
 // exceptions are the fetch's checks of what the repository cache streamed and its transfers from
-// GitHub, under FetchTimeout (the repository cache's own first clone under CacheFetchTimeout
+// GitHub, under FetchTimeout (the repository cache's own first fill under CacheFetchTimeout
 // instead), the stream from the repository cache, under the low-speed bound and no clock at all
 // (CacheStreamLowSpeedBytes), the shared clone's own clone, under CloneTimeout, the issue's
 // checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through CacheGitWithin).
@@ -33,7 +33,7 @@ const CommandTimeout = 5 * time.Minute
 
 // FetchTimeout bounds each clocked size-following transfer stage. For an issue-pod fill,
 // StreamCache verifies its cache tar within one FetchTimeout and the subsequent GitHub delta gets
-// another. The repository cache's refresh uses one; its first clone uses CacheFetchTimeout. The
+// another. The repository cache's refresh uses one; its first fill uses CacheFetchTimeout. The
 // cache tar itself is held by its low-speed rule, not a clock.
 const FetchTimeout = 30 * time.Minute
 

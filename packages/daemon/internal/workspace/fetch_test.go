@@ -707,7 +707,7 @@ func fillIssueClone(t *testing.T, run Runner, clock Clock, source remote) (strin
 // Against a real git and curl reaching the stand-in as github.com, the failures a production
 // transfer met on the pack request — a 408, a transfer cut short, an HTTP/2 stream reset mid-pack —
 // are each told transient from what git prints, and the attempt after them fills the repository.
-// Every attempt presents the provisioning token. Both the cache's clone and an issue pod's fill
+// Every attempt presents the provisioning token. Both the cache's first fill and an issue pod's fill
 // hold to it.
 func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 	for _, how := range gitHubTransfers {
@@ -948,7 +948,9 @@ func (c *removingClock) Sleep(ctx context.Context, d time.Duration) error {
 // FetchTimeout and no tag, then points HEAD at that branch. It reads no git configuration but its
 // own: not the system's, not the image user's, and not what git's `-c` (GIT_CONFIG_PARAMETERS)
 // names in its environment — here each names a template directory, which would plant a file in
-// every repository git creates. Its credential is gone once it returns.
+// every repository git creates, and the system's and the user's also rewrite every file:// URL,
+// the tests' GitHub, to one that names nothing, so a transfer that read them fails. Its credential
+// is gone once it returns.
 func TestFetchFillsTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "release/v7.1", "other.txt")
@@ -957,7 +959,7 @@ func TestFetchFillsTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := filepath.Join(t.TempDir(), "gitconfig")
-	if err := os.WriteFile(config, []byte("[init]\n\ttemplateDir = "+template+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(config, []byte("[init]\n\ttemplateDir = "+template+"\n[url \"file:///nowhere/\"]\n\tinsteadOf = file://\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", config)
@@ -1032,9 +1034,9 @@ func TestFetchBringsNoTagObjectIntoTheCache(t *testing.T) {
 }
 
 // A repository cache that holds the repository — the cache's clone at each refresh, or after a
-// restart on its volume — is fetched into, not cloned again: the default branch GitHub's HEAD
-// names, moved, reaches it through the one-shot credential, bounded as the clone is, without tags,
-// and no other branch does. The credential is gone once Fetch returns.
+// restart on its volume — is fetched into, not filled again: the default branch GitHub's HEAD
+// names, moved, reaches it through the one-shot credential, bounded as the first fill is, without
+// tags, and no other branch does. The credential is gone once Fetch returns.
 func TestFetchIntoACacheThatHoldsTheRepositoryFetchesItsDefaultBranch(t *testing.T) {
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
@@ -1165,7 +1167,7 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 
 // A cache repository Fetch did not write is not taken as its own. It could carry a hook,
 // configuration or link the token-holding fetch would run or follow, so Fetch runs no git in it:
-// it removes it without following a link, says why, and clones the cache afresh in its place. No
+// it removes it without following a link, says why, and fills the cache afresh in its place. No
 // planted hook runs, what a planted link named is left as it was, and the cache Fetch leaves is one
 // it wrote.
 func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
@@ -1296,7 +1298,7 @@ func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
 // git's update-server-info, which every `git repack` runs (the cache's due repack among them),
 // writes info/refs and objects/info/packs through a temporary sibling named <file>_XXXXXX and
 // renames it into place; a repack killed in between leaves that file. git never reads it, so a
-// cache holding one is still one a fetch wrote: kept, never removed and cloned again whole.
+// cache holding one is still one a fetch wrote: kept, never removed and filled again whole.
 func TestFetchKeepsACacheHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
@@ -2019,7 +2021,8 @@ func assertNoGitHubTransfer(t *testing.T, run *recordingRunner) {
 // branch alone (an earlier release's cache, which serves every branch), an issue pod's stream waits
 // on it, asking its /healthz every CachePoll and logging what it answered whenever that changes,
 // then streams it once it is ready and narrowed. Nothing reaches GitHub meanwhile. The health polls
-// carry no credential: the cache's token goes with the tar alone.
+// carry no credential: the cache's token goes with the tar alone. The index the cache streamed with
+// its pack is the one the clone reads it through: no pack is indexed again.
 func TestStreamCacheWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
 	run := newLocalRunner(t)
 	body := cacheTar(t, cacheOf(t, run.remote))
@@ -2050,6 +2053,11 @@ func TestStreamCacheWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
 		t.Errorf("the streamed main is %s, want the remote's %s", got, want)
 	}
 	assertNoGitHubTransfer(t, run)
+	for _, call := range run.Calls() {
+		if slices.Contains(call.Argv, "index-pack") {
+			t.Errorf("StreamCache indexed again a pack the cache streamed its index with: %q", call.Argv)
+		}
+	}
 }
 
 // A cache that never becomes ready within CacheWaitTimeout — answering not ready, answering ready
