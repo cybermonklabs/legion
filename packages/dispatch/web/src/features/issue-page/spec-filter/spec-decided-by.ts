@@ -323,19 +323,19 @@ export function firstSentenceOf(text: string): string {
 }
 
 /** Every node of the tree by its id, at its first placement, which is where a node drawn under
- *  more than one parent is edited (`TreeNode.transcluded`), and after them each node of `more`
- *  the tree holds none of. It is not `decisions-filter/decisions-parts.ts`'s `placements`, which
- *  cuts each node's parent line as well, from words that write each bare address as its short
- *  form (`lineWords`): the Spec view reads a parent's line by its own rule (`parentOf`), so this
- *  walks the nodes alone. */
-function nodesById(root: TreeNode, more?: TreeNode): ReadonlyMap<string, TreeNode> {
+ *  more than one parent is edited (`TreeNode.transcluded`), and after them each node of
+ *  `viewTree` the tree holds none of. It is not `decisions-filter/decisions-parts.ts`'s
+ *  `placements`, which cuts each node's parent line as well, from words that write each bare
+ *  address as its short form (`lineWords`): the Spec view reads a parent's line by its own rule
+ *  (`parentOf`), so this walks the nodes alone. */
+function nodesById(root: TreeNode, viewTree?: TreeNode): ReadonlyMap<string, TreeNode> {
   const nodes = new Map<string, TreeNode>();
   const walk = (node: TreeNode): void => {
     if (!nodes.has(node.id)) nodes.set(node.id, node);
     for (const child of node.children) walk(child);
   };
   walk(root);
-  if (more !== undefined) walk(more);
+  if (viewTree !== undefined) walk(viewTree);
   return nodes;
 }
 

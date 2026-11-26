@@ -955,8 +955,9 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
  *  `useDecisionsTree`): the one its own view read builds once the page holds that read, which
  *  holds every question and decision whatever page of the tree read the page holds, so its count
  *  and its flag are that read's, with "+" only where it names a next page itself; and `root`
- *  until then, with "+" while the tree read names one (R15). Its flag of what waits for review
- *  is a count over the same read, and carries the same "+". */
+ *  until then, with "+" while the tree read names one (R15): either way the "+" of the tree it is
+ *  counted off (`TreeNode.moreToRead`), which the read it was built from sets by its cursor. Its
+ *  flag of what waits for review is a count over the same read, and carries the same "+". */
 export function filterSignals(
   root: TreeNode,
   query: string,
@@ -1000,7 +1001,7 @@ export function filterSignals(
   // Each ask and each decision is one entry of the count: a person's decision is the answered
   // ask itself (`decision-nodes.ts`' `decisionNodes`), so no decision node restates an answer,
   // and a decision under an answered question is an agent's own that settles it.
-  const decisionsMore = more(decisionsRoot === root ? undefined : root.views?.decisions);
+  const decisionsMore = decisionsRoot.moreToRead === true ? { more: true as const } : {};
   return {
     decisions: {
       count: decisions.matches,

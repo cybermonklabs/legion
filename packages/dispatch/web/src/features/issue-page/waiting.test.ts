@@ -318,7 +318,7 @@ function waits(
   about: IssueDetails = quiet
 ): readonly [number, readonly string[]] {
   return [
-    waitingOnReader(about, "alice", coverageStatements(about, read), tree).decisions,
+    waitingOnReader(about, "alice", coverageStatements(about, read), { tree }).decisions,
     waitingIn(
       buildIssueTree({
         ...(read === undefined ? {} : { coverage: read }),
@@ -360,14 +360,14 @@ test("what waits on the reader is their open questions, the review list and thei
     decisionNode("changed", ["r1"]),
     commentNode(change, "changed"),
   ]);
-  const counted = waitingOnReader(issue, "alice", isCoverageStatement, tree);
+  const counted = waitingOnReader(issue, "alice", isCoverageStatement, { tree });
   expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
   expect(waitingIn(buildIssueTree({ coverage, issue, tree, viewer: "alice" }))).toEqual([
     "mine",
     "spec#b-listed",
   ]);
 
-  const unknown = waitingOnReader(issue, undefined, isCoverageStatement, tree);
+  const unknown = waitingOnReader(issue, undefined, isCoverageStatement, { tree });
   expect(unknown.total).toBe(0);
   expect(waitingIn(buildIssueTree({ coverage, issue, tree }))).toEqual([]);
 });
@@ -392,7 +392,10 @@ test("a Change its author deleted leaves its decision on the review list and in 
     decisionNode("changed", ["r1"]),
     commentNode(deleted, "changed"),
   ]);
-  const counted = waitingOnReader(issue, "alice", isCoverageStatement, tree, [deleted]);
+  const counted = waitingOnReader(issue, "alice", isCoverageStatement, {
+    comments: [deleted],
+    tree,
+  });
   expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
 
   const root = buildIssueTree({ comments: [deleted], coverage, issue, tree, viewer: "alice" });
@@ -431,14 +434,16 @@ test("waitingOnReader counts a waiting decision node", () => {
     decisionNode("untied", []),
   ]);
 
-  expect(waitingOnReader(quiet, "alice", isCoverageStatement, tree)).toEqual({
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, { tree })).toEqual({
     approvals: [],
     asks: 0,
     decisions: 1,
     total: 1,
   });
   expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
-  expect(waitingOnReader(quiet, "alice", isCoverageStatement, undefined).decisions).toBe(0);
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, { tree: undefined }).decisions).toBe(
+    0
+  );
 });
 
 // INFRA-1196's decision 516: a decision whose `decided_by` names a person is that person's
@@ -488,7 +493,7 @@ test("an overtaken open question is not counted", () => {
     askNodes.map((node) => (node.id === "mine" ? { ...node, state: "overtaken" as const } : node))
   );
 
-  expect(waitingOnReader(issue, "alice", isCoverageStatement, tree)).toEqual({
+  expect(waitingOnReader(issue, "alice", isCoverageStatement, { tree })).toEqual({
     approvals: [spec.id],
     asks: 0,
     decisions: 0,
@@ -564,7 +569,7 @@ test("a deleted Change under its decision node leaves the decision on the review
     viewer: "alice",
   });
   expect([
-    waitingOnReader(quiet, "alice", isCoverageStatement, tree, [deleted]).decisions,
+    waitingOnReader(quiet, "alice", isCoverageStatement, { comments: [deleted], tree }).decisions,
     waitingIn(root),
   ]).toEqual([1, ["spec#b-noded"]]);
   expect(parentsOf(root, deleted.id)).toEqual(["spec#b-noded"]);
@@ -574,7 +579,9 @@ test("a deleted Change under its decision node leaves the decision on the review
     text: "Deleted by alice · 2026-11-05T12:00:00Z",
   });
   // The same Change not deleted is counted, as above.
-  expect(waitingOnReader(quiet, "alice", isCoverageStatement, tree, [asked]).decisions).toBe(0);
+  expect(
+    waitingOnReader(quiet, "alice", isCoverageStatement, { comments: [asked], tree }).decisions
+  ).toBe(0);
 });
 
 // A person's comment under a decision is a
@@ -679,7 +686,7 @@ test("a Change of a decision node is no Change of another document's decision of
   const root = buildIssueTree({ coverage, issue: quiet, tree, viewer: "alice" });
 
   expect({
-    count: waitingOnReader(quiet, "alice", isCoverageStatement, tree).decisions,
+    count: waitingOnReader(quiet, "alice", isCoverageStatement, { tree }).decisions,
     states: [blockNodeId("decisions-md", "d1"), blockNodeId("spec", "d1")].map(
       (id) => nodeIn(root, id)?.state
     ),
@@ -765,7 +772,9 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   const listed = coverageStatements(planned, coverage);
   expect(tied).toHaveLength(5);
   for (const decided of tied) {
-    const counted = waitingOnReader(planned, "alice", listed, answerOf([...requirements, decided]));
+    const counted = waitingOnReader(planned, "alice", listed, {
+      tree: answerOf([...requirements, decided]),
+    });
     const block = decided.block_id ?? decided.id;
     const marked = waitingDecisions.includes(blockNodeId("spec", block));
     expect(counted.decisions, block).toBe(marked ? 1 : 0);
@@ -794,7 +803,7 @@ function parentNamed(name: string): NonNullable<TreeAnswerNode["parent"]> {
  *  decision nodes. */
 function countedAndDrawn(tree: TreeAnswer, about: IssueDetails, asks?: readonly Ask[]) {
   return {
-    counted: waitingOnReader(about, "alice", isCoverageStatement, tree, undefined, asks),
+    counted: waitingOnReader(about, "alice", isCoverageStatement, { asksRead: asks, tree }),
     drawn: waitingIn(buildIssueTree({ asks, coverage, issue: about, tree, viewer: "alice" })),
   };
 }

@@ -114,15 +114,12 @@ export function IssuePropertiesRow({
   );
   const waiting = useMemo(
     () =>
-      waitingOnReader(
-        issue,
-        viewer,
-        isCoverageStatement,
+      waitingOnReader(issue, viewer, isCoverageStatement, {
+        asksRead: asks.data,
+        comments: comments.data,
+        decisions,
         tree,
-        comments.data,
-        asks.data,
-        decisions
-      ),
+      }),
     [issue, viewer, isCoverageStatement, tree, comments.data, asks.data, decisions]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
