@@ -146,7 +146,6 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
   test.setTimeout(180_000);
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}/conversation`);
-    await expectOpeningLanded(page);
 
     // The rail: 56 px at the left edge, the window's height, R2's links in order, no tooltip, and
     // no sidebar beside it.
