@@ -254,3 +254,40 @@ test("the box shows the hint of the row it was mounted with", async () => {
     }
   }
 });
+
+// A reader who types straight after a pick, before the browser draws its next frame, keeps every
+// key where it was typed: the field's caret after the pick lands with the pick's own text, and
+// nothing set later moves a caret the reader has already moved on. Here the frame the browser
+// would draw after the pick is held until two keys are typed, as a loaded machine holds it (INFRA-
+// 1109's references lane, run 45850342764, writing-surfaces.e2e.ts:665 read "...)hich window does
+// it replay? w").
+test("keys typed after a pick and before the next frame stay in the order they were typed", async () => {
+  const user = userEvent.setup();
+  const { restore } = renderField();
+  const held: FrameRequestCallback[] = [];
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    held.push(callback);
+    return held.length;
+  });
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste("ask @");
+    await screen.findByRole("option", PLANNER_ROW);
+    await user.keyboard("{ArrowDown}{Enter}");
+    await waitFor(() =>
+      expect(field.value).toBe("ask [@Planner](dispatch://agent/planner-session)")
+    );
+    await user.keyboard("{End} w");
+    frames.mockRestore();
+    for (const callback of held.splice(0)) callback(performance.now());
+    await user.keyboard("hich");
+    await waitFor(() =>
+      expect(field.value).toBe("ask [@Planner](dispatch://agent/planner-session) which")
+    );
+  } finally {
+    frames.mockRestore();
+    restore();
+  }
+});
