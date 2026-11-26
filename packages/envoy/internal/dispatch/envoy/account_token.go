@@ -179,9 +179,8 @@ const accountTokenFileSetting = "ENVOY_ACCOUNT_TOKEN_FILE"
 // leaves at least accountTokenExpiryMargin. A token whose payload names no exp, or is not a
 // compact JWT, is presented as it is, for the listener to judge. Every failure is an
 // accountTokenError naming the file by its setting and why (fileerr.Class), never its path or the
-// token: the setting holds what a person wrote, and a token pasted in place of the path would
-// print, in Dispatch's log line of the refused call (do) and in the 503 ENVOY_UNAVAILABLE answer
-// that carries this error, as ciphertoken.AccountTokenError names its own file.
+// token, since the setting holds what a person wrote and a token can be pasted in place of the
+// path, as ciphertoken.AccountTokenError names its own file.
 func accountTokenFromFile(path string, now time.Time) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -445,9 +445,9 @@ func (b windowedBody) Close() error {
 // error that kept it from answering: build's own, an identity token that could not be presented
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
 // ErrUnavailable, and ErrUnreachable where nothing answered). That failure reaches transport
-// through causeOf, so no part of ENVOY_URL's user info or query, which net/http's error quotes,
-// reaches Dispatch's log or an API answer that carries the error (a 503 ENVOY_UNAVAILABLE, a 502
-// ENVOY_UNSUBSCRIBE_FAILED); redact.Cause and causeOf say what prints in its place. Each caller
+// through transportCause, so no part of ENVOY_URL's user info or query, which net/http's error
+// quotes, reaches Dispatch's log or an API answer that carries the error (a 503 ENVOY_UNAVAILABLE,
+// a 502 ENVOY_UNSUBSCRIBE_FAILED); redact.Cause says what prints in its place. Each caller
 // names the route itself. The error still unwraps to the failure, so errors.Is and errors.As
 // classify it as before.
 //
@@ -475,7 +475,7 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		}
 		response, err := c.roundTrip(request)
 		if err != nil {
-			return nil, transport(c.causeOf(err))
+			return nil, transport(c.transportCause(err))
 		}
 		return response, nil
 	}
@@ -499,11 +499,12 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 	return try(true)
 }
 
-// causeOf is err, a call's failure roundTrip answered, as do hands it to transport: redact.Cause of
-// it over the base URL, and where the client's window ended the call (callWindowError), that
-// cause under the window's own words, so the error still names ErrCallWindow and its window and is
-// still a timeout, with no part of the URL net/http's error under it quotes.
-func (c *Client) causeOf(err error) error {
+// transportCause is err, a call's failure roundTrip answered, as do hands it to transport:
+// redact.Cause of it over the base URL, and where the client's window ended the call
+// (callWindowError), that cause under the window's own words, so the error still names
+// ErrCallWindow and its window and is still a timeout, with no part of the URL net/http's error
+// under it quotes.
+func (c *Client) transportCause(err error) error {
 	if window, ok := err.(callWindowError); ok {
 		return callWindowError{err: redact.Cause(window.err, c.baseURL), window: window.window}
 	}
@@ -516,9 +517,9 @@ func identityNotTaken(response *http.Response, err error) bool {
 	return errors.Is(err, ErrAccountToken) || (err == nil && response.StatusCode == http.StatusUnauthorized)
 }
 
-// identityRefusal is what a log line says of a try identityNotTaken reports: the error, which
-// names the token's file by its setting and never its path or the token (accountTokenFromFile), or
-// the listener's status.
+// identityRefusal is what a log line says of a try identityNotTaken reports: the error
+// (ErrAccountToken: accountTokenFromFile's, which names the file by its setting and never its
+// path or the token, or googleIdentity's, which names the audience), or the listener's status.
 func identityRefusal(response *http.Response, err error) string {
 	if err != nil {
 		return err.Error()

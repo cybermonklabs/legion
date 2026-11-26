@@ -111,8 +111,8 @@ func TestASendsWindowRunsOnTheClientsClock(t *testing.T) {
 // was; a call the caller's own deadline ended first is not ErrCallWindow, so a caller tells its
 // own bound's end from the window's. A send carries the chain (errors.Is); a read carries its cause
 // as text, which names ErrCallWindow the same way. Each holds under a listener URL carrying a
-// made-up token as its user name or in its query too, and no call's error holds any part of the
-// token, though net/http's error under it quotes the request URL (causeOf).
+// made-up token as its user name or in its query too, and no call's error holds any 10-byte run of
+// the token, though net/http's error under it quotes the request URL (transportCause).
 func TestACallTheWindowEndedIsErrCallWindowAndOneItsCallerEndedIsNot(t *testing.T) {
 	const token = "madeUpEnvoyToken0123"
 	for _, form := range []struct {
@@ -138,8 +138,10 @@ func TestACallTheWindowEndedIsErrCallWindowAndOneItsCallerEndedIsNot(t *testing.
 		})
 		printsNoToken := func(what string, err error) {
 			t.Helper()
-			if err != nil && strings.Contains(err.Error(), token[:10]) {
-				t.Fatalf("%s, %s = %q, which holds part of the token", form.name, what, err)
+			for at := 0; err != nil && at+10 <= len(token); at++ {
+				if strings.Contains(err.Error(), token[at:at+10]) {
+					t.Fatalf("%s, %s = %q, which holds %q of the token", form.name, what, err, token[at:at+10])
+				}
 			}
 		}
 		start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
