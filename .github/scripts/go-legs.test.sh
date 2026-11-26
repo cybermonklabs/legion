@@ -820,4 +820,65 @@ root=$(tree twice-gone "$(printf '%s\n' "$twice_legs" | sed 's/^    a: the plain
 check "fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
 check "naming it" "$(contains "$(err)" 'twice names mod/gone, which .go list ./.... does not print as a package')"
 
+# ---------------------------------------------------------------- the affected job's selection
+# GO_LEGS_SELECTED is the affected job's selection (go_legs_select.py): per job, the legs its
+# matrix starts and the packages they run. A leg prints only its packages the selection holds.
+echo "case: a selection prints only the leg's selected packages"
+root=$(tree selected "$whole")
+export GO_LEGS_SELECTED='{"job": {"legs": [1], "packages": ["a"]}}'
+check "leg 1 of a matrix of 1 prints a alone" "$(is "$(legs "$root" job 1 1)" "./a/
+exit=0")"
+check "and says which it leaves out" "$(contains "$(err)" 'it leaves out b')"
+export GO_LEGS_SELECTED='{"job": {"legs": [1, 2], "packages": ["a"]}}'
+check "leg 2, none of whose packages it holds, prints nothing and passes" "$(is "$(legs "$root" job 2 2)" "
+exit=0")"
+check "saying so, so its step's xargs -r starts no go test" "$(contains "$(err)" 'leg 2 of job runs none of its 1 package')"
+export GO_LEGS_SELECTED='{"job": {"legs": [1, 2], "packages": "all"}}'
+check "all prints every package of the leg" "$(is "$(legs "$root" job 1 2)" "./b/
+./a/
+exit=0")"
+
+echo "case: a selection the matrix does not match, and one that cannot be read, stop the leg"
+export GO_LEGS_SELECTED='{"job": {"legs": [1], "packages": ["a"]}}'
+check "a leg the selection does not start fails" "$(contains "$(legs "$root" job 2 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'leg 2 of job job runs, and GO_LEGS_SELECTED does not start it')"
+check "a matrix of more legs than the selection starts fails" "$(contains "$(legs "$root" job 1 2)" '^exit=1$')"
+check "naming both counts" "$(contains "$(err)" 'starts 1 leg.s. of job job and its matrix runs 2')"
+export GO_LEGS_SELECTED='{"job": {"legs": [1, 3], "packages": ["a"]}}'
+check "a leg the file does not have fails" "$(contains "$(legs "$root" job 1 2)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" 'starts legs 3 of job job, which .github/go-legs.yaml does not have')"
+export GO_LEGS_SELECTED='{"other": {"legs": [1], "packages": "all"}}'
+check "a selection with no entry for the job fails" "$(contains "$(legs "$root" job 1 1)" '^exit=1$')"
+check "naming the job" "$(contains "$(err)" 'holds no selection for job job')"
+export GO_LEGS_SELECTED='not json'
+check "a selection that is no JSON fails" "$(contains "$(legs "$root" job 1 2)" '^exit=1$')"
+export GO_LEGS_SELECTED=''
+check "an empty selection is every package, the matrix held to the file" "$(is "$(legs "$root" job 1 2)" "./b/
+./a/
+exit=0")"
+check "and a matrix short of the file's legs still fails" "$(contains "$(legs "$root" job 1 1)" '^exit=1$')"
+unset GO_LEGS_SELECTED
+
+echo "case: a leg that runs a group of a package's tests prints nothing when the package is not selected"
+root=$(split_tree selected-group "$two_group_legs" "$whole_groups")
+export GO_LEGS_SELECTED='{"job": {"legs": [1, 2, 3], "packages": ["a"]}}'
+check "the group leg prints nothing and passes" "$(is "$(legs "$root" job 1 3)" "
+exit=0")"
+export GO_LEGS_SELECTED='{"job": {"legs": [1, 2, 3], "packages": ["many"]}}'
+check "and prints its -run and the package when it is" "$(is "$(legs "$root" job 1 3)" "-run=^(TestOne|ExampleThing)\$
+./many/
+exit=0")"
+unset GO_LEGS_SELECTED
+
+echo "case: a selection that names a package no place names runs it in unlisted's last leg"
+root=$(tree selected-dropped "$dropped")
+export GO_LEGS_SELECTED='{"job": {"legs": [2], "packages": ["b/c"]}}'
+check "the last leg prints that package alone, though the change selects none of its own" \
+  "$(is "$(legs "$root" job 2)" "./b/c/
+exit=0")"
+export GO_LEGS_SELECTED='{"job": {"legs": [2], "packages": ["a"]}}'
+check "and leaves it out when the change does not select it" "$(is "$(legs "$root" job 2)" "./a/
+exit=0")"
+unset GO_LEGS_SELECTED
+
 summary "go_legs.py runs each package of its module in exactly one place, and each test of a package it splits in exactly one group"

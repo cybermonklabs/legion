@@ -73,6 +73,14 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+      affected-packages:
+        description: >-
+          `.github/workflows/ci.yaml#needs.affected.outputs.affected_packages`: the legs of each job
+          here that the change starts and the packages they run (.github/scripts/go_legs_select.py).
+          Empty, every leg runs every package: the matrix each legs job writes after `||`.
+        type: string
+        required: false
+        default: ''
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -89,12 +97,15 @@ jobs:
   # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
   daemon-go-legs:
     name: daemon-go (leg ${{ matrix.leg }})
+    # Only the legs the change selects start, so a leg none of whose packages it reaches spends no
+    # runner. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
+    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['daemon-go'].legs[0] }}
     runs-on: ubuntu-24.04
     strategy:
       # One leg's failure leaves the others running, so each reports its own packages.
       fail-fast: false
       matrix:
-        leg: [1, 2]
+        leg: ${{ inputs.affected-packages && fromJSON(inputs.affected-packages)['daemon-go'].legs || fromJSON('[1, 2]') }}
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs that
@@ -126,6 +137,8 @@ jobs:
           --health-retries 5
     env:
       JOB_TIMEOUT_MINUTES: 60 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      # The selection, which go_legs.py reads to print only the leg's packages the change reaches.
+      GO_LEGS_SELECTED: ${{ inputs.affected-packages }}
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL; internal/cipher runs in the plain step), and the Stage 1
@@ -337,6 +350,10 @@ jobs:
       # only follows the leg's, and read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
+          if [ "${{ needs.daemon-go-legs.result }}" = skipped ] && [ "${{ inputs.affected-packages && toJSON(fromJSON(inputs.affected-packages)['daemon-go'].legs) == '[]' }}" = true ]; then
+            echo "daemon-go's legs did not start: the change reaches none of their packages (.github/scripts/go_legs_select.py)"
+            exit 0
+          fi
           if [ "${{ needs.daemon-go-legs.result }}" != success ]; then
             echo "::error::daemon-go's legs ended ${{ needs.daemon-go-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
             exit 1
@@ -365,11 +382,13 @@ jobs:
   # packages reads it.
   daemon-go-race-legs:
     name: daemon-go-race (leg ${{ matrix.leg }})
+    # Only the legs the change selects start. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
+    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['daemon-go-race'].legs[0] }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        leg: [1, 2, 3, 4]
+        leg: ${{ inputs.affected-packages && fromJSON(inputs.affected-packages)['daemon-go-race'].legs || fromJSON('[1, 2, 3, 4]') }}
     # A step's worst case is its largest measured green duration plus its own -timeout, as
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
     # at most, then the Postgres ceiling step's 19 s (its cold build of the connections command
@@ -397,6 +416,8 @@ jobs:
           --health-retries 5
     env:
       JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      # The selection, which go_legs.py reads to print only the leg's packages the change reaches.
+      GO_LEGS_SELECTED: ${{ inputs.affected-packages }}
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # internal/daemon's broker tests (release_broker_test.go, dispatchcredential_test.go) drive
@@ -585,6 +606,10 @@ jobs:
       # only follows the leg's, and read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
+          if [ "${{ needs.daemon-go-race-legs.result }}" = skipped ] && [ "${{ inputs.affected-packages && toJSON(fromJSON(inputs.affected-packages)['daemon-go-race'].legs) == '[]' }}" = true ]; then
+            echo "daemon-go-race's legs did not start: the change reaches none of their packages (.github/scripts/go_legs_select.py)"
+            exit 0
+          fi
           if [ "${{ needs.daemon-go-race-legs.result }}" != success ]; then
             echo "::error::daemon-go-race's legs ended ${{ needs.daemon-go-race-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
             exit 1

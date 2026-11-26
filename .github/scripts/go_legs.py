@@ -10,9 +10,20 @@ which is the order go test starts them in; or, for a leg that runs a group of on
 that group's `-run=^(<name>|…)$` and then the package. <legs> is how many legs the job's matrix
 runs, `${{ strategy.job-total }}`; the build flags are the leg's own `go test`'s (`-race`), under
 which a split package's tests are listed, so the listing is the build the run then reuses. A leg's
-go test step pipes what this prints to xargs:
+go test step pipes what this prints to `xargs -r`, which starts no go test when it prints nothing:
 
-    python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test …
+    python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test …
+
+GO_LEGS_SELECTED, when set and not empty, is ci.yaml's affected job's selection
+(.github/scripts/go_legs_select.py): a JSON object holding, for each job of the file, the legs its
+matrix starts (`legs`) and the packages of the module those legs run (`packages`, a list, or
+`all`). The leg then prints only the packages of its own that the selection holds, or, for a leg
+that runs a group of a package's tests, that group when the package is selected; when that leaves
+it nothing it prints nothing, says so, and exits 0, so the leg runs the other steps that started
+it and no go test. The matrix must then run exactly the selection's legs, and this leg must be one
+of them. Unset or empty, the leg prints all of its packages, and the matrix must run every leg of
+the file. Why a change selects what it selects:
+.github/ci-notes/ci.md#which-packages-a-go-leg-runs.
 
 The rules the legs and the groups keep, and what is refused as an error and what passes with a
 warning, are in .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs and
@@ -39,13 +50,15 @@ test behind a build tag the leg does not pass is in neither the listing nor the 
 Everything but the lines for xargs goes to standard error, the problems as GitHub error and
 warning annotations on the file they are about, so nothing else reaches the go test.
 
-It exits 1 on a problem that is an error, naming each, and 2 on a usage error and when the file
-has no such module, job or leg.
+It exits 1 on a problem that is an error, naming each, a selection it cannot read among them, and 2
+on a usage error and when the file has no such module, job or leg.
 
 The repository is the one this script sits in, so a copy of it in a fixture tree reads that
 tree's file and module: go-legs.test.sh runs it so.
 """
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -77,6 +90,9 @@ TEST_NAME = re.compile(r"^(?:Test|Fuzz|Example)[^\s.*+?()\[\]{}|^$\\]*$")
 # starts a second go test with the arguments that did not fit, which here would be the package with
 # no -run. This bound leaves the step's own flags their room under both.
 PATTERN_LIMIT = 100_000
+# The affected job's selection, which go_legs_select.py writes (the module docstring says what it holds).
+SELECTED = "GO_LEGS_SELECTED"
+ALL = "all"
 
 
 class Place:
@@ -443,6 +459,35 @@ def run_group(module: str, job: str, leg: str, package: str, group: int, by_legs
     return 0
 
 
+def selection(job: str, leg: str, legs: dict, launched: int) -> tuple:
+    """(the packages GO_LEGS_SELECTED gives `job`'s legs to run, or None for all of them; the
+    problems that keep this leg from reading it). Without a selection the matrix must run every
+    leg of the file (leg_problems); with one, it must run exactly the selection's legs, which the
+    file must have, and this leg must be one of them."""
+    raw = os.environ.get(SELECTED, "").strip()
+    if not raw:
+        return None, []
+    try:
+        chosen = json.loads(raw)[job]
+        started = [str(number) for number in chosen["legs"]]
+        packages = chosen["packages"]
+    except (ValueError, KeyError, TypeError) as unread:
+        return None, [f"{SELECTED} holds no selection for job {job} this script can read ({type(unread).__name__}: "
+                      f"{unread}), so which of its packages this leg runs is unknown"]
+    if packages != ALL and not (isinstance(packages, list) and all(isinstance(p, str) for p in packages)):
+        return None, [f"{SELECTED} gives job {job} packages {packages!r}, neither `{ALL}` nor a list of packages"]
+    found = []
+    unknown = [number for number in started if number not in {str(n) for n in legs}]
+    if unknown:
+        found.append(f"{SELECTED} starts legs {', '.join(unknown)} of job {job}, which {LEGS} does not have")
+    if len(started) != launched:
+        found.append(f"{SELECTED} starts {len(started)} leg(s) of job {job} and its matrix runs {launched}: the "
+                     f"matrix must run the selection's legs")
+    if leg not in started:
+        found.append(f"leg {leg} of job {job} runs, and {SELECTED} does not start it")
+    return (None if packages == ALL else set(packages)), found
+
+
 def main(argv: list) -> int:
     if len(argv) < 4 or not argv[3].isdigit() or int(argv[3]) < 1 or not all(f.startswith("-") for f in argv[4:]):
         print("go_legs.py: usage: go_legs.py <module> <job> <leg> <legs> [<build flag>...], <legs> a number "
@@ -464,7 +509,10 @@ def main(argv: list) -> int:
     except RuntimeError as failed:
         print(f"go_legs.py: {failed}", file=sys.stderr)
         return 1
-    found = leg_problems(job, legs, launched) + problems(module, entry, packages)
+    chosen, unread = selection(job, leg, legs, launched)
+    # With a selection, the matrix is held to it above, and the file's legs to their own numbers here.
+    found = unread + leg_problems(job, legs, launched if not os.environ.get(SELECTED, "").strip() else len(legs))
+    found += problems(module, entry, packages)
     if found:
         say(found, "error", LEGS)
         print(f"go_legs.py: {len(found)} problem(s) above; leg {leg} of {job} runs nothing until the file runs "
@@ -479,6 +527,18 @@ def main(argv: list) -> int:
          f"{home[1]} of {home[0]} ({UNLISTED}) runs it: add it to the leg its time fits" for package in extra],
         "warning", LEGS)
     mine = [item(written) for written in mine]
+    if chosen is not None:
+        kept = [(package, group) for package, group in mine if package in chosen]
+        # The selection names a package no place names too, when the change reaches it.
+        extra = [package for package in extra if package in chosen]
+        if not kept and not (extra and home == (job, leg)):
+            print(f"::notice file={LEGS}::leg {leg} of {job} runs none of its {len(mine)} package(s): the change "
+                  f"selects none of them ({SELECTED}), so its go test does not start", file=sys.stderr)
+            return 0
+        if len(kept) < len(mine):
+            print(f"go_legs.py: the change selects {len(kept)} of leg {leg}'s {len(mine)} packages ({SELECTED}); "
+                  f"it leaves out {', '.join(p for p, _ in mine if p not in chosen)}", file=sys.stderr)
+        mine = kept
     split = [(package, group) for package, group in mine if group is not None]
     if split:
         package, group = split[0]

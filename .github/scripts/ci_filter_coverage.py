@@ -1719,6 +1719,9 @@ def reduce_line(line: str) -> tuple:
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
+    # ci.yaml's switch for which packages a merge group's Go legs run, which go-legs-select.sh reads
+    # in the affected job. go reads it nowhere.
+    "CI_MERGE_GROUP_SELECTS",
     # The file of the filters this run's changes job computed, which the lint job hands
     # check-image-trigger-paths.sh and check-ts-filters.sh. around_job reads the env of every step
     # of the job that runs go-release-notices.sh, so without this name here every go command of
@@ -1732,6 +1735,10 @@ ENV_ALLOWED = frozenset({
     # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
     # the same tests with it set as without.
     "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
+    # The affected job's selection, which each Go legs job sets in its env and go_legs.py reads to
+    # print only the leg's packages the change reaches: it chooses which packages a leg's go test is
+    # given, which the step's pin already says come from go_legs.py, and go reads it nowhere.
+    "GO_LEGS_SELECTED",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # Where go keeps what it compiled and the test results it caches, both found by a hash of

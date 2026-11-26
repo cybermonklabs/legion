@@ -19,6 +19,15 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+      affected-packages:
+        description: >-
+          `.github/workflows/ci.yaml#needs.affected.outputs.affected_packages`: the legs here that the
+          change starts (.github/scripts/go_legs_select.py): every leg when it reaches the API's
+          package, none when it does not. Empty, every leg runs: the matrix the legs job writes
+          after `||`.
+        type: string
+        required: false
+        default: ''
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -40,12 +49,14 @@ jobs:
   # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
   envoy-go-race-api-legs:
     name: envoy-go-race-api (leg ${{ matrix.leg }})
+    # Only the legs the change selects start. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
+    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['envoy-go-race-api'].legs[0] }}
     runs-on: ubuntu-24.04-arm
     strategy:
       # One leg's failure leaves the others running, so each reports its own tests.
       fail-fast: false
       matrix:
-        leg: [1, 2, 3]
+        leg: ${{ inputs.affected-packages && fromJSON(inputs.affected-packages)['envoy-go-race-api'].legs || fromJSON('[1, 2, 3]') }}
     # The step's --timeout 70m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
     # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
@@ -71,6 +82,9 @@ jobs:
           --health-retries 5
     env:
       JOB_TIMEOUT_MINUTES: 90 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      # The selection, which go_legs.py reads to print the leg's group only when the change reaches
+      # the package.
+      GO_LEGS_SELECTED: ${{ inputs.affected-packages }}
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The broker's store, which the package's contract tests open (brokerstoretest.Open in
       # internal/dispatch/api/contract_test.go) and skip without; a skip is a pass, so without this
@@ -163,9 +177,14 @@ jobs:
       # reads as able to move what the legs' go commands compile. The error says this job restates
       # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
       # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
-      # only follows the leg's, and read as its own it would hide the leg's.
+      # only follows the leg's, and read as its own it would hide the leg's. The legs pass skipped
+      # when the affected job's selection started none of them, and only then.
       - name: Pass only when every leg passed
         run: |
+          if [ "${{ needs.envoy-go-race-api-legs.result }}" = skipped ] && [ "${{ inputs.affected-packages && toJSON(fromJSON(inputs.affected-packages)['envoy-go-race-api'].legs) == '[]' }}" = true ]; then
+            echo "envoy-go-race-api's legs did not start: the change does not reach the API's package (.github/scripts/go_legs_select.py)"
+            exit 0
+          fi
           if [ "${{ needs.envoy-go-race-api-legs.result }}" != success ]; then
             echo "::error::envoy-go-race-api's legs ended ${{ needs.envoy-go-race-api-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
             exit 1

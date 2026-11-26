@@ -109,10 +109,11 @@ How it reads a step:
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
     a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
-    xargs go test …`) runs each leg's packages in that leg alone, and `${{ strategy.job-total }}`
-    is the number of rows. A matrix of lists is read, and nothing else: an
-    `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
-    has;
+    xargs -r go test …`) runs each leg's packages in that leg alone, and `${{ strategy.job-total }}`
+    is the number of rows. A matrix of lists is read, and nothing else: an `include`, an `exclude`
+    or a matrix an expression computes is refused, as is a key no row has, but for a legs job's
+    legs as the affected job's selection computes them (SELECTED_LEGS), which is read as the list
+    written after its `||`, every leg, which a run that selects every package starts;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
@@ -150,6 +151,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import re
 import shlex
 import subprocess
@@ -377,6 +379,11 @@ ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 # `xargs -r` (`--no-run-if-empty`) runs nothing on empty input, which changes no test the command
 # runs when it runs, so it is read past.
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<test>\S.*)$")
+# A legs job's matrix of legs as the affected job's selection computes it, with the file's whole
+# list after `||` for a run with no selection: what a run that selects every package runs, which is
+# the run this reading is of (go_legs_select.py says what the selection holds).
+SELECTED_LEGS = re.compile(r"^\$\{\{\s*inputs\.affected-packages\s*&&\s*fromJSON\(inputs\.affected-packages\)"
+                           r"\['[A-Za-z0-9_-]+'\]\.legs\s*\|\|\s*fromJSON\('(\[[0-9, ]*\])'\)\s*\}\}$")
 # A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
 MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 # How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
@@ -683,10 +690,13 @@ def matrix_rows(label: str, body: dict) -> list[dict]:
     """The rows of a job's matrix of lists, each the values one of its jobs gets, in GitHub's
     order. Any other shape is refused rather than guessed at: an `include` or `exclude` changes the
     rows in ways this reading does not follow, and a matrix an expression computes is known only
-    when the run starts."""
+    when the run starts, but for a legs job's list of legs that the affected job's selection
+    computes (SELECTED_LEGS), which is read as the whole list a run of every package starts."""
     matrix = ((body or {}).get("strategy") or {}).get("matrix")
     if not isinstance(matrix, dict) or not matrix:
         raise Refused(f"{label}: its run: writes a matrix value, and the job has no matrix of lists to read it from")
+    matrix = {key: json.loads(SELECTED_LEGS.match(value).group(1))
+              if isinstance(value, str) and SELECTED_LEGS.match(value) else value for key, value in matrix.items()}
     if "include" in matrix or "exclude" in matrix or not all(isinstance(v, list) and v for v in matrix.values()):
         raise Refused(f"{label}: its job's matrix is not a matrix of lists alone, which is the one shape read here")
     keys = list(matrix)

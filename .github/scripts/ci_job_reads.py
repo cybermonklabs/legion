@@ -774,8 +774,10 @@ def legs_script(module, job, command):
     tests of a package a leg runs a group of, so the listing is the build the run then reuses and
     names the tests the run can choose from. `set -o pipefail` is what fails the step when
     go_legs.py refuses the file or go list fails, and `xargs -r` runs nothing on the empty output a
-    refusal leaves, where a plain xargs would run the command once with no package (for the skip
-    counter, a run of its whole default table) before the pipeline's status failed the step."""
+    refusal leaves, or a leg the affected job's selection (GO_LEGS_SELECTED) starts for a step of
+    its own and gives no package, where a plain xargs would run the command once with no package
+    (for the skip counter, a run of its whole default table) before the pipeline's status failed
+    the step."""
     words = command.split()
     # `--race` is how packages/envoy/scripts/database-skips.sh takes the same flag, and a leg
     # piped into that counter builds under the detector as surely as one piped into go test.

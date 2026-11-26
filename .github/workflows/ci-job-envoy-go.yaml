@@ -33,6 +33,14 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+      affected-packages:
+        description: >-
+          `.github/workflows/ci.yaml#needs.affected.outputs.affected_packages`: the legs here that the
+          change starts and the packages they run (.github/scripts/go_legs_select.py). Empty, every
+          leg runs every package: the matrix the legs job writes after `||`.
+        type: string
+        required: false
+        default: ''
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -48,12 +56,15 @@ jobs:
   # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
   envoy-go-legs:
     name: envoy-go (leg ${{ matrix.leg }})
+    # Only the legs the change selects start, so a leg none of whose packages it reaches spends no
+    # runner. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
+    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['envoy-go'].legs[0] }}
     runs-on: ubuntu-24.04-arm
     strategy:
       # One leg's failure leaves the others running, so each reports its own packages.
       fail-fast: false
       matrix:
-        leg: [1, 2, 3, 4, 5]
+        leg: ${{ inputs.affected-packages && fromJSON(inputs.affected-packages)['envoy-go'].legs || fromJSON('[1, 2, 3, 4, 5]') }}
     # The unit step's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 2 minutes of setup, then the unit step's own timeout-minutes of
     # 30 (its comment below says why 30), so 35.
@@ -77,6 +88,8 @@ jobs:
           --health-retries 5
     env:
       JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      # The selection, which go_legs.py reads to print only the leg's packages the change reaches.
+      GO_LEGS_SELECTED: ${{ inputs.affected-packages }}
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -700,18 +713,26 @@ jobs:
 
       # The jobs this one waits for are the ones `needs:` names, and only there: the test reads
       # every result through `needs.*.result`, so a job added to `needs:` is tested with the rest.
-      # A job that failed, was cancelled or was skipped fails this one; the error prints their
-      # results, and each job's own check run says why. (`toJSON(needs)` would name each job beside
-      # its result, but it carries every output of every job, which
-      # .github/scripts/check-ci-filters.sh refuses in a run: (rule 23).) The results are written
-      # into the run: rather than set in an env:, which check-ci-filters.sh reads as able to move
-      # what the legs' go commands compile. The error says this job restates its legs' result, in
-      # the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds, so a leg the
-      # platform killed still reads as a runner shutdown: this job's failure only follows the
-      # leg's, and read as its own it would hide the leg's.
+      # A job that failed, was cancelled or was skipped fails this one, but for the legs job when
+      # the affected job's selection started none of its legs (its `legs` is empty), which is
+      # skipped then and passes here; the error prints their results, and each job's own check run
+      # says why. (`toJSON(needs)` would name each job beside its result, but it carries every
+      # output of every job, which .github/scripts/check-ci-filters.sh refuses in a run: (rule
+      # 23).) The results are written into the run: rather than set in an env:, which
+      # check-ci-filters.sh reads as able to move what the legs' go commands compile. The error says
+      # this job restates its legs' result, in the words
+      # `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds, so a leg the platform
+      # killed still reads as a runner shutdown: this job's failure only follows the leg's, and
+      # read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
-          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = true ]; then
+          allowed=0
+          if [ "${{ needs.envoy-go-legs.result }}" = skipped ] && [ "${{ inputs.affected-packages && toJSON(fromJSON(inputs.affected-packages)['envoy-go'].legs) == '[]' }}" = true ]; then
+            echo "envoy-go's legs did not start: the change reaches none of their packages (.github/scripts/go_legs_select.py)"
+            allowed=1
+          fi
+          skipped=$(printf '%s\n' ${{ join(needs.*.result, ' ') }} | grep -c '^skipped$' || true)
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = true ] || [ "$skipped" -gt "$allowed" ]; then
             echo "::error::envoy-go's legs and the jobs beside them ended ${{ join(needs.*.result, ', ') }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
             exit 1
           fi
