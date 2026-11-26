@@ -3504,6 +3504,7 @@ The same log names each pod running as a ServiceAccount other than the one its k
 — `sandbox runtime: <sandbox> runs as ServiceAccount <account>, the configured ServiceAccount is
 <account>; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`accountDrift`, warned by the same function)
 — one warning per Sandbox per kind of drift, so a pod holding both is named twice.
+A repository cache's pod is warned of for neither, whether it runs as `runtime.kubernetes.repository_cache.service_account`, while its bucket is on, or as `service_account`, since its own sweep replaces it for either drift ([The repository cache](#the-repository-cache)).
 A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `sandbox.go`, read by `relaunch` in `relaunch.go`, `roundCovers` in `drift.go`):
 a pod an update round covers — every issue pod — is replaced by that round, which asks the issue's roles to push their work, let their subagents and background jobs finish or stop them and push what they made, and ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
@@ -6622,7 +6623,8 @@ Both are optional, and they are set together: both absent is off, and the loader
 With both set, every cache pod runs as `service_account`, and its `cache` container alone is told the bucket, as `LEGION_REPOSITORY_CACHE_BUCKET` (`repocache.BucketEnv`).
 Its argv, its Secret and its mounts are what they are without the bucket, and it mounts no ServiceAccount token: on GKE its Google identity is the Google service account that `service_account` is bound to through Workload Identity (below), whose email and tokens the node's metadata server gives the pod.
 No issue pod and no controller pod runs as that account or is told the bucket.
-They keep `runtime.kubernetes.pod.service_account`, and the loader refuses a `service_account` that is the account they run as (`pod.service_account`, or `default` while that is unset), since the bucket's grant to that account would reach every pod.
+An issue pod keeps `runtime.kubernetes.pod.service_account`, and the controller's pod keeps `runtime.kubernetes.pod.controller_service_account` where the file names one, else `pod.service_account`.
+The loader refuses a `service_account` that is the account every other pod runs as (`pod.service_account`, or `default` while that is unset), since the bucket's grant to that account would reach every pod, and one that is `pod.controller_service_account`, since the grant would reach the controller's pod.
 The cache writes each pack and its index to the bucket as its own identity, and answers an issue pod's `GET /packs`, on the bearer token `/tar` takes, with the refs and a signed address for each pack and each index, good for 15 minutes.
 A reader holds no grant on the bucket at all, so the pods that can read a repository's packs are the pods that hold its cache's token, as for `/tar`.
 `/tar` stays as it is.
@@ -9985,8 +9987,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a `secret` or `config_map` source may set `default_mode`, the octal mode of every file it projects, such as `0440` in place of Kubernetes' default 0644 ([Configuration](#configuration));
   a projected `service_account_token` must last at least 600 s, the least the API server issues, and its `audience` may not still hold a `${…}` placeholder, which nothing expands.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
-  `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not, and it must be a ServiceAccount's name, a DNS-1123 subdomain, as `repository_cache.service_account` must ([Configuration](#configuration)), or the loader refuses it naming the key and the value (`runtime.kubernetes.pod.service_account "<value>" is no ServiceAccount's name: …`), rather than the API server refusing every pod.
-  Changing it reaches a running pod only by replacing it, which the item **A change of `runtime.kubernetes.pod.service_account`** below describes.
+  `service_account` and `controller_service_account` each have an item of their own below.
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
   no role's agent keeps its Oh My Pi state there any more
@@ -10004,6 +10005,10 @@ each issue's pod (every role of it alike) and the image probe's.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
   a `models.yml` and a settings overlay from a ConfigMap, and a mounted token its key command reads.
   Its README lists what an operator supplies and how `pod` and `provider_keys` compose.
+
+- **`runtime.kubernetes.pod.service_account`** is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount).
+  It may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not, and it must be a ServiceAccount's name, a DNS-1123 subdomain, as `repository_cache.service_account` must ([Configuration](#configuration)), or the loader refuses it naming the key and the value (`runtime.kubernetes.pod.service_account "<value>" is no ServiceAccount's name: …`), rather than the API server refusing every pod.
+  Changing it reaches a running pod only by replacing it, which the item **A change of `runtime.kubernetes.pod.service_account`** below describes.
 
 - **`runtime.kubernetes.pod.controller_service_account`** is the fifth key of `runtime.kubernetes.pod`.
   `controller_service_account` is the ServiceAccount the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod"); unset, that pod runs as `service_account` like every other pod, and every other pod — each issue pod, the image probe's and each repository cache's while `runtime.kubernetes.repository_cache.bucket` is unset — runs as `service_account` whether or not it is set.
@@ -11247,7 +11252,7 @@ The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tre
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
 It runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, and as the operator's `runtime.kubernetes.pod.service_account`, the same account as every issue pod, where it does not, so a deployment that names no controller account runs its controller exactly as before (`controllerPod.serviceAccount` in `podkind.go`, `podTemplate` in `manifest.go`).
-The account a running controller pod is held to is that same one: a pod on any other, `service_account` included while the key names another, is warned of at boot and replaced at the controller's next launch, since no update round covers the controller's pod (`accountDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)); every other pod is held to `service_account` whatever the key says.
+The account a running controller pod is held to is that same one: a pod on any other, `service_account` included while the key names another, is warned of at boot and replaced at the controller's next launch, since no update round covers the controller's pod (`accountDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)); every other pod is held to `service_account` whatever the key says, but a repository cache's pod while `runtime.kubernetes.repository_cache.bucket` is set, which is held to `runtime.kubernetes.repository_cache.service_account`.
 The image probe's pod runs as `service_account`, so the probe at boot does not check that the controller's account exists:
 create that ServiceAccount in `runtime.kubernetes.namespace` before naming it.
 It is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps the account it runs as to `legion-daemon`.

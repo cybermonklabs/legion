@@ -149,7 +149,8 @@ type RepositoryCacheConfig struct {
 	// as, the one the bucket's grant goes to. The two are set together or not at all, and "" for
 	// both, the default, is off: each cache pod then runs as runtime.kubernetes.pod.service_account,
 	// as every other pod does, and serves /tar alone. ServiceAccount is never the account every
-	// other pod runs as (readCacheBucket), so no issue pod holds the bucket's grant.
+	// other pod runs as nor the controller's own (readCacheBucket), so no issue pod and no
+	// controller pod holds the bucket's grant.
 	Bucket         string
 	ServiceAccount string
 }
