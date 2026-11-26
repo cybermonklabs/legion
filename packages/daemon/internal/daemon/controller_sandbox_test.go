@@ -797,7 +797,7 @@ func newControllerSandboxPods(t *testing.T, kube *issueSandboxAPI, tools, daemon
 ) *controllerSandboxPods {
 	t.Helper()
 	p := &controllerSandboxPods{kube: kube, tools: tools, daemonURL: daemonURL, pool: pool, shims: map[uint64]*controllerSandboxShim{}}
-	p.launchers = newIdleRigPods(t, p.launch, session, dial)
+	p.launchers = newIdleRigPods(t, p.launch, session, dial, kube.gitHubFiles)
 	return p
 }
 

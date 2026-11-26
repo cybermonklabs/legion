@@ -16,6 +16,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // sandboxNamespace is the namespace every object of these tests' cluster lives in, the one
@@ -297,6 +300,37 @@ func (a *issueSandboxAPI) launcherTokensLocked(pod string) map[string]string {
 		roles[role] = string(token)
 	}
 	return roles
+}
+
+// gitHubFiles is the pod's view of its slot's gh directory: each bundle directory's hosts.yml
+// and config.yml that the slot's Secret holds (runtime/sandbox's GitHubHostsKey and
+// GitHubConfigKey), by its path under that directory, as the kubelet projects the Secret there.
+// A slot whose Secret holds none, or that has no Secret, has no files.
+func (a *issueSandboxAPI) gitHubFiles(pod, slot string) map[string][]byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// A slot's Secret is named <sandbox>-<slot>-boot (runtime/sandbox's roleSecretName).
+	object := a.objects["secrets"][pod+"-"+slot+"-boot"]
+	data, _ := object["data"].(map[string]any)
+	decoded := func(key string) ([]byte, bool) {
+		encoded, _ := data[key].(string)
+		value, err := base64.StdEncoding.DecodeString(encoded)
+		return value, encoded != "" && err == nil
+	}
+	files := map[string][]byte{}
+	for key := range data {
+		dir, ok := sandbox.GitHubHostsDir(key)
+		if !ok {
+			continue
+		}
+		if hosts, ok := decoded(key); ok {
+			files[dir+"/"+ghconfig.HostsFile] = hosts
+		}
+		if config, ok := decoded(sandbox.GitHubConfigKey(dir)); ok {
+			files[dir+"/"+ghconfig.ConfigFile] = config
+		}
+	}
+	return files
 }
 
 // createPodLocked makes the pod the Sandbox's podTemplate describes, Ready: the controller's own

@@ -95,7 +95,8 @@ type idleRigAdoption struct {
 // HoldsBeforeEnvoy: a woken Oh My Pi still starting, whose session holds no role yet while the
 // daemon publishes to it. The stand-in otherwise claims its role within a second of its pod's
 // start, far sooner than an Oh My Pi does, and a test that needs the daemon's publish to meet a
-// role its woken session has not claimed yet would be racing it.
+// role its woken session has not claimed yet would be racing it. Every process of the rig is held
+// so as well until the rig has read the listener's ready report (idleRigAgents.envoyHeld).
 //
 // A process reads Topics and ExitsAsReleasedInProduction once, as it starts
 // (idleRigRoleProcess.run), after the plan no longer holds it, and TakeTurn and Background at
@@ -132,16 +133,29 @@ type idleRigAgents struct {
 	plans   map[string]idleRigPlan
 	// plan is the plan a role with none of its own gets.
 	plan idleRigPlan
+	// envoyHeld holds every role process before its first call to the Envoy listener, as a plan
+	// with HoldsBeforeEnvoy does, until the rig has read the listener's ready report
+	// (idleWakeRig.awaitListenerReady). Until then the rig may stop the listener and start it
+	// again, and a call in flight at the stop is answered EOF, which ends the process that made
+	// it: the daemon then starts its role again, at a generation the test did not count on.
+	envoyHeld bool
 }
 
 func newIdleRigAgents(t *testing.T, pool *store.Pool) *idleRigAgents {
 	t.Helper()
 	a := &idleRigAgents{t: t, pool: pool, private: map[string]string{}, roles: map[string]*idleRigRole{},
-		plans: map[string]idleRigPlan{}, plan: idleRigPlan{TakeTurn: true}}
+		plans: map[string]idleRigPlan{}, plan: idleRigPlan{TakeTurn: true}, envoyHeld: true}
 	server := httptest.NewServer(a)
 	t.Cleanup(server.Close)
 	a.url = server.URL
 	return a
+}
+
+// releaseEnvoy lets every role process held by envoyHeld go on to the Envoy listener.
+func (a *idleRigAgents) releaseEnvoy() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.envoyHeld = false
 }
 
 func idleRigKey(pod, role string) string { return pod + "/" + role }
@@ -305,6 +319,7 @@ func (a *idleRigAgents) servePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		plan = a.plan
 	}
+	plan.HoldsBeforeEnvoy = plan.HoldsBeforeEnvoy || a.envoyHeld
 	a.mu.Unlock()
 	writeIdleRigJSON(w, plan)
 }

@@ -98,6 +98,11 @@ type Config struct {
 	// (internal/runtime/sandbox's rolesDirLauncher, WorkingDir). A test names a workspace of its
 	// own.
 	Workspace string
+	// GHDir is where the single-role form reads the gh files a start names
+	// (LauncherStart.GitHubCredential); "" is the start's LEGION_GH_OWNERS_DIR, the directory the
+	// pod projects its role Secret's gh files into. A test names one of its own, and projects that
+	// Secret into it as the kubelet does.
+	GHDir string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -521,12 +526,14 @@ func (c Config) validate() error {
 			return errors.New("launcher: roles without a roles directory")
 		case !filepath.IsAbs(c.PrivateDir):
 			return fmt.Errorf("launcher: private directory %q is not absolute", c.PrivateDir)
+		case c.GHDir != "" && !filepath.IsAbs(c.GHDir):
+			return fmt.Errorf("launcher: gh directory %q is not absolute", c.GHDir)
 		}
 		return c.validateSessionDatabase()
 	}
 	switch {
-	case c.Token != "" || c.Role != "" || c.PrivateDir != "":
-		return errors.New("launcher: a roles directory holds every role's own token and private directory")
+	case c.Token != "" || c.Role != "" || c.PrivateDir != "" || c.GHDir != "":
+		return errors.New("launcher: a roles directory holds every role's own token, private directory and gh directory")
 	case len(c.Roles) == 0:
 		return errors.New("launcher: no roles")
 	case !filepath.IsAbs(c.RolesDir):
@@ -1016,12 +1023,15 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 }
 
 // ghRoot is the directory of the slot's gh files as this launcher sees them: the role's own gh
-// directory of the roles directory for a role of an issue pod (RoleGHDir), and the gh bundle root
-// its start names (LEGION_GH_OWNERS_DIR) for the controller's launcher, whose container mounts it
-// there.
+// directory of the roles directory for a role of an issue pod (RoleGHDir), and for the
+// controller's launcher the gh bundle root its start names (LEGION_GH_OWNERS_DIR), where its
+// container mounts it, or the directory its configuration names in its place (Config.GHDir).
 func (m *manager) ghRoot(env []string) string {
 	if m.namespaced {
 		return filepath.Join(m.cfg.RolesDir, m.role, RoleGHDir)
+	}
+	if m.cfg.GHDir != "" {
+		return m.cfg.GHDir
 	}
 	return envValue(env, "LEGION_GH_OWNERS_DIR")
 }
