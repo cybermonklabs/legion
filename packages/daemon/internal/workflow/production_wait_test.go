@@ -470,6 +470,36 @@ func TestProductionOnlyWaitIsVisibleAndReconciled(t *testing.T) {
 	})
 }
 
+// Under `production_check: off` no role of the project runs a check after the merge (D5). So at
+// the first read after the entry to verifying the owning architect is told, once, each check that
+// has no pass, and that an eligible agent must run it. A second read with the same checks tells
+// nothing more. A project that runs a production check tells this at the check's close instead.
+func TestAnOffProjectIsToldAtTheEntryWhichChecksNeedAnAgent(t *testing.T) {
+	t.Parallel()
+	t.Run("production check off", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge), passing("c-done", waitRootMerge)))
+		told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result")
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "- c-after") || strings.Contains(told[0].Reason, "c-done") ||
+			!strings.Contains(told[0].Reason, "eligible agent") {
+			t.Fatalf("close-wait-no-result notices = %+v, want one naming c-after alone and an eligible agent", told)
+		}
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge), passing("c-done", waitRootMerge)))
+		if told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result"); len(told) != 1 {
+			t.Fatalf("close-wait-no-result notices after a second read = %+v, want the one", told)
+		}
+	})
+	t.Run("production check on", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+		if told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result"); len(told) != 0 {
+			t.Fatalf("close-wait-no-result notices at the first read with a production check = %+v, want none before its close", told)
+		}
+	})
+}
+
 // openCheck opens one check for each generation and merge: a second open in one generation opens
 // nothing, and a check of the same merge from an earlier generation, closed recorded, is replaced
 // by one of the issue's generation.
