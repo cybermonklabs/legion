@@ -161,6 +161,17 @@ export const PRIORITY_DESCRIPTION_CHANGED = new ApiError(409, {
   error: "the description was written meanwhile",
 });
 
+/** Whether a priority write's `expected` for one attribute - the text its edit began from, or a
+ *  list of the texts it may go over - names `stored`, so Dispatch takes it (`expectedValues` in
+ *  envoy's `internal/dispatch/api/priorities.go`). A stand-in for Dispatch refuses one that does
+ *  not with `PRIORITY_TITLE_CHANGED` or `PRIORITY_DESCRIPTION_CHANGED`. */
+export function namesStored(
+  expected: string | readonly string[] | null | undefined,
+  stored: string
+): boolean {
+  return Array.isArray(expected) ? expected.includes(stored) : expected === stored;
+}
+
 /** `PUT /api/v1/me/issues/{key}/state` (`issueStateRequest`). */
 export const answerIssueStates = () =>
   answerRoute<

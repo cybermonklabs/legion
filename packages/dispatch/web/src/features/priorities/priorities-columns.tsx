@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
+import type { WriteAnswer } from "./field-arrival";
 import { PriorityDescription } from "./PriorityDescription";
 import {
   NEVER_MOVED,
@@ -38,13 +39,14 @@ export interface PriorityRowActions {
   /** Writes `description` as the priority's description, over `from`, the server's text the
    *  description's editor last took in, which the write names as the text it goes over unless a
    *  write of the page's own goes before it (`describe`), made on `on` (`PriorityDescription`'s
-   *  `onSave`). Answers whether it landed. */
+   *  `onSave`). Answers whether it landed, or `undefined` where it ended with no verdict
+   *  (`WriteAnswer`). */
   readonly onDescribe: (
     item: PriorityItem,
     description: string,
     from: string,
     on: string
-  ) => Promise<boolean>;
+  ) => Promise<WriteAnswer>;
   /** The reader's texts kept beside a priority's description while it shows another person's,
    *  where the page reads `held`, and the change of them: held in the write store
    *  (`usePriorityWrites`) rather than by the editor, which a row scrolling away takes with it.

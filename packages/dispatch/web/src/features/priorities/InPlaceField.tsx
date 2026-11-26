@@ -25,7 +25,14 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
+import {
+  answered,
+  arrival,
+  NOTHING_KEPT,
+  type SentText,
+  usedOn,
+  type WriteAnswer,
+} from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
@@ -169,9 +176,10 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * text arrives first. Use my text writes the kept text at once, whatever the field held before,
  * unless the field's newest write is that very text and still out. The page answers each write
  * with whether it landed: one that did is no write of the reader's still out when another person's
- * text arrives, and one that did not is no write whose answer the field waits for (`sent`), and no
+ * text arrives, one Dispatch refused is no write whose answer the field waits for (`sent`), and no
  * text the field writes again on its own once the write before it comes back: the reader discarded
- * it, or the shell's line holds it, with its Retry. Each write hands on too the text the field
+ * it, or the shell's line holds it, with its Retry. One that ended with no verdict is no write
+ * still out either, but may come back, as hers. Each write hands on too the text the field
  * held as its edit began (`onSave`'s `on`, `made`): Use my text's as well, since it puts the
  * kept text in place of what the field holds - but for Use my text of a text a write of the
  * reader's carried, which is that same edit, and hands on what that write was made on: the
@@ -230,9 +238,10 @@ export function InPlaceField({
    *  it wrote, though that write did not land, or the last it took in, whichever came last - or,
    *  for Use my text of a text whose own write is known, what that write was made on, since it
    *  writes that same edit again. So a write made on a stopped one's text is known to carry it
-   *  (`PriorityTextWrite.made`). Answers, where the page tells, whether the write landed. */
+   *  (`PriorityTextWrite.made`). Answers, where the page tells, whether the write landed, or
+   *  `undefined` where it ended with no verdict and may land still (`WriteAnswer`). */
   // biome-ignore lint/suspicious/noConfusingVoidType: a page that does not say whether its write landed - the owner's - hands any callback, as a void callback takes one
-  onSave: (next: string, from: string, on: string) => Promise<boolean> | void;
+  onSave: (next: string, from: string, on: string) => Promise<WriteAnswer> | void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
@@ -273,8 +282,9 @@ export function InPlaceField({
   latest.current = { draft, kept, onSave, required, setKept };
 
   // Writes `text`, made on `on`: `made`, unless Use my text says otherwise. The page's answer is
-  // that write's own (`answered`): one that landed is no write still out, and one that did not
-  // never comes back, so the field waits for no answer with it.
+  // that write's own (`answered`): one that landed is no write still out, one Dispatch refused
+  // never comes back, so the field waits for no answer with it, and one that ended with no verdict
+  // may come back still, as the reader's own.
   const write = (text: string, on = made.current) => {
     base.current = text;
     made.current = text;
@@ -357,7 +367,7 @@ export function InPlaceField({
     setKept(NOTHING_KEPT);
     setDraft(text);
     const newest = sent.current.at(-1);
-    if (newest?.text === text && !newest.landed) return;
+    if (newest?.text === text && newest.landed === false) return;
     const on = usedOn(text, kept, (one) => madeOn.get(one) ?? keptMadeOn?.(one)) ?? made.current;
     write(text, on);
   };

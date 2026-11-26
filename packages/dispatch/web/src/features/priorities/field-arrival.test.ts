@@ -175,3 +175,44 @@ test("the page's answer marks a write that landed, and takes out one that did no
   const none = [two];
   expect(answered(none, one, false)).toBe(none);
 });
+
+// A write that ended with no verdict of Dispatch's - stopped, or refused after an attempt that
+// went unanswered - may have landed, or may land still. The page answers it `undefined`: it stays
+// in `sent`, as no write still out, so a read that brings its text later is the reader's own
+// write coming back - whatever reads showed meanwhile - and nothing is taken in or kept beside the
+// field. Her next write goes over the texts it may find, its own and hers, and lands.
+test("a write of unknown end stays the reader's own: its text arriving late comes back, and nothing is kept", () => {
+  const [a] = out("Old A") as [SentText];
+  const stopped = answered([a], a, undefined);
+  expect(stopped).toEqual([{ landed: "unknown", text: "Old A" }]);
+  // She types on and her next write, "Old AB", goes; "Old A" lands late, before it.
+  const ab: SentText = { landed: false, text: "Old AB" };
+  const stand: FieldStand = {
+    base: "Old AB",
+    kept: NOTHING_KEPT,
+    made: "Old AB",
+    sent: [...stopped, ab],
+  };
+  expect(arrival("Old A", "Old AB", stand)).toEqual({
+    base: "Old AB",
+    kept: [],
+    made: "Old AB",
+    sent: [ab],
+    take: false,
+  });
+  // Or "Old AB" lands first and Dispatch refuses "Old A", which names only "Old": the read shows
+  // "Old AB", hers, and that answers both.
+  const landed = answered(stand.sent, ab, true);
+  expect(arrival("Old AB", "Old AB", { ...stand, sent: landed })).toEqual({
+    base: "Old AB",
+    kept: [],
+    made: "Old AB",
+    sent: [],
+    take: false,
+  });
+  // A write of unknown end is no write still out: another person's text arriving over a field
+  // that holds nothing else of hers is taken in, and nothing kept, as with one that landed.
+  expect(
+    arrival("Bob's", "Old A", { ...SETTLED, base: "Old A", made: "Old A", sent: stopped })
+  ).toEqual({ base: "Bob's", kept: [], made: "Bob's", sent: [], take: true });
+});

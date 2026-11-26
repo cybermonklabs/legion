@@ -3466,7 +3466,9 @@ type TableField = "description" | "title";
 
 /** One write of the field the page sent, with its answer once it came. */
 interface LoggedWrite {
-  readonly expected: string | undefined;
+  /** The texts the write named as the ones it may go over: its `expected`, one string or a list
+   *  of them, as a list; empty where it named none. */
+  readonly expected: readonly string[];
   readonly text: string | undefined;
   /** Whether the reader's press of Use my text made it. */
   readonly use: boolean;
@@ -3528,9 +3530,9 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
     if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${made.id}`))
       return;
     const body = request.postDataJSON() as Record<string, unknown>;
-    const expected = (body.expected as Record<string, string> | undefined)?.[field];
+    const named = (body.expected as Record<string, string | string[]> | undefined)?.[field];
     const write: LoggedWrite = {
-      expected,
+      expected: named === undefined ? [] : typeof named === "string" ? [named] : named,
       text: body[field] as string | undefined,
       use: cell.using,
     };
@@ -3618,7 +3620,7 @@ async function useMyText(cell: TableCell): Promise<void> {
 }
 
 /** Rule 1 and rule 5 over every write the page sent: a write the server took that named another
- *  person's text as the one it replaced was Use my text's, or named a text the field had taken as
+ *  person's text as one it may replace was Use my text's, or named a text the field had taken as
  *  its start, and no write carries the escapes a reading written back as markdown leaves. */
 function checkWrites(cell: TableCell): void {
   const soft = expect.configure({ soft: true });
@@ -3626,9 +3628,7 @@ function checkWrites(cell: TableCell): void {
     (write) =>
       write.status === 200 &&
       !write.use &&
-      write.expected !== undefined &&
-      cell.others.includes(write.expected) &&
-      !cell.taken.includes(write.expected)
+      write.expected.some((text) => cell.others.includes(text) && !cell.taken.includes(text))
   );
   soft(overwrote, "no write of hers but Use my text replaced another person's text").toEqual([]);
   soft(

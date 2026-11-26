@@ -19,6 +19,7 @@ import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import {
   answerPriorityPatches,
+  namesStored,
   PRIORITY_DESCRIPTION_CHANGED,
   PRIORITY_TITLE_CHANGED,
 } from "../../__tests__/send-answers";
@@ -1080,12 +1081,13 @@ test("the reader's description kept beside a row outlives the row leaving the ta
 });
 
 // A row's description written on, each write made on the one before: "A", then "AB" and "ABC".
-// Dispatch answers no attempt of "A", and the reader stops it; the others waited behind it and
-// name a text it never took, so each is refused 409 and kept beside the row. A search then takes
-// the row off the table, so its texts stand above it, where no editor knows the writes they came
-// from. Using the newest is made on what its write was made on, and so on through the texts the
-// click lets go, down to "A", which the page holds for them: its landing lets "A" go, and the
-// Retry of "A" sends nothing.
+// Dispatch answers no attempt of "A", and the reader stops it, as another person's description
+// takes its place: the others waited behind it, and each, naming the texts of hers it may go over,
+// is refused 409 for that description and kept beside the row. A search then takes the row off
+// the table, so its texts stand above it, where no editor knows the writes they came from. Using
+// the newest is made on what its write was made on, and so on through the texts the click lets
+// go, down to "A", which the page holds for them: it goes over the other person's description and
+// over "A", whose end is unknown, its landing lets "A" go, and the Retry of "A" sends nothing.
 test("Use my text of a row's description above the table, the row not drawn, is made on the stopped write its texts were made on, which its landing lets go", async () => {
   const user = userEvent.setup();
   const { client, editors, patch, priorities } = page(FIFTEEN);
@@ -1094,7 +1096,7 @@ test("Use my text of a row's description above the table, the row not drawn, is 
     if (input.description === "A\n") {
       throw new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
     }
-    if (input.expected?.description !== stored) throw PRIORITY_DESCRIPTION_CHANGED;
+    if (!namesStored(input.expected?.description, stored)) throw PRIORITY_DESCRIPTION_CHANGED;
     stored = input.description ?? stored;
     return { ...saved(id), description: stored };
   });
@@ -1113,6 +1115,7 @@ test("Use my text of a row's description above the table, the row not drawn, is 
       writeAtEnd(handle, end);
       act(() => handle.view.dom.blur());
     }
+    stored = "Their description.\n";
     await stopTheLateWrite(client);
   });
   const writes = writesOf(client);
@@ -1132,7 +1135,7 @@ test("Use my text of a row's description above the table, the row not drawn, is 
   await waitFor(() =>
     expect(patch.mock.calls.at(-1)?.slice(0, 2)).toEqual([
       "linkage-closure",
-      { description: "ABC\n", expected: { description: "" } },
+      { description: "ABC\n", expected: { description: ["Their description.\n", "A\n"] } },
     ])
   );
   await waitFor(() => expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull());

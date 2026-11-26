@@ -12,6 +12,7 @@ import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import {
   answerPriorityPatches,
+  namesStored,
   PRIORITY_DESCRIPTION_CHANGED,
   PRIORITY_TITLE_CHANGED,
 } from "../../__tests__/send-answers";
@@ -1038,7 +1039,7 @@ test("Use my text pressed as the field's own write leaves names that write's tit
     await user.type(title, ", more");
   });
   patch.mockImplementation(async (id, input) => {
-    if (input.expected?.title !== stored) throw PRIORITY_TITLE_CHANGED;
+    if (!namesStored(input.expected?.title, stored)) throw PRIORITY_TITLE_CHANGED;
     stored = input.title ?? stored;
     return { ...saved(id), title: stored };
   });
@@ -1049,7 +1050,8 @@ test("Use my text pressed as the field's own write leaves names that write's tit
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
   expect(patch.mock.calls.map(([, input]) => input)).toEqual([
     { expected: { title: "Written elsewhere" }, title: "Written elsewhere, more" },
-    { expected: { title: "Written elsewhere, more" }, title: mine },
+    // Over the field's own write, out as she pressed, and the text the field took in.
+    { expected: { title: ["Written elsewhere, more", "Written elsewhere"] }, title: mine },
   ]);
   await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
   expect(stored).toBe(mine);
@@ -1089,14 +1091,15 @@ const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "the server 
 
 /** Dispatch as the rows below meet it, for `attribute` of the page's priority: its answer to a
  *  write (`write`), which answers no attempt of `lost` - the network loses each - refuses one
- *  naming a text it does not hold, as another person's text refuses it, and takes any other; and
- *  a read of the priorities (`read`), which shows what it holds. */
+ *  naming no text it holds, as another person's text refuses it, and takes any other; a read of
+ *  the priorities (`read`), which shows what it holds; and another person's text (`writeOver`). */
 function dispatchLosing(
   attribute: "description" | "title",
   lost: string
 ): {
   read: () => Promise<Priorities>;
   write: (id: string, input: PatchPriorityInput) => Promise<Priority>;
+  writeOver: (theirs: string) => void;
 } {
   let stored = ROWS[1]?.[attribute] ?? "";
   const holding = () => (attribute === "title" ? { title: stored } : { description: stored });
@@ -1104,11 +1107,14 @@ function dispatchLosing(
     read: async () => writtenOver("rocq-lean", holding()),
     write: async (id, input) => {
       if (input[attribute] === lost) throw UNAVAILABLE;
-      if (input.expected?.[attribute] !== stored) {
+      if (!namesStored(input.expected?.[attribute], stored)) {
         throw attribute === "title" ? PRIORITY_TITLE_CHANGED : PRIORITY_DESCRIPTION_CHANGED;
       }
       stored = input[attribute] ?? stored;
       return { ...saved(id), ...holding() };
+    },
+    writeOver: (theirs) => {
+      stored = theirs;
     },
   };
 }
@@ -1126,13 +1132,14 @@ const RUNS = [
 ] as const;
 
 // The reader writes the title or the description on, each write made on the one before: "A",
-// then "AB" and "ABC". Dispatch answers no attempt of "A", and she stops it; the others waited
-// behind it and name a text it never took, so each is refused 409 - the limit rule 3 accepts -
-// and kept beside the field, newest first. She uses the newest: the same edit as its write, made
-// on the text the write before it was made on, and so on through the texts the click lets go,
-// down to "A". Its landing lets "A" go, from the line and from the tab, and its Retry sends
-// nothing. A field drawn again knows none of its writes, and reads what each was made on from the
-// page, which holds them.
+// then "AB" and "ABC". Dispatch answers no attempt of "A", and she stops it, as another person's
+// text takes its place: the others waited behind it, and each, naming the texts of hers it may go
+// over, is refused 409 for that text and kept beside the field, newest first. She uses the newest:
+// the same edit as its write, made on the text the write before it was made on, and so on through
+// the texts the click lets go, down to "A". It goes over the other person's text, and over "A",
+// whose end is unknown. Its landing lets "A" go, from the line and from the tab, and its Retry
+// sends nothing. A field drawn again knows none of its writes, and reads what each was made on
+// from the page, which holds them.
 test.each(
   (["title", "description"] as const).flatMap((attribute) =>
     RUNS.map(([run, count, again]) => [attribute, run, count, again] as const)
@@ -1147,6 +1154,7 @@ test.each(
     return attribute === "title" ? typed : `${typed}\n`;
   });
   const dispatch = dispatchLosing(attribute, texts[0] ?? "");
+  const theirs = attribute === "title" ? "Their title" : "Their description.\n";
   patch.mockImplementation(dispatch.write);
   priorities.mockImplementation(dispatch.read);
   if (attribute === "title") {
@@ -1156,6 +1164,7 @@ test.each(
         await user.type(title, end);
         await jump(SAVE_AFTER_MS);
       }
+      dispatch.writeOver(theirs);
       await stopTheLateWrite(client);
     });
   } else {
@@ -1166,6 +1175,7 @@ test.each(
         writeAtEnd(handle, end);
         act(() => handle.view.dom.blur());
       }
+      dispatch.writeOver(theirs);
       await stopTheLateWrite(client);
     });
   }
@@ -1189,8 +1199,8 @@ test.each(
   await waitFor(() =>
     expect(patch.mock.calls.at(-1)?.[1]).toEqual(
       attribute === "title"
-        ? { expected: { title: start }, title: used }
-        : { description: used, expected: { description: start } }
+        ? { expected: { title: [theirs, texts[0]] }, title: used }
+        : { description: used, expected: { description: [theirs, texts[0]] } }
     )
   );
   await waitFor(() => expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull());
