@@ -420,6 +420,22 @@ printed an act message, naming each message with its component and the frames th
   `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
   reader position in O(1) rect reads" failed 1 run in 20 that way.
 
+- A row whose tree can still hold a real timer when its body ends, such as the 150 ms debounce of
+  a composer's draft pills (`useSettled`), ends its body by unmounting inside `act`: `cleanup()` in
+  a `finally` around the body, as `web/src/features/delivery/DeliveryPage.test.tsx` and
+  `web/src/features/inbox/ThreadBody.test.tsx` wrap their rows. Bun gives the event loop a turn
+  between a row's body and its `afterEach`, so a timer due then fires with the act environment on
+  and no act scope open, and an `afterEach` that unmounts comes after that turn. Only a loaded run
+  ends the body before the timer: `ThreadBody.test.tsx`'s row "an Agent card whose thread moves on
+  under a refused reply says what its box can do" failed 1 run in 20 that way. A row that reads
+  what the timer does lets it run out inside `act` instead (`settleRefPickerSearch` in
+  `web/src/features/refs/ref-picker-fixture.ts`).
+
+- Bun drops the frame of an arrow whose whole body is the call that sets the state, as in
+  `setTimeout(() => setValue(next), ms)`: JavaScriptCore runs that call as a tail call. The act
+  rule then names the component and no frame of `web/src`, so look in that component's own hooks
+  for a timer or a promise that ends in such a call.
+
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
   `act-rule-quiet-restore.fixture.tsx` proves that the preload puts back a spy of

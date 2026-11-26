@@ -58,7 +58,7 @@ Every launch opens with a start message, and Envoy keeps no wake sent while no c
 
 A free slot or a full cap is no reason to take, label, admit or park an issue. A labelled root in `todo` takes the next slot by itself.
 
-A slot is one issue that the daemon started, a root or a child. The free slots are `admission.cap`, less each issue in `admission.active`, less each issue in `admission.waiting` that is in neither `admission.active` nor `admission.blocked`. The lists, the `admission.held` words and the only moves to `todo` that you make: `skill://legion-controller/references/admission.md`.
+A slot is one issue that the daemon started, a root or a child. The free slots are `admission.cap`, less the holders in `admission.active` that are not P0, less each issue in `admission.waiting` that is not P0 and is in neither `admission.active` nor `admission.blocked`. What makes an issue P0, the lists, the `admission.held` words and the only moves to `todo` that you make: `skill://legion-controller/references/admission.md`.
 
 ## The prioritization pass
 
@@ -68,7 +68,7 @@ The pass keeps the order of the work aligned with the project's priorities (`dis
 - On any other turn it is due once the wake's work is done, nothing else waits, and `dispatch issues --project <PROJECT> --updated-since <the time of your newest pass line> --all` lists an issue, or when your context holds no pass line.
 
 1. Read the `read_state` summary's admission lines and the open roots: the rows of `dispatch issues --project <PROJECT> --all` that name no parent (no ` · child of <KEY>` outside quotes) and whose status is not `done`.
-2. Change only a rank or an admission where it no longer matches the project's priorities, and change nothing else. Admit an issue only as the intake your deployment instructions give and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit.
+2. Change only a rank, a priority or an admission that no longer matches the project's priorities. Set P0, which starts an issue at once outside the cap, only where the owner's words cited on the issue ask for it. Change the P0 bound (`set_p0_bound`, `clear_p0_bound`) only on a person's word, cited in its reason. Admit an issue only as your deployment's intake and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit.
 3. End the pass with exactly one line: `Prioritization pass at <RFC3339>: <what it changed, or none>`.
 
 ## Merge holds

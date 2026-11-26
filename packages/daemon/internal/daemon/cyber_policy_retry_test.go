@@ -62,7 +62,7 @@ func TestTheKeeperDoesNotRetryAControllerHeldForCyberPolicy(t *testing.T) {
 				t.Fatalf("create the failed controller: %v", err)
 			}
 			var logs syncBuffer
-			k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, slog.New(slog.NewJSONHandler(&logs, nil)))
+			k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
 			clock := time.Now()
 			k.now = func() time.Time { return clock }
 			m, _ := sup.Machine(token)

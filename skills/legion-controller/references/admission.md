@@ -1,12 +1,14 @@
 # Reading admission
 
 An issue's `phase` alone does not say where it stands in admission. Read its key in the `admission` lists, and read the root that its `tree` names.
-The `read_state` summary prints `admission.active`, `admission.waiting` and `admission.blocked` as its `active`, `waiting` and `blocked` lines. No read prints `admission.trees` or `admission.held`.
+The `read_state` summary prints `admission.active`, `admission.waiting`, `admission.blocked` and `admission.trees` as its `active`, `waiting`, `blocked` and `trees` lines, and each entry of `admission.held` as a `held` line.
 
 ## The lists
 
 - The live trees: a root is a record whose `tree` is its own key (`read_state` with `issues`). Its tree is live while the root stands in `admission.active` or `admission.waiting`, waits on a person, stands past `admitted` and not `done`, or waits under live work above it, and never while its record carries `lingerUntil`. Use this, not `admission.active`, to know which trees run.
-- `admission.active`: each issue that holds a slot. A root in `awaiting_person` keeps its slot and is in no line. `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, within its priority, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
+- `admission.active`: each issue that holds a slot. The cap counts only the holders that are not P0 (`admission.p0Holders` counts the P0 ones), so the list can hold more issues than `admission.cap`.
+- `admission.p0Holders` and `admission.p0Bound`: how many holders are P0, and the P0 bound in force (`bound`, null for none). An issue is P0 when its `resolvedPriority` is 0, or, with no `resolvedPriority`, its own `priority` is 0. A P0 issue starts outside the cap while fewer than `bound` P0 issues hold a slot, or always when `bound` is null.
+- A root in `awaiting_person` keeps its slot and is in no line. `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, within its priority, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
 - `admission.waiting`: the line, in order. Before you call an order wrong, quote `issues.<KEY>.waitingLine.reason`.
 - `admission.blocked`: issues that wait on an unfinished `blocked_by` issue, and parents that wait for their open children. A started issue here gave its slot back. It takes a slot again by itself.
 
