@@ -233,7 +233,8 @@ export type MadeDecision = Decision & { readonly decided_by?: DecisionEntry["dec
 
 /** One agent's decision, a `decision` block of the spec, as the decisions read answers it: it
  *  waits for review unless the case says otherwise. A case that names a person in its
- *  `decided_by` makes it that person's decision, which the server reads as waiting for none. */
+ *  `decided_by` makes it that person's decision, which the server answers as waiting for none,
+ *  so that case says `waiting_review: false` as well. */
 export function decision(block: string, partial: Partial<MadeDecision> = {}): MadeDecision {
   return {
     asks: [],

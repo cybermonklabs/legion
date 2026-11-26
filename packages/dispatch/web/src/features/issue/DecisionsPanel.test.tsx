@@ -279,6 +279,7 @@ test("a decision block a person decided is drawn under Your decisions", async ()
         block: "cap",
         decided_by: { id: "alice", kind: "person" },
         text: `## ${words}\n\nAlice chose the cap.`,
+        waiting_review: false,
       }),
     ],
     open_questions: [],
@@ -288,7 +289,7 @@ test("a decision block a person decided is drawn under Your decisions", async ()
     renderPanel();
     const mine = await screen.findByRole("region", { name: "Your decisions" });
     expect(within(mine).getByText(words)).toBeDefined();
-    expect(within(mine).queryByRole("button", { name: "Keep" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Keep" })).not.toBeInTheDocument();
     expect(within(list("Waiting for your review")).queryByText(words)).not.toBeInTheDocument();
   } finally {
     read.mockRestore();
