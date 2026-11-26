@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import type { Actor, CheckBlock, RequirementCoverage } from "../../../api/types";
+import type { Actor, CheckBlock, IssueCoverage } from "../../../api/types";
 import {
   focusVisibleRing,
   pageFailedText,
@@ -140,7 +140,7 @@ export function queryTyped(query: string): boolean {
  * What it says of a statement and of a check is `statement-state.ts`, which is pure. What it
  * says of the issue - the chips' counts, the summary's counts of statements and checks, how each
  * statement stands and so the state a chip narrows by - is read from the view with no words
- * query, and the summary's covered count from the coverage read (`requirements`). The view the
+ * query, and the summary's covered line from the coverage read (`coverage`). The view the
  * query left says which statements and checks are drawn, and each check drawn is read from the
  * view with no query too: its state, its latest result and its count of earlier results, with
  * the earlier results the query kept drawn under its latest. So a query narrows the rows and
@@ -157,10 +157,12 @@ export function queryTyped(query: string): boolean {
  *   state is told from another by colour alone.
  * - **Covered, never proven.** The summary counts the issue's statements that carry a check as
  *   covered, out of every statement of the issue, both from the coverage read, which no page of
- *   the view read cuts; no count, legend or heading of this body reads proven or met for it,
- *   because a statement that has a check is not a statement that is true. Every other count the
- *   summary and the chips draw is of the statements and checks the view has loaded, and carries
- *   "+" while the view read holds nodes no page read yet holds (R15, `TreeNode.moreToRead`).
+ *   the view read cuts; while a document of the issue is still being indexed, it draws that
+ *   document's line in place of any count. No count, legend or heading of this body reads proven
+ *   or met for it, because a statement that has a check is not a statement that is true. Every
+ *   other count the summary and the chips draw is of the statements and checks the view has
+ *   loaded, and carries "+" while the view read holds nodes no page read yet holds (R15,
+ *   `TreeNode.moreToRead`).
  * - **Every value inside its card.** Each cell is a column of its own that may be zero wide
  *   and breaks inside a word where it has nothing else to break on, and a check's attributes
  *   and a result's are the two-column grid `NodeFacts.tsx` draws, which is what keeps a value
@@ -177,10 +179,10 @@ export function VerificationFilterBody({
   addressed,
   checks,
   context,
+  coverage,
   namesLine,
   published,
   reads,
-  requirements,
   view,
   whole,
 }: {
@@ -194,6 +196,12 @@ export function VerificationFilterBody({
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
+  /** The coverage read (`GET /api/v1/issues/{key}/coverage`, the slot's `coverage`): every
+   *  statement of the issue's spec, with how many checks serve it, and any line saying a
+   *  document of the issue is still being indexed, which the summary's covered line is read from
+   *  alone (`issueCovered`). That read is one of the three the body waits on (`reads`), so the
+   *  summary is drawn only once it holds an answer. */
+  coverage: IssueCoverage | undefined;
   /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
    *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
    *  none while they do not stand failed. Every reference the rows and the parent lines draw
@@ -218,11 +226,6 @@ export function VerificationFilterBody({
    *  out. A read that has answered once stays answered when a later refetch fails: the body
    *  draws what it last answered. */
   reads: VerificationReads;
-  /** The coverage read's rows (`GET /api/v1/issues/{key}/coverage`, the slot's `requirements`):
-   *  every statement of the issue's spec, with how many checks serve it, which the summary's
-   *  covered count is read from alone (`issueCovered`). That read is one of the three the body
-   *  waits on (`reads`), so the summary is drawn only once it holds an answer. */
-  requirements: readonly RequirementCoverage[];
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query, where a query is typed: what the issue holds,
@@ -248,7 +251,7 @@ export function VerificationFilterBody({
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
-  const covered = useMemo(() => issueCovered(requirements), [requirements]);
+  const covered = useMemo(() => issueCovered(coverage), [coverage]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements
   // and checks it has loaded carries "+" (R15).
   const more = (whole ?? view).moreToRead === true;
@@ -887,9 +890,9 @@ function Summary({
   reading,
 }: {
   counts: Readonly<Record<StatementState, number>>;
-  /** How many of the issue's statements carry a check, out of every statement it has, from the
-   *  coverage read (`issueCovered`): the same on every read, whichever page of the view is
-   *  loaded. */
+  /** How the issue's covered count stands, from the coverage read (`issueCovered`): the same on
+   *  every read, whichever page of the view is loaded, or each line saying a document of the
+   *  issue is still being indexed in place of any count. */
   covered: IssueCovered;
   /** Whether the view read holds nodes no page read yet holds: each count of the loaded
    *  statements and checks then carries "+" (R15). */
@@ -920,12 +923,28 @@ function Summary({
       className={`flex min-w-0 flex-wrap items-center gap-[18px] rounded-[10px] border px-[18px] py-3.5 ${pageLineBorder} ${pagePaperBg}`}
       data-verification-summary=""
     >
-      <p className={`text-sm leading-5 font-semibold ${pageInkText}`} data-verification-covered="">
-        <span {...authorText}>{covered.covered}</span>{" "}
-        <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
-        <span {...authorText}>{covered.total}</span>{" "}
-        <span {...pageChrome}>{VERIFICATION_WORDS.covered}</span>
-      </p>
+      {covered.kind === "owed" ? (
+        <div
+          className={`flex min-w-0 flex-col gap-0.5 text-sm leading-5 ${pageQuietText}`}
+          data-verification-covered=""
+        >
+          {covered.notes.map((words) => (
+            <p key={words} {...authorText}>
+              {words}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p
+          className={`text-sm leading-5 font-semibold ${pageInkText}`}
+          data-verification-covered=""
+        >
+          <span {...authorText}>{covered.covered}</span>{" "}
+          <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
+          <span {...authorText}>{covered.total}</span>{" "}
+          <span {...pageChrome}>{VERIFICATION_WORDS.covered}</span>
+        </p>
+      )}
       <span
         aria-hidden="true"
         className={`flex h-3 min-w-[220px] flex-1 overflow-hidden rounded-[6px] ${pageGuideBg}`}

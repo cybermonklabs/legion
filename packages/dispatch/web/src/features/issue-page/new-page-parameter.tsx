@@ -102,7 +102,13 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
     // hears a click on its root, below the document, and a handler that took it prevented it.
     const follow = (event: MouseEvent) => {
       if (event.defaultPrevented || !isPlainClick(event)) return;
-      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      // The link is read from the press's own path, which the browser fixed as it dispatched the
+      // press, and not from its target: a handler that ran before the document can take the
+      // pressed element out of its link, as Details at phone width does when a link in it is
+      // pressed (`Margin.tsx` closes it, and its words leave the link).
+      const anchor = event
+        .composedPath()
+        .find((node) => node instanceof Element && node.matches("a[href]"));
       // A link inside an editable text is the editor's: a plain click puts the caret in it.
       if (!(anchor instanceof HTMLAnchorElement) || anchor.closest(EDITABLE) !== null) return;
       if (anchor.hasAttribute("download") || anchor.hasAttribute("target")) return;
