@@ -1,20 +1,25 @@
 name: Dispatch browser nightly
 
 # Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
-# recordings. ci.yaml calls the same workflow twice: its dispatch-browser-pr job runs the
-# pull-request lane on a pull request, the rows a pull request is held to, and its
+# recordings. ci.yaml calls the same workflow from three jobs. Its dispatch-browser-pr job runs
+# the pull-request lane on a pull request, the rows a pull request is held to. Its
 # dispatch-browser job runs the full lane - every project the shard job's browser step names for
 # it (.github/scripts/dispatch-browser-shard-suite.sh), the three `-alone` ones and the
-# two-process job - in the merge queue, on a pull request labelled full-ci or
-# lane:dispatch_browser, and on a workflow_dispatch of ci.yaml (ci.yaml's dispatch_browser
-# output), so the merge group runs it on the tree a change lands as. The full lane's jobs are
+# two-process job - wherever ci.yaml's dispatch_browser output selects it: in the merge queue,
+# on a pull request labelled full-ci or lane:dispatch_browser, and on a workflow_dispatch of
+# ci.yaml, which selects every job on main or with its `every-job` input, and on any other
+# branch only the jobs that branch's diff from its merge base with main reaches. So the merge
+# group runs the full lane on the tree a change lands as. Its dispatch-references job runs the
+# references lane, Chromium over the reference rows' spec files, on a pull request its own
+# dispatch_references output selects. That lane is a preview: it gates nothing, and it replaces
+# neither the pull-request lane's run nor the full lane's. The full lane's jobs are
 # dispatch-browser.yaml's, whose notes name them and the machines they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
 # they are seven jobs on eight machines (full-lane run 44286153772, at c31857b8), where the
 # default branch's full lanes in the merge queue ran the same seven jobs on twelve machines on
 # 2026-11-24, and
 # .github/ci-notes/dispatch-browser.md#what-the-job-set-costs-and-the-machine-time-ceiling-the-run-holds-it-to
-# measures what both lanes cost.
+# measures what the pull-request and full lanes cost.
 # This run covers a day with no merge group, and is what runs the full lane on main's tip
 # (.github/workflows/dispatch-browser.yaml, which
 # holds every step). The re-record job's own head, below, says what it guards and why it is here
@@ -32,9 +37,11 @@ name: Dispatch browser nightly
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
-# the same of its own nightly). A change to the workflow it calls is proven before main by
-# ci.yaml's two callers of it: the pull-request lane on the pull request that makes it, and the
-# full lane in the merge group that lands it. No ci.yaml job calls this file, so a change to it
+# the same of its own nightly). A change to the workflow it calls is proven before main by two
+# of ci.yaml's three callers of it: the pull-request lane on the pull request that makes it, and
+# the full lane in the merge group that lands it. The third, dispatch-references, runs the
+# references lane on that pull request too, since its filter names that workflow, but it gates
+# nothing and replaces neither run. No ci.yaml job calls this file, so a change to it
 # is proven by `gh workflow run dispatch-browser-nightly.yaml --ref <branch>` (below). It runs on
 # its schedule only once it is on main.
 
