@@ -59,8 +59,9 @@ jobs:
     # (300), the pack, the upload and the ci-ok report (4), the post steps with the containers
     # stopped (5), and the seconds the job's own clock holds over the sum of its steps (5). That
     # is 396 s, 6 m 36 s, a floor this job, without the typecheck and the pack, stays under.
-    # The test step runs the package's files in one worker per CPU (`bun test --parallel`,
-    # package.json), so it lasts as long as its slowest worker, which runs
+    # The test step runs the package's files in four workers (`bun test --parallel=4`,
+    # package.json; README.md, "Development", says why the count is fixed), one per CPU of this
+    # runner, so it lasts as long as its slowest worker, which runs
     # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s
     # of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and
     # 137361573250 (2026-11-22), the 300 above being the slowest rounded up. Three runs are no

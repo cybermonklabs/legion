@@ -71,6 +71,12 @@ export interface ModelFallbackDeps {
     ctx: FallbackChainContext,
     model: HostModel
   ) => Promise<HostModel | undefined>;
+  /** `fallbackModels` (`@legion/pi-shared/fallback-chain`): every model below this one in the same
+   * chain, in its order, which the cyber-policy ladder searches for one of the same family. */
+  readonly fallbackModels: (
+    ctx: FallbackChainContext,
+    model: HostModel
+  ) => Promise<readonly HostModel[]>;
   readonly log: FallbackChainLog;
   /** The host's own timer for the pane (`SessionContext.setTimeout`): runs `callback` once,
    * `delayMs` from now, and answers whether it set the timer. This repository's `SessionContext`
@@ -125,6 +131,20 @@ export interface ModelFallback {
    * the fallback model and come back at its second request.
    */
   readonly maybeRestore: (ctx: ModelFallbackContext) => Promise<void>;
+  /**
+   * The first model below the session's own in its chain whose family is the session model's own
+   * (`HostModel.identity.class`), or undefined when the chain holds none, when the session's model
+   * names no family the catalog knows (`unknown`, a gateway's alias, whose family nothing here
+   * can tell), or when this host exposes no registry to walk with. Every model of another family
+   * in the chain is passed over: the cyber-policy ladder's last rung never changes family.
+   */
+  readonly sameFamilyFallback: (ctx: ModelFallbackContext) => Promise<HostModel | undefined>;
+  /**
+   * Moves the session to `next` as one step down its chain, and arms the return to the model the
+   * walk started from on the refusal cooldown, exactly as a content filter's step does
+   * (`walkChain`). Answers whether the session is on `next` with its return armed.
+   */
+  readonly stepDownTo: (ctx: ModelFallbackContext, next: HostModel) => Promise<boolean>;
 }
 
 /** The newest `model_change` on the branch, the one before it, and the one the walk ending there
@@ -432,12 +452,23 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       });
       return;
     }
+    await applyStep(ctx, current, next);
+  };
+
+  /** Sets `next` as one step down the chain from `current` and arms the return on the
+   * `model_change` entry the switch wrote; answers whether the arming was saved. */
+  const applyStep = async (
+    ctx: ModelFallbackContext,
+    current: HostModel,
+    next: HostModel
+  ): Promise<boolean> => {
+    const selector = modelSelector(current);
     if (!(await deps.setModel(next))) {
       deps.log.warn("legion: the next model of the chain could not be set; staying on this one", {
         model: selector,
         next: modelSelector(next),
       });
-      return;
+      return false;
     }
     const change = newestModelChange(ctx);
     if (change === undefined) {
@@ -445,7 +476,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         model: selector,
         next: modelSelector(next),
       });
-      return;
+      return false;
     }
     save(
       step({
@@ -455,6 +486,36 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         cause: "refusal",
         now: deps.now(),
       })
+    );
+    return true;
+  };
+
+  /** The family the host's catalog gives `model`, or undefined when it gives none it knows. */
+  const familyOf = (model: HostModel | undefined): string | undefined => {
+    const family = model?.identity?.class;
+    return family === undefined || family === "" || family === "unknown" ? undefined : family;
+  };
+
+  const sameFamilyFallback = async (ctx: ModelFallbackContext): Promise<HostModel | undefined> => {
+    const current = ctx.models?.current?.();
+    const family = familyOf(current);
+    if (current === undefined || family === undefined) {
+      deps.log.warn(
+        "legion: the session's model names no family the catalog knows, so no weaker model of its family is chosen",
+        { model: current === undefined ? undefined : modelSelector(current) }
+      );
+      return undefined;
+    }
+    const chain = chainContext(ctx);
+    if (chain === undefined) {
+      deps.log.warn("legion: this host exposes no model registry to find a weaker model with", {
+        model: modelSelector(current),
+      });
+      return undefined;
+    }
+    const candidates = await deps.fallbackModels(chain, current);
+    return candidates.find(
+      (candidate) => !sameModel(candidate, current) && familyOf(candidate) === family
     );
   };
 
@@ -710,6 +771,27 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         await restoreIfDue(ctx);
       } catch (error) {
         contained("put the session back on the model it fell back from", error);
+      }
+    },
+    sameFamilyFallback: async (ctx) => {
+      try {
+        return await sameFamilyFallback(ctx);
+      } catch (error) {
+        contained("find a weaker model of the session model's family", error);
+        return undefined;
+      }
+    },
+    stepDownTo: async (ctx, next) => {
+      try {
+        const current = ctx.models?.current?.();
+        if (current === undefined) {
+          deps.log.warn("legion: this host names no model to step down from");
+          return false;
+        }
+        return await applyStep(ctx, current, next);
+      } catch (error) {
+        contained("step down to a weaker model of the session model's family", error);
+        return false;
       }
     },
   };
