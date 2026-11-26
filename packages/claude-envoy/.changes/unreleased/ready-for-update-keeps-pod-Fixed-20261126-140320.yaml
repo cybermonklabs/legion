@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The `legion` tool's description of `ready_for_update` says that the daemon keeps the pod and says
+  so when it finds work that origin does not hold, and that a round over a drift that breaks the
+  pod replaces the pod anyway. It said that the daemon replaces the pod and its disk when the round
+  ends in every case, which has not been so since the daemon reads the pod's workspace before a
+  replacement.
+time: 2026-11-26T14:03:20Z
+custom:
+    Issue: ready-for-update-keeps-pod
