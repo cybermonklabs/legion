@@ -186,7 +186,8 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "PARENT_WAITS_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 90,
+      "run_timeout_minutes": 43,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/parent-waits.sh; CI's service is the PostgreSQL it needs, the lib installs the nats-server it needs with go install, and it starts no container and reaches no outside service; a measured run in a pod took 64 seconds, most of it building the driver",
       "jj": true
     },
@@ -229,7 +230,8 @@
       "apt": [],
       "bun": true,
       "evidence_variable": "REGISTER_GATE_BASIS_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 90,
+      "run_timeout_minutes": 43,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/register-gate-basis.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch and the daemon itself, the lib installs the nats-server it needs with go install, and it starts no container; a run takes one to five minutes, most of it building the driver and Dispatch",
       "jj": true
     },

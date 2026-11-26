@@ -7,7 +7,7 @@ in the workflow file, or, for a value the proof job's matrix carries, in the com
 
 ## The proof step's own limit
 
-`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and fifteen of the twenty-one hosted scripts
+`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and seventeen of the twenty-three hosted scripts
 source `scripts/e2e/lib/live-daemon-proof.sh`, whose `live_daemon_proof` installs nats-server with
 `go install` through `.github/scripts/ci-retry.sh` at the 180 s module bound,
 5 x 180 + 150 = 1050 s; `scripts/e2e/dispatch-session-settings.sh` retries the same install the
@@ -28,8 +28,9 @@ Each row's measured figure is the one its `timeout_minutes` starts from (the com
 
 - Sourcing `lib/live-daemon-proof.sh`, and calling `live_daemon_proof` once: behind-entry-fence.sh,
   child-adoption.sh, conflict-merger.sh, conflict-no-takeover.sh, experiment.sh,
-  handoff-records.sh, merge-wait-readable.sh, owner-steps.sh, plan-ratings.sh, review-range.sh,
-  step-records.sh and sub-architect.sh at 25 minutes, 1500 + 1050 = 2550 s -> 43 min,
+  handoff-records.sh, merge-wait-readable.sh, owner-steps.sh, parent-waits.sh, plan-ratings.sh,
+  register-gate-basis.sh, review-range.sh, step-records.sh and sub-architect.sh at 25 minutes,
+  1500 + 1050 = 2550 s -> 43 min,
   owner-steps-client.sh and look-names-its-check.sh at 30 minutes, 1800 + 1050 = 2850 s -> 48 min,
   and phase-entry-converge.sh at 20 minutes, 1200 + 1050 = 2250 s -> 38 min.
 - Sourcing neither file, directly or through `lib/rig.sh`, through `lib/codex-host.sh`, through
@@ -64,7 +65,10 @@ with its `jj` false and its `bun` true, now carries setup-bun's 1500 + 3416 = 49
 over 26 (dispatch://INFRA-1545, round 66). Main's #5463's
 look-names-its-check.sh row, added with its measured 30 minutes alone and no
 `run_timeout_minutes`, with its `jj` and `bun` true, now carries owner-steps-client.sh's
-1800 + 3866 = 5666 s -> 95 min over 48 (dispatch://INFRA-1545, round 68).
+1800 + 3866 = 5666 s -> 95 min over 48 (dispatch://INFRA-1545, round 68). Main's #4592's
+parent-waits.sh and register-gate-basis.sh rows, added with their measured 25 minutes alone and
+no `run_timeout_minutes`, each with its `jj` true, now carry 1500 + 3866 = 5366 s -> 90 min over
+43 (dispatch://INFRA-1545, round 71).
 
 `.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/` and no number
 out of an expression (A CEILING WRITTEN AS AN EXPRESSION, under its rule 8), so it prices neither
