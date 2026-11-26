@@ -13,9 +13,9 @@
 // a host, with none and under Claude Code. The other rows hold the paths it refuses before
 // anything is sent, the credential it presents and the session its trade names, with a host and
 // without one, and the AskGate rule: in a session whose gate is on it sends GET alone, and names
-// the command that makes the write; the gate sits in the command itself, under a host and with
-// none. A command whose spec binds its routes is held to the same rule, so the refusal never names
-// one.
+// the command that makes the write, or says that no command the session may run makes it; the
+// gate sits in the command itself, under a host and with none. A command whose spec binds its
+// routes is held to the same rule, so the refusal never names one.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -326,8 +326,12 @@ const COMMENT = JSON.stringify({ body: "Looks good." });
 const GATED_WHY =
   "this session's AskGate reviews Dispatch writes, so dispatch api sends only GET here";
 
-/** How the gate refuses a write: before the command it names. */
+/** How the gate refuses a write a hand-written command makes: before the command it names. */
 const GATED = `dispatch api was not called: ${GATED_WHY}; make this write with `;
+
+/** How the gate refuses a write no hand-written command makes, whole: no command the session may
+ *  run makes it, since the gate refuses that write to a command whose spec binds its route too. */
+const GATED_NO_COMMAND = `dispatch api was not called: ${GATED_WHY}; no dispatch command this session may run makes this write`;
 
 /** The ask a command whose spec binds its routes acts on here: `dispatch decline-ask` writes it,
  *  `POST /api/v1/asks/{id}/decline`, and `dispatch read-ask` reads it. */
@@ -1125,11 +1129,11 @@ describe("the session's ledger", () => {
 describe("AskGate", () => {
   test.each([
     ["GET", "/api/v1/whoami", null],
-    ["POST", "/api/v1/issues/ACME-1/comments", "dispatch comment"],
-    ["PUT", "/api/v1/projects/ACME/settings", "dispatch --help"],
-    ["PATCH", "/api/v1/projects/ACME/settings", "dispatch --help"],
-    ["DELETE", "/api/v1/projects/ACME/settings", "dispatch --help"],
-  ])("in a session AskGate gates, GET is sent and each other method is refused with nothing sent: %s %s", async (method, path, names) => {
+    ["POST", "/api/v1/issues/ACME-1/comments", `${GATED}dispatch comment or dispatch suggest`],
+    ["PUT", "/api/v1/projects/ACME/settings", GATED_NO_COMMAND],
+    ["PATCH", "/api/v1/projects/ACME/settings", GATED_NO_COMMAND],
+    ["DELETE", "/api/v1/projects/ACME/settings", GATED_NO_COMMAND],
+  ])("in a session AskGate gates, GET is sent and each other method is refused with nothing sent: %s %s", async (method, path, refusal) => {
     const broker = stubBroker(300);
     const server = stubDispatch();
     const stateDir = tempDir();
@@ -1143,14 +1147,13 @@ describe("AskGate", () => {
       ],
       sessionEnvironment(broker.url, server.url, stateDir)
     );
-    if (names === null) {
+    if (refusal === null) {
       expect(ran.code, ran.stdout).toBe(0);
       expect(server.sent).toHaveLength(1);
       return;
     }
     expect(ran.code).toBe(1);
-    expect(ran.stdout).toStartWith(GATED);
-    expect(ran.stdout).toContain(names);
+    expect(ran.stdout.trimEnd()).toBe(refusal);
     expect(server.sent).toHaveLength(0);
     expect(broker.trades).toHaveLength(0);
   });
@@ -1309,7 +1312,9 @@ describe("AskGate and the commands whose specs bind their routes", () => {
         askgate: { mode: "block", why: broken ? expect.stringContaining(file) : DECLINE_GATED_WHY },
       },
     ]);
-    expect(cliRefusals(ran.stdout)).toEqual([{ line: ran.stdout.trimEnd(), command: "decline-ask" }]);
+    expect(cliRefusals(ran.stdout)).toEqual([
+      { line: ran.stdout.trimEnd(), command: "decline-ask" },
+    ]);
   });
 
   test("with a live AskGate record, a bound read is sent", async () => {
@@ -1351,11 +1356,12 @@ describe("AskGate and the commands whose specs bind their routes", () => {
   });
 
   test.each([
-    // A route only a command whose spec binds it sends: the refusal names no command.
-    ["POST", `/api/v1/asks/${ASK}/decline`, "dispatch --help", "dispatch decline-ask"],
+    // A route only a command whose spec binds it sends: the refusal says that no command the
+    // session may run makes it.
+    ["POST", `/api/v1/asks/${ASK}/decline`, "dispatch decline-ask", GATED_NO_COMMAND],
     // A route a hand-written command sends too: the refusal names that command alone.
-    ["POST", "/api/v1/markdown/round-trip", "dispatch artifact", "dispatch check-markdown"],
-  ])("dispatch api's refusal of %s %s names %s, never %s, which is refused there too", async (method, path, names, bound) => {
+    ["POST", "/api/v1/markdown/round-trip", "dispatch check-markdown", `${GATED}dispatch artifact`],
+  ])("dispatch api's refusal of %s %s never names %s, which is refused there too", async (method, path, bound, refusal) => {
     const broker = stubBroker(300);
     const server = stubDispatch();
     const stateDir = tempDir();
@@ -1365,8 +1371,7 @@ describe("AskGate and the commands whose specs bind their routes", () => {
       sessionEnvironment(broker.url, server.url, stateDir)
     );
     expect(ran.code).toBe(1);
-    expect(ran.stdout).toStartWith(GATED);
-    expect(ran.stdout).toContain(names);
+    expect(ran.stdout.trimEnd()).toBe(refusal);
     expect(ran.stdout).not.toContain(bound);
     expect(server.sent).toHaveLength(0);
   });

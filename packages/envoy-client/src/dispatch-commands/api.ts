@@ -20,9 +20,10 @@
 // bearer. Where no host is found, as in a GitHub Actions job, the CLI reads Dispatch from the
 // environment alone (`unhostedDispatch`, host-session.ts). In a session whose AskGate reviews
 // Dispatch writes it sends GET alone, and names the command that makes the write, which the gate
-// reviews (`gatedWrite`, src/askgate-marker.ts). The gate sits in the command itself
-// (`sendApiCall`), under a host and with none. A command whose spec binds its routes is refused a
-// write there as this command is (`gatedWriteRefusal`, route-tools.ts), so the refusal names none.
+// reviews (`gatedWrite`, src/askgate-marker.ts), or says that no command the session may run makes
+// it. The gate sits in the command itself (`sendApiCall`), under a host and with none. A command
+// whose spec binds its routes is refused a write there as this command is (`gatedWriteRefusal`,
+// route-tools.ts), so the refusal names none.
 
 import type { DispatchApiMethod } from "@legion/contracts";
 import { type AskgateState, askgateState } from "../askgate-marker";
@@ -46,9 +47,10 @@ function gatedWhy(call: string): string {
   return `this session's AskGate reviews Dispatch writes, so ${call} sends only GET here`;
 }
 
-/** What the refusal names for a route no row holds: a route that no command a gated session may
- *  run writes. */
-const NO_ROW = "the dispatch command that makes it (dispatch --help lists them)";
+/** What the refusal says of a route no row holds: no `dispatch` command a gated session may run
+ *  makes that write, since a command whose spec binds the route is refused it there too
+ *  (`gatedWriteRefusal`). */
+const NO_ROW = "no dispatch command this session may run makes this write";
 
 /** A write route a `dispatch` command sends: its method, its path with each `{name}` standing for
  *  one segment, and the commands that send it. */
@@ -65,11 +67,11 @@ export interface WriteRoute {
  * writes nothing (`markdown/round-trip`, `markdown/file-round-trip`, `related`, `results/dry-run`)
  * names the command that sends it, since the gate refuses it all the same. No command whose spec
  * binds its routes is named: the gate refuses each of its writes as it refuses this command's
- * (`routeCommand`), so a route only such a command sends has no row, and the refusals name no
- * command for it (`NO_ROW`). A write method of `DispatchClient` that no hand-written command calls
- * has no row either, `callRoute` among them, and neither has `sendRoute`, which sends the route its
- * caller names: `dispatch-api-routes.test.ts` names each in its `NO_COMMAND`, and holds the table
- * to every other write `DispatchClient` sends.
+ * (`routeCommand`), so a route only such a command sends has no row, and the refusal says that no
+ * command the session may run makes it (`NO_ROW`). A write method of `DispatchClient` that no
+ * hand-written command calls has no row either, `callRoute` among them, and neither has
+ * `sendRoute`, which sends the route its caller names: `dispatch-api-routes.test.ts` names each
+ * in its `NO_COMMAND`, and holds the table to every other write `DispatchClient` sends.
  */
 export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
@@ -196,9 +198,9 @@ export class ApiGateRefusal extends Error {
  * written for is one whose gate is read. A record that cannot be read counts as live. An id that
  * names no directory refuses the write too, as a usage error that names the variable to unset
  * rather than the value it holds. `instead` ends the refusal with what makes the write in the
- * command's place: `dispatch api` names the command that makes it, and a command whose spec binds
- * its routes, which is that command, names none. It returns rather than throws, so the throw stays
- * at the call.
+ * command's place: `dispatch api` names the command that makes it, or says that none the session
+ * may run does, and a command whose spec binds its routes, which is that command, names none. It
+ * returns rather than throws, so the throw stays at the call.
  */
 export function gatedWriteRefusal(
   tool: string,
@@ -258,9 +260,8 @@ export async function sendApiCall(
   if (method !== undefined) {
     const refusal = gatedWriteRefusal("dispatch_api", env, () => {
       const row = writeRoute(method, path.split("?", 1)[0] ?? "");
-      const command =
-        row === undefined ? NO_ROW : row.commands.map((name) => `dispatch ${name}`).join(" or ");
-      return `make this write with ${command}`;
+      if (row === undefined) return NO_ROW;
+      return `make this write with ${row.commands.map((name) => `dispatch ${name}`).join(" or ")}`;
     });
     if (refusal !== undefined) throw refusal;
   }
