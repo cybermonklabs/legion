@@ -9,6 +9,7 @@ package workflow
 import (
 	"context"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -457,7 +458,10 @@ func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
 // whose architect writes no workspace, the sign-off into the retro of the implementer it asked,
 // and the retro's completion into merging, where the merger waits for the implementer's merge.
 // Nothing else is sent, no move back is counted, and the landing in merging tells the merger and
-// asks the reviewer to read the merge.
+// asks the reviewer to read the merge. One message more than main's is sent, at the ready of a
+// launch the daemon makes of the merger by itself while the merge is open: the merger is held
+// again (holdSentWorker), where main sends no message at a ready. Its check uses t.Errorf, so the
+// landing is still read on main.
 func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T) {
 	t.Parallel()
 	pool := seedConflictIssue(t, phase.Reviewing, "needs_review", waitingOnTheMergeState())
@@ -491,7 +495,12 @@ func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T)
 	want = append(want, heldIn(claim.RoleMerger, phase.Merging, why))
 	sent("the retro's completion", phase.Merging)
 
-	asked := len(want)
+	applyRefusingNothing(t, pool, readsAfter(3*time.Minute+30*time.Second), intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleMerger, Launch: 2})
+	if got, held := mergeForwardMessages(t, pool), append(slices.Clone(want), heldIn(claim.RoleMerger, phase.Merging, why)); !reflect.DeepEqual(got, held) {
+		t.Errorf("after the ready of the merger's launch 2 the merge-forward messages are %+v, want %+v: the ready holds the merger again", got, held)
+	}
+
+	asked := len(mergeForwardMessages(t, pool))
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardHead, Before: conflictHead, Sender: "legion-implementer[bot]"})
 	if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, []string{"merger landed", "reviewer review"}) {
