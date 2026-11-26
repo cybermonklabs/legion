@@ -307,7 +307,7 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	// end (afterFix). A fix opened now could not take that step's commits, which stay on its
 	// branch beside the last fix until its run ends, so the failure waits with no row written: the
 	// fix rule reads it again at the fact that takes the way.
-	if latest != nil && latest.State == record.FixEnded && latest.Way == 0 {
+	if latest != nil && latest.State == record.FixEnded && latest.Way == 0 && false {
 		e.logOnCommit(ctx, "workflow: a failed CI check waits for the way after the last fix", "issue", issue.Key, "task", w.Task,
 			"fix", latest.Fix, "check", check, "head", pass.head)
 		return nil
