@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,9 +13,9 @@ import (
 	"github.com/spf13/cobra"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
@@ -33,13 +31,6 @@ const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 // delta from GitHub.
 const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 
-// newProvisionRunner is the runner `provision`'s commands run under, workspace.NewRunner given
-// commandBudget: the slow-command budget of every command carrying no bound of its own, the
-// commands that carry one being the exceptions workspace.CommandTimeout names, the issue's
-// checkout among them (workspace.Provision, Request.CheckoutBound). This package's tests wrap it to
-// read the bound each command was given.
-var newProvisionRunner = workspace.NewRunner
-
 // commandBudget is the slow-command budget of the runners workspace-init's provision and cache
 // run their commands under: workspace.CommandTimeout, 5 min. It is a variable so that this
 // package's tests can give it their own deadline (programbound): a stand-in jj that a loaded machine
@@ -50,10 +41,10 @@ func init() {
 	programbound.Register(&commandBudget)
 }
 
-// secretFileFromEnv is the secret file the environment variable name points at, once it reads
+// secretFile is the secret file the environment variable name points at, once it reads
 // (config.ReadSecretPointer); an error when name is not set or its file does not read.
-func secretFileFromEnv(name string) (string, error) {
-	file, set := os.LookupEnv(name)
+func (p workspaceProcess) secretFile(name string) (string, error) {
+	file, set := p.lookup(name)
 	if !set {
 		return "", errors.New(name + " is not set")
 	}
@@ -67,23 +58,27 @@ func secretFileFromEnv(name string) (string, error) {
 // repository cache process. An issue pod runs one `provision` init container, which fills its clone
 // and makes its Jujutsu workspace while it holds the provisioning Secret. A repository cache pod
 // runs `cache` as its one container, on its own volume, until it is stopped. Each one's log lines
-// go to stdout and its refusals and failures to stderr. A usage error exits 2
+// go to stdout and its refusals and failures to stderr — together the init log the runtime quotes —
+// both through the URL rule (redact.Writer here for stdout, newRoot's for stderr), as Go's
+// standard logger is for the run of each when it runs as `legion` (workspaceProcess.standardLog):
+// a failure that quotes the repository cache's address (LEGION_REPOSITORY_CACHE_URL) loses its
+// query and its userinfo. No child process is handed either writer. A usage error exits 2
 // (workspace.InitExitUsage); `provision` exits 3 (workspace.InitExitOutsideVolume) for a failure
 // whose cause is outside the issue volume, and 1 for every other failure. `cache` exits 1 for every
 // failure (workspaceInitExit).
-func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
+func newWorkspaceInitCommand(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
 	stdout = redact.Writer(stdout)
 	return group(&cobra.Command{
 		Use:    "workspace-init",
 		Short:  "an issue pod's init container and a repository cache pod's process",
 		Hidden: true,
 	},
-		newWorkspaceProvisionCommand(stdout, stderr),
-		newWorkspaceCacheCommand(stdout, stderr),
+		newWorkspaceProvisionCommand(stdout, stderr, ws),
+		newWorkspaceCacheCommand(stdout, stderr, ws),
 	)
 }
 
-func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
+func newWorkspaceProvisionCommand(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
 	cmd := &cobra.Command{Use: strings.TrimPrefix(workspaceProvisionUsage, "legion workspace-init "), Short: "fill the issue clone and provision its jj workspace on the pod's disk", Hidden: true, Args: noArguments}
 	issue := cmd.Flags().String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
 	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
@@ -91,8 +86,8 @@ func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 	root := cmd.Flags().String("root", "/legion", "issue volume root directory")
 	credentialHelper := cmd.Flags().String("credential-helper", "", "git credential helper written into the clone's config (required)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
-		defer podLogs(stderr)()
-		return issuePodInitExit(cmd, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, stdout), stderr)
+		defer ws.logs(stderr)()
+		return issuePodInitExit(cmd, workspaceInit(ctx, ws, *issue, *repo, *defaultBranch, *root, *credentialHelper, stdout), stderr)
 	})
 	return cmd
 }
@@ -123,9 +118,10 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // stale locks and fills the issue clone and workspace. The one init container has the provisioning
 // Secret mounted and creates its one-shot credential under TMPDIR, which it removes before the
 // launcher starts. A kept volume reuses its clone and workspace; every provision updates the clone
-// from GitHub under its narrow refspecs.
-func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, credentialHelper string, stdout io.Writer) error {
-	inputs, err := provisionInputs(issue, repo, defaultBranch, root, credentialHelper)
+// from GitHub under its narrow refspecs. What it reads of its process — each variable, the PATH,
+// TMPDIR, the clock and the bound of its fill, and the runner — it reads from ws.
+func workspaceInit(ctx context.Context, ws workspaceProcess, issue, repo, defaultBranch, root, credentialHelper string, stdout io.Writer) error {
+	inputs, err := provisionInputs(ws, issue, repo, defaultBranch, root, credentialHelper)
 	if err != nil {
 		// Every check before the first write to the volume is provisionInputs', so this one mark
 		// covers each of them, and a check added there later too (issuePodInitExit).
@@ -136,10 +132,13 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
 		return err
 	}
-	run := newProvisionRunner(programbound.Of(&commandBudget), inputs.tools)
+	// commandBudget is the slow-command budget of every command carrying no bound of its own, the
+	// commands that carry one being the exceptions workspace.CommandTimeout names, the issue's
+	// checkout among them (workspace.Provision, Request.CheckoutBound).
+	run := ws.runner(programbound.Of(&commandBudget), inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
-		Source: workspace.ForIssuePod(inputs.token, os.TempDir(), inputs.cacheURL, inputs.cacheToken, clock.Real(), log), Log: log,
+		Source: workspace.ForIssuePod(inputs.token, ws.tempDir(), inputs.cacheURL, inputs.cacheToken, ws.clock, ws.fetchBound, log), Log: log,
 	})
 	if err != nil {
 		return err
@@ -162,7 +161,7 @@ type provisionInput struct {
 // provisionInputs is every check `provision` makes before it touches the volume, --repo first,
 // then the cache inputs, the readable provisioning token and the provisioner's tools. It writes
 // nothing, so no refusal of it has a cause on the volume.
-func provisionInputs(issue, repo, defaultBranch, root, credentialHelper string) (provisionInput, error) {
+func provisionInputs(ws workspaceProcess, issue, repo, defaultBranch, root, credentialHelper string) (provisionInput, error) {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {
 		return provisionInput{}, err
@@ -179,12 +178,12 @@ func provisionInputs(issue, repo, defaultBranch, root, credentialHelper string) 
 	if defaultBranch == "" {
 		return provisionInput{}, fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage)
 	}
-	inputs := provisionInput{repository: repository, cacheURL: os.Getenv(cacheURLEnv)}
+	inputs := provisionInput{repository: repository, cacheURL: ws.getenv(cacheURLEnv)}
 	if inputs.cacheURL != "" {
 		if parsed, err := url.Parse(inputs.cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
 			return provisionInput{}, fmt.Errorf("%s must be an http:// URL (got %q)", cacheURLEnv, inputs.cacheURL)
 		}
-		tokenFile, set := os.LookupEnv(repocache.CacheTokenFileEnv)
+		tokenFile, set := ws.lookup(repocache.CacheTokenFileEnv)
 		if !set {
 			return provisionInput{}, errors.New(repocache.CacheTokenFileEnv + " is not set: a repository cache needs its token")
 		}
@@ -192,12 +191,12 @@ func provisionInputs(issue, repo, defaultBranch, root, credentialHelper string) 
 			return provisionInput{}, err
 		}
 	}
-	tokenFile, err := secretFileFromEnv(provisionTokenFileEnv)
+	tokenFile, err := ws.secretFile(provisionTokenFileEnv)
 	if err != nil {
 		return provisionInput{}, err
 	}
 	inputs.token = func() (string, error) { return config.ReadSecretPointer(provisionTokenFileEnv, tokenFile) }
-	if inputs.tools, err = provisioningTools("git", "jj"); err != nil {
+	if inputs.tools, err = ws.tools("git", "jj"); err != nil {
 		return provisionInput{}, err
 	}
 	located, err := workspace.Location(root, repository, issue)
@@ -208,15 +207,15 @@ func provisionInputs(issue, repo, defaultBranch, root, credentialHelper string) 
 	return inputs, nil
 }
 
-// provisioningTools resolves the named tools a provisioning step runs from PATH — in an init
-// container the image's, with no operator rc ahead of them — where the
-// TypeScript runner found them (processEnvRunner, workspace-init.ts).
-func provisioningTools(names ...string) (map[string]string, error) {
+// tools resolves the named tools a provisioning step runs on the environment's PATH — in an init
+// container the image's, with no operator rc ahead of them — where the TypeScript runner found
+// them (processEnvRunner, workspace-init.ts).
+func (p workspaceProcess) tools(names ...string) (map[string]string, error) {
 	tools := map[string]string{}
 	for _, tool := range names {
-		path, err := exec.LookPath(tool)
-		if err != nil {
-			return nil, fmt.Errorf("%s is not on PATH: %w", tool, err)
+		path, ok := lookpath.On(p.getenv("PATH"), tool)
+		if !ok {
+			return nil, fmt.Errorf("%s is not on PATH", tool)
 		}
 		tools[tool] = path
 	}

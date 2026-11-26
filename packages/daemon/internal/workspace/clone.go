@@ -171,6 +171,7 @@ type issuePod struct {
 	cacheURL   string
 	cacheToken string
 	clock      Clock
+	bound      time.Duration
 	log        func(string)
 	fetched    bool
 	defaults   []string
@@ -178,13 +179,17 @@ type issuePod struct {
 
 // ForIssuePod reaches GitHub with the mounted provisioning token and, when cacheURL is non-empty,
 // starts the clone from the repository cache. The cache's bearer token is separate from the GitHub
-// token and is needed only for its tar stream.
-func ForIssuePod(token func() (string, error), credentialDir, cacheURL, cacheToken string, clock Clock, log func(string)) Source {
+// token and is needed only for its tar stream. clock is what the fill's waits read and sleep on:
+// its polls of a cache that is not ready and its backoff between transfers from GitHub. bound is
+// the time each clocked stage of the fill gets — the check of what the cache streamed, and the
+// transfers from GitHub — zero being FetchTimeout.
+func ForIssuePod(token func() (string, error), credentialDir, cacheURL, cacheToken string, clock Clock, bound time.Duration, log func(string)) Source {
 	return issuePodSource{
 		gitHubSource: gitHubSource{token: token, credentialDir: credentialDir},
 		cacheURL:     cacheURL,
 		cacheToken:   cacheToken,
 		clock:        clock,
+		bound:        bound,
 		log:          log,
 	}
 }
@@ -194,6 +199,7 @@ type issuePodSource struct {
 	cacheURL   string
 	cacheToken string
 	clock      Clock
+	bound      time.Duration
 	log        func(string)
 }
 
@@ -230,6 +236,7 @@ func (s issuePodSource) open(repository ghrepo.Repository, bookmark, defaultBran
 		cacheURL:   s.cacheURL,
 		cacheToken: s.cacheToken,
 		clock:      s.clock,
+		bound:      s.bound,
 		log:        s.log,
 	}
 	return r, nil
@@ -408,7 +415,7 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 		var err error
 		stream, err = StreamCache(ctx, run, CacheStream{
 			Repo: issue.repository, URL: issue.cacheURL, Token: issue.cacheToken,
-			Log: issue.log, Clock: issue.clock,
+			Log: issue.log, Clock: issue.clock, Bound: issue.bound,
 		}, gitDir)
 		if err != nil {
 			return err
@@ -455,7 +462,7 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remote, fresh bool) (int64, int, string, error) {
 	issue := source.issue
 	gitDir := filepath.Join(cloneDir, ".git")
-	request := FetchRequest{Repo: issue.repository, Token: issue.token, Log: issue.log, Clock: issue.clock}
+	request := FetchRequest{Repo: issue.repository, Token: issue.token, Log: issue.log, Clock: issue.clock, Bound: issue.bound}
 	held := &fetchCredential{remote: source, env: merge(source.env, isolatedGitConfig), read: issue.token, held: []string{source.token}}
 	deadline := issue.clock.Now().Add(request.bound())
 	defaults, err := issuePodDefaults(ctx, run, request, gitDir, issue.defaultRef, held, deadline)
