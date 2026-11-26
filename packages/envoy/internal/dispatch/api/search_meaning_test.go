@@ -1053,6 +1053,14 @@ func uploadSearchDocument(t *testing.T, handler http.Handler, issueKey, name, bo
 // closely than anything else, fills the document arm on its own; the arm's `distinct on (id)`
 // then yields that one document, and every other document the query matches by meaning is
 // lost. A comment, whose arm is its own, stands beside them as the rest of the page.
+//
+// The test's database holds no HNSW index (embeddings_cosine is dropped before the search), so
+// every arm reads its rows by an exact order and the arm's candidate depth alone decides what it
+// keeps. With the index, the planner usually still sorts this handful of rows exactly, but not
+// always; when it walks the index instead, the walk does not reach the short document or the
+// comment, whose vectors stand far from 51 long-document vectors that are all nearly equally far
+// from each other, and the test failed with the long document alone. How far an arm's index walk
+// reaches is the index's own business (searchMeaningScan), not this test's subject.
 func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
@@ -1090,6 +1098,11 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
+	// database is this test's own clone (newTestServer's storetest.Open), so no other test's
+	// database loses the index.
+	if _, err := database.Pool.Exec(context.Background(), `drop index embeddings_cosine`); err != nil {
+		t.Fatalf("drop the HNSW index, so every arm reads an exact order: %v", err)
+	}
 
 	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
