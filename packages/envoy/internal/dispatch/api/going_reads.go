@@ -47,8 +47,9 @@ import (
 
 // goingDeploymentReads are the reads that are no one project's: the roster names every
 // project's sessions and the delivery reads every project's pull requests and issues. A
-// credential scoped to one project reads nothing outside it through the bar, so it
-// is offered neither; every other read is held to the run's project (goingReadRun.project).
+// credential scoped to one project reads only the projects access.CredentialCovers covers, its
+// own and the public ones (createGoingRequest), so it is offered neither; every other read is
+// held to the project the run was asked of (goingReadRun.project).
 var goingDeploymentReads = map[string]bool{going.ReadRoster: true, going.ReadDelivery: true}
 
 // The bounds of what one read hands the model, so a read of a large project is a summary the
@@ -217,9 +218,10 @@ func (g *goingReadRun) rosterRead() (goingRosterFrame, bool) {
 }
 
 // project is the project a read reads: the one the model named, else the run's, else the page's.
-// A run asked of one project reads that project alone, whatever the model names:
-// a credential scoped to one project asks only of it (createGoingRequest), and search is held to
-// it the same way (goingSearch).
+// A run asked of one project reads that project alone, whatever the model names, and search is
+// held to it the same way (goingSearch). A credential scoped to one project asks of a project
+// access.CredentialCovers covers, its own or a public one, and is answered 404 PROJECT_NOT_FOUND
+// for any other (createGoingRequest).
 func (g *goingReadRun) project(named string) (string, error) {
 	project := cmp.Or(strings.TrimSpace(named), g.asked)
 	if project == "" && g.chip != nil {

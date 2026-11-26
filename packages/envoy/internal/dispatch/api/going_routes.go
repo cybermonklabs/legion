@@ -242,7 +242,9 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// Such a caller is answered 404 PROJECT_NOT_FOUND for that project, and for a project that
 	// does not exist, with one body for both, so it cannot tell the two apart. A credential that
 	// names no project is answered as before: its question of a project no row holds is recorded.
-	// The run's reads are held to that scope too (goingReadsFor).
+	// The run's reads are held to the project it was asked of (goingReadRun.project), and a
+	// credential scoped to one project is offered no read of every project, the roster's or the
+	// delivery's (goingReadsFor).
 	covers, scoped := s.callerProject(r)
 	if scoped && project != "" {
 		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
