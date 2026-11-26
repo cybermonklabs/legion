@@ -20,6 +20,7 @@ import (
 // neither its path nor what it holds prints. A root whose files fit still takes them: the
 // control.
 func TestAnAirlockFileThatCannotBeWrittenNamesItsPathButNotWGETRCs(t *testing.T) {
+	t.Parallel()
 	wgetrc, secrets := inheritedWgetrc(t)
 	// The root is base/agent-secrets/airlock; its build directory, root/.building-<1 to 10
 	// digits>, is at most len(root)+21 bytes, and the trust bundle's temporary file in it at least
