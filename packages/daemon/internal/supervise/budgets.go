@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -109,6 +110,17 @@ const (
 	// earlier daemon failed can carry it for a run of refused turns that reached the launch failure
 	// limit, which fails no claim now (turnOutcome); the sentence beside the word says which it was.
 	CauseProviderError FailureCause = "provider_error"
+	// CauseCyberPolicy: OpenAI refused the session's content for cyber policy, or Oh My Pi held a
+	// request after such a refusal, as the result of the prompt the turn ran says, or as the
+	// report of a turn that ran no prompt of the daemon's says (providerErrorTurnEnded, Oh My Pi's
+	// class `cyber_policy`). It is a provider error that cannot clear, and a word of its own because
+	// it is the one failure after which no retry of the daemon's own may launch the claim's agent
+	// again (Claim.HeldForCyberPolicy): every prompt the daemon sends is input from outside the
+	// session, which ends Oh My Pi's hold, so the refused content would go to OpenAI again and add
+	// a refusal to the organization's record. The architect's retry of the held phase and the
+	// operator's retry launch the agent again, each in a new session (freshSession), which holds
+	// none of that content.
+	CauseCyberPolicy FailureCause = "cyber_policy"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence
 	// does not say which event wrote it.
@@ -132,6 +144,7 @@ var FailureCauses = []FailureCause{
 	CauseStalePlugin,
 	CausePromptRetiresExhausted,
 	CauseProviderError,
+	CauseCyberPolicy,
 	CauseUnrecorded,
 }
 
@@ -153,14 +166,14 @@ var FailureCauses = []FailureCause{
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
 // already (registrationDeadline).
 //
-// turn is the moment the caller already reserved for this relaunch in the wake pacing, as
-// launchAfter takes it, and the zero time for every caller but the boot's replay of a recorded
-// death (RecordedDeath.Turn). The retry of a refused relaunch passes the zero time: it is raised
-// anew, so it reserves afresh.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, turn time.Time) error {
+// place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
+// takes it, and nil for every caller but the boot's replay of a recorded death
+// (RecordedDeath.Place). The retry of a refused relaunch passes nil: it is raised anew, so it
+// takes a place afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, place *wakepace.Place) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause, ending, time.Time{})
+			return m.relaunchAfterFailure(ctx, cause, ending, nil)
 		}, err)
 	}
 	if !m.deathLaunchFailureCharged(cause) {
@@ -170,7 +183,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, turn, ending)
+	return m.launchAfter(ctx, true, false, false, place, ending)
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of

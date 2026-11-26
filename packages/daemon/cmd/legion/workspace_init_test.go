@@ -867,7 +867,7 @@ type lockedBuffer = testlog.Buffer
 func (v *issueVolume) start(t *testing.T, tag, issue string, env ...string) *initProcess {
 	t.Helper()
 	p := &initProcess{lines: make(chan string, 16)}
-	p.cmd = exec.Command(os.Args[0], append([]string{"workspace-init"}, v.args(issue)...)...)
+	p.cmd = exec.Command(legionCopy(t), append([]string{"workspace-init"}, v.args(issue)...)...)
 	overrides := maps.Clone(v.env)
 	overrides[testMainEnv] = "1"
 	overrides["WINIT_TAG"] = tag

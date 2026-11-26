@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // outsideStood is how the claim stood when its pod ended from outside it.
@@ -67,11 +68,10 @@ type nextEvent string
 
 const (
 	atReplay nextEvent = "the boot's replay"
-	// atReplayAtTurn is the boot's replay at the turn the boot's pass reserved for it, come
-	// already, as it is for the first relaunch of the restart's wave: the wake gate runs a
-	// relaunch it raises at once, with no wake parked whose turn would take the task back
-	// (reserveWake, runWake).
-	atReplayAtTurn  nextEvent = "the boot's replay at its reserved turn"
+	// atReplayAtPlace is the boot's replay carrying the place the boot's pass took for its
+	// relaunch in the pacing's first queue (RecordedDeath.Place), as the pass posts it for each
+	// death of the restart's wave (internal/daemon's launchUnfinished).
+	atReplayAtPlace nextEvent = "the boot's replay at the place its pass took"
 	atReportOutside nextEvent = "the report read again as outside"
 	atReportNeither nextEvent = "the report read neither way"
 	// atReportRefused is a report read neither way whose relaunch D2's lifecycle recheck
@@ -245,14 +245,14 @@ func besideTheProduct() []outsideOrder {
 			at: []nextEvent{atReportNeither, atReplay}, told: earlierOutsideWords,
 		}),
 		{
-			name:  "beside the product: the take-back refused, restart, the replay at its reserved turn over no decision, then the report read outside",
+			name:  "beside the product: the take-back refused, restart, the replay at its place over no decision, then the report read outside",
 			stood: stoodInTaskTurn, takeBack: takeBackRefused, restart: true,
-			at: []nextEvent{atReplayAtTurn, atReportOutside}, told: endFromOutside,
+			at: []nextEvent{atReplayAtPlace, atReportOutside}, told: endFromOutside,
 		},
 		{
-			name:  "beside the product: the take-back of unknown outcome not landed, restart, the replay at its reserved turn over no decision, then the report read outside",
+			name:  "beside the product: the take-back of unknown outcome not landed, restart, the replay at its place over no decision, then the report read outside",
 			stood: stoodInTaskTurn, takeBack: takeBackUnknownLost, restart: true,
-			at: []nextEvent{atReplayAtTurn, atReportOutside}, told: endFromOutside,
+			at: []nextEvent{atReplayAtPlace, atReportOutside}, told: endFromOutside,
 		},
 		{
 			name:  "beside the product: the first report read neither way, its relaunch refused, then the report read as outside three times a minute apart, its relaunch refused",
@@ -444,6 +444,10 @@ func (o outsideOrder) walk(t *testing.T) {
 	sent := len(h.prompts())
 	if o.restart {
 		h.restart()
+		// The restart's wave places the relaunches of the deaths it found in the pacing's first
+		// queue, ahead of the backlog (internal/daemon's launchUnfinished): another role's place
+		// there stands for that wave, so a relaunch this restart raises waits its turn behind it.
+		firstAhead(h.deps.WakePace.Pacer, 1)
 		turnEnd.restarted(h)
 		want("the restart", turnEnd.see(h))
 	}
@@ -579,7 +583,8 @@ func (o outsideOrder) wantStoredAtD1(h *harness, task string, read uint64) {
 }
 
 // reach is one event after the end. The replay carries the generation the boot read, and at its
-// reserved turn that turn too, as the boot's pass posts it (internal/daemon's launchUnfinished).
+// place the place the boot's pass took too, as that pass posts it (internal/daemon's
+// launchUnfinished).
 func (o outsideOrder) reach(h *harness, ev nextEvent, ended runtime.Locator, read uint64) {
 	h.t.Helper()
 	if ev == atReportOutsideRefused {
@@ -590,8 +595,8 @@ func (o outsideOrder) reach(h *harness, ev nextEvent, ended runtime.Locator, rea
 	switch ev {
 	case atReplay:
 		h.must(RecordedDeath{Claim: h.token, Generation: read})
-	case atReplayAtTurn:
-		h.must(RecordedDeath{Claim: h.token, Generation: read, Turn: h.clock.Now()})
+	case atReplayAtPlace:
+		h.must(RecordedDeath{Claim: h.token, Generation: read, Place: h.deps.WakePace.Pacer.Join(wakepace.First)})
 	case atReportOutside:
 		h.must(RuntimeObservation{Observation: outside})
 	case atReportOutsideQueued:
@@ -994,6 +999,8 @@ func (w *outsideWalk) restart() {
 	w.step("a restart", func() error {
 		h := w.h
 		h.restart()
+		// Another role's place in the first queue stands for the restart's wave, as in walk.
+		firstAhead(h.deps.WakePace.Pacer, 1)
 		w.applyFault()
 		stored := h.store.load(h.token)
 		if !stored.EndedWork.FromOutside || stored.EndedWork.Generation != w.generation {
