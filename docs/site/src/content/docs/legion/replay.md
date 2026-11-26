@@ -66,12 +66,14 @@ A recorded window is a directory.
 | `git/<owner>__<name>.jsonl` | Git's reading of the repository's pull requests: their heads, the paths that each head and each first-parent commit of the base branch change, and git's verdict of merging each head with each later commit of the base that changes one of its paths ([Add git's verdicts of each repository](#add-gits-verdicts-of-each-repository)). |
 | `signals/provider.jsonl` | The deployment's record of the model provider, one line a minute. |
 | `launcher/log.jsonl` | The launcher's lines of the project's issue pods, whose memory guard lines are the record of its kills. |
-| `signals/memory.jsonl` | The memory of each of the project's issue pods, one line a minute for each pod. |
 | `queue/<owner>__<name>.jsonl` | The merge queue's events of the repository's pull requests. |
 | `settings/events.jsonl` | The project's settings events of Dispatch's event log. |
 
-The last five files hold the records of R11's signals, and each is optional.
+The last four files hold the records of R11's signals, and each is optional.
 The git file of a repository is optional too: a window without one holds no verdict of git's.
+A window that `collect` wrote while it still collected the pods' memory series also names `signals/memory.jsonl`.
+No model reads that series, so a command checks the file's sha256 and reads nothing else of it.
+`collect-merges`, `collect-queue` and `collect-git` leave it as they leave every other input, and `neutralize` drops it with its pod names.
 `window.json` also holds, only where the window has them:
 
 - `p0Bounds`: the P0 bound from each change on, `{at, bound}`, as the daemon's line of each change of the bound gives it.
@@ -138,9 +140,6 @@ Each line of each file is one JSON object.
 
 - `launcher/log.jsonl`: `{time, pod, text}`, each line of the launcher of one of the project's issue pods, its text verbatim.
   A line whose text starts `launcher: memory guard: ended` records one kill.
-
-- `signals/memory.jsonl`: `{minute, pod, bytes}`, the memory that a pod's roles container used in the minute.
-  Where the record gives a pod's evictable and non-evictable memory as two series, `bytes` is their sum, and a minute with one of them counts that one.
 
 - `queue/<owner>__<name>.jsonl`: `{pullRequest, item}`, each timeline event of a pull request of the kinds `added_to_merge_queue`, `removed_from_merge_queue` and `merged`, exactly as GitHub's REST timeline serves it, with the pull request's number beside it.
   Each event carries its `id` and its `url`, `https://api.github.com/repos/<owner>/<name>/issues/events/<id>`.
@@ -228,13 +227,10 @@ Each is optional: a window collected without one holds no record of its signal.
   It keeps a line that two files hold once, and writes each as `{time, pod, text}`.
   The window then holds a record of the kills over the whole reach, so give it the lines of the whole reach.
 
-- `--memory <file or directory>` names the pods' memory series, given once for each file or directory: rows `{minute, pod, memory_type, bytes}`, or a window's own `{minute, pod, bytes}`.
-  `collect` sums each pod's series in each minute.
-
 - `--default-assignee <login>` gives the project's default assignee at the start of the reach.
   Give it where no settings event before the reach names the default assignee.
 
-Under a directory that `--launcher-log` or `--memory` names, `collect` reads only the files whose names end in `.jsonl`, `.jsonl.gz`, `.json` or `.json.gz`, at any depth.
+Under a directory that `--launcher-log` names, `collect` reads only the files whose names end in `.jsonl`, `.jsonl.gz`, `.json` or `.json.gz`, at any depth.
 So an export's other files beside its hour objects, such as its `manifest-<day>.sha256` of their hashes, are left out.
 A file that a flag names itself is read whatever its name.
 `--log` reads every file under a directory that it names.
@@ -262,7 +258,7 @@ legion replay collect \
   --project ACME \
   --from 2026-10-05T00:00:00Z --to 2026-10-08T00:00:00Z --before 168h \
   --log daemon-export.json --log daemon.log \
-  --provider provider.jsonl --launcher-log launcher/ --memory memory/ \
+  --provider provider.jsonl --launcher-log launcher/ \
   --dispatch-token-file <token file> \
   --part 2026-10-05T00:00:00Z,2026-10-08T00:00:00Z,<release>,<commit>,main \
   --out windows/acme-2026-10-05
@@ -285,7 +281,6 @@ It holds a record of the approvals from the moment the project's default assigne
 | `--log <file or directory>` | A file, or a directory of files, of the daemon's lines, given once for each (required). |
 | `--provider <file>` | The deployment's record of the model provider. |
 | `--launcher-log <file or directory>` | A file, or a directory of files, of the launcher's lines of the project's issue pods, given once for each. |
-| `--memory <file or directory>` | A file, or a directory of files, of the pods' memory series, given once for each. |
 | `--default-assignee <login>` | The project's default assignee at the start of the reach, where no settings event before the reach names it. |
 | `--out <dir>` | The directory that the window goes to, which must be missing or empty (required). |
 | `--dispatch-token-file <file>` | The file that holds the Dispatch token. |
@@ -914,7 +909,7 @@ legion replay models --window windows/acme-2026-10-05 --against windows/acme-202
 A replay keeps each work segment's recorded length, so it cannot show a refusal, a memory kill or a longer merge queue that more work in flight would have caused.
 So a replay under another rule takes the provider's signal, the kills and the merge queue's wait from these models (assumption 45).
 Each model keeps what the window records, and moves with the work in flight of the replay only as its form says.
-No model reads the pods' memory series, `signals/memory.jsonl`.
+No model reads the pods' memory series, and `collect` no longer collects it.
 The work in flight is the record's issues in flight at each moment, as the scorecard counts them (`inFlight`).
 Each model is fitted and tested only where the window holds its record (assumption 47), and the output names each span that it skips, with the reason.
 
@@ -2040,7 +2035,7 @@ A refusal that the provider gives every project is kept as recorded.
 **Next crossing**: with the kills as they stand at the moment, the moment at which an old kill leaves the hour.
 
 **Inputs**: `launcher/log.jsonl`, the record of the kills.
-No model reads `signals/memory.jsonl`, the pods' memory series, which `collect` still writes where it is given one.
+No model reads the pods' memory series, and `collect` no longer collects it.
 
 **Source**: the memory model fitted on the window.
 

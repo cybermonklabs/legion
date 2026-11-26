@@ -431,10 +431,9 @@ func TestModelsPassAndFailRsDailyTest(t *testing.T) {
 // 1,000 uncached input tokens each, with the project's own limit of 6,000 a minute on the first
 // and the third day and no limit observed on the second, on which the provider refuses 4 calls;
 // the window holds a record of the provider's headroom in the minutes with a limit, as collect
-// writes it. The memory guard runs from the second day: the record of its kills starts there, the
-// launcher's lines hold 12 kills on each of the second and the third day, and 30 on the first,
-// before the record; and the pods' memory, read each hour, is 3 GB a pod from the second day and 9
-// GB a pod on the first. The window holds no record of the merge queue.
+// writes it. The memory guard runs from the second day: the record of its kills starts there, and
+// the launcher's lines hold 12 kills on each of the second and the third day, and 30 on the first,
+// before the record. The window holds no record of the merge queue.
 func missingRecordWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, minuteOf(0), minuteOf(72*60))
 	b.boot(minuteOf(-60))
@@ -464,15 +463,6 @@ func missingRecordWindow(t *testing.T) Window {
 	for i := range 24 {
 		kill(1440+30+120*i, "legion-acme-acme-1")
 	}
-	for hour := range 72 {
-		used := int64(3_000_000_000)
-		if hour < 24 {
-			used = 9_000_000_000
-		}
-		for _, pod := range []string{"legion-acme-acme-1", "legion-acme-acme-2"} {
-			b.window.Memory = append(b.window.Memory, MemorySample{Minute: minuteOf(60 * hour), Pod: pod, Bytes: used})
-		}
-	}
 	b.window.Signals = map[string][]Span{
 		SignalProvider: {{From: minuteOf(0), To: minuteOf(24 * 60)}, {From: minuteOf(48 * 60), To: minuteOf(72 * 60)}},
 		SignalKills:    {{From: minuteOf(24 * 60), To: minuteOf(72 * 60)}},
@@ -481,15 +471,14 @@ func missingRecordWindow(t *testing.T) Window {
 }
 
 // A load model is fitted and tested only in the spans where the window holds its record (plan Q4,
-// departure 10), on missingRecordWindow at two issues in flight, and no model reads the pods'
-// memory: the same window without its memory series gives the same models. The memory guard's
-// record starts on the second day: the kill model's rate is its 24 kills over 96 issue-hours, 0.25
-// kills for each hour of an issue in flight, the first day's 30 kills read by none; it gives 12
-// kills on each of the second and the third day, as recorded, and the first day has no test, a span
-// the output names. The tokens model is fitted on every minute of the provider's record, 500 tokens
-// for each minute of an issue in flight, and still where no limit is recorded; it gives no refused
-// minute at a limit of 6,000 on the first and the third day, as recorded, and on the second day,
-// which records no limit, the refused minutes have no test, never a pass, while the provider's 4
+// departure 10), on missingRecordWindow at two issues in flight. The memory guard's record starts
+// on the second day: the kill model's rate is its 24 kills over 96 issue-hours, 0.25 kills for each
+// hour of an issue in flight, the first day's 30 kills read by none; it gives 12 kills on each of
+// the second and the third day, as recorded, and the first day has no test, a span the output
+// names. The tokens model is fitted on every minute of the provider's record, 500 tokens for each
+// minute of an issue in flight, and still where no limit is recorded; it gives no refused minute at
+// a limit of 6,000 on the first and the third day, as recorded, and on the second day, which
+// records no limit, the refused minutes have no test, never a pass, while the provider's 4
 // refusals are kept as recorded. The merge queue's model, with no record anywhere, is not fitted,
 // gives no test and gives no limit.
 func TestAModelIsNotFittedWhereItsRecordIsMissing(t *testing.T) {
@@ -497,20 +486,6 @@ func TestAModelIsNotFittedWhereItsRecordIsMissing(t *testing.T) {
 	window := missingRecordWindow(t)
 	models := fittedModels(t, window)
 	checkDaysInFlight(t, window, models)
-
-	noMemory := window
-	noMemory.Memory = nil
-	with, err := json.Marshal(models)
-	if err != nil {
-		t.Fatal(err)
-	}
-	without, err := json.Marshal(fittedModels(t, noMemory))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(with, without) {
-		t.Errorf("the load models read the pods' memory series: with it they are\n%s\nand without it\n%s", with, without)
-	}
 
 	memory := modelNamed(t, models, ModelMemory)
 	assertNear(t, "the kill model's rate", parameterOf(t, memory, paramKillRate), 0.25)

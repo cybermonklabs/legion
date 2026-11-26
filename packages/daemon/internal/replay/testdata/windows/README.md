@@ -57,11 +57,12 @@ The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "T
 ## What a directory holds
 
 - `window.json`, `log.jsonl` and `events/<KEY>.jsonl` (and `merges/<owner>__<name>.jsonl` in `clock-far-from-now`, `conflict-from-fitted-rate` and the seven windows of the git branch and the generator, which hold base-branch commits, and `git/<owner>__<name>.jsonl` in the five of them that hold git's reading), in the format of `window.go`: `ReadWindow` checks each input against the sha256 `files` records.
-  A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `signals/memory.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
+  A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
   Its `window.json` names each signal's spans in `signals` (`{"kills": [{"from", "to"}]}`), and may give `defaultAssignee` and the P0 bound's changes in `p0Bounds` (`[{"at", "bound"}]`, in `p0-at-its-bound`).
   It may name in `missingAncestors` each ancestor on a Dispatch parent chain whose events `collect` could not read (`["ACMEAUX-1"]`, in `p0-recorded-descendant-update`).
   Every other window names none: each holds the events of every parent its events name, but `p0-inherited-ancestor-missing`, which lacks ACMEAUX-1's as a window collected before `collect` read each ancestor can.
   `replay.md`'s "The records of the signals" gives each file's form.
+  No fixture window holds `signals/memory.jsonl`, the pods' memory series that `collect` wrote before no model read it, which `ReadWindow` checks by its sha256 alone.
   After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl`, `git/*.jsonl` and each signal input where the window has them.
   `TestFixtureWindows` reads every window with `ReadWindow` before it replays it (it needs `LEGION_TEST_PG_DSN`), and `TestTheFixtureWindowsCoverK1` reads each window of k1's list without a database, so a hash that differs fails them.
 

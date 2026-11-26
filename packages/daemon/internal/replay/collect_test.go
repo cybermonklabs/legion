@@ -423,10 +423,8 @@ var collectIssues = []string{"ACME-27", "ACME-29", "ACME-32", "ACME-55", "ACME-5
 // before the reach; its captured minutes of 2026-11-23 are after the reach. The launcher's lines
 // are t25's export rows of an hour, gzipped under a directory of their own, with a line before the
 // reach and one at its end, and a Cloud Logging read of two entries, one the export holds too. The
-// pods' memory is the export's rows of an hour, two series of each pod, before the reach and in
-// it, under a directory of their own. Each export directory holds, beside its hour objects, the
-// export's manifest of their hashes (collectManifest), which is no record, so collect reads the
-// hour objects alone.
+// export directory holds, beside its hour objects, the export's manifest of their hashes
+// (collectManifest), which is no record, so collect reads the hour objects alone.
 const (
 	collectManifest     = "0000000000000000000000000000000000000000000000000000000000000000  2026-11-20/00.jsonl\n"
 	collectProviderHead = `{"minute": "2026-11-15T23:59:00Z", "uncached": 1, "limit": 6000000, "limit_source": "deployment-log", "limit_scope": "Claude", "own": 0, "provider": 0}` + "\n" +
@@ -434,13 +432,6 @@ const (
 	collectGuardEnded   = `launcher: memory guard: ended pid=41 role=tester size=1048576 reading=7000000000 counter=7100000000 shmem=0 limit=8589934592 executable="go"`
 	collectGuardStarted = "launcher: memory guard: started act_percent=85 floor_percent=10 wait=5s interval=100ms limit=8589934592 reading=23052288"
 	collectGuardStopped = "launcher: memory guard: stopped for this rise reason=nothing to end reading=7303979008 endable=0 protected=7429586944 unread=0 unheld=-125607936 limit=8589934592 left_out=0"
-	collectMemory       = `{"minute":"2026-11-15T23:59:00Z","pod":"legion-acme-acme-9","memory_type":"non-evictable","bytes":5}
-{"minute":"2026-11-20T00:00:00Z","pod":"legion-acme-acme-9","memory_type":"evictable","bytes":100}
-{"minute":"2026-11-20T00:00:00Z","pod":"legion-acme-acme-9","memory_type":"non-evictable","bytes":900}
-{"minute":"2026-11-20T00:00:00Z","pod":"legion-acme-acme-8","memory_type":"non-evictable","bytes":3}
-{"minute":"2026-11-20T00:00:00Z","pod":"legion-acme-acme-8","memory_type":"evictable","bytes":7}
-{"minute":"2026-11-20T00:01:00Z","pod":"legion-acme-acme-9","memory_type":"non-evictable","bytes":50}
-`
 )
 
 // collectChildAdded is the child.added event of ACME-32 naming the child ACME-60 that Dispatch
@@ -506,7 +497,7 @@ type collectRun struct {
 // collectCaptured writes the captured daemon lines as the three forms a person collects them in —
 // a gzipped Cloud Logging export of JSON lines, a Cloud Logging export as one JSON array, and
 // `kubectl logs --timestamps` output under a directory of its own — with the signals' records
-// (collectProviderHead and the captured provider minutes, the launcher's lines, the pods' memory)
+// (collectProviderHead and the captured provider minutes, and the launcher's lines)
 // and the default assignee, and collects the window from them against a Dispatch stub answering
 // the captured events, the event log collectLog and the listing collectIssues, and a GitHub stub
 // answering the captured commit page and the commit below it (collectBelowPage) in two pages, then
@@ -574,16 +565,13 @@ func collectCaptured(t *testing.T) collectRun {
 	}
 	inputs := t.TempDir()
 	for name, data := range map[string][]byte{
-		filepath.Join(logs, "a-export.jsonl.gz"):                         export.Bytes(),
-		filepath.Join(logs, "b-export-array.json"):                       []byte(array),
-		filepath.Join(logs, "c", "kubectl.log"):                          kubectl.Bytes(),
-		filepath.Join(inputs, "provider.jsonl"):                          append([]byte(collectProviderHead), signalsFixture(t, "provider/minutes.jsonl")...),
-		filepath.Join(inputs, "launcher", "2026-11-20", "01.jsonl.gz"):   launcherExport.Bytes(),
-		filepath.Join(inputs, "launcher", "manifest-2026-11-20.sha256"):  []byte(collectManifest),
-		filepath.Join(inputs, "launcher-read.out"):                       entries,
-		filepath.Join(inputs, "memory", "2026-11-20", "00.jsonl"):        []byte(collectMemory),
-		filepath.Join(inputs, "memory", "2026-11-20", "manifest.sha256"): []byte(collectManifest),
-		filepath.Join(inputs, "memory", "manifest-2026-11-20.sha256"):    []byte(collectManifest),
+		filepath.Join(logs, "a-export.jsonl.gz"):                        export.Bytes(),
+		filepath.Join(logs, "b-export-array.json"):                      []byte(array),
+		filepath.Join(logs, "c", "kubectl.log"):                         kubectl.Bytes(),
+		filepath.Join(inputs, "provider.jsonl"):                         append([]byte(collectProviderHead), signalsFixture(t, "provider/minutes.jsonl")...),
+		filepath.Join(inputs, "launcher", "2026-11-20", "01.jsonl.gz"):  launcherExport.Bytes(),
+		filepath.Join(inputs, "launcher", "manifest-2026-11-20.sha256"): []byte(collectManifest),
+		filepath.Join(inputs, "launcher-read.out"):                      entries,
 	} {
 		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 			t.Fatal(err)
@@ -656,8 +644,8 @@ func collectCaptured(t *testing.T) collectRun {
 	run.collected, err = Collect(context.Background(), CollectConfig{
 		Project: "ACME", From: collectFrom, To: collectTo, Before: collectBefore, Logs: []string{logs},
 		Provider: filepath.Join(inputs, "provider.jsonl"), LauncherLogs: []string{filepath.Join(inputs, "launcher"), filepath.Join(inputs, "launcher-read.out")},
-		Memory: []string{filepath.Join(inputs, "memory")}, DefaultAssignee: "person-1@example.invalid",
-		Dispatch: NewDispatchReader(dispatchServer.URL, stubDispatchToken), Concurrency: 3, Settings: settings, Parts: run.parts,
+		DefaultAssignee: "person-1@example.invalid", Dispatch: NewDispatchReader(dispatchServer.URL, stubDispatchToken), Concurrency: 3,
+		Settings: settings, Parts: run.parts,
 		Collector: "0123456789abcdef0123456789abcdef01234567", Out: run.out, Wait: wait,
 	})
 	if err != nil {
@@ -696,12 +684,12 @@ func collectCaptured(t *testing.T) collectRun {
 // does not keep, each at the merge event GitHub records for the pull request it names
 // (collectPulls), with that pull request and with the commit's committer's time as committed:
 // collect-merges reads the listing's two pages first, and pull requests alone after them.
-// The signals' records are each one's lines in the reach: the provider's minutes, the launcher's
-// lines of both its forms as the window's rows, each line once, in time order, the Cloud Logging
-// read named on its own though its name is no JSON file's, and the pods' memory as each pod's two
-// series summed a minute, each export's manifest beside its hour objects read as no record; the
-// settings events are the project's own, read from the event log from its start to the reach's
-// end, the one before the reach included; and the signals map holds a record of the idle share,
+// The signals' records are each one's lines in the reach: the provider's minutes, and the
+// launcher's lines of both its forms as the window's rows, each line once, in time order, the Cloud
+// Logging read named on its own though its name is no JSON file's, the export's manifest beside
+// its hour objects read as no record; the settings events are the project's own, read from the
+// event log from its start to the reach's end, the one before the reach included; and the signals
+// map holds a record of the idle share,
 // the kills and the approvals over the reach (the default assignee is known from the reach's
 // start), of the provider where a limit is in force (each run of minutes with one), and, once
 // collect-queue ran, of the queue over the reach. collect-queue reads the timeline of each pull
@@ -868,14 +856,6 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 	}
 	if !sameReading(read.Launcher, wantLauncher) {
 		t.Errorf("the launcher's lines are %s, want %s", describeReading(read.Launcher), describeReading(wantLauncher))
-	}
-	wantMemory := []MemorySample{
-		{Minute: stamped("2026-11-20T00:00:00Z"), Pod: "legion-acme-acme-8", Bytes: 10},
-		{Minute: stamped("2026-11-20T00:00:00Z"), Pod: "legion-acme-acme-9", Bytes: 1000},
-		{Minute: stamped("2026-11-20T00:01:00Z"), Pod: "legion-acme-acme-9", Bytes: 50},
-	}
-	if !sameReading(read.Memory, wantMemory) {
-		t.Errorf("the pods' memory is %s, want %s", describeReading(read.Memory), describeReading(wantMemory))
 	}
 	if wantSettings := []json.RawMessage{compactJSON(t, []byte(collectLog[0])), compactJSON(t, []byte(collectLog[3]))}; !reflect.DeepEqual(read.Settings, wantSettings) {
 		t.Errorf("the settings events are\n  %s\nwant the project's own up to the reach's end\n  %s", read.Settings, wantSettings)

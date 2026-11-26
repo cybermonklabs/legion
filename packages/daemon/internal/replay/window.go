@@ -36,12 +36,17 @@ const (
 	eventsDir    = "events"
 	mergesDir    = "merges"
 	providerFile = "signals/provider.jsonl"
-	memoryFile   = "signals/memory.jsonl"
 	launcherFile = "launcher/log.jsonl"
 	queueDir     = "queue"
 	settingsFile = "settings/events.jsonl"
 	gitDir       = "git"
 )
+
+// unreadMemoryFile is the pods' memory series, which collect wrote into a window before no model
+// read it (spec R11): a window collected then may still name it in its files. ReadWindow checks its
+// sha256 as it checks every input's and reads nothing else of it, and Write, which writes the
+// inputs a Window holds, writes none, so a window read and written again drops it.
+const unreadMemoryFile = "signals/memory.jsonl"
 
 // The signals of R11 a window's signals map holds a record of, each by the name the map gives its
 // record under: the names package signals defines. The provider's refusals ride on the provider's
@@ -77,7 +82,6 @@ var windowSignals = []string{SignalIdle, SignalQueue, SignalProvider, SignalKill
 //     minute;
 //   - launcher/log.jsonl, the launcher's lines of the project's issue pods (LauncherLine), whose
 //     memory guard lines are the record of its kills;
-//   - signals/memory.jsonl, the pods' memory, one MemorySample a minute for each pod;
 //   - queue/<owner>__<repo>.jsonl, the merge queue's events of the repository's pull requests,
 //     each the timeline event as GitHub serves it with its pull request's number (ParseQueueLine);
 //   - settings/events.jsonl, the project's own settings events of Dispatch's event log, verbatim,
@@ -89,7 +93,9 @@ var windowSignals = []string{SignalIdle, SignalQueue, SignalProvider, SignalKill
 // path the head changes (GitInput, CollectGit).
 //
 // A window with none of the signals' inputs, as every window collected before them, holds no
-// record of any signal (Recorded); one with no git input holds no verdict of git's.
+// record of any signal (Recorded); one with no git input holds no verdict of git's. A window
+// collected while collect wrote the pods' memory series names signals/memory.jsonl too, which
+// nothing reads (unreadMemoryFile).
 //
 // A window is the record a replay runs from (RunConfig.Window) and the record a scorecard is read
 // from (Score), so both read the same bytes, and the hash of each input in Files is what says
@@ -166,14 +172,12 @@ type Window struct {
 	Events map[string][]json.RawMessage `json:"-"`
 	// Merges is each merges file's commits, by repository as owner/repo.
 	Merges map[string][]Merge `json:"-"`
-	// Provider is signals/provider.jsonl's minutes, Launcher launcher/log.jsonl's lines, Memory
-	// signals/memory.jsonl's samples and Settings settings/events.jsonl's events, each in its
-	// file's order and nil where the window holds no such file; Queue is each queue file's lines,
-	// by repository as owner/repo. An input held empty is a file with no line: a record that
-	// holds nothing, which is not a missing record.
+	// Provider is signals/provider.jsonl's minutes, Launcher launcher/log.jsonl's lines and
+	// Settings settings/events.jsonl's events, each in its file's order and nil where the window
+	// holds no such file; Queue is each queue file's lines, by repository as owner/repo. An input
+	// held empty is a file with no line: a record that holds nothing, which is not a missing record.
 	Provider []ProviderMinute             `json:"-"`
 	Launcher []LauncherLine               `json:"-"`
-	Memory   []MemorySample               `json:"-"`
 	Queue    map[string][]json.RawMessage `json:"-"`
 	Settings []json.RawMessage            `json:"-"`
 	// Git is each git input, by repository as owner/repo; nil where the window holds none.
@@ -296,12 +300,14 @@ func readWindowHead(dir string) (Window, error) {
 
 // ReadWindow reads the window in dir: window.json (readWindowHead), then every input its Files
 // names, each read once, a line at a time, and hashed as it is read (walkWindow), every line of
-// every input held. It refuses a window of another format, an input that is missing or whose hash
-// differs, a name in Files that is no input of the format, a line of an input that is not one JSON
-// object or not of that input's form, a git input whose lines do not stand in the order its format
-// writes them in (GitInput), an input file in dir that Files does not name, since nothing would
-// check it, and a record of the signals no reader could trust (checkSignals). Other files of dir —
-// a fixture's README.md and expect.json — are no part of the window and are not read.
+// every input held but those of the pods' memory series an older window names, which nothing
+// reads (unreadMemoryFile). It refuses a window of another format, an input that is missing or
+// whose hash differs, a name in Files that is no input of the format, a line of an input that is
+// not one JSON object or not of that input's form, a git input whose lines do not stand in the
+// order its format writes them in (GitInput), an input file in dir that Files does not name, since
+// nothing would check it, and a record of the signals no reader could trust (checkSignals). Other
+// files of dir — a fixture's README.md and expect.json — are no part of the window and are not
+// read.
 func ReadWindow(dir string) (Window, error) {
 	w, err := readWindowHead(dir)
 	if err != nil {
@@ -336,11 +342,10 @@ func ReadWindow(dir string) (Window, error) {
 			return func(_ json.RawMessage, launched any) {
 				w.Launcher = append(w.Launcher, launched.(LauncherLine))
 			}
-		case memoryFile:
-			w.Memory = []MemorySample{}
-			return func(_ json.RawMessage, sample any) {
-				w.Memory = append(w.Memory, sample.(MemorySample))
-			}
+		case unreadMemoryFile:
+			// The pods' memory series of a window collected before no model read it: its sha256 is
+			// checked, as every input's is, and nothing of it is held.
+			return nil
 		case queueDir:
 			if w.Queue == nil {
 				w.Queue = make(map[string][]json.RawMessage)
@@ -525,8 +530,8 @@ func (r *inputReader) line() ([]byte, bool, error) {
 
 // decodeInputLine checks line, a line of an input of kind (inputOf), against that input's form,
 // and is the line decoded for an input a Window holds decoded: a Merge, a ProviderMinute, a
-// LauncherLine, a MemorySample or a git input's line (gitLineRead); nil for the others, which a
-// Window holds as their lines.
+// LauncherLine or a git input's line (gitLineRead); nil for the others, which a Window holds as
+// their lines, and for the pods' memory series, whose lines nothing reads (unreadMemoryFile).
 func decodeInputLine(kind string, line []byte) (any, error) {
 	switch kind {
 	case mergesDir:
@@ -550,15 +555,6 @@ func decodeInputLine(kind string, line []byte) (any, error) {
 			return nil, err
 		}
 		return launched, nil
-	case memoryFile:
-		var sample MemorySample
-		if err := decodeStrict(line, &sample); err != nil {
-			return nil, err
-		}
-		if err := sample.check(); err != nil {
-			return nil, err
-		}
-		return sample, nil
 	case queueDir:
 		_, err := ParseQueueLine(line)
 		return nil, err
@@ -686,7 +682,6 @@ func (w Window) Write(dir string) error {
 	}{
 		{providerFile, w.Provider != nil, func() ([]json.RawMessage, error) { return marshalLines(w.Provider) }},
 		{launcherFile, w.Launcher != nil, func() ([]json.RawMessage, error) { return marshalLines(w.Launcher) }},
-		{memoryFile, w.Memory != nil, func() ([]json.RawMessage, error) { return marshalLines(w.Memory) }},
 		{settingsFile, w.Settings != nil, func() ([]json.RawMessage, error) { return w.Settings, nil }},
 	} {
 		if !input.held {
@@ -839,15 +834,15 @@ func splitRepo(repo string) (owner, name string, ok bool) {
 }
 
 // inputOf is which input of the format name is — logFile, eventsDir, mergesDir, providerFile,
-// launcherFile, memoryFile, queueDir, settingsFile or gitDir — and the key it holds: the issue key
-// of an events file, owner/repo of a merges, a queue or a git file, "" for the others. A name that
-// is not clean, relative and slash-separated, or that names no input, is refused.
+// launcherFile, unreadMemoryFile, queueDir, settingsFile or gitDir — and the key it holds: the
+// issue key of an events file, owner/repo of a merges, a queue or a git file, "" for the others. A
+// name that is not clean, relative and slash-separated, or that names no input, is refused.
 func inputOf(name string) (kind, key string, err error) {
 	if name == "" || path.IsAbs(name) || path.Clean(name) != name || strings.Contains(name, "\\") {
 		return "", "", fmt.Errorf("window.json names the file %q, which is no clean relative path", name)
 	}
 	switch name {
-	case logFile, providerFile, launcherFile, memoryFile, settingsFile:
+	case logFile, providerFile, launcherFile, unreadMemoryFile, settingsFile:
 		return name, "", nil
 	}
 	dir, file := path.Split(name)

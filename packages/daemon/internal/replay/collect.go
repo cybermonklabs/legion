@@ -246,11 +246,6 @@ type CollectConfig struct {
 	// *.jsonl, *.jsonl.gz, *.json and *.json.gz are read (signalInputFile), so an export's manifest
 	// beside them is not; a file named here is read whatever its name.
 	LauncherLogs []string
-	// Memory is each file or directory of the pods' memory: rows of {minute, pod, memory_type,
-	// bytes} (t25's export, a series for each memory type), or a window's own {minute, pod,
-	// bytes}, as JSON lines or as one JSON array, gzipped or not, a directory read as
-	// LauncherLogs's is.
-	Memory []string
 	// DefaultAssignee is the project's default assignee at the start of the inputs' reach, which
 	// the deployment gives where no settings event before that start names it; "" where it gives
 	// none.
@@ -302,17 +297,16 @@ type Collected struct {
 // Collect reads a recorded window and writes it to cfg.Out. From the log files it keeps the lines
 // of every kind the trace reads, written in [From − Before, To + After), the inputs' reach, in time
 // order (a line read in two files once); from the deployment's records of the signals it keeps
-// each one's lines in the reach: the provider's minutes, the launcher's lines as the window's rows
-// in time order (a line read twice once), and the pods' memory as each pod's series summed a
-// minute. From Dispatch, with GET alone, it pages the whole event log from its first event to the
-// reach's end and keeps the project's settings events, the ones before the reach included, since
-// they set what holds at its start; it lists every issue of the project; and it reads the events
-// of every issue the lines name, of every blocker and child those issues' events name, in any
-// project, of every issue of the project the listing or the event log names, and of every issue on
-// the Dispatch parent chain of each of those, in any project, up to ancestorLevels above it
-// (readAncestors), each issue's from its first event up to the reach's end, at most
-// cfg.Concurrency at once. Each read Dispatch refuses for now (429, a 5xx, no answer) is tried
-// again with a growing wait.
+// each one's lines in the reach: the provider's minutes, and the launcher's lines as the window's
+// rows in time order (a line read twice once). From Dispatch, with GET alone, it pages the whole
+// event log from its first event to the reach's end and keeps the project's settings events, the
+// ones before the reach included, since they set what holds at its start; it lists every issue of
+// the project; and it reads the events of every issue the lines name, of every blocker and child
+// those issues' events name, in any project, of every issue of the project the listing or the
+// event log names, and of every issue on the Dispatch parent chain of each of those, in any
+// project, up to ancestorLevels above it (readAncestors), each issue's from its first event up to
+// the reach's end, at most cfg.Concurrency at once. Each read Dispatch refuses for now (429, a
+// 5xx, no answer) is tried again with a growing wait.
 // window.json records the project, the span, Before, the run-out After, the cap of each change the
 // slot lines and the daemon's start lines show, the line kinds the log holds, cfg's settings, parts,
 // collector and default assignee, the sha256 of each file, the spans of each signal's record
@@ -363,11 +357,6 @@ func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 	}
 	if len(cfg.LauncherLogs) > 0 {
 		if w.Launcher, err = readLauncherLogs(cfg.LauncherLogs, reach, end); err != nil {
-			return Collected{}, err
-		}
-	}
-	if len(cfg.Memory) > 0 {
-		if w.Memory, err = readMemory(cfg.Memory, reach, end); err != nil {
 			return Collected{}, err
 		}
 	}
@@ -738,80 +727,6 @@ func readLauncherLogs(paths []string, from, to time.Time) ([]LauncherLine, error
 	}
 	slices.SortStableFunc(lines, func(a, b LauncherLine) int { return a.Time.Compare(b.Time) })
 	return lines, nil
-}
-
-// memorySeries is one sample of one memory series of a pod.
-type memorySeries struct {
-	minute    time.Time
-	pod, kind string
-}
-
-// readMemory is the pods' memory of the files and directories paths name (filesOf, a directory's
-// JSON files alone: signalInputFile) in [from, to): each pod's bytes in each minute, the sum of its
-// series that minute (t25's export gives a pod two, its evictable and its non-evictable memory,
-// whose sum is the container's use; a minute with one alone counts that one), ordered by minute
-// and then pod. A row of a window's own form, with no memory_type, is the pod's whole use. A series
-// a file gives twice in one minute is read once where both give it the same bytes, and refused
-// where they differ, as is a row with no minute or pod, or bytes that are no whole number at or
-// above zero.
-func readMemory(paths []string, from, to time.Time) ([]MemorySample, error) {
-	files, err := filesOf(paths, signalInputFile)
-	if err != nil {
-		return nil, err
-	}
-	series := make(map[memorySeries]int64)
-	for _, file := range files {
-		err := readLogFile(file, func(file string, at int, element []byte) error {
-			var row struct {
-				Minute     *time.Time  `json:"minute"`
-				Pod        string      `json:"pod"`
-				MemoryType string      `json:"memory_type"`
-				Bytes      json.Number `json:"bytes"`
-			}
-			decoder := json.NewDecoder(bytes.NewReader(element))
-			decoder.UseNumber()
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&row); err != nil || row.Minute == nil || row.Pod == "" {
-				return fmt.Errorf("replay: collect: %s line %d is no row of a pod's memory with its minute, pod and bytes", file, at)
-			}
-			count, err := strconv.ParseInt(row.Bytes.String(), 10, 64)
-			if whole, ferr := strconv.ParseFloat(row.Bytes.String(), 64); err != nil && ferr == nil && whole == float64(int64(whole)) {
-				count, err = int64(whole), nil
-			}
-			if err != nil || count < 0 {
-				return fmt.Errorf("replay: collect: %s line %d counts %q bytes, no whole number at or above zero", file, at, row.Bytes)
-			}
-			if row.Minute.Before(from) || !row.Minute.Before(to) {
-				return nil
-			}
-			key := memorySeries{minute: row.Minute.UTC(), pod: row.Pod, kind: row.MemoryType}
-			if was, read := series[key]; read && was != count {
-				return fmt.Errorf("replay: collect: %s line %d gives the %q memory of %s at %s as %d bytes, and another line as %d",
-					file, at, row.MemoryType, row.Pod, stamp(key.minute), count, was)
-			}
-			series[key] = count
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	type podMinute struct {
-		minute time.Time
-		pod    string
-	}
-	sums := make(map[podMinute]int64)
-	for key, count := range series {
-		sums[podMinute{minute: key.minute, pod: key.pod}] += count
-	}
-	samples := make([]MemorySample, 0, len(sums))
-	for key, count := range sums {
-		samples = append(samples, MemorySample{Minute: key.minute, Pod: key.pod, Bytes: count})
-	}
-	slices.SortFunc(samples, func(a, b MemorySample) int {
-		return cmp.Or(a.Minute.Compare(b.Minute), strings.Compare(a.Pod, b.Pod))
-	})
-	return samples, nil
 }
 
 // readLogs reads every daemon line of the files and directories paths name (filesOf, every file

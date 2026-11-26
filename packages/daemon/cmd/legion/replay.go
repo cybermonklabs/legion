@@ -76,11 +76,10 @@ The deployment's records of the signals, each optional, are read in the same rea
 the model provider's record, one line a minute; --launcher-log, the launcher's lines of the
 project's issue pods (an export's {timestamp, pod, text} rows or a Cloud Logging read of
 {timestamp, resource.labels.pod_name, textPayload} entries), whose memory guard lines are the
-record of its kills; --memory, the pods' memory ({minute, pod, memory_type, bytes} rows, each
-pod's series summed a minute). Under a directory --launcher-log or --memory names, only the files
-named *.jsonl, *.jsonl.gz, *.json and *.json.gz are read, so an export's manifest beside them is
-left out; a file named on the command line is read whatever its name. --default-assignee is the
-project's default assignee at the reach's start, where no settings event before it names one.
+record of its kills. Under a directory --launcher-log names, only the files named *.jsonl,
+*.jsonl.gz, *.json and *.json.gz are read, so an export's manifest beside them is left out; a
+file named on the command line is read whatever its name. --default-assignee is the project's
+default assignee at the reach's start, where no settings event before it names one.
 
 --after is the window's run-out: a replay runs on past --to through it, so the work the record
 shows after --to runs where the replay moves it, and every measure reads [--from, --to) alone.
@@ -111,7 +110,6 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 	logs := flags.StringArray("log", nil, "a file or a directory of files of the daemon's lines; repeat for more (required)")
 	provider := flags.String("provider", "", "the file of the deployment's record of the model provider, one line a minute")
 	launcherLogs := flags.StringArray("launcher-log", nil, "a file, or a directory whose *.jsonl, *.jsonl.gz, *.json and *.json.gz files are read, of the launcher's lines of the project's issue pods; repeat for more")
-	memory := flags.StringArray("memory", nil, "a file, or a directory whose *.jsonl, *.jsonl.gz, *.json and *.json.gz files are read, of the pods' memory series; repeat for more")
 	defaultAssignee := flags.String("default-assignee", "", "the project's default assignee at the start of the reach, where no settings event before it names one")
 	out := flags.String("out", "", "the directory the window is written to, missing or empty (required)")
 	tokenFile := flags.String("dispatch-token-file", "", "the file holding the Dispatch token (else DISPATCH_TOKEN_FILE, else DISPATCH_TOKEN)")
@@ -167,7 +165,7 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 		}
 		collected, err := replay.Collect(ctx, replay.CollectConfig{
 			Project: *project, From: span[0], To: span[1], Before: *before, After: *after, Logs: *logs,
-			Provider: *provider, LauncherLogs: *launcherLogs, Memory: *memory, DefaultAssignee: *defaultAssignee,
+			Provider: *provider, LauncherLogs: *launcherLogs, DefaultAssignee: *defaultAssignee,
 			Dispatch: replay.NewDispatchReader(base, token), Concurrency: *concurrency, Parts: windowParts, Collector: commit, Out: *out,
 			Settings: replay.Settings{TickInterval: *tick, GateSteps: steps, Linger: *linger, ReviewRoundCap: *rounds,
 				StalledTreeNotice: *stalled, WorkerSilence: *silence, WorkerBackground: *background},
@@ -179,8 +177,8 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 		w := collected.Window
 		fmt.Fprintf(stdout, "legion replay collect: wrote %s: %d of %d daemon lines kept (%d kinds, %d read twice), %d lines that are no daemon line, the events of %d issues\n",
 			*out, collected.Kept, collected.Read, len(w.Lines), collected.Duplicates, collected.NotLines, len(w.Events))
-		fmt.Fprintf(stdout, "legion replay collect: %d issues of %s listed, %d settings events, %d provider minutes, %d launcher lines, %d memory samples\n",
-			collected.ProjectIssues, *project, collected.SettingsEvents, len(w.Provider), len(w.Launcher), len(w.Memory))
+		fmt.Fprintf(stdout, "legion replay collect: %d issues of %s listed, %d settings events, %d provider minutes, %d launcher lines\n",
+			collected.ProjectIssues, *project, collected.SettingsEvents, len(w.Provider), len(w.Launcher))
 		if len(collected.Missing) > 0 {
 			fmt.Fprintf(stdout, "legion replay collect: Dispatch has no issue %s\n", strings.Join(collected.Missing, ", "))
 		}

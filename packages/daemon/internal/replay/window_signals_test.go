@@ -41,11 +41,11 @@ func TestAWindowWithNoSignalInputReadsEverySignalUnrecorded(t *testing.T) {
 					}
 				}
 			}
-			if w.Signals != nil || w.Provider != nil || w.Launcher != nil || w.Memory != nil || w.Queue != nil || w.Settings != nil ||
+			if w.Signals != nil || w.Provider != nil || w.Launcher != nil || w.Queue != nil || w.Settings != nil ||
 				w.DefaultAssignee != "" || w.P0Bounds != nil {
-				t.Errorf("the window reads with signals %v, %d provider minutes, %d launcher lines, %d memory samples, queues of %d "+
+				t.Errorf("the window reads with signals %v, %d provider minutes, %d launcher lines, queues of %d "+
 					"repositories, %d settings events, default assignee %q and P0 bounds %v; want none of them",
-					w.Signals, len(w.Provider), len(w.Launcher), len(w.Memory), len(w.Queue), len(w.Settings), w.DefaultAssignee, w.P0Bounds)
+					w.Signals, len(w.Provider), len(w.Launcher), len(w.Queue), len(w.Settings), w.DefaultAssignee, w.P0Bounds)
 			}
 		})
 	}
@@ -105,9 +105,9 @@ func TestTheK1WindowsOfTheSignalsRead(t *testing.T) {
 
 // signalWindow is a window holding every input of the signals and every field they add: the
 // provider's minutes (one with no limit in force and one whose uncached tokens are below zero, as
-// the record can give them), the launcher's lines, the pods' memory, the merge queue's events of
-// one repository, the project's settings events, the default assignee, a change of the P0 bound,
-// and a span of each signal.
+// the record can give them), the launcher's lines, the merge queue's events of one repository, the
+// project's settings events, the default assignee, a change of the P0 bound, and a span of each
+// signal.
 func signalWindow(t *testing.T) Window {
 	t.Helper()
 	at := func(hour, minute int) time.Time { return time.Date(2001, time.March, 5, hour, minute, 0, 0, time.UTC) }
@@ -137,7 +137,6 @@ func signalWindow(t *testing.T) Window {
 			{Minute: at(8, 2), Uncached: -20, Limit: &limit, LimitSource: &source},
 		},
 		Launcher: []LauncherLine{{Time: at(8, 30), Pod: "legion-acme-acme-1", Text: `launcher: memory guard: ended pid=7 role=tester size=1 reading=2 counter=3 shmem=0 limit=4 executable="go"`}},
-		Memory:   []MemorySample{{Minute: at(8, 0), Pod: "legion-acme-acme-1", Bytes: 1000}, {Minute: at(8, 0), Pod: "legion-acme-acme-2", Bytes: 10}},
 		Queue:    map[string][]json.RawMessage{"acme/widgets": {queued}},
 		Settings: []json.RawMessage{settings},
 	}
@@ -158,8 +157,7 @@ func TestTheSignalInputsWriteAndReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadWindow of the written window: %v", err)
 	}
-	wantFiles := []string{"launcher/log.jsonl", "log.jsonl", "queue/acme__widgets.jsonl", "settings/events.jsonl", "signals/memory.jsonl",
-		"signals/provider.jsonl"}
+	wantFiles := []string{"launcher/log.jsonl", "log.jsonl", "queue/acme__widgets.jsonl", "settings/events.jsonl", "signals/provider.jsonl"}
 	var files []string
 	for name := range read.Files {
 		files = append(files, name)
@@ -174,7 +172,6 @@ func TestTheSignalInputsWriteAndReadBack(t *testing.T) {
 	}{
 		{"the provider's minutes", read.Provider, w.Provider},
 		{"the launcher's lines", read.Launcher, w.Launcher},
-		{"the pods' memory", read.Memory, w.Memory},
 		{"the P0 bounds", read.P0Bounds, w.P0Bounds},
 	} {
 		if !sameReading(check.got, check.want) {
@@ -203,11 +200,115 @@ func TestTheSignalInputsWriteAndReadBack(t *testing.T) {
 	}
 }
 
+// oldMemorySeries is the pods' memory series as collect wrote it into signals/memory.jsonl while it
+// still collected one: a line a minute for each pod.
+const oldMemorySeries = `{"minute":"2001-03-05T08:00:00Z","pod":"legion-acme-acme-1","bytes":1000}` + "\n" +
+	`{"minute":"2001-03-05T08:00:00Z","pod":"legion-acme-acme-2","bytes":10}` + "\n"
+
+// A window collected while collect wrote the pods' memory series still reads, and nothing reads
+// the series (spec R11: no model reads it). signalWindow is written, then given the series as
+// signals/memory.jsonl with its sha256 in window.json's files, as collect wrote it then: it reads
+// back with every other input as written and the file still named in its files. The file's sha256
+// is still checked: the series with other bytes than its recorded sha256 is refused, and so is a
+// series that window.json does not name. The window read and written again holds no series and
+// names none, since Write writes the inputs a Window holds and a Window holds nothing of it, and
+// that window reads back. A command that writes one input in place (replaceInput: collect-merges,
+// collect-queue, collect-git) leaves the series as it leaves every other input, its bytes and its
+// sha256 as they were, and the window it leaves reads.
+func TestAWindowWithThePodsMemorySeriesStillReads(t *testing.T) {
+	t.Parallel()
+	const series = "signals/memory.jsonl"
+	w := signalWindow(t)
+	old := func(t *testing.T) string {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), "old")
+		if err := w.Write(dir); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		rewriteWindow(t, dir, nil, map[string]string{series: oldMemorySeries})
+		return dir
+	}
+	dir := old(t)
+	read, err := ReadWindow(dir)
+	if err != nil {
+		t.Fatalf("ReadWindow of a window holding the pods' memory series: %v", err)
+	}
+	if _, named := read.Files[series]; !named {
+		t.Errorf("the window read names the files %v, want %s among them", read.Files, series)
+	}
+	for _, check := range []struct {
+		what      string
+		got, want any
+	}{
+		{"the provider's minutes", read.Provider, w.Provider},
+		{"the launcher's lines", read.Launcher, w.Launcher},
+		{"the P0 bounds", read.P0Bounds, w.P0Bounds},
+	} {
+		if !sameReading(check.got, check.want) {
+			t.Errorf("%s read back as %s, want %s", check.what, describeReading(check.got), describeReading(check.want))
+		}
+	}
+	if !reflect.DeepEqual(read.Queue, w.Queue) || !reflect.DeepEqual(read.Settings, w.Settings) || !sameSignals(read.Signals, w.Signals) {
+		t.Errorf("the queue, the settings events and the signals read back as %s, %s and %v; want %s, %s and %v", read.Queue, read.Settings,
+			read.Signals, w.Queue, w.Settings, w.Signals)
+	}
+
+	again := filepath.Join(t.TempDir(), "again")
+	if err := read.Write(again); err != nil {
+		t.Fatalf("Write of the window read: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(again, filepath.FromSlash(series))); !os.IsNotExist(err) {
+		t.Errorf("the window read and written again holds %s (%v), want no such file", series, err)
+	}
+	written, err := ReadWindow(again)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window written again: %v", err)
+	}
+	if _, named := written.Files[series]; named {
+		t.Errorf("the window written again names %s among its files %v", series, written.Files)
+	}
+
+	changed := old(t)
+	if err := os.WriteFile(filepath.Join(changed, filepath.FromSlash(series)), []byte(strings.Replace(oldMemorySeries, "1000", "1001", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadWindow(changed); err == nil || !strings.Contains(err.Error(), "the sha256 of "+series) {
+		t.Errorf("ReadWindow of a memory series whose bytes differ from its sha256 = %v, want a refusal naming its sha256", err)
+	}
+	unnamed := old(t)
+	rewriteWindow(t, unnamed, func(h map[string]any) { delete(h["files"].(map[string]any), series) }, nil)
+	if _, err := ReadWindow(unnamed); err == nil || !strings.Contains(err.Error(), series+" is an input file window.json does not name") {
+		t.Errorf("ReadWindow of a memory series window.json does not name = %v, want a refusal naming it", err)
+	}
+	kept := old(t)
+	head, err := readWindowHead(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceInput(kept, head, "queue/acme__widgets.jsonl", w.Queue["acme/widgets"]); err != nil {
+		t.Fatalf("replaceInput of the queue: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(kept, filepath.FromSlash(series))); err != nil || string(data) != oldMemorySeries {
+		t.Errorf("the window an input was written into in place holds %s as %q (%v), want its bytes as they were", series, data, err)
+	}
+	after, err := readWindowHead(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Files[series] != head.Files[series] {
+		t.Errorf("the window an input was written into in place names %s with the sha256 %q, want %q as before", series, after.Files[series], head.Files[series])
+	}
+	if _, err := ReadWindow(kept); err != nil {
+		t.Errorf("ReadWindow of the window an input was written into in place: %v", err)
+	}
+}
+
 // ReadWindow refuses a window whose record of the signals no reader could trust: a signal its
 // signals map names that is none of R11's, a span that is empty or that overlaps another of its
 // signal, a record of the kills, the provider or the queue with no file of that input, a line of
-// an input that is not that input's form, an input file of the format's directories with a name
-// the format does not give, and a negative P0 bound.
+// an input that is not that input's form, a line of the pods' memory series, which nothing reads,
+// that is not one JSON object, as no line of any input may be, an input file of the format's
+// directories with a name the format does not give, and a negative P0 bound.
 func TestReadWindowRefusesABadSignalRecord(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -238,7 +339,7 @@ func TestReadWindowRefusesABadSignalRecord(t *testing.T) {
 		{"a provider line of another form", nil, map[string]string{providerFile: `{"minute":"2001-03-05T08:00:00Z","uncached":1,"limit":null,` +
 			`"limit_source":null,"limit_scope":null,"own":0,"provider":0,"team":"x"}` + "\n"}, providerFile + " line 1: "},
 		{"a launcher line with no pod", nil, map[string]string{launcherFile: `{"time":"2001-03-05T08:00:00Z","text":"launcher: started"}` + "\n"}, launcherFile + " line 1: "},
-		{"a memory line with no minute", nil, map[string]string{memoryFile: `{"pod":"legion-acme-acme-1","bytes":5}` + "\n"}, memoryFile + " line 1: "},
+		{"a memory series line that is no JSON object", nil, map[string]string{unreadMemoryFile: "5 bytes\n"}, unreadMemoryFile + ": line 1 is not one JSON object"},
 		{"a queue file of no repository", nil, map[string]string{"queue/widgets.jsonl": ""}, `"queue/widgets.jsonl", which is no input`},
 		{"a negative P0 bound", func(h map[string]any) {
 			h["p0Bounds"] = []any{map[string]any{"at": "2001-03-05T08:00:00Z", "bound": -1}}
@@ -247,7 +348,7 @@ func TestReadWindowRefusesABadSignalRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "window")
 			w := signalWindow(t)
-			w.Signals, w.Provider, w.Launcher, w.Memory, w.Queue, w.Settings, w.P0Bounds = nil, nil, nil, nil, nil, nil, nil
+			w.Signals, w.Provider, w.Launcher, w.Queue, w.Settings, w.P0Bounds = nil, nil, nil, nil, nil, nil
 			if err := w.Write(dir); err != nil {
 				t.Fatal(err)
 			}

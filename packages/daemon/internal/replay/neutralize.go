@@ -82,17 +82,19 @@ type NeutralMap struct {
 // and the free text of Dispatch's events (titles, summaries, reasons, questions, answers, bodies)
 // to numbered neutral text. The inputs of the signals are renamed by the same rules: a pod's name
 // and a pull request's branch have their keys and the logins of the window's people renamed
-// (renameLogins), the launcher's lines and the pods' memory the names their shapes show, the
-// merge queue's events their GitHub accounts (login, numeric id, node id and links), the
-// repository of their file and the repository their url names, the url keeping its form, the
-// project's settings events as Dispatch's events (a token's name and a source's last error among
-// them), and the default assignee as a person. A git input keeps its paths and commits but for the
-// issue keys of the window's projects that its paths spell and its deny words, and its missing
-// inputs' details are renamed as the daemon's lines are; its file takes its repository's neutral
-// name. It changes values alone: every member, JSON type and list length of every line is the
-// record's, so the neutral window is read by the same readers. The daemon's msgs, document names,
-// ranks, statuses and times are kept, and so are the daemon's own words in its lines, their names
-// renamed. It writes the map to cfg.Map and returns it. It refuses a map
+// (renameLogins), the launcher's lines the names their shapes show, the merge queue's events
+// their GitHub accounts (login, numeric id, node id and links), the repository of their file and
+// the repository their url names, the url keeping its form, the project's settings events as
+// Dispatch's events (a token's name and a source's last error among them), and the default
+// assignee as a person. A git input keeps its paths and commits but for the issue keys of the
+// window's projects that its paths spell and its deny words, and its missing inputs' details are
+// renamed as the daemon's lines are; its file takes its repository's neutral name. The pods'
+// memory series of a window collected while collect wrote one, which nothing reads, is not written
+// (unreadMemoryFile), so none of its pod names reaches the neutral window. It changes values
+// alone: every member, JSON type and list length of every line is the record's, so the neutral
+// window is read by the same readers. The daemon's msgs, document names, ranks, statuses and times
+// are kept, and so are the daemon's own words in its lines, their names renamed. It writes the map
+// to cfg.Map and returns it. It refuses a map
 // inside cfg.Out or already there, an Out that is In or holds files, a deny word that is part of
 // withheld, the word every deny word is replaced with, whose replacement would put it back, a
 // window holding more IPv4 addresses than the documentation ranges hold, and a neutral window that
@@ -168,11 +170,6 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 	}
 	if w.Launcher != nil {
 		if out.Launcher, err = rewriteTyped[LauncherLine](n, parsed.launcher); err != nil {
-			return NeutralMap{}, err
-		}
-	}
-	if w.Memory != nil {
-		if out.Memory, err = rewriteTyped[MemorySample](n, parsed.memory); err != nil {
 			return NeutralMap{}, err
 		}
 	}
@@ -296,8 +293,8 @@ const (
 	sourceEvent
 	sourceMerges
 	// sourceRecord is the signals' records whose words are their writers' own: the launcher's
-	// lines, the pods' memory and the provider's minutes, every name in which is found by its
-	// shape, as in the daemon's lines.
+	// lines and the provider's minutes, every name in which is found by its shape, as in the
+	// daemon's lines.
 	sourceRecord
 	// sourceQueue is the merge queue's events as GitHub serves them, whose actors are GitHub's
 	// accounts.
@@ -317,12 +314,12 @@ type field struct {
 // parsedWindow is a window's inputs and window.json as ordered JSON values (decodeOrdered), each
 // in the order the neutralizer reads them, so the numbering of names is the same on every run.
 type parsedWindow struct {
-	header                     any
-	log                        []any
-	events                     map[string][]any
-	settings                   []any
-	launcher, memory, provider []any
-	queue                      map[string][]any
+	header             any
+	log                []any
+	events             map[string][]any
+	settings           []any
+	launcher, provider []any
+	queue              map[string][]any
 }
 
 // parseWindow is w as ordered JSON values. window.json is w's own fields as Write writes them, and
@@ -353,7 +350,6 @@ func parseWindow(w Window) (parsedWindow, error) {
 		lines func() ([]json.RawMessage, error)
 	}{
 		{&p.launcher, "launcher line", func() ([]json.RawMessage, error) { return marshalLines(w.Launcher) }},
-		{&p.memory, "memory sample", func() ([]json.RawMessage, error) { return marshalLines(w.Memory) }},
 		{&p.provider, "provider minute", func() ([]json.RawMessage, error) { return marshalLines(w.Provider) }},
 	} {
 		lines, err := input.lines()
@@ -387,8 +383,8 @@ func decodeAll(lines []json.RawMessage, what string) ([]any, error) {
 }
 
 // visit hands each value of p to do with its input, window.json first, then the log in its order,
-// then each issue's events by key, then the settings events, the launcher's lines, the pods'
-// memory and the provider's minutes, each in its order, and each repository's queue by repository.
+// then each issue's events by key, then the settings events, the launcher's lines and the
+// provider's minutes, each in its order, and each repository's queue by repository.
 func (p parsedWindow) visit(do func(v any, from source)) {
 	do(p.header, sourceWindow)
 	for _, line := range p.log {
@@ -403,7 +399,7 @@ func (p parsedWindow) visit(do func(v any, from source)) {
 	for _, event := range p.settings {
 		do(event, sourceEvent)
 	}
-	for _, line := range slices.Concat(p.launcher, p.memory, p.provider) {
+	for _, line := range slices.Concat(p.launcher, p.provider) {
 		do(line, sourceRecord)
 	}
 	for _, repo := range slices.Sorted(maps.Keys(p.queue)) {
