@@ -390,7 +390,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
-		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
+		// starts no turn, so the pause lets it run: a claim that ends or changes its session while
+		// the project is paused changes those holders, which Dispatch should show. The pause's own
+		// stops suspend as released, which keeps each holder, so they queue none.
 		OutboxKindRoleHoldersPublish: "",
 		// A step record writes Dispatch one start or one end of a step of an issue
 		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a

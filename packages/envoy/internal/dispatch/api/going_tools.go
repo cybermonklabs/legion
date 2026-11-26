@@ -886,6 +886,10 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_results": {Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/results", Path: map[string]string{"key": "issue"}},
 	}},
+	// A read of the deploys of one repository: its repo is the route's query.
+	"dispatch_deploys": {Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/deploys", Path: map[string]string{}},
+	}},
 	// A search's words are the route's q (goingTranslateSearch).
 	"dispatch_search": {Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/search", Path: map[string]string{}, Translate: goingTranslateSearch},
@@ -1003,6 +1007,8 @@ const (
 	// an option of dispatch_issue_update is written out as one update row for each issue the
 	// option reaches (expandStatusOptions), each with its own landing and its own Undo.
 	goingExcludedStatusChange = "a status change with an option: the bar reaches its outcome through one update row for each issue it reaches"
+	// dispatch_deploy's route (going.UnofferedTools says why the bar offers no tool of it).
+	goingExcludedDeployRecord = "a deploy's record of the build a program runs in production, which a deploy reports with `dispatch deploy`"
 )
 
 // goingExcludedRoutes is every route a person's credential may call that no tool calls, by
@@ -1055,6 +1061,7 @@ var goingExcludedRoutes = map[string]string{
 	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
 	"PUT /api/v1/projects/{key}/proven-sessions":                    goingExcludedProvenSessions,
 	"DELETE /api/v1/projects/{key}/proven-sessions":                 goingExcludedProvenSessions,
+	"POST /api/v1/deploys":                                          goingExcludedDeployRecord,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

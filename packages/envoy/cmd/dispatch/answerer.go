@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -94,6 +95,9 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	if endpoint == "" {
 		return "", fmt.Errorf("%s is required when DISPATCH_ANSWERER is %s", name, place)
 	}
+	if err := credentialURLRefusal(name, "an endpoint's URL", endpoint); err != nil {
+		return "", err
+	}
 	if err := httpsBaseURL(name, endpoint, "chat completions route"); err != nil {
 		return "", err
 	}
@@ -101,11 +105,12 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 }
 
 // httpsBaseURL refuses an endpoint setting that is not an absolute https URL with a host and no
-// query or fragment, naming the setting and the route its client appends to it.
+// query or fragment, naming the setting and the route its client appends to it. The refusal
+// quotes the endpoint through redact.URL, so it prints no credential the URL holds.
 func httpsBaseURL(name, endpoint, route string) error {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the %s is appended to)", name, endpoint, route)
+		return fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the %s is appended to)", name, redact.URL(endpoint), route)
 	}
 	return nil
 }

@@ -656,6 +656,26 @@
     }
   },
   {
+    "name": "dispatch_deploys",
+    "description": "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
+    "arguments": {
+      "properties": {
+        "json": {
+          "description": "Print the complete wire answer as JSON.",
+          "type": "boolean"
+        },
+        "repo": {
+          "description": "The deployed repository, owner/repo.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "dispatch_dismiss_inbox",
     "description": "Take threads out of the Inbox of the person you act for, or put them back with restore. Name the rows by id in threads (reply:<thread id>, agent:<root message id>), or name none and give the Inbox's narrowing with dismiss_through, never both. Taking rows named by id out carries seen_replies, what was seen of each; a restore carries none. Name issue or artifact, not both. A dismissed thread comes back when somebody writes in it.",
     "arguments": {
@@ -3204,11 +3224,11 @@
   },
   {
     "name": "dispatch_results",
-    "description": "Print each check of an issue's Verification document with every result recorded against it, newest first. Each check prints what Dispatch compared its results with. A before_merge check is compared with the head of each pull request Dispatch holds for the check's issue, open or merged. An after_merge check is compared with the branch that issue's pull request merged into and with the repository's default branch, and with the default branch alone where Dispatch holds no merge of the issue. A default_branch check is compared with the repository's default branch alone, whatever branch the pull request merged into. Where a check compared with nothing, it says which of three things happened: the issue has no pull request and no branch to compare with, Dispatch cannot read the repository, or a read Dispatch made did not answer. Each check then prints one line that answers the gate: whether a pass of it stands, and from which roles. A pass stands when its commit is one of the commits the check compared with, the check's words did not move after the result was recorded, and no retraction stands against it. The check's own words print once, under the check. Each result then prints its verdict, its role, its whole 40-character commit, where that commit stands, whether the check's words moved after it was recorded, the time, its id, and the reading the role recorded. A result nobody gave a reading says so. A retracted result prints as retracted, with the reason and the caller that retracted it. A check with no result says so. A check whose ci_check names a CI check run, and that holds no recorded result, is proved by CI: no role records its result, and Dispatch reads it from GitHub at the head of the issue's open pull request of the highest number, else at the head of its merged one of the highest number. Its one result prints as `- <id> (before_merge): <verdict> at <commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` and the line to write into the pull-request body unchanged, then the reading: the conclusion, the run's output title and summary, and its URL. A run that proves nothing prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> (before_merge): CI run <name> has no result (<case>)`. That is a run that has not concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an issue with no pull request head, or GitHub not read, with what GitHub answered. A pull-request line writes `CI run <name>` only when it keeps every word of the name, and `the CI run the check names` in its place where it drops one: a word the line drops, such as an issue key or a word holding `_`. A push that moves a pull request's head leaves a result at the commit before it, with no write of anyone's: record the check again at the new head. A check CI proves is read again at the new head by itself. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
+    "description": "Print each check of an issue's Verification document with every result recorded against it, newest first. Each check prints what Dispatch compared its results with. A before_merge check is compared with every open pull request head, or the final head of the last to merge when none is open. An after_merge result counts only at a commit that holds the work's merge on the compared branch. A default_branch check names the default branch alone. With no known merge, an after_merge check compares with nothing and says so. A read that failed is not known, never a pass or a fail. The newest branch result decides and names its id and commit. A pass and fail at that commit are not known until retraction. Production and graph checks count only results recorded for the current deploy of the program they read. The output names that deploy and says why an excluded result counts for nothing. The check's words must be unchanged and the result unretracted. The check's own words print once, under the check. Each result then prints its verdict, its role, its whole 40-character commit, where that commit stands, whether the check's words moved after it was recorded, the time, its id, and the reading the role recorded. A result nobody gave a reading says so. A retracted result prints as retracted, with the reason and the caller that retracted it. A check with no result says so. A check whose ci_check names a CI check run, and that holds no recorded result, is proved by CI: no role records its result. Dispatch reads GitHub at every open head, or the final head of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at <commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` and the line to write into the pull-request body unchanged, then the reading: the conclusion, the run's output title and summary, and its URL. A run that proves nothing prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> (before_merge): CI run <name> has no result (<case>)`. That is a run that has not concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an issue with no pull request head, or GitHub not read, with what GitHub answered. A pull-request line writes `CI run <name>` only when it keeps every word of the name, and `the CI run the check names` in its place where it drops one: a word the line drops, such as an issue key or a word holding `_`. A push that moves a pull request's head leaves a result at the commit before it, with no write of anyone's: record the check again at the new head. A check CI proves is read again at the new head by itself. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
     "arguments": {
       "properties": {
         "at": {
-          "description": "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head.",
+          "description": "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at.",
           "type": "string"
         },
         "brief": {
@@ -3218,6 +3238,10 @@
         "issue": {
           "description": "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
           "type": "string"
+        },
+        "json": {
+          "description": "Print the complete results wire answer as JSON.",
+          "type": "boolean"
         }
       },
       "required": [

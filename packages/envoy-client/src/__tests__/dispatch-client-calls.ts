@@ -93,6 +93,9 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
+  recordDeploy: (client) =>
+    client.recordDeploy({ repo: "acme/widgets", program: "worker", commit: "1".repeat(40) }),
+  deploys: (client) => client.deploys("acme/widgets"),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),

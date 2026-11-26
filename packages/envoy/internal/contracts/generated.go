@@ -374,6 +374,7 @@ var DispatchEventTypes = []string{
 	"comment.reopened",
 	"comment.resolved",
 	"decision.kept",
+	"deploy.recorded",
 	"going_plan.updated",
 	"handoff.recorded",
 	"issue.claimed",
