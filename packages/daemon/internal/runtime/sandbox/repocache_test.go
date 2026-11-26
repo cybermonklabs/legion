@@ -1649,8 +1649,9 @@ func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 	t.Parallel()
 	served, credentials := healthServer(t, cacheRepo.String())
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
-	// The test counts the health reads, so the refresher's tick, which reads once more, never comes.
-	g := newRig(t, nil, withCacheDial(network.dial), withNoRefreshTick())
+	// The test counts the health reads; the rig's runtime runs no refresher tick of its own
+	// (testOptions), which would read once more.
+	g := newRig(t, nil, withCacheDial(network.dial))
 	name := readyCache(t, g, "10.0.0.5")
 
 	g.r.readCacheHealth(g.ctx)
@@ -1679,8 +1680,8 @@ func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 func TestAStrangerAtTheCachePodsAddressGetsNoCredential(t *testing.T) {
 	t.Parallel()
 	stranger, credentials := healthServer(t, "acme/gadgets")
-	// The test counts the stranger's requests, so the refresher's tick never comes.
-	g := newRig(t, nil, withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial), withNoRefreshTick())
+	// The test counts the stranger's requests; the rig's runtime runs no refresher tick of its own.
+	g := newRig(t, nil, withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial))
 	readyCache(t, g, "10.0.0.5")
 
 	g.r.readCacheHealth(g.ctx)

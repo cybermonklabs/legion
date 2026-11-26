@@ -102,6 +102,11 @@ func testOptions() Options {
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
 		ProbeInterval:         time.Hour,
+		// The rig's runtime never runs its own gh refresher tick, about 292 years: the tests that
+		// exercise the refresher drive its ticks themselves (refreshTick, readCacheHealth) and count
+		// what each does, and a tick of the runtime's own a run reached would add its reads and
+		// writes to theirs. A test that wants the runtime's ticks sets a short interval.
+		GitHubRefreshInterval: time.Duration(math.MaxInt64),
 		AdoptTimeout:          time.Minute,
 		Tokens:                staticTokens{},
 		GitHubCredential:      staticCredential,
@@ -600,20 +605,14 @@ func withWaitsToTheDeadline() rigOption {
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
 
 // withCacheDial has the runtime open its cache health reads through dial, installed before the
-// runtime starts. start runs the gh refresher, whose every tick (gitHubRefreshInterval, a minute)
-// reads the caches' health through r.cacheDial on a goroutine of its own, so a test that set the
-// field once newRig had returned wrote it with no ordering against that read: a data race, which
-// the race detector reports when a tick's read and the test's write are both in one run.
+// runtime starts. start runs the gh refresher on a goroutine of its own, and each of its ticks
+// (r.gitHubRefresh: a minute in the daemon; out of reach in this rig unless a test sets it) reads
+// the caches' health through r.cacheDial; start's go statement orders a dial installed before it
+// ahead of every such read. A test that set the field once newRig had returned was ordered ahead
+// of a tick's read only by the store locks the tick happens to take before it, which no test
+// should rely on.
 func withCacheDial(dial func(ctx context.Context, network, address string) (net.Conn, error)) rigOption {
 	return func(g *rig, _ *Options) { g.cacheDial = dial }
-}
-
-// withNoRefreshTick sets the runtime's gh refresher to a tick no test run reaches, about 292 years
-// (Options.GitHubRefreshInterval), for a test that counts the cache health reads: each tick reads
-// every Ready cache's health once more, so at the default minute a run that lasted past it counted
-// one read more than the test made.
-func withNoRefreshTick() rigOption {
-	return withOptions(func(o *Options) { o.GitHubRefreshInterval = time.Duration(math.MaxInt64) })
 }
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the

@@ -208,9 +208,9 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 // reads them within the same wait.
 func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	t.Parallel()
-	// The rig's own runtime never ticks (withNoRefreshTick): its refresher would read the role
-	// Secrets this test counts as the Prober's.
-	g := newProbeRig(t, nil, withNoRefreshTick()).succeeds(okLine(3))
+	// The rig's own runtime runs no refresher tick (testOptions), so the Secret reads this test
+	// counts are the Prober's or the control's alone.
+	g := newProbeRig(t, nil).succeeds(okLine(3))
 	g.autoStart.Store(true)
 	g.spawn(rootSpec(t))
 	g.autoStart.Store(false)
@@ -220,6 +220,9 @@ func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	opts.GitHubRefreshInterval = tick
 	var prober *Prober
 	g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, opts); return err })
+	if prober.r.gitHubRefresh != tick {
+		t.Fatalf("the Prober's refresh interval is %s, want the %s its Options set", prober.r.gitHubRefresh, tick)
+	}
 	proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
 	g.clearActions()
 	g.with(func() { g.held = func(name string) bool { return name == proberName } })
@@ -238,6 +241,11 @@ func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	control, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Without this, a runtime that ignored the option would pass the wait below on its
+	// one-minute tick, since the wait gives up only near the binary's deadline.
+	if control.gitHubRefresh != tick {
+		t.Fatalf("the control's refresh interval is %s, want the %s its Options set", control.gitHubRefresh, tick)
 	}
 	g.startWatched(func() error { return control.start(g.ctx, g.clients) })
 	g.eventually("the control's refresher to read the issue pod's role Secrets", func() bool { return secretReads(g.rig) > 0 })
