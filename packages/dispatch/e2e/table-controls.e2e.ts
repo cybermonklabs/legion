@@ -12444,6 +12444,71 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
   ).toBe(true);
 });
 
+// INFRA-3135, round 29 (the implementer's own row, named in the bar-return design note): the
+// bar's Snooze names its rows as leaving from the pick until the first read of the Inbox the list
+// adopts after the write, and the bar's hand-off waits only while a named row is still listed.
+// Under `?group=none` the snoozed rows leave the list once the write lands, in the commit the
+// bar goes in, while the read that will end their names is still out (builds Jobs
+// `infra-3135-infra-3135-r30t-heldp` and `-r30v-namep`, Chromium: the rows and the bar gone 14 ms
+// after the writes landed, the read asked at once and held, the landing made while both names
+// stood, and the names ended two seconds later, when the list adopted that read). So with every
+// read of the Inbox held for two
+// seconds, the landing is made while the read is still held, on the row now at the snoozed rows'
+// place, and the read's landing then moves nothing: a name that outlives the write neither holds
+// the landing back nor moves it. `@firefox` and `@webkit`: WebKit drew a snoozed row in its band
+// in a commit after its write had settled (builds Job `infra-3135-infra-3135-r30f-s70p`), so the
+// row runs in each engine.
+// SLOW(>=2s): thirty asks seeded, and the reads of the Inbox held for two seconds.
+test("the Inbox bar's Snooze with the Inbox's own read held lands while the read is out, on the row now at the snoozed rows' place, and the read moves nothing @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 30; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  await page.goto("/?group=none");
+  await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+  const ids = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const upper = ids[4] ?? "";
+  const lower = ids[5] ?? "";
+  const after = ids[6] ?? "";
+  // The lower row first, so the row marked last is the upper one.
+  for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+  await expect(bar).toBeVisible();
+  // From here on every read of the Inbox is held for two seconds; `heldNow` counts the reads
+  // held at this moment.
+  let heldNow = 0;
+  await page.route(/\/api\/v1\/inbox(?:\?|$)/u, async (route) => {
+    heldNow += 1;
+    await new Promise((settle) => setTimeout(settle, 2_000));
+    heldNow -= 1;
+    return route.fallback();
+  });
+  const trigger = listTrigger(bar, "Snooze selected asks");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("tom");
+  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  await page.keyboard.press("Enter");
+  const landing = inboxRow(page, after).getByRole("checkbox").first();
+  await expect(landing).toBeFocused({ timeout: 1_500 });
+  expect(heldNow, "no read of the Inbox was out when the landing was made").toBeGreaterThan(0);
+  await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0);
+  await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0);
+  // The held reads land, and the list adopts them: the focus stays where the landing put it.
+  await expect.poll(() => heldNow, { timeout: 15_000 }).toBe(0);
+  await page.unroute(/\/api\/v1\/inbox(?:\?|$)/u);
+  await nextFrames(page);
+  await expect(landing).toBeFocused();
+  await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0);
+});
+
 // INFRA-3135, round 28 (the tester's finding beside its red row `35bec491`, which the architect
 // ruled on at 2026-11-25 21:20Z: the implementer fixes it in the same change, and the next round
 // checks it in five or more WebKit repeats). Measured at 5a444912 in builds Jobs

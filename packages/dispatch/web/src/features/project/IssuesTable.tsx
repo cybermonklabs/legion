@@ -338,10 +338,10 @@ export function IssuesTable({
   // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
   // lands in the place of an issue that went.
   // What the table's own actions say is leaving, read through a ref because they are read after
-  // this hook (`useIssueTableActions`, below): a row an action changed while that action and the
-  // read after it are out. The hand-off waits for each such row to leave the list by name, as the
-  // Inbox's does, so a landing never stands on a row the press is taking away however long the
-  // write and its read take.
+  // this hook (`useIssueTableActions`, below) and assigned there: a row an action changed while
+  // that action and the read after it are out. The hand-off waits for each such row to leave the
+  // list by name, as the Inbox's does, so a landing never stands on a row the press is taking away
+  // however long the write and its read take.
   const leavingNow = useRef<((key: string) => boolean) | undefined>(undefined);
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
@@ -362,14 +362,21 @@ export function IssuesTable({
   // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
+    // The box's height made current first: the table sizes the box to the page at a
+    // `ResizeObserver`'s read, a frame after whatever changed the page, and the bar's going is
+    // such a change. At 390x664 the box stood at 434 px when the bar went, from a read long
+    // before, and at 414 a frame later, which left a landing shown whole in the old box below the
+    // new one's edge (builds Jobs `infra-3135-infra-3135-r30q-frames` and `-r30r-frames`).
+    // `fitHeight` makes it the box the reader will see before the hand-off reads it.
+    model.layout.fitHeight();
     if (landAtPlace.land()) return null;
     // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
     if (key === null) return focusListStop(tableStop());
-    model.focusRow(key, ROW_CHECKBOX, "nearest");
-    // The row is drawn in a commit of the table's own, so the hand-off waits for its mark to stand
-    // and lands on it then; until it does, the table's own stop holds the focus.
-    landAtPlace.own(key);
+    // The table draws the row and lands on its checkbox once drawn, with the least scroll from
+    // where the reader stood (`focusRow`); the hand-off holds what takes that landing back, so the
+    // reader's own act ends it, and the table's own stop holds the focus until then (`own`).
+    landAtPlace.own(model.focusRow(key, ROW_CHECKBOX, "nearest"));
     return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
@@ -466,6 +473,7 @@ export function IssuesTable({
     items: allItems,
     clearSelection: () => setSelection({}),
   });
+  leavingNow.current = leaving;
 
   // How many parents the walk could not read: every one of them when the walk itself failed,
   // else the ones it named. The rest of the rows keep the epic they were read with.

@@ -47,8 +47,14 @@ export interface RowKeymap {
 }
 
 /** Focuses the row whose id is `key`, or the element `selector` names inside it. The selection
- *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. */
-export type FocusRow = (key: string, selector?: string, placement?: "nearest") => void;
+ *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. A row
+ *  the table has not drawn is scrolled to and focused once it is drawn; the answer takes that
+ *  focus back while it is still to come, and does nothing once it has been made. */
+export type FocusRow = (key: string, selector?: string, placement?: "nearest") => () => void;
+
+/** What `FocusRow` answers when it leaves no focus to come: a drawn row is focused at once, and a
+ *  key the table does not hold focuses nothing. */
+const NOTHING_PENDING = (): void => undefined;
 
 /**
  * The keys a reader walks the table's rows with, under the ids and words the caller gives, the
@@ -105,14 +111,17 @@ export function useRowKeymap<TData>({
         if (placement === "nearest") landNearest(element);
         else element.focus();
       }
-      return;
+      return NOTHING_PENDING;
     }
     const index = displayRows.findIndex(({ row }) => row.id === key && !row.getIsGrouped());
-    if (index !== -1) {
-      const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
-      pendingFocus.current = { key, selector, from };
-      scrollToIndex(index);
-    }
+    if (index === -1) return NOTHING_PENDING;
+    const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
+    const pending = { from, key, selector };
+    pendingFocus.current = pending;
+    scrollToIndex(index);
+    return () => {
+      if (pendingFocus.current === pending) pendingFocus.current = null;
+    };
   };
   const moveFocus = (direction: 1 | -1) => {
     const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());

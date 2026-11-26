@@ -20,6 +20,7 @@ import {
   causedByReader,
   focusedOutOfSight,
   holdHandOff,
+  pressIsArmedOwn,
   repeatTookFocusFrom,
   useFocusPlace,
 } from "./focus-place";
@@ -1425,6 +1426,50 @@ function droppingPress(element: HTMLElement): void {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   fireEvent.click(element);
 }
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 06:18Z, rule (3)): what the bar's
+// hand-off reads to tell the reader's next act from a press the armed press counts as its own
+// (`pressIsArmedOwn`), the test the armed press itself ends on: a press on its own control, or on a
+// control its write holds - the held Start next of Take out of epic's run - is its own; a press on
+// a control nothing holds is not, and nothing is its own once the press has ended.
+test("the armed press counts a press on its own control or on a control its write holds as its own, and no other", async () => {
+  const read: Record<string, boolean> = {};
+  await inMain(["Filter"], async (main) => {
+    const host = document.createElement("div");
+    main.append(host);
+    const bar = ["Take out of epic"];
+    const view = render(createElement(ArmedSection, { bar, held: false }), { container: host });
+    try {
+      const startNext = () => view.getByRole("button", { name: "Start next" });
+      const takeOut = () => view.getByRole("button", { name: "Take out of epic" });
+      const filter = main.querySelector<HTMLElement>(":scope > button");
+      if (filter === null) throw new Error("the page draws no Filter");
+      disarm();
+      read["with nothing armed"] = pressIsArmedOwn(takeOut());
+      clickPress(takeOut());
+      view.rerender(createElement(ArmedSection, { bar, held: true }));
+      const answered = holdHandOff();
+      read["its own control"] = pressIsArmedOwn(takeOut());
+      read["the Start next its write holds"] = pressIsArmedOwn(startNext());
+      read["the Filter nothing holds"] = pressIsArmedOwn(filter);
+      read["no element"] = pressIsArmedOwn(null);
+      answered();
+      disarm();
+      read["once the press has ended"] = pressIsArmedOwn(startNext());
+    } finally {
+      view.unmount();
+      host.remove();
+    }
+  });
+  expect(read).toEqual({
+    "with nothing armed": false,
+    "its own control": true,
+    "the Start next its write holds": true,
+    "the Filter nothing holds": false,
+    "no element": false,
+    "once the press has ended": false,
+  });
+});
 
 // What the selection bar reads of the armed press as it goes after the reader's press on a
 // control outside it that the press holds (`SelectionBar`): whether that press, or a move of the

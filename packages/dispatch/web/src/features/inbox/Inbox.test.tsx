@@ -4110,6 +4110,78 @@ test("a bulk Snooze lets the row it is taking away go though the hand-off parked
   }
 });
 
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 07:42Z): a refused bulk Snooze marks
+// its asks again, so its bar stays with its refusal and no hand-off runs then. The name of each
+// refused ask ends at once, so when the reader then clears the selection, nothing is leaving: the
+// landing is made on the mark of the row marked last, which the list holds, and nothing is owed
+// after it, so a wheel of theirs moves no focus. A refused name that outlived its refusal would
+// owe that landing instead, and the wheel would take the focus off the parked mark.
+test("after a refused bulk Snooze, Clear selection lands on the row marked last and owes nothing", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => rows);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  const getAsk = mockAskReads(rows);
+  const laidOut = layRowsDown(0);
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 12?");
+    const order = rowIds();
+    const marked = order[2] as string;
+    await user.click(markOf(marked));
+    await screen.findByText("1 selected");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    await screen.findByText(/Could not snooze 1 of 1/u);
+
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    await waitFor(() => expect(markOf(marked)).toHaveFocus());
+    document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    await afterFrameAndTasks();
+    expect(markOf(marked)).toHaveFocus();
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The same refusal under the bar's Dismiss: its optimistic apply takes the rows out before its
+// request is sent, so the landing is made on the row now at their place before Dispatch answers,
+// and the refusal that puts the rows back then moves nothing: the focus stays where the landing
+// put it, and a wheel of the reader's moves no focus either.
+test("after a refused bulk Dismiss, the focus stays on the row its landing chose and nothing moves it", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  answerInboxDismisses().mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  const laidOut = layRowsDown(0);
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const order = rowIds();
+    const marked = order.slice(2, 4);
+    for (const id of [...marked].reverse()) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await screen.findByText(/could not dismiss/iu);
+    await waitFor(() => expect(rowIds()).toEqual(order));
+    const landing = markOf(order[4] as string);
+    await waitFor(() => expect(landing).toHaveFocus());
+    document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    await afterFrameAndTasks();
+    expect(landing).toHaveFocus();
+  } finally {
+    unmount();
+    laidOut();
+    reads();
+  }
+});
+
 // The bar's Dismiss over two threads the reader marked and then scrolled above the window. Their
 // whole space goes, so every row after them moves up by it: the row now at the place of the row
 // marked last, and the next one, end wholly above the window. The bar's hand-off reads each row

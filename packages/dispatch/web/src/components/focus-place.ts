@@ -1468,7 +1468,8 @@ export function controlsLikeRow(row: Element, control: Element, from: Element): 
 }
 
 /** Focuses `target` without a scroll: a hand-off's landing (`land`), a region's own stop
- *  (`focusOwnStop`), the mark SelectionBar focuses before its row moves up (`landMark`), and
+ *  (`focusOwnStop`), the mark the selection bar's hand-off parks the focus on while its row is
+ *  leaving (`SelectionBar`'s `park`), and
  *  the control the Agents page hands a pin's moved focus to (`controlsLikeRow`).
  *  Answers whether it took the focus. */
 export function focusNoScroll(target: HTMLElement): boolean {
@@ -1508,8 +1509,7 @@ function walkBack(
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
  *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
- *  reaches it, and of its fallback too, and the selection bar's hand-off reads it of the mark it
- *  parks the focus on (`SelectionBar`'s `park`). */
+ *  reaches it, and of its fallback too. */
 export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
   return inSight(element, clippingBoxes(element, clips));
 }
