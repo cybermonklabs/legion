@@ -153,7 +153,7 @@ func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
 	logs := &lockedLog{}
 	restarted := secondRuntime(t, g, func(o *Options) {
 		*o = g.opts
-		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+		o.RoleApps.Deployed = appauth.DeploymentApps{"critic": appauth.Review}
 		o.Log = slog.New(slog.NewTextHandler(logs, nil))
 		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
 	})()
