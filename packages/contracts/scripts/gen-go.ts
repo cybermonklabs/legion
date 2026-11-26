@@ -6,6 +6,7 @@ import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_APPROVE_ONLY_TOKEN,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
@@ -804,6 +805,13 @@ const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
+// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
+// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
+// to a route the approve list does not name, or for its answer of an ask that is not an approval
+// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchApproveOnlyToken = ${JSON.stringify(DISPATCH_APPROVE_ONLY_TOKEN)}
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
 // carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
