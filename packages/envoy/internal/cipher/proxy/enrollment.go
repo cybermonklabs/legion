@@ -3,7 +3,7 @@
 // grant its session has, and its proxy password names one of them, so a host any of them binds is
 // read (sessionBinds) and a request is handled for the grant whose placeholder it carries
 // (handledFor). The enrollment's other grants are read only where that can change the answer, so a
-// tunnel to a host no entry binds, and a request of the connection's own grant, read nothing more.
+// tunnel to a host no kind binds, and a request of the connection's own grant, read nothing more.
 package proxy
 
 import (
@@ -106,7 +106,7 @@ func headersHoldPlaceholder(prefixes []placeholderPrefix, headers [][2]string) b
 // it, and servePlain to refuse plain HTTP: a host only another grant of the session binds is read,
 // and a request on it is handled for the grant whose placeholder it carries (handledFor). The
 // enrollment's other grants are read only where grant binds nothing, and then only those that
-// hold a name an entry binds to host (otherGrantsBinding).
+// hold a name whose kind binds host (otherGrantsBinding).
 func (s *Server) sessionBinds(ctx context.Context, rules proxyrules.Rules, grant requests.AirlockConnection, host string, port uint16) (bool, error) {
 	if len(candidates(rules, grant, host, port)) > 0 {
 		return true, nil

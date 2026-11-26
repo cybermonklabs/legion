@@ -45,10 +45,10 @@ func placeholderPrefixes(rules proxyrules.Rules) []placeholderPrefix {
 }
 
 // leftoverPlaceholder is the first whole placeholder a request would send, and false when it
-// carries none. It scans the command-written headers with only the swapped placeholder removed
-// (Rewrite with ""), trailers where the body is already read, and the path and query forms.
-// prefixes holds the default prefix and every kind prefix of the rules this request was decided
-// under.
+// carries none. It scans the command-written headers with only the swapped placeholder replaced
+// by a space (proxyrules.Swap), trailers where the body is already read, and the path and query
+// forms. prefixes holds the default prefix and every kind prefix of the rules this request was
+// decided under.
 func leftoverPlaceholder(prefixes []placeholderPrefix, header, trailer http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, fields := range [...]http.Header{header, trailer} {
 		if placeholder, carried := fieldsPlaceholder(prefixes, fields); carried {

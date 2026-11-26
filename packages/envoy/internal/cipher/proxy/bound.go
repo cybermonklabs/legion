@@ -484,8 +484,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The swap first, and the decision only to explain a refusal. Decide and Rewrite take
 		// the same decision (proxyrules.check), which is deterministic and has no side effect, so
 		// Rewrite answers nil for exactly the requests Decide refuses: running it first costs
-		// an allowed swap the commonest request the proxy serves one decision, and leaves the
-		// refusal, the order its reasons are reported in and the 403 exactly as they were.
+		// an allowed swap (the commonest request the proxy serves) one decision rather than
+		// two, and leaves the refusal, the order its reasons are reported in and the 403
+		// exactly as they were.
 		rewritten := proxyrules.Rewrite(rules, grant, value, request)
 		if rewritten == nil {
 			if refused() {
@@ -518,11 +519,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	header.Del("Proxy-Connection")
 	// SC14 scans the request as the command wrote it, leaving out only the placeholder the swap
 	// replaced. A second, ended or unknown placeholder in the same named header remains and is
-	// refused. Rewrite with "" performs that exact removal, including inside Basic credentials.
-	// Joining text on either side of the removed placeholder cannot create a false prefix match:
-	// the default prefix is 26 characters no real value starts with, and a kind prefix has a
-	// left boundary that blocks a match after a letter or digit. The AWS sign path instead
-	// removes the three headers the signer writes (aws.go:185-189), because the signer wrote
+	// refused. proxyrules.Swap puts one space where the swap put the value, inside a Basic
+	// credential too, and changes nothing else, so the text on the two sides of the placeholder
+	// stays apart in the scan as the value keeps it apart upstream. A kind prefix right after the
+	// placeholder therefore has a boundary before it and is read whatever the value ends in, and
+	// the default prefix right before it is not joined to the text after it into a placeholder
+	// the request never sends. A space is no letter or digit and no character of
+	// placeholder.Alphabet. The empty string would join the two sides. The AWS sign path instead
+	// removes the three headers signAWS deletes before it signs, because the signer wrote
 	// them; the query is scanned as the command wrote it, since the sign path does not rewrite
 	// it (presigned URLs are refused earlier). Proxy-only headers and Cipher-Repository leave
 	// before the service and are left out too.
@@ -533,9 +537,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		scannedHeaders.Del("X-Amz-Date")
 		scannedHeaders.Del("X-Amz-Security-Token")
 	} else {
-		// Rewrite with "" removes only the placeholder the swap replaced. The allowed Rewrite
-		// above answers nil only where refused returned, so this copy always exists here.
-		scannedHeaders = headerOf(proxyrules.Rewrite(rules, grant, "", request).Headers)
+		// Swap and not a second Rewrite: Rewrite decides again, and its check refuses a request
+		// whose headers already hold the value it is given, which a space is in nearly every
+		// request. Rewrite above has decided this request, under the kind Swap reads here.
+		scannedHeaders = headerOf(proxyrules.Swap(rules.KindOf(rules.Lookup(grant.Secret)), grant.Placeholder, " ", request).Headers)
 	}
 	scannedHeaders.Del("Proxy-Authorization")
 	scannedHeaders.Del("Proxy-Connection")

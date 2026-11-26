@@ -58,7 +58,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		return
 	}
 	// Whether this CONNECT may be decrypted and read: whether a (name, slot) pair of the grant,
-	// or of another live grant of its enrollment, has an entry that binds this host on the port
+	// or of another live grant of its enrollment, has a kind that binds this host on the port
 	// the CONNECT named. One answer from the one function that says what is bound for a session
 	// (sessionBinds, over candidates), so a change to what is bound is made in one place. The
 	// command holds the placeholders of every grant its session has - a role's own GitHub grant
