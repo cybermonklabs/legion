@@ -90,12 +90,7 @@ func startEdgeLiveHub(t *testing.T, grants map[string]natsgrant.Permissions, dis
 	}
 	hub.server, hub.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(static...), []string{"-js"}, false)
 	dispatchSeed := hub.seeds[dispatch]
-	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return dispatchSeed, true
-		}
-		return "", false
-	}))
+	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(testnats.SeedOnly(dispatchSeed)))
 	if err != nil {
 		t.Fatalf("Dispatch's user creates the stream: %v", err)
 	}
@@ -351,7 +346,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = probe.Flush()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for {
 			logged := rig.violations(t)
 			if slices.ContainsFunc(logged, func(v []string) bool { return v[1] == provoked }) {
@@ -363,7 +358,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the server logged no violation naming %s within 10s, so its log was not read", provoked)
+				t.Fatalf("the server logged no violation naming %s in time, so its log was not read", provoked)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}

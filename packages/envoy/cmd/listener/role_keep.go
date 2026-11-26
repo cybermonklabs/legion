@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -352,12 +353,37 @@ func roleKeepWriteFailed(err error) (roleKeepDrainEnd, error) {
 // not walk its kept lane together and read the same copy twice. A role's guard is kept for the
 // set's life, which costs one channel per role the listener it belongs to has seen claimed. One set
 // is built per process (main.go), as listenerDeliveryHandlerConfig.roleKeepDrains.
+//
+// It also counts, per role, the handovers started in a goroutine of their own that have not yet
+// returned (begin, startHandover). Such a handover takes the guard only once its goroutine runs,
+// so between its start and then neither hold nor tryHold sees it; the count does, from the start
+// until the goroutine returns. Nothing in the listener decides by the count: it is how a test
+// tells a handover not yet begun from one that has ended, where the guard alone reads both as
+// free (roleKeepGuards.idle, in the tests).
 type roleKeepGuards struct {
-	guards sync.Map
+	guards  sync.Map
+	started sync.Map
 }
 
 func newRoleKeepGuards() *roleKeepGuards {
 	return &roleKeepGuards{}
+}
+
+// begin counts one handover of role as started, and returns role's count, which the handover's
+// goroutine lowers by one as it returns (startHandover). The count is made on the first handover
+// of that role, as guard makes the guard: a load first, so a role already seen allocates nothing.
+// A config built with no guards counts nothing, and begin returns nil.
+func (g *roleKeepGuards) begin(role string) *atomic.Int64 {
+	if g == nil {
+		return nil
+	}
+	count, ok := g.started.Load(role)
+	if !ok {
+		count, _ = g.started.LoadOrStore(role, new(atomic.Int64))
+	}
+	started := count.(*atomic.Int64)
+	started.Add(1)
+	return started
 }
 
 // guard is role's own guard, made on the first handover of that role: a channel of one, which the
@@ -373,7 +399,7 @@ func (g *roleKeepGuards) guard(role string) chan struct{} {
 // hold takes role's guard for the whole of one handover and returns the release of it, or reports
 // false when ctx ended before the guard was free. It waits for the handover of that role running
 // on this listener, which is what every start that runs a handover in a goroutine of its own does
-// (runKeptRoleDrain) - the claim route's, a registration's and a keep's: the handover ahead of
+// (startHandover) - the claim route's, a registration's and a keep's: the handover ahead of
 // them drains the lane, so the one behind it opens on a lane with nothing left and ends on its two
 // stream reads, with no holder resolved at all. The wait ends with ctx - the handover's own
 // window (roleKeepHandoverWindow) - because a handover whose window has run out walks nothing
@@ -646,7 +672,7 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	if err != nil {
 		return keptRoleCopy{}, err
 	}
-	go runKeptRoleDrain(cfg, role)
+	startHandover(cfg, role, runKeptRoleDrain)
 	return kept, nil
 }
 
@@ -691,18 +717,31 @@ func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item co
 
 // runKeptRoleDrain hands role's kept lane over to whoever holds the role, under a context of its
 // own (roleKeepHandoverWindow), and logs a handover that failed. It is what the starts of a
-// handover run in a goroutine of their own - the claim route's for each role of a claimant its
-// refresh makes live again (roleSetHandler; the claimed role's own, when the claim lands, runs
-// runTakenRoleDrain, which runs the role's takeover passes first), the registration's that makes a
-// holder live again (subscribeHandler), the keep's (keepForNextHolder) and the session relay's
-// once it copied a frame of a role another session holds (sessionRelays.takeOverFrame) - since no
-// route's answer, keep's caller or relay waits for a stream read or a forward. The sweep starts
-// its handovers itself, under the guard it already took (sweepKeptRoleLanes). A copy's age is
-// measured by the listener's clock (cfg.now).
+// handover run in a goroutine of their own (startHandover) - the claim route's for each role of a
+// claimant its refresh makes live again (roleSetHandler; the claimed role's own, when the claim
+// lands, runs runTakenRoleDrain, which runs the role's takeover passes first), the
+// registration's that makes a holder live again (subscribeHandler), the keep's
+// (keepForNextHolder) and the session relay's once it copied a frame of a role another session
+// holds (sessionRelays.takeOverFrame) - since no route's answer, keep's caller or relay waits for
+// a stream read or a forward. The sweep starts its handovers itself, under the guard it already
+// took (sweepKeptRoleLanes). A copy's age is measured by the listener's clock (cfg.now).
 func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
 	defer cancel()
 	reportKeptRoleDrain(cfg, role, drainKeptRole(ctx, cfg, role, cfg.now))
+}
+
+// startHandover runs run, runKeptRoleDrain or runTakenRoleDrain, for role in a goroutine of its
+// own, counted on cfg's guards as started from before that goroutine exists until it returns
+// (roleKeepGuards.begin). Every start of a handover that does not wait for it goes through here.
+func startHandover(cfg listenerDeliveryHandlerConfig, role string, run func(listenerDeliveryHandlerConfig, string)) {
+	started := cfg.roleKeepDrains.begin(role)
+	go func() {
+		if started != nil {
+			defer started.Add(-1)
+		}
+		run(cfg, role)
+	}()
 }
 
 // reportKeptRoleDrain logs a handover that failed: the one line every start of a handover writes,

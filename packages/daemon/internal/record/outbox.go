@@ -423,36 +423,40 @@ type Notice struct {
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
-	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
-	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds an architect already running (the outbox's start,
-	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
-	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
-	// a launch does.
+	// PacedAt is the moment the daemon's wake pacing let out a catch-up it held to its turn: the
+	// catch-up the outbox writes in place of a launch when a start row finds an architect already
+	// running (the outbox's start, workflow's claimReady). Reading that catch-up is a wake of the
+	// architect, and what the organization's per-minute cap counts is the context it reads, so the
+	// row waits its turn in the pacing's second queue as a launch does (dispatch://INFRA-5682 R1).
+	// It is CatchUpHeldAt while the row waits there, the let-out's moment once the pacer has let
+	// the row out (ReleaseHeldCatchUp), and the zero value on every other notice.
 	//
 	// The moment is kept here rather than read back from the row's next_at because the two part
 	// company: a failed attempt rewrites next_at to its backoff (RetryOutbox), while the turn the
 	// pacing gave this wake never moves. The outbox writes that wake's one line from it, on
 	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the
 	// architect's waiting notices leaves the row where it stands only while the moment is still
-	// ahead (the daemon's releaseWaiting), so a catch-up whose turn has come is released like any
-	// other notice rather than waiting out a backoff the pacing never asked for. It is the
-	// daemon's own bookkeeping, so the publish drops it (Published) as it drops ResendOf; a
-	// re-held copy keeps it for that one line alone, its next_at being the re-send delay rather
-	// than a reservation (the daemon's noticeAnswered).
+	// ahead (the daemon's releaseWaiting), so a catch-up still held stays held, and one whose turn
+	// has come is released like any other notice rather than waiting out a backoff the pacing
+	// never asked for. It is the daemon's own bookkeeping, so the publish drops it (Published) as
+	// it drops ResendOf; a re-held copy keeps it for that one line alone, its next_at being the
+	// re-send delay (the daemon's noticeAnswered).
 	PacedAt time.Time `json:"paced_at,omitzero"`
-	// PacedFrom is the moment the reservation above was made, on the clock that made it, and the
-	// two travel together: PacedAt less PacedFrom is how long the pacing held this wake, which is
-	// what the line it writes reports (the daemon's wakeRan).
-	//
-	// The wait is read from this pair rather than from PacedAt less the row's created_at, which
-	// is two clocks subtracted from each other: created_at is the database's now() at the start
-	// of the fact's transaction (store/migrations/0004_record.up.sql), while the reservation is
-	// made from the engine's clock later in that same transaction (workflow's claimReady). A
-	// catch-up the burst let straight through — PacedAt equal to PacedFrom, the first wake of a
-	// wave — would otherwise report the transaction's own duration as a wait, and under clock
-	// skew a wait the other way about.
+	// PacedFrom is the moment the engine wrote the row held, on the clock the let-out is read on,
+	// and the two travel together: PacedAt less PacedFrom is how long the pacing held this wake,
+	// which is what the line it writes reports (the daemon's wakeRan). The wait is read from this
+	// pair rather than from PacedAt less the row's created_at, which is two clocks subtracted from
+	// each other: created_at is the database's now() at the start of the fact's transaction
+	// (store/migrations/0004_record.up.sql), while the row is held from the engine's clock later
+	// in that same transaction (workflow's claimReady). A row the pacer let out at its join waited
+	// no turn, and its let-out writes PacedAt as PacedFrom (ReleaseHeldCatchUp), so the commit
+	// that came between the write and the join is not read as a wait.
 	PacedFrom time.Time `json:"paced_from,omitzero"`
+	// PacedTurns is how many turns the pacing let out between the row's join of its queue and its
+	// own let-out (wakepace.Let.Turns), which the line its wake writes names beside the queue. The
+	// let-out writes it with PacedAt (ReleaseHeldCatchUp), and it goes where PacedAt goes: dropped
+	// at the publish, kept on a re-held copy.
+	PacedTurns int `json:"paced_turns,omitempty"`
 	// ResendOf is the outbox row a re-held copy copies. The copy is published under that row's
 	// dedupe key (OutboxKey), so the listener's report of a failed forward names the original row,
 	// whichever copy failed (exceptionNotice), and the listener's role lane drops a copy that
@@ -924,20 +928,42 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
 // notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
 // the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
-// and puts nothing back, and only the receipt-timeout path restores the two paced moments by
-// hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
+// and puts nothing back, and only the receipt-timeout path restores the paced moments and turns
+// by hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
 // (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
 // as it requires CatchUp of a catch-up notice, is stripped here only together with a restore of
 // its own there, or every re-hold of that kind is refused for want of it
 // (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
-	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
+	n.PacedAt, n.PacedFrom, n.PacedTurns = time.Time{}, time.Time{}, 0
 	if n.ResendOf == 0 {
 		return n, OutboxKey(id)
 	}
 	copied := n.ResendOf
 	n.ResendOf = 0
 	return n, OutboxKey(copied)
+}
+
+// CatchUpHeldAt is the moment a catch-up the wake pacing holds is written at, in its row's
+// next_at and in its notice's PacedAt: a moment no clock of this daemon reaches, which is the row
+// having no due moment until the pacer lets it out (ReleaseHeldCatchUp). A place in the pacing's
+// queue has no moment of its own until then (dispatch://INFRA-5682 R1), and the row has to stand
+// in the outbox meanwhile, so that a restart finds it and joins it to the queue again (the
+// daemon's catchUpPacing). The outbox runs a row only once it is due, so no lane takes a held row
+// up, and a reader of a notice's due moment that meets this one (CatchUpIsHeld) reads the pacer's
+// estimate for the row's place instead (the daemon's pacedCatchUps and deliverNotice).
+var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// CatchUpIsHeld is whether at, a row's next_at or a notice's PacedAt, is CatchUpHeldAt: the
+// moment of a catch-up the wake pacing still holds in its queue, which is no due moment. The
+// daemon's earlierNoticeFor, catchUpPacing.restore and pacedCatchUps, where it names a row's moment
+// in the state's wakesWaiting, test the moment with it, so none of them takes it for a deadline.
+// Two statements of the store compare next_at with CatchUpHeldAt itself (ReleaseHeldCatchUp,
+// CatchUpHeld), and the other readers rely on the held moment sorting after any now: the outbox
+// runs a row only once its next_at has come, and the daemon's releaseWaiting and pacedCatchUps
+// tell a held notice by a PacedAt still ahead of now.
+func CatchUpIsHeld(at time.Time) bool {
+	return at.Equal(CatchUpHeldAt)
 }
 
 // ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,
@@ -1233,8 +1259,28 @@ type SuperviseRequest struct {
 	// with no delivery pending, so the entry test alone would drop the retry's own task and
 	// relaunch the worker with no prompt. The outbox row-id guard still holds
 	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
-	// time.
+	// time. It says nothing of who asked for the start (Decided below): the phase-entry upgrade
+	// stamped it on each owed start whose claim already held an entry
+	// (migrations/20261111225552_phase_entry.up.sql), whoever had queued that start.
 	ResendEntry bool `json:"resendEntry,omitempty"`
+	// Decided marks a start a person, the controller or the issue's architect decided. Two starts
+	// carry it: the held phase's retry (workflow.Engine.restart), by any route into it — the
+	// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker, a
+	// person's todo on a held root — and admission's start of a promoted root's architect
+	// (workflow.Engine.StartPromotedArchitect), which a todo on the root brings, the controller's
+	// restart of a tree among them. It is the one start that launches again the agent of a claim
+	// held for OpenAI's cyber-policy refusal: the outbox hands it to the claim's retry
+	// (supervise.RequestRetry's Decided, which supervise.Claim.RetryHeld reads), and that retry
+	// starts the agent in a new session (supervise's freshSession). Every other start of such a
+	// claim is one the daemon makes by itself, which the machine refuses, whatever other mark it
+	// carries. A row a release before this field wrote carries no Decided, so its start of a held
+	// claim is refused too; where that start is of the issue's phase the refusal holds the issue
+	// for its architect (the daemon outbox's heldStartRefused), and the architect's retry then
+	// writes a row that carries it. A release before this field refuses a row that carries it
+	// (DisallowUnknownFields), so the way back takes the key off every supervise row, with every
+	// daemon of the database stopped, before the earlier image boots (docs/kubernetes.md, under
+	// 20261125223008_claim_held_for).
+	Decided bool `json:"decided,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow's Engine.ResumeTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -1394,11 +1440,19 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // zero moment is a fence that any turn passes. A release before this field refuses a row that
 // carries it (DisallowUnknownFields), so a rollback waits for such rows to run
 // (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+//
+// PodUID, on the suspension a left pod's close queues after its launcher's clean read, is the pod
+// that read found clean (IssueWorkspaceCheck.PodUID): the suspension takes that pod or nothing,
+// read under the runtime's pod lock (internal/daemon's suspendIssue). "" binds no pod. A release
+// before this field refuses a row that carries it (DisallowUnknownFields), so a rollback waits for
+// such rows to run too (docs/kubernetes.md, "Rolling back the release that keeps no saved
+// workspace").
 type IssueSuspend struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	TurnStart      *time.Time `json:"turnStart,omitempty"`
+	PodUID         string     `json:"podUid,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
@@ -1430,6 +1484,23 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
 // (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
 // release's row leaves it zero, since its mark holds it.
+//
+// Launcher makes the pod's launcher read the workspace rather than Role's shim (R6 of
+// #5285, runtime.PodWorkspaceReader): no role process runs in the pod, so no shim
+// is there to read through. It is the check of the release of a pod no claim owns
+// (workflow.UnownedPodRelease), inside that release's mark, and, with Close, of the close of a left
+// pod with no live claim, which marks no release and stops no role: its clean read queues the
+// Sandbox suspension alone, fenced on TurnStart. Such a row names no Role, since no role's shim
+// reads it; a decline it records tells the issue's architect (workspace-kept, WorkspaceKeptNotice).
+// A release before these two fields refuses a row that carries either (DisallowUnknownFields), so
+// a rollback waits for such rows to run (docs/kubernetes.md, "Rolling back the release that keeps
+// no saved workspace").
+//
+// PodUID, on a launcher's row, is the pod the pass read the runtime holding when it queued the
+// check (pods.IdleView.PodUID), "" where it could not say: a read the launcher made of another pod
+// is evidence of that pod alone, and is discarded (internal/daemon's checkIssueWorkspace and
+// checkLeftPodWorkspace), and the teardown and the suspension that a clean read lets through take
+// that pod or nothing (IssueRelease.PodUID, IssueSuspend.PodUID).
 type IssueWorkspaceCheck struct {
 	Tree           string       `json:"tree"`
 	Generation     uint64       `json:"generation"`
@@ -1437,7 +1508,14 @@ type IssueWorkspaceCheck struct {
 	Role           claim.Role   `json:"role"`
 	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
 	TurnStart      time.Time    `json:"turnStart,omitzero"`
+	Launcher       bool         `json:"launcher,omitempty"`
+	Close          bool         `json:"close,omitempty"`
+	PodUID         string       `json:"podUid,omitempty"`
 }
+
+// LeftPodClose is whether the check is the first act of a left pod's close (CloseRoles, or Close
+// for a close that stops no role) rather than of a release.
+func (c IssueWorkspaceCheck) LeftPodClose() bool { return len(c.CloseRoles) > 0 || c.Close }
 
 func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
@@ -1454,10 +1532,19 @@ func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundl
 // again from what was pushed to the issue's branch. The check took the pod only because the
 // workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
 // last pod used.
+//
+// PodUID, on the teardown of a release whose launcher reads the workspace first, is the pod that
+// check reads (IssueWorkspaceCheck.PodUID): the teardown takes that pod or nothing, read under the
+// runtime's pod lock, and a pod that took its place since cancels the release (internal/daemon's
+// releaseIssue). "" binds no pod. A release before this field refuses a row that carries it
+// (DisallowUnknownFields), so a rollback waits for such rows to run, an issue_release row behind
+// its check among them (docs/kubernetes.md, "Rolling back the release that keeps no saved
+// workspace").
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
 	TreeGeneration uint64 `json:"treeGeneration"`
+	PodUID         string `json:"podUid,omitempty"`
 }
 
 func (IssueRelease) OutboxKind() OutboxKind { return OutboxKindIssueRelease }
@@ -2456,8 +2543,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
 	case IssueWorkspaceCheck:
-		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
+		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || (value.Role == "") != value.Launcher {
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace, and names no role where the pod's launcher reads it")
+		}
+		if value.Launcher && len(value.CloseRoles) > 0 {
+			return fmt.Errorf("a workspace check the pod's launcher reads stops no role, so it names no close roles")
+		}
+		if value.Close && !value.Launcher {
+			return fmt.Errorf("a close's workspace check that stops no role is read by the pod's launcher")
 		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
@@ -2577,6 +2670,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.ResendEntry && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start that resends the entry its role's row names requires a start with a task and a phase")
+		}
+		if value.Decided && (value.Op != "start" || value.News || value.CheckLook != 0) {
+			return fmt.Errorf("a supervise request someone decided is a start, and neither a start for news alone nor a production check's look")
 		}
 		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")
@@ -2837,9 +2933,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
 // passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
 // (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree; the reason names each version, its document and its giver,
-// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
-// default steps), and that the architect may give the plan again with register_plan as its own.
+// moves a member to another tree; the reason names each version once, its document and the
+// givers of its copies, the plan the first step runs (an owner's, of the issue's generation or
+// carried to it, or the default steps), and that the architect may give the plan again with
+// register_plan as its own.
 // Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
 // passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
 // run takes the project's default steps, and the reason names each version and the group
@@ -2852,6 +2949,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
+// disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a
+// replacement that still took a disk that may hold work.
 //
 // `hook-prompt-undelivered` is a hook's prompt to a role of the issue that ended with no session of
 // that role handed it: the role's claim failed or was retired, or no session of it held the role
@@ -2870,6 +2971,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	WorkspaceKeptNotice, WorkspaceTakenNotice,
 	HookPromptUndeliveredNotice,
 }
 
@@ -2884,6 +2986,38 @@ const HookPromptUndeliveredNotice NoticeKind = "hook-prompt-undelivered"
 // volume is the issue's — a repository cache, a build tree, a test run's artefacts — and the
 // architect is who can stop or redirect it.
 const VolumeNearFullNotice NoticeKind = "volume-near-full"
+
+// WorkspaceKeptNotice is the architect's notice that the daemon keeps a pod in which no role
+// process runs, because the pod's launcher read its workspace and found work that no branch or tag
+// on origin holds, or could not read it (R6 of #5285, internal/daemon's
+// keptMessage): the release of a pod no claim owns and the close of a left pod with no live claim
+// delete a disk only after a read shows it clean. It names the state of each claim of the issue
+// and what the read found, and it is sent once for each pod kept so (store's recordDecline). It is
+// the architect's because no live role of the issue is there to push the work, and the architect
+// is who can bring one back. Where the owning architect will not hold its role again, the notice
+// reaches the project's controller instead, as a ControllerNotice of the same kind and words
+// (internal/daemon's tellControllerOfKeptPod), since the pod counts as told once its notice is
+// queued. No earlier release decodes it, so a rollback deletes its unsent rows, the controller's
+// among them, first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+//
+// An update round over a drift the pod's roles can keep working under that reads work in the pod's
+// workspace, or cannot read it, keeps the pod too (R7 of #5285, internal/daemon's
+// keepPodForRound): where the open phase's worker has no live process in the pod, its architect is
+// told by this notice, once for the pod, with each claim's state and what the read found.
+const WorkspaceKeptNotice NoticeKind = "workspace-kept"
+
+// WorkspaceTakenNotice is the architect's notice that a replacement of its issue's pod took a disk
+// that may hold work no branch or tag on origin holds (R7 of #5285): an update
+// round over a drift that breaks the pod (runtime.Breaks), or a launch's own
+// replacement of an issue pod (runtime.TakenPod), whose read of the workspace before the
+// replacement found such work or could not be made. It names each commit and the working-copy
+// change, or that no read could be made and why, and it is sent once for each replacement. It is
+// the architect's because the work is gone with the pod and the architect is who can have it made
+// again. Where the owning architect will not hold its role again, it reaches the project's
+// controller instead, as WorkspaceKeptNotice does. No earlier release decodes it, so a rollback
+// deletes its unsent rows with the workspace-kept ones (docs/kubernetes.md, "Rolling back the
+// release that keeps no saved workspace").
+const WorkspaceTakenNotice NoticeKind = "workspace-taken"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
