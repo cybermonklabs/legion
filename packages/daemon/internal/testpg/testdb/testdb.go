@@ -39,6 +39,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -84,7 +87,9 @@ func PlainDatabase(t testing.TB, prefix string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := drop(); err != nil {
+		dropContext, cancel := testwait.TeardownContext(t)
+		defer cancel()
+		if err := drop(dropContext); err != nil {
 			t.Error(err)
 		}
 	})
@@ -92,12 +97,12 @@ func PlainDatabase(t testing.TB, prefix string) string {
 }
 
 // create makes an empty database named <prefix>_<random> on the server dsn names, and answers its
-// URL and the function that drops it, which also closes the admin connection create opened. Both
-// URLs it connects or points a caller at — the admin database's and the new database's — come
-// from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database is its caller: one database
-// per test.
-func create(dsn, prefix string) (string, func() error, error) {
+// URL and a function that drops it with the context its caller supplies, which also closes the
+// admin connection create opened. Both URLs it connects or points a caller at — the admin
+// database's and the new database's — come from DatabaseURL, and it makes them before it connects,
+// so a DSN whose rewrite names another server ends the call with no connection and no database.
+// Database is its caller: one database per test.
+func create(dsn, prefix string) (string, func(context.Context) error, error) {
 	admin, err := DatabaseURL(dsn, "postgres")
 	if err != nil {
 		return "", nil, err
@@ -111,19 +116,26 @@ func create(dsn, prefix string) (string, func() error, error) {
 		return "", nil, err
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin)
+	config, err := pgxpool.ParseConfig(admin)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse the admin database URL: %w", err)
+	}
+	// The ordinary path takes one connection, and the second is reserved for the backend
+	// diagnostic when the context cancels a forced drop's connection.
+	config.MaxConns = 2
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return "", nil, fmt.Errorf("connect to the admin database: %w", err)
 	}
 	// A copy of template1's files. Created the default way, from PostgreSQL 15, every page of
 	// template1 goes into the write-ahead log: 4.4 MB of log for each empty database.
-	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		_ = conn.Close(ctx)
+	if _, err := pool.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		pool.Close()
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}
-	drop := func() error {
-		defer func() { _ = conn.Close(context.Background()) }()
-		if err := Drop(context.Background(), conn, name); err != nil {
+	drop := func(ctx context.Context) error {
+		defer pool.Close()
+		if err := Drop(ctx, pool, name); err != nil {
 			return fmt.Errorf("drop %s: %w", name, err)
 		}
 		return nil
@@ -139,36 +151,59 @@ const insufficientPrivilege = "42501"
 // has not exited yet: PostgreSQL waits only a few seconds for one before it gives up.
 const objectInUse = "55006"
 
-// Execer is what Drop needs of a connection or a pool: one statement.
+// Execer is the admin handle Drop needs: a forced drop and the read that identifies the database's
+// backends when the test's teardown deadline ends.
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Drop drops name, waiting out an autovacuum worker and a backend that has not exited yet.
 // `drop database ... with (force)` terminates every other session of the database, which
 // PostgreSQL refuses to a login that is neither superuser nor a member of pg_signal_backend as
 // soon as one session belongs to another role — an autovacuum worker, which attaches to a
-// database a test has just filled. Every Legion pod shares one server whose test login holds
-// neither privilege (dispatch://INFRA-714 round six). Where the login may terminate every session,
-// the drop then waits only a few seconds for those backends to exit, and answers 55006 while one
-// has not, which a run under load reaches (envoy's storetest retries the same code). Both
-// refusals are waited out for 30 seconds; any other error is the caller's at once.
+// database a test has just filled. Where the login may terminate every session, the drop then
+// waits only a few seconds for those backends to exit, and answers 55006 while one has not.
+//
+// Both refusals are retried until ctx ends. A caller supplies the test binary's deadline: a
+// test's cleanup takes testwait.TeardownContext(t), and testpg.Main uses
+// testwait.TeardownDeadline after m.Run has returned. That lets a correct teardown survive
+// machine load but still ends a holder that never leaves, naming its backends. Any error that is
+// not either refusal is the caller's at once.
 //
 // It lives here rather than in internal/testpg because this package imports no package of the
 // module except internal/testwait, which imports none, so every package's tests can take it —
 // internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for attempt := 0; ; attempt++ {
+	var (
+		attempt int
+		last    error
+		reason  string
+	)
+	for {
+		if cause := ctx.Err(); cause != nil {
+			if last == nil {
+				last = errors.New("no forced drop ran before its context ended")
+				reason = "the context ended before a forced drop ran"
+			}
+			return dropDeadlineError(ctx, cause, last, attempt, reason, admin, name)
+		}
+		attempt++
 		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
 		if err == nil {
 			return nil
+		}
+		if cause := ctx.Err(); cause != nil {
+			if last == nil {
+				last = err
+				reason = "the forced drop did not finish before its context ended"
+			}
+			return dropDeadlineError(ctx, cause, last, attempt, reason, admin, name)
 		}
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) {
 			return err
 		}
-		var reason string
 		switch pgErr.Code {
 		case insufficientPrivilege:
 			reason = "a session of another role, an autovacuum worker, holds the database and this login may not terminate it"
@@ -177,15 +212,41 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 		default:
 			return err
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w (still refused after %d attempts over 30s: %s)", err, attempt+1, reason)
-		}
+		last = err
+		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(250 * time.Millisecond):
+			timer.Stop()
+			return dropDeadlineError(ctx, ctx.Err(), last, attempt, reason, admin, name)
+		case <-timer.C:
 		}
 	}
+}
+
+// dropDeadlineError keeps the PostgreSQL error that says why the drop was retried, joins the
+// context's deadline or cancellation so errors.Is still reports it, and names the backends the
+// server still shows on the database.
+func dropDeadlineError(bound context.Context, cause, last error, attempts int, reason string, admin Execer, name string) error {
+	ctx, cancel := diagnosticContext(bound)
+	defer cancel()
+	var backends string
+	if err := admin.QueryRow(ctx, `select coalesce(string_agg(
+		'pid=' || pid::text || ' type=' || coalesce(backend_type, 'not visible') ||
+		' user=' || coalesce(usename, '') || ' state=' || coalesce(state, '') || ' wait=' ||
+		coalesce(nullif(coalesce(wait_event_type, '') || '/' || coalesce(wait_event, ''), '/'), 'none'),
+		'; ' order by pid), 'none')
+		from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()`, name).Scan(&backends); err != nil {
+		backends = "could not read pg_stat_activity: " + err.Error()
+	}
+	return fmt.Errorf("%w (still refused after %d attempts before its context bound: %s; backends still holding %s: %s): %w",
+		last, attempts, reason, name, backends, cause)
+}
+
+func diagnosticContext(bound context.Context) (context.Context, context.CancelFunc) {
+	if deadline, bounded := testwait.TeardownDiagnosticDeadline(bound); bounded {
+		return context.WithDeadline(context.Background(), deadline)
+	}
+	return context.WithTimeout(context.Background(), testwait.TeardownDiagnosticBound)
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is
