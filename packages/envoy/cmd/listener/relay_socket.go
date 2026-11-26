@@ -178,6 +178,8 @@ const (
 
 	relaySocketReasonExpired           = "credential_expired"
 	relaySocketReasonRefused           = "credential_refused"
+	relaySocketReasonMembershipHeld    = "membership_held"
+	relaySocketReasonDeadlinePassed    = "deadline_passed"
 	relaySocketReasonBrokerUnavailable = "broker_unavailable"
 	relaySocketReasonNATSUnavailable   = "nats_unavailable"
 	relaySocketReasonSlowConsumer      = "slow_consumer"
@@ -1017,24 +1019,44 @@ func (socket *relaySocket) subscribed() bool {
 //     answers it live with an exp that has passed: the broker writes exp as the whole second at
 //     or before the true expiry, and holds the token live until that true expiry, up to a second
 //     later, which the expiry's timer (watch) would otherwise miss until the next tick;
+//   - the broker answers the token's person held (ciphertoken.Caller.Held): 4403 membership_held,
+//     the class apiAuth refuses such a token's upgrade 401 MEMBERSHIP_HELD under
+//     (refuseHeldBrokerToken), so a socket closes at its next check after the broker answers the
+//     hold (Dispatch's own socket reads no hold yet: its heartbeat asks only whether the token is
+//     live, callerStillResolves);
+//   - the broker answers the person not held only until a deadline that has passed
+//     (ciphertoken.Verifier.Lapsed): 1013 deadline_passed, the class apiAuth answers such a
+//     token's upgrade 503 under (refuseLapsedBrokerToken), so the client comes back rather than
+//     discards a token that works again once the broker answers a later deadline;
 //   - the broker no longer holds it live before its expiry (a revoke, a login ended early), or
 //     holds it as something no session's token is: 4403;
 //   - the answer names another caller than the one the socket was admitted as (its session, its
 //     person or service, its project scope and its projects): 4403. The admitted caller passed the
 //     edge's admission (EdgeAdmits) in apiAuth, which reads no field but these, so an answer equal
-//     to it passes that admission too;
+//     to it passes that admission too, and one that also passes the two checks above passes every
+//     check apiAuth makes of the broker's answer;
 //   - the broker could not be asked: 1013, and every upgrade meanwhile is refused 503 by apiAuth.
 func (socket *relaySocket) verdict() (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), relaySocketCheckWait)
 	defer cancel()
-	caller, until, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
+	verifier := socket.sockets.brokers.verifier.Load()
+	caller, until, err := verifier.LiveUntil(ctx, socket.check)
 	var why string
 	switch {
 	case err == nil:
 		if !until.IsZero() && !socket.sockets.now().Before(until) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
-		if sameRelayCaller(caller, socket.admitted) {
+		switch {
+		case caller.Held:
+			socket.sockets.logger.Warn("listener: the broker answers the relay socket's person held; it is closed",
+				slog.String("session_id", socket.session), slog.String("reason", relaySocketReasonMembershipHeld))
+			return relaySocketCloseRefused, relaySocketReasonMembershipHeld
+		case verifier.Lapsed(caller):
+			socket.sockets.logger.Warn("listener: whether the relay socket's person may still act could not be read; it is closed",
+				slog.String("session_id", socket.session), slog.String("reason", relaySocketReasonDeadlinePassed))
+			return websocket.CloseTryAgainLater, relaySocketReasonDeadlinePassed
+		case sameRelayCaller(caller, socket.admitted):
 			return 0, ""
 		}
 		why = "the broker's answer names another caller than the socket was opened as"

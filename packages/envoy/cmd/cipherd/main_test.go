@@ -1313,11 +1313,18 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 		// inside it comes out escaped; these rows look for the parts around it, or write it
 		// escaped.
 		//
-		// A proxy block of a kind other than dpop is the form the kinds replaced, so it is
-		// refused naming them and the source to tag, rather than served with its rules missing.
-		"a proxy block of a kind the kinds replaced": {
-			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
+		// A proxy block of a kind other than dpop is the form the kinds replaced, so in a file
+		// that declares kinds it is refused naming them and the source to tag, rather than served
+		// with its rules missing.
+		"a proxy block of a kind the kinds replaced, in a file of kinds": {
+			path: profilesFile(t, `{"kinds": [{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}], "profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
 			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy is a proxy block, and a proxy block is no longer read", "declare the kind under kinds", "tag the source, DEEL_API_KEY, proxy="},
+		},
+		// A file that declares no kinds reads its blocks as the broker before the kinds did, so a
+		// block of a kind no block ever took is refused, naming the kinds a block takes.
+		"a proxy block of a kind no block took, in a file of no kinds": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy.kind is", "gcp", "a proxy block's kind is"},
 		},
 		// Who decides a request is the key's own judge tag, and a dpop block is made from no
 		// stored key, its grant decided by its kind, so a dpop block that still sets a judge is
@@ -1423,6 +1430,30 @@ func TestMainStartsWithAProfilesFile(t *testing.T) {
 		], "profiles": [
 			{"name": "DEEL_READ", "source": "DEEL_API_KEY", "allow": [{"method": "GET", "pathPrefix": "/rest/v1/"}]}
 		]}`),
+	)})
+	requireHealthy(t, broker.Addr)
+}
+
+// TestMainStartsWithAFileOfProxyBlocks: a broker that reads kinds starts against a deployment's
+// profiles file of proxy blocks and no kinds (testdata/profiles-proxy-blocks.json, the file every
+// deployment ran before the kinds), and goes on to serve: the file declares no kind, so the
+// broker reads its blocks as the broker before the kinds did (policy.ParseProfiles).
+func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
+	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := filepath.Abs(proxyBlocksFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
+		"BROKER_DATABASE_URL="+storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:legion-daemon",
+		"BROKER_PROFILES_FILE="+profiles,
 	)})
 	requireHealthy(t, broker.Addr)
 }

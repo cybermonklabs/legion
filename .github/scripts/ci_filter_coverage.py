@@ -2,7 +2,7 @@
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
 read none of that - what no if: condition of ci.yaml may say, what every job's `if:` must say, what
-ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
+the cache fill workflows must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
 of this repository running on a merge group - and main() runs them.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
@@ -52,6 +52,13 @@ from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unr
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
 CACHE_WORKFLOW = ".github/workflows/ci-caches.yaml"
+# The fill workflows rule 11 (ci_workflow_rules.check_cache_round_trip) holds to WORKFLOW's
+# restores: CACHE_WORKFLOW, one run at a time, and the changes job's two entries, one run per commit,
+# so that no commit's entry waits for the Go fills or is lost to a newer push that replaced its run
+# (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores). Not every workflow that
+# fills a cache on a push: docs-pages.yaml saves go-docs from the build job it shares with the docs
+# job.
+CACHE_WORKFLOWS = (CACHE_WORKFLOW, ".github/workflows/ci-caches-changes.yaml")
 REPO = Path.cwd().resolve()
 SHOWN = 20  # uncovered files printed per gate
 # A Go test file, by name: what `go list` reports as a package's TestGoFiles or XTestGoFiles
@@ -3755,7 +3762,7 @@ def check() -> int:
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
-    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
+    rules.check_race_fill_packages(data.RACE_FILLS, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)

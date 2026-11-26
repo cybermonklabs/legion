@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/sockettest"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -72,6 +73,7 @@ func heldPortChildCopyRefusal() error {
 // that has heldPortChildEnv=1 and no other. While TestMain is in the build no copy reaches it, so
 // this test is what holds the refusal.
 func TestAProcessStartedAsTheHeldPortChildStartsNoCopy(t *testing.T) {
+	// Not parallel: it unsets heldPortChildEnv (fixtureenv.Unset, through t.Setenv).
 	fixtureenv.Unset(t, heldPortChildEnv)
 	if err := heldPortChildCopyRefusal(); err != nil {
 		t.Fatalf("with %s unset: %v, want no refusal", heldPortChildEnv, err)
@@ -135,6 +137,7 @@ func heldPortChild() int {
 // that process holding it once Start returns: another program's bind in the meantime is refused,
 // the process serves on the socket, and the socket is gone once it exits.
 func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
+	t.Parallel()
 	held := HoldPort(t)
 	// The socket itself, by its inode, which the checks below read rather than its port: once the
 	// socket is gone, any other process on the machine may bind the port.
@@ -170,8 +173,10 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial %s: %v\n%s", held.Addr, err, child.Output.String())
 	}
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		if err := conn.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
 	}
 	answer, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
@@ -261,6 +266,8 @@ func checkSocket(t *testing.T, when string, inode uint64, copies map[int]int, ro
 // that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
 // an Exited closed before afterExit returned would show here as nothing recorded.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
+	// Not parallel: the order it proves rests on a 200 ms sleep in the callback, which load could
+	// outlast and pass the test without the order.
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int

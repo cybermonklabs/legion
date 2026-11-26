@@ -3444,6 +3444,54 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 	}
 }
 
+// TestHoldRequiresDeadlineIsAnOnOffSetting pins BROKER_HOLD_REQUIRES_DEADLINE, which an IAP
+// deployment's broker sets, read as the broker's other on/off settings are: unset, or blank, is
+// off, every spelling strconv.ParseBool reads is taken, and anything else refuses the start naming
+// the setting rather than being taken as off, which would serve an IAP deployment's people with no
+// deadline. It needs the hold it rules, which BROKER_PROJECT_ACCESS_URL builds: set true without
+// that URL, the start is refused naming both settings, since a broker that asks no Dispatch holds
+// nobody, deadline or not; set false without it, the start goes on.
+//
+// Controls: Load leaving HoldRequiresDeadline unread ("true" reads as off, and the test fails
+// naming it); Load taking it true with no BROKER_PROJECT_ACCESS_URL (the start goes on, and the
+// test fails naming the refusal it wanted).
+func TestHoldRequiresDeadlineIsAnOnOffSetting(t *testing.T) {
+	withHold := func() map[string]string {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766"
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		return e
+	}
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{{"", false}, {"  ", false}, {"false", false}, {"0", false}, {"true", true}, {" TRUE ", true}, {"1", true}} {
+		e := withHold()
+		if c.value != "" {
+			e["BROKER_HOLD_REQUIRES_DEADLINE"] = c.value
+		}
+		cfg, err := Load(env(e))
+		if err != nil || cfg.HoldRequiresDeadline != c.want {
+			t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = (%t, %v); want %t", c.value, cfg.HoldRequiresDeadline, err, c.want)
+		}
+	}
+	e := withHold()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "required"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "must be true or false") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = %v; want a refusal naming the setting", "required", err)
+	}
+
+	e = validEnv()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "true"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=true with no BROKER_PROJECT_ACCESS_URL) = %v; want a refusal naming both settings: that broker holds nobody", err)
+	}
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "false"
+	if cfg, err := Load(env(e)); err != nil || cfg.HoldRequiresDeadline {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=false with no BROKER_PROJECT_ACCESS_URL) = (%t, %v); want the start to go on with it off", cfg.HoldRequiresDeadline, err)
+	}
+}
+
 // TestTheDirectoryURLIsGooglesUnlessSet pins BROKER_DIRECTORY_URL: unset, the broker reads no
 // address of its own, so the group reader calls Google's Directory API; set, it is read without
 // the slashes it ends in, as a test's stand-in is named; and a value that is no absolute https URL,

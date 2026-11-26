@@ -4,8 +4,10 @@
 // with its restore (narrow.go). The bus's own tests cannot import it (it imports the bus) and keep
 // their own copies: the fixture deployedClusterStream, the drift table in
 // internal/bus/stream_replicas_test.go, and narrowedAsTheQuiesce in
-// internal/bus/adhoc_topic_test.go; they fill the stream through testnats.FillStream itself. Every
-// test outside package bus takes them from here.
+// internal/bus/adhoc_topic_test.go. Their full-stream tests use testnats.FillStream, except
+// TestAFullStreamRefusesAPublishAndKeepsEveryStoredMessage: it fills a single-server stream, where
+// nats-server checks the store with no clustered in-flight count, and it reads back every envelope
+// it filled by stream sequence. Every test outside package bus takes these from here.
 package bustest
 
 import (

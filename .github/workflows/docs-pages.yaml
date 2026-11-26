@@ -158,6 +158,7 @@ on:
       - 'packages/envoy/internal/cipher/githubname/**'
       - 'packages/envoy/internal/cipher/groups/*'
       - 'packages/envoy/internal/cipher/helper/**'
+      - 'packages/envoy/internal/cipher/hold/**'
       - 'packages/envoy/internal/cipher/judge/**'
       - 'packages/envoy/internal/cipher/leasetime/**'
       - 'packages/envoy/internal/cipher/logmask/**'
