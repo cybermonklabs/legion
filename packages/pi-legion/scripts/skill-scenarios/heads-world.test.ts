@@ -140,6 +140,9 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
 // Catches: the fake GitHub and the opened envelopes disagree about the base revision, leaving
 // Dispatch's former-head read incomplete and refusing the tester's record at its state fence.
 test("reviewer-own-head seeds one base revision through the fake GitHub and the opened envelopes", async () => {
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const { calls } = await world("sibling-fails", "reviewer-own-head");
   const seed = calls
     .filter((call) => call.path === "/__fixture/repos")
@@ -394,7 +397,7 @@ test("heads-events refuses a world it records no results for, and records none",
   const dir = dirOf("unknown");
   const file = path.join(dir, "fixture.json");
   const headsFile = path.join(dir, "heads.json");
-  writeFileSync(headsFile, JSON.stringify({ "702": "a".repeat(40) }));
+  writeFileSync(headsFile, JSON.stringify({ base: "0".repeat(40), "702": "a".repeat(40) }));
   const unknown = "architect-pass-and-fail-no-verdict";
   await heads.headsIssue(file, unknown);
   await expect(heads.headsEvents(file, headsFile, unknown)).rejects.toThrow(
