@@ -238,6 +238,67 @@ function paintAcrossTasks(
   };
 }
 
+/** The attribute an element names itself by to Element Timing, which reports when the element
+ *  first paints text of its own. */
+export const ELEMENT_TIMING = "elementtiming";
+
+/** The `display` of an element that flows inline in the box around it rather than laying out a
+ *  box of its own: `inline`, and `contents`, which draws no box at all. A DOM that computes no
+ *  style answers an inline element's `display` with nothing. */
+const FLOWS_INLINE: Readonly<Record<string, true>> = { "": true, contents: true, inline: true };
+
+/**
+ * The element that paints the first line of text `root` shows, the one element of a body that
+ * an Element Timing entry for that line can report: Paint Timing gives a painted text node to
+ * "the Element which determines the containing block of text", the nearest element around it
+ * that lays out a box of its own. It is found from the first text node with words in it that is
+ * shown - none inside an element `hidden` within `root`, as a row hides a typed block's source
+ * line (`RowText.tsx`), and none under an element drawn as `display: none` - walking up past
+ * every element that flows inline, to a paragraph, a heading, a list item or a table cell. Where
+ * the host lays the body itself out inline, the walk passes `root` and ends at the host's own
+ * box: a row of the issue page draws a text of one paragraph inline before its trail
+ * (`styles.css`), and its words' box paints that text. Undefined while `root` shows no words.
+ */
+function firstLineElement(root: HTMLElement): Element | undefined {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+    const hidden = text.parentElement?.closest("[hidden]");
+    if ((text.nodeValue ?? "").trim() === "" || (hidden != null && root.contains(hidden))) {
+      continue;
+    }
+    let box = text.parentElement;
+    let display = box === null ? "none" : getComputedStyle(box).display;
+    while (box !== null && FLOWS_INLINE[display] === true) {
+      box = box.parentElement;
+      display = box === null ? "none" : getComputedStyle(box).display;
+    }
+    if (box !== null && display !== "none") return box;
+  }
+  return undefined;
+}
+
+/**
+ * Gives the element that paints `root`'s first line (`firstLineElement`) the Element Timing
+ * identifier `identifier`, and takes it off every other element that held it for this body: an
+ * element of the paint this one replaced, and the body's own element and each box of the host's
+ * it flows inline in, which held it while the first line was theirs - a body's literal text, or
+ * a text of one paragraph before a row's trail. Nothing where `identifier` is undefined, as it
+ * is for every surface but the issue page's rows. A host whose own pass over a paint hides part
+ * of it after the paint has landed calls it again on its element (`RowText.tsx`).
+ */
+export function markFirstLine(root: HTMLElement, identifier: string | undefined): void {
+  if (identifier === undefined) return;
+  const first = firstLineElement(root);
+  for (const held of root.querySelectorAll(`[${ELEMENT_TIMING}]`)) {
+    if (held !== first) held.removeAttribute(ELEMENT_TIMING);
+  }
+  for (let up: Element | null = root; up !== null; up = up.parentElement) {
+    if (up !== first) up.removeAttribute(ELEMENT_TIMING);
+    if (FLOWS_INLINE[getComputedStyle(up).display] !== true) break;
+  }
+  first?.setAttribute(ELEMENT_TIMING, identifier);
+}
+
 /** What a surface tells `useRenderedMarkdown` beyond its element, source and paint; each has a
  *  default, so a surface names only what it changes. */
 export interface RenderedMarkdownOptions {
@@ -246,6 +307,11 @@ export interface RenderedMarkdownOptions {
   pictures?: "block" | "inline";
   /** The surface's last pass over its rendered element (`DecorateMarkdown`); none by default. */
   decorate?: DecorateMarkdown;
+  /** The Element Timing identifier (`elementtiming`) of the element that paints the body's first
+   *  line of text (`markFirstLine`), which a host whose first paint is measured names: the issue
+   *  page's rows. That element carries it from the paint that builds the line, before the
+   *  browser paints it, the first batch of a paint across tasks included; none by default. */
+  elementTiming?: string;
   /** Called after each render lands; none by default. */
   onRendered?: () => void;
   /** The parse policy (`SoftBreaks`): `space`, the default, or `line`. */
@@ -522,6 +588,12 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * is reading moves to the new one with it. A source that differs from the one painted is sliced
  * however much the element already holds, so an edit of a long comment, and a streamed turn that
  * grew past a batch after a short paint, never land in one task.
+ *
+ * Where the surface names an Element Timing identifier (`elementTiming`), the element that paints
+ * the body's first line of text carries it from each paint that builds that line - the pending
+ * text, the fallback, a whole paint and the first batch of a paint across tasks - and no other
+ * element of the body does (`markFirstLine`). The newest identifier is the one given, and a new
+ * identifier alone paints nothing again, as a new `onRendered` does not.
  */
 export function useRenderedMarkdown(
   root: RefObject<HTMLElement | null>,
@@ -531,6 +603,7 @@ export function useRenderedMarkdown(
   {
     pictures = "block",
     decorate,
+    elementTiming,
     onRendered,
     paintInSlices,
     references,
@@ -539,6 +612,8 @@ export function useRenderedMarkdown(
 ): RenderedMarkdown {
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
+  const elementTimingRef = useRef(elementTiming);
+  elementTimingRef.current = elementTiming;
   const Card = useContext(TextAskCard);
   const host = useReferenceHost();
   const [referenceAnchors, setReferenceAnchors] = useState<readonly ReferenceAnchor[]>(NO_ANCHORS);
@@ -621,6 +696,7 @@ export function useRenderedMarkdown(
           );
           setReferenceAnchors(anchors);
           setPictureAnchors(placeholders);
+          markFirstLine(element, elementTimingRef.current);
           return;
         }
         paintedRender.current = render;
@@ -677,6 +753,9 @@ export function useRenderedMarkdown(
             }
           }
           onRenderedRef.current?.();
+          // Last, so the identifier goes to the line a host's own pass (`onRendered`) left shown;
+          // a host whose pass runs after this one marks the line again (`RowText.tsx`).
+          markFirstLine(element, elementTimingRef.current);
         };
         if (engine === undefined || parsed === undefined) {
           painted.current = undefined;
@@ -732,6 +811,9 @@ export function useRenderedMarkdown(
             // (`keepTheReadersPlace`).
             element.getBoundingClientRect();
             place?.keep();
+            // The first line's element carries its identifier from the batch that put it in, in
+            // the same task, before the browser paints it.
+            markFirstLine(element, elementTimingRef.current);
           },
           beforeBatch() {
             // What the reader has done to the page since the last batch, before this one grows

@@ -46,7 +46,7 @@ import {
   isReader,
   NODE_TYPE_NAMES,
 } from "../page-words";
-import { RowText } from "../RowText";
+import { ROW_TIMING, RowText, rowTiming } from "../RowText";
 import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
@@ -259,13 +259,14 @@ export function DecisionsRow({
           >
             {deleted === null ? (
               <RowText
+                elementTiming={ROW_TIMING}
                 focused={focused}
                 markdown={node.text}
                 source={node.source}
                 tree={node.tree}
               />
             ) : (
-              <p className="break-words" {...authorText}>
+              <p className="break-words" {...authorText} {...rowTiming}>
                 <DeletedLine deleted={deleted} />
               </p>
             )}

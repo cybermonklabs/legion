@@ -249,6 +249,10 @@ function* paintBlockInSlices(
  *  surface drawing it says about it. One shape for the public body and for the painted one it
  *  hands its props to (`PaintedBody`). */
 interface MarkdownBodyProps {
+  /** The Element Timing identifier of the element that paints this body's first line of text
+   *  (`useRenderedMarkdown`'s `elementTiming`), which only the issue page's rows name: the load
+   *  rows read by it when each row was first painted. */
+  elementTiming?: string;
   /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
    *  element as its literal characters where neither the tree nor the markdown could be drawn -
    *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
@@ -338,6 +342,9 @@ interface MarkdownBodyProps {
  * (`.dispatch-markdown`'s `font-size: inherit; line-height: inherit`, styles.css, a rule in no
  * layer that overrides any utility on the renderer's own element), so a caller sizes a wrapper,
  * as it does for `MarkdownPreview`.
+ *
+ * A host whose first paint is measured names an Element Timing identifier (`elementTiming`),
+ * which the element that paints the body's first line of text carries (`useRenderedMarkdown`).
  */
 export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
   const host = useReferenceHost();
@@ -347,6 +354,7 @@ export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
 /** The body as a host that draws markup draws it: painted, with its references linked where the
  *  host links them, and the cards under a body that is nothing but references. */
 function PaintedBody({
+  elementTiming,
   markdown,
   onRendered,
   referenceText = markdown,
@@ -367,6 +375,7 @@ function PaintedBody({
     tree,
     inline ? paintInline : paintBlock,
     {
+      elementTiming,
       pictures: variant,
       onRendered,
       paintInSlices: inline ? undefined : paintBlockInSlices,

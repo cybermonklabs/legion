@@ -62,7 +62,7 @@ import {
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
-import { RowText } from "../RowText";
+import { ROW_TIMING, RowText, rowTiming } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow } from "../useTreeKeymap";
 import {
@@ -920,7 +920,11 @@ function Summary({
       className={`flex min-w-0 flex-wrap items-center gap-[18px] rounded-[10px] border px-[18px] py-3.5 ${pageLineBorder} ${pagePaperBg}`}
       data-verification-summary=""
     >
-      <p className={`text-sm leading-5 font-semibold ${pageInkText}`} data-verification-covered="">
+      <p
+        className={`text-sm leading-5 font-semibold ${pageInkText}`}
+        data-verification-covered=""
+        {...rowTiming}
+      >
         <span {...authorText}>{covered.covered}</span>{" "}
         <span {...pageChrome}>{VERIFICATION_WORDS.of}</span>{" "}
         <span {...authorText}>{covered.total}</span>{" "}
@@ -1156,7 +1160,7 @@ function Statement({
             className="size-3.5 shrink-0"
             token={GLYPH_TOKENS.statements[statement.state]}
           />
-          <span data-statement-state={statement.state} {...pageChrome}>
+          <span data-statement-state={statement.state} {...pageChrome} {...rowTiming}>
             {VERIFICATION_WORDS.states[statement.state]}
           </span>
         </p>
@@ -1333,7 +1337,13 @@ function Check({
             className={`mt-1.5 block size-[7px] shrink-0 rounded-full ${pageKindBullet.check}`}
           />
           <div className="min-w-0 break-words" data-node-words="">
-            <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+            <RowText
+              elementTiming={ROW_TIMING}
+              markdown={node.text}
+              source={node.source}
+              tabStops
+              tree={node.tree}
+            />
           </div>
         </div>
         {surface === "" ? null : (
@@ -1626,7 +1636,7 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
       role="treeitem"
       tabIndex={tabIndex}
     >
-      <p className={`text-xs leading-5 ${pageQuietText}`}>
+      <p className={`text-xs leading-5 ${pageQuietText}`} {...rowTiming}>
         <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
         <EditedMark at={node.editedAt} marks={NODE_EDITED_MARKS} />
       </p>

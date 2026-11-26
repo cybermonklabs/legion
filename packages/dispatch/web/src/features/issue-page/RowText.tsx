@@ -24,6 +24,7 @@ import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { ELEMENT_TIMING, markFirstLine } from "../refs/useRenderedMarkdown";
 import { placedStorePath, placeStoreLinks } from "./lenses/store-link";
 import { documentWord } from "./node-row-chip";
 import { authorText } from "./page-structure";
@@ -35,6 +36,19 @@ import {
   rowReferenceWords,
 } from "./row-references";
 import { titleReading } from "./tree-drafts";
+
+/** The Element Timing identifier (`elementtiming`) every row of the issue page gives the element
+ *  that paints the start of its first line, by which the load rows read when the row was first
+ *  painted (`e2e/load-instruments.ts`). A row whose first line is its node's words hands it to
+ *  `RowText` (`elementTiming`); a row that draws that line itself spreads `rowTiming` on the
+ *  element that paints it. Today's Dashboard names it nowhere. */
+export const ROW_TIMING = "issue-page-row";
+
+/** `ROW_TIMING` as the attribute a row spreads on the element that paints the start of its first
+ *  line, `<p {...rowTiming}>`, so the attribute is spelled once (`ELEMENT_TIMING`). */
+export const rowTiming: Readonly<Record<string, string>> = Object.freeze({
+  [ELEMENT_TIMING]: ROW_TIMING,
+});
 
 /**
  * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
@@ -83,6 +97,7 @@ import { titleReading } from "./tree-drafts";
  * a later pass makes included.
  */
 export function RowText({
+  elementTiming,
   focused = false,
   markdown,
   onRedrawn,
@@ -90,6 +105,10 @@ export function RowText({
   tabStops = false,
   tree,
 }: {
+  /** The Element Timing identifier of the element that paints the text's first line
+   *  (`MarkdownBody`'s `elementTiming`): `ROW_TIMING` where the text is the start of a row's
+   *  first line on the issue page, and none for every other text. */
+  elementTiming?: string;
   /** Whether the row drawing the text holds the focus: out of the tab order, its scrollers keep
    *  their tab stop, named, so the keyboard can scroll them (decision 317, `useOutOfTabOrder`'s
    *  `keepScrollers`). */
@@ -110,6 +129,7 @@ export function RowText({
 }): ReactNode {
   return tree === undefined ? (
     <ParsedText
+      elementTiming={elementTiming}
       focused={focused}
       markdown={markdown}
       onRedrawn={onRedrawn}
@@ -118,6 +138,7 @@ export function RowText({
     />
   ) : (
     <DrawnText
+      elementTiming={elementTiming}
       focused={focused}
       markdown={markdown}
       onRedrawn={onRedrawn}
@@ -138,12 +159,14 @@ export function RowText({
  *  then draws as it draws any reading with no engine: as the text's own characters
  *  (`MarkdownBody`). So no row's words are lost from the page. */
 function ParsedText({
+  elementTiming,
   focused,
   markdown,
   onRedrawn,
   source,
   tabStops,
 }: {
+  elementTiming: string | undefined;
   focused: boolean;
   markdown: string;
   onRedrawn: (() => void) | undefined;
@@ -157,6 +180,7 @@ function ParsedText({
   }, [engine, failed, markdown]);
   return tree === undefined ? null : (
     <DrawnText
+      elementTiming={elementTiming}
       focused={focused}
       markdown={markdown}
       onRedrawn={onRedrawn}
@@ -544,6 +568,7 @@ function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorEl
  *  (`overflow-wrap: anywhere`), which `break-word` does not do inside a flex or grid row: there it
  *  leaves the box as wide as its longest word, and a long address widens the page. */
 function DrawnText({
+  elementTiming,
   focused,
   markdown,
   onRedrawn,
@@ -551,6 +576,7 @@ function DrawnText({
   tabStops,
   tree,
 }: {
+  elementTiming: string | undefined;
   focused: boolean;
   markdown: string;
   onRedrawn: (() => void) | undefined;
@@ -559,6 +585,10 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
+  // Read through a ref, as the body reads it (`useRenderedMarkdown`): a new identifier alone
+  // links nothing again.
+  const timing = useRef(elementTiming);
+  timing.current = elementTiming;
   // The reading and the record the body was last handed, while the new ones hold the same values.
   const reading = useSameValue(tree);
   const record = useSameValue(source);
@@ -585,6 +615,14 @@ function DrawnText({
     const element = box.current;
     if (element === null) return;
     dropDirectiveLines(element);
+    // The paint marked its first paragraph as the first line's element. Where that paragraph held
+    // a typed block's source line alone it is hidden now, and the line starts in the next one: at
+    // a first paint this pass hides it only after the body's own pass, which ran before `box` was
+    // set, so the line's element is found again here.
+    const marked = `[${ELEMENT_TIMING}]`;
+    if (element.querySelector(`${marked}[hidden], [hidden] ${marked}`) !== null) {
+      markFirstLine(element, timing.current);
+    }
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
@@ -659,6 +697,7 @@ function DrawnText({
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
         <MarkdownBody
+          elementTiming={elementTiming}
           markdown={markdown}
           onRendered={link}
           referenceText=""

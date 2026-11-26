@@ -68,7 +68,7 @@ import {
   nodeStateWord,
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
-import { RowText, useOutOfTabOrder } from "./RowText";
+import { ROW_TIMING, RowText, rowTiming, useOutOfTabOrder } from "./RowText";
 import { titleReading } from "./tree-drafts";
 import { indentOf } from "./tree-fold";
 
@@ -232,6 +232,10 @@ export function NodeRow({
     </span>
   );
   const trailInWords = editing === undefined;
+  // A deleted post's line is a direct `[data-author-text]` child of the words' box, which
+  // `styles.css` lays out inline where the trail stands in the words, so the words' box paints the
+  // line's text and carries the row's identifier in its place (`ROW_TIMING`).
+  const deletedInline = deleted !== null && trailInWords && trail !== null;
   // The view a node's kind tag opens it in, at its own block (R9).
   const tagView = tagFilter(node);
   const tagTo = tagView === undefined ? undefined : presetNodePath(tagView, node);
@@ -288,6 +292,7 @@ export function NodeRow({
           {oneLine ? (
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
+              {...rowTiming}
             >
               {deleted === null ? (
                 <FirstLine node={node} />
@@ -316,17 +321,19 @@ export function NodeRow({
                 context ? pageQuietText : own ? pageInkText : pageWordsText
               }`}
               data-node-words=""
+              {...(deletedInline ? rowTiming : {})}
             >
               {editing !== undefined ? (
                 // The editor lays its own content out, so on a phone it starts under the
                 // margin's float, at the words' whole width (`NODE_ROW_LAYOUT.content`).
                 <div className="clear-right flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : deleted !== null ? (
-                <p className="break-words" {...authorText}>
+                <p className="break-words" {...authorText} {...(deletedInline ? {} : rowTiming)}>
                   <DeletedLine deleted={deleted} />
                 </p>
               ) : node.child === undefined ? (
                 <RowText
+                  elementTiming={ROW_TIMING}
                   focused={focused}
                   markdown={node.text}
                   source={node.source}
@@ -336,7 +343,7 @@ export function NodeRow({
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
-                <p className="break-words">
+                <p className="break-words" {...rowTiming}>
                   {/* A title holds no markup: the reading list's `node-row-child-title`. */}
                   <span {...authorText}>{node.text}</span>
                   <ChildIssueFacts child={node.child} tabStops={tabStops} />

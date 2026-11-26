@@ -69,7 +69,7 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
-import { RowText, useOutOfTabOrder } from "../RowText";
+import { ROW_TIMING, RowText, rowTiming, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
@@ -1309,7 +1309,12 @@ function Statement({
           ref={words}
           style={clamped ? { maxHeight: clamp.height } : undefined}
         >
-          <RowText markdown={node.text} source={node.source} tree={node.tree} />
+          <RowText
+            elementTiming={ROW_TIMING}
+            markdown={node.text}
+            source={node.source}
+            tree={node.tree}
+          />
           {/* A direct child of the words' box, which `styles.css` reads to draw the words
               inline, so the trail follows the last word. */}
           {clamped ? null : trail}
@@ -1385,7 +1390,7 @@ function OtherRow({
       role="treeitem"
       tabIndex={tabStop ? 0 : -1}
     >
-      <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome}>
+      <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome} {...rowTiming}>
         {NODE_TYPE_NAMES[node.type]}
       </p>
       <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>

@@ -48,6 +48,7 @@ import type { FailedRead, OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, PLAN_WORDS, PRESET_NAMES, STATE_LINES } from "../page-words";
 import { nodeReading } from "../presets";
+import { rowTiming } from "../RowText";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
 import {
@@ -451,7 +452,11 @@ function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boo
       className={`mb-2.5 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm leading-5 ${pageMutedText}`}
       data-plan-cycle=""
     >
-      <span {...pageChrome}>{PLAN_WORDS.cycle}</span>
+      {/* In the chart the line is a row, and the cycle's word, a flex item, paints the start of
+          its first line (`RowText.tsx`'s `ROW_TIMING`). */}
+      <span {...pageChrome} {...(inChart ? rowTiming : {})}>
+        {PLAN_WORDS.cycle}
+      </span>
       {cycle.tasks.map((task) => (
         <TaskLink inChart={inChart} key={task.id} task={task} />
       ))}
@@ -1212,6 +1217,7 @@ function BarRow({
           className={`text-[15px] leading-[22px] break-words ${pageInkText} max-[761px]:-order-2 max-[761px]:min-w-0 max-[761px]:basis-full`}
           data-node-words=""
           {...line.marks}
+          {...rowTiming}
         >
           {line.reads}
           {line.words}

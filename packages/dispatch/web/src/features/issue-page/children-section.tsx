@@ -13,6 +13,7 @@ import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetOf } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { rowTiming } from "./RowText";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
 import { outlineOf } from "./tree-read/tree-read";
@@ -186,10 +187,13 @@ function ChildrenList({
       </div>
       <ul className="mt-1 flex min-w-0 flex-col" hidden={!open} id={listId} ref={list}>
         {shown.map((child) => (
+          // The entry paints its first line's text itself: its key and its title flow inline in
+          // it, so it carries the row's identifier (`RowText.tsx`'s `ROW_TIMING`).
           <li
             className={`min-w-0 text-[15px] leading-6 break-words ${pageWordsText}`}
             data-child-entry={child.key}
             key={child.key}
+            {...rowTiming}
           >
             <ChildIssueTag child={child} tabStops /> <span {...authorText}>{child.title}</span>
             <ChildIssueFacts child={child} tabStops />
