@@ -114,19 +114,35 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	// calls alone. Left running, the poller would query a connection Measure's defer closes, the
 	// tracer would go on recording, and the execution tracer would stay on, so the next Measure in
 	// the process could not start its own (TestAStoppedMeasureLeavesTheNextItsOwnTrace). A
-	// transaction the stop left open leaves its thread's clock open too, which the capture's end
-	// drops (xidDropThreadClock). endCapture is deferred after conn.Close, so it runs first; the
-	// execution tracer's stop is deferred after endCapture, so it runs before it on such an exit.
+	// transaction the stop left open leaves its thread's clock open too, which dropOpenClocks
+	// drops (xidDropThreadClock), so that no later thread the kernel gives the same id reads it.
+	// dropOpenClocks is deferred after conn.Close and endCapture after dropOpenClocks, so on such
+	// an exit endCapture runs first and dropOpenClocks next; the execution tracer's stop is
+	// deferred after endCapture, so it runs before both.
 	endCapture := sync.OnceFunc(func() {
 		close(stop)
 		<-polled
 		x.recording.Store(false)
+	})
+	// dropOpenClocks drops the clock of every transaction still open. A stop need not be what left
+	// one open: a goroutine of the operation may still be running it, as a broadcast's delivery
+	// may be, since the route answers without waiting for its deliveries, and reading its clock at
+	// a statement's ends. So the clocks are dropped only once the capture's statements are copied.
+	// The copy holds a statement only once both its ends were read (doneStatements), so no drop
+	// lands on a read of a statement the report judges, and none of those reads is of a file opened
+	// in place of a dropped clock. A read still in flight as the drop lands either holds the
+	// clock's lock, and the close waits for it, or finds the clock dropped and reads nothing off
+	// it (xidHeldClock). Dropped at the capture's end, before the copy, a delivery's clock was
+	// closed as its COMMIT's end read it, and the copy held that COMMIT, unread (envoy-go job
+	// 139692608395).
+	dropOpenClocks := sync.OnceFunc(func() {
 		x.mu.Lock()
+		defer x.mu.Unlock()
 		for _, held := range x.locked {
 			xidDropThreadClock(held.thread)
 		}
-		x.mu.Unlock()
 	})
+	defer dropOpenClocks()
 	defer endCapture()
 
 	var traced *xidTrace
@@ -163,6 +179,7 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 			if traced != nil {
 				trace.Log(context.Background(), "xid", "the rig copied the capture's statements")
 			}
+			dropOpenClocks()
 		})
 	})
 	if traced != nil {
