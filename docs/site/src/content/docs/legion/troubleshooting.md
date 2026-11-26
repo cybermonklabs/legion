@@ -906,16 +906,20 @@ waiting its turn. One wake has its session read its whole context again, which t
 as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
-twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
+twenty minutes. A wake for a role that has an Envoy message waiting, and the relaunch of a role
+whose own process died, wait in a first queue that the pacing lets out ahead of the rest, which
+keep one turn in four ([legion.yaml](/legion/legion/running-legion/#legionyaml)). A restart
+forgets each waiting wake's place. The launches it finds unfinished, a
 claim launching with no process, and the relaunches of processes the previous daemon found dead go
-back into the pacing in one order, the order their tasks were queued, the oldest first, so among
-those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
-pass takes its turns as it reaches the gate, and while the project is paused the unfinished
-launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
-the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
-afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
-this launch reached the wake gate an interval or more after the turn its caller reserved` with the
-moment it is now `due`. Read what the pacing still holds before you act on anything below:
+back into the pacing's two queues, each queue in one order, the order their tasks were queued, the
+oldest first, so among those a claim that waited before the restart goes ahead of work owed after
+it; the stale-plugin pass takes its places as it reaches the gate, and while the project is paused
+the unfinished launches wait for the resume instead. A relaunch that reaches its gate an interval
+or more after the pacing let out the place the boot took for it — its admission waits behind every
+other launch's — joins its queue afresh, at the back unless the pacing has drained, and the daemon
+logs `supervise: this launch reached the wake gate an interval or more after the pacing let out the
+place its caller took` with the moment it is now `due`. Read what the pacing still holds before you
+act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -927,28 +931,35 @@ Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launc
 process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
 earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
 `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs.
+and `dueAt`, the pacing's estimate, at the read, of the moment it lets that wake out, as the
+queues stand. A change to the queues or to the pace can move that moment earlier or later, so two
+reads can name two moments: for example, a wake ahead of it in its own queue that leaves moves it
+earlier, and a wake that joins and is let out ahead of it moves it later. The jitter alone, a
+random part of up to one interval for each turn, can make a wake with n wakes ahead of it run up
+to n intervals after its `dueAt`.
 An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes.
+gone out; the latest `dueAt` in it is the pacing's estimate of when the last of the wave goes.
 A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named.
+nothing from you: its wake holds a place and it runs when the pacing lets that place out.
 To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
 process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
-a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
-their turns.
+a process the claim still records. Each takes the waiting wake out of its queue, and the wakes
+behind it move up.
 
 A claim whose process the daemon found dead before the restart is on that list as well.
 Its record says the death was charged, and the boot raises the relaunch that death raised again, in
-the restart's own wave and in one order with the launches the previous daemon did not finish,
-without waiting for the runtime to report the death a second time.
+the restart's own wave and in the pacing's first queue, ahead of the launches the previous daemon
+did not finish, without waiting for the runtime to report the death a second time.
 Until its turn, such a claim reads the state it was in when its process died, most often `working`
 or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
 was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
 its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
 launch it waits for.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
-`working`, `launching` or `shim_connected`: its launch is already in flight, and runs at the
-`dueAt` the list names.
+`working`, `launching` or `shim_connected`: its launch is already in flight, and runs when the
+pacing lets it out.
+The `dueAt` the list names is the pacing's estimate of that moment at the read, and it can move:
+a later read can name an earlier or a later one.
 A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
 at once.
 A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when
