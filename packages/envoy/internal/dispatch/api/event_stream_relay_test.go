@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -95,16 +94,16 @@ func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
 
 // newCountedRelay is a relay of its own on deps' database, on a lifetime the test ends and waits
 // out, whose every page read is reported on reads, after it returns, with the id it read after.
+// It watches the relay's own read through aroundPage rather than replacing it, so what it counts
+// is the read production makes.
 func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
 	t.Helper()
 	lifetime, stop := context.WithCancel(t.Context())
 	relay := newEventStreamRelay(directServer(deps), lifetime)
 	relay.coalesce = time.Millisecond
 	reads := make(chan int64, 1024)
-	relay.readAfter = func(ctx context.Context, after int64, afterAt time.Time, through int64) ([]model.Event, error) {
-		page, err := relay.server.readEventsAfterIDOnLog(ctx, model.Actor{}, after, afterAt, through, maxEventReplay)
-		reads <- after
-		return page, err
+	relay.aroundPage = func(after int64) func() {
+		return func() { reads <- after }
 	}
 	t.Cleanup(func() {
 		stop()
@@ -566,23 +565,18 @@ func TestARelayReadOvertakenByAResetPublishesNothingOfTheNewLog(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
-	lifetime, stop := context.WithCancel(t.Context())
-	relay := newEventStreamRelay(directServer(deps), lifetime)
-	relay.coalesce = time.Millisecond
+	relay, _ := newCountedRelay(t, deps)
 	var hold atomic.Bool
 	held, release := make(chan struct{}), make(chan struct{})
 	releaseHeld := sync.OnceFunc(func() { close(release) })
-	relay.readAfter = func(ctx context.Context, after int64, afterAt time.Time, through int64) ([]model.Event, error) {
+	counted := relay.aroundPage
+	relay.aroundPage = func(after int64) func() {
 		if hold.CompareAndSwap(true, false) {
 			close(held)
 			<-release
 		}
-		return relay.server.readEventsAfterIDOnLog(ctx, model.Actor{}, after, afterAt, through, maxEventReplay)
+		return counted(after)
 	}
-	t.Cleanup(func() {
-		stop()
-		relay.wait()
-	})
 	// Cleanups run last first, so a test that fails while the read is held lets it go before the
 	// relay's cleanup waits for its goroutines.
 	t.Cleanup(releaseHeld)
