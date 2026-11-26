@@ -248,7 +248,7 @@ func TestTheFormsDutyDrainsWhileTheReleaseBeforeHoldsItsLease(t *testing.T) {
 	held, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(context.Background(), holder, "refs-forms", time.Now(), BlockIndexReconcileInterval, func(context.Context) {
+		duty.Exclusive(context.Background(), nil, holder, "refs-forms", time.Now(), BlockIndexReconcileInterval, func(context.Context) {
 			close(held)
 			<-release
 		})

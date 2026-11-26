@@ -303,7 +303,7 @@ func readSpecRemoval(ctx context.Context, q Queryer, issue, specID string, ask m
 	removing, holder := 0, 0
 	var held *pmdoc.Node
 	for _, number := range numbers {
-		tree, _, readable, err := approvedVersion(ctx, q, specID, number)
+		tree, _, _, readable, err := approvedVersion(ctx, q, specID, number)
 		if err != nil {
 			return specRemoval{}, err
 		}

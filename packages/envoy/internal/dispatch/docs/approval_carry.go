@@ -39,9 +39,11 @@ import (
 // cases (carryCases), each of which takes out of a tree what it may change - the cases compose, so
 // one version that holds several of them carries where its every difference is one of theirs -
 // and nothing else differs: A's stored text and N's rendering, each taken through every case, are
-// byte for byte the same (carryVerdict). The comparison is against the bytes the person approved,
-// which an earlier release stored: A's stored markdown must be what this build renders A's tree to
-// (approvedVersion), so a renderer change between A and N is a difference no case carries. Every
+// byte for byte the same (carryVerdict). The comparison is against the text the person approved,
+// which an earlier release stored: A's stored markdown must be what this build renders A's tree to,
+// or, for an A another renderer version stored or none stamped (pmdoc.OtherRenderer), A's tree is
+// A's text as this build renders it, as the restore compares it (restoresApprovedText,
+// approvedVersion), so a renderer change between A and N is no difference a case must carry. Every
 // ask block of N must also agree with its node (asksAgreeWithTheirNodes: backed by a row of this document, read
 // by settlement, showing no answer state other than its row's and no wording other than a decided
 // row's), since a block that shows a decision nobody made, or one under words nobody decided,
@@ -80,17 +82,23 @@ import (
 // an agent's change the step's version keeps - a decision whose words it rewrote, a pointer it gave
 // an ask, a block it wrote into the part.
 //
-// A version whose text is the approved text carries that approval too, byte for byte and before
-// any case is weighed (restoresApprovedText). The document's newest review approves version A; a
-// later version, N, is stored with A's markdown byte for byte - an accidental edit undone exactly,
-// or a version a route wrote over a document that changed nothing - and each ask block of N agrees
-// with its node, so no block in it shows other than what was decided. Such an N holds nothing its
-// reviewer has not agreed to, so Dispatch records that reviewer's approval of N in their name and
-// of their review's own kind, in the transaction that writes N, rather than asking them to approve
-// A's text again: the newest review of a plan.md is the plan review that approved A, so a restored
-// plan version reads approved by that plan review and not by the session whose write restored it.
-// Only the newest review carries: when it requests changes no approval stands, and an older
-// approval was superseded by it.
+// A version whose text is the approved text carries that approval too, before any case is weighed
+// (restoresApprovedText). The document's newest review approves version A; a later version, N, is
+// stored with A's text - an accidental edit undone exactly, or a version a route wrote over a
+// document that changed nothing - and each ask block of N agrees with its node, so no block in it
+// shows other than what was decided. Such an N holds nothing its reviewer has not agreed to, so
+// Dispatch records that reviewer's approval of N in their name and of their review's own kind, in
+// the transaction that writes N, rather than asking them to approve A's text again: the newest
+// review of a plan.md is the plan review that approved A, so a restored plan version reads
+// approved by that plan review and not by the session whose write restored it. Only the newest
+// review carries: when it requests changes no approval stands, and an older approval was
+// superseded by it. N holds A's text when N's markdown is A's stored markdown byte for byte. An A
+// that another renderer version stored, or that no renderer version stamped (pmdoc.OtherRenderer),
+// is compared as this build renders it: a renderer change (pmdoc.RendererVersion) leaves every
+// version stored before it in its renderer's spelling of its tree, so N also holds A's text when
+// A's markdown, read and rendered again by this build, is N's (readsAs), though N's diff against A
+// shows the spelling the change made. An A this renderer version wrote is compared byte for byte
+// alone.
 
 // CarriedReviewReasonPrefix opens the reason of every review Dispatch carries forward to a later
 // version, and is what tells such a review from one a person wrote on the version it names: the
@@ -271,7 +279,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if len(shown.nodes) == 0 && !holdsDecision(tree) {
 		return nil
 	}
-	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
+	approved, approvedText, otherRenderer, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
 	if err != nil || !readable {
 		return err
 	}
@@ -280,7 +288,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		return err
 	}
 	input := carryInput{
-		approved: approved, approvedText: approvedText, version: tree, agrees: agrees,
+		approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree, agrees: agrees,
 		approverAnswered: approverAnswers(shown, newest), answered: answered,
 		// kept for one release: decisions-step
 		decided: decidedAskBlocks(shown), steps: steps,
@@ -692,27 +700,37 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 }
 
 // restoresApprovedText reports whether markdown, the text a new version of artifactID is written
-// with, is byte for byte the stored text of its version earlier, the one a person approved. A
-// version that stores no markdown, a file's, holds no text and compares false. The text compared
-// against it is the caller's own, which it holds already - the version it just wrote or queued -
-// so only the earlier version is read, and that version is a stored one by construction: the
-// version of a review NewestReview read from artifact_reviews, or the version an open approval
-// request names for a settlement's move (MoveApprovalAsk). octet_length reads a stored text's size
-// without decompressing it, so only a stored text of the same size is read, and the write of any
-// other text reads no document.
+// with, holds the stored text of its version earlier, the one a person approved, by the rule a
+// latest version holds a rendering (holdsRendering): byte for byte, or, where another renderer
+// version stored that text or none stamped it (pmdoc.OtherRenderer), as stored text this build
+// reads and renders again as markdown (readsAs), so a renderer change between the two versions
+// leaves the text held. A version that stores no markdown, a file's, holds no text and compares
+// false. The text compared against it is the caller's own, which it holds already - the version it
+// just wrote or queued - so only the earlier version is read, and that version is a stored one by
+// construction: the version of a review NewestReview read from artifact_reviews, or the version an
+// open approval request names for a settlement's move (MoveApprovalAsk). One read takes the stored
+// text's stamp, and the text itself only where its size is markdown's (octet_length, which reads a
+// stored text's size without decompressing it) or another renderer version stored it or none
+// stamped it: a version this renderer version wrote is read only for a text of its size, so the
+// write of any other text reads no document, and the version of another renderer version is
+// parsed and rendered only once its bytes are not markdown's. It writes nothing, so a
+// transaction whose writes are queued runs it in its read phase, and that parse and render hold
+// no transaction id.
 func restoresApprovedText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
-	var stored string
+	var stored *string
+	var stamp *int
 	err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions
-		where artifact_id = $1 and number = $2 and octet_length(markdown) = $3
-	`, artifactID, earlier, len(markdown)).Scan(&stored)
+		select case when octet_length(markdown) = $3 or renderer_version is distinct from $4 then markdown end, renderer_version
+		from artifact_versions
+		where artifact_id = $1 and number = $2 and markdown is not null
+	`, artifactID, earlier, len(markdown), pmdoc.RendererVersion).Scan(&stored, &stamp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read document version %d: %w", earlier, err)
 	}
-	return stored == markdown, nil
+	return stored != nil && holdsRendering(*stored, stamp, markdown), nil
 }
 
 // carriedAtNamedVersion reports whether the version this carry approves is the version the open
@@ -771,24 +789,24 @@ func askNodes(tree *pmdoc.Node) (map[string]*pmdoc.Node, bool) {
 	return nodes, true
 }
 
-// approvedVersion is the tree of the stored version number of artifactID and the markdown it is
-// stored with, and whether that version could be read: a version outside the Proof schema is
-// logged and not readable, a number below 1, before the document's first version, is no version
-// and not readable either, and a version holding an element this build does not know is an error
-// (skipUnreadableVersion).
-func approvedVersion(ctx context.Context, q Queryer, artifactID string, number int) (*pmdoc.Node, string, bool, error) {
+// approvedVersion is the tree of the stored version number of artifactID, the markdown it is
+// stored with, whether another renderer version stored that markdown or none stamped it
+// (pmdoc.OtherRenderer), and whether that version could be read: a version outside the Proof
+// schema is logged and not readable, a number below 1, before the document's first version, is no
+// version and not readable either, and a version holding an element this build does not know is an
+// error (skipUnreadableVersion).
+func approvedVersion(ctx context.Context, q Queryer, artifactID string, number int) (tree *pmdoc.Node, markdown string, otherRenderer, readable bool, err error) {
 	if number < 1 {
-		return nil, "", false, nil
+		return nil, "", false, false, nil
 	}
-	var markdown string
-	if err := q.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
-		return nil, "", false, fmt.Errorf("read document version %d: %w", number, err)
+	var stamp *int
+	if err := q.QueryRow(ctx, `select markdown, renderer_version from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown, &stamp); err != nil {
+		return nil, "", false, false, fmt.Errorf("read document version %d: %w", number, err)
 	}
-	tree, err := pmdoc.ParseRendering(markdown)
-	if err != nil {
-		return nil, "", false, skipUnreadableVersion(artifactID, number, err)
+	if tree, err = pmdoc.ParseRendering(markdown); err != nil {
+		return nil, "", false, false, skipUnreadableVersion(artifactID, number, err)
 	}
-	return tree, markdown, true, nil
+	return tree, markdown, pmdoc.OtherRenderer(stamp), true, nil
 }
 
 // answerApprovalAsk answers the open approval request ask of artifactID with Approve in actor's

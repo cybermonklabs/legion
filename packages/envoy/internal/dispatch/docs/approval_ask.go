@@ -110,17 +110,18 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // (versionWrite.settlement), or the reopen's follow of a version written while the issue was
 // closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
-// requested_version is the version the request names), and markdown either is byte for byte the
-// stored text of that version (restoresApprovedText) or differs from it in the server-owned
-// attributes of its ask blocks alone, every ask block agreeing with its node (R10's test,
-// changesAskAttributesAlone), does its requested_version move with its version, quietly: a
-// settlement saves what the room already holds - the blocks a close and a reopen wrote back, or
-// the state a person's answer, resolve or decline wrote into the ask's block - so the text the
-// person was asked about did not change and the request keeps its turn as if it had not moved,
-// waking nobody. A version a route writes - a named version, an upload, an edit or a summary edit
-// - moves the request to its agent whatever text it stores, as every move did before the rule:
-// the Legion daemon answers an agent's gate wait with such a version's artifact.version, telling
-// the agent the request is back on its turn, which this keeps true.
+// requested_version is the version the request names), and markdown either holds the stored text
+// of that version as the approval's restore compares it (restoresApprovedText: byte for byte, or,
+// for a version another renderer version stored or none stamped, as this build renders it) or
+// differs from it in the server-owned attributes of its ask blocks alone, every ask block agreeing
+// with its node (R10's test, changesAskAttributesAlone), does its requested_version move with its
+// version, quietly: a settlement saves what the room already holds - the blocks a close and a
+// reopen wrote back, or the state a person's answer, resolve or decline wrote into the ask's block
+// - so the text the person was asked about did not change and the request keeps its turn as if it
+// had not moved, waking nobody. A version a route writes - a named version, an upload, an edit or
+// a summary edit - moves the request to its agent whatever text it stores, as every move did
+// before the rule: the Legion daemon answers an agent's gate wait with such a version's
+// artifact.version, telling the agent the request is back on its turn, which this keeps true.
 //
 // It runs in a transaction a caller joined, as every other document operation does, and in the
 // one a settlement or the block-id backfill owns, which no caller joins (Ledger): the version
@@ -206,10 +207,10 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // (rewriteApprovalAsk). A version move, a request with a new summary and a request that changes
 // which documents it covers all reword; none hands the request back, so each document's
 // requested_version stays as it was. The one exception is a settlement's version move that stores
-// byte for byte the text of the version the person was asked about, or differs from it only in the
-// server-owned attributes of its ask blocks (changesAskAttributesAlone), which moves that document's
-// requested_version with its version, quietly (MoveApprovalAsk). A move of a request that an
-// earlier version already moved since it was opened or handed back, a document's
+// the text of the version the person was asked about (restoresApprovedText), or differs from it
+// only in the server-owned attributes of its ask blocks (changesAskAttributesAlone), which moves
+// that document's requested_version with its version, quietly (MoveApprovalAsk). A move of a
+// request that an earlier version already moved since it was opened or handed back, a document's
 // requested_version below the version it named, is recorded quiet
 // (model.AskEditEventPayload.Quiet): it changes only that version, so like a human's unnamed version
 // it wakes nobody. The event it appends goes to the ledger of the transaction it runs in, as every

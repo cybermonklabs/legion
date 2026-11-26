@@ -57,11 +57,7 @@ type settlement struct {
 	ledger *Ledger
 	tx     pgx.Tx
 	owner  artifactOwner
-	latest struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	latest latestVersionRow
 	// issueClosed is the document's issue row as this settlement's transaction read it under the
 	// issue's owner lock (lockArtifactOwner): true for a closed issue, false for an open one and
 	// for a document of no issue, so its zero value is open. A closed issue's document settles as

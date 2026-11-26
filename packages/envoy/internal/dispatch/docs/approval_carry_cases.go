@@ -191,8 +191,10 @@ func (steps decisionStepCases) any() bool {
 	return steps.restore || steps.conversion
 }
 
-// carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, and
-// N's tree, each as its own read gives it, whether every ask block of N agrees with its node
+// carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, whether
+// another renderer version stored that markdown or none stamped it (approvedOtherRenderer,
+// pmdoc.OtherRenderer; false for a version this renderer version stored), and N's tree, each as its
+// own read gives it, whether every ask block of N agrees with its node
 // (asksAgreeWithTheirNodes), which of N's ask blocks show an ask the approver answered after the
 // approval (approverAnswered, approverAnswers), which show an ask that holds an answer among those
 // closing with readings (answeredAskBlocks) and among them all (decided), the answered ask blocks
@@ -200,12 +202,13 @@ func (steps decisionStepCases) any() bool {
 // versions (restoredAskBlocks), and the decisions step's phases whose own write N is, with what
 // that write added (steps), the only writes those two cases reach.
 type carryInput struct {
-	approved         *pmdoc.Node
-	approvedText     string
-	version          *pmdoc.Node
-	agrees           bool
-	approverAnswered map[string]bool
-	answered         map[string]bool
+	approved              *pmdoc.Node
+	approvedText          string
+	approvedOtherRenderer bool
+	version               *pmdoc.Node
+	agrees                bool
+	approverAnswered      map[string]bool
+	answered              map[string]bool
 	// kept for one release: decisions-step
 	decided map[string]bool
 	// kept for one release: decisions-step
@@ -352,29 +355,34 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 // carryVerdict is the rule over the two versions: N, input.version, carries the approval of A,
 // input.approved, when every ask block of N agrees with its node (input.agrees); A's stored text,
 // input.approvedText, is what this build renders A's tree to, so that what is compared is the
-// bytes the person approved, and a renderer change between A and N is a difference no case
-// carries; both trees, taken through every carry case (carryCases), render byte for byte the
-// same; at least one case is one the two trees render apart without, since a version that equals
-// A without any is the restore's to carry (restoresApprovedText), or a change nobody approved; and
-// every block id A holds, but for the readings readingCase took out of it, still stands in N
-// (blockIDsStand over the two trees each case left). It answers what the carried reason says the
-// change was: the change of each case the two trees render apart without, in carryCases' order,
-// joined and closed by carriedReasonEnd. Each case is skipped in turn, beside every case before it
-// that the trees rendered the same without, at two renders a case. A case that took out of both
-// trees only what stands the same in each - readings A holds and N holds unchanged - changed
-// nothing, and is not named. Its error is a refusal of this renderer.
+// bytes the person approved, or a text another renderer version stored or none stamped
+// (input.approvedOtherRenderer), which A's tree holds as this build renders it, as the restore
+// compares it (restoresApprovedText, holdsRendering), so a renderer change between A and N is no
+// difference a case must carry; both trees, taken through every carry case (carryCases), render
+// byte for byte the same; at least one case is one the two trees render apart without, since a
+// version that equals A without any is the restore's to carry (restoresApprovedText), or a change
+// nobody approved; and every block id A holds, but for the readings readingCase took out of it,
+// still stands in N (blockIDsStand over the two trees each case left). It answers what the carried
+// reason says the change was: the change of each case the two trees render apart without, in
+// carryCases' order, joined and closed by carriedReasonEnd. Each case is skipped in turn, beside
+// every case before it that the trees rendered the same without, at two renders a case. A case
+// that took out of both trees only what stands the same in each - readings A holds and N holds
+// unchanged - changed nothing, and is not named. Its error is a refusal of this renderer.
 func carryVerdict(input carryInput) (string, bool, error) {
 	return carryVerdictOver(input, carryCases[:])
 }
 
 // carryVerdictOver is carryVerdict over cases alone, in their order: carryCases for the carry, and
-// R10's case alone for the turn of an approval request (changesAskAttributesAlone).
+// R10's case alone for the turn of an approval request (changesAskAttributesAlone). A's tree is
+// ParseRendering's read of its stored text, so for an A another renderer version stored, A's text
+// read and rendered again by this build (readsAs) is the rendering of that tree, which no second
+// parse needs to say.
 func carryVerdictOver(input carryInput, cases []carryCase) (string, bool, error) {
 	if !input.agrees {
 		return "", false, nil
 	}
 	approvedText, err := pmdoc.Render(input.approved)
-	if err != nil || approvedText != input.approvedText {
+	if err != nil || approvedText != input.approvedText && !input.approvedOtherRenderer {
 		return "", false, err
 	}
 	// skipped names the cases a comparison is made without: none, for the verdict itself.
@@ -435,15 +443,16 @@ var turnCases = []carryCase{attributeRemovalCase}
 // changesAskAttributesAlone reports whether the version number of artifactID, written as markdown
 // from tree, differs from its stored version earlier in the server-owned attributes of its ask
 // blocks alone, by the test R10's case makes for the carry: every ask block of the version agrees
-// with its node (asksAgreeWithTheirNodes), and the two texts, earlier's as stored and as this
-// build renders it, are byte for byte the same once the eight attributes are taken off every ask
-// block of each (carryVerdictOver with attributeRemovalCase alone), every block id earlier holds
-// still standing. It is MoveApprovalAsk's keep-turn rule beside restoresApprovedText: the version
-// a person's answer, resolve or decline writes, or a reopen's settlement, changes no more than
-// that when the answer, resolve, decline or reopen is that version's whole change. Text a person
-// was editing in the browser and settled into the same version makes this false, and the request
-// goes back to its agent. A nil tree is markdown's read-back, parsed here; a version holding no
-// ask block differs in no ask attribute. Its reads run where it is called.
+// with its node (asksAgreeWithTheirNodes), and the two texts, earlier's as stored, or as this build
+// renders it where another renderer version stored it or none stamped it, and this version's, are
+// byte for byte the same once the eight attributes are taken off every ask block of each
+// (carryVerdictOver with attributeRemovalCase alone), every block id earlier holds still standing.
+// It is MoveApprovalAsk's keep-turn rule beside restoresApprovedText: the version a person's
+// answer, resolve or decline writes, or a reopen's settlement, changes no more than that when the
+// answer, resolve, decline or reopen is that version's whole change. Text a person was editing in
+// the browser and settled into the same version makes this false, and the request goes back to its
+// agent. A nil tree is markdown's read-back, parsed here; a version holding no ask block differs in
+// no ask attribute. Its reads run where it is called.
 func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string, earlier, number int, markdown string, tree *pmdoc.Node) (bool, error) {
 	if tree == nil {
 		parsed, err := pmdoc.ParseRendering(markdown)
@@ -456,11 +465,11 @@ func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string
 	if err != nil || !agrees || len(shown.nodes) == 0 {
 		return false, err
 	}
-	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, earlier)
+	approved, approvedText, otherRenderer, readable, err := approvedVersion(ctx, tx, artifactID, earlier)
 	if err != nil || !readable {
 		return false, err
 	}
-	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees}, turnCases)
+	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree, agrees: agrees}, turnCases)
 	if err != nil {
 		return false, skipUnreadableVersion(artifactID, number, err)
 	}

@@ -687,14 +687,17 @@ func (r *issueRestore) sectionAuthors(ctx context.Context, sections []decisionSe
 // (decision_keeps, which Keep writes for such a heading until the document is retired, F3), by
 // heading block id, with whether the sum it recorded is the section's text sum as it stands: the
 // sum the release before's Decisions read served, over the section's markdown from its heading to
-// its last block (decisionread.TextSum), which the Keep posts back. Each carries the actor of the
-// newest decision.kept the issue holds for its heading, the event Keep appended in the transaction
-// that wrote the row (sectionKeep.keeper).
+// its last block (decisionread.TextSum), which the Keep posts back. A Keep recorded before a
+// renderer change sums the section in its renderer's spelling, so a Keep whose sum is not the
+// section's as it stands matches too where the version it names holds that text in another
+// renderer version's spelling (keptAcrossRenderers). Each carries the actor of the newest
+// decision.kept the issue holds for its heading, the event Keep appended in the transaction that
+// wrote the row (sectionKeep.keeper).
 //
 // kept for one release: decisions-step
 func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, sections []decisionSection) (map[string]*sectionKeep, error) {
 	rows, err := r.tx.Query(ctx, `
-		select k.block_id, k.text_sha256, k.kept_by, k.kept_at, kept.actor
+		select k.block_id, k.text_sha256, k.changed_version, k.kept_by, k.kept_at, kept.actor
 		from decision_keeps k
 		left join lateral (
 			select e.actor from events e
@@ -710,6 +713,7 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 	}
 	type recorded struct {
 		sum, keptBy string
+		version     int
 		keeper      model.Actor
 		keptAt      time.Time
 	}
@@ -718,7 +722,7 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 		var block string
 		var keep recorded
 		var actor *model.Actor
-		if err := rows.Scan(&block, &keep.sum, &keep.keptBy, &keep.keptAt, &actor); err != nil {
+		if err := rows.Scan(&block, &keep.sum, &keep.version, &keep.keptBy, &keep.keptAt, &actor); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read a Keep of the decisions document of %s: %w", r.issue, err)
 		}
@@ -741,6 +745,7 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 		return nil, err
 	}
 	ranges := blockRanges(offsets)
+	var waiting []keptElsewhere
 	for _, section := range sections {
 		keep, kept := held[section.headingID()]
 		if !kept {
@@ -748,7 +753,114 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 		}
 		text, found := sectionText(markdown, ranges, section.blockIDs())
 		matches := found && decisionread.TextSum(text) == keep.sum
-		keeps[section.headingID()] = &sectionKeep{keptBy: keep.keptBy, keeper: keep.keeper, keptAt: keep.keptAt, matches: matches}
+		converted := &sectionKeep{keptBy: keep.keptBy, keeper: keep.keeper, keptAt: keep.keptAt, matches: matches}
+		keeps[section.headingID()] = converted
+		if found && !matches {
+			waiting = append(waiting, keptElsewhere{
+				keep: converted, start: ranges[section.headingID()][0], text: text, sum: keep.sum, version: keep.version,
+			})
+		}
+	}
+	if err := r.keptAcrossRenderers(ctx, markdown, waiting); err != nil {
+		return nil, err
 	}
 	return keeps, nil
+}
+
+// keptElsewhere is a Keep of a section whose recorded sum is not the section's as it stands: the
+// Keep the conversion carries (keep), where the section's heading starts in this build's
+// rendering of the document, the section's text there, and the sum and version the Keep recorded
+// (decision_keeps.text_sha256 and changed_version).
+//
+// kept for one release: decisions-step
+type keptElsewhere struct {
+	keep    *sectionKeep
+	start   int
+	text    string
+	sum     string
+	version int
+}
+
+// keptAcrossRenderers marks matched each of waiting whose Keep agreed with its section's text in
+// another renderer version's spelling, by the rule the release before's Decisions read kept such
+// a decision by in main's #4369 (markKeptAcrossRenderers). A Keep holds the sum of the text it
+// agreed with and the version the decision then stood at, not the text, and that version's
+// stored markdown holds the text. A renderer change (pmdoc.RendererVersion) leaves every version
+// stored before it in its renderer's spelling of the document, so a section kept before the
+// change sums otherwise in this build's spelling though nobody changed it. Such a Keep matches
+// where another renderer version stored the version it names, or none stamped it
+// (pmdoc.OtherRenderer), that version's text of the section (decisionCuts, named by its
+// sectionKey) has the Keep's sum, which makes it the text the Keep agreed with, that text stood
+// alone there and the section's text stands alone now (decisionCut.alone), and this build reads
+// that text as the section's text now, both alone (pmdoc.FragmentReadsAs). markdown is this
+// build's rendering of the document, which the section's key and whether it stands alone now are
+// read from by the same cut; a section that has no cut there matches by its sum alone. A version
+// the parser refuses, one that holds no such text - the heading changed since, or a block left the
+// section after that version - a section that does not stand alone then or now, kept text that
+// reads otherwise alone, and kept text or text now that holds `[^` leave the Keep unmatched, as a
+// version this renderer version stored does. The versions are read in one query, which reads
+// none this renderer version stored, and closed before any is cut.
+//
+// kept for one release: decisions-step
+func (r *issueRestore) keptAcrossRenderers(ctx context.Context, markdown string, waiting []keptElsewhere) error {
+	if len(waiting) == 0 {
+		return nil
+	}
+	current, read := decisionCuts(markdown)
+	if !read {
+		return nil
+	}
+	keyAt := make(map[int]sectionKey, len(current))
+	for key, cut := range current {
+		keyAt[cut.start] = key
+	}
+	keys := make([]sectionKey, len(waiting))
+	standing := make([]bool, len(waiting))
+	numbers := map[int]bool{}
+	for index, keep := range waiting {
+		key, found := keyAt[keep.start]
+		if !found || !current[key].alone {
+			continue
+		}
+		keys[index], standing[index] = key, true
+		numbers[keep.version] = true
+	}
+	if len(numbers) == 0 {
+		return nil
+	}
+	rows, err := r.tx.Query(ctx, `
+		select number, coalesce(markdown, '') from artifact_versions
+		where artifact_id = $1::uuid and number = any($2::int[]) and renderer_version is distinct from $3
+	`, r.decisions.id, slices.Sorted(maps.Keys(numbers)), pmdoc.RendererVersion)
+	if err != nil {
+		return fmt.Errorf("read the versions the Keeps of the decisions document of %s name: %w", r.issue, err)
+	}
+	type storedVersion struct {
+		number   int
+		markdown string
+	}
+	stored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (storedVersion, error) {
+		var version storedVersion
+		err := row.Scan(&version.number, &version.markdown)
+		return version, err
+	})
+	if err != nil {
+		return fmt.Errorf("read the versions the Keeps of the decisions document of %s name: %w", r.issue, err)
+	}
+	for _, version := range stored {
+		cuts, read := decisionCuts(version.markdown)
+		if !read {
+			continue
+		}
+		for index, keep := range waiting {
+			if !standing[index] || keep.version != version.number {
+				continue
+			}
+			kept, held := cuts[keys[index]]
+			if held && kept.alone && kept.sum == keep.sum && pmdoc.FragmentReadsAs(kept.text, keep.text) {
+				keep.keep.matches = true
+			}
+		}
+	}
+	return nil
 }

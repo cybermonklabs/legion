@@ -119,16 +119,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// an agent had just written; carryApproval now carries that approval to such a version
 	// instead, an event nothing in the log would explain). Its tree writes - stamping block ids,
 	// restoring an ask block's server-owned attributes - move the stored Proof state and often
-	// render the same markdown,
-	// and a version for one of those would repeat the version before it too (LEGION-229
-	// requirement 2).
+	// render the same markdown, and a version for one of those would repeat the version before it
+	// too (LEGION-229 requirement 2).
 	// contentChanged stays the first half of the test: a version an older renderer wrote is not
-	// this settlement's to canonicalise when nothing has touched the document since.
+	// this settlement's to canonicalise when nothing has touched the document since. The second
+	// half is whether the latest version holds this rendering (latestVersionRow.holds): byte for
+	// byte, or, for a version another renderer version wrote or none stamped, as markdown that
+	// reads as it. So a renderer change leaves no version behind it either where an edit was made
+	// and undone since, which changed the content and changed it back: the version holds the
+	// same tree in the spelling its renderer wrote.
 	contentChanged, err := contentChangedSinceVersion(ctx, tx, room, st.latest.docUpdateVersion)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
-	versioning := contentChanged && markdown != st.latest.markdown
+	versioning := contentChanged && !st.latest.holds(markdown)
 	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
 	// looks for text in it. Whether it is retired is the read beside the owner's lock this
 	// settlement took (lockArtifactOwner, artifactOwner.Retired), the lock the retirement takes
