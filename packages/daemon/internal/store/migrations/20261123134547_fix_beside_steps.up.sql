@@ -40,10 +40,12 @@
 -- The kind fix_job_read reads a fix's failed job from Dispatch before the fix starts
 -- (record.FixJobRead), ci_news tells a step of a task a CI report or a change of Dispatch's state
 -- (record.CINews), and beside_branches_delete deletes the branches beside a fix on GitHub
--- (record.BesideBranchesDelete). The check is one list, so it is rewritten whole naming every kind,
--- as 20261119203047_design_news rewrote it: that migration's list with the three added. Its version
--- stands above that one on purpose: Migrate applies every unrecorded migration in version order,
--- so the list with the higher version is the last word on any database. issues.hold_reason has no
+-- (record.BesideBranchesDelete). The check is one list that other migrations write as well, so
+-- this one adds its three kinds to the list the database's check holds and names no other kind
+-- itself: a list written whole goes stale the day another migration adds a kind, and wherever such
+-- a migration ran first, a whole list dropped its kind, failed on a waiting row of it with SQLSTATE
+-- 23514, and stopped the daemon starting. Its way back takes out the same three kinds alone, for
+-- the same reason. issues.hold_reason has no
 -- check (0020_hold_reason_and_controller_notice), so the hold reasons fix and ci need no schema.
 --
 -- There is no down file: migrations here are forward-only. The way back is the one transaction
@@ -97,8 +99,12 @@
 -- drop table if exists ci_failures;
 -- drop table if exists task_fixes;
 -- alter table plan_tasks drop column if exists fixes_ci;
--- alter table outbox drop constraint if exists outbox_kind_check;
--- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes'));
+-- do $$ declare held text[]; begin
+--   select array_agg(m[1]) into held from pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''([a-z0-9_]+)''', 'g') as m where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check';
+--   if held is null then raise exception 'outbox_kind_check holds no kind list to take the fix''s kinds out of'; end if;
+--   alter table outbox drop constraint outbox_kind_check;
+--   execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))', (select string_agg(quote_literal(kind), ', ' order by kind) from unnest(held) as kind where kind not in ('fix_job_read', 'ci_news', 'beside_branches_delete')));
+-- end $$;
 -- delete from schema_version where version = 20261123134547;
 -- commit;
 alter table plan_tasks add column fixes_ci boolean not null default false;
@@ -136,12 +142,18 @@ alter table pending_task_deliveries add column fix int not null default 0,
 alter table pending_task_deliveries add column fix_branch text not null default '';
 alter table workspace_bundles add column fix_head text not null default '';
 
-alter table outbox drop constraint if exists outbox_kind_check;
-alter table outbox add constraint outbox_kind_check check (kind in (
-  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
-  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
-  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'fix_job_read', 'ci_news',
-  'beside_branches_delete'));
+do $$
+declare
+  held text[];
+begin
+  select array_agg(m[1]) into held
+    from pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''([a-z0-9_]+)''', 'g') as m
+    where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check';
+  if held is null then
+    raise exception 'outbox_kind_check holds no kind list for the fix migration to add its kinds to';
+  end if;
+  alter table outbox drop constraint outbox_kind_check;
+  execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))',
+    (select string_agg(quote_literal(kind), ', ' order by kind)
+       from (select distinct unnest(held || array['fix_job_read', 'ci_news', 'beside_branches_delete']) as kind) kinds));
+end $$;
