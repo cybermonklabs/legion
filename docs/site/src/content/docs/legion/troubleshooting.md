@@ -1547,34 +1547,44 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
   confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
   prompt, since it can acknowledge and then answer busy. Nothing to do.
+
 - **`supervise: the confirmation of the prompt that told the agent what became of its earlier
   work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
   turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
   another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
-  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
-  or the process ended in a turn that confirmed the task before the prompt's result came (while
-  its send was in flight or it waited on its result), since only that result says the turn was
-  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
-  do.
+  or no turn), a provider error failed a model call of the turn, or the process ended in a turn
+  that confirmed the task before the prompt's result came (while its send was in flight or it
+  waited on its result), since only that result says the turn was
+  the prompt's.
+  The record is untold again, and the next prompt carries the sentence.
+  Nothing to do.
+
 - **`supervise: the claim abandons its session, so the record of what the old session's process
   ended is not told to the fresh agent; the abandoned session's sentence says that work is
   gone`** at Info is a fresh session: the claim's first task names the session it left behind,
-  and the record of the old process's end is marked told with no prompt. A record written later,
-  of the fresh session's own process, is told after the abandoned session's sentence, in the
-  same prompt. Nothing to do.
+  and the record of the old process's end is marked told with no prompt.
+  A record written later, of the fresh session's own process, is told after the abandoned session's
+  sentence, in the same prompt.
+  Nothing to do.
+
 - **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
   record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
   that the claim still held when its record was told by other means, as a fresh session's
-  start tells it. Nothing to do.
+  start tells it.
+  Nothing to do.
+
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
-  state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
-  daemon relaunches its session once its orphan reconciliation has run. Nothing to do.
+  state it was stored in (`stored=`): a launch the previous daemon began and never recorded.
+  The daemon relaunches its session once its orphan reconciliation has run.
+  Nothing to do.
+
 - **`supervise: refused a registration: the launch at its generation records no process`** and
   **`supervise: dropped a stale event`** with `event=StreamHello fence=process` mean a process
   registered or said hello for a launch the claim records no process for: a launch the daemon's
-  stop cut short, or a retired process whose relaunch is waiting. The registration is refused with
-  409 and the claim stays `launching`; the next boot, or the relaunch, starts the claim's process.
+  stop cut short, or a retired process whose relaunch is waiting.
+  The registration is refused with 409 and the claim stays `launching`; the next boot, or the
+  relaunch, starts the claim's process.
   Nothing to do.
 
 ## The work loops or stops
