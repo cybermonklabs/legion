@@ -450,8 +450,9 @@ func (r *hourRig) cursor(role string) bus.KeptRoleCursor {
 	return stored.Cursor
 }
 
-// waitPassed waits until role's cursor is past the copy stored at seq: the last write a walk makes
-// for a copy it ended or forwarded, after the dead letter or the forward a test may already read.
+// waitPassed waits until role's cursor is past the copy stored at seq: the last cursor write a
+// walk makes for a copy it ended or forwarded, after the dead letter or the forward a test may
+// already read. The walk reports a copy it ended after that write (waitReported).
 func (r *hourRig) waitPassed(role string, seq uint64) {
 	r.t.Helper()
 	waitFor(r.t, fmt.Sprintf("role %s's cursor passing its copy at %d", role, seq), func() bool {

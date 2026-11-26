@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -39,6 +40,21 @@ func (r *hourRig) expiryNotices(role string) []storedNotice {
 		found = append(found, held)
 	}
 	return found
+}
+
+// waitReported waits until both listeners' logs hold n lines named name for role, where that line
+// is the last write of a walk's report of a copy it ended. A walk that ends a copy with a publish
+// writes its claim, publishes, confirms the cursor past the copy (waitPassed), and only then
+// reports (endKeptCopyWithPublish, reportKeptCopyEnd): the copy's own drop report, the publish's
+// count, and last the publish's line - the notice's (expiryNoticeLine) or the dead letter's
+// (hourDeadLetterLine). A walk that ends a copy with no publish writes the cursor, then reports its
+// count and last its line (hourDropLine, hourUndecodableLine). A sweep does not wait for the walks
+// it starts, so a row that reads a report's counts or lines waits here first.
+func (r *hourRig) waitReported(role, name string, n int) {
+	r.t.Helper()
+	waitFor(r.t, fmt.Sprintf("%d lines %q for role %s", n, name, role), func() bool {
+		return len(r.lines(name, map[string]any{"role": role})) >= n
+	})
 }
 
 // keepAttempt writes item to role's kept lane as Dispatch's outbox writes the copy it keeps for
@@ -99,12 +115,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		droppedAfter := before.Add(time.Hour)
 		rig.waitPassed(role, listened.sequence)
 		rig.waitDeadLetter(listened)
-		// A walk reports a copy it ended once its confirm has landed, after the cursor a test can
-		// read is past the copy (endKeptCopyWithPublish), and a sweep does not wait for the walks it
-		// starts, so the rows wait for the notice line, each report's last write.
-		waitFor(t, "both outbox copies' notice lines", func() bool {
-			return len(rig.lines(expiryNoticeLine, map[string]any{"role": role})) >= 2
-		})
+		rig.waitReported(role, expiryNoticeLine, 2)
 		rig.letSweepsRun()
 		droppedBy := rig.now()
 
@@ -136,13 +147,23 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-outbox-stale"
 		held := rig.keep(role, outboxCopy(role, "ses_outbox_stale_sender", "a Dispatch event nobody walked"))
+		// The clock moves 3 h on below, so every claim reads older than bus.KeptRoleClaimWindow to
+		// the listeners the moment it is written: the second listener's walk could take over the
+		// first walk's claim while that walk's publish is in flight, judge the copy claimed and so
+		// not stale, and the first walk's confirm would then lose to the moved cursor and report
+		// nothing. The second listener's guard is held for the whole row, so its sweep passes the
+		// lane over and one walk judges the copy, as rows (h) and (n) of
+		// TestAKeptRoleCopyIsForwardedOrReturned hold one.
+		release, taken := rig.listeners[1].cfg.roleKeepDrains.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("take role %s's handover guard on the second listener", role)
+		}
+		defer release()
 		before := rig.now()
 		rig.moveClock(3 * time.Hour)
 		rig.startSweeps()
 		rig.waitPassed(role, held.sequence)
-		waitFor(t, "the stale copy's notice line", func() bool {
-			return len(rig.lines(expiryNoticeLine, map[string]any{"role": role})) >= 1
-		})
+		rig.waitReported(role, expiryNoticeLine, 1)
 		rig.letSweepsRun()
 		notices := rig.expiryNotices(role)
 		if len(notices) != 1 {
@@ -215,8 +236,9 @@ func stoppingNotices(t *testing.T, rig *hourRig, role string, stop noticeStop, s
 // Each row fails when its stop is planted one step later: c sees the notice already stored when
 // the other listener takes over, and d, whose walk then finishes, sees one call where it wants
 // two. Each fails too when its recovery is removed: with a walk that takes an expired claim of an
-// outbox copy over ending the copy with no notice (judgeKeptRoleCopy), each row sees one call
-// where it wants two, and c's notice is never stored.
+// outbox copy over ending the copy with no notice (judgeKeptRoleCopy), no walk writes the notice
+// line - the stopped walk never confirms, and the walk that takes over sends no notice - so each
+// row fails waiting for that line (waitReported).
 //
 // Dispatch's outbox reading that one notice and reopening the event's delivery once is the outbox's
 // own row, which stores one notice twice through bus.Client.PublishKeptCopyExpiry under the copy's
@@ -247,11 +269,7 @@ func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *test
 			rig.moveClock(time.Hour + time.Minute)
 			rig.startSweeps()
 			rig.waitPassed(role, held.sequence)
-			// The walk whose confirm landed reports the copy after that confirm
-			// (endKeptCopyWithPublish), so the row waits for its notice line, the report's last write.
-			waitFor(t, "the notice line of the walk whose confirm landed", func() bool {
-				return len(rig.lines(expiryNoticeLine, map[string]any{"role": role})) >= 1
-			})
+			rig.waitReported(role, expiryNoticeLine, 1)
 			rig.letSweepsRun()
 
 			calls := seam.assertTakenOver(t, "expiry notice", held, row.heldBefore)

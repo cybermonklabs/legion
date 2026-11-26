@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -15,7 +16,9 @@ import (
 // removed, which is the control that the read sees a stream's metadata at all. With "" answered for
 // a stream with no identity, as the identity, the second read fails this test.
 func TestClientStreamIDAnswersErrNoStreamIDForAStreamWithNoIdentity(t *testing.T) {
-	client, err := ConnectOwningStream([]string{testnats.URL(t)})
+	// The keeper puts the stream's identity back every defaultKeepInterval, which would undo the
+	// removal below between the update and the second read, so it runs once an hour here.
+	client, err := ConnectOwningStream([]string{testnats.URL(t)}, WithKeepInterval(time.Hour))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
