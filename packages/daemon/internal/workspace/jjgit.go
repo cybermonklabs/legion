@@ -49,6 +49,19 @@ func OutputLines(out string) []string {
 // the caller stopped by cancelling its context, rather than the budget ending it, reports the
 // signal its stop sent (procgroup.Err), not a timeout.
 func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
+	// PLANT (verdict run, not for merge): RunCommand spends this long inside the caller's budget
+	// before it starts the command.
+	if stall := plantDelay("cmd-stall"); stall > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT cmd-stall fired: %s before %s\n", stall, strings.Join(args, " "))
+		time.Sleep(stall)
+	}
+	// PLANT (verdict run, not for merge): the process RunCommand forks reaches the command's own
+	// first line this long after the fork, with no second process in between: the kernel's start
+	// time of the command's process is unchanged.
+	if late := plantDelay("late-firstline"); late > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT late-firstline fired: %s for %s\n", late, strings.Join(args, " "))
+		args = append([]string{"/bin/sh", "-c", "sleep " + strconv.FormatFloat(late.Seconds(), 'f', -1, 64) + "; exec \"$@\"", "sh"}, args...)
+	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
 	cmd.Dir = dir
