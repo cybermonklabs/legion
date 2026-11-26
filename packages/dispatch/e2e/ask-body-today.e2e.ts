@@ -5,7 +5,8 @@
 // DOM contract (INFRA-5702): data-ask-body and data-decision-card mark the shared roots.
 // AskCard still carries data-ask-card and the ask-<id> test id. The answer field is marked
 // data-ask-answer. Only real options carry data-ask-option. The body's question, type, author
-// and time share the first line, except that the document frame draws the question and type.
+// and time share the first line, except that the document frame draws the question and type;
+// in a body narrower than 32rem the type, author and time stand under the question.
 // The decision card sits in its existing section or margin placement; its time is a <time>.
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -115,6 +116,9 @@ interface Surface {
   readonly block?: boolean;
   readonly changing?: boolean;
   readonly multiple?: boolean;
+  /** The body is narrower than 32rem here, so its kind, asker and time stand under the question
+   *  rather than beside it (`firstLineEnd` in `AskBody.tsx`). */
+  readonly stacked?: boolean;
   readonly question: string;
   open(page: Page, seed: AskTodaySeed): Promise<Locator>;
 }
@@ -144,6 +148,7 @@ const SURFACES: readonly Surface[] = [
     id: (seed) => seed.asks.byOption.id,
     name: "Inbox drawer",
     question: ASK_TODAY.optionQuestion,
+    stacked: true,
     async open(page, seed) {
       await wide(page);
       await page.goto("/agents");
@@ -209,6 +214,7 @@ const SURFACES: readonly Surface[] = [
     id: (seed) => seed.records.anchored,
     name: "comments margin",
     question: "How should the reader order these items?",
+    stacked: true,
     async open(page, seed) {
       await wide(page);
       await page.goto(spec(seed));
@@ -229,28 +235,67 @@ async function firstWords(words: Locator) {
   });
 }
 
-async function expectRow(body: Locator, question: string, authorName: string): Promise<void> {
+/** An open ask's first line: the kind, the asker and the time, in that order, after the words. A
+ *  wide body draws them beside the words' first line; a narrow one (`Surface.stacked`) under the
+ *  words, from the words' left edge, with the asker and the time on one line. */
+async function expectRow(
+  body: Locator,
+  question: string,
+  authorName: string,
+  stacked = false
+): Promise<void> {
   const words = body.getByText(question, { exact: true }).first();
   const kind = body.getByText(KIND).first();
   const author = body.getByText(authorName, { exact: true }).first();
   const time = body.locator("time").first();
   for (const part of [words, kind, author, time]) await expect(part).toBeVisible();
-  const first = await firstWords(words);
-  let right = first.right;
+  const boxes: { height: number; width: number; x: number; y: number }[] = [];
   for (const part of [kind, author, time]) {
     // The part is visible above, so its layout box is settled and this one read is its place.
     const box = await part.boundingBox();
     if (box === null) throw new Error("The first line has a part with no layout box");
-    expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
-    expect(box.y + box.height, "first-line metadata sits above the words").toBeGreaterThan(
-      first.top
-    );
-    expect(
-      box.x,
-      "first-line metadata sits left of the words or out of order"
-    ).toBeGreaterThanOrEqual(right - 1);
-    right = box.x + box.width;
+    boxes.push(box);
   }
+  if (!stacked) {
+    const first = await firstWords(words);
+    let right = first.right;
+    for (const box of boxes) {
+      expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
+      expect(box.y + box.height, "first-line metadata sits above the words").toBeGreaterThan(
+        first.top
+      );
+      expect(
+        box.x,
+        "first-line metadata sits left of the words or out of order"
+      ).toBeGreaterThanOrEqual(right - 1);
+      right = box.x + box.width;
+    }
+    return;
+  }
+  // The visibility assertion above settled the question before this geometry check.
+  const wordsBox = await words.boundingBox();
+  if (wordsBox === null) throw new Error("The question's words have no layout box");
+  const [kindBox, authorBox, timeBox] = boxes;
+  expect(
+    Math.abs(kindBox.x - wordsBox.x),
+    "narrow-body metadata does not start at the words' left edge"
+  ).toBeLessThanOrEqual(1);
+  for (const [index, box] of boxes.entries()) {
+    expect(box.y, "narrow-body metadata sits beside the words").toBeGreaterThanOrEqual(
+      wordsBox.y + wordsBox.height - 1
+    );
+    const previous = boxes[index - 1];
+    if (previous === undefined) continue;
+    const sameLine = box.y < previous.y + previous.height && previous.y < box.y + box.height;
+    const inOrder = sameLine
+      ? box.x >= previous.x + previous.width - 1
+      : box.y >= previous.y + previous.height - 1;
+    expect(inOrder, "narrow-body metadata runs out of order").toBe(true);
+  }
+  expect(
+    timeBox.y < authorBox.y + authorBox.height && authorBox.y < timeBox.y + timeBox.height,
+    "the time opens a line of its own"
+  ).toBe(true);
 }
 
 async function expectOrdered(parts: readonly Locator[]): Promise<void> {
@@ -292,7 +337,7 @@ test("each surface draws the ask with the one ask body", async ({ page }) => {
           block(documentEditor(page)).getByRole("img", { name: ASK_TODAY.picture })
         ).toBeVisible();
       } else {
-        await expectRow(body, surface.question, data.plannerName);
+        await expectRow(body, surface.question, data.plannerName, surface.stacked);
       }
 
       const role = surface.multiple ? "checkbox" : "radio";

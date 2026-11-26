@@ -194,10 +194,11 @@ export interface AskBodyProps {
  *
  * An open ask is root R34's row, as the new issue page draws a question's (`NodeRow.tsx`): a
  * bullet in the question's colour, then the question's words, with the kind, who asked and when
- * at the right end of their first line, and under the words everything else the body draws. In
- * a document's ask block the block's frame draws the question and its kind, so the body draws
- * neither, and no bullet; its first line keeps who asked and when. The answer box always stands
- * in place under the options.
+ * at the right end of their first line, or under the words in a body narrower than 32rem
+ * (`firstLineEnd`), and under the words everything else the body draws. In a document's ask
+ * block the block's frame draws the question and its kind, so the body draws neither, and no
+ * bullet; its first line keeps who asked and when. The answer box always stands in place under
+ * the options.
  *
  * It sends no request of its own: it draws from the ask its caller hands it and the form
  * (`useAskAnswerForm`), and a control reads only when the reader presses it or reaches for it
@@ -329,15 +330,15 @@ export function AskBody({
       : sessionAuthor === undefined
         ? agentText.label(displayedAsk.author)
         : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
-  // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: in a
-  // 384 px margin the first line's end leaves it little room. On a phone, where the name shares
-  // its line with the time, it wraps onto a second line before it is cut, so a name two lines
-  // hold stays whole. Inside `NoTooltips`, where no tooltip gives back what an ellipsis cut, it
-  // is a value that breaks anywhere instead.
+  // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: beside
+  // the words the first line's end leaves it little room. In a narrow body, where that end stands
+  // under the words and the name shares its line with the time (`firstLineEnd`), it wraps onto a
+  // second line before it is cut, so a name two lines hold stays whole. Inside `NoTooltips`,
+  // where no tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead.
   const askerName = (name: ReactNode) =>
     tooltips ? (
       <TruncatedText
-        className="min-w-8 max-[761px]:line-clamp-2 max-[761px]:whitespace-normal max-[761px]:[overflow-wrap:anywhere]"
+        className="min-w-8 @max-[32rem]/ask-body:line-clamp-2 @max-[32rem]/ask-body:whitespace-normal @max-[32rem]/ask-body:[overflow-wrap:anywhere]"
         title={askerTitle}
       >
         {name}
@@ -578,18 +579,22 @@ export function AskBody({
   // `NodeRow.tsx`'s `RowMargin`), then who asked and when. In a document's ask block the block's
   // frame draws the kind, so the line holds who asked and when alone. Outside `NoTooltips` it is
   // one line, and the asker's name is what gives up width, cut with its tooltip; inside it no
-  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap. On a
-  // phone, a window 760 px wide or narrower as the new page's rows take it (`NODE_ROW_LAYOUT`),
-  // the line stands under the words, in the same order from the left, and each of its parts
-  // moves to a line of its own before it gives up width: beside the words there the asker's name
-  // kept a few letters, and the words a column too narrow for two short links on two lines. Who
-  // asked and when are one part, on a phone and wide: the time never opens a line of its own.
-  // Outside `NoTooltips` the time is held whole and the asker's name gives up the width the time
-  // needs (`askerName` says how); inside, the time is a value that breaks anywhere as the name
-  // does, and the part's one flex line keeps the two together.
+  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap. In a
+  // body narrower than 32rem - the comments margin at its default 384 px, the Inbox's drawer, a
+  // phone - the line stands under the words, in the same order from the left, and each of its
+  // parts moves to a line of its own before it gives up width. The rule reads the body's own box
+  // (`@container/ask-body` on its root), never the window's: at 1440 px the margin's body is
+  // about 320 px wide, and beside the words there the line left them some 90 px, which broke a
+  // word such as "troubleshooting" over two lines, and the asker's name a few letters. Beside the
+  // words the line takes up to three quarters of the row, about 200 px for a kind, a short name
+  // and a time, so a body of 32rem still leaves the words a column of some 270 px. Who asked and
+  // when are one part, narrow and wide: the time never opens a line of its own. Outside
+  // `NoTooltips` the time is held whole and the asker's name gives up the width the time needs
+  // (`askerName` says how); inside, the time is a value that breaks anywhere as the name does,
+  // and the part's one flex line keeps the two together.
   const firstLineEnd = (
     <div
-      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
+      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 @max-[32rem]/ask-body:max-w-full @max-[32rem]/ask-body:basis-full @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
     >
       {inBlock ? null : (
         <>
@@ -620,10 +625,10 @@ export function AskBody({
   );
   const rest = (
     <>
-      <div className="flex items-start justify-end gap-x-3 max-[761px]:flex-wrap max-[761px]:justify-start">
+      <div className="flex items-start justify-end gap-x-3 @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start">
         {inBlock ? null : (
           <div
-            className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium max-[761px]:basis-full ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+            className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium @max-[32rem]/ask-body:basis-full ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
           >
             {renderText({
               markdown: displayedAsk.question,
@@ -759,8 +764,11 @@ export function AskBody({
     </>
   );
 
+  // The root is the size container the first line reads (`firstLineEnd`). Every caller draws it
+  // as a block as wide as the box it gives the body, so the inline-size containment a container
+  // takes - its own content no longer widens it - takes no width from the body.
   return (
-    <div data-ask-body="">
+    <div className="@container/ask-body" data-ask-body="">
       <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
       {inBlock ||

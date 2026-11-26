@@ -2202,18 +2202,13 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-4 pt-5 pb-4 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
     "AskCard urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
-    // The ask body's row (dispatch://INFRA-5702/spec#b-r-ask-body, root R34): the question's
-    // words, the bullet, the first line that holds them, the kind at its right end with the
-    // asker and the time, and the turn on its own line under the words. On a phone the first
-    // line's end stands under the words and wraps.
-    "AskCard question":
-      "min-w-0 flex-1 text-[15px] leading-relaxed font-medium max-[761px]:basis-full text-slate-900 dark:text-slate-100",
+    // The ask body's row (dispatch://INFRA-5702/spec#b-r-ask-body, root R34): the bullet, the
+    // kind with the asker and the time, and the turn on its own line under the words. The
+    // question's words and the first line's end are read by their type and colour where the card
+    // is drawn below: where the end stands follows the body's own width, which the browser row
+    // reads (`expectRow` in `e2e/ask-body-today.e2e.ts`).
     "AskCard bullet": "block size-[7px] rounded-full bg-page-question",
-    "AskCard first line":
-      "flex items-start justify-end gap-x-3 max-[761px]:flex-wrap max-[761px]:justify-start",
     "AskCard kind": "shrink-0 font-semibold text-page-question",
-    "AskCard first line's end":
-      "flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start shrink-0 whitespace-nowrap text-slate-500 dark:text-slate-400",
     "AskCard turn line": "mt-1.5 flex min-w-0 text-xs whitespace-nowrap",
     "AskCard turn": "shrink-0 font-semibold text-slate-700 dark:text-slate-300",
     // The turn an agent holds.
@@ -3115,15 +3110,28 @@ test("the default shapes keep main's class strings", async () => {
     const article = card.getByRole("article");
     classAt("AskCard card", article);
     classAt("AskCard urgency notch", article.querySelector(":scope > span[aria-hidden='true']"));
-    classAt("AskCard question", article.querySelector(".dispatch-markdown")?.parentElement);
-    classAt("AskCard bullet", article.querySelector("[data-ask-bullet] > i"));
-    classAt(
-      "AskCard first line",
-      article.querySelector(".dispatch-markdown")?.parentElement?.parentElement
+    // The question's words and the first line's end, which stand in one row, by their type and
+    // colour alone (the comment over `want` says why).
+    const markdown = article.querySelector(".dispatch-markdown");
+    if (markdown === null) throw new Error("the card drew no question");
+    const words = parentOf(markdown);
+    expect(classOf(words)).toEqual(
+      expect.arrayContaining([
+        "text-[15px]",
+        "leading-relaxed",
+        "font-medium",
+        "text-slate-900",
+        "dark:text-slate-100",
+      ])
     );
+    classAt("AskCard bullet", article.querySelector("[data-ask-bullet] > i"));
     const kind = card.getByText("question", { exact: true });
     classAt("AskCard kind", kind);
-    classAt("AskCard first line's end", kind.parentElement);
+    const end = parentOf(kind);
+    expect(parentOf(end)).toBe(parentOf(words));
+    expect(classOf(end)).toEqual(
+      expect.arrayContaining(["text-xs", "leading-6", "text-slate-500", "dark:text-slate-400"])
+    );
     const turn = card.getByTestId("turn-ask-1");
     classAt("AskCard turn", turn);
     classAt("AskCard turn line", turn.parentElement);
