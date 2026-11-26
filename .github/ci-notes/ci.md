@@ -861,7 +861,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what that did).
 go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet are filled on every push to main:
 the fill restores the newest entry of the family, runs on it the build the job runs, which compiles only what changed since, deletes from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
-without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every job that restores it downloaded the growth), and saves the result under the job's key followed by the commit (`-${{ github.sha }}`).
+without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every job that restores it downloaded the growth) and from the module cache every zip, which no build reads (.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips), and saves the result under the job's key followed by the commit (`-${{ github.sha }}`).
 No entry carries the job's key itself, so GitHub's matching gives each job the newest entry whose key starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every other entry of the family, so each family keeps one entry per runner, as before.
 A job that is downloading a deleted entry at that moment gets a cache miss:
 actions/cache/restore warns and the job goes on, compiling what the entry would have given it, slower but not failed.
