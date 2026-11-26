@@ -3178,11 +3178,11 @@ the orphan sweep reads the image as drift and publishes one message to each role
 The round asks no role that failed and no role the daemon itself suspended, and it does not wait for either ([The disk dies with its pod](#the-disk-dies-with-its-pod) says which roles it asks).
 The daemon ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
 So pinning such a release reaches a running issue pod by itself, without stopping a tree.
-A turn that still runs at the bound ends with the pod.
+Where the round replaces the pod, a turn that still runs at the bound ends with the pod.
 A role's own push is what keeps its work, and work a role did not push before the pod goes is lost with the disk, a failed claim's and a passed-over claim's included, unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)); an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
 Before every replacement the daemon reads the issue's workspace, through a role whose process runs in the pod, or through the pod's launcher where none does, as where the pod is replaced through a role whose relaunch waits on it.
 Where the read finds work that no branch or tag on origin holds, or fails, the round keeps the pod over a drift its roles can keep working under, and ends with no replacement.
-A kept volume that the issue's next pod mounts is no exception: the round keeps such a pod as it keeps any other, and a turn that runs at the bound runs on.
+A kept volume that the issue's next pod mounts is no exception: the round keeps such a pod as it keeps any other.
 Over a drift that breaks the pod, the daemon replaces the pod whatever the read finds, and tells the issue's architect what the read found and whether the work is on a kept volume; the read pushes and saves nothing ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work, let its subagents and background jobs finish or stop them, push what they made, put scratch evidence on Dispatch and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
