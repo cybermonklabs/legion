@@ -44,10 +44,9 @@ const ON_PAGE = {
  * upload behind it, because the host is what sends them: a compact card's lone Answer stands
  * where this area is not mounted, and an upload the area held would have left that send ungated.
  *
- * A picked session is a reference written in the draft's text, which the comment Ask back and
- * Reply post carries to the server, and the server delivers the comment to that session. An
- * answer delivers to nobody it names, so a host whose send is an answer refuses the draft while
- * it names a session (`ANSWER_MENTION_REFUSAL`) rather than sending it to nobody.
+ * A picked session is a reference written in the draft's text. The comment that Ask back and
+ * Reply post carries it to the server, and the server delivers the comment to that session. An
+ * answer keeps the reference as a link in its text and delivers to nobody it names.
  */
 export function AskAnswerArea<Name extends string, UploadDraft>({
   actions,

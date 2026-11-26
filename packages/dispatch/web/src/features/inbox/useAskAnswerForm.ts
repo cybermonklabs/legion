@@ -16,7 +16,6 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
-import { draftParties } from "../refs/party-references";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
@@ -53,14 +52,6 @@ interface AskAnswerFailure {
   /** False for a refusal the same answer never gets past. */
   retryable: boolean;
 }
-
-/** Why Answer and **Answer with it anyway** refuse a draft that names a session: an answer is a
- *  decision on the ask, and the answer request delivers to nobody the words name
- *  (`AnswerAskInput`), so the words would name the session and the session itself would hear
- *  nothing. Ask back posts a comment, whose mentions are delivered, which is why the reason says
- *  where to send it instead. */
-export const ANSWER_MENTION_REFUSAL =
-  "An answer cannot mention a session. Remove the mention, or send it with Ask back.";
 
 /** Why Answer refuses a draft that is neither an option picked nor words written: the two ways
  *  an ask is answered, and the box holds neither. */
@@ -387,15 +378,9 @@ export function useAskAnswerForm({
     reasonRequired && trimmedAnswer === ""
       ? `Add a reason to send ${reasonRequiredFor}`
       : undefined;
-  // The sessions this draft names, which an answer delivers nothing to: Answer and "Answer with
-  // it anyway" refuse while one stands, by button and by Ctrl/Cmd+Enter alike, rather than
-  // naming a session that is never told (`draftParties`, the reader the field's own line of
-  // mention targets reads).
-  const answerMentioned = draftParties(answerText).targets.length > 0;
   /** Why Answer refuses the draft as it stands, or null while it would take it. An approval
    *  whose choice demands a reason keeps its own words; the rest is a draft nothing can send. */
-  const answerRefusal =
-    submitHint ?? (answerMentioned ? ANSWER_MENTION_REFUSAL : canAnswer ? null : ANSWER_REFUSAL);
+  const answerRefusal = submitHint ?? (canAnswer ? null : ANSWER_REFUSAL);
   /** Why Ask back refuses it: it posts what the box holds, and the box is empty. */
   const clarificationRefusal = emptyDraftRefusal(answerText);
   const answerPlaceholder = reasonRequired

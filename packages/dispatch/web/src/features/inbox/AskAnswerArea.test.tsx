@@ -15,10 +15,10 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskCard } from "./AskCard";
 import { AskReplyComposer } from "./AskThread";
 import { EMPTY_DRAFT_REFUSAL } from "./draft-store";
-import { ANSWER_MENTION_REFUSAL, ANSWER_REFUSAL } from "./useAskAnswerForm";
+import { ANSWER_REFUSAL } from "./useAskAnswerForm";
 
-/** INFRA-341 (R2, R3, R4): the ask's shared answer area stores a picked session as a
- * reference in the comment body and refuses an answer that would not tell that session. */
+/** INFRA-341: the ask's shared answer area stores a picked session as a reference in the text
+ * that Ask back, Reply and Answer send. */
 
 const planner: Agent = {
   capabilities: ["steer"],
@@ -167,7 +167,7 @@ function shownReason(button: HTMLElement): string | null {
   return id === undefined || id === "" ? null : (document.getElementById(id)?.textContent ?? null);
 }
 
-test("Ask back posts the picked session as a mention, which the answer refuses to carry", async () => {
+test("Ask back posts the picked session as a mention, and Answer sends a draft that names one", async () => {
   const input = ask();
   const posted: CreateCommentInput[] = [];
   const answered: unknown[] = [];
@@ -189,24 +189,18 @@ test("Ask back posts the picked session as a mention, which the answer refuses t
   try {
     const field = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
     await pickPlanner(view, field, "Ask ");
-
-    // An answer carries no mentions, so Answer refuses this draft - in the tab order, with its
-    // reason on screen and as its accessible description.
-    const answer = view.getByRole("button", { name: "Answer" });
-    expect(answer.getAttribute("aria-disabled")).toBe("true");
-    expect(answer.hasAttribute("disabled")).toBe(false);
-    expect(answer.getAttribute("title")).toBe(ANSWER_MENTION_REFUSAL);
-    expect(shownReason(answer)).toBe(ANSWER_MENTION_REFUSAL);
-    // A press on a control the refusal already holds, which user-event will not perform.
-    fireEvent.click(answer);
-    // Ctrl/Cmd+Enter submits the form without passing through the button, and is refused too.
-    fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
-    fireEvent.keyDown(field, { key: "Enter", metaKey: true });
-    expect(answered).toEqual([]);
-
     await userEvent.setup().click(view.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toEqual({ ask_id: "ask-1", body: `Ask ${PLANNER_MENTION}` });
+
+    // The answer keeps the picked session as the reference in its text.
+    await pickPlanner(view, field, "Over to ");
+    await userEvent.setup().click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() =>
+      expect(answered).toEqual([
+        { expected_edited_at: null, selected: [], text: `Over to ${PLANNER_MENTION}` },
+      ])
+    );
   } finally {
     view.unmount();
   }
@@ -352,51 +346,6 @@ test("an empty answer area refuses Answer and Ask back, sends nothing, and keeps
     }
     expect(answered).toEqual([]);
     expect(posted).toEqual([]);
-  } finally {
-    view.unmount();
-  }
-});
-
-// The draft belongs to the ask, not to the card showing it, so a mention picked in one card
-// stands in the other's draft - the one way "Answer with it anyway" is offered over a draft that
-// holds a mention, since picking one in the card that offered the choice takes the choice away.
-test("Answer with it anyway refuses a draft another card put a mention in", async () => {
-  const input = ask();
-  const answered: unknown[] = [];
-  const view = renderWithClient(
-    <>
-      <AskCard
-        answerAsk={async (_id, answerInput) => {
-          answered.push(answerInput);
-          return input;
-        }}
-        ask={input}
-        getAskThread={async () => thread(input)}
-      />
-      <AskCard ask={input} getAskThread={async () => thread(input)} />
-    </>
-  );
-
-  try {
-    const fields = (await view.findAllByLabelText("Your answer")) as HTMLTextAreaElement[];
-    const [asking, other] = fields;
-    if (asking === undefined || other === undefined) throw new Error("expected two answer boxes");
-    // The box's own text and a press on a refused control, in the one task the row measures:
-    // user-event has no form for either.
-    fireEvent.change(asking, { target: { value: "How does this fit the release plan?" } });
-    fireEvent.click(view.getAllByRole("button", { name: "Answer" })[0] as HTMLElement);
-    const choice = await view.findByRole("group", { name: "Question-shaped answer" });
-    const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
-    expect(anyway.hasAttribute("aria-disabled")).toBe(false);
-
-    await pickPlanner(view, other, "How does this fit the release plan? ");
-    expect(anyway.getAttribute("aria-disabled")).toBe("true");
-    expect(anyway.getAttribute("title")).toBe(ANSWER_MENTION_REFUSAL);
-    expect(shownReason(anyway)).toBe(ANSWER_MENTION_REFUSAL);
-    // A press on a control the refusal already holds: user-event refuses to click what it reads
-    // as unpressable, and the press is the whole of what this row proves.
-    fireEvent.click(anyway);
-    expect(answered).toEqual([]);
   } finally {
     view.unmount();
   }

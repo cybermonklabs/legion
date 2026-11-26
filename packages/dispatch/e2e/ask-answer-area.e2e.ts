@@ -15,9 +15,9 @@ import { asUser } from "./users";
 /**
  * INFRA-341: the ask card's answer box and the reply box under an answered ask share the
  * Conversation tab's field and reference picker. Ask back and Reply send a picked session's
- * reference in the comment body, and the server delivers the comment to that session.
- * Answer refuses a draft that would not notify a session it names. A refused button says why
- * in place (`RefusableButton`), and one ask's header reads the same wherever the ask is drawn.
+ * reference in the comment body, and the server delivers the comment to that session. An answer
+ * keeps the reference as a link in its text. A refused button says why in place
+ * (`RefusableButton`), and one ask's header reads the same wherever the ask is drawn.
  */
 
 /** The one live session the `@` picker offers. */
@@ -37,8 +37,6 @@ const PLANNER_MENTION = `[@Planner](dispatch://agent/${planner.session_id})`;
 /** The asker of every ask these rows seed. */
 const asker = { actor: { id: sessionIds.planner, kind: "session" as const }, as: "agent" as const };
 
-const MENTION_REFUSAL =
-  "An answer cannot mention a session. Remove the mention, or send it with Ask back.";
 const EMPTY_ANSWER_REFUSAL = "Pick an option or write an answer.";
 const EMPTY_DRAFT_REFUSAL = "Write something first.";
 
@@ -259,7 +257,7 @@ test("a decision block draws the same header fields as the ask's other places, w
   }
 });
 
-test("a session picked in an Inbox ask's answer area goes out on Ask back, and no answer carries it @phone", async ({
+test("a session picked in an Inbox ask's answer area goes out on Ask back, and an answer keeps it as a link @phone", async ({
   browser,
 }) => {
   const { ask, issue } = await seedOpenAsk();
@@ -271,43 +269,31 @@ test("a session picked in an Inbox ask's answer area goes out on Ask back, and n
     await page.goto("/");
     const card = await askCard(page, ask.id);
     const field = card.getByLabel("Your answer");
-    await pickPlanner(field, "Over to ");
-
-    // An answer does not tell a session it names, so Answer refuses this draft. It says why on
-    // screen and as its accessible description, and sends nothing by click or by key.
-    const answer = card.getByRole("button", { exact: true, name: "Answer" });
-    await answer.focus();
-    await expect(answer).toBeDisabled();
-    await expect(answer).toHaveAttribute("aria-disabled", "true");
-    await expect(answer).toHaveAttribute("title", MENTION_REFUSAL);
-    await expect(answer).toHaveAccessibleDescription(MENTION_REFUSAL);
-    await expect(card.getByText(MENTION_REFUSAL, { exact: true })).toBeVisible();
-    await answer.click({ force: true });
-    await expect(answer).toBeFocused();
-    await field.press("ControlOrMeta+Enter");
-    // Nothing being sent cannot be awaited: half a second is the window the answer would have
-    // reached the server in, by the click above or by this key.
-    await page.waitForTimeout(500);
-    expect(answers).toEqual([]);
+    await pickPlanner(field, "Ask ");
 
     // Ask back posts it as a comment that names the session, and the session gets it.
     await card.getByRole("button", { exact: true, name: "Ask back" }).click();
     await expect
       .poll(() => comments.map((write) => write.input))
-      .toEqual([{ ask_id: ask.id, body: `Over to ${PLANNER_MENTION}` }]);
+      .toEqual([{ ask_id: ask.id, body: `Ask ${PLANNER_MENTION}` }]);
     await expect
       .poll(() => getSentMessages())
       .toMatchObject([{ target_session: planner.session_id }]);
     await expect(field).toHaveValue("");
 
-    // And the same box, its mention gone, answers: `answers` is the list this page's answers
-    // land in, so its empty read above is Answer's refusal and not a watch on an address the
-    // page never posts to.
-    await field.fill("Ship it.");
-    await field.press("ControlOrMeta+Enter");
+    // Answer sends a draft that names the session, with the reference in the answer's text.
+    await pickPlanner(field, "Over to ");
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => answers.map((write) => write.input))
-      .toEqual([{ expected_edited_at: null, selected: [], text: "Ship it." }]);
+      .toEqual([{ expected_edited_at: null, selected: [], text: `Over to ${PLANNER_MENTION}` }]);
+
+    // The recorded answer reads the session as a link to it.
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const answered = page.locator("#issue-conversation-panel").getByTestId(`ask-${ask.id}`);
+    const link = answered.locator(`a[data-dispatch-ref="dispatch://agent/${planner.session_id}"]`);
+    await expect(link).toHaveText("@Planner");
+    await expect(link).toHaveAttribute("href", `/agents/${planner.session_id}/live`);
   } finally {
     await alice.close();
   }
@@ -335,9 +321,6 @@ test("a decision block's answer area picks a session the same way and asks back 
     const field = card.getByLabel("Your answer");
     await pickPlanner(field, "Ask ");
 
-    const answer = card.getByRole("button", { exact: true, name: "Answer" });
-    await expect(answer).toBeDisabled();
-    await expect(answer).toHaveAccessibleDescription(MENTION_REFUSAL);
     await card.getByRole("button", { exact: true, name: "Ask back" }).click();
     await expect
       .poll(() => comments.map((write) => write.input))
