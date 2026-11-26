@@ -915,8 +915,9 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 // holds, and [] where recovery is nil. A KEY_IN_FLIGHT answered before the repeat's body is judged
 // (answerDrainedRepeat's Expect: 100-continue and drain-error answers) names the running request's
 // point whatever the repeat's body; elsewhere a point is passed only once the digest matched.
-// recovery is nil where the layer read none, where the row is another request's (KEY_REUSED), and
-// where it is past its window.
+// Either way the layer passes a point only to a caller that sees every issue it names
+// (recoveryPointFor). recovery is nil where the layer read none, where the row is another
+// request's (KEY_REUSED), where it is past its window, and where the caller does not see it.
 func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recovery json.RawMessage) {
 	var point statusChangeRecovery
 	if recovery != nil {
