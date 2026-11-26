@@ -3,6 +3,7 @@ package duty_test
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -82,6 +83,44 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 		time.Sleep(time.Hour)
 		stop(cancel, done)
 		wantPassesAt(t, &passes, booted, 0)
+	})
+}
+
+// Idle is called each time the loop is about to wait with nothing owed and nothing due, and not
+// while a pass's due time is armed: here the boot pass asks to run again 10 s on, so the loop is
+// first idle after that pass, and again after the pass a later wake earns.
+func TestAWokenLoopReportsIdleOnlyWithNothingOwedOrDue(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var passes, idles passClock
+		wake := make(chan struct{}, 1)
+		booted := time.Now()
+		first := true
+		cancel, done := runLoop(duty.WokenLoop{
+			Wake:   wake,
+			MinGap: 5 * time.Second,
+			Pass: func(context.Context) time.Time {
+				passes.record()
+				if first {
+					first = false
+					return booted.Add(10 * time.Second)
+				}
+				return time.Time{}
+			},
+			Idle: idles.record,
+		}, noLease(t))
+		time.Sleep(time.Minute)
+		signal(wake)
+		time.Sleep(time.Minute)
+		stop(cancel, done)
+		wantPassesAt(t, &passes, booted, 0, 10*time.Second, time.Minute)
+		var reported []time.Duration
+		for _, at := range idles.times() {
+			reported = append(reported, at.Sub(booted))
+		}
+		if want := []time.Duration{10 * time.Second, time.Minute}; !slices.Equal(reported, want) {
+			t.Fatalf("idle reported at %v after boot, want %v", reported, want)
+		}
 	})
 }
 

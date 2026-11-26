@@ -162,6 +162,13 @@ type Runtime struct {
 	// a live pod a launch would keep has ended (relaunch), nil for a runtime that keeps every such
 	// pod.
 	roundPodEnds runtime.RoundPodEnds
+	// launchTakes is Options.LaunchTakes: the daemon's record of what a launch's own replacement
+	// of an issue pod is about to take (relaunch), nil for a runtime that records nothing.
+	launchTakes runtime.LaunchTakes
+	// launchTook is Options.LaunchTook: the daemon's word of a launch's own replacement of an
+	// issue pod, with what the read of its workspace found (relaunch, R7 of
+	// #5285), nil for a runtime that tells nobody.
+	launchTook runtime.LaunchTook
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -484,7 +491,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds,
+		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs, gitHubRoute: opts.GitHubRoute,
