@@ -12,9 +12,11 @@
 //
 // A box a launcher enrolled through this helper renews with its own key and tells the helper
 // nothing, so the helper keeps a record of each it enrolled under a sign-in (SignInBoxesPath).
-// Where it finds no record it can read, as at its first start after a release that kept none, it
-// cannot tell which boxes stand under the sign-in on this box, so it holds that sign-in and trades
-// it until it leaves the box (loadSignInHolds).
+// Where there is no record and no helper ran on this machine before (Broker.FirstOnMachine), no
+// box stands under a sign-in here, so it holds nothing. Where it finds no record it can read
+// otherwise, as at its first start after a release that kept none, it cannot tell which boxes
+// stand under the sign-in on this box, so once it can tell which sign-in that is, it holds that
+// sign-in and trades it until it leaves the box (decideSignInHolds).
 
 package helper
 
@@ -95,8 +97,8 @@ func (b *Broker) keepSignIns(ctx context.Context) {
 // While the helper has not yet decided what a missing or unreadable record holds, it tries again
 // first (decideSignInHolds).
 func (b *Broker) signInNeeded(now time.Time) bool {
-	if b.signInHolds.undecided() {
-		b.decideSignInHolds(false)
+	if loadErr := b.signInHolds.unreadBecause(); loadErr != nil {
+		b.decideSignInHolds(loadErr, false)
 	}
 	here := ""
 	if b.signInHolds.namesSignIns() {
@@ -115,28 +117,27 @@ func (b *Broker) signInNeeded(now time.Time) bool {
 // (signInHolds.load), and where there is none it can read, decides what the helper holds
 // instead (decideSignInHolds).
 func (b *Broker) loadSignInHolds() {
-	if b.signInHolds.load(b.SignInBoxesFile) != nil {
-		b.decideSignInHolds(true)
+	if loadErr := b.signInHolds.load(b.SignInBoxesFile); loadErr != nil {
+		b.decideSignInHolds(loadErr, true)
 	}
 }
 
 // decideSignInHolds decides what a helper with no record of its boxes it can read holds
-// (signInHolds.decide), and from then on saves its record. Where the record is not there and no
-// helper ran on this machine before (FirstOnMachine), nothing was enrolled under a sign-in that
-// the record would name, so it holds nothing. Otherwise it cannot tell which boxes a helper before
-// it enrolled under the sign-in on this box: the release before kept no such record, and a lost
-// record keeps none. A box it cannot see is refused its renewal an hour after the last trade of
-// its sign-in, so it holds the sign-in on the box now, which keepSignIns then trades until that
-// sign-in leaves the box, saves the hold so a restart keeps it, and says so at WARN, naming the
-// person. With nobody signed in, it holds nothing: no box of a sign-in gone from the box can be
-// kept by any trade here.
+// (signInHolds.decide), loadErr being why it was not read (signInHolds.load), and from then on
+// saves its record. Where the record is not there and no helper ran on this machine before
+// (FirstOnMachine), nothing was enrolled under a sign-in that the record would name, so it holds
+// nothing. Otherwise it cannot tell which boxes a helper before it enrolled under the sign-in on
+// this box: the release before kept no such record, and a lost record keeps none. A box it cannot
+// see is refused its renewal an hour after the last trade of its sign-in, so it holds the sign-in
+// on the box now, which keepSignIns then trades until that sign-in leaves the box, saves the hold
+// so a restart keeps it, and says so at WARN, naming the person. With nobody signed in, it holds
+// nothing: no box of a sign-in gone from the box can be kept by any trade here.
 //
 // Where it cannot tell which sign-in is on the box (two people signed in and none named, a record
 // in the store that cannot be read), it decides nothing and saves no record, so neither a box
 // enrolled meanwhile nor a restart writes a record that holds nothing: keepSignIns tries again at
 // each tick, and a helper started again tries at its start. It says so at WARN at start alone.
-func (b *Broker) decideSignInHolds(atStart bool) {
-	loadErr := b.signInHolds.undecidedBecause()
+func (b *Broker) decideSignInHolds(loadErr error, atStart bool) {
 	missing := errors.Is(loadErr, fs.ErrNotExist)
 	person, thumbprint := "", ""
 	if !missing || !b.FirstOnMachine {
@@ -175,13 +176,13 @@ func (b *Broker) decideSignInHolds(atStart bool) {
 type signInHolds struct {
 	mu sync.Mutex
 	// file is where boxes and unrecorded are kept across a restart (Broker.SignInBoxesFile, set
-	// by load, or by decide); "" keeps them for this process's life alone.
+	// by load); "" keeps them for this process's life alone. Nothing moves it once load set it.
 	file string
-	// pending is the record's path while what a missing or unreadable record holds is not yet
-	// decided, and pendingErr why it was not read: nothing is saved until decide, so no record
-	// that holds nothing is written in the meantime (Broker.decideSignInHolds).
-	pending    string
-	pendingErr error
+	// unread is why the record at file was not read (load), until the helper decides what that
+	// holds (decide), and nil once it has, or where the record was read. Nothing is saved while
+	// it is set, so no record that holds nothing is written in the meantime
+	// (Broker.decideSignInHolds).
+	unread error
 	// sessions are the enrollments of the sessions this helper renews, each with the end of its
 	// lease and whether this helper enrolled it under its own machine credential, which no trade
 	// of a sign-in keeps. One it renews without having enrolled it, which a session record gave
@@ -194,9 +195,9 @@ type signInHolds struct {
 	// another sign-in is on the box, or none, no trade here can keep it, and it goes (keepSignIn).
 	boxes map[string]string
 	// unrecorded are the sign-ins, by their box keys' thumbprints, that were on this box when the
-	// helper found no record it could read (Broker.loadSignInHolds): a box a helper before it
-	// enrolled under one may stand that no record names. Each counts while it is the sign-in on
-	// this box, and goes once another is, or none (keepSignIn).
+	// helper decided what a record it could not read holds (Broker.decideSignInHolds): a box a
+	// helper before it enrolled under one may stand that no record names. Each counts while it is
+	// the sign-in on this box, and goes once another is, or none (keepSignIn).
 	unrecorded map[string]bool
 }
 
@@ -321,18 +322,12 @@ func (h *signInHolds) ended(id string) error {
 	return h.saveLocked()
 }
 
-// undecided reports whether what a missing or unreadable record holds is not yet decided.
-func (h *signInHolds) undecided() bool {
+// unreadBecause is why the record was not read, while what that holds is not yet decided; nil
+// once it is, or where the record was read.
+func (h *signInHolds) unreadBecause() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.pending != ""
-}
-
-// undecidedBecause is why the record was not read, while that is not yet decided.
-func (h *signInHolds) undecidedBecause() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pendingErr
+	return h.unread
 }
 
 // decide settles a record that was not read: the sign-in whose box key's thumbprint is thumbprint
@@ -341,7 +336,7 @@ func (h *signInHolds) undecidedBecause() error {
 func (h *signInHolds) decide(thumbprint string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.file, h.pending, h.pendingErr = h.pending, "", nil
+	h.unread = nil
 	if thumbprint != "" {
 		if h.unrecorded == nil {
 			h.unrecorded = map[string]bool{}
@@ -352,9 +347,10 @@ func (h *signInHolds) decide(thumbprint string) error {
 }
 
 // saveLocked writes the boxes and the sign-ins held for want of a record to h.file, owner-only and
-// atomically (writeFileOwnerOnly); nothing where h.file is "". The caller holds h.mu.
+// atomically (writeFileOwnerOnly); nothing where h.file is "", or while what a record that was not
+// read holds is not yet decided (h.unread). The caller holds h.mu.
 func (h *signInHolds) saveLocked() error {
-	if h.file == "" {
+	if h.file == "" || h.unread != nil {
 		return nil
 	}
 	boxes := h.boxes
@@ -380,22 +376,22 @@ func sortedKeys(set map[string]bool) []string {
 
 // load reads file, kept by the helper that ran before this one, and keeps file for every later
 // save. A file that is not there is an error wrapping fs.ErrNotExist, and one that cannot be read,
-// or is no such record, an error naming it; either way nothing is added, file waits for decide,
-// and the caller decides what the helper holds (Broker.decideSignInHolds).
+// or is no such record, an error naming it; either way nothing is added, nothing is saved until
+// decide, and the caller decides what the helper holds (Broker.decideSignInHolds).
 func (h *signInHolds) load(file string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.file = file
 	data, err := os.ReadFile(file)
 	if err != nil {
-		h.pending, h.pendingErr = file, fmt.Errorf("read %s: %w", SignInBoxesNamed, redact.File(err))
-		return h.pendingErr
+		h.unread = fmt.Errorf("read %s: %w", SignInBoxesNamed, redact.File(err))
+		return h.unread
 	}
 	var kept signInHoldsFile
 	if err := json.Unmarshal(data, &kept); err != nil {
-		h.pending, h.pendingErr = file, fmt.Errorf("%s is no record of boxes and sign-ins", SignInBoxesNamed)
-		return h.pendingErr
+		h.unread = fmt.Errorf("%s is no record of boxes and sign-ins", SignInBoxesNamed)
+		return h.unread
 	}
-	h.file = file
 	if h.boxes == nil {
 		h.boxes = map[string]string{}
 	}

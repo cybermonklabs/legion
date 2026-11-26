@@ -2638,7 +2638,7 @@ before it expires; the clients from before do not:
 | --- | --- |
 | `agent-secrets` of this release | Its renewer trades the sign-in again each time a third of the credential's life has passed, so its enrollment renews on. Refused, it exits 76, and the next command registers a new enrollment. |
 | `agent-secrets` from before | It renews no sign-in enrollment, which lapses one `BROKER_LEASE_SECONDS` after the command, as before. The rule changes nothing for it. |
-| `agent-secrets-helper` of this release | It trades the sign-in while a session or box it enrolled under it may need it, and keeps the boxes in a record beside its session records. A helper that finds no record it can read, as at its first start after a helper from before, which kept none, cannot tell which boxes stand under the sign-in on the machine: it trades that sign-in until it leaves the machine, and logs a WARN naming the person. So a box the helper from before enrolled renews on. Refused, it enrols the session again. |
+| `agent-secrets-helper` of this release | It trades the sign-in while a session or box it enrolled under it may need it, and keeps the boxes in a record beside its session records. A helper that finds no record it can read, as at its first start after a helper from before, which kept none, cannot tell which boxes stand under the sign-in on the machine: it trades that sign-in until it leaves the machine, and logs a WARN naming the person. So a box the helper from before enrolled renews on. A helper on a new machine, whose identity key it made at its start, holds nothing. Refused, it enrols the session again. |
 | `agent-secrets-helper` from before | It trades the sign-in only when it enrols a session. Once it has enrolled nothing for the credential's hour, every session it holds under the sign-in is refused its next renewal; it enrols each again, trading then. A session that names itself takes its grants and pending requests with it to the new enrollment; one that names none loses them. A box it enrolled under the sign-in (`agent-secrets enroll --helper`) renews with its own `agent-secrets renew`, which exits 76 when refused, and the box is enrolled again only by running that command again. |
 | Pods, machines' own sessions, machine logins a person approved | Not sign-in sessions: the rule changes nothing for them. |
 
@@ -2674,13 +2674,19 @@ group by 1, 2, 3
 order by 1;
 ```
 
-On each machine it lists, the running helper's release is the `version` of its last start line.
-Each must be this release. A machine where no sign-in was traded for seven days is not listed:
-check any such machine a person may come back to the same way.
+On each machine it lists where a helper runs, the running helper's release is the `version` of its
+last start line. Each must be this release. A machine where no sign-in was traded for seven days is
+not listed: check any such machine a person may come back to the same way.
 
 ```sh
 journalctl --user -u agent-secrets-helper.service -g 'agent-secrets-helper listening' -n 1 -o cat
 ```
+
+A machine it lists where no helper runs (`pgrep -u "$USER" -f agent-secrets-helper` prints nothing)
+trades the sign-in through the command-line `agent-secrets` alone, which writes no start line, so
+this check is not for it: the rule changes nothing for that command from before, and the command of
+this release keeps its own sign-in traded (the table above). Check 2 lists each of its sessions
+that nothing trades for.
 
 **2. No session is at risk now.** This query lists each live sign-in session whose credential is
 revoked, has lapsed, or lapses within five minutes, with the person, the machine and its account:

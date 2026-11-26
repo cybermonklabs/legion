@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -194,11 +195,20 @@ func TestAHelperTradesItsSignInOnlyWhileAnEnrollmentMayStandUnderIt(t *testing.T
 		b.SignInBoxesFile = file
 		signIns := &stubSignIns{}
 		asks, _ := startKeeping(t, b, signIns)
+		ada := signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
 		signIns.mu.Lock()
-		signIns.authority = signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
+		signIns.authority = ada
 		signIns.mu.Unlock()
-		if _, _, err := b.EnrollSessionKey(ctx, "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil); err != nil {
+		id, _, err := b.EnrollSessionKey(ctx, "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil)
+		if err != nil {
 			t.Fatal(err)
+		}
+		under, err := proof.Thumbprint(&ada.Key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if boxes, _ := recordedHolds(t, file); boxes[id] != under {
+			t.Fatalf("the record after the enrolment holds boxes %q; want %s under the thumbprint of the sign-in on the box, %s", boxes, id, under)
 		}
 		testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "three asks for the box under the sign-in", func() bool { return asks() >= 4 })
 		// The person signs in again, which makes a key of its own: nothing here can trade the
@@ -268,14 +278,47 @@ func TestSignInHoldsCountWhatMayStandUnderTheSignIn(t *testing.T) {
 	if holds.needed(later, adaAgain) || holds.needed(later, "") {
 		t.Fatal("a sign-in held for want of a record is needed while another is on the box, or none, or while the box was not read")
 	}
-	if err := holds.keepSignIn(ada); err != nil || !holds.namesSignIns() {
-		t.Fatalf("the box and the hold of the sign-in still on the box were dropped (%v)", err)
+	if err := holds.keepSignIn(ada); err != nil {
+		t.Fatal(err)
+	}
+	if holds.boxes["another-signin-box"] != ada || !holds.unrecorded[ada] {
+		t.Fatalf("after keepSignIn of the sign-in still on the box, the boxes are %q and the holds %v; want its box and its hold kept", holds.boxes, holds.unrecorded)
 	}
 	if err := holds.keepSignIn(adaAgain); err != nil {
 		t.Fatal(err)
 	}
 	if holds.namesSignIns() || holds.needed(later, ada) {
 		t.Fatal("a box or a hold is still recorded after another sign-in took the place of the one it names")
+	}
+}
+
+// TestSignInHoldsDecidedTwiceKeepTheirRecord: what a record that was not read holds is decided
+// once, but a second decide cannot take the record's path from the helper: a box recorded after
+// two decisions is still saved to the record, as is the box recorded before them, which was not
+// saved while the decision waited.
+func TestSignInHoldsDecidedTwiceKeepTheirRecord(t *testing.T) {
+	const ada = "thumbprint-of-adas-key"
+	file := SignInBoxesPath(filepath.Join(t.TempDir(), "sessions.json"))
+	var holds signInHolds
+	if err := holds.load(file); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("load of a record that is not there: %v; want an error wrapping fs.ErrNotExist", err)
+	}
+	if err := holds.box("box-before-the-decision", ada); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the record before the decision: %v; want none written", err)
+	}
+	for range 2 {
+		if err := holds.decide(""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := holds.box("box-after-the-decisions", ada); err != nil {
+		t.Fatal(err)
+	}
+	if boxes, _ := recordedHolds(t, file); boxes["box-before-the-decision"] != ada || boxes["box-after-the-decisions"] != ada {
+		t.Fatalf("the record after two decisions holds boxes %q; want both boxes under %s", boxes, ada)
 	}
 }
 
@@ -319,10 +362,11 @@ func TestAHelperDecidesWhatAMissingRecordHoldsOnlyOnceItCanTell(t *testing.T) {
 		if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the record while the helper cannot tell which sign-in is on the box: %v; want none written", err)
 		}
+		asked := asks()
 		signIns.mu.Lock()
 		signIns.onBoxErr = nil
 		signIns.mu.Unlock()
-		testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "three asks once the helper can tell the sign-in on the box", func() bool { return asks() >= 3 })
+		testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "three asks once the helper can tell the sign-in on the box", func() bool { return asks() >= asked+3 })
 		if boxes, held := recordedHolds(t, file); len(held) != 1 || len(boxes) != 1 {
 			t.Fatalf("the record once the helper could tell holds boxes %q and sign-ins %q; want the box and the sign-in on the box", boxes, held)
 		}

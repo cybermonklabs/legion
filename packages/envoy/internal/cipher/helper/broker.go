@@ -165,14 +165,16 @@ type Broker struct {
 	SignIns SignIns
 	// SignInBoxesFile is where the helper keeps the enrollments it made under a person's sign-in
 	// for a launcher's key (SignInBoxesPath), so a helper started again keeps that sign-in's
-	// credential live for them too (keepSignIns, signInHolds). A helper that finds none it can
-	// read holds the sign-in on the box until it leaves (loadSignInHolds). Empty keeps the boxes
-	// for this process's life alone, and holds no sign-in.
+	// credential live for them too (keepSignIns, signInHolds). What a helper that finds none it
+	// can read holds instead, decideSignInHolds decides: nothing on a new machine
+	// (FirstOnMachine), and otherwise, once the helper can tell which sign-in is on the box, that
+	// sign-in until it leaves. Empty keeps the boxes for this process's life alone, and holds no
+	// sign-in.
 	SignInBoxesFile string
 	// FirstOnMachine reports that no helper ran on this machine before this one: the identity key
 	// was made at this start (LoadOrMakeIdentityKey). A sign-in needs this machine's identity, so
 	// no earlier helper enrolled a box under one, and a record of the boxes that is not there holds
-	// no sign-in (loadSignInHolds).
+	// no sign-in (decideSignInHolds).
 	FirstOnMachine bool
 	HTTP           *http.Client
 	// Log records every change of the launcher credential: a machine login or a trade installing
@@ -283,7 +285,9 @@ type SignIns interface {
 	Refused(ctx context.Context, credentialID string) error
 	// SignedIn names the sign-in Current would act under, with no trade: its person and its
 	// box key's thumbprint, which no later sign-in shares; both empty where nobody is signed in.
-	// keepSignIns reads it for a sign-in held with no record of its boxes (signInHolds).
+	// keepSignIns reads it at each tick while a box or a sign-in held for want of a record is
+	// recorded, to drop each that names another sign-in (signInNeeded), and decideSignInHolds
+	// reads it to tell which sign-in a record that was not read holds.
 	SignedIn() (person, thumbprint string, err error)
 }
 
@@ -1069,9 +1073,11 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 // before it listens, holding the machine file's claim.
 //
 // Where a person may be signed in on this box (SignIns), it first reads SignInBoxesFile, the
-// boxes a helper before it enrolled under a sign-in, and holds the sign-in on the box where it
-// finds no record it can read (loadSignInHolds). Then it starts keepSignIns, which keeps the
-// sign-in's credential live while something may stand under it.
+// boxes a helper before it enrolled under a sign-in, and where it finds no record it can read,
+// decides what the helper holds instead (decideSignInHolds): nothing on a new machine, and
+// otherwise the sign-in on the box, or, while it cannot tell which sign-in that is, nothing until
+// a later tick can. Then it starts keepSignIns, which keeps the sign-in's credential live while
+// something may stand under it.
 //
 // Where this machine proves an identity of its own, the rest is startIdentity's. Otherwise it
 // resumes the machine login kept at MachineFile, if there is one, and starts the refresh loop
@@ -1854,13 +1860,15 @@ func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 	if err != nil || signIn == nil {
 		return id, lease, err
 	}
-	under, recordErr := proof.Thumbprint(&signIn.Key.PublicKey)
-	if recordErr == nil {
-		recordErr = redact.File(b.signInHolds.box(id, under))
+	under, err := proof.Thumbprint(&signIn.Key.PublicKey)
+	if err != nil {
+		b.logger().Warn("the helper could not read the thumbprint of the sign-in it enrolled a box under, so it recorded no box and does not count it among what keeps that sign-in live; the broker refuses the box its renewal an hour after the sign-in's last trade",
+			"enrollment_id", id, "error", err)
+		return id, lease, nil
 	}
-	if recordErr != nil {
-		b.logger().Warn("the helper could not record a box it enrolled under a person's sign-in; it keeps the sign-in live for it until the helper stops, and not after a restart",
-			"enrollment_id", id, "file", SignInBoxesNamed, "error", recordErr)
+	if err := b.signInHolds.box(id, under); err != nil {
+		b.logger().Warn("the helper could not save the record of a box it enrolled under a person's sign-in; it keeps the sign-in live for it until the helper stops, and not after a restart",
+			"enrollment_id", id, "file", SignInBoxesNamed, "error", redact.File(err))
 	}
 	return id, lease, nil
 }
