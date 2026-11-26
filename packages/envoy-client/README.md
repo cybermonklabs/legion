@@ -342,9 +342,9 @@ LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
 The dry-run file runs through the package's `test` script, whose `--timeout` its rows take. CI
 runs each of them in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package
 with both a PostgreSQL and a Go; the dry-run file runs in a leg of that job of its own,
-`artifact-dry-run` in `.github/workflows/ci-job-envoy-session-stall.yaml`, so the job's time stays
-under the pull request's 10-minute line (`.github/ci-notes/ci.md`, "The session stall suites, the
-session state rig and the live Dispatch stack").
+`artifact-dry-run` in `.github/workflows/ci-job-envoy-session-stall.yaml`, so its rows add to the
+job's time only the head start a runner gives the leg (`.github/ci-notes/ci.md`, "The session
+stall suites, the session state rig and the live Dispatch stack").
 
 ## The listener's relay socket
 

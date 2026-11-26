@@ -158,8 +158,8 @@ jobs:
   # each run the real CLI, its own process, against a real Dispatch of this tree, in every
   # combination of the way the text is given, --force and the name (dispatch://INFRA-983 moved
   # these rows here from the browser suite, where they drove no browser). A leg beside the job
-  # above rather than a step of it, so the job's time on a pull request stays under the
-  # 10-minute line.
+  # above rather than a step of it, so its rows add to the job's time on a pull request only the
+  # head start a runner gives this leg, not their own minutes.
   # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
   artifact-dry-run:
     runs-on: ubuntu-24.04-arm

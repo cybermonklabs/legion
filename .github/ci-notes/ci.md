@@ -2921,8 +2921,10 @@ pull-request runs of 2026-11-26 (CI runs 45750707056, 45739294535, 45759095380 a
 45768587967), at the 10-minute line that keeps a job on the pull request
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue), and the
 rows as one more step would have added about 106 s and taken it past the line. As a leg they add
-the leg's own setup to the runner time and nothing to the job's time, which runs from its first
-leg's start to its last leg's end. The leg repeats what the rows need of the job's setup: the
+the leg's own setup to the runner time. The job's time runs from its first leg's start to its
+last leg's end, so the leg adds to it only the head start a runner gives it over the stall
+suites: none in CI run 45794154038 (563 s), and 79 s in run 45812065142, where the stall suites
+took 540 s and the job 619 s. The leg repeats what the rows need of the job's setup: the
 checkout, Bun and the install, Go and the go-envoy cache, the Postgres service with the read-back
 of its settings and the check of its connection ceiling, and the contracts build. It reports
 ci-ok under the job's id, as the
