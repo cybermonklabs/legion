@@ -55,7 +55,7 @@ calls, and GraphQL queries that read file contents in batches.
 
 ## Commands
 
-### `behaviour screen|confirm|control|report`
+### `behaviour screen|confirm|control|report|audit-mixed`
 
 ```
 bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
@@ -69,6 +69,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--route-id <arm>=<uuid>]...
                                  (--again, --confirm-flagged: confirm only; --store-only: report only;
                                   --route-id: screen, confirm and control only)
+bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <skill-cuts.json> --out <dir> \
+  --old <dir> --new <dir> --cases <case file> [--cache-dir <dir>] [--scratch <dir>]
 ```
 
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
@@ -231,9 +233,12 @@ skill's cases (`cases.ts`), one JSON object per line.
   answered it; `absent`: the unknown-skill reply). A run that reads a skill in several rounds
   counts once for it, and a read answered from the arm's own text (the tested skill) is no
   count. The line is a count only: it drops no case and changes no verdict (the architect,
-  2026-11-25). It calls no model, and needs only `--config`, `--out`, `--old` and
-  `--cases`; `--request-log` names the log it sets the spend against, `<out>/requests.jsonl` by
-  default. With
+  2026-11-25). It also counts, by stage and arm, the runs continued past a reply that read skill
+  files beside calls that only prepare the case's act, the runs judged at a reply that read them
+  beside an act, and the runs left with no verdict by one beside an undecided call
+  (`mixed-undecided`; the mixed-reply rule, below). It calls no model, and needs only `--config`,
+  `--out`, `--old` and `--cases`; `--request-log` names the log it sets the spend against,
+  `<out>/requests.jsonl` by default. With
   `--reading-models` it also prints each model of that file with its sessions and whether the
   gateway serves it, the sessions whose file names no model and those in no models query's rows,
   and the served models the screened cases ran on, each with its cases; a verdict then ends with
@@ -258,6 +263,21 @@ skill's cases (`cases.ts`), one JSON object per line.
   A file that is not JSON or not of that shape is refused (exit 2), naming the file.
   `screen`, `confirm` and `control` refuse `--store-only` (exit 2).
   Without `--store-only`, the report says nothing of the transcript store.
+- `audit-mixed` (no model call, no capture, no network, no key): the mixed-reply rule below,
+  applied to the judged reply of each saved run of each stage, earlier confirms included (the
+  run's `reply` less its answered rounds' read calls, the first N blocks for N the reads its
+  `skillReads` holds). Each arm is built from `--old` and `--new` (and a control's planted line
+  from its stage) in a scratch directory of its own under `--scratch`, removed after, and a read
+  of another skill is answered from the copy its stage's saved capture names under `--cache-dir`,
+  which the audit never restores: give it the cache the stages ran with. A stage run with other
+  texts than `--old` and `--new` is skipped and named. Per case, stage and arm it prints, and
+  writes as JSON to `<out>/audit-mixed.json`, which it names: the runs and the judged runs; the
+  runs judged at a mixed reply with an act (`acts`), those it would continue now (`continues`),
+  those it would leave with no verdict past the last round (`pastLastRound`) and those with an
+  undecided call (`unresolved`), each with its run number, blind id, session id, verdict and the
+  tools that decided it; and the runs whose judged reply only reads skill files, holds no mixed
+  reply, or was not saved. It holds ids, counts and tool names, never a request's or a reply's
+  text.
 
 The report's spend at list price is the sum of what the case results in `<out>/cases` record
 their calls cost, each call once, and the report prints each part of it: the judge controls (the
@@ -407,12 +427,47 @@ source that `none` lists under the skill's name (below), where it lists one, as 
 skill's; a skill the arm does not install (the case's skill in `none` otherwise, or a skill the
 profile does not list) with Oh My Pi's `Unknown skill: <name>` text, and the run goes on. The judged
 step is each answered round's read calls, without their results, then the first reply that holds
-another call or none, so a case whose line governs a read of a file of the skill is judged on that
-read. A reply after round 3 that still only reads skill files gets no verdict and is run again, as
-any run with no verdict is. Each report counts such runs by stage and arm, and a stage that an arm
-cannot finish for them drops its case as `reads-past-last-round`, listed with its counts. Each run
-records each answered round's reads (`skillReads`: the skill, the file, by `skill://` or by path,
-and whether the arm, the installed copy or no copy answered it).
+no read the replay answers, or an act beside one (below), so a case whose line governs a read of a
+file of the skill is judged on that read. A reply after round 3 that still only reads skill files,
+or reads them beside calls that only prepare (below), gets no verdict and is run again, as any run
+with no verdict is. Each report counts such runs by
+stage and arm, and a stage that an arm cannot finish for them drops its case as
+`reads-past-last-round`, listed with its counts. Each run records each answered round's reads
+(`skillReads`: the skill, the file, by `skill://` or by path, and whether the arm, the installed
+copy or no copy answered it).
+
+The mixed-reply rule (the architect of INFRA-4676, 2026-11-26T06:16:45Z). A mixed reply reads a
+skill file the replay answers and makes a call it does not: the agent reads the reference the text
+sends it to beside the calls that prepare its act, and that batch is not its attempt at the act.
+It is sorted with no model call (`replay.ts`'s `replyBoundary`), by the case's act (`caseAct`),
+from its two steps: each step's `toolCall` blocks, each its tool and its argument tokens (every
+string value of its arguments, numbers and booleans as text, but the intent label `i`, split at
+whitespace and `"`, `'`, backtick, `;`, `|`, `&`, `(`, `)`, `,`, `=`, `<`, `>`, lowercased, each
+of 2 characters or more). The shared tokens are those the calls of both steps hold; a call both
+steps make as it is (its tool and arguments, the intent label left out) is context; each other
+call is an act call, and its distinguishing tokens are its tokens that are not shared. Where the
+two steps make the same calls, the act is the text, and its distinguishing tokens are each step's
+text tokens the other's text lacks. Each call of a mixed reply but its answered reads is
+preparation when its tool is no act call's; an act when it is an act call of its tool (the intent
+label left out) or its tokens hold a distinguishing token of one; preparation when it only reads
+or looks (a `read`, `grep`, `glob`, `find`, `lsp` or `ast_grep` call, a `write` to `xd://lsp`, a
+`bash` command of the load test's read-only list) and no act call of its tool does; else
+undecided. A call is never preparation because the steps share its words: a violating step that
+leaves out the real one's check has no token of its own. Where the act is the text, the reply's
+text is an act when it holds a distinguishing token, preparation when it is blank, else
+undecided (a plan to answer is not the answer); elsewhere the text decides nothing.
+A mixed reply with an act is the judged step as it came (the run's `mixedAct`). One with no act
+and an undecided call gets no verdict, its reason beginning `mixed-undecided` and naming each such
+call (or its text); its reply is kept, and it is run again as any run with no verdict, never
+continued. One whose other calls only prepare is a round of its own: its reads are answered, and
+it goes back holding only those read calls (a Messages reply less its unanswered `tool_use`
+blocks, its thinking and text blocks kept, since a body with thinking needs its thinking block;
+a Responses reply's output items less its unanswered `function_call` items, its reasoning and
+message items kept in their order), with one answer per read. No other call is run and no result
+is made up for one: the run records each call left out (`leftOut`: the round, the tool and its
+first argument but `i`), in no body and in no judged step. Such a reply after round 3 gets no
+verdict as `reads-past-last-round`, its reason saying it read skill files beside other calls, none
+an act.
 
 ### The harness strings
 
@@ -559,6 +614,7 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
   [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] \
   [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>] \
   [--route-seed <text, empty by default>]
+bun scripts/skill-cuts/cli.ts load audit-mixed --out <dir> --skill <skill dir> [--cache-dir <dir>]
 ```
 
 The load test (`load.ts`): whether the host's agent loads the skill for each task,
@@ -659,44 +715,75 @@ another skill the profile installs from that skill's installed copy (made again 
 cache lacks it, as `behaviour` makes it), a read of a skill the profile does not install with Oh
 My Pi's unknown-skill answer, a read of another file of the tested skill from its directory. Then
 the request goes again with the answers, at most 3 rounds.
-Each run comes to one of four outcomes:
+
+A reply that reads skill files beside other calls, and does not load the tested skill, takes the
+behaviour replay's mixed-reply rule with the load test's own sorting (the architect of
+INFRA-4676, 2026-11-26T06:20:08Z; `replay.ts`'s LOAD_RULE), since a load has no steps to read an
+act from and its question stays whether the agent loaded the skill before it started the task.
+Each other call is preparation when it only reads or looks (a `read` of any path, `grep`, `glob`,
+`find`, `lsp`, `ast_grep`, a `write` to the `xd://lsp` device, which is a query, or a `bash` call
+each of whose commands, split at `;`, `&&`, `||`, `|`, `&` and new lines outside quotes, starts
+with a program of the read-only list: `ls`, `cat`, `head`, `tail`, `wc`, `pwd`, `cd`, `grep`, `rg`,
+`fd`, `jq`, `tree`, `stat`, `file`, `du`, `df`, `which`, `echo` and the like, `find` with no
+`-exec` or `-delete`, `sed -n` with no `-i`, `sort` with no `-o`, `git status`, `log`, `diff`,
+`show`, `rev-parse`, `ls-files`, `blame`, `grep`, `git branch` and `git remote` with listing flags
+only, `docker ps`, `images`, `inspect`, `logs`, `kubectl get`, `describe`, `logs`; a command that
+writes a file by a redirection or runs one inside another is off the list); an action when it
+changes state or starts the task's work (a `write` or `edit` of a file, a `task` dispatch, any
+other tool); undecided otherwise (a `bash` command off the list, or a `bash` or `write` call whose
+command or path is not known). A reply with an action ends the run there, not loaded, as before
+(a reply that also reads the tested skill is still `loaded`). One with no action and an undecided
+call gets no verdict. One whose other calls only prepare is a round of its own, as in
+`behaviour`: its reads are answered, it goes back holding only those calls, and the run records
+each call left out (`leftOut`), never run; after the third round it reads past the last round.
+Claude Code's runs are not changed: they end at their first message.
+Each run comes to one of five outcomes:
 
 - `loaded`: a reply reads the skill, the first message or one after answered rounds, before any
-  reply does more than read skill files. The run ends there.
+  reply does more than read skill files and prepare. The run ends there.
 - `sent by` another skill: the answer to a read of that skill holds a text that names the tested
   skill, that is `skill://<name>`, `/skill:<name>`, the name in backticks, or the name next to the
   word "skill" ("the `x` skill", "skill x", "x skill"). The name alone as a word does not count,
   so names such as `analyze` or `sdd` do not match ordinary prose. The run ends once that answer
   is made, before it is sent.
-- `reads past last round`: the reply after the third answered round still only reads skill files.
+- `reads past last round`: the reply after the third answered round still only reads skill files,
+  or reads them beside calls that only prepare.
+- `undecided`: a reply reads skill files beside a call the rule sorts as neither, and no action;
+  the run's `reason` names each such call.
 - `not loaded`: any other run.
 
 Claude Code's runs end at their first message, and their run lines say so (`skillReads: "first
 message"`): the runner does not rebuild Claude Code's result of a `Skill` or `Read` call, so it
 answers no read there.
 
-`loaded` and `not loaded` runs are judged. For each `sent by` or `reads past last round` run the
-task runs again, at most 5 extra runs a task, until it has `--runs` judged runs; the extra runs go
-in a seeded order of their own. A task still short of them after its 5 extra runs gives no
-description evidence, a need task and a near-miss task alike: the skill's verdict leaves it out,
-and its line and the summary's `noEvidence` say why, with the counts (`sent by <skill> in <n> of
-<m> runs`, `reads past the last round in <n> of <m> runs`). It prints, per task, its loads among
-its judged runs, what each run came to, its runs sent by each other skill, its runs that read past
-the last round, its extra runs, its verdict and its spend at list price (its runs, its failed runs,
-its hints, all); each send order's seed; and the skill's verdict (`score.ts`). It writes
+`loaded` and `not loaded` runs are judged. For each `sent by`, `reads past last round` or
+`undecided` run the task runs again, at most 5 extra runs a task, until it has `--runs` judged
+runs; the extra runs go in a seeded order of their own. A task still short of them after its 5
+extra runs gives no description evidence, a need task and a near-miss task alike: the skill's
+verdict leaves it out, and its line and the summary's `noEvidence` say why, with the counts
+(`sent by <skill> in <n> of <m> runs`, `reads past the last round in <n> of <m> runs`,
+`undecided at a mixed reply in <n> of <m> runs`). It prints, per task, its loads among its judged
+runs, what each run came to, its runs sent by each other skill, its runs that read past the last
+round, its runs undecided at a mixed reply where it has any, its extra runs, its verdict and its
+spend at list price (its runs, its failed runs, its hints, all); each send order's seed; and the
+skill's verdict (`score.ts`). It writes
 `<out>/runs/<task>.jsonl`, one line per run: its outcome, `loadedBy`, `sentBy`, `skillReads`, and
-each reply (its tool calls with their names and targets, the answers made to its reads with where
-each came from, `arm` for the tested skill's directory, `copy` for an installed copy and `absent`
-for none, and what it used; every reply but the last went back with its answers), with its session
-id, its routing id (`routingId`, null on the Responses route), the deployment that answered each
-of its requests (`deployments`, as `behaviour`'s runs record them), its send seed and its place in
+each reply (its tool calls with their names and targets, and for an Oh My Pi `bash` or `write`
+call what the rule reads of it, `argument`: its command, its path; the answers made to its reads
+with where each came from, `arm` for the tested skill's directory, `copy` for an installed copy and
+`absent` for none, and what it used; every reply but the last went back with its answers), the
+calls its continued rounds left out (`leftOut`, where any was) and an undecided run's `reason`,
+with its session id, its routing id (`routingId`, null on the Responses route), the deployment that
+answered each of its requests (`deployments`, as `behaviour`'s runs record them), its send seed and
+its place in
 the order. A run that fails after one or more of its requests
 had their replies (a later request refused, the budget's refusal among them) comes to no outcome
 and is made again by the next command, but what those replies used is kept in
 `<out>/runs/<task>.failed.jsonl` (the error and each reply's usage), and counts in its task's spend,
 its task's line and the test's spend from then on. It also writes `<out>/captures/`,
 `<out>/sessions/` and `<out>/summary.json`, whose tasks give `judged`, `loads`, `sentBy`,
-`readsPastLastRound`, `extraRuns`, `noEvidence`, `fault` and `spend` (`runsUsd`, `failedRuns`,
+`readsPastLastRound`, `undecided`, `extraRuns`, `noEvidence`, `fault` and `spend` (`runsUsd`,
+`failedRuns`,
 `failedRunsUsd`, `hintsUsd`, `usd`), and whose `spend` gives the test's `runsUsd`,
 `failedRunsUsd`, `hintsUsd` and `usd`, `routeSeed` the seed, and `deployments` the runs counted by
 the deployment that answered them under the tested name (`byName: {<name>: {<id>: <runs>}}`, and
@@ -706,11 +793,27 @@ run line and each task of the summary names its
 profile file and the SHA-256 of its bytes. A task whose run file holds its judged runs, or has used
 its extra runs, is skipped, so a run started again goes on from what was saved; a task whose
 capture or runs were made under a profile of other bytes is refused, and so is an `--out` whose
-runs were sent before each had its own session id or before this rule. A task whose context needs
+runs were sent before each had its own session id, before this rule, or before the mixed-reply
+rule (its settings' `skillReads` names that rule). A task whose context needs
 a directory no read can give (as `behaviour` drops a case for) is dropped: its line and the
 summary's `dropped` give the reason (`unreadable-directory: ` and the repository, the commit and
 the path), a run started again skips it while its profile file keeps the same bytes, and the
 verdict rule counts it as a task with no runs.
+
+`load audit-mixed` (no model call, no capture, no network, no key) applies the mixed-reply rule
+above to the saved runs of a load's `--out`: for each task its summary lists, the last reply of
+each run the rule could reach (not a `loaded` or `sent by` run, nor a Claude Code one), rebuilt
+from its record (each call's tool, a read's path, and the command or path the rule reads, which a
+run saved before it was recorded lacks, so its `bash` and `write` calls are undecided), its reads
+answered as its run would answer them: the tested skill (the run's name) from `--skill`, the
+other skills of the run's profile file from the copies its task's saved capture names under
+`--cache-dir`. Per task it prints, and writes as JSON to `<out>/audit-mixed.json`, which it names:
+the runs and the judged runs; the runs that end at an action (`actions`), that it would continue
+now (`continues`), that another skill's answer would send on now (`sentBy`), with no verdict past
+the last round (`pastLastRound`) or for an undecided call (`unresolved`), each with its run number,
+session id and the tools that decided it; and the runs it does not reach (`untouched`), whose last
+reply makes no mix (`ends`) or only reads skill files (`skillRound`). It holds ids, counts and
+tool names, never a reply's text.
 
 Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24;
 narrowed by how the capture shows the listing, 2026-11-25), so no one applies it by hand. Each

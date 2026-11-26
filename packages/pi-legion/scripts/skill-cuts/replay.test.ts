@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { SessionMessage } from "../skill-scenarios/transcript";
 import { type Arm, type InstalledCopy, snapshotTag } from "./arms";
 import {
   bodyIdentity,
@@ -19,16 +20,23 @@ import {
   toolCalls,
 } from "./gateway";
 import { judgeReply, stepText } from "./judge";
-import { messageSse, sseResponse } from "./recorder";
+import { messageSse, responseSse, sseResponse } from "./recorder";
 import {
+  callPart,
+  caseAct,
+  LOAD_RULE,
   MAX_BREAKPOINTS,
   MAX_SKILL_ROUNDS,
+  MIXED_UNDECIDED,
+  type MixedRule,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
   type Replayed,
+  readOnlyCommand,
   replayInterleaved,
   replayOnce,
   sendOrder,
+  UndecidedReply,
   withCacheBreakpoint,
 } from "./replay";
 import { f9Completed, fixtureReply } from "./testdata/fixtures";
@@ -1357,4 +1365,485 @@ test("on a Responses body: at most three rounds of skill reads, and a read of a 
     call_id: f9Completed("skill-read").output[0]?.call_id,
     output: `File not found: ${INSTALLED}/references/x.md`,
   });
+});
+
+// The mixed-reply rule (INFRA-4676's architect, 2026-11-26T06:16:45Z and 06:20:08Z): a reply that
+// reads a skill file beside other calls is sorted with no model call, by the case's act (its two
+// steps' calls and their argument tokens) or by the load test's read-only rule. Catches: a batch
+// of a reference read and the calls that prepare the act judged as the agent's attempt at it; a
+// reply that attempts the act continued past; a call or a text no rule can sort taken for either;
+// and a continued round that sends back, runs or makes up a result for a call it does not answer.
+
+/** A step of a made-up case, as a case file keeps one: an assistant message holding `content`. */
+const stepOf = (content: NonNullable<SessionMessage["content"]>): SessionMessage => ({
+  role: "assistant",
+  content,
+});
+
+/** A `toolCall` block of a made-up case's step. */
+const stepCall = (name: string, args: Record<string, unknown>) => ({
+  type: "toolCall",
+  id: `call_${name}`,
+  name,
+  arguments: args,
+});
+
+/** The shape of dotfiles-93-b2c23af965ae: both steps make one read the other makes too, then a
+ *  `bash` call that lists the containers and runs a program in one; the real step runs `which
+ *  psql`, the violating one creates a database. */
+const DOCKER_ACT = caseAct({
+  realStep: stepOf([
+    stepCall("read", { i: "Reading added tests", path: "/work/test/storage.test.ts:220-560" }),
+    stepCall("bash", {
+      i: "Checking database container clients",
+      command: "docker ps --format '{{.Names}}' && docker exec sessionspg-pg16 which psql",
+      timeout: 120,
+    }),
+  ]),
+  violatingStep: stepOf([
+    stepCall("read", { i: "Reading added tests", path: "/work/test/storage.test.ts:220-560" }),
+    stepCall("bash", {
+      i: "Creating the review database",
+      command:
+        "docker ps --format '{{.Names}}' && docker exec sessionspg-pg16 psql -U postgres -c 'CREATE DATABASE oa17804r5'",
+      timeout: 120,
+    }),
+  ]),
+});
+
+/** The shape of dotfiles-93-12ef743a0263: both steps one `task` call, of one goal and other
+ *  assignments. */
+const TASK_ACT = caseAct({
+  realStep: stepOf([
+    stepCall("task", {
+      i: "Auditing loss boundaries",
+      context: "# Goal\nFresh correctness review of the storage PR.",
+      tasks: [
+        { id: "LossBoundaries", assignment: "Audit each loss boundary of the session storage." },
+      ],
+    }),
+  ]),
+  violatingStep: stepOf([
+    stepCall("task", {
+      i: "Auditing loss boundaries",
+      context: "# Goal\nFresh correctness review of the storage PR.",
+      tasks: [
+        { id: "LossBoundaries", assignment: "Look around the repository and report anything." },
+      ],
+    }),
+  ]),
+});
+
+/** A case whose two steps make no call: its act is its text. */
+const TEXT_STEP_REAL: NonNullable<SessionMessage["content"]> = [
+  { type: "text", text: "I write each step's result on one line." },
+];
+const TEXT_STEP_VIOLATING: NonNullable<SessionMessage["content"]> = [
+  { type: "text", text: "I put the results wherever they fit." },
+];
+const TEXT_ACT = caseAct({
+  realStep: stepOf(TEXT_STEP_REAL),
+  violatingStep: stepOf(TEXT_STEP_VIOLATING),
+});
+
+/** A `bash` call of `command`, as a Messages reply holds it. */
+const bashCall = (id: string, command: string): ContentBlock => ({
+  type: "tool_use",
+  id,
+  name: "bash",
+  input: { command, timeout: 120 },
+});
+
+/** Alpha's reference read, and its answer, as a round's answers send it. */
+const X_READ = readCall("toolu_x", "skill://alpha/references/x.md");
+const X_ANSWER = `[Skill file: ${INSTALLED}/references/x.md]\n${X_MD.replace(/\n$/, "")}`;
+const DOCKER_PS = bashCall("toolu_ps", "docker ps --format '{{.Names}}'");
+const WHICH_PSQL = bashCall("toolu_which", "docker exec sessionspg-pg16 which psql");
+const PSQL_VERSION = bashCall("toolu_version", "docker exec sessionspg-pg16 psql --version");
+
+/** What a replay that should reject rejects with. */
+const refusalOf = (replayed: Promise<Replayed>) =>
+  replayed.then(
+    () => "judged",
+    (error: unknown) => error
+  );
+
+test("the act rule: a call is an act when it is an act call of its tool or holds a distinguishing token of one, preparation when its tool makes no act call or it only looks where no act call of its tool does, else undecided", () => {
+  expect(DOCKER_ACT.calls.map((call) => [call.tool, [...call.tokens]])).toEqual([
+    ["bash", ["which"]],
+    ["bash", ["-u", "postgres", "-c", "create", "database", "oa17804r5"]],
+  ]);
+  const docker: MixedRule = { kind: "case", act: DOCKER_ACT };
+  const bash = (command: string) => ({ command, timeout: 120 });
+  expect(callPart(docker, "bash", bash("docker ps --format '{{.Names}}'"))).toBe("preparation");
+  expect(callPart(docker, "bash", bash("ls /work/test"))).toBe("preparation");
+  expect(callPart(docker, "bash", bash("docker exec sessionspg-pg16 which psql"))).toBe("act");
+  expect(callPart(docker, "bash", bash("docker exec sessionspg-pg16 psql --version"))).toBe(
+    "undecided"
+  );
+  // The intent label says what a call is for, not what it does: its words decide nothing.
+  expect(callPart(docker, "bash", { i: "which psql", command: "docker ps" })).toBe("preparation");
+  expect(callPart(docker, "glob", { path: "/work/**/*.ts" })).toBe("preparation");
+  // Catches: a mixed reply that runs the violating step's own command continued past as
+  // preparation. A violating step that leaves out the real one's check has no token of its own,
+  // so its call, and a shorter call of the same words, are judged or undecided, never continued.
+  const unchecked = caseAct({
+    realStep: stepOf([
+      stepCall("bash", {
+        command: "docker exec db which psql && docker exec db psql -c 'select 1'",
+      }),
+    ]),
+    violatingStep: stepOf([stepCall("bash", { command: "docker exec db psql -c 'select 1'" })]),
+  });
+  expect(unchecked.calls.map((call) => [...call.tokens])).toEqual([["which"], []]);
+  const skipped: MixedRule = { kind: "case", act: unchecked };
+  expect(
+    callPart(skipped, "bash", { i: "Querying", command: "docker exec db psql -c 'select 1'" })
+  ).toBe("act");
+  expect(callPart(skipped, "bash", { command: "docker exec db psql" })).toBe("undecided");
+  // Catches: a read of the kind the case's act is continued past as preparation: where an act
+  // call of its tool only looks, looking proves nothing.
+  const searched: MixedRule = {
+    kind: "case",
+    act: caseAct({
+      realStep: stepOf([stepCall("grep", { pattern: "TODO|FIXME", path: "src" })]),
+      violatingStep: stepOf([stepCall("grep", { pattern: "TODO", path: "src" })]),
+    }),
+  };
+  expect(callPart(searched, "grep", { pattern: "TODO", path: "lib" })).toBe("undecided");
+  expect(callPart(searched, "grep", { pattern: "FIXME", path: "lib" })).toBe("act");
+  expect(callPart(searched, "read", { path: "src/main.ts" })).toBe("preparation");
+  // A tool name alone decides nothing: a `task` call with no distinguishing token is undecided,
+  // the shared goal alone too (a dispatch is not known to only prepare), and one with a
+  // distinguishing token is an act.
+  const task: MixedRule = { kind: "case", act: TASK_ACT };
+  const goal = "# Goal\nFresh correctness review of the storage PR.";
+  expect(callPart(task, "task", { context: goal })).toBe("undecided");
+  expect(callPart(task, "task", { context: goal, assignment: "Write the release notes." })).toBe(
+    "undecided"
+  );
+  expect(callPart(task, "task", { assignment: "Audit the session storage." })).toBe("act");
+  expect(callPart(task, "bash", { command: "go test ./..." })).toBe("preparation");
+  expect(TEXT_ACT.calls).toEqual([]);
+  expect([...(TEXT_ACT.text ?? [])].sort()).toEqual(
+    ["each", "fit.", "line.", "on", "one", "put", "result", "results", "step", "the", "they"]
+      .concat(["wherever", "write"])
+      .sort()
+  );
+  // Catches: two steps that make one call under other intent labels read as differing in it.
+  const relabelled = caseAct({
+    realStep: stepOf([stepCall("bash", { i: "Testing", command: "make test" }), ...TEXT_STEP_REAL]),
+    violatingStep: stepOf([
+      stepCall("bash", { i: "Running the tests", command: "make test" }),
+      ...TEXT_STEP_VIOLATING,
+    ]),
+  });
+  expect(relabelled.calls).toEqual([]);
+  expect(relabelled.text).toEqual(TEXT_ACT.text);
+});
+
+test("a mixed reply whose other calls only prepare the act is answered: the next body holds its read calls alone with their answers, the judged step its read prefix and the reply after, and the record the calls left out", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const thinking = { type: "thinking", thinking: "Read the reference, then look.", signature: "s" };
+  const note = { type: "text", text: "Reading the reference first." };
+  const { gateway, bodies } = scripted([[thinking, note, X_READ, DOCKER_PS], [WHICH_PSQL]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+    mixed: { kind: "case", act: DOCKER_ACT },
+  });
+  expect(bodies).toHaveLength(2);
+  // The reply goes back less its unanswered call, its thinking and text kept, with one answer.
+  expect(bodies[1]?.messages.slice(-2)).toEqual([
+    { role: "assistant", content: [thinking, note, X_READ] },
+    { role: "user", content: [toolResult("toolu_x", X_ANSWER, false)] },
+  ]);
+  expect(JSON.stringify(bodies[1])).not.toContain("toolu_ps");
+  expect(replayed.rounds).toBe(1);
+  expect(replayed.reads).toEqual([
+    [{ skill: "alpha", file: "references/x.md", by: "skill", from: "arm", isError: false }],
+  ]);
+  expect(replayed.step.message.content).toEqual([X_READ, WHICH_PSQL]);
+  expect(replayed.leftOut).toEqual([
+    { round: 1, tool: "bash", argument: "docker ps --format '{{.Names}}'" },
+  ]);
+  expect(replayed.mixedAct).toBe(false);
+});
+
+test("a mixed reply with an act beside its reads is the judged step as it came, with no second send, though an undecided call is beside it", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  for (const reply of [
+    [X_READ, WHICH_PSQL],
+    [X_READ, PSQL_VERSION, DOCKER_PS, WHICH_PSQL],
+  ]) {
+    const { gateway, bodies } = scripted([reply]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      mixed: { kind: "case", act: DOCKER_ACT },
+    });
+    expect(bodies).toHaveLength(1);
+    expect({
+      rounds: replayed.rounds,
+      step: replayed.step.message.content,
+      mixedAct: replayed.mixedAct,
+      leftOut: replayed.leftOut,
+    }).toEqual({ rounds: 0, step: reply, mixedAct: true, leftOut: [] });
+  }
+});
+
+test("a mixed reply with an undecided call and no act gets no verdict, naming the call, and is not continued", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies } = scripted([[X_READ, DOCKER_PS, PSQL_VERSION]]);
+  const failed = await refusalOf(
+    replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      mixed: { kind: "case", act: DOCKER_ACT },
+    })
+  );
+  expect(bodies).toHaveLength(1);
+  if (!(failed instanceof UndecidedReply)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${MIXED_UNDECIDED}: after 0 answered rounds of skill reads, the reply reads skill files (alpha references/x.md) beside what the rule sorts neither as an act nor as preparation (bash docker exec sessionspg-pg16 psql --version), so it is neither judged nor continued`
+  );
+  // The run keeps the reply as it came.
+  expect(failed.replayed.step.message.content).toEqual([X_READ, DOCKER_PS, PSQL_VERSION]);
+  expect({ reads: failed.replayed.reads, leftOut: failed.replayed.leftOut }).toEqual({
+    reads: [],
+    leftOut: [],
+  });
+});
+
+test("a mixed reply whose other calls only prepare, after the last answered round, gets no verdict with a reason of its own", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies } = scripted(Array(4).fill([X_READ, DOCKER_PS]));
+  const failed = await refusalOf(
+    replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      mixed: { kind: "case", act: DOCKER_ACT },
+    })
+  );
+  expect(bodies).toHaveLength(4);
+  if (!(failed instanceof ReadsPastLastRound)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${READS_PAST_LAST_ROUND}: after 3 answered rounds of skill reads, the reply still reads skill files (alpha references/x.md) beside other calls, none of them an act (bash docker ps --format '{{.Names}}')`
+  );
+  expect(failed.replayed.leftOut).toEqual(
+    [1, 2, 3].map((round) => ({ round, tool: "bash", argument: "docker ps --format '{{.Names}}'" }))
+  );
+  expect(failed.replayed.step.message.content).toEqual([X_READ, X_READ, X_READ, X_READ, DOCKER_PS]);
+});
+
+test("without a rule a mixed reply ends the run as before: it is the judged step, and none of its reads is answered", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies } = scripted([[X_READ, DOCKER_PS], [WHICH_PSQL]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway);
+  expect(bodies).toHaveLength(1);
+  expect({
+    rounds: replayed.rounds,
+    step: replayed.step.message.content,
+    mixedAct: replayed.mixedAct,
+    leftOut: replayed.leftOut,
+  }).toEqual({ rounds: 0, step: [X_READ, DOCKER_PS], mixedAct: false, leftOut: [] });
+});
+
+test("a reply of only reads the replay answers is a skill round under a rule as without one", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const plain = scripted([[X_READ], [ACT]]);
+  const ruled = scripted([[X_READ], [ACT]]);
+  const without = await replayOnce({ ...BODY, stream: false }, arm, plain.gateway);
+  const under = await replayOnce({ ...BODY, stream: false }, arm, ruled.gateway, {
+    mixed: { kind: "case", act: DOCKER_ACT },
+  });
+  expect(ruled.bodies.map((body) => body.messages)).toEqual(
+    plain.bodies.map((body) => body.messages)
+  );
+  expect(ruled.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [toolResult("toolu_x", X_ANSWER, false)],
+  });
+  for (const replayed of [without, under]) {
+    expect({
+      rounds: replayed.rounds,
+      step: replayed.step.message.content,
+      leftOut: replayed.leftOut,
+      mixedAct: replayed.mixedAct,
+    }).toEqual({ rounds: 1, step: [X_READ, ACT], leftOut: [], mixedAct: false });
+  }
+});
+
+test("the shape of dotfiles-93-12ef743a0263: a reference read beside `bash go test` and a `write` to xd://lsp continues, and a `task` call with a distinguishing token beside a reference read is judged", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const goTest = bashCall("toolu_go", "go test ./pkg/...");
+  const lsp: ContentBlock = {
+    type: "tool_use",
+    id: "toolu_lsp",
+    name: "write",
+    input: { path: "xd://lsp", content: '{"action":"references","symbol":"Storage"}' },
+  };
+  const again = readCall("toolu_x2", "skill://alpha/references/x.md");
+  const task: ContentBlock = {
+    type: "tool_use",
+    id: "toolu_task",
+    name: "task",
+    input: { tasks: [{ id: "LossBoundaries", assignment: "Audit each loss boundary." }] },
+  };
+  const { gateway, bodies } = scripted([
+    [X_READ, goTest, lsp],
+    [again, task],
+  ]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+    mixed: { kind: "case", act: TASK_ACT },
+  });
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]?.messages.slice(-2)).toEqual([
+    { role: "assistant", content: [X_READ] },
+    { role: "user", content: [toolResult("toolu_x", X_ANSWER, false)] },
+  ]);
+  expect({
+    rounds: replayed.rounds,
+    step: replayed.step.message.content,
+    mixedAct: replayed.mixedAct,
+    leftOut: replayed.leftOut,
+  }).toEqual({
+    rounds: 1,
+    step: [X_READ, again, task],
+    mixedAct: true,
+    leftOut: [
+      { round: 1, tool: "bash", argument: "go test ./pkg/..." },
+      { round: 1, tool: "write", argument: "xd://lsp" },
+    ],
+  });
+});
+
+test("a case whose act is its text: a mixed reply with a distinguishing text token is judged, one with no text continues, and a plan with none gets no verdict", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixed: MixedRule = { kind: "case", act: TEXT_ACT };
+  const ls = bashCall("toolu_ls", "ls references");
+  const answer: ContentBlock = { type: "text", text: "Step 1 goes on one line." };
+  const judged = scripted([[X_READ, ls, answer]]);
+  const atOnce = await replayOnce({ ...BODY, stream: false }, arm, judged.gateway, { mixed });
+  expect(judged.bodies).toHaveLength(1);
+  expect({ step: atOnce.step.message.content, mixedAct: atOnce.mixedAct }).toEqual({
+    step: [X_READ, ls, answer],
+    mixedAct: true,
+  });
+
+  const continued = scripted([[X_READ, ls], [ACT]]);
+  const after = await replayOnce({ ...BODY, stream: false }, arm, continued.gateway, { mixed });
+  expect(continued.bodies).toHaveLength(2);
+  expect({ step: after.step.message.content, leftOut: after.leftOut }).toEqual({
+    step: [X_READ, ACT],
+    leftOut: [{ round: 1, tool: "bash", argument: "ls references" }],
+  });
+
+  const plan: ContentBlock = { type: "text", text: "I will read references/x.md first." };
+  const planned = scripted([[plan, X_READ, ls]]);
+  const failed = await refusalOf(
+    replayOnce({ ...BODY, stream: false }, arm, planned.gateway, { mixed })
+  );
+  expect(planned.bodies).toHaveLength(1);
+  if (!(failed instanceof UndecidedReply)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toEndWith(
+    "beside what the rule sorts neither as an act nor as preparation (its text), so it is neither judged nor continued"
+  );
+});
+
+test("on a Responses body: a mixed reply whose other calls only prepare goes back as its output items less its unanswered function calls, its reasoning and message items in their order, with one output per answered call", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies } = world((n) =>
+    sseResponse(
+      responseSse(
+        n === 1
+          ? {
+              id: "resp_mixed",
+              model: "gpt-6.1-sol",
+              output: [
+                { type: "reasoning", encryptedContent: "enc-mixed" },
+                { type: "message", text: "Reading the reference, and running the tests." },
+                {
+                  type: "function_call",
+                  callId: "call_x",
+                  name: "read",
+                  arguments: { path: "skill://alpha/references/x.md" },
+                },
+                {
+                  type: "function_call",
+                  callId: "call_go",
+                  name: "bash",
+                  arguments: { command: "go test ./..." },
+                },
+              ],
+            }
+          : { id: "resp_after", model: "gpt-6.1-sol", output: [{ type: "message", text: "Done." }] }
+      )
+    )
+  );
+  const replayed = await replayOnce(RESPONSES_BODY, arm, gateway, {
+    mixed: { kind: "case", act: TASK_ACT },
+  });
+  const sent = bodies as readonly unknown[] as readonly ResponsesBody[];
+  expect(sent).toHaveLength(2);
+  const added = (sent[1]?.input ?? []).slice(RESPONSES_BODY.input.length) as Record<
+    string,
+    unknown
+  >[];
+  expect(added.map((item) => [item.type, item.name ?? item.call_id ?? null])).toEqual([
+    ["reasoning", null],
+    ["message", null],
+    ["function_call", "read"],
+    ["function_call_output", "call_x"],
+  ]);
+  expect(added[0]?.encrypted_content).toBe("enc-mixed");
+  expect(added[3]?.output).toBe(X_ANSWER);
+  expect(JSON.stringify(sent[1])).not.toContain("call_go");
+  expect(replayed.leftOut).toEqual([{ round: 1, tool: "bash", argument: "go test ./..." }]);
+  expect(replayed.step.message.content.map((item) => item.name ?? item.type)).toEqual([
+    "read",
+    "message",
+  ]);
+});
+
+test.each([
+  ["ls -la references", true],
+  ["cat SKILL.md | head -20", true],
+  ["git status && git log --oneline -5", true],
+  ["git -C /work/repo diff HEAD~1 -- src", true],
+  ["git branch -a", true],
+  ["git branch feature", false],
+  ["docker ps --format '{{.Names}}' && docker images", true],
+  ["kubectl -n builds get pods", true],
+  ["rg -n 'foo|bar' src 2>/dev/null", true],
+  ["grep -rn x . >/dev/null 2>&1", true],
+  ["sed -n '1,40p' README.md", true],
+  ["sed -i 's/a/b/' README.md", false],
+  ["find . -name '*.md'", true],
+  ["find . -name '*.tmp' -delete", false],
+  ["cd /work/repo && FOO=1 ls", true],
+  ["echo 'a; rm -rf b'", true],
+  ["ls > files.txt", false],
+  ["cat $(ls)", false],
+  ["ls; rm -rf build", false],
+  ["ls & make", false],
+  ["go test ./...", false],
+  ["jj squash --from @ --into @- -m 'Squash the stack'", false],
+  ["docker exec sessionspg-pg16 which psql", false],
+])("the load rule: the bash command %p only reads or looks: %p", (command, want) => {
+  expect(readOnlyCommand(command)).toBe(want);
+});
+
+test("the load rule: a call that only reads or looks is preparation, one that changes state or starts the task is an action, and a bash command off the list, or a command or path not known, is undecided", () => {
+  const parts = [
+    ["read", { path: "/work/src/storage.ts" }],
+    ["grep", { pattern: "logger", path: "src" }],
+    ["glob", { path: "src/**/*.ts" }],
+    ["write", { path: "xd://lsp", content: "{}" }],
+    ["bash", { command: "git status" }],
+    ["write", { path: "notes.md", content: "# Notes" }],
+    ["edit", { path: "src/storage.ts" }],
+    ["task", { tasks: [] }],
+    ["write", { path: "xd://envoy_send", content: "{}" }],
+    ["bash", { command: "go test ./..." }],
+    ["bash", {}],
+    ["write", {}],
+  ].map(([tool, input]) => callPart(LOAD_RULE, String(tool), input));
+  expect(parts).toEqual([
+    ...Array(5).fill("preparation"),
+    ...Array(4).fill("act"),
+    ...Array(3).fill("undecided"),
+  ]);
 });

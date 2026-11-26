@@ -49,7 +49,7 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
-import { READS_PAST_LAST_ROUND, sendOrder } from "./replay";
+import { caseAct, MIXED_UNDECIDED, READS_PAST_LAST_ROUND, sendOrder } from "./replay";
 import {
   FRESH_RUNS,
   LISTING_MEASURE_ITEM,
@@ -3242,7 +3242,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout.split("\n")).toContain(
-      `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of 3 answered rounds of skill reads still only read skill files, which get no verdict and are run again, by stage and arm: screen ${pastByArm(runs)}; confirm old 0, new 0; control old 0, minus 0, twin 0`
+      `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of 3 answered rounds of skill reads still read skill files, alone or beside calls that only prepare, which get no verdict and are run again, by stage and arm: screen ${pastByArm(runs)}; confirm old 0, new 0; control old 0, minus 0, twin 0`
     );
     expect(
       pastByArm(runs)
@@ -3261,7 +3261,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const all = SCREEN_RUNS + MAX_EXTRA_RUNS;
-    const reason = `${READS_PAST_LAST_ROUND}: the none arm has 0 of its ${SCREEN_RUNS} judged runs after ${all} runs, ${all} of which still only read skill files after the last answered round (runs that read past the last round: old 0, new 0, none ${all})`;
+    const reason = `${READS_PAST_LAST_ROUND}: the none arm has 0 of its ${SCREEN_RUNS} judged runs after ${all} runs, ${all} of which still read skill files after the last answered round, alone or beside calls that only prepare (runs that read past the last round: old 0, new 0, none ${all})`;
     const c = result(s.out, "c04");
     expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
       dropped: reason,
@@ -3277,6 +3277,332 @@ describe("behaviour: a replay's reads of skill files", () => {
       `, 1 ${READS_PAST_LAST_ROUND}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
   }, 120_000);
+});
+
+// The mixed-reply rule in the behaviour stages (INFRA-4676's architect, 2026-11-26T06:16:45Z): a
+// reply that reads a skill file beside other calls is sorted by the case's act with no model call,
+// and `behaviour audit-mixed` applies the same rule to saved runs. Catches: a stage that judges a
+// batch of a reference read and preparatory calls as the attempt, a run record that does not say
+// which calls a continued round left out, and an audit that calls a model, needs a key, or writes
+// a reply's text.
+describe("behaviour: a reply that reads skill files beside other calls", () => {
+  /** The report's lines of each kind of mixed reply, by stage and arm. */
+  const mixedLines = (continued: string, judged: string, undecided: string) => [
+    `mixed replies continued (the reply read skill files beside calls that only prepare the case's act: its reads answered and sent back alone, its other calls left out, never run), runs by stage and arm: ${continued}`,
+    `mixed replies judged (the reply read skill files beside an act, and was judged as it came), runs by stage and arm: ${judged}`,
+    `${MIXED_UNDECIDED}: the runs whose reply read skill files beside a call that is neither an act nor only preparation, which get no verdict and are run again, by stage and arm: ${undecided}`,
+  ];
+  const NONE_ELSE = "confirm old 0, new 0; control old 0, minus 0, twin 0";
+
+  test("screen continues a run past a reply whose other call only prepares the case's act: the read is answered, the other call left out of every body and recorded, and the run judged on the act after it", async () => {
+    const s = scenario("mixed-continued", LOSS_SKILL(), [{ id: "c04" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // Each run's first reply reads alpha's reference beside a `glob` call; its later ones act.
+    const seen = new Set<string>();
+    const bodies: string[] = [];
+    let mixed = 0;
+    answer = (body) => {
+      if (isJudgement(body)) return behaviourStandIn(body);
+      bodies.push(JSON.stringify(body.messages));
+      const id = String(Object(body.metadata).user_id);
+      if (seen.has(id)) return behaviourStandIn(body);
+      seen.add(id);
+      mixed += 1;
+      return sseResponse(
+        messageSse({
+          id: `msg_standin_mixed_${mixed}`,
+          model: "claude-sonnet-5-5",
+          content: [
+            {
+              type: "tool_use",
+              id: `toolu_mixed_read_${mixed}`,
+              name: "read",
+              input: { path: "skill://alpha/references/x.md" },
+            },
+            {
+              type: "tool_use",
+              id: `toolu_mixed_glob_${mixed}`,
+              name: "glob",
+              input: { path: "src/**/*.ts" },
+            },
+          ],
+          stopReason: "tool_use",
+        })
+      );
+    };
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const c = result(s.out, "c04");
+    expect(passes(c, "screen")).toEqual({ old: SCREEN_RUNS, new: 0, none: 0 });
+    const runs = c.stages.screen?.runs ?? [];
+    expect(runs).toHaveLength(3 * SCREEN_RUNS);
+    for (const run of runs) {
+      expect({
+        rounds: run.skillRounds,
+        leftOut: run.leftOut,
+        mixedAct: run.mixedAct,
+        step: run.reply?.map((block) => block.name ?? block.type),
+      }).toEqual({
+        rounds: 1,
+        leftOut: [{ round: 1, tool: "glob", argument: "src/**/*.ts" }],
+        mixedAct: undefined,
+        step: ["read", "text"],
+      });
+    }
+    // The glob call was run nowhere and given no result: no body holds it.
+    expect(bodies.some((text) => text.includes("toolu_mixed_glob"))).toBe(false);
+    expect(bodies.filter((text) => text.includes("toolu_mixed_read"))).toHaveLength(
+      3 * SCREEN_RUNS
+    );
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    for (const line of mixedLines(
+      `screen old ${SCREEN_RUNS}, new ${SCREEN_RUNS}, none ${SCREEN_RUNS}; ${NONE_ELSE}`,
+      `screen old 0, new 0, none 0; ${NONE_ELSE}`,
+      `screen old 0, new 0, none 0; ${NONE_ELSE}`
+    )) {
+      expect(lines).toContain(line);
+    }
+  }, 120_000);
+
+  test("audit-mixed sorts each saved run's judged reply by the case's act with no model call: one it would continue, one judged at an act, one only reading skill files, one with no skill read, one unresolved and one past the last round; and report counts the runs recorded as continued, judged at a mixed reply and undecided", async () => {
+    const s = scenario("mixed-audit", LOSS_SKILL(), [{ id: "c04" }]);
+    // The case's act is a `bash` call: its real step runs `which psql` in the container, its
+    // violating step creates a database there.
+    writeFileSync(
+      s.casesFile,
+      `${JSON.stringify({
+        ...s.cases[0],
+        realStep: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call_which",
+              name: "bash",
+              arguments: { i: "Finding the client", command: "docker exec db which psql" },
+            },
+          ],
+        },
+        violatingStep: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call_create",
+              name: "bash",
+              arguments: {
+                i: "Making the database",
+                command: "docker exec db psql -c 'CREATE DATABASE review'",
+              },
+            },
+          ],
+        },
+      })}\n`
+    );
+    recordCaptures(s, ["old", "new", "none"]);
+    const read = (id: string) => ({
+      type: "tool_use",
+      id,
+      name: "read",
+      input: { path: "skill://alpha/references/x.md" },
+    });
+    const call = (id: string, name: string, input: Record<string, unknown>) => ({
+      type: "tool_use",
+      id,
+      name,
+      input,
+    });
+    const x = { skill: "alpha", file: "references/x.md", by: "skill", from: "arm", isError: false };
+    const planted = (n: number, fields: Record<string, unknown>) => ({
+      ...plantedRun("c04", "old", "screen", n, "fail", "planted"),
+      id: `blind${n}`,
+      userId: `user-${n}`,
+      skillRounds: 0,
+      skillReads: [],
+      ...fields,
+    });
+    const unjudged = (reason: string) => ({ verdict: null, reason, id: null });
+    const runs = [
+      // Judged before the repair at a reply whose other call only looks: it continues now.
+      planted(0, { reply: [read("r0"), call("g0", "glob", { path: "src/**/*.ts" })] }),
+      // Judged at a reply with the act beside the read.
+      planted(1, {
+        reply: [read("r1"), call("b1", "bash", { command: "docker exec db which psql" })],
+        mixedAct: true,
+      }),
+      // Still only reading after the last round.
+      planted(2, {
+        ...unjudged(`${READS_PAST_LAST_ROUND}: planted`),
+        skillRounds: 3,
+        skillReads: [[x], [x], [x]],
+        reply: [read("p0"), read("p1"), read("p2"), read("p3")],
+      }),
+      // A reply with no skill read.
+      planted(3, { reply: [{ type: "text", text: "Step 1 is done." }] }),
+      // A `bash` call the case's two steps do not explain.
+      planted(4, {
+        ...unjudged(`${MIXED_UNDECIDED}: planted`),
+        reply: [read("u0"), call("u1", "bash", { command: "make test" })],
+      }),
+      // After the last round, beside a call that only prepares.
+      planted(5, {
+        ...unjudged(`${READS_PAST_LAST_ROUND}: planted`),
+        skillRounds: 3,
+        skillReads: [[x], [x], [x]],
+        reply: [
+          read("q0"),
+          read("q1"),
+          read("q2"),
+          read("q3"),
+          call("q4", "glob", { path: "src" }),
+        ],
+      }),
+      // Continued by the repaired replay: its reply less its answered read holds the act alone.
+      planted(6, {
+        skillRounds: 1,
+        skillReads: [[x]],
+        leftOut: [{ round: 1, tool: "glob", argument: "src" }],
+        reply: [read("c0"), call("c1", "bash", { command: "docker exec db which psql" })],
+      }),
+      // A replay that failed keeps no reply.
+      planted(7, { ...unjudged("the replay failed: planted"), skillRounds: null, reply: null }),
+    ];
+    plantResult(s, "c04", {
+      stages: { screen: { ...plantedStage(s, "c04", "screen", {}), state: "running", runs } },
+    });
+
+    const { config } = setup();
+    const from = recorder.requests.length;
+    const audited = await cli([
+      ...["behaviour", "audit-mixed", "--config", config, "--out", s.out],
+      ...["--old", s.old, "--new", s.new, "--cases", s.casesFile],
+      ...["--cache-dir", path.join(s.dir, "cache"), "--scratch", path.join(s.dir, "scratch")],
+    ]);
+    expect({ code: audited.code, stderr: audited.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length).toBe(from);
+    const named = (n: number, verdict: "fail" | null, tools: string[]) => ({
+      run: n + 1,
+      id: verdict === null ? null : `blind${n}`,
+      userId: `user-${n}`,
+      verdict,
+      tools,
+    });
+    const file = path.join(s.out, "audit-mixed.json");
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    expect(written.arms).toEqual([
+      {
+        caseId: "c04",
+        stage: "screen",
+        arm: "old",
+        runs: 8,
+        judged: 4,
+        noReply: 1,
+        unrecorded: 0,
+        ends: 2,
+        skillRound: 1,
+        acts: [named(1, "fail", ["bash"])],
+        continues: [named(0, "fail", ["glob"])],
+        pastLastRound: [named(5, null, ["glob"])],
+        unresolved: [named(4, null, ["bash"])],
+      },
+    ]);
+    expect(written.totals).toEqual({
+      runs: 8,
+      judged: 4,
+      acts: 1,
+      continues: 1,
+      pastLastRound: 1,
+      unresolved: 1,
+    });
+    expect(written.skipped).toEqual([]);
+    expect(audited.stdout).toContain(
+      "behaviour audit-mixed: case c04 screen old: 8 runs, 4 judged; judged at a mixed reply with an act 1 (run 2 id blind1: bash); continued now 1 (run 1 id blind0: glob); no verdict past the last round 1 (run 6: glob); unresolved 1 (run 5: bash); only skill reads 1; no mixed reply 2; no reply 1\n"
+    );
+    expect(audited.stdout).toContain(`; written to ${file}\n`);
+    // Ids, counts and tool names: no reply's text.
+    for (const text of [audited.stdout, readFileSync(file, "utf8")]) {
+      for (const said of ["make test", "which psql", "src/**/*.ts", "Step 1 is done."]) {
+        expect(text).not.toContain(said);
+      }
+    }
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    for (const line of mixedLines(
+      `screen old 1, new 0, none 0; ${NONE_ELSE}`,
+      `screen old 1, new 0, none 0; ${NONE_ELSE}`,
+      `screen old 1, new 0, none 0; ${NONE_ELSE}`
+    )) {
+      expect(lines).toContain(line);
+    }
+  }, 120_000);
+
+  test("a case's act tools are the tools of the calls its two steps do not share: task for one task call of other arguments, bash for two bash calls, the calls both steps make left out, and none where the steps differ in text alone", () => {
+    const call = (name: string, args: Record<string, unknown>) => ({
+      type: "toolCall",
+      id: `call_${name}`,
+      name,
+      arguments: args,
+    });
+    type Block = NonNullable<SessionMessage["content"]>[number];
+    const step = (content: Block[]): SessionMessage => ({ role: "assistant", content });
+    // dotfiles-93-b2c23af965ae's shape: the same glob, read, grep and read, then another bash.
+    const shared = [
+      call("glob", { path: "/work/*/node_modules", hidden: true }),
+      call("read", { path: "/work/test/storage.test.ts:220-560" }),
+      call("grep", { pattern: "logger\\.|#retryDeadlocks", path: "/work/src/storage.ts" }),
+      call("read", { path: "/work/evidence" }),
+    ];
+    const rows: [string, Block[], Block[], string[]][] = [
+      [
+        "dotfiles-93-12ef743a0263",
+        [
+          call("task", {
+            context: "# Goal",
+            tasks: [{ id: "A", assignment: "Audit the storage." }],
+          }),
+        ],
+        [call("task", { context: "# Goal", tasks: [{ id: "A", assignment: "Look around." }] })],
+        ["task", "task"],
+      ],
+      [
+        "dotfiles-93-070687740541",
+        [call("bash", { command: "docker images --format '{{.Repository}}'" })],
+        [call("bash", { command: "docker run --rm --init rocq coqc --version" })],
+        ["bash", "bash"],
+      ],
+      [
+        "dotfiles-93-b2c23af965ae",
+        [...shared, call("bash", { command: "docker ps && docker exec db which psql" })],
+        [
+          ...shared,
+          call("bash", { command: "docker ps && docker exec db psql -c 'CREATE DATABASE r'" }),
+        ],
+        ["bash", "bash"],
+      ],
+      ["text only", [{ type: "text", text: PASS_STEP }], [{ type: "text", text: FAIL_STEP }], []],
+    ];
+    for (const [name, real, violating, tools] of rows) {
+      const act = caseAct({ realStep: step(real), violatingStep: step(violating) });
+      expect({
+        name,
+        tools: act.calls.map((each) => each.tool),
+        text: act.text !== undefined,
+      }).toEqual({ name, tools, text: tools.length === 0 });
+    }
+    // The shared calls are context: their tokens distinguish no act call.
+    const b2c = caseAct({
+      realStep: step(rows[2]?.[1] ?? []),
+      violatingStep: step(rows[2]?.[2] ?? []),
+    });
+    expect(b2c.calls.map((each) => [...each.tokens])).toEqual([
+      ["which"],
+      ["-c", "create", "database"],
+    ]);
+  });
 });
 
 // The provider's content policy (the architect, 2026-11-24): a case whose every replay the provider
