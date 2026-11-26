@@ -1,0 +1,13 @@
+{"return":"ACME-1/a/merge/1","reader":"1","model":"control","own":true,"confirmed":{}}
+{"return":"ACME-2/a/merge/1","reader":"1","model":"control","own":false,"confirmed":{"ci":true}}
+{"return":"ACME-2/a/merge/1","reader":"2","model":"control","own":false,"confirmed":{"ci":true}}
+{"return":"ACME-3/a/retro/1","reader":"1","model":"control","own":false,"confirmed":{"goal-check":true}}
+{"return":"ACME-3/a/retro/1","reader":"2","model":"control","own":false,"confirmed":{"goal-check":true}}
+{"return":"DECOY-1/a/merge/1","reader":"1","model":"control","own":true,"confirmed":{"merge-blocked":false}}
+{"return":"DECOY-2/a/merge/1","reader":"1","model":"control","own":true,"confirmed":{"merge-blocked":true}}
+{"return":"DECOY-3/a/merge/1","reader":"1","model":"control","own":true,"confirmed":{"merge-blocked":true}}
+{"return":"DECOY-3/a/merge/1","reader":"2","model":"control","own":true,"confirmed":{"merge-blocked":true}}
+{"return":"DECOY-4/a/merge/1","reader":"1","model":"control","own":true,"confirmed":{"merge-blocked":true}}
+{"return":"DECOY-4/a/merge/1","reader":"2","model":"control","own":true,"confirmed":{"merge-blocked":true}}
+{"return":"DECOY-5/a/merge/1","reader":"1","model":"control","own":true,"confirmed":{"merge-blocked":true}}
+{"return":"DECOY-5/a/merge/1","reader":"2","model":"control","own":true,"confirmed":{"merge-blocked":true}}
