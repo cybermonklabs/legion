@@ -70,9 +70,9 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
 // (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but
 // the back-fill of 20261111045636_experiment_assignments. The merge snapshot reads as the empty
-// Merge where none stands, and an unclassified merge history as the empty class.
+// Merge where none stands.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, members_owed, priority, ` +
-	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, coalesce(merge_history, ''), ` +
+	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, ` +
 	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
@@ -275,17 +275,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// written as Dispatch's own level, the record's Priority.Level, null for NoPriority, as
 	// issueColumns reads it back.
 	// The merge snapshot (merge_number, merge_head, merge_sha, merge_base, merge_repo, merged_at)
-	// is PutMergeSnapshot's alone, and merge_history PutMergeSnapshot's and the evidence pass's, so
-	// neither half names them: a whole new record of a merged issue, a re-entered child's among
-	// them, keeps its merge, and an inserted row takes merge_history's default, NONE. The wait's
-	// columns (close_wait_since to standing_told_at) are the record's own, written whole from the
-	// copy as every other field is. tree_generation is the tree's run (Issue.TreeGeneration): an
-	// insert writes the record's, or its generation where it gives none, and an update writes it
-	// only where the write moves the issue to another tree, which takes the issue's generation: a
-	// root that a hand-over or an orphan's re-admission made starts its tree's run at its own
-	// generation, and the tree it left keeps its own. Every other update leaves it, so a root's next
-	// change, which raises the root's generation, leaves the tree's run, and only a rerun of the
-	// whole tree raises it (ClearTreeGeneration).
+	// is PutMergeSnapshot's alone, so neither half names it: a whole new record of a merged issue,
+	// a re-entered child's among them, keeps its merge. The wait's columns (close_wait_since to
+	// standing_told_at) are the record's own, written whole from the copy as every other field
+	// is. tree_generation is the tree's run (Issue.TreeGeneration): an insert writes the record's,
+	// or its generation where it gives none, and an update writes it only where the write moves
+	// the issue to another tree, which takes the issue's generation: a root that a hand-over or an
+	// orphan's re-admission made starts its tree's run at its own generation, and the tree it left
+	// keeps its own. Every other update leaves it, so a root's next change, which raises the root's
+	// generation, leaves the tree's run, and only a rerun of the whole tree raises it
+	// (ClearTreeGeneration).
 	var closeWait any
 	if len(issue.CloseWait) > 0 {
 		closeWait = []byte(issue.CloseWait)
@@ -535,7 +534,6 @@ func scanIssue(row scanner) (*Issue, error) {
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt *time.Time
 	var priority *int
 	var mergedAt, closeWaitSince, closedOnChecksAt, standingToldAt *time.Time
-	var mergeHistory string
 	var closeWait []byte
 	var nextChange, treeGeneration int64
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
@@ -543,13 +541,12 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.MembersOwed, &priority,
-		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt, &mergeHistory,
+		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt,
 		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
 		&treeGeneration); err != nil {
 		return nil, err
 	}
 	issue.Merge.MergedAt = utcOrZero(mergedAt)
-	issue.MergeHistory = MergeHistoryClass(mergeHistory)
 	issue.CloseWaitSince, issue.ClosedOnChecksAt, issue.StandingToldAt = utcOrNil(closeWaitSince), utcOrNil(closedOnChecksAt), utcOrNil(standingToldAt)
 	if len(closeWait) > 0 {
 		issue.CloseWait = json.RawMessage(closeWait)
@@ -615,8 +612,8 @@ func utcOrNil(at *time.Time) *time.Time {
 // PutMergeSnapshot writes merge on issue's row where no snapshot stands or merge is the later one,
 // in one statement that reads the stored snapshot under the row's lock: a known merged_at later
 // than the stored one, or than a stored one nobody read, replaces it, and an older or an unknown
-// one never replaces a snapshot that stands. The merge history is ANSWERED whatever the snapshot
-// does, since merge is positive evidence of a merge either way.
+// one never replaces a snapshot that stands. It answers whether it wrote the snapshot, and refuses
+// an issue with no record.
 func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error) {
 	if !merge.Merged() {
 		return false, fmt.Errorf("record the merge of %s: a merge names the pull request that merged", issue)
@@ -627,7 +624,7 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 		mergedAt = merge.MergedAt
 	}
 	tag, err := tx.Exec(ctx, `update issues set merge_number = $2, merge_head = nullif($3::text, ''), merge_sha = nullif($4::text, ''),
-		merge_base = nullif($5::text, ''), merge_repo = nullif($6::text, ''), merged_at = $7::timestamptz, merge_history = 'ANSWERED'
+		merge_base = nullif($5::text, ''), merge_repo = nullif($6::text, ''), merged_at = $7::timestamptz
 		where key = $1 and (merge_number is null or ($7::timestamptz is not null and (merged_at is null or merged_at < $7::timestamptz)))`,
 		issue, merge.Number, merge.Head, merge.SHA, merge.Base, merge.Repo, mergedAt)
 	if err != nil {
@@ -636,11 +633,11 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	if tag.RowsAffected() == 1 {
 		return true, nil
 	}
-	answered, err := tx.Exec(ctx, `update issues set merge_history = 'ANSWERED' where key = $1`, issue)
-	if err != nil {
-		return false, fmt.Errorf("record the merge history of %s: %w", issue, err)
+	var recorded bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issues where key = $1)`, issue).Scan(&recorded); err != nil {
+		return false, fmt.Errorf("record the merge of %s: %w", issue, err)
 	}
-	if answered.RowsAffected() == 0 {
+	if !recorded {
 		return false, fmt.Errorf("record the merge of %s: the issue has no record", issue)
 	}
 	return false, nil

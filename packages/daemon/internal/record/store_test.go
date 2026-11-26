@@ -84,13 +84,13 @@ func issueFixture(key string) Issue {
 	}
 }
 
-// written is got with the movement and the merge history taken off, after holding it to what
-// PutIssue promises of those columns: moved_at is not null and no write of the record names it
-// (PutIssue's own carve-out, which keeps a stale copy from writing a movement away), so a row read
-// back always carries the moment it was written, which no fixture can name; and merge_history is
-// no write of PutIssue's either, so a row PutIssue inserted reads NONE, its default, until
-// PutMergeSnapshot marks it. Every comparison below is of the fields PutIssue writes, so the two
-// are checked here, once, and left out of them.
+// written is got with the movement taken off, after holding it to what PutIssue promises of that
+// column and of the merge: moved_at is not null and no write of the record names it (PutIssue's
+// own carve-out, which keeps a stale copy from writing a movement away), so a row read back always
+// carries the moment it was written, which no fixture can name; and the merge snapshot is no write
+// of PutIssue's either, so a row PutIssue wrote reads none until PutMergeSnapshot writes it. Every
+// comparison below is of the fields PutIssue writes, so the two are checked here, once, and the
+// movement is left out of them.
 func written(t *testing.T, got *Issue) *Issue {
 	t.Helper()
 	if got == nil {
@@ -99,15 +99,15 @@ func written(t *testing.T, got *Issue) *Issue {
 	if got.MovedAt.IsZero() {
 		t.Fatalf("issue %s reads back carrying no movement: moved_at is not null and every row is stamped when it is written", got.Key)
 	}
-	if got.MergeHistory != MergeHistoryNone || got.Merge.Merged() {
-		t.Fatalf("issue %s reads back with the merge history %q and the merge %+v, want NONE and none: PutIssue writes neither", got.Key, got.MergeHistory, got.Merge)
+	if got.Merge.Merged() {
+		t.Fatalf("issue %s reads back with the merge %+v, want none: PutIssue writes none", got.Key, got.Merge)
 	}
 	// tree_generation is written at the insert, from the record or its generation, and by an update
 	// only where it moves the issue to another tree (TestAWholeTreeRerunRaisesTheTreeGeneration and
 	// TestARootAHandOverMadeStartsItsTreeGenerationAtItsOwn hold it), so it is left out of the
 	// comparisons of the fields PutIssue writes on every write.
 	bare := *got
-	bare.MovedAt, bare.MergeHistory, bare.TreeGeneration = time.Time{}, "", 0
+	bare.MovedAt, bare.TreeGeneration = time.Time{}, 0
 	return &bare
 }
 
@@ -2383,7 +2383,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "members_owed", "priority",
-			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "merge_history", "close_wait_since",
+			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "close_wait_since",
 			"close_wait", "closed_on_checks_at", "next_change", "next_changes", "merger_completion_owed", "standing_told_at", "tree_generation"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
@@ -3087,9 +3087,8 @@ func TestEveryClearRecordsTheClockTheSameWay(t *testing.T) {
 
 // The merge snapshot is the record of the issue's merge: one writer sets it, and nothing else of
 // the record moves it. It stands after each clear of a generation — the issue's own, its tree's,
-// and a next change's — and after a whole new record of the issue, as a re-entry writes one, and
-// so does the merge history PutMergeSnapshot marks with it. A snapshot of an older merge changes
-// nothing, and a later one replaces it.
+// and a next change's — and after a whole new record of the issue, as a re-entry writes one. A
+// snapshot of an older merge changes nothing, and a later one replaces it.
 func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -3115,8 +3114,8 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 			t.Fatalf("record the merge = %t, %v, want it written", written, err)
 		}
 	})
-	if got := read(); got.Merge != merge || got.MergeHistory != MergeHistoryAnswered {
-		t.Fatalf("the issue after its merge holds %+v and %q, want %+v and ANSWERED", got.Merge, got.MergeHistory, merge)
+	if got := read(); got.Merge != merge {
+		t.Fatalf("the issue after its merge holds %+v, want %+v", got.Merge, merge)
 	}
 	for _, write := range []struct {
 		name  string
@@ -3149,8 +3148,8 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 		}},
 	} {
 		inTx(t, st, func(tx pgx.Tx) { must(t, write.write(tx)) })
-		if got := read(); got.Merge != merge || got.MergeHistory != MergeHistoryAnswered {
-			t.Fatalf("the issue after %s holds %+v and %q, want its snapshot %+v and ANSWERED", write.name, got.Merge, got.MergeHistory, merge)
+		if got := read(); got.Merge != merge {
+			t.Fatalf("the issue after %s holds %+v, want its snapshot %+v", write.name, got.Merge, merge)
 		}
 	}
 	later := Merge{Number: 42, Head: strings.Repeat("f", 40), SHA: strings.Repeat("9", 40), Base: "main", Repo: issue.Repo, MergedAt: mergedAt.Add(time.Hour)}

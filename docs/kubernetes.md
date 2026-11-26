@@ -2829,7 +2829,7 @@ Rolling forward again also costs the window the other way: an issue the earlier 
 #### Rolling back the release that closes an issue when its checks pass
 
 This release's migration `20261125004932_done_by_checks.up.sql` adds the phase `verifying` to `issues_phase_check`: the phase of an issue whose pull request merged and whose close waits for the checks of its goal ([The close](site/src/content/docs/legion/concepts.md#the-close)).
-It adds the merge snapshot and the close wait's columns to `issues` (`merge_number`, `merge_head`, `merge_sha`, `merge_base`, `merge_repo`, `merged_at`, `merge_history`, `close_wait_since`, `close_wait`, `closed_on_checks_at`, `next_change`, `next_changes`, `merger_completion_owed`, `standing_told_at` and `tree_generation`), `production_checks.relook_seq` and `production_checks.generation`, `pending_task_deliveries.start_at`, the tables `defects` and `close_reads`, and the outbox kinds `close_read` and `close_wait_publish`.
+It adds the merge snapshot and the close wait's columns to `issues` (`merge_number`, `merge_head`, `merge_sha`, `merge_base`, `merge_repo`, `merged_at`, `close_wait_since`, `close_wait`, `closed_on_checks_at`, `next_change`, `next_changes`, `merger_completion_owed`, `standing_told_at` and `tree_generation`), `production_checks.relook_seq` and `production_checks.generation`, `pending_task_deliveries.start_at`, the tables `defects` and `close_reads`, and the outbox kinds `close_read` and `close_wait_publish`.
 It writes `design_news_current` again with four arguments, writes the two functions that call it and `step_run_witness` again, and these read the tree's run from `issues.tree_generation`.
 An earlier release knows no phase `verifying`, calls the three-argument `design_news_current`, and decodes an outbox row strictly, so it fails a row of a kind, a notice kind or a field it does not know at every attempt (`DisallowUnknownFields` in `record/outbox.go`).
 
@@ -2908,7 +2908,7 @@ $$;
 drop function if exists design_news_current(text, text, bigint, bigint);
 drop table if exists close_reads;
 drop table if exists defects;
-alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists merge_history, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
+alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
 alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 alter table pending_task_deliveries drop column if exists start_at;
 alter table outbox drop constraint if exists outbox_kind_check;

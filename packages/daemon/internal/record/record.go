@@ -331,13 +331,6 @@ type Issue struct {
 	// read before a merge never writes that merge away, and a next change keeps the merge it
 	// continues.
 	Merge Merge
-	// MergeHistory is what the record holds as evidence of the issue's merges (MergeHistoryClass):
-	// ANSWERED where a merge stands on the record, PARTIAL where only rows that prove no merge stand,
-	// and NONE where nothing does. It is "" for a record no evidence pass has classified yet, which
-	// is every issue recorded before the column, until the pass writes its class. A record written
-	// after the column starts at NONE. PutMergeSnapshot writes ANSWERED with the snapshot. PutIssue
-	// neither writes nor clears it, and no clear of a generation touches it.
-	MergeHistory MergeHistoryClass
 	// CloseWaitSince is since when the issue's close waits: GitHub's merged_at at an entry from a
 	// merge, or the time the request applied for a change a request started. Nil for an issue
 	// whose close waits for nothing.
@@ -367,8 +360,8 @@ type Issue struct {
 // Merge is one merge of an issue's work as the record keeps it: the pull request's number, the
 // final head that was reviewed (Head), the merge commit (SHA), the base branch the pull request
 // merged into, the repository the merge fact named, and GitHub's merged_at of that pull request.
-// A field that was not read is empty, and no reader invents it: an older issue's snapshot that an
-// evidence pass copied can know its number and not its commit, its base or its time.
+// A field that was not read is empty, and no reader invents it: an older issue's snapshot that a
+// door saved from a retained row can know its number and not its commit, its base or its time.
 type Merge struct {
 	Number   int
 	Head     string
@@ -380,22 +373,6 @@ type Merge struct {
 
 // Merged says whether the snapshot records a merge at all: it names the pull request that merged.
 func (m Merge) Merged() bool { return m.Number > 0 }
-
-// MergeHistoryClass is the evidence the record holds of an issue's merges. It has exactly three
-// values. None of PARTIAL and NONE proves that the issue's work never merged: each only says what
-// the record does not hold.
-type MergeHistoryClass string
-
-const (
-	// MergeHistoryAnswered is positive evidence of a merge: a merge snapshot, a retained merged pull
-	// request, or a production check that only a merge opens.
-	MergeHistoryAnswered MergeHistoryClass = "ANSWERED"
-	// MergeHistoryPartial is rows of the issue's merges that prove none: a pull request that did not
-	// merge, a cleared pull request's clock.
-	MergeHistoryPartial MergeHistoryClass = "PARTIAL"
-	// MergeHistoryNone is a record that holds nothing of the issue's merges.
-	MergeHistoryNone MergeHistoryClass = "NONE"
-)
 
 // TreeRun is the tree's run of the issue's record: TreeGeneration as the record holds it, and on a
 // record that names none, one built and not read back, the issue's own generation, which is what
@@ -2146,8 +2123,8 @@ type Store interface {
 	// would give a recorded issue another of any of them. This release's rename pass writes a
 	// configured rename's new name on a recorded issue through RenameIssueRepository instead, the
 	// one writer that changes a recorded repository, which dispatch://INFRA-3532's own change removes.
-	// It neither writes nor clears the merge snapshot (Issue.Merge) or the merge history
-	// (Issue.MergeHistory): a whole new record of the issue keeps both.
+	// It neither writes nor clears the merge snapshot (Issue.Merge): a whole new record of the
+	// issue keeps it.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
