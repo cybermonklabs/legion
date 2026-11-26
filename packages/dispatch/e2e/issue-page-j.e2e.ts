@@ -822,12 +822,12 @@ test("a spec node shows the decisions that shaped it at every version", async ({
 // statements alone, in the order the coverage read gives them, and each hangs under the issue, so
 // no row draws a parent line and no group a heading; the view's count is their number. A
 // decision's chip, followed from the outline, opens the view on the statement it names, and Enter
-// on a statement opens the issue's address at its block, with the focus on its row of the
-// outline. "No check" is a statement's mark and the legend's word, and never a gap beside the
+// on a statement puts the caret at the start of its text, in place, in the view still drawn at its
+// own address. "No check" is a statement's mark and the legend's word, and never a gap beside the
 // mark too. A child's Spec view draws its own statements and none of its parent's: the tree reads
 // the issue's own coverage alone (reading (e) of the part's plan).
 // SLOW(>=2s): two seeded issues, the whole one and a parent with its child, and four loads of the
-// page and two followed links, each waited on until the page redraws.
+// page and one followed link, each waited on until the page redraws.
 test("the Spec view draws statements alone, each parent once, and no check once", async ({
   browser,
 }) => {
