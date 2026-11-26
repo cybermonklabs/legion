@@ -772,6 +772,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 		if dropped := rig.count(hourExpired); dropped != 1 {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want one", dropped)
@@ -810,6 +811,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, held[1].sequence)
+		rig.waitReported(role, hourDeadLetterLine, 2)
 		rig.letSweepsRun()
 		for i, sender := range senders {
 			letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
@@ -837,6 +839,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, outbox.sequence)
+		rig.waitReported(role, hourDropLine, 2)
 		rig.letSweepsRun()
 		for _, tc := range []struct {
 			held   laneCopy
@@ -920,6 +923,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitPassed(role, held[copies-1].sequence)
+		rig.waitReported(role, hourDeadLetterLine, copies)
 		rig.letSweepsRun()
 		rig.letSweepsRun()
 
@@ -967,6 +971,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 
 		seam.assertTakenOver(t, "dead letter", held, 0)
@@ -1039,6 +1044,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
@@ -1065,6 +1071,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(2*time.Hour + time.Minute)
 		rig.startSweeps()
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDropLine, 1)
 		rig.letSweepsRun()
 
 		if stale, fresh := rig.count(hourExpiredStale), rig.count(hourExpired); stale != 1 || fresh != 0 {
@@ -1103,6 +1110,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 
 		seam.assertTakenOver(t, "dead letter", held, 0)
@@ -1143,6 +1151,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(time.Hour + time.Minute)
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
@@ -1166,6 +1175,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		rig.startSweeps()
 		rig.waitPassed(role, ack.Sequence)
+		rig.waitReported(role, hourUndecodableLine, 1)
 		rig.letSweepsRun()
 
 		if ended := rig.count(hourUndecodable); ended != 1 {
@@ -1191,7 +1201,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		rig.moveClock(time.Hour + time.Minute)
 		rig.startSweeps()
-		waitFor(t, "every copy ended", func() bool { return rig.count(hourExpired) >= copies })
+		rig.waitReported(role, hourDropLine, copies)
 		rig.waitPassed(role, last.sequence)
 		rig.letSweepsRun()
 
@@ -1275,6 +1285,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
@@ -1390,6 +1401,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
+		rig.waitReported(role, hourDeadLetterLine, 1)
 		rig.letSweepsRun()
 
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
