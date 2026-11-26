@@ -13,10 +13,10 @@
 # caller that does not call it creates the cluster with the kind on PATH (or LEGION_E2E_KIND) and
 # that kind's own default node image.
 # kind_sandbox_create NAME WORK makes the cluster NAME with its kubeconfig in a file of WORK
-# (kind_kubeconfig) and the context kind-NAME (kind_context). Its one node (kind_node) is labelled
-# legion.dev/pool=legion, the pool the runtime places every pod on, and the cluster has the legion
-# namespace and kind's standard storage class. kind_k runs kubectl against that file and context
-# alone, so the caller's kubeconfig and its current context are never read.
+# (kind_kubeconfig) and the context kind-NAME (kind_context). Its one node (kind_node) carries no
+# label or taint of Legion's, since Legion's pods share a cluster's general nodes, and the cluster
+# has the legion namespace and kind's standard storage class. kind_k runs kubectl against that file
+# and context alone, so the caller's kubeconfig and its current context are never read.
 # kind_sandbox_install_agent_sandbox WORK applies Agent Sandbox's release manifest at the version
 # internal/runtime/sandbox speaks, pinned by sha256, and waits for its controller.
 # kind_sandbox_install_gvisor WORK installs gVisor's dated release, pinned by sha512, into the
@@ -64,7 +64,6 @@ kind_sandbox_install_kind() {
 kind_sandbox_create() {
   kind_cluster=$1 kind_context=kind-$1 kind_kubeconfig=$2/kubeconfig kind_node=$1-control-plane
   "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s ${kind_node_image:+--image "$kind_node_image"}
-  kind_k label node "$kind_node" legion.dev/pool=legion
   kind_k create namespace legion
   kind_k get storageclass standard -o name
   note "kind $("$kind_bin" version), node $(kind_k get node "$kind_node" -o jsonpath='{.status.nodeInfo.kubeletVersion} {.status.allocatable.cpu} cpu {.status.allocatable.memory} memory')"

@@ -661,6 +661,11 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// The P0 issues, which hold their slots outside the cap, and the bound they hold them under
+	// (the P0 start's contract entry); a state served below that entry carries neither, and says nothing of them.
+	if line := p0AdmissionLine(state.Admission); line != "" {
+		fmt.Fprintln(stdout, line)
+	}
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
 	// after one has ended, and neither before any pause, as the state carries one key at most.
 	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {
