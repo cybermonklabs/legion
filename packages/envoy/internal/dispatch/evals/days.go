@@ -538,7 +538,12 @@ func dayUpdates(project, evalID, builtBy string, rows []DayRow) iter.Seq[[]any] 
 // the row's own last value among them as the part of the reading the row records holding it
 // (lastOf), in whatever order they come: a refold's standing parts come first and the write's own
 // after them, though a write that began later may have stored some of them, and the row an append
-// adds to may hold the reading of a write that began after this one and committed first.
+// adds to may hold the reading of a write that began after this one and committed first. Each
+// value's product with its weight is converted to float64, which rounds it before the sum it feeds
+// (num): the Go spec lets a build fuse a product with the sum it feeds into one instruction that
+// rounds once, and an arm64 build does, so without the conversion a row's num would differ by
+// machine (0.1 over an n of 1 and then 0.3 over an n of 3 sum to 0.9999999999999999 rounded at each
+// step, 1 fused).
 func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 	samples := slices.Clone(row.Samples)
 	num, den := measures.ValueOrZero(row.Num), measures.ValueOrZero(row.Den)
@@ -555,7 +560,7 @@ func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 		samples = append(samples, part.value)
 		sum += part.value
 		largest = max(largest, part.value)
-		num += part.value * part.weight
+		num += float64(part.value * part.weight)
 		den += part.weight
 		if !held || holder.lastBefore(part) {
 			value, at, recordedAt := part.value, part.at, part.recordedAt

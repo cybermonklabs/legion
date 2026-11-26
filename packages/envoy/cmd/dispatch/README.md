@@ -5188,6 +5188,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A series' `min_n` is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs (`sort=median`, and the Pipeline's table), the one read that reads a `min_n`, so it is taken on pr-ci's job series (`job:*`) alone and is `400 EVAL_FIELD_INVALID` naming `series[i].min_n` on any other series, a logged eval's included, rather than stored and ignored.
 
+  - A write names each series once, with every field it sets of it: a series named twice is `400 EVAL_SERIES_INVALID` naming the second entry's `series[i].series`, since each entry that changes a series would store a version, log a change and relist its day rows in the one transaction that holds the eval's lock.
+
+  - `doc_block` names a block of the project's `evals-md`, read under the lock the write takes on that document: one the document does not hold, or any `doc_block` where the project has no such document, is `400 EVAL_FIELD_INVALID` naming `doc_block`, since the eval would have no method and the seed would replace the field at the next boot.
+
   - On a computed eval the write sets only how the number is judged and who answers for it: `target`, `target_inclusive` and `target_judges`, the `min_n` of pr-ci's job series, `owner_role`, `person`, `issue_key`, `links`, `state`, `replaced_by` and the method (`doc_text`, or `doc_block`), each of which the seed carries forward rather than reverts.
 
   - A write that names one of those fields records on the version it writes that a person set that field (`eval_versions.set_by_person`, a series' `min_n` in `eval_series.set_by_person`), whether or not it moves the field's value, and every version after it carries the record forward:

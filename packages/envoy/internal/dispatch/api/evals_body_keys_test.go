@@ -15,23 +15,31 @@ import (
 // TestTheDocumentedEvalReadingKeysAreTheKeysARowTakes: the readings route documents its body, a
 // row and a link in types of its own (evalReadingsInput, evalReadingInput, evalLinkInput), the
 // contract a client writes to; the handler decodes the body into a type of its own
-// (evalReadingsBody, whose keys decodeEvalBody holds a body to), and the registry decodes and
-// holds the rows and links to types of its own (evals.ReadingKeys, ReadingLinkKeys): a key one
-// states and the other does not is a documented key refused, or a key taken that no client is
-// told of. Each documented key is one the body, the row or the link takes, and the other way
-// round.
+// (evalReadingsBody, whose keys decodeEvalBody holds a body to), and the registry takes a row's
+// keys as those of a stored reading (evals.Reading, the route's answer) less the keys the server
+// sets, and a link's as those of a stored link (evals.Link) less its recorded_at, which evals'
+// TestARowTakesTheKeysOfAStoredReadingButThoseTheServerSets holds: a key one states and the other
+// does not is a documented key refused, or a key taken that no client is told of. Each documented
+// key is one the body, the row or the link takes, and the other way round. The keys the server
+// sets, the five evalReadingInput names as refused on a row, are the registry's serverSetKeys,
+// which the evals test named above holds to that list.
 func TestTheDocumentedEvalReadingKeysAreTheKeysARowTakes(t *testing.T) {
 	documented := bodyKeysOf(reflect.TypeFor[evalReadingInput]())
+	stored := bodyKeysOf(reflect.TypeFor[evals.Reading]())
+	less := func(keys bodyKeys, set ...string) []string {
+		return slices.DeleteFunc(slices.Sorted(maps.Keys(keys)), func(key string) bool { return slices.Contains(set, key) })
+	}
 	for _, shape := range []struct {
 		what             string
 		documented, read []string
 	}{
 		{"the readings write's body", slices.Sorted(maps.Keys(bodyKeysOf(reflect.TypeFor[evalReadingsInput]()))), slices.Sorted(maps.Keys(evalReadingsBodyKeys))},
-		{"a reading's row", slices.Sorted(maps.Keys(documented)), slices.Sorted(slices.Values(evals.ReadingKeys()))},
-		{"a reading's link", slices.Sorted(maps.Keys(documented["links"])), slices.Sorted(slices.Values(evals.ReadingLinkKeys()))},
+		{"a reading's row", slices.Sorted(maps.Keys(documented)), less(stored, "id", "eval_id", "recorded_by", "recorded_at", "superseded_at")},
+		{"a reading's link", slices.Sorted(maps.Keys(documented["links"])), less(stored["links"], "recorded_at")},
 	} {
 		if !slices.Equal(shape.documented, shape.read) {
 			t.Errorf("%s: the route documents the keys %v, and the server takes %v", shape.what, shape.documented, shape.read)
+			continue
 		}
 		t.Logf("%s: %d keys, documented and taken alike: %s", shape.what, len(shape.read), strings.Join(shape.read, ", "))
 	}
