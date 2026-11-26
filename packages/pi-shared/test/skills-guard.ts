@@ -362,9 +362,8 @@ export type Reference = {
  */
 export function references(source: string, text: string): Reference[] {
   const lineOf = (index: number | undefined) => text.slice(0, index).split("\n").length;
-  // A reference that ends a sentence or a clause carries its full stop or comma.
   const intoSkill = (skill: string, rest: string) => {
-    const [target = "", anchor] = rest.replace(/[.,;:]+$/, "").split("#");
+    const [target = "", anchor] = trimClosingPunctuation(rest).split("#");
     return { skill, target: target === "" ? "SKILL.md" : target, anchor };
   };
   return [
@@ -372,14 +371,14 @@ export function references(source: string, text: string): Reference[] {
       ({ 0: written, 1: skill = "", 2: rest = "", index }) => ({
         source,
         line: lineOf(index),
-        text: written.replace(/[.,;:]+$/, ""),
+        text: trimClosingPunctuation(written),
         ...intoSkill(skill, rest.replace(/^\//, "")),
       })
     ),
     ...[...text.matchAll(SKILL_PATH)].map(({ 0: written, 1: skill = "", 2: rest = "", index }) => ({
       source,
       line: lineOf(index),
-      text: written.replace(/[.,;:]+$/, ""),
+      text: trimClosingPunctuation(written),
       ...intoSkill(skill, rest),
     })),
     ...[...text.matchAll(AGENT_REFERENCE)].map(({ 0: written, 1: agent = "", index }) => ({
@@ -389,6 +388,17 @@ export function references(source: string, text: string): Reference[] {
       agent,
     })),
   ];
+}
+
+/**
+ * `written` without the full stops, commas, semicolons and colons that end it: a reference that
+ * ends a sentence or a clause carries them. A loop, not a regular expression anchored at the end,
+ * so a long run of them costs one pass.
+ */
+function trimClosingPunctuation(written: string): string {
+  let end = written.length;
+  while (end > 0 && ".,;:".includes(written[end - 1] ?? "")) end -= 1;
+  return written.slice(0, end);
 }
 
 /**
