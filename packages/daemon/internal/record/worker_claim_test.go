@@ -51,6 +51,30 @@ func TestWorkerClaimRefusesARoleThatIsNoRole(t *testing.T) {
 	}
 }
 
+// Under the task key a phases row is one agent's (PhaseRow.Key), so a later entry of a step for
+// another agent writes a row of its own beside the earlier agent's, and both name the step. The
+// step is one, worked by the row of its latest entry: the claim of the role's worker is that row's
+// claim. Two steps of the role worked by two agents at once, the steps of two tasks, name no one
+// worker, and the read is refused so the caller names the claim it means.
+func TestWorkerClaimReadsEachStepAtItsLatestEntry(t *testing.T) {
+	const keyed claim.Token = "legion-legion-infra-12-implementer"
+	const later claim.Token = "legion-legion-infra-12-reviewer"
+	moved := []PhaseRow{
+		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
+		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 3, Claim: later},
+	}
+	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, moved); err != nil || got != later {
+		t.Fatalf("WorkerClaim of a step a later entry moved to %s = %q, %v; want %s, the claim of its latest entry", later, got, err, later)
+	}
+	twoSteps := []PhaseRow{
+		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
+		{Role: claim.RoleTester, StepTask: "b", StepPlace: 2, Entry: 2, Claim: later},
+	}
+	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, twoSteps); err == nil {
+		t.Fatalf("WorkerClaim of two tasks' tester steps worked by two agents = %q, want the refusal that names no one worker", got)
+	}
+}
+
 // A row whose producer holds the claim it is for carries it, and a row the release before wrote
 // carries none: each of the three payloads decodes both, the claim it names kept and none read as
 // "" so the runner reads the worker's claim from the record.
