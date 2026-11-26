@@ -461,7 +461,8 @@ describe("the source of an answer: the merger's own reads", () => {
     ]);
     const ret = returnOfSession(lines);
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "established", step: 3 }]);
-    expect(resolveReturn(ret, [confirming(ret.id, "1")]).class).toBe("mixed");
+    // The class is mixed, which leaves the return out of the count, so reader 2 reads it too.
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("mixed");
   });
 
   test("a gh pr view that reads the head MERGEABLE and CLEAN is a clear answer about that head", () => {

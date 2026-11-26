@@ -6174,6 +6174,61 @@ By default it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names 
 No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*`, `CLAUDE_*`, `CODEX_*` or `OPENAI_*` variable of the caller reaches anything the run starts; with `--real-hosts` each model key reaches its hosts' environments alone, never an argv.
 Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 refused (an input or tool is missing, a pin does not match, or the stack or a client did not start).
 
+## forward-count-control.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  bash scripts/e2e/forward-count-control.sh [--control unread|no-failure|blocked|captured]     # → "forward count control e2e: PASS …", exit 0
+```
+
+The live control of the count of returns from the retro and the merge (C7 of dispatch://INFRA-5581's design, the check `c-forward-count-control`).
+Nine issues in three projects (`ACME`, `DECOY`, `CLEAR`) walk through three real daemons over one real Dispatch, each return is the role's own `request_backward_move` through `POST /legion/v1/phase/backward`, and the count's `collect` then reads Dispatch, the run's GitHub stand-in and the DECOY mergers' transcripts.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later, `awk`, `bun` (after `bun install` at the checkout's root) and `python3`, as [`step-records.sh`](#step-recordssh) does, and `LEGION_TEST_PG_DSN` is required with the same bounds: its host must be loopback, and the driver creates Dispatch's own database on that server and drops it on exit.
+A run takes ten to twenty-five minutes: three daemons boot, and nine issues walk their plans.
+
+The driver (`internal/daemon/forward_count_live_test.go`, `-tags e2e`, `TestForwardCountControlEventsLive`) runs `collect` itself, because the Dispatch and the GitHub it reads live inside the driver's own process; the script runs `resolve` after the driver and judges each project's summary, line by line, with `grep -x`.
+The program writes each line it judges, so the script's own echo of a line cannot match it.
+
+| project | what walks | what the summary must hold |
+| :--- | :--- | :--- |
+| `ACME` | a merger's return for its own defect, a merger's return for the failed required check `unit-limits`, and a retro's return on a task that ran the implementer alone | `ACME-1 against-R23`, `ACME-2 exempt:ci`, `ACME-3 goal-check`, `against R23: 1`, `verdict: fail` |
+| `DECOY` | five mergers' returns whose readings confirm a block: one with GitHub reading the head clear, one whose reason names a conflict against that same clear answer, one whose block GitHub answered outside `gh`, one with no answer at all, and one whose payload stands only in text the role wrote and in a delivery | `DECOY-1 against-R23`, `DECOY-2 against-R23`, `DECOY-3 mixed`, `DECOY-4 pending`, `DECOY-5 pending`, `against R23: 2`, `pending: 2`, `verdict: fail` |
+| `CLEAR` | one issue whose retro and merge pass, with no return | `last steps passed: 1`, `verdict: pass` |
+
+Its four controls, each of which bites on its own line and leaves every other line standing:
+
+| control | what it changes | the line it bites on |
+| :--- | :--- | :--- |
+| `--control unread` | `resolve` is given no readings | `verdict: unknown` for `ACME` and for `DECOY`, and every return of theirs `pending` |
+| `--control no-failure` | the stand-in reports the check run `unit-limits` passing at ACME-2's head | `ACME-2 unexplained`, where it reads `exempt:ci` |
+| `--control blocked` | DECOY-2's timeline holds a removal from the merge queue at its head, after the transcript time of its `clear` answer | `DECOY-2 mixed`, where it reads `against-R23` |
+| `--control captured` | DECOY-4's transcript gains the result of a `curl` to the GraphQL route that reads its head `CONFLICTING` | `DECOY-4 mixed`, with `DECOY-5 pending` in the same run |
+
+What the run stands in for lies outside the records: GitHub is the driver's own stand-in (`forwardCountGitHub`, which Dispatch's App, the three daemons and the count all read), the Apps' tokens are placeholders, Envoy's listener is the package's `noticeListener`, and no agent runs: each claim is launched by the package's fake runtime and played by the driver.
+`FORWARD_COUNT_CONTROL_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemons' own, Dispatch's, the driver's output, the DECOY transcripts (`transcripts/`), the count's `returns.jsonl` and each summary (`count/`).
+
+## forward-count.sh
+
+```sh
+bash scripts/e2e/forward-count.sh --from 2026-11-10 --to 2026-11-23 [--readings <readings.jsonl>]     # → "forward count: …", exit 0
+bash scripts/e2e/forward-count.sh --from <release day> --days 14 --readings <readings.jsonl>
+```
+
+The live count itself (the checks `c-forward-count-history` and `v-forward-count`): over a window of days and the projects a Legion daemon runs, it collects every return of a retro or a merge, reads each one's reason, records and answers, and resolves them with the readers' readings.
+`collect` reads Dispatch for the returns, GitHub for each pull request's timeline, and the roles' own transcripts in the transcript store through `tq`; with `--readings` it then runs `resolve`, which writes `resolved.jsonl`, `summary.txt` for the window and `summary-<PROJECT>.txt` for each project.
+Without `--readings` the run stops after `collect`, with `returns.jsonl` for the readers to read.
+
+It runs where the reader runs `dispatch` by hand, with the reader's own credential: `bun`, `gh` signed in, `jq`, and `tq` on PATH for the transcript store.
+Dispatch is the one the reader's shell names (`DISPATCH_URL` and `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`), else the `dispatch.serverUrl` and `dispatch.token` of the envoy.json `ENVOY_CONFIG_FILE` names.
+The run writes `gh auth token` and the Dispatch bearer into files of its own `mktemp -d`, mode 0600, and deletes that directory at its exit.
+It reads and starts nothing else: no write of any kind reaches Dispatch or GitHub, which is why it is an `elsewhere` row of `.github/e2e-scripts.json`.
+
+| exit | printed | when |
+| :--- | :--- | :--- |
+| 0 | `forward count: …`, with the window's summary where `--readings` was given | the run read the window and wrote its files |
+| 1 | the program's own failure | `collect` or `resolve` failed |
+| 2 | `UNKNOWN: <reason>` | nothing could be read: no Dispatch is named, no credential, no `bun`, `gh`, `jq` or `tq` on PATH, or a usage error |
+
 ## lib/loopback-dsn.py
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
