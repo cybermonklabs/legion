@@ -45,7 +45,7 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 		session string
 	}{{agent, agentSession}, {role, roleSession}, {routed, routedSession}}
 	var stopped map[string]bool
-	testwait.Holds(testwait.Bounded(t, idleRigRecordWait, idleRigDeadlineMargin), idleRigPoll, func() bool {
+	testwait.Holds(testwait.Remaining(t), idleRigPoll, func() bool {
 		stopped = map[string]bool{}
 		for _, entry := range rig.loggedEntries(idleRigStopLine) {
 			stopped[fmt.Sprint(entry["session"])] = true
@@ -163,7 +163,7 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	// 1. The release's stop of the process sent the clean stop of its session, and the listener
 	//    deleted the registration. The stop runs on a goroutine of its own once the machine's
 	//    decision is made (cleanSessionStop), so the line is waited for.
-	idleRigEventually(t, idleRigRecordWait, "the daemon's stop of "+issue.key+"'s session "+session, func() bool {
+	idleRigEventually(t, "the daemon's stop of "+issue.key+"'s session "+session, func() bool {
 		return rig.logged(idleRigStopLine, map[string]string{"session": session}) >= 1
 	})
 
@@ -182,10 +182,10 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 
 	// 3. The woken process registers with the daemon and holds, and both rows end while it does:
 	//    each publish meets a role no live session holds.
-	idleRigEventually(t, idleRigPodWait, "the woken process of "+issue.key+" registered with the daemon", func() bool {
+	idleRigEventually(t, "the woken process of "+issue.key+" registered with the daemon", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered > registered
 	})
-	idleRigEventually(t, idleRigRecordWait, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
+	idleRigEventually(t, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
 		var left int
 		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
 			issue.key, string(record.OutboxKindHookPrompt)).Scan(&left); err != nil {
