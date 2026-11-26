@@ -985,9 +985,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The one panel of the issue's properties, which opens over the right of the page, and the
    *  control at the right of the header's first row that opens it (R14). */
   details: "Details",
-  /** The one row a branch below the three drawn levels folds to, which opens it in place: the
-   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1), and the
-   *  words agree with it: "1 more row below", "3 more rows below". A node is a row to the
+  /** What the row a branch below the three drawn levels folded to said, when the outline drew
+   *  three levels: every level is drawn now (R11), and no row of the page draws these words.
+   *  They agree with their count: "1 more row below", "3 more rows below". A node is a row to the
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
@@ -1023,8 +1023,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
   /** What a folded branch says it holds, after the count of the rows under it (R1): they are
-   *  not gone, they are out of sight until the branch is opened. It agrees with its count, as
-   *  `deeper_row` does. */
+   *  not gone, they are out of sight until the branch is opened. It agrees with its count. */
   folded_row: "row hidden inside",
   folded_rows: "rows hidden inside",
   /** Draws one branch of the outline at a time, the Contents pane's current one, by zooming the

@@ -11,13 +11,14 @@ import {
   pageRowAct,
 } from "../../theme/classes";
 import { type HandoffField, handoffFields } from "../conversation/conversation-model";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { standsFailed } from "../refs/reference-target";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
 
-/** How a handoff shows JSON: an array or object field, or a body that is not a JSON object, in
- *  the muted grey on the mark grey, as a node's body draws a check's command. */
+/** How a handoff shows JSON: an array or object field, in the muted grey on the mark grey, as a
+ *  node's body draws a check's command. */
 const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${pageMarkBg} ${pageMutedText}`;
 
 /** The page's names of the fields every Legion handoff record carries. */
@@ -125,17 +126,23 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
   // The fields hold the body whatever a later read's outcome, as the history holds its log: an
   // invalidation of every read after a write reads the body again, and a read that fails then
   // draws no line over the fields it held.
+  const trees = handoff.data.field_trees;
   if (fields === undefined) {
     return (
-      <pre
-        className={`${handoffPre} outline-none`}
+      <div
+        className={`mt-1 min-w-0 text-xs outline-none [overflow-wrap:anywhere] ${pageInkText}`}
         data-handoff-raw
+        data-node-words=""
         id={id}
         tabIndex={-1}
         {...authorText}
       >
-        {handoff.data.body}
-      </pre>
+        <MarkdownBody
+          markdown={handoff.data.body}
+          surface="issue-page-history-handoff-body"
+          tree={trees !== undefined && Object.hasOwn(trees, "") ? trees[""] : undefined}
+        />
+      </div>
     );
   }
   return (
@@ -145,7 +152,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
       tabIndex={-1}
       {...authorText}
     >
-      {fields.map(({ entry, field, json, label, text }) => {
+      {fields.map(({ entry, field, label, path, shape, text }) => {
         const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
         // The element keeps the field's key, which a reader of the page selects by; the label
         // is the page's name for the field, or the words its key spells.
@@ -163,10 +170,26 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
               )}
             </dt>
             <dd className="min-w-0">
-              {json ? (
+              {shape === "prose" ? (
+                <div className="min-w-0 [overflow-wrap:anywhere]" data-node-words="">
+                  <MarkdownBody
+                    markdown={text}
+                    surface="issue-page-history-handoff-body"
+                    tree={
+                      trees !== undefined && Object.hasOwn(trees, path) ? trees[path] : undefined
+                    }
+                  />
+                </div>
+              ) : shape === "json" ? (
+                // The session's data, as the JSON it is: the reading list's
+                // `issue-page-history-handoff-data`.
                 <pre className={handoffPre}>{text}</pre>
               ) : (
-                <span className="break-words whitespace-pre-wrap">{text}</span>
+                <span className="break-words whitespace-pre-wrap">
+                  {/* A number, a boolean or null, as its JSON text: the reading list's
+                      `issue-page-history-handoff-data`. */}
+                  {text}
+                </span>
               )}
             </dd>
           </div>

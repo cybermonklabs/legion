@@ -231,7 +231,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks, first.located, first.pointers, facts)
+		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks, first.located, first.pointers, "", facts)
 		return write, err
 	}, firstRecord.event)
 	if got := mentionRows(t, database.Pool, document.artifact); got != 1 {
@@ -316,7 +316,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 		}
 		// The block index plans the typed-node pass's own facts of the version into its one
 		// write (TypedFacts.indexedFacts), as the reconciler indexes it.
-		_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.markdown, second.blocks, second.located, second.pointers, facts)
+		_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.markdown, second.blocks, second.located, second.pointers, "", facts)
 		if err == nil && !won {
 			err = fmt.Errorf("the reconciler lost the revision fence over version 2")
 		}
@@ -363,7 +363,7 @@ func TestAOneWordEditWritesOnlyTheNodesOfTheBlocksItMoved(t *testing.T) {
 			// The typed-node pass's own nodes, as the block index plans them beside its own, and
 			// every node the one write of the index writes.
 			own, _ := facts.indexedFacts(nil)
-			_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, facts)
+			_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, "", facts)
 			if err == nil && !won {
 				err = fmt.Errorf("version %d lost the revision fence", number)
 			}

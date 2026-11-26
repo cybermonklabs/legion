@@ -18,6 +18,7 @@ GATE = gate("pi_envoy", "pi-envoy", reads=reads(
     ("scripts/e2e/lib/pack-plugin.sh", "`packages/pi-envoy/scripts/prepack.test.ts#the packed tarball` packs with it"),
     (f"{DAEMON}/internal/prompts/**/*.md", "`packages/pi-envoy/src/skills-guard.test.ts#no skill or daemon prompt names a native Dispatch tool` and `packages/pi-envoy/src/skills-guard.test.ts#skillAndPromptRoots` reads every .md of skillAndPromptRoots"),
 ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; `packages/pi-envoy/extensions/envoy.ts#@legion/envoy-client/` imports")
+  + dispatch_api_types(at("pi-envoy", "Typecheck pi-envoy"))
   + install_omp("pi-envoy") + bun_job("pi-envoy"))
 GATE = with_reads(GATE, [
     Read('packages/daemon/internal/prompts/**', "filter pi_envoy held packages/daemon/internal/prompts/** by hand before the filters were computed: it selected 1 file(s) no other read of this gate declares", but=('**/*_test.go',)),

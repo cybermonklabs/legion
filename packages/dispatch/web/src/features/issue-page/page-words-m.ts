@@ -80,10 +80,10 @@ export default {
       collaborators_legion: "Legion agents",
       collaborators_others: "Other agents",
       collaborators_people: "People",
-      /** The history's list as a reader hears it named, the Activity tab's name for the same list;
-       *  the line it draws where the reader's read mark stood as it first drew in this visit; and
-       *  what one author's uploads within a minute say before the files they open
-       *  (`IssueHistory.tsx`). */
+      /** The history's list as a reader hears it named, the Activity tab's name for the same list
+       *  (`IssueHistory.tsx`); the line it draws where the reader's read mark stood as it first
+       *  drew in this visit; and what one author's uploads within a minute say before the files
+       *  they open (`history-entries.tsx`'s `Entry`). */
       history_list: "Issue activity",
       history_unread: "New since you last read",
       history_uploaded: "uploaded",

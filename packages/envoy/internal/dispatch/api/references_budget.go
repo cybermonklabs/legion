@@ -53,7 +53,7 @@ func (s *server) inClosureRead(ctx context.Context, who model.Actor, issueKey st
 	var references refs.References
 	err := s.inJITOffRead(ctx, refs.ClosureTag, func(tx pgx.Tx) error {
 		var err error
-		references, err = refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey)
+		references, err = refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey, s.deps.ServerURL)
 		return err
 	})
 	return references, err

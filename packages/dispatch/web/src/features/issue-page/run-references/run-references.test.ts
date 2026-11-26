@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
-import { plainWords } from "../tree-drafts";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { runRows } from "./run-references";
@@ -15,6 +14,8 @@ const OTHER_RUN = "5a4d0e3f-7b6c-4d8e-9f1a-2b3c4d5e6f70";
 const FIRST_RUN = "1c9e7a5b-3d2f-4e1a-8b6c-0d4f2a9e7b51";
 const ASKED_AT = "2026-11-17T09:00:00Z";
 const QUESTION = "When does the **release** ship?\n\nAnd who owns it?";
+/** `QUESTION` as plain words: its marks gone, its two paragraphs on one line. */
+const QUESTION_WORDS = "When does the release ship? And who owns it?";
 
 /** The issue's own node. */
 const ISSUE_NODE = treeNode(KEY, "issue", null, { text: "Ship the release" });
@@ -56,7 +57,7 @@ test("an interaction of the tree read is a row with the page's words and the run
   expect(row.key).toBe(RUN);
   expect(row.kind).toBe(sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction));
   expect(row.edge).toBe(NODE_REFERENCES_WORDS.edges.changed_by_run);
-  expect(row.excerpt).toBe(plainWords(QUESTION));
+  expect(row.excerpt).toBe(QUESTION_WORDS);
   expect(row.at).toBe(ASKED_AT);
   expect(row.href).toBe(`/runs/${RUN}`);
   const { href: _href, key: _key, ...words } = row;
@@ -64,6 +65,22 @@ test("an interaction of the tree read is a row with the page's words and the run
   expect(drawn).not.toContain("interaction");
   expect(drawn).not.toContain("changed_by_run");
   expect(drawn).not.toContain(RUN);
+});
+
+// A run's row reads its question's words from the server's reading of it where the tree read
+// sends one (`text_tree`), not from the question as stored.
+test("a run's row reads its question's words from the reading the tree read sends", () => {
+  const reading = {
+    content: [{ content: [{ text: "Who ships the release?", type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
+  const rows = runRows([
+    treeOf(
+      [ISSUE_NODE, commentNode(COMMENT), { ...runNode(RUN), text_tree: reading }],
+      [changedBy(COMMENT, RUN)]
+    ),
+  ]);
+  expect(rows.map((row) => row.excerpt)).toEqual(["Who ships the release?"]);
 });
 
 test("one run is one row however many writes it made", () => {

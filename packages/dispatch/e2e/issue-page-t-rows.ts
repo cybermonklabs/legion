@@ -11,6 +11,7 @@ import { decisionNodeChanges } from "../web/src/features/issue-page/decision-rev
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { shortDay } from "../web/src/features/issue-page/node-time";
 import {
+  CONTROL_LABELS,
   coverageNotes,
   NODE_STATE_WORDS,
   PRESET_NAMES,
@@ -47,6 +48,8 @@ import {
   decisionTimes,
   drawnNodes,
   heldAnswer,
+  type OutlineKind,
+  outlineAnswerOf,
   owedUnless,
   R2_ROW_KINDS,
   seedEventsLanded,
@@ -55,7 +58,7 @@ import {
   treeReadGate,
 } from "./issue-page-t-tree";
 import { isLiveSocket } from "./live-socket-watch";
-import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
+import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
  * What the rows of the new issue page that draw it from the tree read share: the outline drawn
@@ -91,6 +94,19 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  *    one or two tree reads (its own refresh, and its event's), and a reply sent from the row's
  *    Reply on the open question becomes a row under it and sends one or two. It is in
  *    `e2e/issue-page-t-write.e2e.ts`.
+ *
+ * Rows 5 to 14 are the checks of root version 183, each in a file of its topic:
+ * `c-conversation-read` (row 5, `e2e/issue-page-t-conversation.e2e.ts`), `c-graph-view` (row 6,
+ * `e2e/issue-page-t-graph.e2e.ts`), `c-row-controls` (row 7) and `c-dashboard-reads` (row 11, in
+ * `e2e/issue-page-t-views.e2e.ts`), `c-contents-beside` (row 8,
+ * `e2e/issue-page-t-contents.e2e.ts`), `c-children-section` (row 9,
+ * `e2e/issue-page-t-children.e2e.ts`), `c-pages` (row 10, `e2e/issue-page-t-pages.e2e.ts`), and
+ * `c-row-link` (row 12), `c-ask-body` (row 13) and `c-row-face` (row 14, in
+ * `e2e/issue-page-t-face.e2e.ts`). Each reads an outline as it opens (`openOutline`) against the
+ * answer it was drawn from: its rows are the answer's nodes but those no row draws
+ * (`nodesNoRowDraws`, `answerRowIds`), each in its place (`firstRowOutOfPlace`,
+ * `servingOutOfPlace`), none folded (`foldedRowIds`) and each whole (`rowsNotWhole`). Rows 11 and
+ * 13 wait on Dashboard's part (`dashboardPartGate`).
  *
  * Each row checks its gates first, each with one `owedUnless` call, and skips where a gate is not
  * on this branch's base, with an `owed` annotation naming the gate; it never passes then, since a
@@ -178,14 +194,19 @@ function canonical(value: unknown): string {
 // Row 1: the outline from the tree read.
 // ---------------------------------------------------------------------------------------------
 
+/** What a row's place is read against: the answer the page drew its rows from, and the reads
+ *  `treeIdOf` names the answer's nodes by. */
+export interface DrawnFrom {
+  readonly answer: IssueTreeRead;
+  readonly reads: TreeIdReads;
+}
+
 /** What row 1 reads of one seed's page. */
-interface OutlineRead {
+interface OutlineRead extends DrawnFrom {
   /** The ids of the comments the comments read anchors to a node's text. */
   readonly anchored: ReadonlySet<string>;
-  readonly answer: IssueTreeRead;
   readonly decisions: DecisionsRead | undefined;
   readonly keys: ReadonlyMap<string, string>;
-  readonly reads: TreeIdReads;
   readonly rows: readonly RowReading[];
   readonly slugs: readonly string[];
 }
@@ -200,7 +221,7 @@ const PAGES_DRAWN_AT_MOST = 40;
  * how many are left and draws the next 50 on the reader's press (R15); a page is no fold, so the
  * rows it holds back are rows Graph holds, and row 1 reads them with every page drawn.
  */
-async function drawEveryPage(page: Page): Promise<void> {
+export async function drawEveryPage(page: Page): Promise<void> {
   const control = page.locator("[data-issue-page] [data-tree-page] button").first();
   const rows = page.locator("[data-issue-page] [data-node-row]");
   for (let pressed = 0; pressed < PAGES_DRAWN_AT_MOST; pressed += 1) {
@@ -245,25 +266,42 @@ async function readOutline(page: Page, seeded: SeededIssue): Promise<OutlineRead
   };
 }
 
+/** The ids of the comments the comments read anchors to a node's text, of issue `key`. */
+export async function anchoredComments(key: string): Promise<ReadonlySet<string>> {
+  const comments = await listComments(key);
+  return new Set(comments.flatMap((comment) => (comment.anchor === null ? [] : [comment.id])));
+}
+
 /**
- * The keys of the fixture's rows that are comments on a node's text, which R2 lets Graph draw as
+ * The read ids of the answer's comments on a node's text, which R2 and R9 let an outline draw as
  * no row, since the margin beside that node draws them (root R41): a comment the comments read
- * anchors to text that the answer hangs under a node other than the issue, and each comment the
- * answer hangs under such a comment, a reply in its thread. A comment anchored in a document whose
- * block the answer holds no node of hangs under the issue, has no node for a margin to stand
- * beside, and is a row.
+ * anchors to text (`anchored`) that the answer hangs under a node other than the issue, and each
+ * comment the answer hangs under such a comment, a reply in its thread. A comment anchored in a
+ * document whose block the answer holds no node of hangs under the issue, has no node for a
+ * margin to stand beside, and is a row.
  */
-function textCommentKeys(outline: OutlineRead): ReadonlySet<string> {
-  const nodes = new Map((outline.answer.nodes ?? []).map((node) => [node.id, node]));
+export function textComments(
+  answer: IssueTreeRead,
+  anchored: ReadonlySet<string>
+): ReadonlySet<string> {
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const onText = (node: IssueTreeNode | undefined, passed: Set<string>): boolean => {
     if (node?.supertag !== "comment" || node.parent === null || passed.has(node.id)) return false;
     passed.add(node.id);
-    if (outline.anchored.has(node.id)) return node.parent.supertag !== "issue";
+    if (anchored.has(node.id)) return node.parent.supertag !== "issue";
     return node.parent.supertag === "comment" && onText(nodes.get(node.parent.id), passed);
   };
+  return new Set(
+    (answer.nodes ?? []).flatMap((node) => (onText(node, new Set()) ? [node.id] : []))
+  );
+}
+
+/** The keys of the fixture's rows that are comments on a node's text (`textComments`). */
+function textCommentKeys(outline: OutlineRead): ReadonlySet<string> {
+  const onText = textComments(outline.answer, outline.anchored);
   const keys = new Set<string>();
   for (const [id, key] of outline.keys) {
-    if (onText(nodes.get(id), new Set())) keys.add(key);
+    if (onText.has(id)) keys.add(key);
   }
   return keys;
 }
@@ -313,7 +351,7 @@ function placedByFixture(
  *  issue. */
 function homesOf(
   node: IssueTreeNode,
-  outline: OutlineRead,
+  outline: DrawnFrom,
   idOf: (readId: string) => string,
   drawn: ReadonlySet<string>
 ): ReadonlySet<string | null> {
@@ -348,11 +386,12 @@ function homesOf(
 
 /** The first row of `readings` the answer holds that does not stand under the node the answer
  *  places it under, at the level that gives, or stands before a sibling the answer orders before
- *  it; undefined where none. */
-function firstRowOutOfPlace(
+ *  it; undefined where none. A row the answer holds no node for is read by row 1 against the
+ *  fixture, and by every other row against the ids the answer holds (`answerRowIds`). */
+export function firstRowOutOfPlace(
   where: string,
   readings: readonly RowReading[],
-  outline: OutlineRead
+  outline: DrawnFrom
 ): string | undefined {
   const idOf = treeIdOf(outline.answer, outline.reads);
   const held = heldNodes(outline.answer, idOf);
@@ -978,4 +1017,190 @@ export async function stateWordOf(page: Page, id: string): Promise<string | null
 export function expectOneOrTwoReads(reads: number, message: string): void {
   expect(reads, message).toBeGreaterThanOrEqual(1);
   expect(reads, message).toBeLessThanOrEqual(2);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rows 5 to 14: each outline as it opens, read against the answer it was drawn from.
+// ---------------------------------------------------------------------------------------------
+
+/** An outline as it opened: the answer of its read, the reads its ids are named by, every row
+ *  with the face it draws once two readings agree, and the requests until then. */
+export interface OpenedOutline extends DrawnFrom {
+  /** The requests from the navigation until the rows held still. */
+  readonly load: readonly ApiRequest[];
+  readonly rows: readonly RowReading[];
+  readonly traffic: ApiRequests;
+}
+
+/** Opens issue `key` at `path` (the outline's own address unless one is given), where it draws
+ *  `outline`, once the seed's events have landed, and reads it as it opens: every row with its
+ *  face (`drawnRowFaces`) once two readings agree, the load's requests, which `loaded` reads
+ *  before anything waits on the outline's read (a row asserts there what its load sent), and the
+ *  answer of that outline's read (`outlineAnswerOf`). */
+export async function openOutline(
+  page: Page,
+  key: string,
+  outline: OutlineKind,
+  {
+    loaded,
+    path = presetPath(key, outline),
+  }: {
+    readonly loaded?: (load: readonly ApiRequest[]) => void;
+    readonly path?: string;
+  } = {}
+): Promise<OpenedOutline> {
+  const watch = outlineAnswerOf(page, outline);
+  const traffic = watchApiRequests(page);
+  await seedEventsLanded(page);
+  await gotoIssue(page, path);
+  await expectIssuePageDrawn(page);
+  const { rows, total } = await steadily(page, traffic, `${key} as ${outline} opens`, async () => ({
+    rows: await drawnRowFaces(page),
+    total: traffic.total(),
+  }));
+  const load = traffic.requests.slice(0, total);
+  loaded?.(load);
+  const answer = await heldAnswer(watch, `${key}'s ${outline} read`);
+  return { answer, load, reads: await idReadsOf(key), rows, traffic };
+}
+
+/** The kinds of an item's own blocks: a block of an ask, a comment or a message is part of its
+ *  item and no row of its own (spec R10). */
+const ITEM_BLOCK_KINDS: readonly string[] = ["ask_block", "comment_block", "message_block"];
+
+/** The kinds of node that are who wrote or decided a node, a person and a session, which the
+ *  answer holds as context of the nodes they name and the page draws no row of (spec R7): a row
+ *  names them in its author and its state. */
+const ACTOR_KINDS: readonly string[] = ["person", "session"];
+
+/** The read ids of the answer's nodes an outline draws no row of on any seed of these rows: the
+ *  memo's callout, which the three sentences draw (`memoBlock`, the block id the seed wrote it
+ *  under), each comment on a node's text (`textComments`), each block of an item, and each
+ *  person and session. */
+export function nodesNoRowDraws(
+  answer: IssueTreeRead,
+  anchored: ReadonlySet<string>,
+  memoBlock: string | undefined
+): Set<string> {
+  const onText = textComments(answer, anchored);
+  return new Set(
+    (answer.nodes ?? []).flatMap((node) =>
+      onText.has(node.id) ||
+      ITEM_BLOCK_KINDS.includes(node.kind) ||
+      ACTOR_KINDS.includes(node.kind) ||
+      ACTOR_KINDS.includes(node.supertag) ||
+      (memoBlock !== undefined && node.supertag === "callout" && node.block_id === memoBlock)
+        ? [node.id]
+        : []
+    )
+  );
+}
+
+/** The tree ids of the decisions of `from` that wait on the reader's review, as the review list
+ *  reads them (c-review-list): a decision the answer marks `waiting_review`, no Change asked of
+ *  it, whose `shaped` tuples name a statement of this issue. */
+export function decisionsThatWait(from: DrawnFrom): Set<string> {
+  const idOf = treeIdOf(from.answer, from.reads);
+  const key = from.reads.issue.key;
+  const nodes = new Map((from.answer.nodes ?? []).map((node) => [node.id, node]));
+  const changed = decisionNodeChanges(from.answer);
+  const shapesStatement = (id: string) =>
+    (from.answer.tuples ?? []).some((tuple) => {
+      const target =
+        tuple.kind === "shaped" && tuple.from.id === id ? nodes.get(tuple.to.id) : undefined;
+      return (
+        target?.supertag === "requirement" && (target.issue === undefined || target.issue === key)
+      );
+    });
+  return new Set(
+    (from.answer.nodes ?? []).flatMap((node) =>
+      node.supertag === "decision" &&
+      node.decision?.waiting_review === true &&
+      !changed.has(node.id) &&
+      shapesStatement(node.id)
+        ? [idOf(node.id)]
+        : []
+    )
+  );
+}
+
+/** The ids an outline drawn from `from` draws a row of, each once and sorted (`idSet`): the tree
+ *  id of every node of the answer but the issue itself and each node `leftOut` names by its read
+ *  id. */
+export function answerRowIds(from: DrawnFrom, leftOut: ReadonlySet<string>): string[] {
+  const idOf = treeIdOf(from.answer, from.reads);
+  return idSet(
+    (from.answer.nodes ?? []).flatMap((node) => {
+      const id = idOf(node.id);
+      return id === from.reads.issue.key || leftOut.has(node.id) ? [] : [id];
+    })
+  );
+}
+
+/** Each check and plan task of this issue that is drawn under no row of a statement its `serves`
+ *  names, where both are drawn: the outline draws such a node again under each statement it
+ *  serves, the one node (root R4, spec R9, R10). */
+export function servingOutOfPlace(rows: readonly RowReading[], from: DrawnFrom): string[] {
+  const idOf = treeIdOf(from.answer, from.reads);
+  const key = from.reads.issue.key;
+  const nodes = new Map((from.answer.nodes ?? []).map((node) => [node.id, node]));
+  const own = (node: IssueTreeNode | undefined): node is IssueTreeNode =>
+    node !== undefined && (node.issue === undefined || node.issue === key);
+  const drawn = new Set(rows.flatMap((row) => (row.id === null ? [] : [row.id])));
+  const placements = new Set(rows.map((row, index) => `${row.id} ${parentIdOf(rows, index)}`));
+  return (from.answer.tuples ?? []).flatMap((tuple) => {
+    const serving = nodes.get(tuple.from.id);
+    const statement = nodes.get(tuple.to.id);
+    if (
+      tuple.kind !== "serves" ||
+      !own(serving) ||
+      !own(statement) ||
+      (serving.supertag !== "check" && serving.supertag !== "plan_task") ||
+      statement.supertag !== "requirement"
+    ) {
+      return [];
+    }
+    const [servingId, statementId] = [idOf(serving.id), idOf(statement.id)];
+    if (!drawn.has(servingId) || !drawn.has(statementId)) return [];
+    return placements.has(`${servingId} ${statementId}`)
+      ? []
+      : [`${servingId} is drawn under no row of ${statementId}, which it serves`];
+  });
+}
+
+/** Every row's node id that opens folded: a row that draws its one line (`aria-expanded`
+ *  false), with the node's first line in place of its words. */
+export function foldedRowIds(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-issue-page] [data-node-row][aria-expanded="false"]'
+      ),
+      (row) => row.dataset.nodeId ?? ""
+    )
+  );
+}
+
+/** Every row whose words the page does not draw whole: a row whose words box hides some of them
+ *  (its `scrollHeight` past its `clientHeight`, a pixel for rounding), or one that draws a
+ *  control for more words (`[data-node-more]`), each by its node id. */
+export function rowsNotWhole(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>("[data-issue-page] [data-node-row]"))
+      .filter((row) => {
+        const words = row.querySelector("[data-node-words]");
+        const hidden = words !== null && words.scrollHeight > words.clientHeight + 1;
+        return hidden || row.querySelector("[data-node-more]") !== null;
+      })
+      .map((row) => row.dataset.nodeId ?? "")
+  );
+}
+
+/** The serving-checks line the face of a statement draws from the coverage read's two counts
+ *  (`NodeRow.tsx`'s `NodeFace`), as `drawnRowFaces` reads it into the row's `counts`. */
+export function servingCountsLine(checks: number, planTasks: number): string {
+  return (
+    `${CONTROL_LABELS.serving_checks}: ${checks}, ${CONTROL_LABELS.serving_plan_tasks}: ` +
+    `${planTasks}`
+  );
 }

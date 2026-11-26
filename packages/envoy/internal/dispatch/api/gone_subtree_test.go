@@ -525,7 +525,7 @@ func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	// `<lens address>#b-<id>`, and the lens as a word of its own (graphstoretest.NamesAsAWord),
 	// which words that name the finding alone never hold.
 	asked := "a finding asked for project under alice's author-only lens " + lens.Address
-	answer := requireRefused(t, asked, rig.post(nodePath(lens.Address, "findings"), map[string]any{
+	answer := requireRefusedNaming(t, asked, rig.post(nodePath(lens.Address, "findings"), map[string]any{
 		"text": "Every reader would see this.", "visibility": graphstore.VisibilityProject}, "alice"),
 		http.StatusBadRequest, codeVisibilityWiderThanParent, lens.Address)
 	if !strings.HasPrefix(answer.Error, lens.Address+"#b-") {

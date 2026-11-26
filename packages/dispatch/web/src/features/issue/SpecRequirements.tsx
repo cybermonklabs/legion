@@ -28,6 +28,8 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
       data-testid="spec-requirement"
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        {/* The server's flattened words of the spec block: the reading list's
+            `spec-requirement-words`. */}
         <span className={textPrimaryOnSurface}>{requirement.text}</span>
         {gaps.map((gap) => (
           <span

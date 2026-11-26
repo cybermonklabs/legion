@@ -645,7 +645,7 @@ func TestTheTreeReadNamesTheAncestorAnIssueIsAViewOf(t *testing.T) {
 	requirement := ":::requirement{#cr9}\nThe child's own work.\n:::\n"
 	refusedWith := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
-		refusal := requireRefused(t, what, response, http.StatusConflict, codeRequirementBelongsToAncestor, parent.Key)
+		refusal := requireRefusedNaming(t, what, response, http.StatusConflict, codeRequirementBelongsToAncestor, parent.Key)
 		if !strings.Contains(refusal.Error, "cr9") {
 			t.Errorf("%s is refused %q, want the requirement it adds named", what, refusal.Error)
 		}
@@ -702,7 +702,7 @@ func TestAKeepReachesADecisionOfAnIssueRoom(t *testing.T) {
 			t.Fatalf("%s: the tree read answers %+v, want an unkept decision with its text_sha256", kept.name, decision.Decision)
 		}
 		keep := "/api/v1/artifacts/" + kept.document + "/blocks/" + kept.block + "/keep"
-		requireRefused(t, kept.name+" kept with a sum it does not hold", dispatchRequest(t, handler, http.MethodPost, keep,
+		requireRefusedNaming(t, kept.name+" kept with a sum it does not hold", dispatchRequest(t, handler, http.MethodPost, keep,
 			map[string]any{"text_sha256": strings.Repeat("0", 64)}, "alice"), http.StatusConflict, "DECISION_CHANGED")
 		succeeded(t, "keep "+kept.name, dispatchRequest(t, handler, http.MethodPost, keep, map[string]any{"text_sha256": decision.Decision.TextSHA256}, "alice"))
 		after, _ := treeRead(t, handler, issue.Key, "", "alice", false).node(t, refs.BlockNodeKind, node)
@@ -1202,14 +1202,14 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		if (query == "") != issueCase.unconverted || !issueCase.unconverted && newest < 1 {
 			t.Fatalf("%s holds the decisions query node %q at version %d, want one at version 1 or above exactly where the issue is converted", what, query, newest)
 		}
-		requireRefused(t, what+": a version the decisions query does not have", treeResponse(t, handler, issue.Key, fmt.Sprintf("?view=decisions&v=%d", newest+1), "alice", false),
+		requireRefusedNaming(t, what+": a version the decisions query does not have", treeResponse(t, handler, issue.Key, fmt.Sprintf("?view=decisions&v=%d", newest+1), "alice", false),
 			http.StatusNotFound, "QUERY_VERSION_NOT_FOUND", fmt.Sprintf("decisions query of %s holds no version %d", issue.Key, newest+1))
 		if query == "" {
 			continue
 		}
 		first := treeResponse(t, handler, issue.Key, "?view=decisions&v=1", "alice", false)
 		if treeReadViewsRecorded(t, database, query, 1) == 0 {
-			requireRefused(t, what+": version 1 of the decisions query, which records no store revision", first, http.StatusNotFound, "QUERY_VERSION_NOT_RECORDED", "version 1")
+			requireRefusedNaming(t, what+": version 1 of the decisions query, which records no store revision", first, http.StatusNotFound, "QUERY_VERSION_NOT_RECORDED", "version 1")
 			continue
 		}
 		if first.Code != http.StatusOK {

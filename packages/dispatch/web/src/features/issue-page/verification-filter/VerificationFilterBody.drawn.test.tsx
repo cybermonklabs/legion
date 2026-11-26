@@ -13,18 +13,27 @@ import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { displayTree } from "../../../__tests__/display-trees";
+import { countEngineParses, displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Actor, CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
+import type {
+  Actor,
+  CheckBlock,
+  IssueCheckResults,
+  IssueCoverage,
+  IssueDetails,
+} from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import type { TreeNode } from "../issue-tree";
+import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
@@ -43,8 +52,13 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
+import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
+import { drawStage, REFUSED, stubReads } from "../slots/stage-fixtures";
 import { useVerificationReads } from "../slots/view-verification";
+import { treeContext } from "../tree-drafts";
+import { treeAnswer } from "../tree-read/tree-fixtures";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -62,6 +76,7 @@ import {
   OTHER_COMMIT,
   result,
   statementNode,
+  VERIFICATION_SLUG,
   verificationView,
 } from "./verification-fixtures";
 
@@ -86,15 +101,42 @@ beforeAll(async () => {
  *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
  *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
  *  the view with no query where a case builds it itself (`whole`), which is otherwise built as
- *  the slot builds it, and whether the body is drawn inside the stage the page draws a view in
+ *  the slot builds it, whether the body is drawn inside the stage the page draws a view in
  *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
- *  tree itself takes it (`ViewStage`). */
+ *  tree itself takes it (`ViewStage`), and what the page publishes of its batched names read
+ *  (`published`), which is what it publishes for the issue's statements where a case gives
+ *  nothing else (`publishedStatements`). */
 interface DrawOptions {
   readonly named?: readonly string[];
+  readonly published?: PublishedReferences;
   readonly query?: string;
   readonly reads?: VerificationReads;
   readonly staged?: boolean;
   readonly whole?: TreeNode;
+}
+
+/** Every statement `root` holds, at any depth, that has an address. */
+function statementsOf(root: TreeNode): TreeNode[] {
+  return [
+    ...(root.statement === true && root.reference !== undefined ? [root] : []),
+    ...root.children.flatMap(statementsOf),
+  ];
+}
+
+/** What the page publishes for `statements`: what its batched read names them by, by the page's
+ *  own rule (`targetNaming`) over the reads it names them from (`blockReads`, over the issue the
+ *  statements are blocks of, unless a case hands the reads it built its chips from), and every
+ *  statement's address as one the page asks for, answered or not yet. */
+function publishedStatements(
+  statements: readonly TreeNode[],
+  reads: IssueTreeReads = blockReads(issueDetails(), statements)
+): PublishedReferences {
+  return {
+    ...targetNaming(reads),
+    asked: new Set(
+      statements.flatMap(({ reference }) => (reference === undefined ? [] : [reference]))
+    ),
+  };
 }
 
 /** A query client for one drawn body, which answers nothing on its own. */
@@ -109,13 +151,16 @@ function testClient(): QueryClient {
  *  the view with no query as the slot builds it, which is given only where a query is typed: a
  *  query that is not empty once trimmed, as `presetView` reads it. It is drawn inside
  *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
- *  `staged` inside `ViewStage` around that, as the page's stage draws the slot. A case that
- *  draws the body again with other reads passes it to `rerender` with the same `client`. */
+ *  `staged` inside `ViewStage` around that, as the page's stage draws the slot; under the names
+ *  store, with `published` published to it and handed to the body, as the slot hands it, and no
+ *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed. A case
+ *  that draws the body again with other reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   {
     named = [],
+    published: givenPublished,
     query = "",
     reads = { state: "answered" },
     staged = false,
@@ -128,11 +173,15 @@ function bodyOf(
   const whole =
     given ??
     (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
+  const published = givenPublished ?? publishedStatements(statementsOf(issue));
   const slot = (
     <NoTooltips>
+      <Publisher published={published} />
       <VerificationFilterBody
         checks={checks}
         context={view.context}
+        namesLine={NO_FAILED_READS}
+        published={published}
         reads={reads}
         view={view.root}
         whole={whole}
@@ -141,7 +190,9 @@ function bodyOf(
   );
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter>{staged ? <ViewStage>{slot}</ViewStage> : slot}</MemoryRouter>
+      <ReferenceNamesProvider>
+        <MemoryRouter>{staged ? <ViewStage>{slot}</ViewStage> : slot}</MemoryRouter>
+      </ReferenceNamesProvider>
     </QueryClientProvider>
   );
 }
@@ -251,6 +302,22 @@ const LINKED_WORDS = "Read [the runbook](https://example.com/runbook) and dispat
  *  (`text_tree`), which `checkNode` leaves out. */
 function linkedCheckNode(block: CheckBlock): TreeNode {
   return { ...checkNode(block), tree: displayTree(LINKED_WORDS) };
+}
+
+/** CORE-2 as its summary answers it: the name a reference to it in a stored text reads as, which
+ *  the row reads itself where no batched read beside the body names it (R8, issue page decision
+ *  350: a reference reads as its target's name, the short form gone). */
+const CORE_2 = {
+  documents: [],
+  key: "CORE-2",
+  project: "CORE",
+  status: "in_progress",
+  title: "Drain the queue",
+} as const;
+
+/** Answers the read of CORE-2's summary (`CORE_2`) until the returned spy is restored. */
+function readsCore2() {
+  return spyOn(api, "getIssueSummary").mockResolvedValue({ ...CORE_2, documents: [] });
 }
 
 // How many statements carry a check is drawn as covered, and no count, legend or heading reads
@@ -782,9 +849,9 @@ test("a statement is marked as context, with its words and the node they came fr
 });
 
 // A statement's parent line is the link a reader follows to the node its words came from where
-// that node has an address, as the outline's parent line is (`NodeRow.tsx`'s `ParentLink`), and
-// the link is a tab stop, since the tree's keys move between rows and reach no link inside one. A
-// parent with no address is named by its words alone.
+// that node has an address, as the outline's parent line is (`node-line.tsx`'s
+// `NodeParentLine`), and the link is a tab stop, since the tree's keys move between rows and
+// reach no link inside one. A parent with no address is named by its words alone.
 test("a statement's parent line links the node it came from where that node has an address", () => {
   const served = passing("c-one");
   const other = passing("c-two");
@@ -2086,6 +2153,55 @@ test("a refused read asked again reads as failed, with its Retry running, while 
   }
 });
 
+// Under the Verification filter the Verification document's blocks are the view's own read
+// (`useTreeRead`'s `blocksOf`), and the blocks line runs by that read (`useBlocksRunning`), not by
+// Conversation's, which the page reads beside the view. On the page's own stage, with
+// Conversation's read out and the view read refused, the blocks line's Retry sends the view read
+// again, the line is busy while it runs, and it leaves once the view read answers.
+test("with Conversation's read out, the blocks line's Retry sends the refused Verification view read, and is busy while it runs", async () => {
+  const user = userEvent.setup();
+  const stubs = stubReads();
+  const base = issueDetails();
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), artifact("artifact-verification", VERIFICATION_SLUG)],
+    verification_artifact_id: "artifact-verification",
+  };
+  // Conversation's read never answers; the Verification view read is refused, and then answers
+  // when the case says.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view !== "verification") return Promise.withResolvers<never>().promise;
+    viewReads += 1;
+    return viewReads === 1 ? Promise.reject(REFUSED) : again.promise;
+  });
+  const view = drawStage("", { issue, preset: "verification" });
+  try {
+    const line = await waitFor(() => {
+      const drawn = view.container.querySelector<HTMLElement>(
+        '[data-verification-unreadable="blocks"]'
+      );
+      expect(drawn, "the view drew no line for its refused blocks").not.toBeNull();
+      return drawn as HTMLElement;
+    });
+    const retry = within(line).getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await waitFor(() => expect(viewReads, "the Retry sent no Verification view read").toBe(2));
+    expect(retry.getAttribute("aria-busy"), "the line is not busy while the view read runs").toBe(
+      "true"
+    );
+    await act(async () => again.resolve(treeAnswer([])));
+    await waitFor(() =>
+      expect(view.container.querySelector('[data-verification-unreadable="blocks"]')).toBeNull()
+    );
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // TanStack Query pauses a run while the browser is offline, the read pending and not fetching, so
 // a read refused before it first answered and asked again offline would read as neither in error
 // nor running, and a rule that read `isFetching` or `isError` would take its line and its Retry
@@ -2197,11 +2313,13 @@ test("an agent that recorded a result is named by its role's word", async () => 
 });
 
 // A check's words are drawn whole through `RowText` from the results read's reading of them
-// (`text_tree`), so a link in them is a link and a reference is named, never spelled as its
-// address. The words are no button, so no control holds a link, and a press on a link is the
-// link's own: it neither opens nor shuts the check's facts.
+// (`text_tree`), so a link in them is a link and a reference is named by its target's name,
+// never spelled as its address (R8, issue page decision 350). The words are no button, so no
+// control holds a link, and a press on a link is the link's own: it neither opens nor shuts the
+// check's facts.
 test("a check's words draw their links from the results read's tree", async () => {
   const user = userEvent.setup();
+  const summary = readsCore2();
   const linked = check({ block_id: "c-one", text: LINKED_WORDS });
   const view = drawBody(
     [statementNode("r1", "The page draws it.", [linkedCheckNode(linked)])],
@@ -2213,7 +2331,9 @@ test("a check's words draw their links from the results read's tree", async () =
     const runbook = await waitFor(() => {
       const found = words?.querySelector<HTMLElement>('a[href="https://example.com/runbook"]');
       expect(found ?? null).not.toBeNull();
-      expect(words?.querySelector('a[data-row-reference="dispatch://CORE-2"]')).not.toBeNull();
+      expect(words?.querySelector('a[data-row-reference="dispatch://CORE-2"]')?.textContent).toBe(
+        "CORE-2 Drain the queue"
+      );
       return found as HTMLElement;
     });
     expect(view.container.textContent).not.toContain("dispatch://");
@@ -2226,19 +2346,122 @@ test("a check's words draw their links from the results read's tree", async () =
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
   } finally {
+    summary.mockRestore();
     view.unmount();
   }
 });
 
-// A check that serves two statements is drawn under each and names the other by its first words,
-// read from that statement's own node, which the view already holds: the words of the server's
-// reading of its text (`nodeWords`), cut at a word within 32 characters, with no mark the author
-// typed and no markdown pass over them, so words that open on "1." keep it. The chip's stored
-// excerpt (`name`) is never what it draws. A statement that reads as no words, one whose words
-// are a picture alone, is named by nothing, with no comma for it, as is one the view holds no
-// statement for; and a check whose only other statement is such a one draws no "Also under" at
-// all.
-test("a check under two statements names the other by its words with no mark of markdown", () => {
+// R8 and issue page decision 350 over a statement's parent line, which the view draws as the
+// outline draws a parent line (`node-line.tsx`'s `NodeParentLine`): a reference in the parent's
+// words reads as the words its author wrote while the page's batched read has not answered for
+// it, and as its target's name once it has, and the line reads none itself.
+test("a statement's parent line reads a reference as its target's name, and as its author's words until it resolves", async () => {
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const words = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const served = passing("c-one");
+  const statement = statementNode("r1", "The page draws it.", [checkNode(served)]);
+  const parent = node({ children: [statement], id: "comment-1", text: words, type: "comment" });
+  const client = testClient();
+  const drawn = (published: PublishedReferences) =>
+    bodyOf([parent], [served], { published }, client);
+  const view = render(drawn(publishedNames(new Map(), { asked: [address] })));
+  const line = () => view.container.querySelector("[data-node-parent-line]")?.textContent;
+  try {
+    expect(line(), "the parent line drew the reference before its name came").toBe(
+      `${NODE_TYPE_NAMES.comment}${words}`
+    );
+    expect(
+      getReferences,
+      "the parent line read the reference the page asks for"
+    ).not.toHaveBeenCalled();
+    view.rerender(drawn(publishedNames(new Map([[address, name]]))));
+    await waitFor(() =>
+      expect(line(), "the parent line did not name the target").toBe(
+        `${NODE_TYPE_NAMES.comment}See ${name} first.`
+      )
+    );
+    expect(
+      getReferences,
+      "the parent line read the reference the page named"
+    ).not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// The body hands its rows what the page publishes of its batched names read in the render that
+// draws them (`published`), as the outline does, and the page publishes to the names store only
+// after the rows have rendered (`Publisher`): so a reference the page asks for waits on the
+// page's answer from a row's first render, drawn as its author wrote it meanwhile, and is never
+// read by the row; a row that read the store alone read it itself first.
+test("a row of the view waits on the page's read for a reference the page asks for", async () => {
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const words = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const served = passing("c-one");
+  const statement = statementNode("r1", words, [checkNode(served)]);
+  const client = testClient();
+  const drawn = (published: PublishedReferences) =>
+    bodyOf([statement], [served], { published }, client);
+  const view = render(drawn(publishedNames(new Map(), { asked: [address] })));
+  const statementWords = () =>
+    view.container.querySelector("[data-verification-card] [data-node-words]")?.textContent ?? "";
+  try {
+    await waitFor(() => expect(statementWords()).toContain(words));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.rerender(drawn(publishedNames(new Map([[address, name]]))));
+    await waitFor(() => expect(statementWords()).toContain(`See ${name} first.`));
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// A result's observed words are drawn from the results read's reading of them (`observed_tree`),
+// as every stored text of the view is drawn from its tree where its read sent one, so the page
+// parses none of them on its own thread.
+test("a result's observed words are drawn from the results read's reading, with no parse of their own", () => {
+  const observed = "41 passed, **2** skipped.";
+  const block = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [result({ check_block_id: "c-one", id: "result-c-one", observed })],
+  });
+  const built = checkNode(block);
+  const read = (one: TreeNode): TreeNode => ({ ...one, tree: displayTree(one.text) });
+  const checked = { ...read(built), children: built.children.map(read) };
+  const statement = read(statementNode("r1", "The page draws it.", [checked]));
+  const parses = countEngineParses();
+  try {
+    const view = drawBody([statement], [block]);
+    try {
+      expect(
+        view.container.querySelector("[data-verification-result] [data-node-words]")?.textContent
+      ).toBe("41 passed, 2 skipped.");
+      expect(parses.count(), "the page parsed a stored text the read sent a reading of").toBe(0);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    parses.restore();
+  }
+});
+
+// A check that serves two statements is drawn under each and names the other as every chip of
+// the page names a block: by the line the names store projects from the reading the page
+// published for that statement, its first block that holds words, cut at a word within 32
+// characters, with no mark the author typed and no markdown pass over the words, so words that
+// open on "1." keep it, and an address inside them read as its short form, since a name inside a
+// name resolves nothing. A statement that reads as no words, one whose words are a picture
+// alone, is named by nothing, with no comma for it, as is one the view holds no statement for;
+// and a check whose only other statement is such a one draws no "Also under" at all.
+test("a check under two statements names the other by its words with no mark of markdown", async () => {
+  const summary = readsCore2();
   const twice = passing("c-one");
   const thrice = passing("c-two");
   const pictured = passing("c-three");
@@ -2258,17 +2481,15 @@ test("a check under two statements names the other by its words with no mark of 
   const numbered = read(statementNode("r4", "1\\. Stand the page up first."));
   // A statement of no card of this view, which a check may still name.
   const stranger = read(statementNode("r9", "A statement this view does not draw."));
-  // What the reference read names every target by, which is no name "Also under" draws.
-  const excerpt = "A stored excerpt that no line draws.";
-  // A check's row under one statement, naming the others it serves as the tree names them.
+  // The reads the page names every statement from, and a check's row under one statement naming
+  // the others it serves as the tree names them, from those reads: each chip is the page's own
+  // for its target (`treeContext`), and the page publishes from the same reads.
+  const all = [plain, marked, picture, numbered, stranger];
+  const reads = blockReads(issueDetails(), all);
+  const { chipOf } = treeContext(reads);
   const under = (block: CheckBlock, others: readonly TreeNode[]): TreeNode => ({
     ...checkNode(block),
-    alsoUnder: others.map((other) => ({
-      answered: true,
-      gone: false,
-      name: excerpt,
-      ref: other.reference ?? "",
-    })),
+    alsoUnder: others.map((other) => chipOf(other.reference ?? "")),
   });
   const view = drawBody(
     [
@@ -2285,7 +2506,8 @@ test("a check under two statements names the other by its words with no mark of 
       { ...picture, children: [under(thrice, [plain, marked]), under(pictured, [plain])] },
       { ...numbered, children: [under(counted, [plain])] },
     ],
-    [twice, thrice, pictured, counted]
+    [twice, thrice, pictured, counted],
+    { published: publishedStatements(all, reads) }
   );
   try {
     // The trail of a check's row under a statement, and the words of each target it names.
@@ -2348,10 +2570,15 @@ test("a check under two statements names the other by its words with no mark of 
     expect(trailOf(numbered, counted)).toEqual([
       { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
     ]);
-    const drawn = view.container.querySelector("[data-verification-body]")?.textContent ?? "";
-    expect(drawn).not.toContain(excerpt);
-    expect(drawn).not.toContain("dispatch://");
+    // The statement's own words name CORE-2 by its read, as every reference in a row's words is
+    // named (issue page decision 350), and spell no address.
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-verification-body]")?.textContent ?? ""
+      ).not.toContain("dispatch://")
+    );
   } finally {
+    summary.mockRestore();
     view.unmount();
   }
 });
@@ -2387,6 +2614,7 @@ function layOut(height: number): () => void {
 // near the viewport, so the rows' words are brought near and measured before the cut is read.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
+  const summary = readsCore2();
   const linked = check({
     block_id: "c-one",
     results: [
@@ -2497,6 +2725,7 @@ test("each control of the view is a tab stop", async () => {
   } finally {
     near.restore();
     restore();
+    summary.mockRestore();
   }
 });
 

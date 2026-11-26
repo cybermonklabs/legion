@@ -12,6 +12,7 @@ import {
 } from "react-router-dom";
 
 import { api } from "../../../api/client";
+import type { TreeFilter } from "../../../api/queries";
 import type { Comment, IssueDetails } from "../../../api/types";
 import { parseIssuePath } from "../../refs/routes";
 import {
@@ -26,7 +27,7 @@ import { presetPath } from "../issue-address";
 import { TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { pagedAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
   type TreeAnswer,
@@ -122,7 +123,7 @@ function answerVerifiedTree(checks: readonly TreeAnswerNode[] = [], threads = tr
     plan: "plan_task",
     spec: "requirement",
     verification: "check",
-  };
+  } satisfies Record<TreeFilter, string>;
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
     const { view } = query;
     if (view === undefined) return treeOf(nodes, SERVES);
@@ -478,8 +479,11 @@ test("a node address whose node Conversation draws no row of opens Graph at that
     // Conversation draws the task too where the address names it, but no other task: the
     // second task's row is Graph's.
     expect(view.container.querySelector(secondRow), `${what} drew no Graph`).not.toBeNull();
-    // Graph's read the earlier visit brought is the one the address is decided by, and Graph draws.
-    expect(graphReads.length, `${what} sent a Graph read`).toBe(earlier);
+    // Graph's read the earlier visit brought is the one the address is decided by, and Graph draws:
+    // the address sends no Graph read of its own. Only that pass counts Graph's reads.
+    if (!conversationHolds) {
+      expect(graphReads.length, `${what} sent a Graph read`).toBe(earlier);
+    }
     cleanup();
   }
 });
@@ -500,6 +504,33 @@ function SeenStage({ issue }: { readonly issue: IssueDetails }): ReactNode {
       <StageSlot issue={issue} route={route} />
     </ProvidersSlot>
   );
+}
+
+/** Starts recording the heading of each line the body draws in the outline's place
+ *  (`[data-issue-body] h2`), however briefly it stands: one drawn and replaced before a case
+ *  looks is recorded too. Answers the call that ends the record and hands back their words. */
+function watchBodyLines(): () => string[] {
+  const lines: string[] = [];
+  const record = (records: readonly MutationRecord[]): void => {
+    for (const { addedNodes, target } of records) {
+      const inBody = target instanceof Element && target.closest("[data-issue-body]") !== null;
+      for (const added of addedNodes) {
+        if (!(added instanceof Element)) continue;
+        for (const heading of [added, ...added.querySelectorAll("h2")]) {
+          if (heading.matches("h2") && (inBody || heading.closest("[data-issue-body]") !== null)) {
+            lines.push(heading.textContent ?? "");
+          }
+        }
+      }
+    }
+  };
+  const watch = new MutationObserver(record);
+  watch.observe(document.body, { childList: true, subtree: true });
+  return () => {
+    record(watch.takeRecords());
+    watch.disconnect();
+    return lines;
+  };
 }
 
 // R9: a node address no read holds opens the outline's own address without the node, with the
@@ -567,6 +598,7 @@ test("a node address only Graph's read holds opens Graph at it on a cold load, a
       return whole;
     });
     const from = `${conversation}?node=${encodeURIComponent(node)}`;
+    const lines = watchBodyLines();
     const view = render(
       <MemoryRouter initialEntries={[from]}>
         <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -585,11 +617,117 @@ test("a node address only Graph's read holds opens Graph at it on a cold load, a
         ).not.toBeNull()
       );
     }
-    expect(view.container.querySelector("[data-issue-body] h2"), `${from} drew a line`).toBeNull();
+    expect(lines(), `${from} drew a line`).toEqual([]);
     await waitInAct(50);
     expect(graphReads.length, `${from} sent other than one Graph read`).toBe(1);
     cleanup();
   }
+});
+
+// R9, R15: Graph's read is the whole tree, the read most likely to answer in more than one page.
+// On a cold load of a node address Conversation's read holds none of, the body reads Graph's next
+// pages until one brings the node, as Graph's own address does, and decides only then: a plan
+// task on Graph's second page opens Graph's `?node=` at it, with the focus on its row. A refused
+// next page of Graph on that cold load ends the reading and drops `?node=`, as a refused Graph
+// read does, since Conversation's address draws no Retry for Graph's pages.
+test("a node address only Graph's second page holds opens Graph at it on a cold load", async () => {
+  // The task's id in the tree read, which the tree draws by its block's node id.
+  const readId = `${KEY}/${PLAN_DOCUMENT.slug}#${PLAN_TASK}`;
+  answerVerificationReads();
+  const whole = treeOf(verifiedTree(), SERVES);
+  const held = treeOf(
+    verifiedTree().filter((each) => each.id !== readId),
+    SERVES
+  );
+  // Graph's read in two pages: every node but the task, then the task.
+  const first = pagedAnswer(held, "page-2");
+  const second = pagedAnswer(
+    { ...whole, nodes: (whole.nodes ?? []).filter((each) => each.id === readId), tuples: [] },
+    null
+  );
+  // The cursor of each of Graph's reads, each a read with neither kinds nor view.
+  const graphPages: (string | undefined)[] = [];
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as {
+      readonly cursor?: string;
+      readonly kind?: unknown;
+      readonly view?: string;
+    };
+    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+    if (asked.kind !== undefined) return held;
+    graphPages.push(asked.cursor);
+    return asked.cursor === "page-2" ? second : first;
+  });
+  const from = `${presetPath(KEY, "conversation")}?node=${encodeURIComponent(readId)}`;
+  const to = `${presetPath(KEY, "graph")}?node=${encodeURIComponent(readId)}`;
+  const view = render(
+    <MemoryRouter initialEntries={[from]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={verifiedIssue()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  await waitFor(() => expect(seen.address, `${from} did not open Graph at the task`).toBe(to));
+  await rowTakesFocus(view, TASK_ROW, `${from} in Graph`);
+  expect(graphPages, "Graph's pages read").toEqual([undefined, "page-2"]);
+});
+
+// R15: a next page refused is no last page. A node address whose node stands on the second page
+// of Conversation's read, that page refused, keeps the node on the address, and no Graph read is
+// sent to decide it: the control after the outline's last row stays, the page's Retry, and a
+// press of it that brings the page lands on the node.
+test("a node address whose page is refused keeps its node, and the next page's Retry lands on it", async () => {
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  const whole = treeOf(commentNodes(TWO_THREADS));
+  const nodes = whole.nodes ?? [];
+  // Conversation's read in two pages, the last reply on the second.
+  const first = pagedAnswer(
+    { ...whole, nodes: nodes.filter(({ id }) => id !== "reply-b") },
+    "page-2"
+  );
+  const second = pagedAnswer({ ...whole, nodes: nodes.filter(({ id }) => id === "reply-b") }, null);
+  // The second page, refused until the case answers it.
+  let secondPage = (): Promise<TreeAnswer> => Promise.reject(REFUSED);
+  // The cursor of each of Conversation's reads, and each of Graph's reads.
+  const pages: (string | undefined)[] = [];
+  const graphReads: unknown[] = [];
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as {
+      readonly cursor?: string;
+      readonly kind?: unknown;
+      readonly view?: string;
+    };
+    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+    if (asked.kind === undefined) {
+      graphReads.push(query);
+      return whole;
+    }
+    pages.push(asked.cursor);
+    return asked.cursor === "page-2" ? secondPage() : first;
+  });
+  const from = `${presetPath(KEY, "conversation")}?node=reply-b`;
+  const view = render(
+    <MemoryRouter initialEntries={[from]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={issueDetails()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  const retry = () =>
+    view.container.querySelector<HTMLButtonElement>("[data-issue-body] [data-tree-more] button");
+  await waitFor(() => expect(pages, "the second page was not read").toEqual([undefined, "page-2"]));
+  await waitInAct(100);
+  expect(seen.address, "the refused page moved the address off the node").toBe(from);
+  expect(graphReads, "a Graph read was sent to decide the address").toEqual([]);
+  expect(retry(), "no control reads the refused page again").not.toBeNull();
+  secondPage = () => Promise.resolve(second);
+  await act(async () => retry()?.click());
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="reply-b"]',
+    "the refused page's Retry"
+  );
+  expect(seen.address, "the Retry moved the address off the node").toBe(from);
 });
 
 /** An open question of the issue whose turn is the reader's, alice's, as the asks' read answers
@@ -653,6 +791,45 @@ test("Graph's address with an id no read holds opens with the focus where Graph'
     expect(focusedRow(), `${from} moved the first focus off the first row`).toBe("head-a");
     cleanup();
   }
+});
+
+// R10: `/graph/<node id>` opens Graph zoomed to that node, with the breadcrumb above it and only
+// that branch's rows drawn. Where the issue holds an open question outside the branch, the
+// opening stays inside the branch on its first row instead of leaving the zoom for the question.
+test("Graph's zoomed address keeps its zoom on an issue with an open question outside the branch", async () => {
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
+  answerTree([
+    ...commentNodes(TWO_THREADS),
+    treeNode(WAITING_QUESTION.id, "ask", KEY, { text: WAITING_QUESTION.question }),
+  ]);
+  const zoomed = `${presetPath(KEY, "graph")}/head-a`;
+  const view = render(
+    <MemoryRouter initialEntries={[zoomed]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={issueDetails()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="head-a"]',
+    `${zoomed}, the zoom's own row`
+  );
+  await waitInAct(50);
+  expect(
+    view.container.querySelector(`[data-crumb="${KEY}"]`),
+    `${zoomed} lost its breadcrumb`
+  ).not.toBeNull();
+  expect(
+    view.container.querySelector('[data-node-row][data-node-id="head-b"]'),
+    `${zoomed} drew a row outside the zoomed branch`
+  ).toBeNull();
+  expect(
+    view.container.querySelector(`[data-node-row][data-node-id="${WAITING_QUESTION.id}"]`),
+    `${zoomed} left the zoom for the open question outside it`
+  ).toBeNull();
+  expect(focusedRow(), `${zoomed} moved the focus off the zoomed branch`).toBe("head-a");
 });
 
 // Every entry the browser makes has the key "default". Under the Verification view a check keeps

@@ -53,7 +53,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	}
 	const kept = "A paragraph the next version keeps."
 	_, won, stated, _, err := refs.IndexBlocks(ctx, tx, rig.otherIssueDocumentID, refs.OneVersion(rig.otherIssueDocumentID, 2, time.Now().UTC()), kept+"\n",
-		[]model.ArtifactBlock{{ID: "kept", Type: "paragraph", From: 0, To: len(kept)}}, nil, nil, refs.TypedFacts{})
+		[]model.ArtifactBlock{{ID: "kept", Type: "paragraph", From: 0, To: len(kept)}}, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version 2 of the check's document: %v", err)
 	}
@@ -117,6 +117,6 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	// The route reads a check no current version holds as a far end that does not exist
 	// (pointerEnd, nodeNotFound), so the append that waited on the pass and then found its check
 	// gone is the 404 such a far end gets, naming the check by the address the append gave.
-	requireRefused(t, "the append to "+rig.otherIssueCheck+", a check the index pass marked gone", appended,
+	requireRefusedNaming(t, "the append to "+rig.otherIssueCheck+", a check the index pass marked gone", appended,
 		http.StatusNotFound, "NOT_FOUND", rig.otherIssueCheck, rig.issue)
 }

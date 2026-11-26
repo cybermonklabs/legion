@@ -1,12 +1,14 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import { actorLabelText } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { deletedLineText } from "../refs/post-marks";
+import { wordsOf } from "../refs/tree-fragment";
 import type { AddressFallback } from "./address-target";
 import type { AddressTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
+import { NODE_TYPE_NAMES, type NodeType, PRESET_ORDER, type Preset } from "./page-words";
 import {
   answerHolds,
   filterHolding,
@@ -16,10 +18,15 @@ import {
   presetView,
   tagFilter,
 } from "./presets";
+import { parentLinkWords } from "./projection-fixture";
 import { addressView } from "./slots/body";
 import { type DrawnRow, treeRows } from "./tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The page with no filter on and the four filters as views of the one tree: with no filter on
@@ -79,7 +86,9 @@ function drawn(root: TreeNode, preset: Preset, query = ""): string[] {
 function parentLines(root: TreeNode): Record<string, string> {
   const lines: Record<string, string> = {};
   const walk = (at: TreeNode): void => {
-    if (at.parentLine !== undefined) lines[at.id] = `${at.parentLine.type}: ${at.parentLine.line}`;
+    if (at.parentLine !== undefined) {
+      lines[at.id] = `${at.parentLine.type}: ${parentLinkWords(at.parentLine)}`;
+    }
     for (const child of at.children) walk(child);
   };
   walk(root);
@@ -160,7 +169,7 @@ test("Graph is no filter", () => {
   const root = issue();
   expect(isFilter("graph")).toBe(false);
   expect(isFilter("conversation")).toBe(false);
-  expect((["spec", "verification", "plan", "decisions"] as const).every(isFilter)).toBe(true);
+  expect(PRESET_ORDER.filter(isFilter)).toEqual(["spec", "verification", "plan", "decisions"]);
   const view = presetView(root, "graph", "");
   expect(view).toMatchObject({ lines: new Map(), rootRow: true });
   expect(nodesUnder(view.root).map((one) => one.id)).toEqual(nodesUnder(root).map((one) => one.id));
@@ -496,7 +505,8 @@ test("the Decisions count holds an agent's decision under an answered question a
 });
 
 // R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the
-// parent's own address where the model gives it one, so the line is the link to that node.
+// parent's own address where the model gives it one, so the line is the link to that node, and
+// the parent's own words, which the row projects its line from.
 test("a parent line carries the parent's own address", () => {
   const root = node("CORE-1", "issue", [
     statement("spec#b-r1", [node("plan#b-t1", "plan_task")], {
@@ -508,11 +518,11 @@ test("a parent line carries the parent's own address", () => {
   expect(lines).toEqual([
     {
       id: "spec#b-r1",
-      line: "spec#b-r1",
       reference: "dispatch://CORE-1/spec#b-r1",
+      text: "spec#b-r1",
       type: "requirement",
     },
-    { id: "comment-1", line: "comment-1", type: "comment" },
+    { id: "comment-1", text: "comment-1", type: "comment" },
   ]);
 });
 
@@ -539,11 +549,11 @@ test("a parent line carries a deleted or an edited parent's marks", () => {
       deletedAt: "2026-11-05T12:00:00Z",
       deletedBy: by,
       id: "comment-1",
-      line: "Deleted by alice · 2026-11-05T12:00:00Z",
+      text: "Deleted by alice · 2026-11-05T12:00:00Z",
       type: "comment",
     },
-    { editedAt: "2026-11-05T13:00:00Z", id: "message-1", line: "message-1", type: "message" },
-    { id: "comment-2", line: "comment-2", type: "comment" },
+    { editedAt: "2026-11-05T13:00:00Z", id: "message-1", text: "message-1", type: "message" },
+    { id: "comment-2", text: "comment-2", type: "comment" },
   ]);
 });
 
@@ -569,7 +579,9 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
   ]);
   const view = presetView(root, "spec", "");
   expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
-  const [long, short] = view.root.children.map((row) => row.parentLine?.line);
+  const [long, short] = view.root.children.map((row) =>
+    row.parentLine === undefined ? undefined : parentLinkWords(row.parentLine)
+  );
   // The one sentence runs past the limit, so the line stops inside it and says it carries on.
   expect(long).toEndWith("…");
   expect(long).toBe(`${kept}…`);
@@ -577,7 +589,7 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
   expect(short).toBe("Which layout does the page take?");
 });
 
-// A parent's line is cut from the parent's first block (`lineWords`), so a parent whose reading
+// A parent's line is cut from the parent's first block (`lineReading`), so a parent whose reading
 // opens with a heading draws that heading alone, and never the heading run into the paragraph
 // after it. A parent with no reading is read the same way from its stored text, whose heading
 // marker is markup.
@@ -623,7 +635,8 @@ test("a parent with no words is drawn on its child's row as its kind's word, nev
     "plan#b-t3": `ask: ${NODE_TYPE_NAMES.ask}`,
   });
   for (const row of view.root.children) {
-    expect(row.parentLine?.line).not.toBe(row.parentLine?.id);
+    const line = row.parentLine;
+    expect(line === undefined ? undefined : parentLinkWords(line)).not.toBe(line?.id);
   }
 });
 
@@ -719,7 +732,7 @@ test("a view answer's decisions and constraints are lines, never rows", () => {
 });
 
 /** The Spec view read holding the statements r1 and r2, and the tree its own answer builds
- *  (`TreeViews.treeOf`), each statement worded as the view's. */
+ *  (`TreeViews.trees`), each statement worded as the view's. */
 function specViewOf(): { readonly answer: TreeAnswer; readonly tree: TreeNode } {
   return {
     answer: treeAnswer(
@@ -748,13 +761,11 @@ function rowWords(root: TreeNode, preset: Preset): [string, string][] {
 
 // R4, R5: a filter draws its view read's rows whatever the outline read holds. A node of its view
 // answer the outline's tree holds no node of is drawn as the node of the tree the view's answer
-// builds alone (`TreeViews.treeOf`): with the outline read not sent, as on Spec loaded cold below
+// builds alone (`TreeViews.trees`): with the outline read not sent, as on Spec loaded cold below
 // 1024 px (R13), the outline's tree is the issue alone and Spec still draws each statement.
 test("a filter draws a node its view answer holds that the outline's tree lacks", () => {
   const { answer, tree } = specViewOf();
-  const cold = node("CORE-1", "issue", [], {
-    views: { spec: answer, treeOf: (filter) => (filter === "spec" ? tree : undefined) },
-  });
+  const cold = node("CORE-1", "issue", [], { views: { spec: answer, trees: { spec: tree } } });
   expect(rowWords(cold, "spec")).toEqual([
     ["spec#b-r1", "The view's r1."],
     ["spec#b-r2", "The view's r2."],
@@ -770,7 +781,7 @@ test("a filter draws the outline's node where the outline's tree and its view's 
     "CORE-1",
     "issue",
     [statement("spec#b-r1", [], { readId: "CORE-1/spec#r1", text: "The outline's r1." })],
-    { views: { spec: answer, treeOf: (filter) => (filter === "spec" ? tree : undefined) } }
+    { views: { spec: answer, trees: { spec: tree } } }
   );
   expect(rowWords(root, "spec")).toEqual([
     ["spec#b-r1", "The outline's r1."],
@@ -780,11 +791,12 @@ test("a filter draws the outline's node where the outline's tree and its view's 
 
 // R4 and R9: Conversation's read holds no plan task, so the Plan filter draws each task from the
 // tree its own view answer builds, where the names read gave no words to the chip of a statement
-// the task also serves: the row names that statement by its line, from the tree that holds it.
-test("a view's row drawn from its own tree names each other parent it serves by that parent's line", () => {
+// the task also serves: the row names that statement by its own words, from the tree that holds
+// it.
+test("a view's row drawn from its own tree names each other parent it serves by that parent's words", () => {
   const second = "dispatch://CORE-1/spec#b-r2";
   const task = node("plan#b-t1", "plan_task", [], {
-    alsoUnder: [{ answered: false, gone: false, name: "", ref: second }],
+    alsoUnder: [{ answered: false, gone: false, ref: second }],
     readId: "CORE-1/plan#t1",
   });
   const tree = node("CORE-1", "issue", [
@@ -798,12 +810,12 @@ test("a view's row drawn from its own tree names each other parent it serves by 
   const answer = treeAnswer([viewNode("t1", "plan_task", "query", { in: "plan" })], [], {
     view: "plan",
   });
-  const root = node("CORE-1", "issue", [], {
-    views: { plan: answer, treeOf: (filter) => (filter === "plan" ? tree : undefined) },
-  });
+  const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
   const drawn = presetView(root, "plan", "").root.children.find((row) => row.id === "plan#b-t1");
   expect(
-    drawn?.alsoUnder.map((chip) => chip.name),
+    drawn?.alsoUnder.map((chip) =>
+      chip.reading !== undefined && "tree" in chip.reading ? wordsOf(chip.reading.tree) : undefined
+    ),
     "the task does not name the second statement it serves"
   ).toEqual(["The second statement."]);
 });

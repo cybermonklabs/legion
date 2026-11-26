@@ -535,7 +535,14 @@ test("a filter loaded cold with no outline read draws its own count from its vie
   expect(
     viewRowSignals({ ...cold, preset: "spec", root: coldRoot(spec) }),
     "Spec loaded cold does not count its view answer's statements"
-  ).toEqual({ spec: { count: 2 } });
+  ).toEqual({
+    conversation: undefined,
+    decisions: undefined,
+    graph: undefined,
+    plan: undefined,
+    spec: { count: 2 },
+    verification: undefined,
+  });
   expect(
     viewRowSignals({ ...cold, preset: "spec", root: coldRoot() }),
     "Spec loaded cold draws a count before its view answer is held"

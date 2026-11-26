@@ -15,9 +15,7 @@ import {
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
-import { drawnLine, firstLineOf } from "../issue-tree";
 import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
-import { plainWords } from "../tree-drafts";
 import { linkedHref, runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
@@ -42,8 +40,10 @@ function answerOf(
   };
 }
 
-/** The words of the issue's node the run changed, as its edge's excerpt carries them. */
+/** The words of the issue's node the run changed, as its edge's excerpt carries them, and their
+ *  first line as the page draws it: its marks gone, to the end of its first sentence. */
 const CHANGED_ISSUE_TEXT = "Ship the **release** on Friday. Then rest.";
+const CHANGED_ISSUE_LINE = "Ship the release on Friday.";
 
 /** An edge from the issue CORE-1, which the run changed. */
 const CHANGED_ISSUE: GraphEdge = {
@@ -84,10 +84,10 @@ test("the view holds the question, the time, each frame in order with its drawin
   expect(view.parts).toEqual([
     { kind: "answer", markdown: "The release ships on Friday\\." },
     { href: "/issues/CORE-1", kind: "item", title: "The release plan" },
-    { kind: "line", text: `${STATE_LINES.run_cut.before}120${STATE_LINES.run_cut.after}` },
+    { kind: "line", words: `${STATE_LINES.run_cut.before}120${STATE_LINES.run_cut.after}` },
     {
       kind: "line",
-      text: `${STATE_LINES.run_changed.before}2${STATE_LINES.run_changed.after}`,
+      words: `${STATE_LINES.run_changed.before}2${STATE_LINES.run_changed.after}`,
     },
   ]);
   // The issue it changed, by its kind's word and the first line of its words, linked to it.
@@ -96,21 +96,38 @@ test("the view holds the question, the time, each frame in order with its drawin
       href: "/issues/CORE-1",
       key: "dispatch://CORE-1",
       kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.issue),
-      line: drawnLine(firstLineOf(plainWords(CHANGED_ISSUE_TEXT))),
+      line: CHANGED_ISSUE_LINE,
     },
   ]);
 
   // A node two edges name is one changed node.
   expect(runView(answerOf([], [CHANGED_ISSUE, CHANGED_ISSUE])).changed).toHaveLength(1);
+  // A changed node whose read sent the server's reading of its words is named by that reading,
+  // not by its words as stored.
+  const read: NonNullable<GraphReferences["edges"]>[number] = {
+    ...CHANGED_ISSUE,
+    excerpt: {
+      text: CHANGED_ISSUE_TEXT,
+      text_tree: {
+        content: [
+          { content: [{ text: "Ship the release on Monday.", type: "text" }], type: "paragraph" },
+        ],
+        type: "doc",
+      },
+    },
+  };
+  expect(runView(answerOf([], [read])).changed.map((node) => node.line)).toEqual([
+    "Ship the release on Monday.",
+  ]);
   // A count that is no number draws as 0.
   expect(runView(answerOf([frame(1, GOING_EVENT_CUT, { words: "many" })])).parts).toEqual([
-    { kind: "line", text: `${STATE_LINES.run_cut.before}0${STATE_LINES.run_cut.after}` },
+    { kind: "line", words: `${STATE_LINES.run_cut.before}0${STATE_LINES.run_cut.after}` },
   ]);
 
   // No answer at all, and each way a run fails, by its line; a code the page does not know, and
   // none, draw the answer having failed.
   const lines = (frames: readonly GraphFrame[]) =>
-    runView(answerOf(frames)).parts.map((part) => (part.kind === "line" ? part.text : ""));
+    runView(answerOf(frames)).parts.map((part) => (part.kind === "line" ? part.words : ""));
   expect(lines([frame(1, GOING_EVENT_NONE), frame(2, GOING_EVENT_END)])).toEqual([
     EMPTY_STATE_LINES.run_none,
   ]);
@@ -134,6 +151,7 @@ test("the view holds the question, the time, each frame in order with its drawin
 
 test("a changed node is named by the page's words alone, and an edge the page does not know is left out", () => {
   const riskText = "Drop the **release** if the checks fail. Then wait.";
+  const riskLine = "Drop the release if the checks fail.";
   const risk: GraphEdge = {
     ...CHANGED_ISSUE,
     excerpt: { text: riskText },
@@ -160,7 +178,7 @@ test("a changed node is named by the page's words alone, and an edge the page do
       href: undefined,
       key: "risk:4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6",
       kind: "",
-      line: drawnLine(firstLineOf(plainWords(riskText))),
+      line: riskLine,
     },
   ]);
 });

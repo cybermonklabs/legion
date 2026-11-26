@@ -371,7 +371,9 @@ export interface DrawnRow {
   readonly answerAuthor: string | null;
   /** The text of the answer line an answered ask draws on its own row, or null where none. */
   readonly answerLine: string | null;
-  /** The whole of what the person wrote, every character kept; null where none is drawn. */
+  /** The whole of what the person wrote, every word and every paragraph kept, in order: each
+   *  paragraph the renderer draws, joined by the blank line the store holds between them, or
+   *  the text as drawn where the answer draws no paragraph; null where none is drawn. */
   readonly answerText: string | null;
   /** The author the row's group names, or null where it names none. An open body names an
    *  author of its own, "Author unknown" included, which this leaves out. */
@@ -436,6 +438,17 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       if (rect.width === 0 && rect.height === 0) return null;
       return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
     };
+    // The renderer draws each paragraph of a stored text as a <p> of its own, so the blank line
+    // between two of them is a block boundary and no character of the page: the answer's words
+    // are its paragraphs' text, joined as the store joins them. An answer drawn with no <p> - as
+    // stored, where the read sent no reading - is its text as drawn.
+    const answerWords = (element: Element | null): string | null => {
+      if (element === null) return null;
+      const paragraphs = [...element.querySelectorAll("p")];
+      return paragraphs.length === 0
+        ? element.textContent
+        : paragraphs.map((paragraph) => paragraph.textContent ?? "").join("\n\n");
+    };
     const lineBox = (element: Element | null | undefined) =>
       element === null || element === undefined
         ? null
@@ -452,7 +465,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       return {
         answerAuthor: text(answerLine?.querySelector(selectors.answerAuthor) ?? null),
         answerLine: text(answerLine),
-        answerText: row.querySelector(selectors.answerText)?.textContent ?? null,
+        answerText: answerWords(row.querySelector(selectors.answerText)),
         author: text(row.querySelector(`${selectors.nodeMargin} ${selectors.nodeAuthor}`)),
         authorShape:
           row
@@ -1353,12 +1366,11 @@ export interface LongRowsSeed {
 /**
  * One issue whose spec opens with one long statement the planner wrote, which a check of its
  * Verification document serves and no result proves, and whose conversation is the reader's
- * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
- * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
- * run of `OWN_ROWS` replies of the reader's own of the same words after the first
- * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
- * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
- * the check nothing proves keeps it open in an outline folded to what is open.
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, each drawn
+ * whole and shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own
+ * of the same words after the first `ROWS_ABOVE_OWN`. Drawn whole they make a page many screens
+ * tall, so a jump into it lands on rows no frame has laid out yet. The statement is the body's
+ * first row.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1384,7 +1396,7 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   const specSlug =
     ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   // A question that waits on the reader, which an outline that opens with the focus on such a
-  // question focuses in place of its first row, so the statement keeps its cut.
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
   await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
   const head = await createComment(key, { body: "Each reply under this one is long." });
   const rows: string[] = [];

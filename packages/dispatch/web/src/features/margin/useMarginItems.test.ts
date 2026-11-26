@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import type { AcceptSuggestionResponse } from "@legion/contracts";
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
@@ -23,6 +23,7 @@ import type {
   IssueDecisions,
 } from "../../api/types";
 import type { DecisionsRead } from "../issue/decision-entries";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
   anchoredThreadComments,
@@ -30,6 +31,12 @@ import {
   marginItemId,
   useMarginItems,
 } from "./useMarginItems";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function event(id: string): DispatchEvent {
   const seq = Number(id);

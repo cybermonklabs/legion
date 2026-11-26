@@ -5,9 +5,10 @@ import type { GraphEdge, IssueDetails } from "../../../api/types";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
 import { standsFailed } from "../../refs/reference-target";
 import { buildRunPath } from "../../refs/routes";
+import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
-import { plainWords } from "../tree-drafts";
+import { storedReading } from "../stored-reading";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
@@ -46,15 +47,21 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
   return a.run.id < b.run.id ? -1 : 1;
 }
 
-/** The row of one run: its kind and its edge in the page's words, its question read to plain
- *  words, when it was made - no `at` where the read answers no time, so the row draws none - and
- *  the run's own page. Only the key and the link hold the run's id. */
+/** The row of one run: its kind and its edge in the page's words, its question as plain words,
+ *  when it was made - no `at` where the read answers no time, so the row draws none - and the
+ *  run's own page. Only the key and the link hold the run's id. The question's plain words are
+ *  the words of the server's reading of it (`text_tree`), and of its stored text's reading where
+ *  the read sent none (`storedReading`), on one line: its formatting gone and each reference as
+ *  its asker wrote it, which the list draws as the characters they are (the reading list's
+ *  `referenced-by-run-question`). */
 function runRow(run: TreeAnswerNode): ExtraReferenceRow {
-  const excerpt = plainWords(run.text);
+  const excerpt = wordsOf(run.text_tree ?? storedReading(run.text, run))
+    .replace(/\s+/gu, " ")
+    .trim();
   return {
     ...(run.made_at === null ? {} : { at: run.made_at }),
     edge: NODE_REFERENCES_WORDS.edges.changed_by_run,
-    ...(excerpt.trim() === "" ? {} : { excerpt }),
+    ...(excerpt === "" ? {} : { excerpt }),
     href: buildRunPath(run.id),
     key: run.id,
     kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),

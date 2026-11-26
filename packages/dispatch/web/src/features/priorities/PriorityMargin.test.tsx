@@ -1,10 +1,17 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { PriorityAct } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PriorityMargin } from "./PriorityMargin";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const alice = { id: "alice", kind: "user" };
 const bob = { id: "bob", kind: "user" };

@@ -15,9 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// BlockExcerptRunes bounds the containing block a document mention's excerpt shows.
-const BlockExcerptRunes = 480
-
 // Execer is the statement surface shared by a pool and a transaction.
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
@@ -25,14 +22,15 @@ type Execer interface {
 
 // MentionExcerpts is, for each target the mentions located in markdown name, the innermost of
 // blocks holding its first mention that lies inside a block - the block with the tightest byte
-// range - as the references route shows it: the block's id and its markdown cut to
-// BlockExcerptRunes. A target none of whose mentions lies inside a block has none. The block is
+// range - as the references route shows it: the block's id and its markdown as BlockExcerpt cuts
+// it. A target none of whose mentions lies inside a block has none. The block is
 // any of blocks, not only a graph node: PlanBlocks makes no node of a block whose id is past
 // text.MaxBlockIDBytes, empty or unstorable, nor of a later holder of a repeated id
 // (uniqueBlocks), and writes the mention from the innermost node holding it, if any. Such a block
 // still gives the excerpt, so its excerpt_block_id can name a block the graph does not hold.
-// located is Mentions of markdown, the one reading a version's index takes.
-func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []text.Located) map[Target]model.GraphExcerpt {
+// located is Mentions of markdown, the one reading a version's index takes, and serverURL the
+// deployment whose dashboard URLs the excerpt is cut around (BlockExcerpt).
+func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []text.Located, serverURL string) map[Target]model.GraphExcerpt {
 	starts := make([]int, len(located))
 	for i, mention := range located {
 		starts[i] = mention.Offset
@@ -53,7 +51,7 @@ func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []te
 		block := blocks[holders[i]]
 		excerpts[target] = model.GraphExcerpt{
 			BlockID: block.ID,
-			Text:    text.HeadRunes(markdown[block.From:block.To], BlockExcerptRunes),
+			Text:    BlockExcerpt(markdown[block.From:block.To], serverURL),
 		}
 	}
 	return excerpts
@@ -61,9 +59,15 @@ func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []te
 
 // RecordExcerpts stores, on every mention the document fromID writes, the excerpt excerpts holds
 // for its target, or none, as of the document's version: the excerpt GET /api/v1/references
-// answers that mention with. A row already holding a later version's excerpt is left as it is, so
-// the reconciliation, which reads the document outside the version write's transaction, never
-// overwrites what a later version stored.
+// answers that mention with. It writes only a row whose excerpt is owed (excerpt_version null) or
+// older than version. A row already holding a later version's excerpt is left as it is, so the
+// reconciliation, which reads the document outside the version write's transaction, never
+// overwrites what a later version stored. A row already holding this version's excerpt is left as
+// it is too: a re-index of a version already indexed - the block index of a document owed one,
+// the forms drain (docs.Service.drainFormsDocument) - reads the same text and the same blocks, and
+// the excerpt that version's write stored was cut as the block's own row was (PlanBlocks writes
+// a block's excerpt only when its text changed), where a cut that moved since (BlockExcerpt)
+// would rewrite the mention's excerpt and leave the block's own as it was.
 //
 // The guard admits a row a version write has just marked owed (ClearExcerpts, excerpt_version
 // null) while the reconciliation, holding an older version's number, read the document, so the
@@ -96,14 +100,14 @@ func RecordExcerpts(ctx context.Context, q Queryer, fromID string, version int, 
 			       case when excerpt_version is not null then excerpt_text end as served_text,
 			       case when excerpt_version is not null and excerpt_text is not null then coalesce(excerpt_block_id, '') end as served_block
 			from refs
-			where from_kind = 'artifact' and from_id = $1 and coalesce(excerpt_version, 0) <= $2
+			where from_kind = 'artifact' and from_id = $1 and (excerpt_version is null or excerpt_version < $2)
 		),
 		written as (
 			update refs r
 			set excerpt_version = $2,
 			    (excerpt_block_id, excerpt_text) = (select e.block_id, e.text from e where e.kind = r.to_kind and e.id = r.to_id)
 			where r.from_kind = 'artifact' and r.from_id = $1
-			  and coalesce(r.excerpt_version, 0) <= $2
+			  and (r.excerpt_version is null or r.excerpt_version < $2)
 			returning r.to_kind, r.to_id, r.excerpt_text as served_text,
 			          case when r.excerpt_text is not null then coalesce(r.excerpt_block_id, '') end as served_block
 		)
@@ -118,7 +122,8 @@ func RecordExcerpts(ctx context.Context, q Queryer, fromID string, version int, 
 }
 
 // QueueRecordExcerpts queues RecordExcerpts' update on a write phase's batch, without the targets
-// it moved, which the writer worked out in its read phase (ExcerptsMoved).
+// it moved, which the writer worked out in its read phase (ExcerptsMoved). It writes the rows
+// RecordExcerpts writes: an owed one, or one holding an older version's excerpt.
 func QueueRecordExcerpts(b *store.WriteBatch, fromID string, version int, excerpts map[Target]model.GraphExcerpt) {
 	kinds, ids, blockIDs, texts := excerptColumns(excerpts)
 	b.Queue("record reference excerpts of "+fromID, `
@@ -127,7 +132,7 @@ func QueueRecordExcerpts(b *store.WriteBatch, fromID string, version int, excerp
 		set excerpt_version = $2,
 		    (excerpt_block_id, excerpt_text) = (select e.block_id, e.text from e where e.kind = r.to_kind and e.id = r.to_id)
 		where r.from_kind = 'artifact' and r.from_id = $1
-		  and coalesce(r.excerpt_version, 0) <= $2
+		  and (r.excerpt_version is null or r.excerpt_version < $2)
 	`, fromID, version, kinds, ids, blockIDs, texts)
 }
 
@@ -171,7 +176,9 @@ func ExcerptsMoved(ctx context.Context, q Queryer, fromID string, version int, h
 		}
 		seen[target] = struct{}{}
 		row := stored[target]
-		if row.version != nil && *row.version > version {
+		// RecordExcerpts' guard: a row holding this version's excerpt or a later one's is left
+		// as it is, and moves nothing.
+		if row.version != nil && *row.version >= version {
 			continue
 		}
 		// What the route serves: a stored block and text once the version is set and the text is

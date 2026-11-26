@@ -608,6 +608,126 @@
     }
   },
   {
+    "name": "emails-after-a-link-address",
+    "markdown": "Mail [w](dispatch://ACME-1)me@example.com, or \\[w](dispatch://ACME-1)me@example.com, now.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail "
+            },
+            {
+              "type": "text",
+              "text": "w",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", or [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", now."
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail "
+            },
+            {
+              "type": "text",
+              "text": "w",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", or [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "text": "me@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", now."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "name": "html-block",
     "markdown": "Before the block.\n\n\u003cdiv class=\"note\"\u003e\n  \u003cp\u003eMarkup the Proof schema carries inline only.\u003c/p\u003e\n\u003c/div\u003e\n\nAfter the block.\n",
     "latest": {
@@ -673,6 +793,70 @@
             {
               "type": "text",
               "text": "After the block."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "person-addresses-beside-an-email",
+    "markdown": "Ask dispatch://person/john.doe@example.com or dispatch://person/person-2@example.com, or mail john.doe@example.com.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/john.doe@example.com or dispatch://person/person-2@example.com, or mail "
+            },
+            {
+              "type": "text",
+              "text": "john.doe@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:john.doe@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "."
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/john.doe@example.com or dispatch://person/person-2@example.com, or mail "
+            },
+            {
+              "type": "text",
+              "text": "john.doe@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:john.doe@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "."
             }
           ]
         }

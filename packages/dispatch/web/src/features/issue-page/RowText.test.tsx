@@ -1,17 +1,19 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider, usePublishReferenceNames } from "../refs/reference-names";
 import { outlineRowPath } from "./lenses/store-link";
 import { NoTooltips } from "./NoTooltips";
 import { waitInAct } from "./outline-fixtures";
+import { publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 
 /**
  * A row's words keep the link the reader is on through a read of the tree again. A later read
@@ -26,7 +28,16 @@ beforeAll(async () => {
 
 /** The names the page's one batched read brought, published as the page publishes them. */
 function Named({ children }: { children: ReactNode }): ReactNode {
-  const names = useMemo(() => new Map([["dispatch://CORE-2", "Draw the children"]]), []);
+  const names = useMemo(
+    () =>
+      publishedNames(
+        new Map([
+          ["dispatch://CORE-2", "Draw the children"],
+          ["dispatch://CORE-1/spec#b-r1", "Read the page first"],
+        ])
+      ),
+    []
+  );
   usePublishReferenceNames(names);
   return children;
 }
@@ -210,11 +221,10 @@ test("a link to a store address opens no path an author wrote as its title", asy
         anchor.textContent,
         anchor.getAttribute("href"),
       ]);
-      expect(hrefs).toEqual([
-        ["Failover takes minutes", path],
-        ["Approve", ""],
-        ["Approve here", ""],
-      ]);
+      // A link whose title is no row's path is placed as no link: the body draws it as its
+      // words, as it draws any link to an address no route names.
+      expect(hrefs).toEqual([["Failover takes minutes", path]]);
+      expect(view.container.textContent).toBe("Failover takes minutes, Approve, Approve here");
     });
   } finally {
     view.unmount();
@@ -257,8 +267,10 @@ test("a store link to a finding opens its row by either form of its read id", as
       expect(hrefs).toEqual([
         ["By its block", outlineRowPath("CORE-1", "first")],
         ["By its lens and block", outlineRowPath("CORE-1", `lens/${lens}#first`)],
-        ["By another lens", ""],
       ]);
+      expect(view.container.textContent).toBe(
+        "By its block, By its lens and block, By another lens"
+      );
     });
   } finally {
     view.unmount();
@@ -289,6 +301,9 @@ test("a block address beside a named store address is linked by the row's link p
     ],
     type: "doc",
   };
+  // The row names the block address by its own read in the commit before the page's names reach
+  // the store, which reads the spec's blocks.
+  const blocks = spyOn(api, "getReferences").mockResolvedValue({ edges: [] } as never);
   const view = draw(row(`See ${address} and ${block} first.`, reading));
   try {
     await waitFor(() => {
@@ -301,5 +316,6 @@ test("a block address beside a named store address is linked by the row's link p
     });
   } finally {
     view.unmount();
+    blocks.mockRestore();
   }
 });

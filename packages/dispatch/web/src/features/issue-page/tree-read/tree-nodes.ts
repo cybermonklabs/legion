@@ -17,11 +17,13 @@ import type {
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { isDecisionEntry } from "../../issue/decision-entries";
 import { type PostDeletion, postDeletion } from "../../refs/post-marks";
+import type { ReferenceNameReading } from "../../refs/reference-names";
 import {
   buildDispatchReference,
   parseDispatchReference,
   parseNodeReference,
 } from "../../refs/routes";
+import { firstWordedBlock } from "../../refs/tree-fragment";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
   blockIdOfNode,
@@ -33,7 +35,14 @@ import {
   parentsIn,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
-import { blockAttributeLabel, coverageNotes, type NodeType } from "../page-words";
+import {
+  blockAttributeLabel,
+  coverageNotes,
+  NODE_TYPE_NAMES,
+  NODE_TYPES,
+  type NodeType,
+} from "../page-words";
+import { storedReading } from "../stored-reading";
 import {
   addDocumentChips,
   answerOf,
@@ -46,10 +55,10 @@ import {
   decisionState,
   deletedPostLine,
   markKeptAndUnsure,
-  plainWords,
   requirementGaps,
   stableSourceOf,
   type TreeContext,
+  titleReading,
 } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
@@ -67,7 +76,7 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * What the answer does not hold - an ask's options and answer, a check's standing and facts, a
  * requirement's counts and gaps, a child's row, a decision's decider - comes from the page's
  * other reads, each row matched to its node by its `dispatch://` address (`KeptReads`). A node's
- * words are its `text_tree`, read by the outline's word rules (`nodeWords`, `lineWords`), so a
+ * words are its `text_tree`, read by the outline's word rules (`nodeWords`, `lineWordsRaw`), so a
  * row reads as it read when the outline was built from the page's other reads; an `ask` block's
  * are its question as the asks read holds it (`draftAsk`).
  *
@@ -80,17 +89,13 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word
- * rules it reads are handed in (`TreeWords`), as `buildIssueTree` hands `chipLine` to
- * `treeContext`.
+ * rule it reads is handed in (`TreeWords`).
  */
 
-/** The outline's reading of the issue's addresses and names (`treeContext`), with the two word
- *  rules of `issue-tree.ts` a draft's line and a chip's name are read by: what `buildIssueTree`
- *  hands `treeDraftsFrom`. */
+/** The outline's reading of the issue's addresses and names (`treeContext`), with the word rule
+ *  of `issue-tree.ts` a draft's line is read by: what `buildIssueTree` hands `treeDraftsFrom`. */
 export interface TreeWords extends TreeContext {
-  /** The line a chip names a block by, from the block's reading (`chipLine`). */
-  readonly chipLine: (reading: DisplayTree) => string;
-  /** The words a node's one line is cut from (`lineWords`). */
+  /** The words a node's one line is cut from (`lineWordsRaw`). */
   readonly lineWords: (node: Pick<TreeNode, "text" | "tree">) => string;
 }
 
@@ -704,7 +709,9 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, context);
-  if (askId !== undefined) draft.source = stableSourceOf(draft.tree ?? node, "ask", askId);
+  if (askId !== undefined) {
+    draft.source = stableSourceOf(draft.tree ?? node, "ask", askId, context.key);
+  }
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -720,8 +727,14 @@ function draftAsk(
     draft.options = (ask.options ?? []).map((option) => ({
       ...(option.description === undefined || option.description === ""
         ? {}
-        : { description: option.description }),
+        : {
+            description: option.description,
+            ...(option.description_tree === undefined
+              ? {}
+              : { descriptionTree: option.description_tree }),
+          }),
       label: option.label,
+      ...(option.label_tree === undefined ? {} : { labelTree: option.label_tree }),
     }));
   }
   if (ask.multiple) draft.multiple = true;
@@ -769,7 +782,7 @@ function draftTurn(
   } else if (marks?.editedAt != null) {
     draft.editedAt = marks.editedAt;
   }
-  draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
+  draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id, context.key);
   return draft;
 }
 
@@ -824,7 +837,10 @@ function draftProse(
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (node.supertag !== "prose" && !(isPlainBlock(node) && !isForeign(node, context.key))) {
+  if (
+    node.supertag !== "prose" &&
+    !(isPlainBlock(node, context) && !isForeign(node, context.key))
+  ) {
     return undefined;
   }
   return draftOf(node, "prose", context);
@@ -837,12 +853,19 @@ function draftProse(
  * The read types a block by the typed block its text opens and answers that type as its
  * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
  * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
- * lens, `lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id. A block of
- * an ask, a comment or a message is a node of its item's own block kind (`comment_block`), part
- * of that item, and no block node.
+ * lens (`lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id) or whose
+ * parent is a lens, so it is never drafted as prose, even where nothing drafts its lens. A block
+ * of an ask, a comment or a message is a node of its item's own block kind (`comment_block`),
+ * part of that item, and no block node.
  */
-function isPlainBlock(node: TreeAnswerNode): boolean {
-  return node.kind === "block" && node.supertag === "block" && !node.id.startsWith("lens/");
+function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean {
+  if (node.kind !== "block" || node.supertag !== "block" || node.id.startsWith("lens/")) {
+    return false;
+  }
+  return !(
+    node.parent !== null &&
+    (node.parent.kind === "lens" || context.nodeOf(node.parent.id)?.supertag === "lens")
+  );
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
@@ -886,7 +909,7 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = stableSourceOf(reading, "artifact", node.document.artifact_id);
+      draft.source = stableSourceOf(reading, "artifact", node.document.artifact_id, context.key);
     }
   }
   return draft;
@@ -1090,10 +1113,10 @@ function pinDropped(reference: string): { readonly pinned: boolean; readonly tar
 /**
  * The chip naming the node `readId` names: addressed by that node's address as a chip addresses
  * it (`referenceOf`, a block of the issue's spec as `spec#b-<id>`, and an issue's own), and named
- * by the node the answer holds, by the outline's rule for the kind of target it is (`chipName`).
- * Where the answer holds no words for it, or does not hold it and the tuple names it by an
- * address, the batched reference read names it (`chipOf`), as it names every chip the outline
- * draws. A target with no address has no chip, as in the outline.
+ * by the node the answer holds, by the outline's rule for the kind of target it is
+ * (`chipReading`). Where the answer holds no words for it, or does not hold it and the tuple
+ * names it by an address, the batched reference read names it (`chipOf`), as it names every chip
+ * the outline draws. A target with no address has no chip, as in the outline.
  */
 function chipTo(readId: string, context: TreeDraftContext): NodeChip | undefined {
   const target = context.nodeOf(readId);
@@ -1106,23 +1129,30 @@ function chipTo(readId: string, context: TreeDraftContext): NodeChip | undefined
       ? buildDispatchReference({ key: target.id, kind: "issue" })
       : undefined);
   if (ref === undefined) return undefined;
-  const name = chipName(target, context);
-  return name === "" ? context.chipOf(ref) : { answered: true, gone: false, name, ref };
+  const reading = chipReading(target);
+  return reading === undefined
+    ? context.chipOf(ref)
+    : { answered: true, gone: false, reading, ref };
 }
 
-/** The name a chip draws for a node the answer holds, by the outline's rule for each kind of
- *  target (`treeContext`), from the node's own words: a question's, a comment's and a message's
- *  stored words read to plain words (`plainWords`), an issue's title as it stands, and a block's
- *  first line from its reading (`chipLine`). `""` where the node holds no such words - a block
+/** How a chip names a node the answer holds, by the outline's rule for each kind of target
+ *  (`treeContext`), from the node's own words: a question, a comment and a message by the reading
+ *  of its words, the read's own else its stored text's (`storedReading`); an issue by its title
+ *  read as one text run (`titleReading`); and a block by its reading, with the page's word for
+ *  its kind where those words project to none. None where the node holds no such words - a block
  *  the read sent no reading for, one whose reading holds no words - which the batched reference
  *  read then names (`chipTo`), by the page's word for its kind for a block of this issue. */
-function chipName(target: TreeAnswerNode, context: TreeDraftContext): string {
+function chipReading(target: TreeAnswerNode): ReferenceNameReading | undefined {
   if (target.supertag === "ask" || target.supertag === "comment" || target.supertag === "message") {
-    return plainWords(target.text);
+    return { tree: target.text_tree ?? storedReading(target.text, target) };
   }
-  if (target.supertag === "issue") return target.text;
+  if (target.supertag === "issue") return { tree: titleReading(target.text) };
   const reading = readingOf(target);
-  return reading === undefined ? "" : context.chipLine(reading);
+  if (reading === undefined || firstWordedBlock(reading) === undefined) return undefined;
+  const kind = NODE_TYPES.find((type) => type === target.supertag);
+  return kind === undefined
+    ? { tree: reading }
+    : { fallback: NODE_TYPE_NAMES[kind], tree: reading };
 }
 
 /** Whether `node` names anything by `kind`: a tuple of that kind, or a pointer of its attribute of

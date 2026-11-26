@@ -1,6 +1,10 @@
+import type { StepExperimentInput } from "@legion/contracts";
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
+import { routeUrl } from "../web/src/api/paths";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { issueProject } from "../web/src/lib/issue-key";
+import { baseUrl, e2eAgentToken } from "./api";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
 import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId } from "./issue-page-i";
@@ -8,10 +12,14 @@ import { settledState } from "./settled";
 
 /**
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
- * history, the steps under it, the facts of the focused row, and the way to them.
+ * history, the steps under it, the facts of the focused row, and the way to them;
+ * `putStepExperiment`, the one write of their seed that `e2e/api.ts` has no wrapper for; and
+ * `daemonOf`, the Legion daemon of a project as their seed's writes name it.
  *
- * This file is those rows' own: it imports the readers of `e2e/issue-page.ts`,
- * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, and `settledState` of `e2e/settled.ts`, and
+ * This file is those rows' own, and the reading list's drivers of Details' history
+ * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`: it
+ * imports the readers of `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`,
+ * `settledState` of `e2e/settled.ts`, and `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and
  * copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
@@ -32,8 +40,9 @@ import { settledState } from "./settled";
  * - **The people** in the People section: "Subscribers" and the row
  *   `[data-details-row="collaborators"]` (`details-more.tsx`).
  * - **The steps** `[data-testid="issue-steps"]`, a `section` named "Steps" under the history
- *   (`DetailsSteps.tsx`): its heading "Steps (<runs>)", each task a `section` "Task <task>" with
- *   its `h3`, each run `[data-step-run="<record id>"]`, and each of a run's labelled values
+ *   (`DetailsSteps.tsx`): its heading "Steps (<runs>)", under it the line `[data-step-variant]`
+ *   where the newest run names an experiment, each task a `section` "Task <task>" with its `h3`,
+ *   each run `[data-step-run="<record id>"]`, and each of a run's labelled values
  *   `[data-step-field="<field>"]`, its label the `dt` and its value the `dd`.
  */
 
@@ -58,11 +67,6 @@ const SHOW_MORE = new RegExp(
   `^${literally(CONTROL_LABELS.show_more)}(?: \\(\\d+\\+? ${literally(CONTROL_LABELS.show_more_left)}\\))?$`,
   "u"
 );
-
-/** Show more's name with `count` entries of its list left to draw: "Show more (25 left)". */
-export function showMoreLeft(count: number): string {
-  return `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
-}
 
 /** The history's Show more, the one control under its last entry drawn, whatever its count says:
  *  it draws the next entries read, or reads the log's next page where every entry read is drawn. */
@@ -333,4 +337,46 @@ export function stepsUnread(page: Page): Promise<string[]> {
     }
     return found;
   });
+}
+
+/** The Legion daemon of `project`, which writes on the project's issues as the session
+ *  `legion-daemon:<PROJECT>`: a message it writes with no target begins a thread the history
+ *  holds whole, whoever writes in it (`agents-only.ts`), and it is the one writer the steps'
+ *  routes admit for that project's issues. */
+export function daemonOf(project: string) {
+  return {
+    actor: { id: `legion-daemon:${project}`, kind: "session" as const },
+    as: "agent" as const,
+  };
+}
+
+/**
+ * Writes the experiment and the variant of run `id` of issue `key`, as the Legion daemon of the
+ * issue's project writes them after it has written the run
+ * (`PUT /api/v1/issues/{key}/steps/{id}/experiment`): under the agent bearer, naming the session
+ * of `daemonOf`, the one writer the route admits for that project's issues. It throws, naming the
+ * status and the body, where the answer is not ok.
+ */
+export async function putStepExperiment(
+  key: string,
+  id: string,
+  drawn: Pick<StepExperimentInput, "experiment" | "variant">
+): Promise<void> {
+  const input: StepExperimentInput = {
+    actor: daemonOf(issueProject(key)).actor,
+    ...drawn,
+  };
+  const response = await fetch(
+    new URL(routeUrl("/api/v1/issues/{key}/steps/{id}/experiment", { id, key }), baseUrl),
+    {
+      body: JSON.stringify(input),
+      headers: { Authorization: `Bearer ${e2eAgentToken}`, "Content-Type": "application/json" },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw new Error(
+      `write the experiment of run ${id} of ${key} failed: ${response.status} ${await response.text()}`
+    );
+  }
 }

@@ -481,7 +481,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 		t.Fatalf("read the spec's change marks: %v", err)
 	}
 	target := refs.Target{Kind: refs.BlockNodeKind, ID: mover}
-	cited, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target})
+	cited, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}, "")
 	if err != nil || cited[target].Excerpt == nil || !strings.Contains(cited[target].Excerpt.Text, "The words that move.") {
 		t.Fatalf("a citation of the moving block resolves to %+v (%v), want its words", cited[target], err)
 	}
@@ -529,7 +529,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	if now, err := refs.BlockChanges(ctx, database.Pool, spec); err != nil || now["mover"] != marks["mover"] {
 		t.Errorf("the moved block's change mark reads %+v (%v), want the mark before the move %+v", now["mover"], err, marks["mover"])
 	}
-	if now, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}); err != nil ||
+	if now, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}, ""); err != nil ||
 		now[target].Excerpt == nil || now[target].Excerpt.Text != cited[target].Excerpt.Text {
 		t.Errorf("a citation of the moved block resolves to %+v (%v), want the words it resolved to before, %+v", now[target], err, cited[target])
 	}
@@ -617,7 +617,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	}
 	defer staleTx.Rollback(ctx)
 	olderMarkdown, olderBlocks := renderedVersion(t, treeVersion1)
-	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the older pass: %v", err)
 	}

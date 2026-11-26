@@ -837,7 +837,7 @@ export function useNodeEditing({
       (event) => {
         const to = event.target;
         if (!(to instanceof Element)) return;
-        // A row of the tree: a node's, or a branch's folded below the drawn levels.
+        // A row of the tree: a node's, or a control's that draws more of it (`TreeRows.tsx`).
         const entered = to.closest('[role="treeitem"]');
         if (entered === null) return;
         const row = box.querySelector<HTMLElement>(rowSelector);

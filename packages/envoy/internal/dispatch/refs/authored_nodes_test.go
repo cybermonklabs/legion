@@ -249,7 +249,7 @@ func TestAPlanNodesNeedsNamingAnIssueIsATupleToTheIssue(t *testing.T) {
 	at := writeAuthoredVersion(t, tx, document, 1, markdown, model.Actor{Kind: "user", ID: "alice"})
 	pointers := []Pointer{{Block: "t1", BlockType: "plan_task", Kind: "needs",
 		Target: text.Ref{Kind: "issue", IssueKey: "WIND-2", ID: "WIND-2"}, Targets: []string{"plan_task"}}}
-	_, won, write, _, err := IndexBlocks(ctx, tx, document, OneVersion(document, 1, at), markdown, blocks, nil, pointers, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, document, OneVersion(document, 1, at), markdown, blocks, nil, pointers, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index the plan: won %t, %v", won, err)
 	}
@@ -276,7 +276,7 @@ func TestAPlanNodesNeedsNamingAnIssueIsATupleToTheIssue(t *testing.T) {
 func indexAndCause(t *testing.T, tx pgx.Tx, artifact string, versions Versions, markdown string, blocks []model.ArtifactBlock) {
 	t.Helper()
 	ctx := context.Background()
-	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index %s: won %t, %v", artifact, won, err)
 	}
@@ -362,7 +362,7 @@ func (d servingDocuments) index(t *testing.T, tx pgx.Tx, name string, number int
 	markdown, blocks := documentOf(parts)
 	artifact := d[name].artifact
 	at := writeAuthoredVersion(t, tx, artifact, number, markdown, model.Actor{Kind: "user", ID: "alice"})
-	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, number, at), markdown, blocks, nil, pointers, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, number, at), markdown, blocks, nil, pointers, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index version %d of the %s: won %t, %v", number, name, won, err)
 	}
@@ -447,7 +447,7 @@ func TestARetargetOverAStaleStoreMovesNoAuthoredNode(t *testing.T) {
 	}
 	index := func(what string, number int, at time.Time, target string) {
 		t.Helper()
-		_, won, write, _, err := IndexBlocks(ctx, tx, plan, OneVersion(plan, number, at), markdown, blocks, nil, serves(target), TypedFacts{})
+		_, won, write, _, err := IndexBlocks(ctx, tx, plan, OneVersion(plan, number, at), markdown, blocks, nil, serves(target), "", TypedFacts{})
 		if err != nil || !won {
 			t.Fatalf("%s: won %t, %v", what, won, err)
 		}

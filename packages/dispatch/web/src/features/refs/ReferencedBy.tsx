@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { GraphEdge } from "../../api/types";
+import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
 import {
   borderDefault,
   linkHoverText,
@@ -18,13 +18,16 @@ import {
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { type BlockItemKind, blockFragment, isBlockItemKind } from "./block-reference";
-import { DeletedBody, EditedMark } from "./PostBody";
+import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { DeletedBody, EditedMark } from "./PostMarks";
 import { postDeletion } from "./post-marks";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
-import { buildReferencePath, parseNodeReference } from "./routes";
+import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";
+import { type TextSource, textSourceKind, textSourceOf } from "./text-references";
 
 /** Every node kind a read of the graph answers, which `GraphNode.kind` names, each with the
  *  word the panel reads it under. A kind a newer build adds is skipped where it is met, since no
@@ -138,11 +141,11 @@ export function drawsEdge(edge: GraphEdge): boolean {
  *  `reference` names, since the new page's outline is that issue's conversation. One function, so
  *  a control that counts the list counts the rows the list shows. Undefined while there is no
  *  read. */
-export function listedEdges(
-  edges: readonly GraphEdge[] | null | undefined,
+export function listedEdges<E extends GraphEdge>(
+  edges: readonly E[] | null | undefined,
   reference: string,
   page: boolean
-): GraphEdge[] | undefined {
+): E[] | undefined {
   const drawn = edges?.filter(drawsEdge);
   const route = page ? parseNodeReference(reference) : undefined;
   const issueKey = route !== undefined && "key" in route ? route.key : undefined;
@@ -214,14 +217,16 @@ interface SourcePath {
 
 /** Where `reference`, a node's own reference as the graph returned it, opens - whatever the length
  *  of its name - with `block` (the block of a document that holds the mention) as its `#b-`
- *  fragment when the reference names no block of its own. */
+ *  fragment when the reference names no block of its own. Undefined where it opens nothing: a
+ *  reference that does not parse, and a party the graph records no node for (R5). */
 function referencePath(reference: string | undefined, block?: string): SourcePath | undefined {
   const route = reference === undefined ? undefined : parseNodeReference(reference);
-  if (route === undefined) {
+  const href = route === undefined ? undefined : referenceHref(route);
+  if (route === undefined || href === undefined) {
     return undefined;
   }
   return {
-    href: `${buildReferencePath(route)}${
+    href: `${href}${
       ("block" in route && route.block !== undefined) || block === undefined
         ? ""
         : blockFragment(block)
@@ -230,8 +235,11 @@ function referencePath(reference: string | undefined, block?: string): SourcePat
   };
 }
 
+/** An edge as the references read answers it, with its excerpt's tree (`GraphEdgeWithTrees`). */
+type ReadEdge = NonNullable<GraphReferences["edges"]>[number];
+
 interface SourceGroup {
-  readonly edges: GraphEdge[];
+  readonly edges: ReadEdge[];
   readonly key: string;
   readonly label: string;
   /** How many citing nodes the group holds: more than one only when blocks of one document, or of
@@ -246,8 +254,8 @@ interface SourceGroup {
  *  that document's or item's rows. A source of one node links to that node (a block at the
  *  block); a document or item whose blocks are its rows links to itself, and each row to its own
  *  block. */
-function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
-  const groups = new Map<string, { edges: GraphEdge[]; nodes: Set<string> }>();
+function groupBySource(edges: readonly ReadEdge[]): SourceGroup[] {
+  const groups = new Map<string, { edges: ReadEdge[]; nodes: Set<string> }>();
   for (const edge of edges) {
     const key =
       edge.node.document ??
@@ -260,7 +268,7 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
     groups.set(key, group);
   }
   return [...groups].map(([key, { edges: grouped, nodes }]) => {
-    const [first] = grouped as [GraphEdge, ...GraphEdge[]];
+    const [first] = grouped as [ReadEdge, ...ReadEdge[]];
     return {
       edges: grouped,
       key,
@@ -274,23 +282,101 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
   });
 }
 
+/** The citing nodes whose excerpt is the head of their own stored text. */
+const BODY_NODE_KINDS: readonly string[] = ["ask", "block", "comment", "message"];
+
+/** Whether `edge`'s excerpt is the head of a stored body rather than a title or a name. A citing
+ *  block, ask, comment or message is listed by the head of its own text, and a document's
+ *  mention by the block that holds it (`excerpt.block_id`): each is a bounded head the server
+ *  cuts, which the renderer draws. A citing issue, document, component or session is listed by
+ *  its title or name, which is one line of text already. */
+function excerptIsBody(edge: GraphEdge): boolean {
+  return edge.excerpt?.block_id !== undefined || BODY_NODE_KINDS.includes(edge.node.kind);
+}
+
+/** The record a body excerpt is the head of, where the citing node is one a `TextSource` names:
+ *  an ask, a comment or a message, or a document. A citing block is a block of its holder - a
+ *  comment, an ask, a message or a document - which the node carries as its `parent`
+ *  (`refs/graph.go`), so its excerpt is the holder's text and a `#id` in it names a question of
+ *  the holder's document. */
+function excerptSource(node: GraphEdge["node"]): TextSource | undefined {
+  const holder = node.kind === "block" ? node.parent : node;
+  return holder === null
+    ? undefined
+    : textSourceOf(textSourceKind(holder.kind), holder.id, node.issue_key);
+}
+
 function Excerpt({
+  rendered,
+  source,
   text,
   tokens,
+  tree,
+  whole = false,
 }: {
+  /** Whether the text is the head of a stored body, which the renderer draws (`excerptIsBody`). */
+  rendered: boolean;
+  source: TextSource | undefined;
   text: string;
   tokens: { readonly excerpt: string; readonly link: string };
+  /** The server's reading of the head as it cut it, so the page parses none of it. */
+  tree: DisplayTree | undefined;
+  /** Whether the excerpt is drawn whole, as the new page's Details draws each one (`page`): with
+   *  no clamp and no Show more, a long word broken where it must be rather than run past its row.
+   *  Every other page passes nothing, and the excerpt clamps as it always has. */
+  whole?: boolean;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  if (whole) {
+    return rendered ? (
+      <div className={`mt-1 text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`} data-node-words="">
+        <MarkdownBody markdown={text} source={source} surface="referenced-by-excerpt" tree={tree} />
+      </div>
+    ) : (
+      <p className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}>
+        {/* A title or a name, as the line it is: the reading list's `referenced-by-title`. */}
+        {text}
+      </p>
+    );
+  }
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
+  const clamped = clampable && !expanded;
 
   return (
     <>
-      <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${tokens.excerpt}`}
-      >
-        {text}
-      </p>
+      {rendered ? (
+        // The head of a stored body, drawn by the renderer from the reading the server made of
+        // it: one clamped run until the reader opens it, the whole of it after.
+        // The type is on the element around the renderer in both, as `.dispatch-markdown` takes
+        // it from there (styles.css).
+        clamped ? (
+          <div className={`mt-1 text-sm ${tokens.excerpt}`}>
+            <MarkdownPreview
+              lines={3}
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
+        ) : (
+          <div className={`mt-1 text-sm ${tokens.excerpt}`}>
+            <MarkdownBody
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
+        )
+      ) : (
+        <p
+          className={`mt-1 whitespace-pre-wrap text-sm ${clamped ? "line-clamp-3" : ""} ${tokens.excerpt}`}
+        >
+          {/* A title or a name, as the line it is: the reading list's `referenced-by-title`. */}
+          {text}
+        </p>
+      )}
       {clampable ? (
         <button
           aria-expanded={expanded}
@@ -433,9 +519,11 @@ export function ReferencedBy({
   // its rows the same way, and shares the list's pages, its control and its count. A card the
   // cut falls in draws the rows before the cut, and a card after the cut is not drawn.
   const paged = page ? pages : undefined;
-  let rowsLeft = paged?.drawn ?? Number.POSITIVE_INFINITY;
   let rowCount = 0;
+  // How many rows of the drawn pages the list's own rows leave: without `pages`, every one.
+  let extraRowsLeft = Number.POSITIVE_INFINITY;
   if (paged !== undefined) {
+    let rowsLeft = paged.drawn;
     const drawnGroups = groups.flatMap((group) => {
       rowCount += group.edges.length;
       const drawnEdges = group.edges.slice(0, rowsLeft);
@@ -443,20 +531,22 @@ export function ReferencedBy({
       return drawnEdges.length === 0 ? [] : [{ ...group, edges: drawnEdges }];
     });
     groups.splice(0, groups.length, ...drawnGroups);
+    extraRowsLeft = rowsLeft;
   }
   // The host's rows (`extraRows`) are such a source, after every source of the list's own: they
   // take what is left of the rows the list draws, and count every one of theirs in the list's.
-  // Without `pages` every one of them is drawn.
   rowCount += extraRows.length;
-  const drawnExtraRows = extraRows.slice(0, rowsLeft);
-  // Each row drawn in pages carries the list's own mark, by which the press of the control finds
-  // the first row it drew, by its place in the sequence: the row's card where the row is its
-  // card's first, whose link names the source, and else the row itself.
+  const drawnExtraRows = extraRows.slice(0, extraRowsLeft);
+  // Each row drawn in pages carries the list's own mark, and each card its card mark
+  // (`data-reference-card`), by which the press of the control finds the first row it drew, by
+  // its place in the sequence: the row's card where the row is its card's first, whose link
+  // names the source, and else the row itself.
   const rowsMark = useId();
   const rowAt = (index: number) => {
     const marked = `[data-reference-rows="${CSS.escape(rowsMark)}"]`;
     const row = document.querySelectorAll(marked)[index];
-    return row?.parentElement?.firstElementChild === row ? row.parentElement?.parentElement : row;
+    const card = row?.closest("[data-reference-card]");
+    return card?.querySelector(marked) === row ? card : row;
   };
   // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
   // every page.
@@ -520,7 +610,11 @@ export function ReferencedBy({
       {groups.length === 0 ? null : (
         <ul className="space-y-2">
           {groups.map((group) => (
-            <li className={`rounded-lg border p-3 ${tokens.row}`} key={group.key}>
+            <li
+              className={`rounded-lg border p-3 ${tokens.row}`}
+              data-reference-card={paged === undefined ? undefined : ""}
+              key={group.key}
+            >
               <div className={`text-xs font-medium ${tokens.line}`}>
                 {group.path === undefined ? (
                   <span>{group.label}</span>
@@ -583,16 +677,20 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
+                      {/* A block whose text opens with a reference longer than the server's cut
+                          has an empty excerpt that still names the block it links to: the row
+                          then draws no excerpt rather than an empty paragraph. */}
                       {deleted !== null ? (
                         <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
-                      ) : page && edge.excerpt !== undefined ? (
-                        <p
-                          className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
-                        >
-                          {edge.excerpt.text}
-                        </p>
-                      ) : edge.excerpt === undefined ? null : (
-                        <Excerpt text={edge.excerpt.text} tokens={tokens} />
+                      ) : edge.excerpt === undefined || edge.excerpt.text === "" ? null : (
+                        <Excerpt
+                          rendered={excerptIsBody(edge)}
+                          source={excerptSource(edge.node)}
+                          text={edge.excerpt.text}
+                          tokens={tokens}
+                          tree={edge.excerpt.text_tree}
+                          whole={page}
+                        />
                       )}
                     </li>
                   );
@@ -605,7 +703,11 @@ export function ReferencedBy({
       {drawnExtraRows.length === 0 ? null : (
         <ul className="space-y-2" data-extra-references="">
           {drawnExtraRows.map((row) => (
-            <li className={`rounded-lg border p-3 ${tokens.row}`} key={row.key}>
+            <li
+              className={`rounded-lg border p-3 ${tokens.row}`}
+              data-reference-card={paged === undefined ? undefined : ""}
+              key={row.key}
+            >
               {/* One row in a card of its own, as each source's rows are in its card, so the press
                   of the control under the list finds it by the list's mark and moves the focus to
                   the card's first link, the row's own (`rowAt`). */}
@@ -630,6 +732,9 @@ export function ReferencedBy({
                     <p
                       className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
                     >
+                      {/* The words a host made of its row's item, drawn as the characters they
+                          are: a command bar run's question, the reading list's
+                          `referenced-by-run-question`. */}
                       {row.excerpt}
                     </p>
                   )}

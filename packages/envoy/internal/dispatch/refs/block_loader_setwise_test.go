@@ -361,7 +361,7 @@ func requireBlockNodesAndRows(t *testing.T, read string, q Queryer, who model.Ac
 			t.Errorf("%s: the block %s's row is %+v (held %t) in the one read and %+v in the tree read's row read", read, id, got, held, wanted)
 		}
 	}
-	excerpted, err := ExcerptedNodes(ctx, q, who, targetsOfBlocks(ids))
+	excerpted, err := ExcerptedNodes(ctx, q, who, targetsOfBlocks(ids), "")
 	if err != nil {
 		t.Fatalf("%s: read the blocks through the registry: %v", read, err)
 	}

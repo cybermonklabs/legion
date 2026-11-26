@@ -25,7 +25,6 @@ import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { referencesQuery } from "../../refs/reference-target";
 import { RUN_PATH } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
-import { drawnLine, firstLineOf } from "../issue-tree";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -35,7 +34,6 @@ import {
   sentenceCase,
   wordsIn,
 } from "../page-words";
-import { plainWords } from "../tree-drafts";
 import { RunPage } from "./RunPage";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
@@ -467,7 +465,7 @@ test("the answered page draws the question as typed, the time and what it change
   expect(document.title).toBe(`${RUN_WORD} · Dispatch`);
 
   // The question, character for character: no strong text and no link made of it.
-  const asked = screen.getByRole("region", { name: RUN_PAGE_WORDS.question });
+  const asked = screen.getByRole("region", { name: RUN_PAGE_WORDS.question_heading });
   expect(within(asked).getByText(question).textContent).toBe(question);
   expect(asked.querySelector("strong")).toBeNull();
   expect(within(asked).queryByRole("link")).toBeNull();
@@ -475,14 +473,16 @@ test("the answered page draws the question as typed, the time and what it change
   // When it was asked.
   expect(document.querySelector(`time[datetime="${ASKED_AT}"]`)).not.toBeNull();
 
-  // The issue it changed, by its kind's word and its first line, which links to it.
+  // The issue it changed, by its kind's word and its first line - its marks gone, to the end of
+  // its first sentence - which links to it.
   const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
   expect(within(what).getByRole("listitem")).toHaveTextContent(
     sentenceCase(NODE_REFERENCES_WORDS.kinds.issue)
   );
-  expect(
-    within(what).getByRole("link", { name: drawnLine(firstLineOf(plainWords(excerpt))) })
-  ).toHaveAttribute("href", "/issues/CORE-1");
+  expect(within(what).getByRole("link", { name: "Ship the release on Friday." })).toHaveAttribute(
+    "href",
+    "/issues/CORE-1"
+  );
 });
 
 // A node of a kind the page has no word for is named by its line alone: no schema token
@@ -501,6 +501,6 @@ test("a changed node of a kind the page has no word for is named by its line alo
   await screen.findByRole("heading", { level: 1, name: RUN_WORD });
   const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
   const entry = within(what).getByRole("listitem");
-  expect(entry.textContent).toBe(drawnLine(firstLineOf(plainWords(excerpt))));
+  expect(entry.textContent).toBe(excerpt);
   expect(wordsIn(entry.textContent ?? "")).not.toContain("risk");
 });

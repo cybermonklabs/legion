@@ -83,7 +83,7 @@ func seedShapedDecisions(t *testing.T, database *store.Store, artifactID, pointe
 		if err != nil {
 			return err
 		}
-		_, _, stated, _, err := refs.IndexBlocks(ctx, tx, artifactID, versions, rendered, blocks, nil, nil, facts)
+		_, _, stated, _, err := refs.IndexBlocks(ctx, tx, artifactID, versions, rendered, blocks, nil, nil, "", facts)
 		if err != nil {
 			return err
 		}

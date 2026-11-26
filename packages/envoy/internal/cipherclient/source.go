@@ -71,6 +71,9 @@ type MetadataIdentity struct {
 	// Audience is what the minted token's `aud` carries, which the broker checks against
 	// BROKER_GOOGLE_OIDC_AUDIENCE.
 	Audience string
+	// FromBroker is set where the audience is the Google exchange audience the broker answered
+	// (DetectMachineIdentity), not one MachineAudienceVar names.
+	FromBroker bool
 }
 
 // NewMetadataIdentity is the identity of a machine whose metadata server mints its token for
@@ -87,14 +90,27 @@ func (m *MetadataIdentity) Token(ctx context.Context) (string, string, error) {
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
 }
 
-// Describe names the audience MachineAudienceVar sets: as written when it is a plain http(s) URL
-// (internal/redact's allow-list), and by the variable alone otherwise, since the audience is a
-// configured value a person can paste a credential into, and this text is in every trade's log
-// line and error.
+// Describe names the audience: the broker's (FromBroker) as such, or by MachineAudienceVar where
+// that setting chose it; as written where it is a plain http(s) URL (internal/redact's
+// allow-list), since the audience is a value a person can paste a credential into, and this text
+// is in every trade's log line and error. It names the metadata server by
+// googleidentity.MetadataHostVar only while that variable is set: a Compute Engine VM's server is
+// at its own address.
 func (m *MetadataIdentity) Describe() string {
-	audience := "the audience " + MachineAudienceVar + " names"
-	if redact.Clean(m.Audience) {
+	var audience string
+	switch clean := redact.Clean(m.Audience); {
+	case m.FromBroker && clean:
+		audience = m.Audience
+	case m.FromBroker:
+		audience = "the Google exchange audience the broker names"
+	case clean:
 		audience = m.Audience + " (" + MachineAudienceVar + ")"
+	default:
+		audience = "the audience " + MachineAudienceVar + " names"
 	}
-	return "this machine's Google identity token for " + audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	described := "this machine's Google identity token for " + audience
+	if os.Getenv(googleidentity.MetadataHostVar) != "" {
+		described += " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	}
+	return described
 }

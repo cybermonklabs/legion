@@ -124,7 +124,7 @@ func indexStatesVersion(t *testing.T, database *store.Store, document preStoreDo
 		t.Fatalf("begin the index of version %d: %v", version, err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, written, _, err := refs.IndexBlocks(ctx, tx, document.artifactID, refs.OneVersion(document.artifactID, version, time.Now().UTC()), markdown, blocks, nil, nil, refs.TypedFacts{})
+	_, won, written, _, err := refs.IndexBlocks(ctx, tx, document.artifactID, refs.OneVersion(document.artifactID, version, time.Now().UTC()), markdown, blocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version %d of %s: %v", version, document.refKey, err)
 	}

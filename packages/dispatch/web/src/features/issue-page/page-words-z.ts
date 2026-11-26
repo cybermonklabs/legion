@@ -18,10 +18,12 @@ import type { PartWords } from "./page-words-parts";
  * The headings of a command bar run's own page (`run-page/RunPage.tsx`): the asker's whole
  * question, and the nodes the run changed. The page's heading is the run's kind word,
  * `NODE_REFERENCES_WORDS.kinds.interaction`, and what each frame of its answer says is in
- * `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`.
+ * `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`. The question's heading is keyed
+ * `question_heading` and not `question`: the reading list's source test reads a field named
+ * `question` as a person's stored text wherever the page draws it (`surface-lists.test.ts`).
  */
 export const RUN_PAGE_WORDS = freeze({
-  question: "Question",
+  question_heading: "Question",
   what_changed: "What it changed",
 } as const);
 

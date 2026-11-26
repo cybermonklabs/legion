@@ -87,7 +87,7 @@ func referencesInStatement(t *testing.T, ctx context.Context, seed linkedIntoIss
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	recorded := &explaintest.RecordedTx{Tx: tx}
-	if _, err := refs.Closure(ctx, recorded, who, seed.key); err != nil {
+	if _, err := refs.Closure(ctx, recorded, who, seed.key, ""); err != nil {
 		t.Fatalf("read the references of %s: %v", seed.key, err)
 	}
 	return recorded.Holding(t, "targets (kind, id)")

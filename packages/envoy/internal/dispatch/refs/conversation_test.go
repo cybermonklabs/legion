@@ -162,7 +162,7 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 
 	listed := func(at time.Time) ([]string, map[string]string) {
 		t.Helper()
-		nodes, err := ConversationNodes(ctx, tx, model.Actor{}, "CORE-1", at)
+		nodes, err := ConversationNodes(ctx, tx, model.Actor{}, "CORE-1", at, "")
 		if err != nil {
 			t.Fatalf("ConversationNodes(CORE-1, %s) = %v", at, err)
 		}

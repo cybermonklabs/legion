@@ -13,7 +13,7 @@ import {
 } from "../../theme/classes";
 import { standsFailed } from "../refs/reference-target";
 import { Identifier, Time, useCatchUp } from "../steps/StepsTab";
-import { type StepRow, stepTasks } from "../steps/steps-model";
+import { type StepRow, stepTasks, stepVariant } from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { groupsDrawn, useListPages } from "./details-leaves";
 import { authorText, pageChrome } from "./page-structure";
@@ -160,7 +160,8 @@ function Run({ row }: { row: StepRow }): ReactNode {
 
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`), under the history in Details,
- * where today's page has a Steps tab: headed by how many runs it lists, then one group per task
+ * where today's page has a Steps tab: headed by how many runs it lists, then the experiment and
+ * variant of the newest run where its records name one (`stepVariant`), then one group per task
  * in the order of each task's first step (`stepTasks`), each run of the task in the order the
  * server read them, with its step, role, type, agent, model, attempt, start, end and result. The
  * runs are one list across their tasks, drawn 20 at a time with Show more under them
@@ -186,20 +187,20 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
-  const section = useRef<HTMLElement>(null);
   const pages = useListPages();
   const retry = useRetryHandOff(() => heading.current);
   // The failure line stands under the heading, in place of the loading line, while the read
   // stands failed (`standsFailed`).
   const failed = standsFailed(query);
   const tasks = query.data === undefined ? undefined : stepTasks(query.data);
+  const variant = query.data === undefined ? null : stepVariant(query.data);
   const runs = tasks?.reduce((count, task) => count + task.rows.length, 0);
   return (
     <section
       aria-label={CONTROL_LABELS.steps}
       className="flex min-w-0 flex-col gap-1.5"
       data-testid="issue-steps"
-      ref={section}
+      ref={pages.list}
     >
       <h2
         className={`text-sm font-semibold outline-none ${pageInkText}`}
@@ -226,6 +227,17 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           retrying={query.isFetching}
         />
       ) : null}
+      {/* The line is the steps model's own (`stepVariant`), as today's Steps tab draws it:
+          words of another surface and the record's two names, so text the page did not author. */}
+      {variant === null ? null : (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
+          data-step-variant=""
+          {...authorText}
+        >
+          {variant}
+        </p>
+      )}
       {tasks === undefined ? (
         failed ? null : (
           <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
@@ -262,7 +274,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           )}
           {pages.more(
             runs ?? 0,
-            (index) => section.current?.querySelectorAll("[data-step-run]")[index]
+            (index) => pages.list.current?.querySelectorAll("[data-step-run]")[index]
           )}
         </>
       )}

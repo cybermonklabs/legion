@@ -22,7 +22,11 @@ import {
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
-import { componentChipIds, IssueComponentsLine } from "../issue/IssueComponentsLine";
+import {
+  COMPONENT_CHIP,
+  componentChipIds,
+  IssueComponentsLine,
+} from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
@@ -174,7 +178,7 @@ export function IssueMarginCards({
             threads anchored in an open document and its composer, in the margin's words and the
             authors' own, and not the page's declared vocabulary (`page-structure.ts`). They are
             first because the margin places an anchored card at a `top` it measures down from
-            the top of its own content (`margin/ThreadList.tsx`'s `regionOrigin`), so anything
+            the top of its own content (`margin/card-stack.ts`'s `regionOrigin`), so anything
             drawn over them moves that anchor and a card can no longer reach the line its mark
             is on. */}
         <div className="contents" {...authorText}>
@@ -203,12 +207,12 @@ export function IssueMarginCards({
  * of theirs that lands, a Retry whose request answers, an editor they close, an Unpin, a Show
  * more. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
  * write hand the focus on in their row as they go (`useFocusHandOff`); an editor hands it on as
- * it closes, and an Unpin and a Show more move it at their press. A change the reader did not
- * make - another session's write, an event, a read that answers on its own, the issue closed
- * elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and nothing in
- * Details takes it; but one that reaches what the reader's press asked for while that press is
- * still out - the route set to the reader's draft, the claim released, the read answered - is
- * taken for the press's answer, and hands the focus on as that answer would.
+ * it closes, a Show more moves it at its press, and an Unpin once its row has gone. A change the
+ * reader did not make - another session's write, an event, a read that answers on its own, the
+ * issue closed elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and
+ * nothing in Details takes it; but one that reaches what the reader's press asked for while that
+ * press is still out - the route set to the reader's draft, the claim released, the read
+ * answered - is taken for the press's answer, and hands the focus on as that answer would.
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
@@ -248,15 +252,11 @@ export function IssueMarginPanel({
   // The pages of each list of unbounded length the panel's rows draw (`useListPages`), each with
   // the box its entries are drawn in, where a press of its Show more finds the first entry it
   // drew. The issues that wait on this one and the pins page their own lists.
-  const pullRequestPages = useListPages();
-  const pullRequestsValue = useRef<HTMLDivElement>(null);
-  const linkPages = useListPages();
-  const linksValue = useRef<HTMLDivElement>(null);
-  const componentPages = useListPages();
-  const componentsValue = useRef<HTMLDivElement>(null);
+  const pullRequestPages = useListPages<HTMLDivElement>();
+  const linkPages = useListPages<HTMLDivElement>();
+  const componentPages = useListPages<HTMLDivElement>();
   const referencePages = useListPages();
-  const filePages = useListPages();
-  const filesList = useRef<HTMLUListElement>(null);
+  const filePages = useListPages<HTMLUListElement>();
   // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
@@ -727,7 +727,7 @@ export function IssueMarginPanel({
         <Row
           glyph={RIGHT_OVER_LEFT_ARROWS}
           label={PROPERTY_LABELS.pull_request}
-          valueRef={pullRequestsValue}
+          valueRef={pullRequestPages.list}
         >
           {pullRequests.length === 0 ? none : null}
           {readingDevelopment ? (
@@ -735,21 +735,18 @@ export function IssueMarginPanel({
               {pullRequests.slice(0, pullRequestPages.drawn).map((link) => (
                 <GitHubLink key={link.url} link={link} />
               ))}
-              {pullRequestPages.more(
-                pullRequests.length,
-                (index) => pullRequestsValue.current?.children[index]
-              )}
+              {pullRequestPages.more(pullRequests.length)}
             </>
           ) : null}
         </Row>
         {otherLinks.length === 0 ? null : (
-          <Row glyph="↗" label={PROPERTY_LABELS.external_links} valueRef={linksValue}>
+          <Row glyph="↗" label={PROPERTY_LABELS.external_links} valueRef={linkPages.list}>
             {readingDevelopment ? (
               <>
                 {otherLinks.slice(0, linkPages.drawn).map((link) => (
                   <GitHubLink key={link.url} link={link} />
                 ))}
-                {linkPages.more(otherLinks.length, (index) => linksValue.current?.children[index])}
+                {linkPages.more(otherLinks.length)}
               </>
             ) : null}
           </Row>
@@ -817,16 +814,13 @@ export function IssueMarginPanel({
             />
           ) : null}
         </Row>
-        {/* The issue's components, then its retired ones, as one list, 20 at a time: the chips
-            are the first children of the line's own box (`IssueComponentsLine`). */}
-        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components} valueRef={componentsValue}>
+        {/* The issue's components, then its retired ones, as one list, 20 at a time: each chip
+            carries the line's mark (`COMPONENT_CHIP`), in the list's order. */}
+        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components} valueRef={componentPages.list}>
           <IssueComponentsLine inRow issue={issue} limit={componentPages.drawn} />
           {componentPages.more(
             componentChips,
-            (index) =>
-              componentsValue.current?.querySelector('[data-testid="issue-components"]')?.children[
-                index
-              ]
+            (index) => componentPages.list.current?.querySelectorAll(COMPONENT_CHIP)[index]
           )}
         </Row>
         {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
@@ -950,7 +944,11 @@ export function IssueMarginPanel({
           {artifacts.length === 0 ? (
             none
           ) : (
-            <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files" ref={filesList}>
+            <ul
+              className="flex w-full min-w-0 flex-col"
+              data-testid="issue-files"
+              ref={filePages.list}
+            >
               {artifacts.slice(0, filePages.drawn).map((artifact) => (
                 <li key={artifact.id}>
                   <Link
@@ -978,7 +976,7 @@ export function IssueMarginPanel({
               ))}
             </ul>
           )}
-          {filePages.more(artifacts.length, (index) => filesList.current?.children[index])}
+          {filePages.more(artifacts.length)}
         </Row>
       </PropertySection>
       <DetailsFocusedNode issue={issue} state={state} />

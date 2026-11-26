@@ -42,7 +42,6 @@ import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
-import { HISTORY_PAGE } from "./history-model";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { PROPERTY_LABELS } from "./page-structure";
@@ -58,7 +57,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
-import { SHOW_MORE, showMoreName } from "./show-more-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { renderAtBrowserEntry } from "./slots/stage-fixtures";
 import { commentNode as commentTreeNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { issueTreeQuery, outlineQuery, type TreeAnswer } from "./tree-read/tree-read";
@@ -202,7 +201,7 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
     id: "comment-1",
     item: { id: "comment-1", kind: "comment" },
     reference: `dispatch://${KEY}/comment/comment-1`,
-    title: OWN_COMMENT.body,
+    text: OWN_COMMENT.body,
     type: "comment",
   };
   const facts = (
@@ -771,6 +770,59 @@ test("the subscribed agents draw 20 at a time under Show more, and an agent read
   }
 });
 
+// The list draws its first 20 agents. Unsubscribe on the 20th, the last agent drawn, pressed and
+// confirmed, takes its row away once its write lands and the agents are read again, and the 21st
+// agent, which no row drew, is drawn in its place: the focus goes to that agent's Unsubscribe, at
+// the place of the row that went, and not to the Subscribers control. A choice made among the
+// controls drawn before the write found no Unsubscribe after the 20th.
+test("Unsubscribe of the last agent drawn gives the focus to the Unsubscribe of the agent drawn in its place", async () => {
+  let subscribed = subscribedAgents(PAGE_SIZE + 5);
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
+    async () => subscribed
+  );
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    async (_key, session) => {
+      subscribed = subscribed.filter((one) => one.session_id !== session);
+    }
+  );
+  const view = renderPeople();
+  const agents = () =>
+    within(screen.getByRole("region", { name: "Subscribed agents" })).getAllByRole("listitem");
+  try {
+    const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:25`));
+    await userEvent.click(subscribers);
+    expect(agents(), "the list does not draw its first 20 agents").toHaveLength(PAGE_SIZE);
+    const last = agents()[PAGE_SIZE - 1];
+    if (last === undefined) throw new Error("the list draws no 20th agent");
+    await userEvent.click(within(last).getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" })
+    );
+
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:24`));
+    expect(unsubscribeIssueSession).toHaveBeenLastCalledWith(KEY, "agent-20", keyedAttempt);
+    expect(last.isConnected, "the 20th agent's row stayed").toBe(false);
+    expect(agents(), "the list does not draw 20 agents after the Unsubscribe").toHaveLength(
+      PAGE_SIZE
+    );
+    const inItsPlace = agents()[PAGE_SIZE - 1];
+    expect(inItsPlace?.textContent, "the 21st agent is not drawn 20th").toContain("Agent 21");
+    expect(
+      document.activeElement,
+      `Unsubscribe of the last agent drawn did not give the focus to the Unsubscribe of the agent drawn in its place (focus: ${document.activeElement?.textContent})`
+    ).toBe(
+      inItsPlace === undefined
+        ? null
+        : within(inItsPlace).getByRole("button", { name: "Unsubscribe" })
+    );
+  } finally {
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
 // The subscribers' Retry goes with its line once a read of them answers. Where the reader pressed
 // it, the focus goes to the Subscribers control; where a read that answers on its own - a window
 // focus, an invalidation after a write - takes the line away, no press of the reader's took it,
@@ -853,7 +905,7 @@ test("the facts name the focused node's kind, state and author, and draw no firs
     author: { id: "bob", kind: "user" },
     id: "ask-1",
     state: NODE_STATE_WORDS.ask.open,
-    title: "Which store holds the drafts?",
+    text: "Which store holds the drafts?",
     type: "ask",
   };
   const view = render(
@@ -887,7 +939,7 @@ test("the facts name the focused node's kind, state and author, and draw no firs
       [`${PROPERTY_LABELS.status}:`, NODE_STATE_WORDS.ask.open],
       [`${CONTROL_LABELS.written_by}:`, "bob"],
     ]);
-    expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.title);
+    expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.text);
   } finally {
     view.unmount();
   }
@@ -955,7 +1007,7 @@ const PLANNERS_NODE: FocusedNode = {
   id: "ask-7",
   item: { id: "ask-7", kind: "ask" },
   state: NODE_STATE_WORDS.ask.open,
-  title: PLANNERS_QUESTION.question,
+  text: PLANNERS_QUESTION.question,
   type: "ask",
 };
 
@@ -1159,7 +1211,7 @@ function commentNode(comment: Comment): FocusedNode {
     author: comment.author,
     id: comment.id,
     item: { id: comment.id, kind: "comment" },
-    title: comment.body,
+    text: comment.body,
     type: "comment",
   };
 }
@@ -1586,7 +1638,7 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
         author: thread.message.author,
         id: "message-1",
         item: { id: "message-1", kind: "message" },
-        title: thread.message.body,
+        text: thread.message.body,
         type: "message",
       })
     );
@@ -2668,7 +2720,7 @@ test("t o pressed again at /collaborators with Details read far below a collabor
   });
   try {
     await page.focused("a load of /collaborators");
-    await page.historyDrawn(HISTORY_PAGE);
+    await page.historyDrawn(PAGE_SIZE);
     // The list the address opened, drawn under the control, makes its row taller than the view.
     page.grow("collaborators", 2 * BOX_HEIGHT);
     page.heightsChanged();
@@ -2783,7 +2835,7 @@ test("t v pressed again at /activity with Details read far down lands the histor
     log: Promise.resolve(log),
   });
   try {
-    await page.historyDrawn(HISTORY_PAGE);
+    await page.historyDrawn(PAGE_SIZE);
     const history = screen.getByTestId("issue-history");
     const heading = history.querySelector<HTMLElement>("h2");
     if (heading === null) throw new Error("the history drew no heading");
@@ -3072,7 +3124,7 @@ type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
  */
 async function readerLeftAPlace(place: EarlierPlace) {
   const { client, getIssueCoverage, names } = agentsThreadClient();
-  const log = place === "older" ? fullPageOfFewEntries(HISTORY_PAGE - 1) : claimsNewestFirst(30);
+  const log = place === "older" ? fullPageOfFewEntries(PAGE_SIZE - 1) : claimsNewestFirst(30);
   const older = Promise.withResolvers<DispatchEvent[]>();
   const reads = [
     getIssueCoverage,
@@ -3102,7 +3154,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
   try {
     act(() => page.hold.open?.(true));
     // Each claim is an entry, and so is the agents' thread: the first of them are drawn.
-    await page.historyDrawn(HISTORY_PAGE);
+    await page.historyDrawn(PAGE_SIZE);
     const entries = [...page.box.querySelectorAll<HTMLElement>("[data-history-entry]")];
     const entry =
       place === "older"
@@ -3125,10 +3177,10 @@ async function readerLeftAPlace(place: EarlierPlace) {
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(api.putIssueState).toHaveBeenCalledTimes(1));
     } else if (place === "older") {
-      const loadOlder = screen.getByRole("button", { name: CONTROL_LABELS.show_more });
-      act(() => loadOlder.focus());
+      const more = screen.getByRole("button", { name: CONTROL_LABELS.show_more });
+      act(() => more.focus());
       await userEvent.keyboard("{Enter}");
-      await waitFor(() => expect(loadOlder).toHaveAttribute("aria-busy", "true"));
+      await waitFor(() => expect(more).toHaveAttribute("aria-busy", "true"));
     } else if (place === "pointer") {
       restPointerOn(entry, point);
     }
@@ -3321,7 +3373,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
       });
       try {
         act(() => page.hold.open?.(true));
-        await page.historyDrawn(HISTORY_PAGE);
+        await page.historyDrawn(PAGE_SIZE);
         await userEvent.keyboard("tv");
         const history = screen.getByTestId("issue-history");
         await waitFor(() =>
@@ -3352,7 +3404,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
 
         if (above === "arrives") {
           act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
-          await page.historyDrawn(HISTORY_PAGE + 1);
+          await page.historyDrawn(PAGE_SIZE + 1);
         } else {
           growEntryAbove(page, entry);
         }
@@ -3378,7 +3430,7 @@ test("after t o and the pointer resting on an entry of the history, the reader's
   const page = drawPeopleInDrawer(`/issues/${KEY}`, { heldClock: true, log: Promise.resolve(log) });
   try {
     act(() => page.hold.open?.(true));
-    await page.historyDrawn(HISTORY_PAGE);
+    await page.historyDrawn(PAGE_SIZE);
     await userEvent.keyboard("to");
     await page.focused("t o");
     page.frame();

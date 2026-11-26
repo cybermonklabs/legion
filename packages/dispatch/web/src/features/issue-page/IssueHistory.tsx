@@ -5,63 +5,36 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigationType } from "react-router-dom";
+import { useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import { issueResultsQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, UserState } from "../../api/types";
-import { PinButton } from "../../components/PinButton";
-import {
-  pageHairBg,
-  pageInkText,
-  pageKindTag,
-  pageLineBorder,
-  pageMarkBg,
-  pageMutedText,
-  pageQuietText,
-  pageRowAct,
-} from "../../theme/classes";
-import { ActivityLine } from "../activity/ActivityLine";
+import type { IssueDetails, UserState } from "../../api/types";
+import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
-import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
-import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
-import { EditedMark } from "../refs/PostBody";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
-import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
-import { Timestamp } from "../refs/Timestamp";
-import { textSourceOf } from "../refs/text-references";
-import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { DetailsErrorLine, retryRead } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
-import { HistoryHandoff } from "./HistoryHandoff";
+import { Entry, runKeys } from "./history-entries";
 import {
   buildHistory,
   comparePlaces,
   HISTORY_PAGE,
-  type HistoryDay,
-  type HistoryEntry,
   type HistoryPlace,
-  type HistoryTurn,
   historyBlocks,
   historyDownTo,
-  type NamedBlock,
   placeUnder,
   turnPlace,
 } from "./history-model";
-import { useMarginDrawer } from "./margin-slot";
-import { DeletedLine } from "./NodeRow";
-import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { ROW_LINK } from "./row-references";
-import { scrollingAncestor } from "./scroll-box";
+import { nearestScroll, scrollingAncestor } from "./scroll-box";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
@@ -76,22 +49,6 @@ export const HISTORY_HEADING_LANDED_EVENT = "history-heading-landed";
 /** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
  *  above and below, its words as written. */
 const DAY_LINE = `py-[5px] text-xs leading-[18px] font-semibold ${pageMutedText}`;
-
-/** One entry, the prototype's `.hev`: 12 px on 18 px in the muted grey, 14 px from a 2 px rule
- *  at its left in the page's line, the rule 4 px from the column's edge, 4 px above and 6 px
- *  below. The prototype's rule is #EEEAE3, which no page token holds; `page-line` is #ECEAE7. */
-const ENTRY = `ml-1 border-l-2 pt-1 pb-1.5 pl-3.5 text-xs leading-[18px] ${pageLineBorder} ${pageMutedText}`;
-
-/** When an entry was made, which opens it (`.ht`), 6 px before what follows: the quiet grey, as
- *  the prototype's #A8A29E reads 2.52:1 on the paper, under the 4.5:1 text needs. */
-const TIME = `mr-1.5 ${pageQuietText}`;
-
-/** Who made the entry (`.hev b`). */
-const AUTHOR = `font-semibold ${pageInkText}`;
-
-/** An agent's words (`.hb`): 14 px on 20 px in the issue's own colour, the prototype's
- *  #44403C, 2 px under the entry's line. */
-const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageKindTag.issue}`;
 
 /** A turn of a thread the history holds that an address names (`/issues/<key>/comments/<id>` or
  *  `/messages/<id>`), with the following of that address it was named at (`useFollowing`). */
@@ -417,34 +374,34 @@ export function IssueHistory({
   };
   // The control under the last entry drawn, Show more, draws the next entries and moves the
   // focus to the first entry it added, as Show more under every other list of Details does
-  // (`details-leaves.tsx`'s `useListPages`), whether the control stays or goes: a control of
-  // that entry the reader can see; else one the press added that they can see, one under the
-  // entries drawn before the press before one above them, as the next entries are drawn where
-  // the control stood; else that entry's control out of view; else any the press added; else the
+  // (`details-leaves.tsx`'s `useListPages`), whether the control stays or goes: to that entry's
+  // first control, wherever it stands. Only a press that adds no entry - a page whose events are
+  // all events the outline draws - hands the focus on otherwise: to a control the press added
+  // that the reader can see, one under the entries drawn before the press before one above them,
+  // as the next entries are drawn where the control stood; else any the press added; else the
   // control again, where entries or pages are left; else the last control drawn before the press,
-  // which stood just above it, for a page that adds no entry (its events are all events the
-  // outline draws); and only then the heading, above the whole list. A press that reads the
-  // log's next page moves it once that page has landed and its first entries are drawn. A
-  // control of the
-  // history that goes away under the reader's focus so leaves the focus in the history, never on
-  // the page, as Details' Unpin does (`IssuePins.tsx`). The Retry of a failed next page, which
-  // stands where the control stood, hands it on the same way; the Retry of a failed read of the
-  // log, gone once the read lands, hands it to the heading. None of them is disabled while it
-  // reads, since Chromium drops the focus of a focused button that turns disabled to the page,
-  // so the focus stays on the control pressed while its read is out, and a press of it then joins
-  // that read rather than ending it and sending another (`readOlderPage` for a page, `retryRead`
-  // for the log). Each press, made with the focus on its control, is held until what it asked
-  // for is drawn, and a press of the control already held keeps the first press's hold, the
-  // controls drawn before it with it, so the press that joins changes nothing of the hand-on;
-  // then a focus left on the page moves, and so does one still on that control once what it
-  // asked for is drawn, while a read that failed leaves it there, beside the line that says so. A
-  // reader who has put the focus elsewhere by then keeps it there. No such move scrolls Details,
-  // whose reader keeps their place: from the press until its reads settle, Details keeps the
-  // place of the entry next to the pressed control (`keepEntryBeside`), so the entries drawn
-  // under it leave that entry where the reader saw it, and a control the page pushed out of view
-  // - under files it added to a run above - takes the focus only when none is in view. The entry
-  // the focus moved to is then the place Details holds as the entries above it change height
-  // (`ViewportAnchor` records the place at every focus moved into its rows).
+  // which stood just above it; and only then the heading, above the whole list. A press that
+  // reads the log's next page moves it once that page has landed and its first entries are drawn.
+  // A control of the history that goes away under the reader's focus so leaves the focus in the
+  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). The Retry of a failed
+  // next page, which stands where the control stood, hands it on the same way; the Retry of a
+  // failed read of the log, gone once the read lands, hands it to the heading. None of them is
+  // disabled while it reads, since Chromium drops the focus of a focused button that turns
+  // disabled to the page, so the focus stays on the control pressed while its read is out, and a
+  // press of it then joins that read rather than ending it and sending another (`readOlderPage`
+  // for a page, `retryRead` for the log). Each press, made with the focus on its control, is held
+  // until what it asked for is drawn, and a press of the control already held keeps the first
+  // press's hold, the controls drawn before it with it, so the press that joins changes nothing of
+  // the hand-on; then a focus left on the page moves, and so does one still on that control once
+  // what it asked for is drawn, while a read that failed leaves it there, beside the line that
+  // says so. A reader who has put the focus elsewhere by then keeps it there. From the press until
+  // its reads settle, Details keeps the place of the entry next to the pressed control
+  // (`keepEntryBeside`), so the entries drawn under it leave that entry where the reader saw it.
+  // The one move of Details a hand-on makes is to bring the element it gives the focus to into
+  // Details' view, by the least scroll (`handTo`): the first entry a press draws can stand below
+  // the view, as under a new day's line, where a keyboard reader would not see the focus. The
+  // entry the focus moved to is then the place Details holds as the entries above it change
+  // height (`ViewportAnchor` records the place at every focus moved into its rows).
   const pressed = useRef<
     | {
         /** The controls and the entries drawn as the press was made. */
@@ -513,21 +470,43 @@ export function IssueHistory({
     const onPage = active === null || active === document.body;
     const onPressedAfterRead = active === press.control && !(reads && log.isError);
     if (!onPage && !onPressedAfterRead) return;
+    // Gives `element` the focus, brought first into Details' view by the least scroll, the one
+    // `block: "nearest"` makes (`nearestScroll`). The scroll is of Details' box alone, never of
+    // the page under it, and the history's anchor takes it for its own (`scrollBox`), so its
+    // event records no place. It comes before the focus, which then scrolls nothing
+    // (`preventScroll`), so that the focus moving into the entries, which the anchor records as
+    // the reader's place, is recorded where the reader sees it.
+    const handTo = (element: HTMLElement) => {
+      const box = scroller.current;
+      if (box !== null) {
+        const at = element.getBoundingClientRect();
+        const view = box.getBoundingClientRect();
+        const by = nearestScroll(at, view);
+        if (by !== 0) anchor.current?.scrollBox(by);
+      }
+      element.focus({ preventScroll: true });
+    };
     if (press.kind === "retry") {
-      (failure.current?.querySelector("button") ?? heading.current)?.focus({ preventScroll: true });
+      const retried = failure.current?.querySelector("button") ?? heading.current;
+      if (retried !== null) handTo(retried);
       return;
     }
-    // The entries it drew stand under every control drawn before it, where Show more stood. They
-    // can push one another out of Details' view: files a page added to a run above move the
-    // entries under that run down, so a new control is in view or not by where it is drawn once
-    // the entry next to the pressed control is back where it stood: the place kept from the
-    // press (`keepEntryBeside`), which `ViewportAnchor` restored in this commit before this runs.
+    // The entries it drew stand under every control drawn before it, where Show more stood, once
+    // the entry next to the pressed control is back where it stood: the place kept from the press
+    // (`keepEntryBeside`), which `ViewportAnchor` restored in this commit before this runs.
     const { controls, entries } = press.before;
     const lastBefore = [...controls].filter((control) => control.isConnected).at(-1);
-    const added = controlsOfList().filter((control) => !controls.has(control));
     const isBelow = (element: HTMLElement) =>
       lastBefore === undefined ||
       (lastBefore.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const first = entriesOfList()
+      .find((entry) => !entries.has(entry) && isBelow(entry))
+      ?.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    if (first != null) {
+      handTo(first);
+      return;
+    }
+    const added = controlsOfList().filter((control) => !controls.has(control));
     const view = scroller.current?.getBoundingClientRect() ?? {
       bottom: window.innerHeight,
       top: 0,
@@ -536,20 +515,15 @@ export function IssueHistory({
       const at = control.getBoundingClientRect();
       return at.height > 0 && at.top >= view.top && at.bottom <= view.bottom;
     };
-    const first =
-      entriesOfList()
-        .find((entry) => !entries.has(entry) && isBelow(entry))
-        ?.querySelector<HTMLElement>(ENTRY_CONTROLS) ?? undefined;
     const target =
-      (first !== undefined && inView(first) ? first : undefined) ??
       added.find((control) => isBelow(control) && inView(control)) ??
       added.find(inView) ??
-      first ??
       added.find(isBelow) ??
       added[0] ??
       more.current ??
-      lastBefore;
-    (target ?? heading.current)?.focus({ preventScroll: true });
+      lastBefore ??
+      heading.current;
+    if (target !== null) handTo(target);
   });
   // The place kept from the press goes once the reads it sent have settled, after the hand-on,
   // whatever that did: the focus it moved into the entries is the reader's place from then on,
@@ -714,336 +688,4 @@ export function IssueHistory({
 interface HeldParts {
   readonly controls: ReadonlySet<HTMLElement>;
   readonly entries: ReadonlySet<HTMLElement>;
-}
-
-/**
- * The key each run of uploads among `days` is drawn under, by the run's id. The model names a
- * run by its newest upload (`HistoryEntry`), so a newer upload that joins a run renames it;
- * drawn under that name, the run would be mounted anew, and a focus on one of its files' links
- * or Pins would fall to the page. So a run keeps the key it was first drawn under: the key one
- * of its files was drawn under (`held`, by each file's upload) unless another run here took it,
- * else its own id, with a count where that is taken too. A newer upload can split a run drawn
- * before (`buildHistory`): the runs are read newest first, so the part that holds the newer
- * upload keeps the run's key, and the files split off, more than a minute older than that
- * upload, are drawn anew under their own run's id, which can be the very key the newer part
- * kept. Every file of the run is then held under its key.
- */
-function runKeys(
-  days: readonly HistoryDay[],
-  held: Map<number, string>
-): ReadonlyMap<string, string> {
-  const keys = new Map<string, string>();
-  const taken = new Set<string>();
-  for (const day of days) {
-    for (const entry of day.entries) {
-      if (entry.kind !== "uploads") continue;
-      let key = entry.id;
-      for (const file of entry.files) {
-        const kept = held.get(file.id);
-        if (kept !== undefined && !taken.has(kept)) {
-          key = kept;
-          break;
-        }
-      }
-      for (let count = 1; taken.has(key); count += 1) key = `${entry.id}:${count}`;
-      taken.add(key);
-      keys.set(entry.id, key);
-      for (const file of entry.files) held.set(file.id, key);
-    }
-  }
-  return keys;
-}
-
-/** One entry of the history (`HistoryEntry`). */
-function Entry({
-  drawnId,
-  entry,
-  issueKey,
-  item,
-  onPin,
-  pinned,
-}: {
-  /** The id the entry is drawn under: its own, or a run's key (`runKeys`). */
-  drawnId: string;
-  entry: HistoryEntry;
-  issueKey: string;
-  item: string | undefined;
-  onPin: (eventId: number) => void;
-  pinned: (eventId: number) => boolean;
-}): ReactNode {
-  if (entry.kind === "unread") {
-    return (
-      <li
-        aria-label={CONTROL_LABELS.history_unread}
-        className={`my-1 flex items-center gap-3 text-xs leading-[18px] font-semibold ${pageInkText}`}
-        {...pageChrome}
-      >
-        <span className={`h-px flex-1 ${pageHairBg}`} />
-        {CONTROL_LABELS.history_unread}
-        <span className={`h-px flex-1 ${pageHairBg}`} />
-      </li>
-    );
-  }
-  // What a dated entry opens with (`.hev`): when, then who, then what they did.
-  const head = (
-    <>
-      <Timestamp at={entry.at} className={TIME} />
-      <span className={AUTHOR}>
-        <AgentName actor={entry.author} inline />
-      </span>{" "}
-    </>
-  );
-  if (entry.kind === "event") {
-    const isPinned = pinned(entry.event.id);
-    return (
-      <li
-        className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2`}
-        data-event-seq={entry.seq}
-        {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
-      >
-        <span className="min-w-40 flex-1 break-words">
-          {head}
-          {/* `main`'s line links a document's name in the application's link blue, which
-              Details draws in no line: those two lines are the history's own. So is a line that
-              names a block by its node's words, where `main`'s names it by its id. */}
-          {entry.event.type === "artifact.created" || entry.event.type === "artifact.renamed" ? (
-            <DocumentLine artifact={entry.event.payload.artifact} description={entry.description} />
-          ) : entry.block === undefined ? (
-            <ActivityLine description={entry.description} event={entry.event} issueKey={issueKey} />
-          ) : (
-            <BlockLine block={entry.block} description={entry.description} />
-          )}
-        </span>
-        <PinButton
-          label={isPinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
-          onClick={() => onPin(entry.event.id)}
-          pinned={isPinned}
-          quiet
-        />
-        {entry.event.type === "handoff.recorded" ? (
-          <HistoryHandoff handoffId={entry.event.payload.handoff_id} />
-        ) : null}
-      </li>
-    );
-  }
-  // Each file of a run is one event's upload, so each has that event's Pin and Unpin, as every
-  // line of the history has its event's: the run's line says who uploaded, and each file
-  // stands under it on a line of its own, beside its pin, as an event's words stand beside theirs.
-  // Each file is an entry the reader's place is held by (`ViewportAnchor`), so an older page
-  // that adds files under the one they read leaves it where it was.
-  if (entry.kind === "uploads") {
-    return (
-      <li
-        className={`${ENTRY} flex min-w-0 flex-col`}
-        data-event-seq={entry.seq}
-        {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
-        data-history-uploads={entry.files.length}
-      >
-        <span className="min-w-0 break-words">
-          {head}
-          <span {...pageChrome}>{CONTROL_LABELS.history_uploaded}</span>
-        </span>
-        <ul className="flex min-w-0 flex-col">
-          {entry.files.map((file) => {
-            const isPinned = pinned(file.id);
-            return (
-              <li
-                className="flex min-w-0 items-center gap-x-2"
-                {...{ [HISTORY_ENTRY_ATTRIBUTE]: `file:${file.id}` }}
-                key={file.id}
-              >
-                <span className="min-w-0 flex-1 break-words">
-                  {file.slug === undefined ? (
-                    file.name
-                  ) : (
-                    <Link
-                      className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
-                      to={buildIssuePath({ key: issueKey, kind: "artifact", slug: file.slug })}
-                    >
-                      {file.name}
-                    </Link>
-                  )}
-                </span>
-                <PinButton
-                  label={isPinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
-                  onClick={() => onPin(file.id)}
-                  pinned={isPinned}
-                  quiet
-                />
-              </li>
-            );
-          })}
-        </ul>
-      </li>
-    );
-  }
-  return (
-    <li
-      className="flex min-w-0 flex-col"
-      data-event-seq={entry.seq}
-      {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
-    >
-      <Turn issueKey={issueKey} marked={item === entry.root.id} turn={entry.root} />
-      {entry.replies.length === 0 ? null : (
-        <ol className="ml-3.5 flex min-w-0 flex-col">
-          {entry.replies.map((reply) => (
-            <li key={reply.id}>
-              <Turn issueKey={issueKey} marked={item === reply.id} turn={reply} />
-            </li>
-          ))}
-        </ol>
-      )}
-    </li>
-  );
-}
-
-/** The line of a document added or renamed, as `ActivityLine` draws it - its words, with the
- *  last reading of the document's name a link to its page, the new title of a rename, whose slug
- *  does not move - in the page's ink and its rows' underline, as an upload's file is. */
-function DocumentLine({
-  artifact,
-  description,
-}: {
-  artifact: Pick<
-    Artifact,
-    "issue_key" | "kind" | "name" | "primary" | "project" | "session_id" | "slug"
-  >;
-  description: readonly AgentPart[];
-}): ReactNode {
-  const name = artifact.name;
-  const linked = description.findIndex((part) => typeof part === "string" && part.includes(name));
-  return (
-    <span>
-      <AgentParts
-        parts={description}
-        text={(part, index) => {
-          if (index !== linked) return part;
-          const at = part.lastIndexOf(name);
-          return (
-            <>
-              {part.slice(0, at)}
-              <Link
-                className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
-                to={buildReferencePath(documentRoute(artifact))}
-              >
-                {name}
-              </Link>
-              {part.slice(at + name.length)}
-            </>
-          );
-        }}
-      />
-    </span>
-  );
-}
-
-/** The line of a block repaired or found invalid that names the block by its node's words
- *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's -
- *  the part of the line `block.part` names - a link to its node in the page's ink and its rows'
- *  underline, where its address reads as one. */
-function BlockLine({
-  block,
-  description,
-}: {
-  block: NamedBlock;
-  description: readonly AgentPart[];
-}): ReactNode {
-  const { path } = block.block;
-  return (
-    <span>
-      <AgentParts
-        parts={description}
-        text={(part, index) =>
-          index !== block.part || path === undefined ? (
-            part
-          ) : (
-            <Link
-              className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
-              to={path}
-              {...authorText}
-            >
-              {part}
-            </Link>
-          )
-        }
-      />
-    </span>
-  );
-}
-
-/**
- * One turn of a thread the history holds: when, who, and ` · edited` after the author where
- * the author edited it (`EditedMark`); its words whole at any length, or, where its author
- * deleted it, the deleted line in their place, as the outline's rows draw it (`DeletedLine`);
- * and Reply, which a deleted turn has not, as Dispatch takes no reply to it.
- */
-function Turn({
-  issueKey,
-  marked,
-  turn,
-}: {
-  issueKey: string;
-  marked: boolean;
-  turn: HistoryTurn;
-}): ReactNode {
-  const writer = useOutlineWriter();
-  const drawer = useMarginDrawer();
-  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
-  return (
-    <article
-      aria-current={marked ? "true" : undefined}
-      className={`${ENTRY} flex min-w-0 flex-col ${marked ? `rounded-r-md ${pageMarkBg}` : ""}`}
-      data-history-item={turn.id}
-      data-history-kind={turn.kind}
-    >
-      <p className="min-w-0 break-words">
-        <Link
-          className={`dispatch-inline-link ${TIME} ${pageRowAct}`}
-          data-history-time=""
-          to={buildIssuePath({ id: turn.id, key: issueKey, kind: turn.kind })}
-          {...{ [KEEPS_DETAILS_ATTRIBUTE]: "" }}
-        >
-          <Timestamp at={turn.at} />
-        </Link>
-        <span className={AUTHOR}>
-          <AgentName actor={turn.author} inline />
-        </span>
-        <EditedMark at={turn.editedAt} deleted={turn.deleted} marks={pageChrome} />
-      </p>
-      <div className={WORDS}>
-        {turn.deleted === null ? (
-          <MarkdownBody
-            markdown={turn.body}
-            source={textSourceOf(turn.kind, turn.id)}
-            tree={turn.bodyTree}
-          />
-        ) : (
-          <DeletedLine deleted={turn.deleted} />
-        )}
-      </div>
-      {writer === undefined || turn.deleted !== null ? null : (
-        <p>
-          <button
-            className={`dispatch-inline-link text-xs font-medium ${pageMutedText} ${pageRowAct}`}
-            data-history-reply={turn.id}
-            onClick={() => {
-              // On a phone Details covers the outline whose foot the line is at, so it closes
-              // for the reader to write there.
-              if (phone) drawer?.setOpen(false);
-              writer.replyTo({
-                author: turn.author,
-                id: turn.id,
-                kind: turn.kind,
-                text: turn.body,
-              });
-            }}
-            type="button"
-            {...pageChrome}
-          >
-            {CONTROL_LABELS.reply}
-          </button>
-        </p>
-      )}
-    </article>
-  );
 }

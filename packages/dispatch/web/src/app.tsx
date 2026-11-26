@@ -38,7 +38,6 @@ import {
   type MarginDrawerPage,
   MarginSlotProvider,
 } from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
 import {
   type ShellNavigation,
   ShellNavigationContext,
@@ -51,6 +50,7 @@ import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
+import { ReferenceNamesProvider } from "./features/refs/reference-names";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -1156,7 +1156,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>
   );

@@ -1163,7 +1163,7 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 			t.Fatalf("begin the index of version %d: %v", version.number, err)
 		}
 		_, won, write, _, err := refs.IndexBlocks(ctx, tx, version.artifact, refs.OneVersion(version.artifact, version.number, version.at), version.markdown,
-			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, refs.TypedFacts{})
+			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, sizedServerURL, refs.TypedFacts{})
 		if err == nil && !won {
 			err = fmt.Errorf("the pass lost the revision fence, so it wrote nothing")
 		}
@@ -1267,7 +1267,7 @@ func indexTheTypedDocuments(t *testing.T, database *store.Store) {
 			t.Fatalf("begin the index of %s: %v", typed.artifact, err)
 		}
 		_, won, write, _, err := refs.IndexBlocks(ctx, tx, typed.artifact, refs.OneVersion(typed.artifact, 1, typed.at),
-			typed.version.markdown, typed.version.blocks, typed.version.located, typed.version.pointers, refs.TypedFacts{})
+			typed.version.markdown, typed.version.blocks, typed.version.located, typed.version.pointers, sizedServerURL, refs.TypedFacts{})
 		if err == nil && !won {
 			err = errLostFence
 		}

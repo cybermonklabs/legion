@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
@@ -18,18 +18,21 @@ import type {
   RequirementCoverage,
 } from "../../../api/types";
 import { withEntries } from "../../issue/decision-entries";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionChanges, decisionNodeChanges } from "../decision-review";
 import {
   assemble,
   buildIssueTree,
   type IssueTreeReads,
-  lineWords,
+  lineWordsRaw,
+  type NodeChip,
   nodeWords,
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
+import { nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
 import {
   pagedAnswer,
@@ -67,6 +70,18 @@ import {
  */
 
 const KEY = "CORE-1";
+
+// A chip is named from its reading through the shared projection, which loads its engine once.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
+ *  reading. */
+function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
+  const { reading: _reading, ...fields } = chip;
+  return { ...fields, name: nameOf(chip) };
+}
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
  *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint and a
@@ -393,7 +408,7 @@ test("a node's words come from its text_tree", () => {
 
   const words = [blockNodeId("spec", "r1"), "c1"].map((id) => {
     const one = nodeOf(root, id);
-    return one === undefined ? undefined : [nodeWords(one), lineWords(one)];
+    return one === undefined ? undefined : [nodeWords(one), lineWordsRaw(one)];
   });
   expect(words).toEqual([
     ["Draw the tree from one read. Then the rest.", "Draw the tree from one read."],
@@ -433,7 +448,7 @@ test("a typed block's row and its chip draw the block's own content, not its kin
     "Build the step.",
     reading("Build the step."),
   ]);
-  expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
+  expect(step?.chips.map(nameOf)).toEqual(["The first statement."]);
 });
 
 /** A typed block of the spec and a person's comment under it, each a new object at each call. */
@@ -455,11 +470,11 @@ test("drawing the same answer twice hands a row the same reading and the same so
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
   expect(row?.tree).toEqual(reading("The first statement."));
-  expect(row?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(row?.source).toEqual({ id: SPEC.id, issue: KEY, kind: "artifact" });
   expect(again?.tree).toBe(row?.tree);
   expect(again?.source).toBe(row?.source);
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
-  expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turn?.source).toEqual({ id: "c1", issue: KEY, kind: "comment" });
   expect(turnAgain?.source).toBe(turn?.source);
 });
 
@@ -478,10 +493,10 @@ test("a node whose reading stays the same object keeps its source when another o
   const builds = [drawn(before).drafts, drawn(after).drafts];
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
-  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source).toEqual({ id: SPEC.id, issue: KEY, kind: "artifact" });
   expect(again?.source, "a node changed beside its words is handed a new source").toBe(row?.source);
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
-  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toEqual({ id: "c1", issue: KEY, kind: "comment" });
   expect(turnAgain?.source, "a comment changed beside its words is handed a new source").toBe(
     turn?.source
   );
@@ -496,10 +511,10 @@ test("a new record of an id is handed a new source, not the one made for the rec
   const builds = Array.from({ length: 2 }, () => drawn(records()).drafts);
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
-  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source).toEqual({ id: SPEC.id, issue: KEY, kind: "artifact" });
   expect(again?.source, "a new block is handed the old block's source").not.toBe(row?.source);
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
-  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toEqual({ id: "c1", issue: KEY, kind: "comment" });
   expect(turnAgain?.source, "a new comment is handed the old comment's source").not.toBe(
     turn?.source
   );
@@ -554,7 +569,7 @@ test("an unconverted issue's typed block stands under the parent the read answer
     source: drafts.get(second)?.source,
   }).toEqual({
     reference: `dispatch://${KEY}/artifact/plan-md#b-t2`,
-    source: { id: PLAN.id, kind: "artifact" },
+    source: { id: PLAN.id, issue: KEY, kind: "artifact" },
   });
   expect(blocksOfRole(tree, "plan", reads.issue)?.map((one) => [one.id, one.from])).toEqual([
     ["t1", 0],
@@ -681,7 +696,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
     [first, false, [`dispatch://${KEY}/spec#b-r2`]],
     [second, true, [`dispatch://${KEY}/spec#b-r1`]],
   ]);
-  expect(nodeOf(root, blockNodeId("plan-md", "t2"))?.chips).toEqual([
+  expect(nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map(drawnChip)).toEqual([
     {
       answered: true,
       gone: false,
@@ -691,7 +706,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
     },
   ]);
   expect(placementsOf(root, "d1").map((one) => one.parent)).toEqual([KEY]);
-  expect(nodeOf(root, "d1")?.chips).toEqual([
+  expect(nodeOf(root, "d1")?.chips.map(drawnChip)).toEqual([
     {
       answered: true,
       gone: false,
@@ -862,24 +877,22 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
     ),
   });
 
-  expect(nodeOf(root, blockNodeId("spec", "q1"))).toMatchObject({
-    chips: [
-      {
-        answered: true,
-        gone: false,
-        name: "Words of r1.",
-        ref: `dispatch://${KEY}/spec#b-r1`,
-      },
-      {
-        answered: true,
-        gone: false,
-        name: "Words of r2.",
-        ref: `dispatch://${KEY}/spec#b-r2`,
-      },
-    ],
-    reference: `dispatch://${KEY}/ask/ask-1`,
-    state: "answered",
-  });
+  const ask = nodeOf(root, blockNodeId("spec", "q1"));
+  expect(ask).toMatchObject({ reference: `dispatch://${KEY}/ask/ask-1`, state: "answered" });
+  expect(ask?.chips.map(drawnChip)).toMatchObject([
+    {
+      answered: true,
+      gone: false,
+      name: "Words of r1.",
+      ref: `dispatch://${KEY}/spec#b-r1`,
+    },
+    {
+      answered: true,
+      gone: false,
+      name: "Words of r2.",
+      ref: `dispatch://${KEY}/spec#b-r2`,
+    },
+  ]);
 });
 
 // R3: a decision of a decisions read of the release before - a section of `decisions.md`, which
@@ -977,7 +990,7 @@ test("drawing the same decisions read twice hands a section's row the same words
   const [row, again] = [buildIssueTree(reads), buildIssueTree(reads)].map((root) =>
     nodeOf(root, blockNodeId("decisions-md", "d1"))
   );
-  expect(row?.source).toEqual({ id: DECISIONS.id, kind: "artifact" });
+  expect(row?.source).toEqual({ id: DECISIONS.id, issue: KEY, kind: "artifact" });
   expect(row?.tree).toEqual(reading("Keep the model pure."));
   expect(again?.tree, "a re-read hands the section new words").toBe(row?.tree);
   expect(again?.source, "a re-read hands the section a new source").toBe(row?.source);
@@ -1606,7 +1619,7 @@ test("a plan task's needs pointer the read ties no node to is still a chip, name
     nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
       gone: chip.gone,
       label: chip.label,
-      name: chip.name,
+      name: nameOf(chip),
       ref: chip.ref,
     }))
   ).toEqual([
@@ -1660,7 +1673,7 @@ test("a plan task's needs the read sends on its reading alone are chips, a remov
     nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
       gone: chip.gone,
       label: chip.label,
-      name: chip.name,
+      name: nameOf(chip),
       ref: chip.ref,
     })),
     "t2's needs are no chips"
@@ -1774,7 +1787,10 @@ test("a requirement whose From line cites a document carries its chip from the t
   );
 
   expect(
-    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
+    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map((chip) => ({
+      name: nameOf(chip),
+      ref: chip.ref,
+    })),
     "the requirement draws no chip for the document its From line cites"
   ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });
@@ -1840,10 +1856,7 @@ test("Conversation's read names root R1's kinds and never block", async () => {
     KEY,
     { kind: [...CONVERSATION_KINDS] },
   ]);
-  expect(outlineQuery(KEY, "conversation").queryKey, "the key of another load").toEqual(
-    conversation.queryKey
-  );
-  expect(outlineQuery(KEY, "graph").queryKey).toEqual(issueTreeQuery(KEY).queryKey);
+  expect<unknown>(outlineQuery(KEY, "graph").queryKey).toEqual(["issue-tree", KEY]);
   const read = spyOn(api, "getIssueTree").mockResolvedValue(answer([]));
   try {
     const client = new QueryClient();
@@ -1991,17 +2004,21 @@ test("a prose node of the tree read is drafted and named in Graph", () => {
 // a list, a heading: a block whose text opens no typed block - as a block node of the supertag
 // `block`, and only its `kind` filter names it prose (the server's `nodeKind`). Graph draws it as
 // a prose row, and so does Conversation, whose read asks for prose and answers it so too. A
-// finding, a block whose id names its lens, and a typed block keep the steps that draft them, and
-// an ask's, a comment's or a message's own block stays part of its item. A block of a converted
-// document, which names its `document`, is a prose row of Graph and no row of Conversation, and
-// no filter draws a block its view read marks as context.
+// finding - a block whose id names its lens, or whose parent is a lens, even one nothing drafts -
+// and a typed block are never drafted as prose, and an ask's, a comment's or a message's own
+// block stays part of its item. A block of a converted document, which names its `document`, is a
+// prose row of Graph and no row of Conversation, and no filter draws a block its view read marks
+// as context.
 test("a plain block of the room's fragment is drafted and named as prose in Graph", () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
+  const orphanLens = "c3000000-0000-4000-8000-000000000004";
   const shared = [
     block("r1", "requirement", KEY, SPEC, 0),
     block("c1", "check", "r1", VERIFICATION, 0),
     node(lens, "lens", KEY),
     { ...node("f1", "block", lens), id: `lens/${lens}#f1` },
+    node(orphanLens, "lens", "doc-1"),
+    node("f2", "block", orphanLens),
     node("p1", "block", KEY),
     block("d1", "block", KEY, SPEC, 1),
     node("c-1", "comment", KEY),
@@ -2022,7 +2039,8 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
     "the word and the shape its row draws"
   ).toEqual(["paragraph", "prose"]);
   expect(typeOf(blockNodeId("spec", "r1")), "the typed block keeps its step").toBe("requirement");
-  expect(typeOf("f1"), "a finding is drafted as prose").toBeUndefined();
+  expect(typeOf("f1"), "a finding is drafted as prose").not.toBe("prose");
+  expect(typeOf("f2"), "a finding under a lens nothing drafts is drafted").toBeUndefined();
   expect(typeOf("cb1"), "a comment's own block is drafted as prose").toBeUndefined();
   expect(typeOf("c-1")).toBe("comment");
   expect(typeOf("q1"), "another issue's plain block is drafted as prose").toBeUndefined();

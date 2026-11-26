@@ -166,7 +166,7 @@ test("a requirement of another document is no statement an entry counts", () => 
 /** Puts the page's focus on node `id`, as the outline does when the reader moves to it. */
 function FocusOn({ id }: { id: string }): null {
   const setFocused = useSetFocusedNode();
-  useEffect(() => setFocused({ id, title: id, type: "ask" }), [id, setFocused]);
+  useEffect(() => setFocused({ id, text: id, type: "ask" }), [id, setFocused]);
   return null;
 }
 

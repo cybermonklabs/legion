@@ -108,7 +108,7 @@ export function viewRowSignals({
   readsHeld: boolean;
   root: TreeNode;
   viewer: string | undefined;
-}): Readonly<Partial<Record<Preset, PresetSignal>>> | undefined {
+}): Readonly<Record<Preset, PresetSignal | undefined>> | undefined {
   if (!namesHeld && filter !== "") return undefined;
   if (readsHeld && viewer !== undefined) {
     return {
@@ -117,11 +117,20 @@ export function viewRowSignals({
         count: contentsEntries(presetView(root, "conversation", filter).root, viewer),
         ...(root.moreToRead === true ? { more: true as const } : {}),
       },
+      graph: undefined,
     };
   }
   const cold = TREE_FILTERS.find((one) => one === preset);
   if (cold === undefined || root.views?.[cold] === undefined) return undefined;
-  return { [cold]: filterSignals(root, filter)[cold] };
+  return {
+    conversation: undefined,
+    decisions: undefined,
+    graph: undefined,
+    plan: undefined,
+    spec: undefined,
+    verification: undefined,
+    [cold]: filterSignals(root, filter)[cold],
+  };
 }
 
 /**

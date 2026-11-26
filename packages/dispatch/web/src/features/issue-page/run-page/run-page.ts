@@ -18,9 +18,9 @@ import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { safeExternalHref } from "../../../lib/external-href";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
-import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
-import { drawnLine, firstLineOf } from "../issue-tree";
+import { drawnLine, firstLineOf, lineWordsRaw } from "../issue-tree";
 import {
   EMPTY_STATE_LINES,
   NODE_REFERENCES_WORDS,
@@ -28,7 +28,6 @@ import {
   STATE_LINES,
   sentenceCase,
 } from "../page-words";
-import { plainWords } from "../tree-drafts";
 
 /**
  * A command bar run's own page, read without a browser: its address, its one read, and what the
@@ -51,6 +50,9 @@ function runAddress(id: string): string {
 
 /** The edge kind from a node a run changed to that run. */
 const CHANGED_BY_RUN: GraphEdge["kind"] = "changed_by_run";
+
+/** An edge as the run's read answers it, with its excerpt's reading (`GraphEdgeWithTrees`). */
+type ReadEdge = NonNullable<GraphReferences["edges"]>[number];
 
 /** Whether a read failed because there is no run to read: the address names none (400), or none
  *  the reader may open (404), which the page cannot tell apart and neither can a retry. */
@@ -127,12 +129,12 @@ export function useRun(id: string | undefined): RunRead {
 }
 
 /** One piece of the answer, in the order its frames came: the model's text, one thing it cites,
- *  or a line the page says of the answer. An item's `href` is the page it opens, none where the
- *  frame's href is no page the page links (`linkedHref`). */
+ *  or a line the page says of the answer, in the page's own words. An item's `href` is the page
+ *  it opens, none where the frame's href is no page the page links (`linkedHref`). */
 export type RunPart =
   | { readonly kind: "answer"; readonly markdown: string }
   | { readonly kind: "item"; readonly href?: string; readonly title: string }
-  | { readonly kind: "line"; readonly text: string };
+  | { readonly kind: "line"; readonly words: string };
 
 /** One node the run changed. */
 export interface RunChange {
@@ -141,8 +143,8 @@ export interface RunChange {
   /** The page's word for the node's kind, sentence-cased; `""` where the page has none, since a
    *  kind's schema token is no word a reader reads. */
   readonly kind: string;
-  /** The first line of the node's words, as every place that draws one line for a node draws
-   *  it; `""` where the read carries none. */
+  /** The first line of the node's words, as every place that draws one line for a node cuts it
+   *  (`lineWordsRaw`, `firstLineOf`, `drawnLine`); `""` where the read carries none. */
   readonly line: string;
   /** The page that opens the node; none where its address names no page. */
   readonly href?: string;
@@ -206,7 +208,10 @@ function errorLine(code: unknown): string {
 }
 
 /** The parts `frames` draw, in `sequence` order: a run of `text` frames is one answer, and an
- *  `end` frame, or a frame of a name the page does not know, draws nothing. */
+ *  `end` frame, or a frame of a name the page does not know, draws nothing. A run's texts are
+ *  joined with `+`: the reading list's source test reads a text in a template literal as drawn
+ *  there (`surface-lists.test.ts`), and the join draws nothing, its answer being the renderer's
+ *  to draw. */
 function partsOf(frames: readonly GraphFrame[]): RunPart[] {
   const parts: RunPart[] = [];
   for (const frame of [...frames].sort((a, b) => a.sequence - b.sequence)) {
@@ -216,7 +221,7 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
         const last = parts.at(-1);
         const text = stringOf(data.text);
         if (last?.kind === "answer") {
-          parts[parts.length - 1] = { kind: "answer", markdown: `${last.markdown}${text}` };
+          parts[parts.length - 1] = { kind: "answer", markdown: last.markdown + text };
         } else {
           parts.push({ kind: "answer", markdown: text });
         }
@@ -233,20 +238,20 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
       case GOING_EVENT_CUT:
         parts.push({
           kind: "line",
-          text: `${STATE_LINES.run_cut.before}${countOf(data.words)}${STATE_LINES.run_cut.after}`,
+          words: `${STATE_LINES.run_cut.before}${countOf(data.words)}${STATE_LINES.run_cut.after}`,
         });
         break;
       case GOING_EVENT_CHANGED:
         parts.push({
           kind: "line",
-          text: `${STATE_LINES.run_changed.before}${countOf(data.dropped)}${STATE_LINES.run_changed.after}`,
+          words: `${STATE_LINES.run_changed.before}${countOf(data.dropped)}${STATE_LINES.run_changed.after}`,
         });
         break;
       case GOING_EVENT_NONE:
-        parts.push({ kind: "line", text: EMPTY_STATE_LINES.run_none });
+        parts.push({ kind: "line", words: EMPTY_STATE_LINES.run_none });
         break;
       case GOING_EVENT_ERROR:
-        parts.push({ kind: "line", text: errorLine(data.code) });
+        parts.push({ kind: "line", words: errorLine(data.code) });
         break;
     }
   }
@@ -254,11 +259,12 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
 }
 
 /** The nodes `edges` name, once each, in the read's order: each by its kind's word, the first
- *  line of its words, and the page its address opens. An edge of a kind, or to a node of a kind,
- *  that this page does not know is left out, as every list of a node's references leaves it
- *  (`drawsEdge`), and so is a node with neither a word for its kind nor a line, which the page
- *  could name by nothing. */
-function changedOf(edges: readonly GraphEdge[]): RunChange[] {
+ *  line of its words, and the page its address opens. The words are those of the server's
+ *  reading of the edge's excerpt (`text_tree`), and of the excerpt as stored where the read sent
+ *  none (`lineWordsRaw`). An edge of a kind, or to a node of a kind, that this page does not know
+ *  is left out, as every list of a node's references leaves it (`drawsEdge`), and so is a node
+ *  with neither a word for its kind nor a line, which the page could name by nothing. */
+function changedOf(edges: readonly ReadEdge[]): RunChange[] {
   const kinds: Readonly<Partial<Record<string, string>>> = NODE_REFERENCES_WORDS.kinds;
   const types: Readonly<Partial<Record<string, string>>> = NODE_TYPE_NAMES;
   const changed = new Map<string, RunChange>();
@@ -268,11 +274,15 @@ function changedOf(edges: readonly GraphEdge[]): RunChange[] {
     const key = ref ?? `${kind}:${id}`;
     if (changed.has(key)) continue;
     const word = kinds[kind] ?? types[kind];
-    const line = drawnLine(firstLineOf(plainWords(edge.excerpt?.text ?? "")));
+    const excerpt = edge.excerpt;
+    const line =
+      excerpt === undefined
+        ? ""
+        : drawnLine(firstLineOf(lineWordsRaw({ text: excerpt.text, tree: excerpt.text_tree })));
     if (word === undefined && line === "") continue;
     const route = ref === undefined ? undefined : parseNodeReference(ref);
     changed.set(key, {
-      href: route === undefined ? undefined : buildReferencePath(route),
+      href: route === undefined ? undefined : referenceHref(route),
       key,
       kind: word === undefined ? "" : sentenceCase(word),
       line,

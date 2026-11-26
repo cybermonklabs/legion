@@ -117,10 +117,11 @@ function RunAnswer({
       </header>
       <section aria-labelledby={questionHeading} className="flex min-w-0 flex-col gap-1.5">
         <h2 className={SECTION_HEADING} id={questionHeading} {...pageChrome}>
-          {RUN_PAGE_WORDS.question}
+          {RUN_PAGE_WORDS.question_heading}
         </h2>
-        {/* The question as the asker typed it: their characters, never read as markdown. */}
         <p className="whitespace-pre-wrap [overflow-wrap:anywhere]" {...authorText}>
+          {/* The question as the asker typed it, her characters and never markdown: the reading
+              list's `run-page-question`. */}
           {view.question}
         </p>
       </section>
@@ -184,7 +185,7 @@ function RunAnswerPart({ part }: { part: RunPart }): ReactNode {
     case "answer":
       return (
         <div {...authorText}>
-          <MarkdownBody markdown={part.markdown} softBreaks="line" />
+          <MarkdownBody markdown={part.markdown} softBreaks="line" surface="run-page-answer" />
         </div>
       );
     case "item":
@@ -202,7 +203,7 @@ function RunAnswerPart({ part }: { part: RunPart }): ReactNode {
     case "line":
       return (
         <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
-          {part.text}
+          {part.words}
         </p>
       );
   }
