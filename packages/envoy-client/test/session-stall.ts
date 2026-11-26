@@ -575,8 +575,12 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // took no registration back, and one already on its way when it came may have moved it on.
     expect(stalled.lastSeen).toBeGreaterThanOrEqual(beforeFreeze);
     // It is past the live window when the listener reads the session as stalled, so it is not
-    // the moment the listener noticed.
-    expect(Date.now() - stalled.lastSeen).toBeGreaterThan(LIVE_WINDOW_MS);
+    // the moment the listener noticed. The listener reads a record live while its age is at most
+    // the window, to the nanosecond (`StateOf`, packages/envoy/internal/session/state.go), and
+    // stamps `last_seen` in whole milliseconds, so a read just past the window can land in the
+    // same millisecond as `Date.now()` here: the age this row sees is the window or more. A wait
+    // that polls every 10 ms read exactly 10 000 in CI run 45827333044 at 32201e8f.
+    expect(Date.now() - stalled.lastSeen).toBeGreaterThanOrEqual(LIVE_WINDOW_MS);
 
     // (2) The default listing is unchanged for every caller that only ever wanted live
     // sessions; the stalled row is there for a caller that asks, with the same last_seen.
@@ -722,8 +726,10 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     }
 
     await waitForState(stack, ended, child.sessionID, "gone");
-    // It reached the horizon by its record's age, not by anything the rig did to it.
-    expect(Date.now() - stalled.lastSeen).toBeGreaterThan(GONE_HORIZON_MS);
+    // It reached the horizon by its record's age, not by anything the rig did to it. As with the
+    // live window above, the listener's nanosecond rule against a whole-millisecond stamp makes the
+    // age this row sees the horizon or more.
+    expect(Date.now() - stalled.lastSeen).toBeGreaterThanOrEqual(GONE_HORIZON_MS);
 
     // Only the role claim reaper releases the claim, and only now that the holder is gone. It
     // runs on the listener's own reap interval, so from here its pass can fall between any two
