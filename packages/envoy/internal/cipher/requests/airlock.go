@@ -718,7 +718,7 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		p.name, p.slot, p.placeholder,
-		e.runtime_id, coalesce(e.session_id, ''), e.kind, e.operator, e.subject, e.projects, c.service
+		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''), e.kind, e.operator, e.subject, e.projects, c.service
 		from grants g
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
@@ -744,7 +744,7 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 		var name, slot, placeholder string
 		if err := rows.Scan(&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
 			&name, &slot, &placeholder,
-			&row.conn.RuntimeID, &row.conn.SessionID, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service); err != nil {
+			&row.conn.RuntimeID, &row.conn.SessionID, &row.conn.Operator, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service); err != nil {
 			return nil, err
 		}
 		if len(grants) == 0 || grants[len(grants)-1].conn.GrantID != row.conn.GrantID {
