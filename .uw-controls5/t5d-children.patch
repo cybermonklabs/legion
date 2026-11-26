@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f0946421e19..11593418d23 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -883,7 +883,7 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
+ 		terms = append(terms, fmt.Sprintf("%s beneath it is in the workflow at %s since %s.", beneath.Key, beneath.Status, since(beneath.Since)))
+ 	}
+ 	for _, child := range stored.OpenChildren {
+-		terms = append(terms, fmt.Sprintf("Its child %s is open in Dispatch at %s since %s.", child.Key, child.Status, since(child.Since)))
++		_ = child
+ 	}
+ 	for _, check := range stored.Checks {
+ 		terms = append(terms, fmt.Sprintf("Check %s has no pass since %s: %s.", check.ID, since(check.Since), strings.Trim(check.Answer+", "+check.Reason, ", ")))

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f0946421e19..dd7c0ea5dd8 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -652,7 +652,7 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue,
+ 			}
+ 		}
+ 	}
+-	if e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
++	if false && e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
+ 		var ids []string
+ 		for _, check := range stored.Checks {
+ 			ids = append(ids, fmt.Sprintf("%s (%s)", check.ID, strings.Trim(check.Answer+", "+check.Reason, ", ")))

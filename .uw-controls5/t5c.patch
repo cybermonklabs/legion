@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f0946421e19..3629c953e87 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -464,7 +464,7 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
+ 	if err != nil || issue == nil || issue.Phase != phase.Verifying {
+ 		return intake.Result{}, err
+ 	}
+-	if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
++	if err := error(nil); err != nil {
+ 		return intake.Result{}, err
+ 	}
+ 	return intake.Result{}, e.askCloseRead(ctx, tx, *issue)

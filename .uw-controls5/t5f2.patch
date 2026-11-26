@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f0946421e19..0b15428b8da 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -445,7 +445,7 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
+ 	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || view.facts.OpenChange {
+ 		return nil
+ 	}
+-	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {
++	if check := view.facts.Production; check != nil && check.MergeSHA == issue.Merge.SHA {
+ 		return nil
+ 	}
+ 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f0946421e19..d3bdeb0b920 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -874,7 +874,7 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
+ 	since := func(at time.Time) string { return at.UTC().Format(time.RFC3339) }
+ 	var terms []string
+ 	if unread := stored.Unread; unread != nil {
+-		terms = append(terms, fmt.Sprintf("Its checks are unread since %s: %s.", since(unread.Since), unread.Cause))
++		_ = unread
+ 	}
+ 	if unapproved := stored.Unapproved; unapproved != nil {
+ 		terms = append(terms, fmt.Sprintf("Since %s these checks changed without a person's approval: %s.", since(unapproved.Since), strings.Join(unapproved.Checks, ", ")))

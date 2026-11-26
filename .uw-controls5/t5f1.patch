@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f0946421e19..022b25c35d7 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -896,8 +896,7 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
+ 		case production.NextLookAt != nil:
+ 			state = "open, its next look at " + since(*production.NextLookAt)
+ 		}
+-		terms = append(terms, fmt.Sprintf("Its production check of generation %d at merge commit %s is %s since %s.", production.Generation, production.Merge, state, since(production.Since)),
+-			"Its way out is a pass at its look, one more look after a late result, or the next change of a fail.")
++		_ = state
+ 	}
+ 	for _, defect := range stored.Defects {
+ 		terms = append(terms, fmt.Sprintf("Reason %d waits since %s: %s.", defect.ID, since(defect.Since), defect.Text))
