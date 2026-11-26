@@ -228,11 +228,14 @@ while [ $# -gt 0 ]; do
       inner="${inner%)$}"
       [ -n "$inner" ] || usage "-run names no test"
       printf '%s\n' "${inner//|/$'\n'}" | sort -u >"$work/selected"
-      # Each alternative a whole test name, as go_legs.py writes them and as
-      # go-test-step-expansion.py's SKIP_ALTERNATION reads a -skip: `^(.*)$` or `^(A)|(B)$` is no
-      # list of names, and a list this script read off it would not be what go test runs.
+      # Each alternative a whole test name, by the rule .github/scripts/go_legs.py's TEST_NAME
+      # writes them under: Test, Fuzz or Example, then no whitespace and no regex metacharacter.
+      # `^(.*)$` or `^(A)|(B)$` is no list of names, and a list this script read off it would not
+      # be what go test runs; a name holding a non-ASCII letter is one (its bytes are none of those
+      # under LC_ALL=C), as go_legs.py lists and places it.
+      test_name='^(Test|Fuzz|Example)[^][:space:].*+?(){}|^$\\[]*$'
       while IFS= read -r name; do
-        [[ "$name" =~ ^(Test|Fuzz|Example)[A-Za-z0-9_]*$ ]] ||
+        [[ "$name" =~ $test_name ]] ||
           usage "-run takes whole test names, ^(Name|Name|...)\$, and \"$name\" is none"
       done <"$work/selected"
       run=(-run "$pattern")

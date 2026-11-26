@@ -53,10 +53,13 @@ ELSEWHERE = "elsewhere"
 # Where a split package's groups are: GROUPS/<module>/<package>.yaml.
 GROUPS = ".github/go-legs"
 # A name `go test -run` matches at the top level: what `go test -list .` prints for each test,
-# fuzz test and example, less the benchmarks, which no -run without -bench runs. `\w` is Unicode
-# in Python 3, as a Go identifier is: `go test` runs a `func TestÄ…` and lists it, and a name this
-# pattern dropped would be in no group and in no leg's -run, with nothing to say so.
-TEST_NAME = re.compile(r"^(?:Test|Fuzz|Example)\w*$")
+# fuzz test and example, less the benchmarks, which no -run without -bench runs. After the prefix
+# any character but whitespace and a regex metacharacter: a Go identifier may hold any Unicode
+# letter (`go test` runs a `func TestÄ…` and lists it), and a name this pattern dropped would be in
+# no group and in no leg's -run, with nothing to say so; while a metacharacter would make the
+# group's -run a pattern rather than a list of names. packages/envoy/scripts/database-skips.sh
+# holds a leg's -run names to the same rule (its TEST_NAME), so a name one accepts the other does.
+TEST_NAME = re.compile(r"^(?:Test|Fuzz|Example)[^\s.*+?()\[\]{}|^$\\]*$")
 # The longest -run pattern a group may print. go test hands the pattern to the test binary as one
 # argument, `-test.run=<pattern>`, and Linux refuses one argument over 131,072 bytes
 # (MAX_ARG_STRLEN); GNU xargs builds a command line of at most 128 KiB by default and, past it,

@@ -437,7 +437,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
                 "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="a5d42e5539ad6ef495e5510f6be94772dfde4f2b7f1c91423588cca377dde99d",
+        sha256="828f2e3d8a0142b2cb84138266efc0860d6c7a4269c62b0a16e5af73aac1c52f",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -826,8 +826,6 @@ def audited_command(step: Step, text: str) -> str:
     words = text.split()
     for path, script in AUDITED_SCRIPTS.items():
         if not words or not words[0].endswith(Path(path).name):
-            continue
-        if Path(path).name not in text:
             continue
         arguments = " ".join(words[1:])
         if arguments not in script.commands:

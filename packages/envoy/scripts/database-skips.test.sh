@@ -418,6 +418,13 @@ for shape in '-run=^(.*)$' '-run=^(TestA)|(TestB)$' '-run=TestA'; do
   judge "$([ "$(code leg-shape)" = 1 ] && said leg-shape 'usage:' && echo 0 || echo 1)" \
     "control 7: $shape, no list of whole test names, is refused before any test runs" "$(seen leg-shape)"
 done
+# A name with a non-ASCII letter is a whole test name: go_legs.py lists and places one, so the
+# counter must take it too. It matches no test here, and the anchor still runs.
+count leg-unicode bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "-run=^($API_ANCHOR|TestÄnderungGibtEsNicht)\$" ./internal/dispatch/api/
+judge "$([ "$(code leg-unicode)" = 0 ] && ! said leg-unicode 'usage:' && grep -qxF 'database_skips=0' "$WORK/leg-unicode.out" &&
+  echo 0 || echo 1)" \
+  "control 7: a -run name holding a non-ASCII letter is taken, as go_legs.py takes it" "$(seen leg-unicode)"
 count leg-report bash "$COUNTER" --report "$WORK/quiet.json" "-run=^($API_ANCHOR)\$" "${QUIET[@]}"
 judge "$([ "$(code leg-report)" = 1 ] && said leg-report 'refused beside it' && echo 0 || echo 1)" \
   "control 7: -run is refused beside --report" "$(seen leg-report)"

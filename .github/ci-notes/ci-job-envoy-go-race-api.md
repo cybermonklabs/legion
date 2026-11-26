@@ -26,7 +26,12 @@ service and its command, `-json` for each test's own time and `/proc/stat` every
   test's own rows to run beside each other, which is the package owner's change and not this one.
 
 Three legs, from the measured times: group 1 is that one test, and groups 2 and 3 model 438 s
-each. A fourth leg would move nothing, since the floor stays 595 s.
+each. A fourth leg would move nothing, since the floor stays 595 s. Measured: in run
+45717135535 leg 1 ran that one test in 609.9 s and legs 2 and 3 took 412.2 and 417.0 s. Main
+then added 76 API tests no group named; go_legs.py placed them, 27 of them in group 1, so in run
+45735800190 leg 1 ran 28 tests in 631.3 s beside 513.4 and 417.1 s. The 76 are named in the
+groups file now: the 27 that fell to group 1 are in group 3, the lightest, and the rest where they
+were placed, so leg 1 is that one test again.
 
 The groups are `.github/go-legs/packages/envoy/internal/dispatch/api.yaml`, one group per leg, and
 the rules they keep are in

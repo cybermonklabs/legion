@@ -11,6 +11,7 @@
   - TestABatchLeavesThePendingAuthorRowsOneAtATimeAppendsLeave  # 6.4 s
   - TestABatchNamesOnlyTheOperationsWhoseTextWentMissing  # 0.6 s
   - TestABlockMovedFromADocumentWhoseAskSettlementRetractedOpensItsOwnAsk  # 1.0 s
+  - TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed
   - TestABlockPastedThenCutOpensItsAskOnTheDocumentItWasPastedInto  # 1.2 s
   - TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom  # 0.7 s
   - TestABrowserEditBeforeAVersionCommitsLeavesOnlyItsOwnAuthorOwed  # 0.8 s
@@ -419,6 +420,7 @@
   - TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent  # 3.9 s
   - TestTheFirstKeystrokeOfARoomLoadedOnAStrandedPruneFinishesIt  # 0.7 s
   - TestTheFirstTickWithAProvenHorizonOwesTheObjectPassThoughATickBeforeAnyHorizonRanIt  # 0.2 s
+  - TestTheFormsDrainSettlesAGoneDocument
   - TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown  # 0.0 s
   - TestTheMarkingRuleNamesTheStatementsItMarksWith  # 0.0 s
   - TestTheObjectPassDebtCrossesProcessesAndClearsOnceThePassFinishes  # 0.5 s
@@ -773,6 +775,10 @@
   - TestTheCompactionQueueRetriesABusyDocumentUntilItsLockIsFree  # 0.9 s
   - TestTheCompactionSweepHandsABusyDocumentToTheQueue  # 0.8 s
   - TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule  # 0.8 s
+  - TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves
+  - TestTheFormsDrainIndexesTextAnOlderBuildStored
+  - TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes
+  - TestTheFormsDrainsIndexSettlesAfterItsOwnDelete
   - TestTheIndexPassesAreStoreWritersAndNoRepairExists  # 28.8 s
   - TestTheNextBuildsFleetProcessWaitsForNoOwnerLock  # 0.4 s
   - TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument  # 0.6 s
@@ -1025,6 +1031,7 @@
   - TestNamedVersionIndexesServerURLDocumentReferences  # 0.7 s
   - TestNamedVersionKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits  # 0.9 s
   - TestNewestReviewReadsTakeTheReviewOrderIndex  # 0.5 s
+  - TestOffsetBlocksCarriesTheAttributesTheRenderFound
   - TestOutsideReviewColdAgentVersionLastHuman  # 0.8 s
   - TestPanickingColdLoadFailsTheRoomAndRecovers  # 0.7 s
   - TestPgVersionedConformance  # 0.9 s
@@ -1111,6 +1118,9 @@
   - TestTheDrainOwesADocumentIndexedByAnEarlierGrammar  # 0.6 s
   - TestTheDrainResolvesAnIDWrittenBeforeItsQuestionSettles  # 0.9 s
   - TestTheExcerptReconciliationMakesNoStatementOnceDrained  # 4.5 s
+  - TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst
+  - TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed
+  - TestTheFormsDrainLeavesALiveAheadDocumentOwed
   - TestThePendingAuthorsKeepAnAuthorProvenOnlyWhenEveryRowIs  # 0.2 s
   - TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite  # 0.3 s
   - TestTheResumptionArmsNoMoreThanItsBoundInOnePass  # 18.7 s
