@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
@@ -974,12 +973,16 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		t.Fatalf("begin the private nodes' write: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	// Each node names the project of the document and the issue it sits in, as the block index
+	// and the comment writer write theirs: a reader whose credential lists that project reads a
+	// node of it, and a node of no project is no node of a listed one.
+	project := strings.SplitN(fixture.issue, "-", 2)[0]
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{{
-		Kind: "block", ID: fixture.private, Supertag: "block",
+		Kind: "block", ID: fixture.private, Supertag: "block", Project: project,
 		Visibility: visibility, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}, {
-		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment,
+		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment, Project: project,
 		Visibility: visibility, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}}, nil); err != nil {

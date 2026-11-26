@@ -118,18 +118,6 @@ func readNearCopyCorpus(t *testing.T, path string) nearCopyCorpus {
 	return corpus
 }
 
-// specAt is the issue's spec as the corpus holds it at the given time: the latest exported
-// version created by then.
-func (corpus nearCopyCorpus) specAt(key string, at time.Time) string {
-	spec := ""
-	for _, version := range corpus.issues[key].SpecVersions {
-		if !version.CreatedAt.After(at) {
-			spec = version.Markdown
-		}
-	}
-	return spec
-}
-
 func (corpus nearCopyCorpus) firstSpec(key string) string {
 	for _, version := range corpus.issues[key].SpecVersions {
 		if version.Number == 1 {
@@ -364,7 +352,7 @@ func measureNearCopyGate(
 		scoring := make([]time.Duration, 0, runs)
 		for run := range runs + 1 {
 			started := time.Now()
-			if _, err := srv.readDuplicateCandidates(ctx, corpus.project, title, text, nil, nearCopyGateBound, duplicateNudgeScore); err != nil {
+			if _, err := srv.readDuplicateCandidates(ctx, everyReader, corpus.project, title, text, nil, nearCopyGateBound, duplicateNudgeScore); err != nil {
 				t.Fatalf("the gate did not answer for %s: %v", name, err)
 			}
 			gate := time.Since(started)
@@ -376,7 +364,7 @@ func measureNearCopyGate(
 			ancestor := time.Since(started)
 
 			started = time.Now()
-			picked, err := srv.pickRelatedTerms(ctx, database.Pool, corpus.project, text, title, relatedExclusion{}, priceUnknownTerms)
+			picked, err := srv.pickRelatedTerms(ctx, database.Pool, everyReader, corpus.project, text, title, relatedExclusion{}, priceUnknownTerms)
 			if err != nil {
 				t.Fatalf("pick the terms for %s: %v", name, err)
 			}
@@ -385,7 +373,7 @@ func measureNearCopyGate(
 			lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 			started = time.Now()
 			rows, err := database.Pool.Query(ctx, duplicateScoreQuery,
-				corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title)
+				corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title, refs.VisibilityArg(everyReader))
 			if err != nil {
 				t.Fatalf("score for %s: %v", name, err)
 			}
@@ -415,13 +403,13 @@ func measureNearCopyGate(
 	}
 
 	title, _, _ := strings.Cut(ordinary, "\n")
-	picked, err := srv.pickRelatedTerms(ctx, database.Pool, corpus.project, ordinary, title, relatedExclusion{}, priceUnknownTerms)
+	picked, err := srv.pickRelatedTerms(ctx, database.Pool, everyReader, corpus.project, ordinary, title, relatedExclusion{}, priceUnknownTerms)
 	if err != nil {
 		t.Fatalf("pick the terms for the plan: %v", err)
 	}
 	lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 	plan, err := database.Pool.Query(ctx, "explain (analyze, buffers) "+duplicateScoreQuery,
-		corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title)
+		corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title, refs.VisibilityArg(everyReader))
 	if err != nil {
 		t.Fatalf("explain the scoring statement: %v", err)
 	}
@@ -443,7 +431,7 @@ func replayNearCopyGate(t *testing.T, srv *server, corpus nearCopyCorpus, key st
 	started := time.Now()
 	// From zero, not from the gate's own floor: the replay must see the whole distribution to
 	// report the rate at a bar below today's.
-	candidates, err := srv.readDuplicateCandidates(context.Background(), corpus.project,
+	candidates, err := srv.readDuplicateCandidates(context.Background(), everyReader, corpus.project,
 		corpus.firstTitle(key), corpus.firstSpec(key), issue.Ancestors, nearCopyGateBound, 0)
 	score := nearCopyScore{key: key, answered: err == nil, took: time.Since(started)}
 	if err != nil {

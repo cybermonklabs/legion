@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -455,7 +454,7 @@ func TestAPassDropsTheQueuedChangesThatNameNoProject(t *testing.T) {
 // excluded, which is the number the picker scores a term by.
 func relatedTermDF(t *testing.T, database *store.Store, project, text, excludeIssue string) map[string]int {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), relatedTermsSQL, project, text, excludeIssue, nil, text)
+	rows, err := database.Pool.Query(context.Background(), relatedTermsSQL, project, text, excludeIssue, nil, text, relatedViewer(everyReader))
 	if err != nil {
 		t.Fatalf("read the related terms of %s: %v", project, err)
 	}

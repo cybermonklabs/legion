@@ -12,12 +12,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -39,10 +41,20 @@ var approvalAskOptions = []model.AskOption{
 	{Label: docs.ApprovalOptionRequestChanges, Description: "Say what must change before it can be approved."},
 }
 
+<<<<<<< branch
 // latestVersionNumber is the newest version an artifact has, nil when it has none.
 func latestVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (*int, error) {
+||||||| base-probe-main
+// latestVersionNumber is the newest version an artifact has, nil when it has none.
+func latestVersionNumber(ctx context.Context, q queryer, artifactID string) (*int, error) {
+=======
+// latestVersionNumber is the newest version an artifact has, nil when it has none or when who may
+// not read the document (documentVisible).
+func latestVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (*int, error) {
+>>>>>>> probe-slice
 	var latest *int
-	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&latest); err != nil {
+	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1 and `+documentVisible("$1", "$2"),
+		artifactID, refs.VisibilityArg(who)).Scan(&latest); err != nil {
 		return nil, fmt.Errorf("latest artifact version: %w", err)
 	}
 	return latest, nil
@@ -58,9 +70,20 @@ func settledVersionNumber(ctx context.Context, q queryer, who model.Actor, artif
 }
 
 // loadReviews is every review of the document, newest first in the order its events committed
+<<<<<<< branch
 // (docs.ReviewOrder).
 func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, artifactID string) ([]model.ArtifactReview, error) {
 	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
+||||||| base-probe-main
+// (docs.ReviewOrder).
+func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) ([]model.ArtifactReview, error) {
+	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
+=======
+// (docs.ReviewOrder), read only where who may read the document (documentVisible).
+func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, artifactID string) ([]model.ArtifactReview, error) {
+	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 and `+
+		documentVisible("artifact_reviews.artifact_id", "$2")+` order by `+docs.ReviewOrder, artifactID, refs.VisibilityArg(who))
+>>>>>>> probe-slice
 	if err != nil {
 		return nil, err
 	}
@@ -75,24 +98,34 @@ func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, ar
 }
 
 // latestReviewsStatement reads the newest review of every document in $1, one row each
-// (docs.ReviewOrder decides which); scanLatestReviews reads its rows.
-const latestReviewsStatement = `
+// (docs.ReviewOrder decides which), of the documents the reader whose visibility argument is $2
+// may read; scanLatestReviews reads its rows.
+var latestReviewsStatement = `
 		select distinct on (artifact_id) ` + docs.ReviewColumns + `
-		from artifact_reviews where artifact_id = any($1::uuid[])
+		from artifact_reviews where artifact_id = any($1::uuid[]) and ` + documentVisible("artifact_reviews.artifact_id", "$2") + `
 		order by artifact_id, ` + docs.ReviewOrder + `
 	`
 
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
-// and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
+// and its Verification document is found by either and reported on both. A row is read only for
+// a document the reader whose visibility argument is $2 may read: the document is one of $1, by
+// the uuid index, and the one the row names. The request itself is read only where that reader
+// may read it as the ask of its own issue or document (access.ItemOwnerClause), and its newest
+// reply through it: a request a store holds naming a document of another project names nothing
+// on that document to a reader who may not see the request's own.
+var openApprovalAsksStatement = `
 		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
 		from asks a` + lastReplyJoin + `
 		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
+		  and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2") + `
+		  and exists (select 1 from artifacts named_document
+		              where named_document.id = any($1::text[]::uuid[]) and named_document.id::text = document ->> 'artifact_id'
+		                and ` + access.DocumentClause("named_document", "$2") + `)
 	`
 
 // openApprovalRequest is one document's open approval request: who asked, whose turn it is, and
@@ -232,10 +265,11 @@ func queueApprovals(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) 
 	}
 	latestReviews := map[string]model.ArtifactReview{}
 	requests := map[string]openApprovalRequest{}
-	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
+	seen := refs.VisibilityArg(who)
+	b.Queue(latestReviewsStatement, ids, seen).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
 	})
-	b.Queue(openApprovalAsksStatement, ids).Query(func(rows pgx.Rows) error {
+	b.Queue(openApprovalAsksStatement, ids, seen).Query(func(rows pgx.Rows) error {
 		return scanOpenApprovalRequests(rows, requests)
 	})
 	return func() { applyApprovals(byID, latestReviews, requests) }
@@ -866,6 +900,19 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
+	// The request's node goes in before its row, in the project of the document it is asked on,
+	// which the issue that owns the request is in too (an issue's document carries its issue's
+	// project); its write is queued before the row's insert, and what it states waits for the
+	// ask.opened event below. The document is read already, so its project costs no round trip
+	// of its own.
+	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
+	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, ask.CreatedAt)}, nil)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
 	if err := queueExec(ledger, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, created_at)
 		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8)
@@ -888,12 +935,13 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
-	// The requester follows the request it opened, right after the ask.opened that records it,
-	// so a session requester's node is caused by that event in the follow's own statement and
-	// the request pays no second statement to move it there. Nothing before the event reads the
-	// follower row: its payload's logins are the thread's (events.ThreadLogins), and the outbox
-	// reads the followers after the commit.
+	// The request's node learns the ask.opened that records it, and the requester follows the
+	// request it opened, both right after that event, so a session requester's node is caused by
+	// that event in the follow's own statement and the request pays no second statement to move
+	// it there. Nothing before the event reads the follower row: its payload's logins are the
+	// thread's (events.ThreadLogins), and the outbox reads the followers after the commit.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		_, err := asks.QueueFollowAuthor(b, ask.ID, actor, ask.CreatedAt, graphstore.LatestEvent)
 		return err
 	}); err != nil {

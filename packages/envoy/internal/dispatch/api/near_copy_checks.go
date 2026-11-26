@@ -13,8 +13,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+<<<<<<< branch
 	"github.com/sjawhar/envoy/internal/contracts"
+||||||| base-probe-main
+
+=======
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+>>>>>>> probe-slice
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The record of every answer the near-copy gate gives a create. Before it only a create forced
@@ -234,14 +242,18 @@ const nearCopyCheckColumns = `id::text, created_at, project_key, actor_kind, act
        build_commit, read_ms, read_stage`
 
 // nearCopyChecksPageQuery reads one page of a project's rows ($1), within [$2, $3) when given,
-// after the row whose created_at and id are $4 and $5 when given, oldest first, at most $6.
-const nearCopyChecksPageQuery = `
+// after the row whose created_at and id are $4 and $5 when given, oldest first, at most $6, of a
+// project the reader ($7) may see (access.ProjectClause): a project it may not see answers the
+// empty page a project nobody holds does. A row's candidates are issues of its own project
+// (duplicateGate reads `i.project_key = $1`), so the clause on the row holds them too.
+var nearCopyChecksPageQuery = `
 select ` + nearCopyCheckColumns + `, null::text
   from near_copy_checks
  where project_key = $1
    and ($2::timestamptz is null or created_at >= $2)
    and ($3::timestamptz is null or created_at < $3)
    and ($4::timestamptz is null or (created_at, id) > ($4, $5::uuid))
+   and ` + access.ProjectClause("project_key", "$7") + `
  order by created_at, id
  limit $6`
 
@@ -259,7 +271,8 @@ func scanNearCopyCheck(row pgx.Row, check *model.NearCopyCheck) error {
 // ?project= recorded within [from, to), oldest first, at most ?limit= of them, after the row
 // ?after= names. It reads one more row than the page holds to know whether another page follows.
 func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -298,8 +311,8 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 		id := parsed.String()
 		var at time.Time
 		err = pool.QueryRow(r.Context(), `
-			select created_at from near_copy_checks where id = $1::uuid and project_key = $2
-		`, id, page.Project).Scan(&at)
+			select created_at from near_copy_checks where id = $1::uuid and project_key = $2 and `+access.ProjectClause("project_key", "$3")+`
+		`, id, page.Project, refs.VisibilityArg(who)).Scan(&at)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "INVALID_QUERY", http.StatusBadRequest,
 				fmt.Sprintf("after %s is no near-copy check of project %s", raw, page.Project))
@@ -312,7 +325,7 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 		afterAt, afterID = &at, &id
 	}
 	rows, err := pool.Query(r.Context(), nearCopyChecksPageQuery,
-		page.Project, page.From, page.To, afterAt, afterID, limit+1)
+		page.Project, page.From, page.To, afterAt, afterID, limit+1, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -339,9 +352,11 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 }
 
 // getNearCopyCheck answers GET /api/v1/near-copy-checks/{id}: the one row of that id, a refused
-// row with the spec it refused, or 404 NEAR_COPY_CHECK_NOT_FOUND.
+// row with the spec it refused, or 404 NEAR_COPY_CHECK_NOT_FOUND, which a row of a project the
+// reader may not see answers too (access.ProjectClause).
 func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	if !requireUUIDPath(w, r, "near_copy_check") {
@@ -355,8 +370,8 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var check model.NearCopyCheck
 	err = scanNearCopyCheck(pool.QueryRow(r.Context(), `
-		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid
-	`, id), &check)
+		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid and `+access.ProjectClause("project_key", "$2")+`
+	`, id, refs.VisibilityArg(who)), &check)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "NEAR_COPY_CHECK_NOT_FOUND", http.StatusNotFound, "near-copy check "+id+" not found")
 		return

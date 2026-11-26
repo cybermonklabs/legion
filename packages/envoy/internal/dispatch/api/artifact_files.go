@@ -44,8 +44,14 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who mod
 	if kind == "doc" || s.deps.Files == nil {
 		return true
 	}
+<<<<<<< branch
 	artifactID, err := s.refuseUploadBeforeItsObject(r.Context(), who, target, input.name, kind, input.precondition != nil)
 	if err != nil {
+||||||| base-probe-main
+	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input.name, kind); err != nil {
+=======
+	if err := s.refuseUploadBeforeItsObject(r.Context(), who, target, input.name, kind); err != nil {
+>>>>>>> probe-slice
 		s.writeHandlerError(w, err)
 		return false
 	}
@@ -69,6 +75,7 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who mod
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
 // storeArtifact's transaction would make of a file or image upload to target under name: a
+<<<<<<< branch
 // project that does not exist, an artifact the name or slug finds whose kind is not kind, a new
 // artifact whose name or reference key is past its bound, or a first upload naming a token
 // (namesToken), which storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal).
@@ -76,10 +83,29 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who mod
 // artifacts between them. With no refusal it answers the id of the artifact the upload writes a
 // version of, "" for a new one, for the check of the token the upload names (refuseFileBase).
 func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Actor, target artifactTarget, name, kind string, namesToken bool) (string, error) {
+||||||| base-probe-main
+// project that does not exist, an artifact the name or slug finds whose kind is not kind, or a new
+// artifact whose name or reference key is past its bound. It reads as that transaction reads, so
+// the two refuse alike whenever nothing writes the owner's artifacts between them.
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, name, kind string) error {
+=======
+// project that does not exist, an artifact the name or slug finds whose kind is not kind, or a new
+// artifact whose name or reference key is past its bound. It reads as that transaction reads, so
+// the two refuse alike whenever nothing writes the owner's artifacts between them.
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Actor, target artifactTarget, name, kind string) error {
+>>>>>>> probe-slice
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
+<<<<<<< branch
 		if _, err := s.loadProject(ctx, pool, who, target.Project); err != nil {
 			return "", err
+||||||| base-probe-main
+		if _, err := s.loadProject(ctx, pool, target.Project); err != nil {
+			return err
+=======
+		if _, err := s.loadProject(ctx, pool, who, target.Project); err != nil {
+			return err
+>>>>>>> probe-slice
 		}
 	}
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
