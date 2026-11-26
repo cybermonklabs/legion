@@ -6,7 +6,9 @@
 //     f62fbb2bdbe8 (read 2026-11-25), with its 18 proxied profiles verbatim: the 17 of the move's
 //     plan and AWS_ADMIN, which main gained after the plan read it. It leaves out the 16 profiles
 //     of persons' own Apps, which no proxy block names, writes owner@example.com for each person's
-//     address, and leaves one GitHub account no proxy rule reads out of the accounts lists.
+//     address and example for the company's name in the one profile name and the one Google Cloud
+//     project that hold it, and leaves one GitHub account no proxy rule reads out of the accounts
+//     lists.
 //   - profiles-kinds.json is its move to kinds: the kinds of the spec's table for those profiles'
 //     hosts; each profile whose source is its own name loses its proxy block, and
 //     GITHUB_ENTERPRISE_ADMIN keeps its five rows as its own allow, each on api.github.com,
@@ -16,7 +18,8 @@
 //   - secrets-tagged.json is the store after the move's tags, as `gcloud secrets list
 //     --format='json(name,annotations)'` prints it: each own-name source tagged with its kind, the
 //     five narrowed ones tagged proxy-narrowed=true, and each source of a name behind a kind given
-//     a max-grant within that kind's max_grant, which the policy load requires.
+//     a max-grant within that kind's max_grant, which the policy load requires. Its ids write
+//     123456789012 for the store's project number and example for the company's name.
 //
 // The helpers are this file's, and runCheck and profilesFile, which a build of the subcommand from
 // before kinds also has, so this file runs against that build and shows what it cannot do.
@@ -53,7 +56,7 @@ var proxiedOnMain = map[string]string{
 	"TAILSCALE_API_KEY":         `tailscale`, // a raw string: a quoted word after a key name reads as a credential to the push check
 	"GCLOUD_OWNER":              "gcp",
 	"AZURE_ADMIN":               "azure",
-	"GWS_THEOREM_ADMIN_OAUTH":   "gws",
+	"GWS_EXAMPLE_ADMIN_OAUTH":   "gws",
 	"GITHUB_ENTERPRISE_ADMIN":   "github",
 	"ANTHROPIC_ADMIN_HDO":       "anthropic",
 	"ANTHROPIC_ADMIN_HDO_V2":    "anthropic",
@@ -211,7 +214,7 @@ func TestProfilesCheckKeepsEveryProxiedNameOfTheMoveBehindTheProxy(t *testing.T)
 	wantHosts := []string{
 		`hosts "AIRLOCK_PROBE": github.com added`,
 		`hosts "AIRLOCK_PROBE": uploads.github.com added`,
-		`hosts "GWS_THEOREM_ADMIN_OAUTH": *.googleapis.com added`,
+		`hosts "GWS_EXAMPLE_ADMIN_OAUTH": *.googleapis.com added`,
 	}
 	if got := linesWith(stdout, "hosts \""); !slices.Equal(got, wantHosts) {
 		t.Errorf("the move lists the hosts added %q, want %q", got, wantHosts)
@@ -615,7 +618,7 @@ func TestProfilesCheckRefusesASecretsListThatShowsNoTags(t *testing.T) {
 		{"an object, not a list", `{"secrets": []}`, "is not the list of secrets gcloud secrets list prints"},
 		{"an entry with no name", `[{"annotations": {"proxy": "github"}}]`, "entry 0 has no name"},
 		{"an empty list", `[]`, "lists no agent secret"},
-		{"no agent secret", `[{"name": "projects/805240912354/secrets/broker-signin-client-secret", "annotations": {}}]`, "lists no agent secret"},
+		{"no agent secret", `[{"name": "projects/123456789012/secrets/broker-signin-client-secret", "annotations": {}}]`, "lists no agent secret"},
 		{"a secret twice", `[{"name": "projects/1/secrets/agent-secrets-airlock-probe"}, {"name": "projects/1/secrets/agent-secrets-airlock-probe"}]`, "lists the secret projects/1/secrets/agent-secrets-airlock-probe twice"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -632,8 +635,8 @@ func TestProfilesCheckRefusesASecretsListThatShowsNoTags(t *testing.T) {
 	}
 	var list []any
 	decodeFixture(t, tagsFixture, &list)
-	list = append(list, jsonObject{"name": "projects/805240912354/secrets/agent-secrets-kms-key-ring", "annotations": nil})
-	list = append(list, jsonObject{"name": "projects/805240912354/secrets/broker-signin-client-secret"})
+	list = append(list, jsonObject{"name": "projects/123456789012/secrets/agent-secrets-kms-key-ring", "annotations": nil})
+	list = append(list, jsonObject{"name": "projects/123456789012/secrets/broker-signin-client-secret"})
 	path := write(t, string(encodeFixture(t, list)))
 	code, stdout, stderr := runCheck(t, kindsFixture, "--against", proxyBlocksFixture, "--secrets-json", path)
 	if want := "profiles check: tags read from " + path + ": 18 agent secrets (1 entry of no agent secret not read)\n"; code != 0 || stderr != "" || !strings.Contains(stdout, want) {
