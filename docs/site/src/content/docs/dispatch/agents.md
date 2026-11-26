@@ -391,8 +391,10 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   unsent in it, and opening it again builds it from what the session replays.
 - An Oh My Pi session that starts again on the same conversation, such as an agent whose pod
   restarted or a session resumed with `omp --continue`, shows the turns it had before: the session
-  reads up to its newest 200 messages back from its transcript. A `!` command run before the
-  restart shows as your message and the session's reply.
+  reads back up to its newest 200 messages since it last summarised its conversation, which is
+  what its terminal shows too. A session that summarised inside those 200 shows only the turns
+  after that summary. A `!` command run before the restart shows as your message and the
+  session's reply.
 
 A session whose plugin does not stream its conversation shows none of it here.
 The live view says so, and still shows your messages and their replies.

@@ -30,6 +30,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
+  AGENT_STREAM_LIMITS,
   canonicalTopic,
   type Envelope,
   EnvelopeSchema,
@@ -23258,6 +23259,60 @@ console.log(JSON.stringify(args));
       { dispatchMessageId: undefined, id: "a20", role: "assistant" },
     ]);
     await fixture.handlers.get("session_shutdown")?.({}, rolledBack);
+  }, 30_000);
+
+  // A session is filled from its transcript once per ring. Filled again on a later move back to
+  // it, while a viewer still watches its ring, the fill would bring back a turn the ring had
+  // dropped past its bound, and drop one it still held.
+  test("a session taken up again while its ring is watched is not filled a second time", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-filled-once"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const say = (at: number) => ({
+      content: [{ text: `turn ${at}`, type: "text" }],
+      role: "assistant",
+      timestamp: at,
+    });
+    const transcript = Array.from({ length: historyMessages }, (_, index) => ({
+      id: `e${index}`,
+      message: say(index + 1),
+      type: "message",
+    }));
+    const base = sessionContext("ses_filled_once");
+    const watched: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => transcript,
+        getEntries: () => transcript,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, watched);
+    expect(await viewerReplay("ses_filled_once", "inbox-filled-first")).toHaveLength(
+      historyMessages
+    );
+    // One more turn: the ring drops the first.
+    await fixture.handlers.get("message_end")?.({ message: say(historyMessages + 1) }, watched);
+    // The host leaves and comes back; the viewer's watch keeps the ring.
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext("ses_away"));
+    await fixture.handlers.get("session_switch")?.({ reason: "resume" }, watched);
+
+    const replayed = await viewerReplay("ses_filled_once", "inbox-filled-again");
+    expect(replayed).toHaveLength(historyMessages);
+    expect(replayed.slice(0, 2).map((row) => ("id" in row ? row.id : row.call))).toEqual([
+      "a2",
+      "a3",
+    ]);
+    expect(replayed.at(-1)).toEqual({
+      dispatchMessageId: undefined,
+      id: `a${historyMessages + 1}`,
+      role: "assistant",
+    });
+    await fixture.handlers.get("session_shutdown")?.({}, watched);
   }, 30_000);
 
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {

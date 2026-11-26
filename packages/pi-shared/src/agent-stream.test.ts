@@ -1538,6 +1538,41 @@ describe("a session this process takes up with turns already in its transcript",
     expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
   });
 
+  // A turn recorded twice inside the bound keeps its first place and its newest text, and the
+  // ring a fill leaves drops the same slot as the running session's ring once later turns push it
+  // past the bound: the fill takes each slot in the order the ring first took it.
+  test("leaves a ring that holds a twice-recorded turn where the running session's ring does", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const filled = [
+      ...Array.from({ length: historyMessages - 1 }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      ),
+      assistant(1, [{ text: "turn 1 again", type: "text" }]),
+    ];
+    const later = [historyMessages, historyMessages + 1].map((at) =>
+      assistant(at, [{ text: `turn ${at}`, type: "text" }])
+    );
+    const ran = harness();
+    for (const message of filled) ran.publisher.record(SUBJECT, message, false);
+    const resumed = harness();
+    resumed.publisher.restore(filled);
+    for (const { publisher } of [ran, resumed]) publisher.noteViewer();
+
+    // Inside the bound: the row is the first turn's, in its place, with what it says last.
+    const inside = resumed.publisher.replay("s1").frames.map(textOf);
+    expect(inside).toHaveLength(historyMessages - 1);
+    expect(inside.slice(0, 2)).toEqual(["turn 1 again", "turn 2"]);
+    expect(inside).toEqual(ran.publisher.replay("s1").frames.map(textOf));
+
+    // Past it: both rings drop the slot first taken, the first turn's.
+    for (const message of later) {
+      for (const { publisher } of [ran, resumed]) publisher.record(SUBJECT, message, false);
+    }
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live.slice(0, 2)).toEqual(["turn 2", "turn 3"]);
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
   test("of an empty transcript keeps nothing: the session replays as a fresh one does", () => {
     const fresh = harness();
     const resumed = harness();

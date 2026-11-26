@@ -713,16 +713,18 @@ export class AgentStreamPublisher {
    * when the process takes the session up (a pod's restart and `omp --continue`, a `--resume`, a
    * `/resume`), oldest first, each as the host handed it to `message_end` when it ran. Each is kept
    * as `record` keeps a settled message, into the ring's own bounds, so a replay after a restart
-   * reads as one before it would have. A message already in the ring stands: a restore after a
-   * turn of this process adds the turns before it and replaces none of them.
+   * reads as one before it would have. A message whose slot the ring already holds stands: a
+   * restore after a turn of this process adds the turns before it and replaces none of them.
    *
    * Which messages survive is decided as the ring itself decides it: the slots are walked in the
    * order the messages were recorded, a message of a slot the ring holds keeps that slot's place,
-   * and past the bound the slot first taken goes. Only the slot each message takes is read here,
-   * never its body: a body is read where a frame is built, for the messages the bound kept.
-   * Nothing is published, since a viewer reads these from its replay. `dispatchMessageIdOf` names
-   * the Dispatch message a user message delivered, which only the caller can know (`record`'s
-   * `dispatchMessageId`).
+   * and past the bound the slot first taken goes. The slots are then kept in that same order, each
+   * with its newest message, so the ring drops what the running session's ring would drop as later
+   * turns arrive. Only the slot each message takes is read here: no body, except the text of a
+   * card that names no id of its own, which is what its slot is (`keyFor`). A body is read where
+   * a frame is built, for the messages the bound kept. Nothing is published, since a viewer reads
+   * these from its replay. `dispatchMessageIdOf` names the Dispatch message a user message
+   * delivered, which only the caller can know (`record`'s `dispatchMessageId`).
    */
   restore(
     messages: readonly unknown[],
@@ -739,7 +741,8 @@ export class AgentStreamPublisher {
       const oldest = slots.keys().next();
       if (oldest.done !== true) slots.delete(oldest.value);
     }
-    for (const index of [...slots.values()].sort((left, right) => left - right)) {
+    for (const [key, index] of slots) {
+      if (this.#history.has(key)) continue;
       const raw = messages[index];
       this.#keep(raw, false, dispatchMessageIdOf(raw));
     }

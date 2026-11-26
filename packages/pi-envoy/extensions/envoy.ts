@@ -4832,6 +4832,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       const liveSessionID = context.sessionManager.getSessionId();
       forgetAgentStreamContext();
       agentStreams.clear();
+      restoredAgentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }
