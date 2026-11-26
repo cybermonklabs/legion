@@ -1904,6 +1904,11 @@ replace "$root/.github/workflows/ci.yaml" "  lint:" \
 replace "$root/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
   "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\", \"called\": \"app\"}'"
 replace "$root/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, image, lint, called]"
+# Rule 25: the called job's gate file, which names it and reads its definition.
+cat > "$root/.github/ci-gates/called.py" <<'PY'
+GATE = gate("app", "called", reads=[Read(".github/workflows/called.yaml", "the job reads the definition of the steps it runs")],
+            workflow=".github/workflows/called.yaml")
+PY
 run_check "$root"
 check "passes while the called file starts no go command" "$(is "$status" 0)"
 replace "$root/.github/workflows/called.yaml" "        run: echo nothing to compile" "        run: go test ./lib"
@@ -2102,6 +2107,11 @@ root=$(fixture list-gate-no-output)
 list_gate "$root"
 replace "$root/.github/ci-gates/called.app.py" 'GATE = gate("app", "called",' 'GATE = gate("library_test", "called",'
 replace "$root/.github/workflows/called.yaml" "'\"app\"'" "'\"library_test\"'"
+# Rule 25: the called job is still gated on app, so a gate of app names it.
+cat > "$root/.github/ci-gates/called.job.py" <<'PY'
+GATE = gate("app", "called", reads=[Read(".github/workflows/called.yaml", "the job reads the definition of the steps it runs")],
+            workflow=".github/workflows/called.yaml")
+PY
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "reads the one gate on library_test" \
@@ -3316,6 +3326,13 @@ YAML
     "{\"app\": \"app\", \"image\": \"image\", \"$slow\": \"app\", \"$fast\": \"app\"}"
   replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
     "    needs: [changes, app, image, lint, $slow, $fast]"
+  # Rule 25: each caller's gate file, which names it on app and reads the steps it runs.
+  for job in "$slow" "$fast"; do
+    cat > "$root/.github/ci-gates/$job.py" <<PY
+GATE = gate("app", "$job", reads=[Read(".github/workflows/shared.yaml", "the job reads the definition of the steps it runs")],
+            workflow=".github/workflows/shared.yaml")
+PY
+  done
 }
 
 echo "case: a workflow two jobs call, each running the job of it named for itself"
@@ -3409,6 +3426,8 @@ split_callers() {
   replace "$root/.github/workflows/ci.yaml" '"tooling-checks": "app"' '"tooling-checks": "fast"'
   replace "$root/.github/workflows/shared.yaml" "        run: echo tooling-checks" \
     $'        run: go test ./cmd/app ./lib\n        working-directory: mod'
+  # The fast caller's gate is fast.py now, not shared_file's gate of it on app.
+  rm "$root/.github/ci-gates/tooling-checks.py"
   cat > "$root/.github/ci-gates/fast.py" <<'PY'
 GATE = gate("fast", "tooling-checks", runs=[
     run("mod", ["./cmd/app", "./lib"],
@@ -3458,7 +3477,11 @@ run_check "$root"
 check "fails once only the slow caller passes the fast output" "$(is "$status" 1)"
 check "names the gate and the step" \
   "$(has "$out" "::error file=.github/workflows/shared.yaml::gate fast names step \"Run the tooling-checks steps\" of tooling-checks, but no single step of that name has an if: on needs.changes.outputs.fast")"
-check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+# Rule 25 refuses the same step from the other side: read through its own caller's value it is
+# gated on app now, and no gate of app names tooling-checks, whose one gate is fast.py.
+check "and names the step that is now gated on a filter no gate of its job declares" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks step \"Run the tooling-checks steps\" is gated on filter app, but no file of .github/ci-gates declares a gate of app for job tooling-checks's steps in .github/workflows/shared.yaml")"
+check "and those are its two problems" "$(contains "$out" '^::error::2 CI filter problem(s)$')"
 
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)
