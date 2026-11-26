@@ -125,7 +125,7 @@ func TestLoadControllerRefuses(t *testing.T) {
 	}{
 		{"a file that is not a mapping", "- a\n- b\n", "controller.yaml must be a mapping"},
 		{"an unknown key", requiredControllerKeys + "runtime: kubernetes\n",
-			`unknown key "runtime" in the controller configuration; legion controller start reads only project, daemon_url, operator_token_file, envoy_url, envoy_token_file, nats_urls, nats_nkey_seed_file, dispatch_url, dispatch_token_file, dispatch_token_broker, instructions, omp_invocation, omp_launch_prefix, state_dir — see deploy/kubernetes/daemon/controller.yaml.example`},
+			`unknown key "runtime" in the controller configuration; legion controller start reads only project, daemon_url, operator_token_file, envoy_url, envoy_token_file, nats_urls, nats_nkey_seed_file, dispatch_url, dispatch_token_file, dispatch_token_broker, instructions, omp_invocation, omp_launch_prefix, state_dir, signal_own_refusal_pattern, signal_provider_refusal_pattern — see deploy/kubernetes/daemon/controller.yaml.example`},
 		{"no project", without("project"), "project is required in the controller configuration"},
 		{"no daemon_url", without("daemon_url"), "daemon_url is required in the controller configuration"},
 		{"no operator_token_file", without("operator_token_file"), "operator_token_file is required in the controller configuration"},

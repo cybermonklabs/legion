@@ -120,6 +120,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// The architect's process runs in the pod too, so its ask is a row like a worker's.
 		UpdateAsk{Role: claim.RoleArchitect, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "The daemon must replace the pod that runs this issue's roles."},
 		MergeQueueRead{Number: 42, Head: "c0de"},
+		QueueTimelineRead{Repo: "cybermonklabs/legion", Number: 42, Move: "enqueued", MinCount: 1},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
@@ -305,8 +306,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
-	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindQueueTimelineRead}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage, LaneSignals}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
 	}
@@ -399,6 +400,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
 		// and at the resume each held start carries what it recorded.
 		OutboxKindDesignChanges: "",
+		// A queue timeline read reads GitHub's timeline for the queue signal and starts no turn, so
+		// a project pause lets it run.
+		OutboxKindQueueTimelineRead: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {

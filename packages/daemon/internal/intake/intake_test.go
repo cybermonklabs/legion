@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -391,19 +392,19 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "Dispatch issue created",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.created",
 			file:    "dispatch/issue-created.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}, Assignee: "smoke", AssigneeKnown: true},
 		},
 		{
 			name:    "Dispatch issue updated",
 			subject: "notifications.dispatch.issue.CAPTURE-3.issue.updated",
 			file:    "dispatch/issue-updated.json",
-			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, Assignee: "smoke", AssigneeKnown: true},
 		},
 		{
 			name:    "Dispatch issue closed",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.closed",
 			file:    "dispatch/issue-closed.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, Assignee: "smoke", AssigneeKnown: true},
 		},
 		{
 			name:    "Dispatch artifact version",
@@ -434,30 +435,34 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "Dispatch ask opened (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.opened",
 			file:    "dispatch/ask-opened.json",
-			want:    DispatchAskOpened{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", AuthorSession: "session-architect", Mark: mark(6, "2026-09-23T00:46:31Z")},
+			want: DispatchAskOpened{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", AuthorSession: "session-architect", Mark: mark(6, "2026-09-23T00:46:31Z"),
+				Turn: signals.AskEvent{Kind: signals.AskOpened, Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Issue: "CAPTURE-4", State: signals.ReportsOpen}},
 		},
 		{
 			name:    "Dispatch ask answered (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.answered",
 			file:    "dispatch/ask-answered.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "human"},
-				Mark: mark(9, "2026-09-23T00:46:34Z")},
+				Mark: mark(9, "2026-09-23T00:46:34Z"),
+				Turn: signals.AskEvent{Kind: signals.AskAnswered, Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Issue: "CAPTURE-4", State: signals.ReportsClosed}},
 		},
 		{
 			name:    "Dispatch ask resolved (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.resolved",
 			file:    "dispatch/ask-resolved.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-architect"},
-				Mark: mark(10, "2026-09-23T00:46:35Z")},
+				Mark: mark(10, "2026-09-23T00:46:35Z"),
+				Turn: signals.AskEvent{Kind: signals.AskResolved, Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Issue: "CAPTURE-4", State: signals.ReportsClosed}},
 		},
-		// A hand-on moves which person's Inbox the ask sits in, and no root waits on a person,
-		// so the daemon reads the type by ignoring it (decode.go's default arm): no fact, no
-		// error, and nothing of the workflow moves.
+		// A hand-on moves which person's Inbox the ask sits in, and no root waits on a person, so the
+		// workflow reads nothing of it: it decodes to the approvals signal's fact alone, which names
+		// the person the ask was handed to.
 		{
 			name:    "Dispatch ask handed to another person (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.asked_of",
 			file:    "dispatch/ask-asked-of.json",
-			want:    nil,
+			want: DispatchAskTurn{Key: "CAPTURE-4", Mark: mark(13, "2026-09-23T00:46:38Z"),
+				Turn: signals.AskEvent{Kind: signals.AskAskedOf, Ask: "b1d3a9c2-5f70-4f0a-9c6e-1d2b3a4c5d6e", Issue: "CAPTURE-4", State: signals.ReportsOpen, AskedOfSet: true, AskedOf: "smoke"}},
 		},
 		{
 			name:    "Dispatch ask resolved as a person's decline (hand-built)",
@@ -465,21 +470,24 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/ask-resolved-declined.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "9f2b7c41-6d0a-4e3b-8c57-1ab2d3e4f506", Kind: "question", State: "resolved",
 				Decline: &record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords},
-				Actor:   dispatch.Actor{Kind: "user", ID: "human"}, Mark: mark(13, "2026-09-23T00:46:38Z")},
+				Actor:   dispatch.Actor{Kind: "user", ID: "human"}, Mark: mark(13, "2026-09-23T00:46:38Z"),
+				Turn: signals.AskEvent{Kind: signals.AskResolved, Ask: "9f2b7c41-6d0a-4e3b-8c57-1ab2d3e4f506", Issue: "CAPTURE-4", State: signals.ReportsClosed}},
 		},
 		{
 			name:    "Dispatch ask reply returning the turn to the agent (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.comment.created",
 			file:    "dispatch/comment-ask-agent.json",
 			want: DispatchAskReply{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", WaitingOn: "agent", Actor: dispatch.Actor{Kind: "user", ID: "human"},
-				Mark: mark(7, "2026-09-23T00:46:32Z"), Comment: "4c4b2a5f-93df-4aeb-a2ca-b5c74187c8bf"},
+				Mark: mark(7, "2026-09-23T00:46:32Z"), Comment: "4c4b2a5f-93df-4aeb-a2ca-b5c74187c8bf",
+				Turn: signals.AskEvent{Kind: signals.AskCommented, Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Issue: "CAPTURE-4", WaitingOn: signals.WaitsOnAgent}},
 		},
 		{
 			name:    "Dispatch ask reply leaving the turn with the human (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.comment.created",
 			file:    "dispatch/comment-ask-human.json",
 			want: DispatchAskReply{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", WaitingOn: "human", Actor: dispatch.Actor{Kind: "session", ID: "session-architect"},
-				Mark: mark(8, "2026-09-23T00:46:33Z"), Comment: "65f690c1-bd91-4a42-81aa-aaf136fcc51c"},
+				Mark: mark(8, "2026-09-23T00:46:33Z"), Comment: "65f690c1-bd91-4a42-81aa-aaf136fcc51c",
+				Turn: signals.AskEvent{Kind: signals.AskCommented, Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Issue: "CAPTURE-4", WaitingOn: signals.WaitsOnHuman}},
 		},
 		{
 			name:    "Dispatch issue claimed (hand-built)",
@@ -774,7 +782,8 @@ func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t
 	if err != nil {
 		t.Fatalf("decode of an event without resolved_repo = %v, want it decoded", err)
 	}
-	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{}}
+	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{},
+		Assignee: "smoke", AssigneeKnown: true}
 	if !reflect.DeepEqual(decoded.Fact, want) {
 		t.Fatalf("fact = %#v, want %#v", decoded.Fact, want)
 	}
@@ -809,12 +818,13 @@ func settingsSubject(project string) string {
 	return "notifications.dispatch.project." + project + ".settings.repo_project.updated"
 }
 
-// A boot narrows the Dispatch consumer an earlier daemon made to the issue events alone: the
-// consumer that heard the subject of Dispatch's settings.repo_project.updated beside them is
-// updated in place, its position kept, and its filters read back exactly
-// notifications.dispatch.issue.>. An event Dispatch then publishes on that settings subject is
-// never delivered: once an issue event published after it is acknowledged, nothing is pending
-// or awaiting its acknowledgement, and processed_events holds a row for the issue events alone.
+// A boot narrows the Dispatch consumer an earlier daemon made to the issue events and the subject of
+// Dispatch's settings.repo_project.updated: the consumer is updated in place, its position kept, and
+// its filters read back exactly the issue events and this project's default assignee subject, the
+// one setting the approvals signal reads. An event Dispatch then publishes on the repo-project
+// settings subject is never delivered: once an issue event published after it is acknowledged,
+// nothing is pending or awaiting its acknowledgement, and processed_events holds a row for the issue
+// events alone.
 //
 // The read-back of the filters is the control: with the settings subject put back among them, and
 // no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
@@ -841,7 +851,7 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
 	narrowed := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
-	if want := []string{"notifications.dispatch.issue.>"}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
+	if want := []string{"notifications.dispatch.issue.>", defaultAssigneeSubject(spec.Project)}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
 		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", narrowed.Config.FilterSubject, narrowed.Config.FilterSubjects, want)
 	}
 	if narrowed.NumPending != 1 || narrowed.Delivered.Stream != 0 {
@@ -871,6 +881,74 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	}
 	if want := []string{"dispatch-15", "dispatch-24"}; !slices.Equal(marks, want) {
 		t.Fatalf("processed_events = %q, want the two issue events alone, %q, and no row for the settings event", marks, want)
+	}
+}
+
+// A boot adds this project's default assignee subject to the Dispatch consumer an earlier daemon
+// made on the issue events alone, in place and with its position kept: the backlog it had is still
+// pending and nothing was delivered by the update. The consumer then hears each move of this
+// project's default assignee, in order with the issue events beside it, and no other setting and
+// no other project's move: the repo-project settings event and another project's default assignee
+// event publish between them and reach no fact.
+func TestTheBootAddsTheDefaultAssigneeSubjectToTheDispatchConsumerAndKeepsItsPosition(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	backlog := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{
+		Durable:        dispatchConsumerName(spec.Project),
+		FilterSubjects: []string{"notifications.dispatch.issue.>"},
+		AckPolicy:      jetstream.AckExplicitPolicy, AckWait: spec.AckWait,
+	}); err != nil {
+		t.Fatalf("create the earlier daemon's consumer: %v", err)
+	}
+	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
+	}
+	updated := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
+	if want := []string{"notifications.dispatch.issue.>", defaultAssigneeSubject(spec.Project)}; updated.Config.FilterSubject != "" || !slices.Equal(updated.Config.FilterSubjects, want) {
+		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", updated.Config.FilterSubject, updated.Config.FilterSubjects, want)
+	}
+	if updated.NumPending != 1 || updated.Delivered.Stream != 0 {
+		t.Fatalf("the updated consumer has %d pending and delivered through stream sequence %d, want its backlog of 1 (stream sequence %d) kept and nothing delivered: the boot updates the consumer in place",
+			updated.NumPending, updated.Delivered.Stream, backlog.Sequence)
+	}
+	var mu sync.Mutex
+	var facts []Fact
+	stop := runConsumers(t, consumers, handlerFunc(func(_ context.Context, _ pgx.Tx, fact Fact) (Result, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		facts = append(facts, fact)
+		return Result{}, nil
+	}))
+	defer stop()
+
+	event := func(id int, project, kind, payload string) []byte {
+		return envelopeJSON(t, fmt.Sprintf("dispatch-%d-%s", id, project), "dispatch", fmt.Sprintf(
+			`{"id":%d,"issue_key":null,"artifact_id":null,"project":%q,"seq":%d,"type":%q,"actor":{"kind":"user","id":"smoke"},"notify":false,"created_at":"2026-10-16T18:00:00Z","payload":%s}`,
+			id, project, id/10, kind, payload))
+	}
+	const defaultAssignee = "settings.project_default_assignee.updated"
+	publish(t, js, defaultAssigneeSubject("OTHER"), event(60, "OTHER", defaultAssignee, `{"project":"OTHER","assignee":"someone-else"}`))
+	publish(t, js, settingsSubject(spec.Project), event(70, spec.Project, "settings.repo_project.updated", `{"deleted":false}`))
+	publish(t, js, defaultAssigneeSubject(spec.Project), event(80, spec.Project, defaultAssignee, `{"project":"CAPTURE","assignee":"smoke"}`))
+	last := publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"intake.DispatchIssue", "intake.DispatchDefaultAssignee", "intake.DispatchIssue"}
+	var got []string
+	for _, fact := range facts {
+		got = append(got, fmt.Sprintf("%T", fact))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the consumer applied %q, want the backlog's issue event, this project's default assignee move and the issue event after it, %q", got, want)
+	}
+	if moved := facts[1].(DispatchDefaultAssignee); moved.Assignee != "smoke" || moved.Seq != 8 {
+		t.Fatalf("the default assignee fact = %+v, want smoke at the event's sequence 8", moved)
 	}
 }
 

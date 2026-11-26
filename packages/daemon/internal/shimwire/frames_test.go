@@ -2,6 +2,7 @@ package shimwire
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1144,6 +1145,99 @@ func TestHelloAckEncodesKernelKillsOnlyWhenTrue(t *testing.T) {
 		}
 		if string(line) != tc.line {
 			t.Fatalf("%+v encodes as %s, want %s", tc.ack, line, tc.line)
+		}
+	}
+}
+
+// A report of a process of no role, of each of the three causes, crosses the wire whole through
+// the writer and the reader a launcher and the daemon speak, `noRole` last, and the frame's own
+// rule takes it: a process of no role can be one the guard ends, or one the pod's kernel stops,
+// protected or not. A report of a role's process carries no noRole member, so it is the bytes it
+// was before the member existed, and those bytes decode with NoRole false.
+func TestMemoryKillANoRoleReportRoundTripsWithEachCauseAndARolesCarriesNoMember(t *testing.T) {
+	for _, tc := range []struct {
+		cause MemoryKillCause
+		line  string
+	}{
+		{MemoryKillCauseGuard, strings.TrimSuffix(memoryKillLine, "}") + `,"noRole":true}`},
+		{MemoryKillCauseKernel, strings.TrimSuffix(kernelKillLine, "}") + `,"noRole":true}`},
+		{MemoryKillCauseKernelProtected, strings.TrimSuffix(kernelProtectedKillLine, "}") + `,"noRole":true}`},
+	} {
+		t.Run(cmp.Or(string(tc.cause), "guard"), func(t *testing.T) {
+			kill := memoryKill()
+			kill.Cause, kill.NoRole = tc.cause, true
+			var wire bytes.Buffer
+			if err := NewWriter(&wire).WriteFrame(kill); err != nil {
+				t.Fatal(err)
+			}
+			if wire.String() != tc.line+"\n" {
+				t.Fatalf("the writer wrote %s, want %s", wire.String(), tc.line)
+			}
+			line, err := NewReader(&wire).ReadLine()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := Decode(line)
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", line, err)
+			}
+			if !reflect.DeepEqual(decoded, kill) {
+				t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, kill)
+			}
+			if err := decoded.(LauncherMemoryKill).Validate(); err != nil {
+				t.Fatalf("the decoded report of no role does not validate: %v", err)
+			}
+		})
+	}
+	for _, line := range []string{memoryKillLine, kernelKillLine, kernelProtectedKillLine} {
+		decoded, err := Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", line, err)
+		}
+		kill, ok := decoded.(LauncherMemoryKill)
+		if !ok || kill.NoRole {
+			t.Fatalf("Decode(%s) = %#v, want a report of a role's process", line, decoded)
+		}
+		encoded, err := json.Marshal(kill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(encoded) != line {
+			t.Fatalf("a role's report encodes as %s, want %s, with no noRole member", encoded, line)
+		}
+	}
+}
+
+// An acknowledgement without noRoleKills, an older daemon's or the controller pod's, decodes with
+// it false beside whatever else it carries, and encodes with no member, so it is byte for byte the
+// acknowledgement a daemon built before the member writes; one with it decodes true and carries
+// the member last.
+func TestHelloAckNoRoleKillsIsFalseWithoutTheMemberAndEncodedOnlyWhenTrue(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		ack  LauncherHelloAck
+		line string
+	}{
+		{LauncherHelloAck{}, `{"type":"launcher_hello_ack"}`},
+		{LauncherHelloAck{MemoryGuard: settings, KernelKills: true},
+			`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`},
+		{LauncherHelloAck{KernelKills: true, NoRoleKills: true}, `{"type":"launcher_hello_ack","kernelKills":true,"noRoleKills":true}`},
+		{LauncherHelloAck{MemoryGuard: settings, KernelKills: true, NoRoleKills: true},
+			`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true,"noRoleKills":true}`},
+	} {
+		line, err := json.Marshal(tc.ack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(line) != tc.line {
+			t.Fatalf("%+v encodes as %s, want %s", tc.ack, line, tc.line)
+		}
+		decoded, err := Decode([]byte(tc.line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", tc.line, err)
+		}
+		if !reflect.DeepEqual(decoded, tc.ack) {
+			t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.ack)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,14 +15,21 @@ import (
 )
 
 // newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
-// operator project route (internal/api/pause.go). pause stops every role of the project but the
-// controller and holds every launch, task and admission until resume lets the held work out
-// through the wake pacing (dispatch://INFRA-3759); the daemon acts on its own project, so neither
-// names one.
+// operator project route (internal/api/pause.go, internal/api/admission_signals.go). pause stops
+// every role of the project but the controller and holds every launch, task and admission until
+// resume lets the held work out through the wake pacing (dispatch://INFRA-3759); signals turns
+// admission by signals on or off and sets or clears each signal's limit (S3 of
+// dispatch://INFRA-5899). The daemon acts on its own project, so none names one.
 func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
-	return group(&cobra.Command{Use: "project", Short: "pause the daemon's project, holding every role's work but the controller's, or resume it"},
+	return group(&cobra.Command{Use: "project", Short: "pause the daemon's project, holding every role's work but the controller's, or resume it; turn admission by signals on or off and set its limits"},
 		projectCommand("pause", "pause the project: stop every role but the controller and hold their work", projectPause, stdout, stderr),
 		projectCommand("resume", "end the project's pause and let the held work out through the wake pacing", projectResume, stdout, stderr),
+		group(&cobra.Command{Use: "signals", Short: "turn admission by signals on or off, or set or clear a signal's limit, on a person's cited word"},
+			projectCommand("on", "turn admission by signals on: an issue below P0 starts only while each signal with a limit reads under it", projectSignals(api.SignalsOn), stdout, stderr),
+			projectCommand("off", "turn admission by signals off: the cap alone admits, as before", projectSignals(api.SignalsOff), stdout, stderr),
+			projectCommand("set-limit", "set one signal's limit, which it holds admission at or over", projectSignals(api.SignalsSetLimit), stdout, stderr),
+			projectCommand("clear-limit", "clear one signal's limit, so it holds nothing", projectSignals(api.SignalsClearLimit), stdout, stderr),
+		),
 	)
 }
 
@@ -110,6 +118,112 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 	return err
 }
 
+// projectSignals is `legion project signals <action>`: on and off turn admission by signals on or
+// off, set-limit sets one signal's limit (--signal, --part for the provider's headroom or refusals,
+// --limit) and clear-limit clears it; each takes the person's cited word (--reason), which the
+// daemon records with the change and the operator as who made it. The daemon refuses a limit
+// outside its signal's range, a name of no signal and a blank reason with the reason, changing
+// nothing.
+func projectSignals(act string) func(c *projectCall) action {
+	return func(c *projectCall) action {
+		reason := c.flags.String("reason", "", "the person's cited word for the change: whose word it is and what they said (required)")
+		required := []string{"operator-token-file", "reason"}
+		var signal, part *string
+		var limit *float64
+		if act == api.SignalsSetLimit || act == api.SignalsClearLimit {
+			signal = c.flags.String("signal", "", "the signal: idle, queue, provider, kills or approvals (required)")
+			part = c.flags.String("part", "", "the provider's part, headroom or refusals: required for provider, and no other signal takes one")
+			required = append(required, "signal")
+		}
+		if act == api.SignalsSetLimit {
+			limit = c.flags.Float64("limit", 0, "the limit, which the signal holds admission at or over: idle above 0 to 1, queue above 0 to 168 hours, "+
+				"provider headroom above 0 to 10, and provider refusals, kills and approvals a whole number from 1 to 1000000 (required)")
+		}
+		return func(ctx context.Context, _ []string) int {
+			if code, ok := c.check(required...); !ok {
+				return code
+			}
+			req := api.OperatorSignalsRequest{Action: act, Reason: *reason}
+			if signal != nil {
+				req.Signal, req.Part = *signal, *part
+			}
+			if limit != nil {
+				if !c.flags.Changed("limit") {
+					return refuse(c.cmd, "--limit is required")
+				}
+				req.Limit = limit
+			}
+			return c.send(ctx, "/signals", req, printSignalsAnswer)
+		}
+	}
+}
+
+// printSignalsAnswer is the settings of admission by signals as the daemon answered a change, as
+// one line: whether the change moved them, the switch, and each signal's limit.
+func printSignalsAnswer(w io.Writer, answer []byte) error {
+	var changed api.ProjectSignalsResponse
+	if err := decodeAnswer(answer, &changed); err != nil {
+		return err
+	}
+	verb := "changed"
+	if !changed.Changed {
+		verb = "unchanged, as it stood"
+	}
+	limits := make([]string, 0, len(changed.Settings.Limits))
+	for _, limit := range changed.Settings.Limits {
+		limits = append(limits, seriesWords(limit.Signal, limit.Part)+" "+limitWords(limit.Limit))
+	}
+	_, err := fmt.Fprintf(w, "admission by signals %s: %s; limits %s\n", verb, switchWords(changed.Settings.On), strings.Join(limits, ", "))
+	return err
+}
+
+// signalsLine is `legion state`'s line for admission by signals (api.Admission.Signals): the
+// switch, and each signal by its signal and part with its value, or not recorded where the daemon
+// cannot compute it, its limit, and whether it holds admission, since when where a pass dated the
+// hold, and undated where none did yet, as `legion state --json` gives them.
+func signalsLine(reading api.SignalsReading) string {
+	words := []string{"signals: " + switchWords(reading.On)}
+	for _, series := range reading.Series {
+		value := "not recorded"
+		if series.Value != nil {
+			value = strconv.FormatFloat(*series.Value, 'f', -1, 64)
+		}
+		hold := "does not hold"
+		switch {
+		case series.Holds && series.Since != nil:
+			hold = "holds since " + series.Since.UTC().Format(time.RFC3339)
+		case series.Holds:
+			hold = "holds, undated"
+		}
+		words = append(words, fmt.Sprintf("%s %s %s %s", seriesWords(series.Signal, series.Part), value, limitWords(series.Limit), hold))
+	}
+	return strings.Join(words, "; ")
+}
+
+// switchWords is the switch of admission by signals in words.
+func switchWords(on bool) string {
+	if on {
+		return "admission by signals on"
+	}
+	return "admission by signals off"
+}
+
+// seriesWords is a series by its signal and, for the provider, its part.
+func seriesWords(signal string, part *string) string {
+	if part == nil {
+		return signal
+	}
+	return signal + "/" + *part
+}
+
+// limitWords is a series' limit in words, none where it has none.
+func limitWords(limit *float64) string {
+	if limit == nil {
+		return "limit none"
+	}
+	return "limit " + strconv.FormatFloat(*limit, 'f', -1, 64)
+}
+
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the
 // pause, who paused, since when and why, and the roles whose stop it still waits on, each by
 // issue and role. It is empty while the project runs, and the caller then prints nothing.
@@ -162,7 +276,7 @@ func endedPauseWords(p api.PauseView) string {
 // operator.
 func pauseActorWords(by api.PauseActorView) string {
 	if by.Session != "" {
-		return "the " + by.Kind + " (session " + by.Session + ")"
+		return "the " + string(by.Kind) + " (session " + by.Session + ")"
 	}
-	return "the " + by.Kind
+	return "the " + string(by.Kind)
 }

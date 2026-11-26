@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -127,6 +128,7 @@ type outbox struct {
 	// outbox by hand leaves them nil, and a read row then fails with an error that names the
 	// missing read.
 	readPullRequest       func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
+	readQueueTimeline     func(context.Context, string, int) ([]signals.QueueEvent, error)
 	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) (intake.PullRequestMergeability, error)
 	mergeStateWait        func() time.Duration
 	queueMergeStateFollow func(issue string, follow *record.PullRequest)
@@ -1015,6 +1017,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeQueueRead(ctx, row, value)
 	case record.MergeQueueRemoval:
 		return r.mergeQueueRemoval(ctx, row, value)
+	case record.QueueTimelineRead:
+		return r.queueTimelineRead(ctx, row, value)
 	case record.DesignNewsReconcile:
 		return r.designChanges(ctx, row)
 	case record.ConflictConfirm:

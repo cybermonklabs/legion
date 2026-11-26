@@ -313,9 +313,13 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	}
 
 	remade := &remadeFailures{}
+	// The Dispatch durable hears every project's issue events and this project's one settings
+	// event the approvals signal reads, the move of its default assignee, and no other setting. A
+	// durable an earlier daemon made on the issue events alone is updated in place to the two,
+	// keeping its position (openConsumer), so it delivers each move published since that position.
 	dispatch, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>"},
+		FilterSubjects: []string{"notifications.dispatch.issue.>", defaultAssigneeSubject(spec.Project)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})

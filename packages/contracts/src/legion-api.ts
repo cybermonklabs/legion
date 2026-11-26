@@ -1163,6 +1163,85 @@ const legionSlotsReading = z.object({
   line: nonEmptyString.optional(),
 });
 
+/** Who changed a setting of admission by signals (`store.PauseActor`, `setBy` of `store.SignalSet`
+ * and of an entry of the record of changes): the controller, from its session, on a person's
+ * word, or the operator. The pause's actor in shape; only its `kind` is required, since no plugin
+ * code reads the rest. */
+const legionSignalSetter = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("controller"), session: nonEmptyString.optional() }),
+  z.object({ kind: z.literal("operator") }),
+]);
+
+/** `store.SignalSet` — a setting's last change: who made it, when, and the person's cited
+ * reason. */
+const legionSignalSet = z.object({
+  setBy: legionSignalSetter.optional(),
+  at: timestamp.optional(),
+  reason: nonEmptyString.optional(),
+});
+
+/** A series of admission by signals as every surface names it: its signal (`idle`, `queue`,
+ * `provider`, `kills`, `approvals`), and for the provider its part (`headroom`, `refusals`), `null`
+ * for every other signal. Each is read as a plain string, since the daemon declares no enumerated
+ * field of them and no plugin code reads them. */
+const legionSignalName = nonEmptyString;
+const legionSignalPart = nonEmptyString.nullable();
+
+/** `store.SignalSeriesReading` — one series as the live signals read it at the state's moment: its
+ * `value`, or `null` with the reason it cannot be computed in `absent`; its `limit`, `null` for
+ * none, with the limit's last change; whether it `holds` admission now; and `since` when it stands
+ * so, `null` for a hold no committed pass has dated yet. */
+const legionSignalSeries = z.object({
+  signal: legionSignalName.optional(),
+  part: legionSignalPart.optional(),
+  value: z.number().nullable().optional(),
+  absent: nonEmptyString.nullable().optional(),
+  limit: z.number().positive().nullable().optional(),
+  limitSet: legionSignalSet.nullable().optional(),
+  holds: z.boolean().optional(),
+  since: timestamp.nullable().optional(),
+});
+
+/** `store.ProviderMinuteReading` — one whole minute of the provider's record the provider's two
+ * series read: whether every request of it was reported (`held`), its uncached input tokens, the
+ * token limit in force when it began (0 for none), and its refused requests by class. */
+const legionProviderMinute = z.object({
+  at: timestamp.optional(),
+  held: z.boolean().optional(),
+  uncachedInputTokens: z.number().int().nonnegative().optional(),
+  tokenLimit: z.number().int().nonnegative().optional(),
+  ownRefusals: z.number().int().nonnegative().optional(),
+  providerRefusals: z.number().int().nonnegative().optional(),
+});
+
+/** `api.SignalsReading` (`store.SignalsReading`) — admission by signals at the state's moment:
+ * whether it is `on`, the `switch`'s last change (`null` before the first), each of the six
+ * series in the order of the daemon's signal names, and the provider's minutes of the last hour.
+ * A caller below the admission-signals entry is served none (`withoutAdmissionSignals`). */
+const legionSignalsReading = z.object({
+  on: z.boolean().optional(),
+  switch: legionSignalSet.nullable().optional(),
+  series: z.array(legionSignalSeries).optional(),
+  provider: z.object({ minutes: z.array(legionProviderMinute).optional() }).optional(),
+});
+
+/** `api.SignalChange` (`store.SignalChange`) — one entry of the record of changes of admission by
+ * signals, exactly the nine members of the spec, each written whether `null` or not: `signal` and
+ * `part` `null` for the switch, `value` `null` for a cleared limit and for a value the daemon
+ * cannot compute, `absent` the reason it cannot, and `setBy` and `reason` set for a limit and the
+ * switch alone. A hold and the switch are 1 or 0. */
+const legionSignalChange = z.object({
+  id: z.number().int().positive().optional(),
+  at: timestamp.optional(),
+  signal: legionSignalName.nullable().optional(),
+  part: legionSignalPart.optional(),
+  what: nonEmptyString.optional(),
+  value: z.number().nullable().optional(),
+  absent: nonEmptyString.nullable().optional(),
+  setBy: legionSignalSetter.nullable().optional(),
+  reason: nonEmptyString.nullable().optional(),
+});
+
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
@@ -1206,7 +1285,10 @@ const legionSlotsReading = z.object({
  * null, and it is optional here for the one reason `trees` is and no other: a reader before the
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
- * finds it absent has been served that stripped body and learns nothing about what is held. */
+ * finds it absent has been served that stripped body and learns nothing about what is held.
+ * `signals` is admission by signals as the live signals read it (`legionSignalsReading`), and
+ * `signalChanges` the newest 50 entries of its record of changes, newest first, `[]` before the
+ * first; a caller below the admission-signals entry is served neither. */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
   active: z.array(nonEmptyString).optional(),
@@ -1216,6 +1298,8 @@ const legionAdmission = z.object({
   held: z.array(legionHeldIssue).optional(),
   free: z.number().int().nonnegative().optional(),
   slots: legionSlotsReading.optional(),
+  signals: legionSignalsReading.optional(),
+  signalChanges: z.array(legionSignalChange).optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1748,6 +1832,86 @@ export const LegionTurnOutcomeResponse = z.object({
 
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 
+/** The most requests one report of model requests carries (`claim.MaxModelRequests`). */
+export const LEGION_MAX_MODEL_REQUESTS = 200;
+
+/** `claim.ModelRequest`, one model request a host made for a session of the project, and nothing
+ * else of it: no prompt, no answer and no text of an error. `id` is the host's own, unique within
+ * the claim's launch generation and kept across the host's retries, so a request reported twice is
+ * kept once. `session` is the session the request ran in (the role's own, a subagent's or the
+ * controller's), `model` the model the host called, and `endedAt` when the request ended, which
+ * places it in its UTC minute. `uncachedInputTokens` is its fresh input plus its cache writes,
+ * never its cache reads, and absent where the host did not learn it. `refusal` is who refused a
+ * refused request, as the host classed its text by the project's two patterns
+ * (`LEGION_SIGNAL_OWN_REFUSAL`, then `LEGION_SIGNAL_PROVIDER_REFUSAL`, else `unknown`), and absent
+ * for one no limit refused. */
+export const LegionModelRequest = z.strictObject({
+  id: nonEmptyString,
+  session: nonEmptyString,
+  model: nonEmptyString,
+  endedAt: timestamp,
+  uncachedInputTokens: z.number().int().nonnegative().optional(),
+  refusal: z.enum(["own", "provider", "unknown"]).optional(),
+});
+
+export type LegionModelRequestBody = z.output<typeof LegionModelRequest>;
+
+/** The half of `claim.ModelRequestsRequest` that is the report rather than the caller: the launch
+ * generation the requests are kept under, which must be the authenticated launch's own, 1 to
+ * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share, and `retriedRefusalsReported`,
+ * whether the host reports each HTTP 429 its transport retries by itself as a refused request of
+ * its own. The Claude Code bridge sends true; the Oh My Pi plugin sends what its host offers, false
+ * on a host that gives an extension no event for such an attempt; a body without it, a host's of a
+ * contract before it, reads as false. While a request of a batch that said false is in the hour
+ * the provider's refusals count, the daemon reads them as not recorded, since that host's count is
+ * known to be low. */
+const modelRequestsFields = {
+  generation: z.number().int().positive(),
+  requests: z
+    .array(LegionModelRequest)
+    .min(1)
+    .max(LEGION_MAX_MODEL_REQUESTS)
+    .refine((requests) => new Set(requests.map((request) => request.id)).size === requests.length, {
+      message: "an id names one request of a report",
+    }),
+  retriedRefusalsReported: z.boolean().optional(),
+};
+
+/** `claim.AgentCaller`'s report of model requests: the Oh My Pi plugin, which names the claim with
+ * its registration's secret as the turn outcome does. The operator's controller names its own
+ * token (`legion-<project>-controller`) with the session and the secret its registration
+ * answered. */
+export const LegionModelRequestsAgentRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  ...modelRequestsFields,
+});
+
+/** `claim.BootCaller`'s report of model requests: `legion claude-bridge`, which holds no secret and
+ * presents its launch's boot token. */
+export const LegionModelRequestsBootRequest = z.strictObject({
+  bootToken: nonEmptyString,
+  ...modelRequestsFields,
+});
+
+/** `claim.ModelRequestsRequest`, the body of `POST /legion/v1/claims/model-requests`: a host's
+ * batch of the model requests of the sessions it runs for one launch of a claim, under exactly one
+ * of the two caller identities above. It names no project: the project is the claim's. */
+export const LegionModelRequestsRequest = z.union([
+  LegionModelRequestsAgentRequest,
+  LegionModelRequestsBootRequest,
+]);
+
+export type LegionModelRequestsRequestBody = z.output<typeof LegionModelRequestsRequest>;
+
+/** `claim.ModelRequestsResponse`, the answer to a report of model requests: every id of the batch
+ * the daemon now holds, new or held already, in the batch's order. The host forgets those and
+ * sends the rest again under the same ids. */
+export const LegionModelRequestsResponse = z.object({
+  kept: z.array(nonEmptyString),
+});
+
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
  * worker's answer to its pod's update message, which says it has pushed everything it wants kept
  * and its process may be replaced. `round` is the round the worker answers for, as the update
@@ -2186,6 +2350,31 @@ export const LegionProjectResumeResponse = z.object({
   released: z.number().int().nonnegative().optional(),
 });
 
+/** `api.ProjectSignalsResponse`, the answer to a change of admission by signals, the controller's
+ * `POST /legion/v1/project/signals` and the operator's `POST
+ * /legion/v1/operator/project/signals` alike: whether the change moved the setting, and the
+ * project's settings as they stand after it, each of the six series with its limit (`null` for
+ * none) and that limit's last change. The controller hands the answer on whole. */
+export const LegionProjectSignalsResponse = z.object({
+  changed: z.boolean().optional(),
+  settings: z
+    .object({
+      on: z.boolean().optional(),
+      switch: legionSignalSet.nullable().optional(),
+      limits: z
+        .array(
+          z.object({
+            signal: legionSignalName.optional(),
+            part: legionSignalPart.optional(),
+            limit: z.number().positive().nullable().optional(),
+            set: legionSignalSet.nullable().optional(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
 /** `api.PauseFailure`, the refusal of a pause, of a resume, and of a request that would start a
  * turn while the project is paused: the code and the sentence every workflow refusal carries,
  * and what this one names beside them. `PAUSE_UNAVAILABLE` names the `setting` that turns the
@@ -2400,6 +2589,26 @@ export const LegionProjectPauseRequest = z.strictObject({
  * project that is not paused (`PROJECT_NOT_PAUSED`). */
 export const LegionProjectResumeRequest = z.strictObject({
   grantId: nonEmptyString,
+});
+
+export const LEGION_SIGNALS = ["idle", "queue", "provider", "kills", "approvals"] as const;
+export const LEGION_SIGNAL_PARTS = ["headroom", "refusals"] as const;
+export const LEGION_SIGNAL_ACTIONS = ["on", "off", "set-limit", "clear-limit"] as const;
+
+/** `api.ProjectSignalsRequest`, the controller's change of admission by signals on a person's cited
+ * word: its grant, the `action` (`on`, `off`, `set-limit`, `clear-limit`), for a limit the series
+ * by its `signal` and, for the provider, its `part`, the `limit` to set, and the person's cited
+ * `reason`, which every action requires. The daemon refuses a grant that is not a controller's
+ * (`CONTROLLER_REQUIRED`), and an unknown action, a name of no series, a limit outside its series'
+ * range, a member the action does not take and a blank reason (`SIGNAL_SETTING_INVALID`), each
+ * changing nothing. */
+export const LegionProjectSignalsRequest = z.strictObject({
+  grantId: nonEmptyString,
+  action: z.enum(LEGION_SIGNAL_ACTIONS),
+  signal: z.enum(LEGION_SIGNALS).optional(),
+  part: z.enum(LEGION_SIGNAL_PARTS).optional(),
+  limit: z.number().positive().optional(),
+  reason: nonEmptyString,
 });
 
 /** The two forms of `api.IntakeSelection`, the give-ups a replay or a discard takes: `giveUp`, one
@@ -2821,4 +3030,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+  // `pi-legion/src/model-requests.ts` forgets each id the daemon says it holds and sends the rest
+  // again under the same ids.
+  LegionModelRequestsResponse: ["kept"],
 };

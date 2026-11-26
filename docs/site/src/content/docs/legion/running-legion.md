@@ -626,6 +626,31 @@ What each part is for:
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
   compared without case and through `repository_renames`, and a daemon that predates the key
   refuses it at boot, as it does any key it does not know.
+- **`projects.<KEY>.signal_token_limit_per_minute`, `signal_token_model_pattern`, `signal_own_refusal_pattern` and `signal_provider_refusal_pattern`** (optional) describe the project's model provider to the two provider signals of admission by signals, its headroom and its refusals:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      signal_token_limit_per_minute: 5500000
+      signal_token_model_pattern: '^claude-'
+      signal_own_refusal_pattern: 'project (token|request) limit'
+      signal_provider_refusal_pattern: '[Oo]verloaded'
+  ```
+
+  The limit is the uncached input tokens the project's sessions may spend in a minute: fresh input and cache writes, never cache reads.
+  Without it the headroom reads as not recorded, never as zero.
+  Each minute keeps the limit that was in force when it began, so a daemon restarted with another limit reads no earlier minute again.
+  The model pattern selects the models whose tokens count against the limit, and every model counts without it; a request of another model is still kept and its refusal still counted.
+  The two refusal patterns reach every host of the project's sessions, each role's pane or pod and the controller, as `LEGION_SIGNAL_OWN_REFUSAL` and `LEGION_SIGNAL_PROVIDER_REFUSAL`, and a pattern left unset sends no variable.
+  A host classes each refused model request by its text: the project's own limit where the own pattern matches, else the provider where the provider's pattern matches, else unknown, which counts as the project's own.
+  The text decides because a deployment's own limit and its provider can both answer 429 with nothing else that tells them apart, so each deployment writes its own patterns.
+  The pinned Oh My Pi host gives its extension no event for a 429 that its transport retries by itself, so while a session of such a host has a request in the hour the refusals count, they read as not recorded, with that reason, and hold no start.
+  They are recorded again an hour after the minute of that request ends; the Claude Code bridge reports each such 429, and the headroom counts every host's tokens alike.
+  The operator's controller file, which `legion controller start` reads, takes the two refusal patterns under the same names; keep them equal to the project's.
+  Each pattern is a regular expression of the subset Go and JavaScript read alike, since a Claude Code host matches it with Go and an Oh My Pi host with JavaScript: characters, `\` before a metacharacter, `.`, `^`, `$`, `\b`, `\B`, `\d`, `\D`, `\w`, `\W`, `\t`, `\n`, `\r`, classes such as `[a-z]` and `[^0-9]`, groups `(…)` and `(?:…)`, `|`, and the repetitions `*`, `+`, `?` and `{n,m}` up to 1000.
+  The loader refuses every other construct, naming the key and why: lookarounds, back references, named groups, inline flags such as `(?i)`, `\p`, `\s` (ASCII's spaces in Go, Unicode's in JavaScript), POSIX classes, `\A`, `\Q`, `[]`, a lone `{` or `]`, and an empty pattern.
+  A refused file is refused whole, so none of its keys takes effect.
+  [Admission by signals](/legion/legion/admission-signals/) says what the two series read, how `legion state` shows them, and how a person turns the rule on and sets their limits.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
   repository that moved: after a transfer GitHub's events name the new repository while every tree
   Legion has already recorded names the old one.
@@ -1505,6 +1530,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `--json` carries the same reading as `admission.slots`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
   The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.
 
+  A daemon that keeps admission by signals prints one more line right after the `slots` line, which the sample above leaves out, `signals: admission by signals off; idle 0 limit none does not hold; queue 0.75 limit none does not hold; …`: whether the rule is on, and each of its six series by its signal and part, with its value or `not recorded`, its limit or `limit none`, and whether it holds admission, since when where a pass dated the hold.
+  [Admission by signals](/legion/legion/admission-signals/) says what each signal is, how to read it here and in `--json`, and how a person turns the rule on and off and sets or clears each limit.
+
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no
   priority, each issue at its own priority, else at its tree root's; and within one priority the
@@ -1687,7 +1715,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
   says what each reason means and what to do.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, `blocked`, and `signals` and `signalChanges`, admission by signals and its record of changes, which [Admission by signals](/legion/legion/admission-signals/#read-the-signals) describes), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
   `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
   the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,

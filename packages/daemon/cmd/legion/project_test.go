@@ -233,12 +233,12 @@ func TestPauseCommands(t *testing.T) {
 		// --json prints the daemon's answer as it served it.
 		var again api.ProjectPauseResponse
 		if err := decodeAnswer([]byte(d.succeed(append([]string{"project", "pause", "--reason", "a second outage", "--json"}, reach...)...)), &again); err != nil ||
-			again.Pause.ID == open.ID || again.Pause.By.Kind != string(store.PauseByOperator) {
+			again.Pause.ID == open.ID || again.Pause.By.Kind != store.PauseByOperator {
 			t.Fatalf("legion project pause --json answered %+v (%v), want a new pause by the operator", again, err)
 		}
 		var ended api.ProjectResumeResponse
 		if err := decodeAnswer([]byte(d.succeed(append([]string{"project", "resume", "--json"}, reach...)...)), &ended); err != nil ||
-			ended.Pause.ID != again.Pause.ID || ended.Pause.EndedBy == nil || ended.Pause.EndedBy.Kind != string(store.PauseByOperator) {
+			ended.Pause.ID != again.Pause.ID || ended.Pause.EndedBy == nil || ended.Pause.EndedBy.Kind != store.PauseByOperator {
 			t.Fatalf("legion project resume --json answered %+v (%v), want pause %d ended by the operator", ended, err, again.Pause.ID)
 		}
 		if n := d.pauses(); n != 2 {

@@ -1,0 +1,96 @@
+package store
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// queueEventsVersion is the version of the migration this file tests, so the test can migrate
+// through everything before it whatever lands beside it.
+const queueEventsVersion = 20261126020201
+
+// queueEventsRelease names the release whose way back the migration's header carries, as a failure
+// to read that block names it.
+const queueEventsRelease = "the release that keeps each merge-queue timeline event of a project's pull requests"
+
+// 20261126020201 adds queue_events, one row per GitHub timeline event of a project's pull
+// requests' merge-queue moves, adds read_error on signal_inputs so a failed boot read marks
+// the queue input absent with its reason until a read succeeds, and widens outbox_kind_check with
+// queue_timeline_read. Its way back drops queue_events, deletes queue_timeline_read rows, drops
+// the added column, deletes the queue row of signal_inputs and deletes this version row so a
+// roll-forward runs the file again.
+func TestTheQueueEventsArriveWith20261126020201AndTheirWayBackLetsThemComeAgain(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, queueEventsVersion-1)
+	exec := func(statement string, args ...any) error {
+		_, err := store.Pool().Exec(ctx, statement, args...)
+		return err
+	}
+	const tables = `select count(*)::text from information_schema.tables where table_name = 'queue_events'`
+	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"0"}) {
+		t.Fatalf("queue_events before the migration = %v, want absent", got)
+	}
+	if err := exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('queue_timeline_read', 'LEGION-208', '{}', 0, now(), '')`); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing queue_timeline_read before the migration = %v, want outbox_kind_check refusal", err)
+	}
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through queue events: %v", err)
+	}
+	const insertEvent = `insert into queue_events (project, event_id, repo, pull_request, at, enters, position) values ($1, $2, $3, $4, $5, $6, $7)`
+	for _, kept := range []struct {
+		project, repo, at string
+		id                int64
+		pr, pos           int
+		enters            bool
+	}{
+		{"LEGION", "cybermonklabs/legion", "2026-11-23T02:27:46Z", 36963393320, 5150, 0, true},
+		{"LEGION", "cybermonklabs/legion", "2026-11-23T18:25:55Z", 37043365149, 5150, 1, false},
+		{"ACME", "cybermonklabs/legion", "2026-11-23T02:27:46Z", 36963393320, 5150, 0, true},
+	} {
+		if err := exec(insertEvent, kept.project, kept.id, kept.repo, kept.pr, kept.at, kept.enters, kept.pos); err != nil {
+			t.Fatalf("insert valid queue event %+v: %v", kept, err)
+		}
+	}
+	for _, refused := range []struct {
+		name, project, repo string
+		id                  int64
+		pr, pos             int
+	}{
+		{"duplicate id in same project", "LEGION", "cybermonklabs/legion", 36963393320, 5150, 0},
+		{"empty project", "", "cybermonklabs/legion", 99, 5150, 0},
+		{"non-positive event id", "LEGION", "cybermonklabs/legion", 0, 5150, 0},
+		{"empty repo", "LEGION", "", 100, 5150, 0},
+		{"non-positive pull request", "LEGION", "cybermonklabs/legion", 101, 0, 0},
+		{"negative position", "LEGION", "cybermonklabs/legion", 102, 5150, -1},
+	} {
+		if err := exec(insertEvent, refused.project, refused.id, refused.repo, refused.pr, "2026-11-23T02:27:46Z", true, refused.pos); err == nil {
+			t.Errorf("%s was accepted, want it refused", refused.name)
+		}
+	}
+	if err := exec(`insert into signal_inputs (project, input, kept_since, read_error) values ('LEGION', 'queue', '2026-11-26T01:00:00Z', 'boot read failed')`); err != nil {
+		t.Fatalf("insert signal_inputs with read_error: %v", err)
+	}
+	if err := exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, 'LEGION-208', '{}', 0, now(), '')`, string(record.OutboxKindQueueTimelineRead)); err != nil {
+		t.Fatalf("queue queue_timeline_read after migration: %v", err)
+	}
+
+	if err := exec(wayBackOf(t, queueEventsVersion, queueEventsRelease)); err != nil {
+		t.Fatalf("the way back: %v", err)
+	}
+	const version = `select count(*)::text from schema_version where version = 20261126020201`
+	if got := append(rowsAsText(t, store, tables), rowsAsText(t, store, version)...); !reflect.DeepEqual(got, []string{"0", "0"}) {
+		t.Fatalf("after the way back queue_events and version row = %v, want neither", got)
+	}
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("roll forward after the way back: %v", err)
+	}
+	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("queue_events after roll-forward = %v, want present again", got)
+	}
+}

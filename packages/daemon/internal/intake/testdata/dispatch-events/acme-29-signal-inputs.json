@@ -1,0 +1,69 @@
+[
+  {
+    "id": 411144,
+    "issue_key": "ACME-29",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 2,
+    "type": "issue.updated",
+    "actor": { "kind": "session", "id": "legion-daemon:ACME" },
+    "notify": false,
+    "created_at": "2026-11-12T02:48:18.305772Z",
+    "payload": {
+      "key": "ACME-29",
+      "status": "todo",
+      "title": "text 13",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzk",
+      "labels": ["legion"],
+      "parent": null,
+      "claim": null,
+      "priority": 2,
+      "resolved_repo": "cybermonklabs/legion",
+      "blocked_by": [],
+      "assignee": "person-1@example.invalid"
+    }
+  },
+  {
+    "id": 877110,
+    "issue_key": "ACME-29",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 23,
+    "type": "ask.opened",
+    "actor": { "kind": "session", "id": "00000000-0000-4000-8000-00000000000c" },
+    "notify": false,
+    "created_at": "2026-11-20T20:47:49.424239Z",
+    "payload": {
+      "id": "00000000-0000-4000-8000-00000000000e",
+      "issue_key": "ACME-29",
+      "author": { "id": "00000000-0000-4000-8000-00000000000c", "kind": "session" },
+      "kind": "question",
+      "state": "open",
+      "asked_of": null
+    }
+  },
+  {
+    "id": 880495,
+    "issue_key": "ACME-29",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 40,
+    "type": "ask.answered",
+    "actor": { "kind": "user", "id": "person-1@example.invalid" },
+    "notify": true,
+    "created_at": "2026-11-20T22:07:57.233851Z",
+    "payload": {
+      "id": "00000000-0000-4000-8000-00000000000a",
+      "issue_key": "ACME-29",
+      "author": { "id": "00000000-0000-4000-8000-00000000000c", "kind": "session" },
+      "kind": "approval",
+      "state": "answered",
+      "asked_of": null,
+      "approval": {
+        "artifact_id": "00000000-0000-4000-8000-000000000009",
+        "requested_version": 4,
+        "version": 4
+      }
+    }
+  }
+]

@@ -444,10 +444,10 @@ func controllerSessionRegistered(stored controller.Record, session, secret strin
 // staleClaim) any other claim is — no machine recorded means nothing is stale. Otherwise (the
 // operator's own `legion controller start`) the daemon never relaunches the operator's controller,
 // so there is no relaunch to wait for: it is stale, with claim.StaleControllerContract's sentence,
-// whenever its recorded contract differs at all.
+// whenever its recorded contract differs at all (staleOperatorController).
 func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request, stored controller.Record) bool {
 	if !s.controllerLaunched {
-		if stored.PluginContract == DaemonAPIVersion() {
+		if !staleOperatorController(stored) {
 			return false
 		}
 		s.logStaleRefusal(r, "session", stored.Session, stored.PluginContract)
@@ -468,6 +468,14 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 	return true
+}
+
+// staleOperatorController says whether stored, the operator's own controller's record, is stale:
+// its recorded contract differs from this daemon's at all, since the daemon never relaunches that
+// controller. Every route the operator's controller calls refuses it by this one comparison
+// (refuseIfStaleController, modelRequestsByController).
+func staleOperatorController(stored controller.Record) bool {
+	return stored.PluginContract != DaemonAPIVersion()
 }
 
 // refuseIfStaleControllerSession is readBody's identity check for the grants route's controller

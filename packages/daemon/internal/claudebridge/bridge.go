@@ -103,6 +103,9 @@ type bridge struct {
 	// reports is this backend's producer of turn outcomes, nil for a pane that names no daemon
 	// (turnoutcome.go).
 	reports *turnReports
+	// requests is this backend's producer of model requests, nil for a pane that names no daemon
+	// (modelrequests.go). It reads every line of Claude Code's stream.
+	requests *modelRequests
 	// promptRun is the request id of the daemon's prompt whose turn is running, and "" in a turn
 	// no prompt of the daemon's started — an Envoy delivery's, or one Claude Code started by
 	// itself when a background task finished. The bridge reports it as Oh My Pi reports its own
@@ -160,7 +163,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// file Claude Code writes to and exec's Wait copies nothing.
 	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0)}
 	b.frames = shimwire.NewWriter(&b.encoded)
-	b.reports = startTurnReports(cfg, b.log)
+	if poster := startDaemonPoster(cfg, b.log); poster != nil {
+		b.reports = &turnReports{daemonPoster: poster}
+		b.requests = startModelRequests(cfg, poster)
+	}
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
@@ -519,11 +525,28 @@ func (b *bridge) fromClaude(line []byte) {
 		// cost the status alone: a result line the decode refused whole would be a turn whose
 		// end the daemon never learns.
 		APIErrorStatus json.RawMessage `json:"api_error_status"`
+		// The rest is what the model requests' producer reads (modelrequests.go): when the line
+		// was written, its own id, the session it is of, the subagent an assistant line of a
+		// subagent's is of (`agent_id`), the model an `init` line names, and the HTTP status of
+		// an attempt a `system` `api_retry` line says Claude Code retries, each measured on the
+		// pinned Claude Code (testdata/subagent-turn.jsonl, testdata/api-error-429.jsonl).
+		Timestamp   string          `json:"timestamp"`
+		UUID        string          `json:"uuid"`
+		SessionID   string          `json:"session_id"`
+		AgentID     string          `json:"agent_id"`
+		Model       string          `json:"model"`
+		ErrorStatus json.RawMessage `json:"error_status"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		b.log.Printf("ignoring a line from Claude Code that is not JSON (%d bytes)", len(line))
 		return
 	}
+	b.requests.read(streamLine{
+		kind: head.Type, subtype: head.Subtype, message: head.Message,
+		parent: head.ParentToolUseID, agent: head.AgentID, session: head.SessionID, uuid: head.UUID,
+		timestamp: head.Timestamp, model: head.Model,
+		apiErrorStatus: httpStatusOf(head.APIErrorStatus), errorStatus: httpStatusOf(head.ErrorStatus),
+	})
 	switch head.Type {
 	case "assistant":
 		b.assistant(head.Message, head.ParentToolUseID != "")
@@ -700,13 +723,7 @@ func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 // whose text is the re-emitted user message's. The bridge's own user messages (the daemon's prompt,
 // the seed) are no delivery sent, so their echoes answer none.
 func (b *bridge) echoed(message json.RawMessage) {
-	var texts []string
-	for _, block := range blocksOf(message) {
-		if block.Type == "text" {
-			texts = append(texts, block.Text)
-		}
-	}
-	text := strings.Join(texts, "\n")
+	text := textOf(blocksOf(message))
 	for i, d := range b.taking {
 		if d.content == text {
 			d.answer <- nil
@@ -714,6 +731,17 @@ func (b *bridge) echoed(message json.RawMessage) {
 			return
 		}
 	}
+}
+
+// textOf joins the text blocks with newlines, leaving tool blocks out.
+func textOf(blocks []contentBlock) string {
+	var texts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			texts = append(texts, block.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 // answerAll answers each of deliveries with err.

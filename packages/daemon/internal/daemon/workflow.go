@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -62,6 +64,19 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// approvals is Dispatch as the boot's read for the approvals signal reads it (readApprovalsOnce):
+	// the same client as dispatch in the daemon, which has the reads Client leaves out. Nil, in a
+	// runtime a test builds by hand that runs no such read.
+	approvals dispatch.ApprovalReads
+	// signals is the project's live signals, which each pass admits by and the state reads at each
+	// read (admit.LiveSignals.State).
+	signals *admit.LiveSignals
+	// signalTimer is the project's one timer of its deadline of admission by signals, which
+	// admission arms once each fact that changed the deadline commits (admit.UseLiveSignals), and
+	// signalDue hands each deadline it fires to the runtime's loop that applies it
+	// (runSignalDeadline), the newest one in place of one not yet applied.
+	signalTimer *admit.DeadlineTimer
+	signalDue   chan record.SignalDeadline
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -749,8 +764,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if !ok {
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
+	dispatchClient := daemonDispatchClient(cfg, dispatchTransport)
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: daemonDispatchClient(cfg, dispatchTransport), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatchClient, approvals: dispatchClient, repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -816,6 +832,17 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// has stopped at: the loader gives six hours to a file that names no key, so the pass
 	// always runs under a number somebody chose.
 	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
+	// The project's token limit and model selector are what admission keeps each boot's limit and
+	// each reported model request by (config.Project.Provider); the loader held the selector to
+	// the shared pattern subset, so it compiles.
+	provider := cfg.Projects[cfg.Project].Provider
+	var models *regexp.Regexp
+	if provider.TokenModels != "" {
+		if models, err = config.SharedPattern(provider.TokenModels); err != nil {
+			return nil, fmt.Errorf("signal_token_model_pattern: %w", err)
+		}
+	}
+	w.admission.UseModelRequests(provider.TokenLimit, models)
 	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
@@ -830,6 +857,18 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w.admission.UseReleasedWakes(func(ctx context.Context, tx pgx.Tx, claims []supervise.Claim) ([]workflow.ReleasedWake, error) {
 		return strandedReleaseWakes(ctx, st, tx, releaseToken, claims, clock().UTC())
 	})
+	// Each pass admits below P0 by the live signals, read in its own transaction from what the
+	// daemon keeps of their inputs (admit.LiveSignals), while the project's settings turn admission
+	// by signals on; a fresh project is off with no limit, and each change a person makes on the
+	// operator's or the controller's route is in force from its own fact's pass
+	// (admit.StoreSignalSettings). Beside each pass admission keeps the record of changes of what it
+	// computed of each series and the project's one deadline, which this runtime's timer fires
+	// (runSignalDeadline). The state reads the same live signals at each read (signals.State).
+	w.signals = admit.NewLiveSignals(w.admission, admit.StoreSignalSettings{}, api.ModelRequestsContract())
+	w.admission.UseSignals(w.signals.Read)
+	w.signalDue = make(chan record.SignalDeadline, 1)
+	w.signalTimer = admit.NewDeadlineTimer(w.signalDeadlineDue)
+	w.admission.UseLiveSignals(w.signals, w.signalTimer.Arm)
 	// The mirror runs before both deciders, and that order is load-bearing (admit.Handlers). The
 	// engine decides whether to start a child and admission whether to admit a root inside this
 	// same transaction, from the mirror's rows, so the row an event carries must already be
@@ -1923,6 +1962,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.hold = supervision.plan.holdOutbox
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.readQueueTimeline = w.readQueueTimeline
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
@@ -1931,6 +1971,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
+	supervision.supervisor.OnTurnEdge(w.turnEdge)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
 	if w.pauses != nil {
@@ -2091,20 +2132,36 @@ const (
 // fact is keyed by the boot, so a retry after a commit whose answer was lost is a duplicate, not a
 // second census. Only the daemon's stop leaves it unapplied, and the next boot applies its own.
 func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
-	retryUntilApplied(ctx, w.log, bootRetryFirst, bootRetryMax, func(ctx context.Context) error { return w.booted(ctx, bootID) })
+	retryUntilApplied(ctx, bootRetryFirst, bootRetryMax, func(ctx context.Context, _ int) error { return w.booted(ctx, bootID) },
+		func(attempt int, wait time.Duration, err error) {
+			w.log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+		})
+	// The boot's reads of GitHub's merge queue and of Dispatch's open asks follow the boot fact,
+	// each on the same backoff: the fact records that the queue and the approvals are kept from now
+	// on, and each read says what stood in them. They run beside each other, so a source that does
+	// not answer leaves the other's signal no less recorded, and each takes a hold mark of its own
+	// (store.ForConcurrentWorker), as the daemon's loops do.
+	var reads sync.WaitGroup
+	reads.Go(func() { w.retryQueueBootRead(store.ForConcurrentWorker(ctx), bootID, bootRetryFirst, bootRetryMax) })
+	reads.Go(func() { w.retryApprovalsBootRead(store.ForConcurrentWorker(ctx), bootID, bootRetryFirst, bootRetryMax) })
+	reads.Wait()
 }
 
-// retryUntilApplied runs apply until it succeeds or ctx ends, waiting first, then twice as long up
-// to most, between attempts, and logging each failure at ERROR. A failure once ctx has ended is the
-// stop, and logs nothing.
-func retryUntilApplied(ctx context.Context, log *slog.Logger, first, most time.Duration, apply func(context.Context) error) {
+// retryUntilApplied runs apply, numbering each attempt from 1, until it succeeds or ctx ends,
+// waiting first, then twice as long up to most, between attempts, and telling retrying, where
+// given, of each failure and the wait before the next attempt. A failure once ctx has ended is the
+// stop, and tells nothing. The boot's fact, the boot's reads of the signals' sources and each
+// firing of the signal deadline retry by it, each with a line of its own.
+func retryUntilApplied(ctx context.Context, first, most time.Duration, apply func(ctx context.Context, attempt int) error, retrying func(attempt int, wait time.Duration, err error)) {
 	wait := first
 	for attempt := 1; ; attempt++ {
-		err := apply(ctx)
+		err := apply(ctx, attempt)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+		if retrying != nil {
+			retrying(attempt, wait, err)
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -2358,6 +2415,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.tickController(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		w.runSignalDeadline(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
@@ -2644,6 +2705,112 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 		case at := <-ticker.C:
 			w.applyControllerTick(ctx, at)
 		}
+	}
+}
+
+// signalDeadlineSource is the source the timer's firings of the signal deadline apply under, and
+// signalDeadlineEventID their event: the project and the deadline's fence, which rises at each
+// change of the deadline (admit's nextDeadline), so each deadline fires once, and a firing of an
+// earlier one is a fact of its own that admission finds stale.
+const signalDeadlineSource = "signals"
+
+func signalDeadlineEventID(project string, fence int64) string {
+	return fmt.Sprintf("signal-deadline:%s:%d", project, fence)
+}
+
+// signalDeadlineRetryFirst and signalDeadlineRetryMax bound the waits between the tries of a
+// firing whose transaction failed (applySignalDeadline).
+const (
+	signalDeadlineRetryFirst = time.Second
+	signalDeadlineRetryMax   = time.Minute
+)
+
+// signalDeadlineDue is the timer's firing of deadline: it hands it to runSignalDeadline's loop,
+// the newest in place of one the loop has not taken yet, and never waits.
+func (w *workflowRuntime) signalDeadlineDue(deadline record.SignalDeadline) {
+	for {
+		select {
+		case w.signalDue <- deadline:
+			return
+		default:
+		}
+		select {
+		case <-w.signalDue:
+		default:
+		}
+	}
+}
+
+// runSignalDeadline is the runtime of the project's one timer of admission by signals (S5): at
+// the boot it arms the timer for the deadline the store holds, which the boot's own pass computes
+// again, then applies each deadline the timer fires (applySignalDeadline), and stops the timer
+// when ctx ends, the daemon's stop. The timer is armed again only when a fact that changed the
+// deadline commits (admit.UseLiveSignals), never on a period.
+func (w *workflowRuntime) runSignalDeadline(ctx context.Context) {
+	defer w.signalTimer.Stop()
+	var committed record.SignalDeadline
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		committed, err = w.records.SignalDeadline(ctx, tx, w.dispatchProject)
+		return err
+	}); err != nil {
+		if ctx.Err() == nil {
+			w.log.Error("legion daemon could not read the signal deadline at its boot; the boot's pass computes it again", "error", err)
+		}
+	} else {
+		w.signalTimer.Arm(committed)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case deadline := <-w.signalDue:
+			w.applySignalDeadline(ctx, deadline)
+		}
+	}
+}
+
+// applySignalDeadline applies the firing of deadline (intake.SignalDeadline), whose pass admission
+// runs only where it is still the committed deadline and due. A firing whose transaction fails
+// leaves the committed deadline and the timer as they stood, and is tried again, the wait doubling
+// up to signalDeadlineRetryMax, until it applies or ctx ends; one admission leaves unspent, early,
+// is armed again for its moment.
+func (w *workflowRuntime) applySignalDeadline(ctx context.Context, deadline record.SignalDeadline) {
+	retryUntilApplied(ctx, signalDeadlineRetryFirst, signalDeadlineRetryMax, func(ctx context.Context, _ int) error {
+		result, err := intake.ApplyFact(ctx, w.pool, signalDeadlineSource, signalDeadlineEventID(w.dispatchProject, deadline.Fence),
+			intake.SignalDeadline{At: deadline.Due, Fence: deadline.Fence}, w.handlers...)
+		if err == nil && result.Unspent {
+			w.signalTimer.Arm(deadline)
+		}
+		return err
+	}, func(_ int, wait time.Duration, err error) {
+		w.log.Error("the signal deadline's pass did not apply; retrying", "at", deadline.Due, "fence", deadline.Fence, "retryIn", wait, "error", err)
+	})
+}
+
+// turnEdgeEventID is the event of the start (start) or end of a turn of token at at: one edge is
+// one fact, however often a decision publishes the claim that carries it.
+func turnEdgeEventID(token claim.Token, start bool, at time.Time) string {
+	edge := "end"
+	if start {
+		edge = "start"
+	}
+	return fmt.Sprintf("turn-%s:%s:%d", edge, token, at.UnixNano())
+}
+
+// turnEdge applies the start or end of a turn of c at at as an intake.TurnEdge, once its machine
+// wrote it (supervisor.OnTurnEdge), for the idle signal of admission by signals: a claim on no
+// issue, the controller's, holds no slot, so it applies none. It runs on the claim's own feed,
+// under a hold mark of its own, as terminal does; a failed apply is logged, and the next edge, pass
+// or deadline reads the claim again.
+func (w *workflowRuntime) turnEdge(c supervise.Claim, start bool, at time.Time) {
+	if c.Issue == "" || c.Role == claim.RoleController {
+		return
+	}
+	ctx := store.ForConcurrentWorker(context.Background())
+	if _, err := intake.ApplyFact(ctx, w.pool, terminalSource, turnEdgeEventID(c.Token, start, at),
+		intake.TurnEdge{Claim: c.Token, Issue: c.Issue, Start: start, At: at}, w.handlers...); err != nil {
+		w.log.Error("apply a turn edge for the idle signal", "claim", c.Token, "start", start, "at", at, "error", err)
 	}
 }
 

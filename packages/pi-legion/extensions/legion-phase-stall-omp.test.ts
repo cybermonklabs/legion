@@ -50,11 +50,23 @@ interface StallPane extends LegionPane {
  * about it. What those reports hold is asserted in extensions/legion-session-activity-omp.test.ts. */
 const ACTIVITY_ROUTE = "/legion/v1/claims/activity";
 
-/** Every daemon route the pane called, in order, the activity heartbeat left out. */
+/** `POST /legion/v1/claims/model-requests`, the pane's report of the model requests its turns made
+ * (src/model-requests.ts): it goes within fifteen seconds of a request's end or at the run's end,
+ * so where it falls among the other routes is the host's timing, and no case here is about it.
+ * What it holds is asserted in src/model-requests.test.ts. */
+const MODEL_REQUESTS_ROUTE = "/legion/v1/claims/model-requests";
+
+/** Every daemon route the pane called, in order, the activity heartbeat and the model requests'
+ * reports left out. */
 function daemonRoutes(pane: LegionPane): string[] {
   return pane.requests
     .map((request) => request.path)
-    .filter((requested) => requested.startsWith("/legion/") && requested !== ACTIVITY_ROUTE);
+    .filter(
+      (requested) =>
+        requested.startsWith("/legion/") &&
+        requested !== ACTIVITY_ROUTE &&
+        requested !== MODEL_REQUESTS_ROUTE
+    );
 }
 
 /**
@@ -530,6 +542,7 @@ test.skipIf(skip)(
             path !== "/legion/v1/issues/STALL-2/record" &&
             path !== "/legion/v1/claims/turn-outcome" &&
             path !== ACTIVITY_ROUTE &&
+            path !== MODEL_REQUESTS_ROUTE &&
             path !== "/v1/interests/subscribe" &&
             !answersRead.test(path)
         )

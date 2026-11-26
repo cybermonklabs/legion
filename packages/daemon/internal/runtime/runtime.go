@@ -629,10 +629,12 @@ func (e KeptPodUnrecorded) Unwrap() error { return e.Err }
 // shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
 // runs the role's session), which the launcher's guest watch names
 // (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
-// process it was, and the daemon tells that role why the process is gone. The session gives it the
-// issue key, the claim token of the role the connection authenticated for, the uid of the pod the
-// launcher runs in and the report; the three are the session's own and never the report's, so a
-// launcher cannot name another role, issue or pod.
+// process it was, and the daemon keeps it and tells that role why the process is gone. A process
+// of no role (the report's NoRole) is reported on the connection of one role of the pod, and the
+// daemon keeps it and tells no role. The session gives it the issue key, the claim token of the
+// role the connection authenticated for, the uid of the pod the launcher runs in and the report;
+// the three are the session's own and never the report's, so a launcher cannot name another role,
+// issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
@@ -1077,6 +1079,35 @@ func (id GitIdentity) Env() map[string]string {
 // none. An operator may not set it (PaneVariableRefusal, the pod's own list), and it is no
 // runtime-owned name, since ValidateSpawnSpec refuses a spec.Env name a runtime owns.
 const RoleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
+
+// OwnRefusalVariable and ProviderRefusalVariable are the launch environment's names of a project's
+// two refusal patterns (`signal_own_refusal_pattern` and `signal_provider_refusal_pattern`,
+// config.SignalProvider), by which the host of a session — the Oh My Pi plugin, the Claude Code
+// bridge — classes each refused model request it reports: the project's own limit's where the own
+// pattern matches, else the provider's where the provider's does, else unknown. Every launch of a
+// role and of the controller carries each pattern the project sets (RefusalEnvironment, which the
+// daemon's SpawnSpec merges into spec.Env and `legion controller start` into the operator's
+// controller's environment), and none it leaves unset. An operator may not set either
+// (PaneVariableRefusal, the pod's own list), and neither is a runtime-owned name, since
+// ValidateSpawnSpec refuses a spec.Env name a runtime owns.
+const (
+	OwnRefusalVariable      = "LEGION_SIGNAL_OWN_REFUSAL"
+	ProviderRefusalVariable = "LEGION_SIGNAL_PROVIDER_REFUSAL"
+)
+
+// RefusalEnvironment is the launch environment's pair of each pattern of own and provider that is
+// set, by OwnRefusalVariable and ProviderRefusalVariable; a pattern that is unset sends no
+// variable.
+func RefusalEnvironment(own, provider string) map[string]string {
+	env := map[string]string{}
+	if own != "" {
+		env[OwnRefusalVariable] = own
+	}
+	if provider != "" {
+		env[ProviderRefusalVariable] = provider
+	}
+	return env
+}
 
 // roleIdentity is one role's identity in the table, as the JSON spells it.
 type roleIdentity struct {
