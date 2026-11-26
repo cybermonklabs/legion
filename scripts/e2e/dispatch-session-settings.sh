@@ -100,6 +100,8 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/run-verdict.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # stop_omp PID ends one Oh My Pi the driver started, and only while it still carries the run's mark
 # (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
@@ -267,11 +269,10 @@ until_true 30 "the broken provider's port to be held" test -s "$work/broken-port
 broken_port=$(cat "$work/broken-port")
 
 # ---- the Oh My Pi profile ----------------------------------------------------------------------------
-# HOME is the run's own, with .omp/natives linked to the caller's native-module cache as
-# lib/omp-home.sh's make_omp_home links it, so nothing is downloaded and nothing of the caller's
-# ~/.omp is written. The agent directory holds the profile every session of the run shares.
-natives=$HOME/.omp/natives
-if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+# HOME is the run's own, with .omp/natives linked to the caller's native-module cache
+# (omp_natives_dir, lib/omp-home.sh), so nothing is downloaded and nothing of the caller's ~/.omp is
+# written. The agent directory holds the profile every session of the run shares.
+natives=$(omp_natives_dir)
 mkdir -p "$natives" "$work/home/.omp" "$work/agent" "$work/session" "$work/tmp"
 ln -sfT "$natives" "$work/home/.omp/natives"
 # rig-broken answers nothing: its one model is the fallback check's, and retry.fallbackChains (the

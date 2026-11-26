@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
@@ -39,6 +41,18 @@ const testMainEnv = "LEGION_CMD_TEST_MAIN"
 // leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion` these
 // tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
+
+// cmdTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel. Every test calls t.Parallel but those that change something the whole process
+// shares, hold code to a wall-clock bound that tests beside them could use up, or rewrite a
+// fixture parallel tests read (each says which in a `Not parallel:` comment); those run first, one
+// at a time. The tests wait far more than they compute — on the git, jj and gh they start, on this
+// binary run again as `legion`, and on the wall-clock bounds some of them prove — so one at a time
+// the package kept about half of one of CI's four CPUs busy, and go test's default of GOMAXPROCS
+// would leave most of that idle. A -parallel on the command line still wins only because TestMain
+// sets this default before testBinaryDeadline parses the command line (flag.Parse): the set must
+// stay above that call, or this default would replace a -parallel the command line names.
+const cmdTestParallelism = 8
 
 // testJJWordBoundEnv names, to this package's test binary run as `legion` (TestMain), the bound
 // in bytes of the jj step's words of ids (jjWordBound), so that a test of `legion jj` in a process
@@ -100,7 +114,13 @@ func TestMain(m *testing.M) {
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
-	// environment_test.go reads these variables again once every test before it has run, so the
+	// The package's default -parallel (cmdTestParallelism), set before testBinaryDeadline below
+	// parses the command line, so a -parallel there still replaces it.
+	if err := flag.Set("test.parallel", strconv.Itoa(cmdTestParallelism)); err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
+		os.Exit(1)
+	}
+	// environment_test.go reads these variables again once every serial test has run, so the
 	// snapshot is taken here, ahead of MustGuard, the first thing after the clearing above that
 	// changes this binary's own environment.
 	snapshotStartupEnvironment()
@@ -194,7 +214,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("read %s: %v", sleep, err)
 	}
 	path := filepath.Join(t.TempDir(), "legion")
-	if err := os.WriteFile(path, body, 0o700); err != nil {
+	if err := execfile.Write(path, body, 0o700); err != nil {
 		t.Fatalf("write the probe: %v", err)
 	}
 
@@ -259,6 +279,7 @@ func healthzOn(t *testing.T, host string) int {
 // daemon is still serving, and a start that overwrote the entry and then failed to bind would
 // delete it on the way out — leaving the running daemon invisible to stop, status and legions.
 func TestStartRefusesWhileTheTeamsLegionIsRunning(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	legions := legionState(t)
 	pid := runningLegion(t)
 	claim(t, legions, registry.Entry{
@@ -288,6 +309,7 @@ func TestStartRefusesWhileTheTeamsLegionIsRunning(t *testing.T) {
 // files, so `legion start` refuses the second while the first is live — naming both teams and the
 // directory, the three things the operator changes one of — and records nothing for it.
 func TestStartRefusesTheStateDirectoryAnotherTeamIsRunningOn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	legions := legionState(t)
 	config := legionConfig(t, "LEGION", 13370)
 	stateDir := filepath.Join(filepath.Dir(config), "state")
@@ -317,6 +339,7 @@ func TestStartRefusesTheStateDirectoryAnotherTeamIsRunningOn(t *testing.T) {
 // naming the variable and the setting, before the team is claimed and so before the daemon opens
 // its store or binds anything.
 func TestStartRefusesAnInheritedSocketLegionYAMLDoesNotName(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	for _, probe := range []struct {
 		name string
 		// bind is legion.yaml's bind; empty leaves its 127.0.0.1 default.
@@ -451,6 +474,7 @@ func appendTo(t *testing.T, path, text string) {
 // A daemon that died without cleaning up leaves an entry naming a pid nothing holds. A stop is
 // then the record's own repair, not an error.
 func TestStopRemovesTheEntryOfADaemonThatIsGone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legions := legionState(t)
 	claim(t, legions, registry.Entry{
 		Team: "LEGION", ConfigPath: "/srv/legion.yaml", PID: reapedPID(t), Port: 13370,
@@ -473,6 +497,7 @@ func TestStopRemovesTheEntryOfADaemonThatIsGone(t *testing.T) {
 // `bind` is a shipped key the overlays set, so the address a legion answers on is the one it
 // recorded — not loopback by assumption.
 func TestStatusDialsTheAddressTheLegionRecorded(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	for _, probe := range []struct {
 		name   string
 		serve  string
@@ -502,6 +527,7 @@ func TestStatusDialsTheAddressTheLegionRecorded(t *testing.T) {
 }
 
 func TestUnknownSubcommandIsUsageError(t *testing.T) {
+	t.Parallel()
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "frobnicate"}, &out, &errb)
 	if code != 2 {
@@ -516,6 +542,7 @@ func TestUnknownSubcommandIsUsageError(t *testing.T) {
 // exit 0, and none a program runs; a bare `legion` prints the same list as a usage error. Every
 // other rule of help on each command is clitest's (TestLegionConformance).
 func TestHelpListsEveryCommand(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		argv   []string
 		code   int
@@ -552,6 +579,7 @@ func usageOf(help string, words ...string) bool {
 }
 
 func TestVersionPrintsBuildInfo(t *testing.T) {
+	t.Parallel()
 	var out, errb bytes.Buffer
 	if code := run(context.Background(), []string{"legion", "version"}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
@@ -564,6 +592,7 @@ func TestVersionPrintsBuildInfo(t *testing.T) {
 // The worker image links the commit it builds (`-ldflags "-X main.revision=<commit>"`), and
 // `legion version` names it after the module version.
 func TestVersionNamesTheLinkedRevision(t *testing.T) {
+	// Not parallel: it sets the package variable revision.
 	linked := revision
 	t.Cleanup(func() { revision = linked })
 	revision = "0123456789abcdef0123456789abcdef01234567"
@@ -583,6 +612,7 @@ func TestVersionNamesTheLinkedRevision(t *testing.T) {
 // `legion version` prints both: a variable renamed without the workflow would leave every
 // release binary printing the module version instead.
 func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
+	t.Parallel()
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	binary := filepath.Join(t.TempDir(), "legion")
 	build := exec.Command("go", "build", "-ldflags", "-X main.revision="+commit+" -X main.release=v9.9.9", "-o", binary, ".")
@@ -603,6 +633,7 @@ func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
 // line, and one of the two linked alone counts as neither, so a half-linked build is never read as
 // a release that shipped a pair.
 func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
+	// Not parallel: it sets the package variables piEnvoyVersion and piLegionVersion.
 	linkedLegion, linkedEnvoy := piLegionVersion, piEnvoyVersion
 	t.Cleanup(func() { piLegionVersion, piEnvoyVersion = linkedLegion, linkedEnvoy })
 
@@ -640,6 +671,7 @@ func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
 // stamp that names an entry it does not register runs no command, `legion version` included: it
 // exits non-zero and names the id.
 func TestVersionContractsPrintsTheBuildsEntriesAndItsOrder(t *testing.T) {
+	t.Parallel()
 	entries := api.NumberedEntries()
 	ids := make([]string, 0, len(entries))
 	lines := []string{fmt.Sprintf("contract %d", api.DaemonAPIVersion()), ""}
@@ -692,6 +724,7 @@ func TestVersionContractsPrintsTheBuildsEntriesAndItsOrder(t *testing.T) {
 // Both commands that read a configured bind dial it the same way: `legion state --config` on a
 // daemon bound to every interface reads loopback, as `legion status` does.
 func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legion.yaml")
 	body := "project: demo\nbind: 0.0.0.0\nport: 13370\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: " + dir + "\n"
@@ -715,6 +748,7 @@ func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
 // record is all this reads, and an issue at testing holds a slot (record.PhaseKeepsSlot), which an
 // empty `active` would deny.
 func TestStateInAPaneReadsTheDaemonItNamesAndPrintsTheIssueRecord(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"issues":{"LEGION-208":{"key":"LEGION-208","generation":2,"phase":"testing","status":"testing","workers":{}}},"pendingStatusWrites":[]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -910,6 +944,7 @@ const twoProjectsWithDeploys = "projects:\n" +
 // Config OK and before every other line, and exits 0, so the deprecation is the first thing an
 // operator reads.
 func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	config := projectsConfig(t, twoProjectsWithDeploys)
 
@@ -927,6 +962,7 @@ func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 // work it does with the file: the start below is refused for a team another legion holds, which
 // is read after the lines are logged, so both are in its log.
 func TestStartLogsEachConfigurationWarningOnceAsItBoots(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	legions := legionState(t)
 	config := projectsConfig(t, twoProjectsWithDeploys)
 	claim(t, legions, registry.Entry{
@@ -949,6 +985,7 @@ func TestStartLogsEachConfigurationWarningOnceAsItBoots(t *testing.T) {
 // `legion config check` prints one `production_check` line per project, in key order: the word the file
 // writes for the project that turns the check off, and the tester for the one that names no key.
 func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	config := projectsConfig(t, "projects:\n  DEMO: {}\n  OTHER:\n    production_check: off\n")
 
@@ -967,6 +1004,7 @@ func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 // key order: the steps the file names, and today's line up to the owner's acceptance for the
 // project that names none, each list as the file would write it.
 func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	config := projectsConfig(t, "projects:\n  DEMO: {}\n  OTHER:\n    default_steps: [implementer, \"reviewer\"]\n")
 
@@ -987,6 +1025,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 // key command runs, no store is opened (the configured Postgres is unreachable), and no team is
 // taken.
 func TestConfigCheckValidatesAndStartsNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legions := legionState(t)
 	config, marker := workflowConfig(t, 13370, "")
 
@@ -1011,6 +1050,7 @@ func TestConfigCheckValidatesAndStartsNothing(t *testing.T) {
 // Config OK for a file it never read, and start, stop, state and probe-boot would act on the team
 // ./legion.yaml names.
 func TestStartRefusesAConfigurationGivenAsAnArgument(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it changes the whole process's working directory.
 	for _, command := range []string{"config check", "start", "stop", "state", "probe-boot"} {
 		t.Run(command, func(t *testing.T) {
 			legionState(t)
@@ -1046,6 +1086,7 @@ func TestStartRefusesAConfigurationGivenAsAnArgument(t *testing.T) {
 // rather than read as a start: it exits 2, prints nothing on stdout, runs no App key command and
 // takes no team.
 func TestStartRefusesItsMovedCheckConfigFlag(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legions := legionState(t)
 	config, marker := workflowConfig(t, 13370, "")
 
@@ -1066,6 +1107,7 @@ func TestStartRefusesItsMovedCheckConfigFlag(t *testing.T) {
 // Every broken variant is refused naming its key, and the command exits non-zero — including a
 // key only boot read before (the Dispatch bearer's file, internal/daemon/workflow.go bind).
 func TestConfigCheckNamesTheBrokenKey(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	for _, variant := range []struct{ extra, drop, says string }{
 		{extra: "worker_cap: 3\n", says: "worker_cap"},
@@ -1116,6 +1158,7 @@ func TestConfigCheckNamesTheBrokenKey(t *testing.T) {
 // the one cap left that blocks a pull request. The refused keys of TestConfigCheckNamesTheBrokenKey (worker_cap,
 // resync_interval_seconds) are the control that the two kinds stay apart.
 func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	config, marker := workflowConfig(t, 13370, "max_fix_attempts: 3\n")
 
@@ -1139,6 +1182,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 // writes its own refusals through (printRefusal), so the refusal of such a DSN names neither the
 // DSN's user name nor its query. No App key command runs, and no state directory is made.
 func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	legionState(t)
 	for _, tc := range []struct {
 		name   string
@@ -1173,7 +1217,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			if err := os.MkdirAll(shims, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			fixtureenv.Unset(t, "LEGION_GH_PATH")
@@ -1261,6 +1305,7 @@ func replaceLine(t *testing.T, path, prefix, line string) {
 // would refuse fails the check with boot's refusal, and one it would take passes, the OK line
 // naming the seed's public key and never the seed.
 func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	legionState(t)
 	seed, public := testnkeys.User(t)
 	const seedKey, envoyKey = "nats_nkey_seed_file", "envoy_token_file"
@@ -1329,6 +1374,7 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 // `legion config check` reads the daemon's own seed as boot does, beside the pane seed: a refusal in boot's
 // words, or an OK line naming both users by public key, never either seed.
 func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	legionState(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	daemonSeed, daemonUser := testnkeys.User(t)
@@ -1387,6 +1433,7 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 // pod that collides with Legion's own (a mount at Legion's launcher token projection, refused naming both
 // paths), and a kubeconfig that cannot be read — with no App key command run.
 func TestConfigCheckRefusesWhatTheSandboxRuntimeRefuses(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	for _, tc := range []struct {
 		name, runtime string
@@ -1493,6 +1540,7 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 // (tmuxCapabilityGaps) are where it is open. Model fallback is the probe's, and pool capacity the
 // probe's run's, and neither is printed here.
 func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	const issueSet = "    resources:\n      issue: {cpu: \"4\", memory: 24Gi}\n"
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1532,6 +1580,7 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 // dispatch_token_file: one it can read passes, and one it cannot is refused naming the key. The
 // control is the same file with dispatch_token_file added, refused naming both keys.
 func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState, fixtureenv.Unset).
 	legionState(t)
 	fixtureenv.Unset(t, "AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_MACHINE_TOKEN_FILE")
 	const exchange = "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token, exchange_audience: legion-broker-exchange}\n"
@@ -1577,12 +1626,13 @@ func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 // `legion config check` refuses a cpu or memory request above its limit and a request that is no
 // quantity, naming the key, with exit 1 and no Config OK.
 func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
 		{"a memory request past its limit", "    resources: {issue: {memory: 32Gi, memory_request: 40Gi}}\n",
 			"legion config check: runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi\n"},
 		{"a cpu request past the default limit", "    resources: {issue: {cpu_request: 4}}\n",
-			"legion config check: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 3\n"},
+			"legion config check: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 2\n"},
 		{"a request that is no quantity", "    resources: {issue: {memory_request: lots}}\n",
 			"legion config check: runtime.kubernetes.resources.issue.memory_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)\n"},
 	} {
@@ -1603,6 +1653,7 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
 // whose plugin is the worker image's and never an install.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
@@ -1644,6 +1695,7 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 // worker_boot_timeout_seconds reaches or exceeds slow_command_timeout_seconds prints it naming the
 // derived bound; the defaults, and a tmux configuration (which runs no probe), print nothing.
 func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
@@ -1692,6 +1744,7 @@ const defaultCacheLine = "repository cache: a 20Gi volume for each repository a 
 // the file settles it: the defaults, or the file's own members over them, a raised limit alone
 // requested in full and a lower request named under its limit, as a role's.
 func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
@@ -1708,6 +1761,7 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 // refused as an unknown key naming the four, and a blank reason records nothing, so it is refused
 // too — each with exit 1 and no Config OK.
 func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
 		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room\n"},
@@ -1733,6 +1787,7 @@ func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
 // both GitHub Apps' private_key_command would fail, and the state is read all the same, with
 // neither command run.
 func TestStateConfigRunsNoPrivateKeyCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (workflowConfig).
 	served := `{"daemon":{"project":"DEMO","schemaVersion":7,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1761,6 +1816,7 @@ func TestStateConfigRunsNoPrivateKeyCommand(t *testing.T) {
 // `legion stop` needs the file only for the team it names, so it runs neither App's key command
 // either: the answer is about the registry, never the key command's failure.
 func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	config, marker := workflowConfig(t, 13370, "")
 
@@ -1783,6 +1839,7 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 // (workflow.PhaseStatus). It carries no admission block: the line reads none, and LEGION-208, at
 // testing, holds a slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"issues":{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"testing","status":"testing"},` +
 		`"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"retro","status":"retro"}}`
@@ -1835,6 +1892,7 @@ func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
 // tree_close before the issue's workspace_remove, at one moment. The state carries both records
 // and no admission block: the line reads none, and LEGION-208, at implementing, holds a slot.
 func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"issues":{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress"},` +
 		`"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"done","status":"done"}},"pendingStatusWrites":[]`
@@ -1886,6 +1944,7 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // turn: a retired or suspended claim keeps the step it was last in on its record, on purpose, so
 // a call open there is no agent in a call, and the line names only the working claims.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads the claims alone, and an issue at implementing holds a
 	// slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
@@ -1972,6 +2031,7 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 // time stands only between looks, since a look's start clears it (workflow's startLook), so
 // LEGION-209's look 1 is closed. With none open the line says so.
 func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
 	closed := `"LEGION-207":{"key":"LEGION-207","generation":1,"phase":"done","status":"done"}`
@@ -2025,6 +2085,7 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 //   - a read time and no merge state -> `read <time> with no merge state`
 //   - no merge state and no read time -> `no read recorded for this head`
 func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads the issues alone, and an issue at reviewing or
 	// implementing holds a slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
@@ -2137,6 +2198,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 // alone does not say what it waits for. The state carries no admission block, since the line
 // reads the issues alone and each root here would stand in `active`.
 func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
 	gate := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"awaiting_person","status":"in_progress",` +
@@ -2200,6 +2262,7 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
 // out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	const (
 		gateWait   = "LEGION-210 waits on spec version 3 of spec-210, unanswered"
@@ -2275,6 +2338,7 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // names the key, the place and the part, while the command prints something else, is the defect
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
+	t.Parallel()
 	const (
 		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
 			" and it takes the free slots before the issues at P1 that have not started."
@@ -2320,6 +2384,7 @@ func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 // The lines name no issue: the keys stay in `--json`, where a line per issue would print hundreds
 // on a live deployment.
 func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the lines read none, and an issue at implementing holds a slot
 	// (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
@@ -2417,6 +2482,7 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 // is the one this deployment read before any experiment was declared: each arm with the mode it
 // was drawn under, and a tree drawn at mode off, which holds the empty arm, as `none (off)`.
 func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
@@ -2465,6 +2531,7 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 // any experiment was declared. Printing `experiments: none` over it would drop a line every such
 // deployment has read since before any experiment was declared.
 func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
@@ -2512,6 +2579,7 @@ func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) 
 // legion-v20.8.1 (045ee0762538), a release without this change, printed for the same issues,
 // measured by INFRA-2566's tester on 2026-11-13.
 func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
@@ -2556,6 +2624,7 @@ func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.
 // the one a `legion` without this change prints.
 // Where an issue carries `assignments` the fields are not counted a second time.
 func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAssignments(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
@@ -2633,6 +2702,7 @@ func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAs
 // Project). It carries no admission block: the line reads none, and every issue here holds a slot
 // (record.PhaseKeepsSlot), which an empty `active` would deny.
 func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
 	// recorded is one claim of the record a case serves: its issue, the phase that issue stands
@@ -2809,6 +2879,7 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 // raises (supervise.WakePluginRefresh). The state carries no admission block: the line reads
 // none, and both issues hold a slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
 	waiting := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-208",` +
@@ -2866,6 +2937,7 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 // with no such list says nothing of the webhook App and gets no line at all. The state carries a
 // record on each repository the block lists (recordsOn).
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (plainStateOf); it changes the whole process's working directory (plainStateOf).
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"issues":` + recordsOn("acme/tools", "acme/widgets", "zeta/tools") + `,"pendingStatusWrites":[]`
 	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
@@ -2916,6 +2988,7 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 // nothing for this body, and the line this test reads is gone. The state carries a record on the
 // repository the list names (recordsOn).
 func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (plainStateOf); it changes the whole process's working directory (plainStateOf).
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"issues":` + recordsOn("acme/widgets") + `,"pendingStatusWrites":[]`
 	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
@@ -2942,6 +3015,7 @@ func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *
 // The state carries a record on each live repository (recordsOn), under the name the records keep
 // it under: sjawhar/legion for the repository served as cybermonklabs/legion.
 func TestPlainStateNamesEachLiveRepositoryGitHubDidNotReadOrAnAppIsMissingFrom(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (plainStateOf); it changes the whole process's working directory (plainStateOf).
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"issues":` + recordsOn("acme/fresh", "acme/gadgets", "acme/widgets", "sjawhar/legion", "zeta/archive", "zeta/gone") +
 		`,"pendingStatusWrites":[]`
@@ -3010,6 +3084,7 @@ func recordsOn(repos ...string) string {
 // did not answer, alone on the line when the consumer's info could not be read. With no consumers
 // the one line says so.
 func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 10, 28, 9, 20, 30, 0, time.UTC)
 	for _, tc := range []struct {
@@ -3058,6 +3133,7 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 // subject, sequence, when and after how many deliveries it was given up, why, and the first line of
 // its error. With none open the one line says so.
 func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
+	t.Parallel()
 	gaveUpAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	t.Run("none", func(t *testing.T) {
 		if got := intakeGiveUpLines(api.IntakeGiveUpsView{}); !slices.Equal(got, []string{"intake give-ups: none"}) {
@@ -3097,6 +3173,7 @@ func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
 // operator's terminal as text, and does not clear the screen or set the window title. The rest of
 // the line stays as the guides show it.
 func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	giveUps, err := json.Marshal(api.IntakeGiveUpsView{
 		Consumers: []api.IntakeGiveUpCountView{{Name: "legion-go-LEGION-dispatch", Open: 1, NewestSeq: 48213}},
 		Newest: []api.IntakeGiveUpView{{
@@ -3139,6 +3216,7 @@ func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
 // however many there are; with none the line says
 // so. Nothing here is the daemon's to clear, so the line names them and stops.
 func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// The line reads `blocked` alone, so the state names nothing else of the admission block and no
 	// `issues`: the daemon lists an issue in `active`, `waiting` or `blocked` only beside its record
 	// in `issues` (projection's Project), which an empty object would deny.
@@ -3191,6 +3269,7 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 // a reader the line from the held lifecycle rows the same output prints below it. A grep of the
 // source would pass on a comment, so this reads what the command prints.
 func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// The line reads `held` alone, so the state names no `active`, `waiting` or `issues`: the
 	// daemon lists an issue in any of the three lists only beside its record in `issues`
 	// (projection's Project, record.HeldList), which an empty object would deny.

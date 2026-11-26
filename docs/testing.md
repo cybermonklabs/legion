@@ -50,6 +50,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A server that takes neither and can listen on a unix socket listens on one in a directory of the test's own (`testtmp.Dir`), and on no TCP port, as `internal/ompsessions`' PgBouncer does in a directory docker mounts into its container.
   A daemon a test boots in its own process (`packages/daemon/internal/daemon`) takes its API listener from a socket the test holds (`heldListen`, through `overrides.listen`), and a test whose daemons must listen on one port across a restart, as the controller sandbox rig's worker stream must, hands each boot a descriptor of a socket it holds for its whole run (`heldSocketListen`, through `overrides.listen` and `overrides.streamListen`).
   A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
@@ -238,7 +239,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -592,6 +593,20 @@ bound that the parallel tests' load could make it miss, which the comment names 
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
 
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -622,10 +637,16 @@ package, while `go list ./...` and the file disagree. Put a new package in the l
 time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the race leg `.github/go-legs.yaml` gives it, whose step
+under the race detector, once per run, split by test name over the three race legs
+`.github/go-legs.yaml` gives it, a group of
+`.github/go-legs/packages/daemon/internal/daemon.yaml` each, whose step
 is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
 job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
-out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. A
+test you add, rename or delete needs no edit of that file to keep CI green: a test no group names
+runs in the group `.github/scripts/go_legs.py` places it in, the same in every leg, and a name the
+package no longer declares matches nothing, each with a warning on the legs' logs for the next
+rebalance. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
