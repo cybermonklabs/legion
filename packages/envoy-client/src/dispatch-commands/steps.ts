@@ -2,7 +2,7 @@ import type { StepRecord } from "@legion/contracts";
 import { answeredText, setModelText } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 
-/** A field the record does not hold prints `-`, so every line keeps its columns. */
+/** A field the record holds empty or null prints `-`, so every line keeps its columns. */
 function orDash(value: string | null): string {
   return value === null || value === "" ? "-" : value;
 }
@@ -13,10 +13,10 @@ function orDash(value: string | null): string {
  *  `answered` the models that answered its agent (`setModelText`, `answeredText`). */
 function stepLine(record: StepRecord): string {
   return [
-    record.task,
+    orDash(record.task),
     record.step,
     record.kind,
-    record.role,
+    orDash(record.role),
     orDash(record.type),
     "attempt",
     record.attempt,

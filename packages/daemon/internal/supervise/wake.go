@@ -809,32 +809,34 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 	return m.runWake(ctx, waiting, false)
 }
 
-// runDroppedLaunchForRetry is an operator's retry of a claim whose launch the pacing or the pause's
-// gate parked over no process, where the state the gate found is one no retry row acts on: queued,
-// which every spawn and the boot's relaunch of an unfinished launch park from; suspended, which a
-// rule's resume parks from; and launching, which a try the pause met after its write
-// (pauseHeldTry) and a start whose pod grant the pause met (podStartDue) are held in, their wake
-// already past the pacing (wake.ran), whose run is a fresh try. The claim reads launching for the
-// whole wait, so a person who sees it stuck reaches for `legion claims retry`; refusing that retry
-// as "a queued claim is spawned, not retried" left the claim behind a restart's whole queue, an
-// hour of it on 2026-11-23 (dispatch://INFRA-5482).
-// The person is asking for the claim to run, and the launch the dropped wake holds is the one that
-// runs it, so that launch runs here, unpaced, exactly as its turn would have run it: the claim is
-// put back launching, where the park wrote it (waitOnMachine), and the wake goes through runWake,
-// lifecycle recheck and all. ran is false, and nothing is done, for every other request, for a
-// claim whose gate-found state a retry row decides (failed, retired), and for any launch while a
-// project pause holds the claim (pauseHolds): the API refuses the operator's retry while the
-// project is paused (refusedWhilePaused), and a pause that opened after that refusal was read
-// holds this launch as it holds every other, so the retry is refused and the wake parked again,
-// for its turn, or the pause's gate, to take it (wakeNow, pauseGate). A launch the pause's gate
-// held whose pause has ended, before the gate's own stop or the resume's event let it out
-// (pauseStopDue, resumePause), is let out here as those let it out (letOutHeldLaunch), unpaced.
+// runDroppedLaunchForRetry is the operator's retry (RequestAskedRetry naming the operator, the line
+// exemptWake draws: the controller's retries, which it asks of as many agents at once as it decides
+// to, keep the turn the pacing gave them and launch at it) of a claim whose launch the pacing or
+// the pause's gate parked over no process, where the state the gate found is one no retry row acts
+// on: queued, which every spawn and the boot's relaunch of an unfinished launch park from;
+// suspended, which a rule's resume parks from; and launching, which a try the pause met after its
+// write (pauseHeldTry) and a start whose pod grant the pause met (podStartDue) are held in, their
+// wake already past the pacing (wake.ran), whose run is a fresh try. The claim reads launching for
+// the whole wait, so a person who sees it stuck reaches for `legion claims retry`; refusing that
+// retry as "a queued claim is spawned, not retried" left the claim behind a restart's whole queue,
+// an hour of it on 2026-11-23 (dispatch://INFRA-5482). The person is asking for the claim to run,
+// and the launch the dropped wake holds is the one that runs it, so that launch runs here, unpaced,
+// exactly as its turn would have run it: the claim is put back launching, where the park wrote it
+// (waitOnMachine), and the wake goes through runWake, lifecycle recheck and all. ran is false, and
+// nothing is done, for every other request, for a claim whose gate-found state a retry row decides
+// (failed, retired), and for any launch while a project pause holds the claim (pauseHolds): the API
+// refuses the operator's retry while the project is paused (refusedWhilePaused), and a pause that
+// opened after that refusal was read holds this launch as it holds every other, so the retry is
+// refused and the wake parked again, for its turn, or the pause's gate, to take it (wakeNow,
+// pauseGate). A launch the pause's gate held whose pause has ended, before the gate's own stop or
+// the resume's event let it out (pauseStopDue, resumePause), is let out here as those let it out
+// (letOutHeldLaunch), unpaced.
 //
 // The launch takes no turn of the pacing, as an operator's task over a parked launch takes none
 // (runParkedLaunchNow): its place is given up, the turn it would have taken going to the wake
 // behind it, and the daemon is told the launch is let out now (wakeLetOut).
 func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, dropped *wake) (ran bool, err error) {
-	if _, retry := ev.(RequestOperatorRetry); !retry || dropped == nil || m.held != nil {
+	if asked, retry := ev.(RequestAskedRetry); !retry || asked.By != SuspendedByOperator || dropped == nil || m.held != nil {
 		return false, nil
 	}
 	if _, paused := m.pauseHolds(); paused {
@@ -899,17 +901,23 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 }
 
 // dropsWaitingWake is whether ev is a request the wake pacing never makes wait over a claim it
-// parked with no process: every request exemptWake lets through, an operator's forget-session —
-// which launches nothing, but which a claim parked launching would refuse "the claim has a live
-// process or launch", and it has neither — and an operator's own delivery (operatorDelivery),
-// which a suspended claim parked by the rule's own resume would queue behind that paced turn
-// where the state the gate found launches for it at once (deliverResuming, revive). An
-// operator's delivery over a launch parked above a process the claim still records is none of
-// this: that launch runs where the task arrives instead (runParkedLaunchNow).
+// parked with no process: every request exemptWake lets through, every forget-session whoever
+// asks it (the operator's own, and the one a fresh session of the operator or the controller
+// sends: RequestForgetSession.By) — which launches nothing, but which a claim parked launching
+// would refuse "the claim has a live process or launch", and it has neither — and an operator's
+// own delivery (operatorDelivery), which a suspended claim parked by the rule's own resume would
+// queue behind that paced turn where the state the gate found launches for it at once
+// (deliverResuming, revive). An operator's delivery over a launch parked above a process the
+// claim still records is none of this: that launch runs where the task arrives instead
+// (runParkedLaunchNow).
 //
 // The daemon's resume by rule is none of them: it meets a parked claim with "the claim runs:
 // nothing to resume" (nothingToDo), which is the truth — the wake the claim waits for is the
-// launch that rule would make.
+// launch that rule would make. Nor is the controller's resume_agent or retry, which the pacing makes
+// wait (exemptWake): dropping the wake for it would park a wake of its own behind every turn the
+// queue holds, for the launch this claim already waits its turn for, so it reaches the agent while
+// its claim is parked launching, is refused because that claim is neither suspended nor failed,
+// and the claim keeps the turn it holds.
 func dropsWaitingWake(ev Event) bool {
 	if _, ok := ev.(RequestForgetSession); ok {
 		return true
@@ -925,20 +933,27 @@ func operatorDelivery(ev Event) bool {
 	return ok && deliver.ID == ""
 }
 
-// exemptWake is whether the launch a request raises is one the wake pacing lets through: the two
-// that reach a machine from the operator's own route alone (RequestResume, RequestOperatorRetry),
+// exemptWake is whether the launch a request raises is one the wake pacing lets through: the
+// operator's own resume and retry (RequestResume.By, RequestAskedRetry.By naming the operator),
 // which a person is waiting on, and a spawn whose caller marked it exempt, which is the
 // operator's spawn route and nothing else — the project controller is exempt by identity, in the
 // gate itself, which covers the launches no request raises as well (reserveWake,
-// claim.IsController). Every other path into a launch is paced, so every other event is too: an
-// operator's delivery carries no launch of its own, and revive reads the exemption from the
-// delivery itself (deliverResuming).
+// claim.IsController). The same two events from the agent door are paced: the controller's
+// resume, retry and fresh session (api's resumeAgent, retryAgent, claimFreshSession) are launches
+// an agent raises, as many at once as it asks for — a controller lifting its own holds after a
+// deploy asks one for every agent it held — and let through, they would start them all at once,
+// past `worker_wakes_per_minute`, the bound that keeps a wave under the provider's per-minute cap.
+// Every other path into a launch is paced, so every other event is too: an operator's delivery
+// carries no launch of its own, and revive reads the exemption from the delivery itself
+// (deliverResuming).
 func exemptWake(ev Event) bool {
 	switch ev := ev.(type) {
 	case RequestSpawn:
 		return ev.Exempt
-	case RequestResume, RequestOperatorRetry:
-		return true
+	case RequestResume:
+		return ev.By == SuspendedByOperator
+	case RequestAskedRetry:
+		return ev.By == SuspendedByOperator
 	}
 	return false
 }

@@ -393,7 +393,11 @@ check "a dispatch of a branch then keys on its commit" \
   "$(contains "$(concurrency_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "^group=ci-$old ")"
 
 echo "case: a generation step handed no merge base fails the branch case"
-broken=$(copy_with "$work/no-merge-base" ci.yaml ' || steps.base.outputs.sha' '')
+# The generation step's own line: the restore of the base's cached filters names the same
+# expression in its `if:` and its key.
+broken=$(copy_with "$work/no-merge-base" ci.yaml \
+  'CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}' \
+  'CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}')
 check "a dispatch of a branch then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=")"
 check "  while a merge group still hands its own" \
