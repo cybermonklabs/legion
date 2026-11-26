@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -602,5 +604,59 @@ func TestTheLaunchOfNoTextsIsUnchanged(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(rig.state, "texts")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a launch of no folder made %s (%v)", filepath.Join(rig.state, "texts"), err)
+	}
+}
+
+// The workspace a pane starts in is the issue's, which the role's agent writes, so its
+// .omp/config.yml, which the base of the texts layer reads, can be a fifo, whose plain open waits
+// for a writer for as long as none comes, or a link to /dev/zero, which a plain read holds whole in
+// the daemon's memory. Either makes the launch's preparation an error naming the file, answered at
+// once, with no root built and no fallback: the fault is the machine's, not the folder's. The
+// answer is waited for with no span of its own (testwait.Receive), so a preparation that waits
+// fails by name before the test binary's deadline, and one that is merely slow passes.
+func TestATextsLaunchRefusesAFifoOrALinkToDevZeroAtTheWorkspaceSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		plant func(t *testing.T, path string)
+	}{
+		{"a fifo", func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a link to /dev/zero", func(t *testing.T, path string) {
+			if err := os.Symlink("/dev/zero", path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newTextsRig(t)
+			spec := testSpec()
+			spec.Variants = []runtime.Variant{{Experiment: "shorter", Name: "folder", Texts: folderPath}}
+			copyDir := filepath.Join(rig.state, "texts", string(spec.Claim), "1", "folder")
+			rig.writeFolder(t, copyDir, map[string]string{"agents/goal-red-team.md": armAgent},
+				map[string]string{"agents/goal-red-team.md": texts.Digest([]byte(pluginAgent))})
+			spec.Texts = &runtime.Texts{Folder: folderPath, Fingerprint: strings.Repeat("ab", 32), Copy: copyDir, Experiment: "shorter", Variant: "folder"}
+			workDir := t.TempDir()
+			settings := filepath.Join(workDir, ".omp", "config.yml")
+			if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.plant(t, settings)
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := PrepareTexts(spec, map[string]string{"HOME": rig.home}, workDir, nil, func(report runtime.TextsReport) {
+					t.Errorf("PrepareTexts fell back: %+v", report.Fault)
+				})
+				done <- err
+			}()
+			if err := testwait.Receive(t, "PrepareTexts over "+settings, done); err == nil || !strings.Contains(err.Error(), settings) {
+				t.Fatalf("PrepareTexts over %s at %s = %v, want an error naming it", tc.name, settings, err)
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(copyDir), "root")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the refused preparation built a root (%v)", err)
+			}
+		})
 	}
 }

@@ -63,18 +63,19 @@ func WriteSettingsLayer(root Root, base, skills []string) (string, error) {
 
 // BaseIgnoredSkills is skills.ignoredSkills as Oh My Pi would read it for a launch without the
 // texts settings layer: layers are the launch's PI_CONFIG_FILES in order, projectDir the directory
-// it starts in, agentDir its profile's agent directory, and read reads each file (os.ReadFile for
-// the plain filesystem, or a view reader where the caller sees mounted files at another path,
-// answering an error matching fs.ErrNotExist where a file is absent). Oh My Pi merges its settings
-// layer over layer and replaces an array whole (config/settings.ts, #deepMerge), so the value is
-// the highest layer's that sets it: the last of layers that does, each a path relative to
-// projectDir unless absolute; else the project's, .omp/config.yml over .omp/settings.json; else
-// the profile's config.yml, or config.yaml where config.yml is absent; else none. A layer that
-// sets it to a value Oh My Pi does not read as a list (null, or a skills that is no mapping in a
-// layer that replaces the whole group) leaves Oh My Pi with its default, none. An overlay that is
-// missing or malformed, and a project config.yml or profile file that is malformed, are errors
-// naming the path as the launch sees it, since Oh My Pi refuses to start on them; a malformed
-// project settings.json Oh My Pi skips, and so does this.
+// it starts in, agentDir its profile's agent directory, and read reads each file (ReadSettingsFile
+// for the filesystem as the caller sees it, or a view reader over it where the caller sees
+// mounted files at another path, answering an error matching fs.ErrNotExist where a file is
+// absent). Oh My Pi merges its settings layer over layer and replaces an array whole
+// (config/settings.ts, #deepMerge), so the value is the highest layer's that sets it: the last of
+// layers that does, each a path relative to projectDir unless absolute; else the project's,
+// .omp/config.yml over .omp/settings.json; else the profile's config.yml, or config.yaml where
+// config.yml is absent; else none. A layer that sets it to a value Oh My Pi does not read as a
+// list (null, or a skills that is no mapping in a layer that replaces the whole group) leaves Oh
+// My Pi with its default, none. An overlay that is missing or malformed, and a project config.yml
+// or profile file that is malformed, are errors naming the path as the launch sees it, since Oh My
+// Pi refuses to start on them, and so is any file read refuses for anything but its absence; a
+// malformed project settings.json Oh My Pi skips, and so does this.
 func BaseIgnoredSkills(layers []string, projectDir, agentDir string, read func(string) ([]byte, error)) ([]string, error) {
 	for i := len(layers) - 1; i >= 0; i-- {
 		file := layers[i]
@@ -137,6 +138,23 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string, read func(s
 		return value, err
 	}
 	return nil, nil
+}
+
+// settingsFileLimit is the most ReadSettingsFile reads of one settings file: an operator's
+// overlay or a project's settings is a few kilobytes, and the bound is well past any.
+const settingsFileLimit = 1 << 20
+
+// ReadSettingsFile reads the settings file at path, for BaseIgnoredSkills' read. A project's
+// settings sit in the workspace the launch starts in, which in an issue pod every role writes,
+// and the reader is the pod's launcher, its container's PID 1, or the tmux daemon: so the file
+// can be a link to /dev/zero, which a plain read holds whole in memory until its reader is gone,
+// or a fifo, whose plain open waits for a writer for as long as none comes. It follows every link
+// on path, as an operator's ConfigMap volume needs (`..data`), waits on nothing, and refuses,
+// naming path, anything but a regular file and one larger than settingsFileLimit
+// (rolefile.ReadFollowing); an absent file answers open's own error, which fs.ErrNotExist
+// matches, so BaseIgnoredSkills reads it as absent.
+func ReadSettingsFile(path string) ([]byte, error) {
+	return rolefile.ReadFollowing(path, settingsFileLimit)
 }
 
 // readIfPresent is file's bytes read through read and true, or false where there is no such file.

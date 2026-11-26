@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -125,6 +127,79 @@ func TestBaseIgnoredSkillsFollowsOhMyPisLayers(t *testing.T) {
 				t.Errorf("BaseIgnoredSkills = %q, %v; want %q", got, err, tc.want)
 			}
 		})
+	}
+}
+
+// Every role of an issue pod writes the workspace a launch starts in, so a role can make each
+// settings file there anything: a fifo, whose plain open waits for a writer for as long as none
+// comes, or a link to /dev/zero, which a plain read holds whole in memory until its reader, the
+// pod's launcher or the tmux daemon, is gone. Read with ReadSettingsFile, the reader both pass,
+// either is an error naming the file, answered at once: at the project's .omp/config.yml, at its
+// .omp/settings.json, and as an overlay named relative to the project. A link there to a regular
+// file is read, as the links of an operator's ConfigMap volume are (the negative control). Each
+// answer is waited for with no span of its own (testwait.Receive), so a read that waits fails by
+// name before the test binary's deadline, and a read that is merely slow passes.
+func TestBaseIgnoredSkillsReadsNoFifoOrDeviceARoleLeavesInTheWorkspace(t *testing.T) {
+	for _, place := range []struct {
+		name, file string
+		overlays   []string
+	}{
+		{"the project's config.yml", ".omp/config.yml", nil},
+		{"the project's settings.json", ".omp/settings.json", nil},
+		{"an overlay named relative to the project", "relative.yml", []string{"relative.yml"}},
+	} {
+		for _, kind := range []struct {
+			name    string
+			plant   func(t *testing.T, path string)
+			refused bool
+		}{
+			{"a fifo", func(t *testing.T, path string) {
+				if err := syscall.Mkfifo(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}, true},
+			{"a link to /dev/zero", func(t *testing.T, path string) {
+				if err := os.Symlink("/dev/zero", path); err != nil {
+					t.Fatal(err)
+				}
+			}, true},
+			{"a link to a regular file", func(t *testing.T, path string) {
+				target := filepath.Join(t.TempDir(), "settings")
+				writeFile(t, target, `{"skills": {"ignoredSkills": ["linked"]}}`)
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			}, false},
+		} {
+			t.Run(kind.name+" as "+place.name, func(t *testing.T) {
+				base := t.TempDir()
+				project, agent := filepath.Join(base, "project"), filepath.Join(base, "agent")
+				path := filepath.Join(project, filepath.FromSlash(place.file))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				kind.plant(t, path)
+				type answer struct {
+					ignored []string
+					err     error
+				}
+				done := make(chan answer, 1)
+				go func() {
+					ignored, err := texts.BaseIgnoredSkills(place.overlays, project, agent, texts.ReadSettingsFile)
+					done <- answer{ignored, err}
+				}()
+				got := testwait.Receive(t, "BaseIgnoredSkills over "+path, done)
+				if kind.refused {
+					if got.err == nil || !strings.Contains(got.err.Error(), path) {
+						t.Fatalf("BaseIgnoredSkills over %s = %q, %v; want an error naming it", path, got.ignored, got.err)
+					}
+					return
+				}
+				if got.err != nil || !slices.Equal(got.ignored, []string{"linked"}) {
+					t.Fatalf("BaseIgnoredSkills over a link at %s = %q, %v; want [linked], the file it names", path, got.ignored, got.err)
+				}
+			})
+		}
 	}
 }
 

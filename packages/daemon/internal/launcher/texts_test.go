@@ -2,12 +2,15 @@ package launcher
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,8 +66,9 @@ exec sleep 600`
 // are built under, the operator's settings overlay its PI_CONFIG_FILES names first (which ignores
 // the skill operator-skill, so a root's settings layer has a base it must keep), the config root
 // its profile resolves to, which is under the home, and the launcher's view of the container's
-// home and of the directory that holds what is mounted under it (useHomeView), which are
-// directories of the case's own.
+// home, of the directory that holds what is mounted under it and of the mounts there role-init
+// binds back (useHomeView), which are directories of the case's own and the mount points it lists
+// in mounted, by their paths relative to homeMounts.
 type textsCase struct {
 	t                     *testing.T
 	g                     *rig
@@ -73,18 +77,31 @@ type textsCase struct {
 	stateHome, overlay    string
 	configRoot, workspace string
 	home, homeMounts      string
+	mounted               []string
 }
 
-// useHomeView points the launcher's view of the container at a home and a home mounts directory of
-// the test's own (roleHome, roleHomeMounts), since a machine running the tests has neither the
-// image's /home/legion nor its /var/run/legion/home, and puts the image's back when the test ends.
-// It is called before the rig starts, which reads both, and a test that calls it is not parallel:
-// parallel tests read them.
-func useHomeView(t *testing.T, home, mounts string) {
+// useHomeView points the launcher's view of the container at a home, a home mounts directory and
+// a mount table of the test's own (roleHome, roleHomeMounts, homeMountsUnder), since a machine
+// running the tests has neither the image's /home/legion nor its /var/run/legion/home, nor the
+// mounts an issue pod's container holds there: bound answers, when the launcher reads the table,
+// the mount points it lists under mounts, by their paths relative to it. It puts the image's back
+// when the test ends. It is called before the rig starts, which reads them, and a test that calls
+// it is not parallel: parallel tests read them.
+func useHomeView(t *testing.T, home, mounts string, bound func() []string) {
 	t.Helper()
-	previousHome, previousMounts := roleHome, roleHomeMounts
+	previousHome, previousMounts, previousUnder := roleHome, roleHomeMounts, homeMountsUnder
 	roleHome, roleHomeMounts = home, mounts
-	t.Cleanup(func() { roleHome, roleHomeMounts = previousHome, previousMounts })
+	homeMountsUnder = func(dir string) (string, []string, error) {
+		if dir != mounts {
+			return "", nil, fmt.Errorf("the test's mount table is of %s, not %s", mounts, dir)
+		}
+		var points []string
+		for _, rel := range bound() {
+			points = append(points, filepath.Join(mounts, filepath.FromSlash(rel)))
+		}
+		return mounts, points, nil
+	}
+	t.Cleanup(func() { roleHome, roleHomeMounts, homeMountsUnder = previousHome, previousMounts, previousUnder })
 }
 
 // useTextsVolume points the issue's volume the launcher reaches every root of a folder of texts
@@ -112,7 +129,7 @@ func newTextsCase(t *testing.T) *textsCase {
 	if err := os.Mkdir(volume, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	useHomeView(t, c.home, c.homeMounts)
+	useHomeView(t, c.home, c.homeMounts, func() []string { return c.mounted })
 	useTextsVolume(t, c.volume)
 	c.g = newRig(t)
 	for p, body := range legionPluginTexts {
@@ -664,49 +681,91 @@ func TestATextsRootOutsideTheVolumeIsAnOrdinaryStartRefusal(t *testing.T) {
 	}
 }
 
-// A path at or under the home is where the launcher's view of the container holds it: under the
-// home mounts directory where an entry exists there, a link that dangles included, else the
-// image's own path under the home. A path outside the home, one that only shares the home's
-// prefix, and one that climbs out of the home are the same in both views.
-func TestTheHomeViewHoldsAMountedPathUnderTheHomeMountsDirectory(t *testing.T) {
+// A path at or under the home is where the launcher's view of the container holds what the role
+// sees there, by the mounts role-init binds back: a path a mount covers, one at the path or above
+// it, is under the home mounts directory, so a file a directory mount lacks is absent there however
+// the image holds it, and a file mount inside a directory mount is read from the mounts too; a path
+// no mount covers is the image's own, even where the home mounts directory holds an entry at its
+// place, as it does beside a file mount. A path outside the home, one that only shares the home's
+// prefix or a mount's, and one that climbs out of the home are the same in both views. A home
+// mounts directory that is not there, as in the controller pod's single-role container, holds no
+// mount whatever a table lists.
+func TestTheHomeViewReadsAPathFromTheMountThatShowsItToTheRole(t *testing.T) {
 	dir := t.TempDir()
 	home, mounts := filepath.Join(dir, "home"), filepath.Join(dir, "mounts")
+	// The image's own files under the home.
+	writeTextsFile(t, filepath.Join(home, "operator", "lacked.yml"), "image\n")
+	writeTextsFile(t, filepath.Join(home, "operator", "overlay.yml"), "image\n")
+	writeTextsFile(t, filepath.Join(home, ".omp", "overlay.yml"), "image\n")
 	writeTextsFile(t, filepath.Join(home, ".omp", "image.yml"), "image\n")
-	writeTextsFile(t, filepath.Join(home, ".omp", "both.yml"), "image\n")
-	writeTextsFile(t, filepath.Join(mounts, ".omp", "both.yml"), "mounted\n")
+	writeTextsFile(t, filepath.Join(home, "operator-other", "overlay.yml"), "image\n")
+	// What the container holds under the home mounts directory: a directory mount at operator with
+	// a file mount inside it, a file mount at .omp/overlay.yml, and entries under no mount.
+	bound := []string{".omp/overlay.yml", "operator", "operator/profile/config.yml"}
+	writeTextsFile(t, filepath.Join(mounts, "operator", "overlay.yml"), "mounted\n")
+	writeTextsFile(t, filepath.Join(mounts, "operator", "profile", "config.yml"), "mounted file\n")
 	writeTextsFile(t, filepath.Join(mounts, ".omp", "overlay.yml"), "mounted\n")
-	// What a path that only shares the home's prefix would map to, if the prefix were the test.
-	writeTextsFile(t, filepath.Join(mounts, "-other", "overlay.yml"), "mounted\n")
-	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(mounts, "dangling.yml")); err != nil {
-		t.Fatal(err)
-	}
+	writeTextsFile(t, filepath.Join(mounts, ".omp", "image.yml"), "under no mount\n")
+	writeTextsFile(t, filepath.Join(mounts, "operator-other", "overlay.yml"), "under no mount\n")
 	outside := filepath.Join(dir, "elsewhere", "overlay.yml")
-	for _, tc := range []struct{ name, path, want string }{
-		{"a file only the mounts hold", filepath.Join(home, ".omp", "overlay.yml"), filepath.Join(mounts, ".omp", "overlay.yml")},
-		{"a file the mounts and the image both hold", filepath.Join(home, ".omp", "both.yml"), filepath.Join(mounts, ".omp", "both.yml")},
-		{"a file only the image holds", filepath.Join(home, ".omp", "image.yml"), filepath.Join(home, ".omp", "image.yml")},
-		{"a file nothing holds", filepath.Join(home, ".omp", "absent.yml"), filepath.Join(home, ".omp", "absent.yml")},
-		{"a link that dangles under the mounts", filepath.Join(home, "dangling.yml"), filepath.Join(mounts, "dangling.yml")},
-		{"a path outside the home", outside, outside},
-		{"a path that shares the home's prefix", home + "-other/overlay.yml", home + "-other/overlay.yml"},
-		{"a path that climbs out of the home", filepath.Join(home, "..", "elsewhere", "overlay.yml"), filepath.Join(home, "..", "elsewhere", "overlay.yml")},
+	writeTextsFile(t, outside, "outside\n")
+	useHomeView(t, home, mounts, func() []string { return bound })
+	view, err := launcherHomeView()
+	if err != nil {
+		t.Fatalf("launcherHomeView = %v", err)
+	}
+	for _, tc := range []struct {
+		name, path, want string
+		// read is what the view reads at path, "" where it finds no file.
+		read string
+	}{
+		{"a file a directory mount holds", filepath.Join(home, "operator", "overlay.yml"), filepath.Join(mounts, "operator", "overlay.yml"), "mounted\n"},
+		{"a file a directory mount lacks, which the image holds", filepath.Join(home, "operator", "lacked.yml"), filepath.Join(mounts, "operator", "lacked.yml"), ""},
+		{"a file mount inside a directory mount", filepath.Join(home, "operator", "profile", "config.yml"), filepath.Join(mounts, "operator", "profile", "config.yml"), "mounted file\n"},
+		{"a file mount over the image's file", filepath.Join(home, ".omp", "overlay.yml"), filepath.Join(mounts, ".omp", "overlay.yml"), "mounted\n"},
+		{"a file beside a file mount, which no mount covers", filepath.Join(home, ".omp", "image.yml"), filepath.Join(home, ".omp", "image.yml"), "image\n"},
+		{"a file nothing holds", filepath.Join(home, ".omp", "absent.yml"), filepath.Join(home, ".omp", "absent.yml"), ""},
+		{"a path that shares a mount's prefix", filepath.Join(home, "operator-other", "overlay.yml"), filepath.Join(home, "operator-other", "overlay.yml"), "image\n"},
+		{"a path outside the home", outside, outside, "outside\n"},
+		{"a path that shares the home's prefix", home + "-other/overlay.yml", home + "-other/overlay.yml", ""},
+		{"a path that climbs out of the home", filepath.Join(home, "..", "elsewhere", "overlay.yml"), filepath.Join(home, "..", "elsewhere", "overlay.yml"), "outside\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := homeViewPath(home, mounts, tc.path); got != tc.want {
-				t.Errorf("homeViewPath(%s) = %s, want %s", tc.path, got, tc.want)
+			if got := view.path(tc.path); got != tc.want {
+				t.Errorf("the home view's path of %s = %s, want %s", tc.path, got, tc.want)
+			}
+			body, err := view.read(tc.path)
+			switch {
+			case tc.read == "" && !errors.Is(err, fs.ErrNotExist):
+				t.Errorf("the home view reads %s as %q, %v; want no such file", tc.path, body, err)
+			case tc.read != "" && (err != nil || string(body) != tc.read):
+				t.Errorf("the home view reads %s as %q, %v; want %q", tc.path, body, err, tc.read)
 			}
 		})
 	}
+	t.Run("a home mounts directory that is not there", func(t *testing.T) {
+		useHomeView(t, home, filepath.Join(dir, "absent"), func() []string { return bound })
+		view, err := launcherHomeView()
+		if err != nil {
+			t.Fatalf("launcherHomeView = %v", err)
+		}
+		if path := filepath.Join(home, ".omp", "overlay.yml"); view.path(path) != path {
+			t.Errorf("the home view's path of %s = %s, want it as it is", path, view.path(path))
+		}
+	})
 }
 
 // The base of the settings layer is read where the launcher sees the container, which is not where
 // a role sees it: an operator's mount at or under the image's home is held under the home mounts
-// directory, and bound back at its own path only in each role's namespace. So a settings overlay
-// named at a path under the home that only the mounts directory holds is read there, where it would
-// otherwise fail every start of the role on a file the role finds; a profile config.yml mounted
-// under the home is read over the image's own at that path; and where nothing is mounted the
-// image's file is read. The settings layer keeps the ignored skills of the file that wins, and a
-// file no view holds refuses the start naming the path the role is told.
+// directory, and bound back at its own path only in each role's namespace, over the image's home.
+// So a settings overlay named at a path under the home that a mount holds is read there, where it
+// would otherwise fail every start of the role on a file the role finds, or read the image's file
+// the mount hides; a profile config.yml a mount holds is read over the image's own at that path,
+// and a file mount inside a directory mount is read too; where a directory mount lacks a file the
+// image holds, the role finds none, and nor does the base; and where no mount covers a path the
+// image's file is read, whatever the home mounts directory holds there. The settings layer keeps
+// the ignored skills of the file that wins, and a missing overlay refuses the start naming the path
+// the role is told.
 func TestATextsStartReadsTheSettingsBaseWhereTheLauncherSeesTheOperatorsMounts(t *testing.T) {
 	list := func(patterns ...string) string {
 		return "skills:\n  ignoredSkills: [" + strings.Join(patterns, ", ") + "]\n"
@@ -716,23 +775,38 @@ func TestATextsStartReadsTheSettingsBaseWhereTheLauncherSeesTheOperatorsMounts(t
 	for _, tc := range []struct {
 		name string
 		// image and mounted are the files of the case by their path under the home: the image's own,
-		// and the operator's, held under the home mounts directory. overlays are the entries of
-		// PI_CONFIG_FILES before the settings layer, paths under the home.
+		// and those held under the home mounts directory. mounts are the mount points the case's
+		// mount table lists there, by the same paths. overlays are the entries of PI_CONFIG_FILES
+		// before the settings layer, paths under the home.
 		image, mounted map[string]string
+		mounts         []string
 		overlays       []string
 		want           []string
 		refused        bool
 	}{
-		{name: "an overlay only the mounts hold",
-			mounted: map[string]string{overlay: list("mounted-overlay")}, overlays: []string{overlay}, want: []string{"mounted-overlay"}},
-		{name: "an overlay the mounts and the image both hold",
+		{name: "an overlay only a file mount holds",
+			mounted: map[string]string{overlay: list("mounted-overlay")}, mounts: []string{overlay},
+			overlays: []string{overlay}, want: []string{"mounted-overlay"}},
+		{name: "an overlay a file mount holds over the image's",
 			image:   map[string]string{overlay: list("image-overlay")},
-			mounted: map[string]string{overlay: list("mounted-overlay")}, overlays: []string{overlay}, want: []string{"mounted-overlay"}},
-		{name: "a profile config.yml the mounts hold over the image's",
+			mounted: map[string]string{overlay: list("mounted-overlay")}, mounts: []string{overlay},
+			overlays: []string{overlay}, want: []string{"mounted-overlay"}},
+		{name: "an overlay a directory mount lacks, which the image holds",
+			image: map[string]string{overlay: list("image-overlay")}, mounts: []string{".omp"},
+			overlays: []string{overlay}, refused: true},
+		{name: "a profile config.yml a directory mount holds over the image's",
 			image:   map[string]string{profile: list("image-profile")},
-			mounted: map[string]string{profile: list("mounted-profile")}, want: []string{"mounted-profile"}},
-		{name: "a profile config.yml nothing mounts",
-			image: map[string]string{profile: list("image-profile")}, want: []string{"image-profile"}},
+			mounted: map[string]string{profile: list("mounted-profile")}, mounts: []string{".omp/profiles/legion"},
+			want: []string{"mounted-profile"}},
+		{name: "a profile config.yml a directory mount lacks, which the image holds",
+			image: map[string]string{profile: list("image-profile")}, mounts: []string{".omp"}, want: nil},
+		{name: "a profile config.yml a file mount inside a directory mount holds",
+			image:   map[string]string{profile: list("image-profile")},
+			mounted: map[string]string{profile: list("mounted-profile")}, mounts: []string{".omp", profile},
+			want: []string{"mounted-profile"}},
+		{name: "a profile config.yml no mount covers",
+			image:   map[string]string{profile: list("image-profile")},
+			mounted: map[string]string{profile: list("under-no-mount")}, want: []string{"image-profile"}},
 		{name: "an overlay no view holds", overlays: []string{overlay}, refused: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -743,6 +817,16 @@ func TestATextsStartReadsTheSettingsBaseWhereTheLauncherSeesTheOperatorsMounts(t
 			for p, body := range tc.mounted {
 				writeTextsFile(t, filepath.Join(c.homeMounts, filepath.FromSlash(p)), body)
 			}
+			// A mount point is there in the container: a directory where the case mounts no file.
+			for _, p := range tc.mounts {
+				point := filepath.Join(c.homeMounts, filepath.FromSlash(p))
+				if _, err := os.Lstat(point); errors.Is(err, fs.ErrNotExist) {
+					if err := os.MkdirAll(point, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			c.mounted = tc.mounts
 			folder, fingerprint := c.folder()
 			told := t.TempDir()
 			start := c.start(7, folder, fingerprint, told)
@@ -757,7 +841,7 @@ func TestATextsStartReadsTheSettingsBaseWhereTheLauncherSeesTheOperatorsMounts(t
 			got := c.g.start(start)
 			if tc.refused {
 				if got.OK || got.Texts != nil || !strings.Contains(got.Error, entries[0]) {
-					t.Fatalf("the start naming %s, which no view holds, answered %#v (texts %+v), want an ordinary refusal naming it", entries[0], got, got.Texts)
+					t.Fatalf("the start naming %s, which the role finds no file at, answered %#v (texts %+v), want an ordinary refusal naming it", entries[0], got, got.Texts)
 				}
 				c.nothingWritten(7)
 				return
@@ -770,6 +854,56 @@ func TestATextsStartReadsTheSettingsBaseWhereTheLauncherSeesTheOperatorsMounts(t
 				t.Errorf("the settings layer ignores %q, want %q: the base of the file the role reads, then the replaced skill's collision names", ignored, want)
 			}
 			c.g.stop(7)
+		})
+	}
+}
+
+// Every role of an issue pod writes the issue's workspace, the launcher's working directory and so
+// the project whose .omp/config.yml the base of a texts start's settings layer reads (textsBase)
+// where no overlay sets the key, as none does here, so a role can make that file anything: a fifo,
+// whose plain open waits for a writer for as long as none comes, and would hang the role's start
+// and its connection's serve loop, or a link to /dev/zero, which a plain read holds whole in memory
+// until the launcher, the pod's PID 1, and every role of the pod with it, is gone. Either is an
+// ordinary refusal of the start naming the file, answered at once, and nothing of the generation
+// is written, no root built and no child started. The rig waits for the answer with no span of its
+// own (testwait.Receive), so a start that waits fails by name before the test binary's deadline,
+// and one that is merely slow passes.
+func TestATextsStartRefusesAFifoOrALinkToDevZeroAtTheWorkspaceSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		plant func(t *testing.T, path string)
+	}{
+		{"a fifo", func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a link to /dev/zero", func(t *testing.T, path string) {
+			if err := os.Symlink("/dev/zero", path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTextsCase(t)
+			settings := filepath.Join(c.workspace, ".omp", "config.yml")
+			if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.plant(t, settings)
+			t.Chdir(c.workspace)
+			folder, fingerprint := c.folder()
+			told := t.TempDir()
+			start := c.start(7, folder, fingerprint, told)
+			start.Env = mergeEnv(start.Env, []string{"PI_CONFIG_FILES=" + filepath.Join(c.root(7), texts.SettingsLayerName)})
+			got := c.g.start(start)
+			if got.OK || got.Texts != nil || !strings.Contains(got.Error, settings) {
+				t.Fatalf("the start over %s at %s answered %#v (texts %+v), want an ordinary refusal naming it", tc.name, settings, got, got.Texts)
+			}
+			c.nothingWritten(7)
+			if entries, _ := os.ReadDir(told); len(entries) != 0 {
+				t.Errorf("a child of the refused start ran and wrote %v", entries)
+			}
 		})
 	}
 }

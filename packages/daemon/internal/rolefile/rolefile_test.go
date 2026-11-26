@@ -107,6 +107,111 @@ func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 	})
 }
 
+// ReadFollowing takes a regular file within its bound through every link on its path, the
+// kubelet's `..data` layout of a ConfigMap's key among them, and refuses everything else a role
+// can leave at a path, whether there or where a link points, without waiting and in words naming
+// the path it was given: a fifo, a socket, a directory, a device (a link to /dev/zero among them)
+// and a file past the bound. A missing file and a link that dangles are open's own error, which
+// fs.ErrNotExist matches. A read that followed /dev/zero to its end would hold it whole in memory,
+// and one that opened the fifo plainly would wait for a writer for ever. Each answer is waited for
+// with no span of its own (testwait.Receive), so a read that waits fails by name before the test
+// binary's deadline, and a read that is merely slow passes.
+func TestReadFollowingTakesARegularFileThroughItsLinksAndRefusesAnythingElse(t *testing.T) {
+	const limit = 16
+	dir := t.TempDir()
+	regular := write(t, filepath.Join(dir, "regular"), []byte("leak-check-v15\n"))
+	fifo := func(t *testing.T, path string) string {
+		t.Helper()
+		if err := syscall.Mkfifo(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tc := range []struct {
+		name string
+		path func(t *testing.T) string
+		// want is the content ReadFollowing answers, or "" with refusal set for a refusal, or
+		// missing for an error fs.ErrNotExist matches.
+		want    string
+		refusal string
+		missing bool
+	}{
+		{name: "a regular file", path: func(*testing.T) string { return regular }, want: "leak-check-v15\n"},
+		{name: "a file at the bound", path: func(t *testing.T) string {
+			return write(t, filepath.Join(dir, "at"), bytes.Repeat([]byte("x"), limit))
+		}, want: string(bytes.Repeat([]byte("x"), limit))},
+		{name: "a symlink to a regular file", path: func(t *testing.T) string { return link(t, regular, filepath.Join(dir, "to-regular")) },
+			want: "leak-check-v15\n"},
+		{name: "a ConfigMap key through its ..data link", path: func(t *testing.T) string {
+			volume := filepath.Join(dir, "volume")
+			if err := os.MkdirAll(filepath.Join(volume, "..2026_11_26_00_00_00.1"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(volume, "..2026_11_26_00_00_00.1", "config.yml"), []byte("skills: {}\n"))
+			link(t, "..2026_11_26_00_00_00.1", filepath.Join(volume, "..data"))
+			return link(t, filepath.Join("..data", "config.yml"), filepath.Join(volume, "config.yml"))
+		}, want: "skills: {}\n"},
+		{name: "a file past the bound", path: func(t *testing.T) string {
+			return write(t, filepath.Join(dir, "past"), bytes.Repeat([]byte("x"), limit+1))
+		}, refusal: "is larger than 16 bytes"},
+		{name: "a symlink to a file past the bound", path: func(t *testing.T) string {
+			past := write(t, filepath.Join(dir, "past-target"), bytes.Repeat([]byte("x"), limit+1))
+			return link(t, past, filepath.Join(dir, "to-past"))
+		}, refusal: "is larger than 16 bytes"},
+		{name: "a symlink to /dev/zero", path: func(t *testing.T) string { return link(t, "/dev/zero", filepath.Join(dir, "zero")) },
+			refusal: "is a device"},
+		{name: "a fifo", path: func(t *testing.T) string { return fifo(t, filepath.Join(dir, "fifo")) }, refusal: "is a fifo"},
+		{name: "a symlink to a fifo", path: func(t *testing.T) string {
+			return link(t, fifo(t, filepath.Join(dir, "fifo-target")), filepath.Join(dir, "to-fifo"))
+		}, refusal: "is a fifo"},
+		{name: "a socket", path: func(t *testing.T) string {
+			if runtime.GOOS != "linux" {
+				// Darwin's open(2) answers a socket with EOPNOTSUPP, not ENXIO: the read is still
+				// refused, as open's own error, and this row's words are Linux's.
+				t.Skip("open(2) answers a socket with ENXIO on Linux alone")
+			}
+			path := filepath.Join(testtmp.Dir(t, "socket"), "socket")
+			listener, err := net.Listen("unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			return path
+		}, refusal: "is a socket"},
+		{name: "a directory", path: func(*testing.T) string { return dir }, refusal: "is a directory"},
+		{name: "a device", path: func(*testing.T) string { return "/dev/null" }, refusal: "is a device"},
+		{name: "a missing file", path: func(*testing.T) string { return filepath.Join(dir, "missing") }, missing: true},
+		{name: "a dangling symlink", path: func(t *testing.T) string {
+			return link(t, filepath.Join(dir, "nothing"), filepath.Join(dir, "dangling"))
+		}, missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.path(t)
+			type answer struct {
+				body []byte
+				err  error
+			}
+			done := make(chan answer, 1)
+			go func() {
+				body, err := ReadFollowing(path, limit)
+				done <- answer{body, err}
+			}()
+			got := testwait.Receive(t, "ReadFollowing("+path+")", done)
+			switch {
+			case tc.missing && !errors.Is(got.err, fs.ErrNotExist):
+				t.Fatalf("ReadFollowing(%s) = %q, %v; want an error fs.ErrNotExist matches", path, got.body, got.err)
+			case tc.missing:
+			case tc.refusal == "" && got.err != nil:
+				t.Fatalf("ReadFollowing(%s) = %v, want %q", path, got.err, tc.want)
+			case tc.refusal == "" && string(got.body) != tc.want:
+				t.Fatalf("ReadFollowing(%s) = %q, want %q", path, got.body, tc.want)
+			case tc.refusal != "" && (got.err == nil || got.err.Error() != path+" "+tc.refusal):
+				t.Fatalf("ReadFollowing(%s) = %q, %v; want the refusal %q", path, got.body, got.err, path+" "+tc.refusal)
+			}
+		})
+	}
+}
+
 // OpenRegular refuses a fifo it would write as a fifo, without waiting: a write-only open of a
 // fifo no reader holds answers ENXIO under O_NONBLOCK, as an open of a socket does, and the
 // refusal names what is at the path rather than call every ENXIO a socket. The launcher writes a

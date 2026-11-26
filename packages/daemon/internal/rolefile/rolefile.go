@@ -4,11 +4,12 @@
 // symlink to /dev/zero, which a reader that follows it and reads to the end holds whole in memory
 // until the process is killed, a fifo, whose plain open waits for a writer for as long as none
 // comes, a device, a socket, or a regular file of any size. OpenRegular never follows a link and
-// never waits, and refuses anything but a regular file in words naming it; ReadBounded refuses a
-// file larger than its caller's bound rather than read on; MakeDirectory and CreateRegular make a
-// directory or a new file under a directory's descriptor and refuse whatever a role put at its
-// name, a link among it, rather than make or write anything where it points; RemoveTree and
-// RemoveTreeAt follow no link and wait on nothing anywhere they walk.
+// never waits, and refuses anything but a regular file in words naming it; ReadFollowing follows
+// a path's links for a caller that must, and otherwise waits on nothing and refuses as Read does;
+// ReadBounded refuses a file larger than its caller's bound rather than read on; MakeDirectory
+// and CreateRegular make a directory or a new file under a directory's descriptor and refuse
+// whatever a role put at its name, a link among it, rather than make or write anything where it
+// points; RemoveTree and RemoveTreeAt follow no link and wait on nothing anywhere they walk.
 package rolefile
 
 import (
@@ -28,6 +29,36 @@ import (
 // for which errors.Is(err, fs.ErrNotExist) holds), or any other failure to read it.
 func Read(path string, limit int) ([]byte, error) {
 	file, err := OpenRegular(unix.AT_FDCWD, path, path, unix.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return ReadBounded(file, path, limit)
+}
+
+// ReadFollowing is Read for a caller that must follow a link to the file it reads: an operator's
+// ConfigMap or Secret volume holds each key as a link into its `..data` directory, which Read
+// refuses. It follows every link on path, the last element's among them, and otherwise refuses as
+// Read does: it never waits on a fifo or a device (O_NONBLOCK), never takes a terminal (O_NOCTTY),
+// and reads path only when the descriptor it opened is a regular file, refusing anything else in
+// words naming path and what the descriptor is (Kind), so a link to /dev/zero is refused as a
+// device rather than read until its reader's memory is gone. An open answered with ENXIO, a
+// socket's answer, is refused by what path names (Kind, read through its links), or as a socket
+// when that cannot be read. A missing file, a dangling link included, is open's own error, for
+// which errors.Is(err, fs.ErrNotExist) holds; a file larger than limit is ReadBounded's refusal.
+func ReadFollowing(path string, limit int) ([]byte, error) {
+	fd, err := Openat(unix.AT_FDCWD, path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	switch {
+	case errors.Is(err, unix.ENXIO):
+		kind := "socket"
+		if info, statErr := os.Stat(path); statErr == nil {
+			kind = Kind(info.Mode())
+		}
+		return nil, fmt.Errorf("%s is a %s", path, kind)
+	case err != nil:
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	file, err := regular(fd, path)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +88,12 @@ func OpenRegular(dirfd int, name, path string, flag int, perm uint32) (*os.File,
 	case err != nil:
 		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 	}
+	return regular(fd, path)
+}
+
+// regular is fd, which an open of path answered, as a file when its fstat says regular file;
+// anything else is closed and refused in words naming path and what it is (Kind).
+func regular(fd int, path string) (*os.File, error) {
 	file := os.NewFile(uintptr(fd), path)
 	info, err := file.Stat()
 	if err != nil {
@@ -70,9 +107,9 @@ func OpenRegular(dirfd int, name, path string, flag int, perm uint32) (*os.File,
 	return file, nil
 }
 
-// ReadBounded reads file, which OpenRegular opened as path, from where it stands to its end, and
-// refuses it rather than read on once it holds more than limit bytes: a file a role wrote can be
-// any size, and a reader that holds it whole in memory is one a role can end.
+// ReadBounded reads file, which OpenRegular or ReadFollowing opened as path, from where it stands
+// to its end, and refuses it rather than read on once it holds more than limit bytes: a file a
+// role wrote can be any size, and a reader that holds it whole in memory is one a role can end.
 func ReadBounded(file *os.File, path string, limit int) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	if err != nil {
