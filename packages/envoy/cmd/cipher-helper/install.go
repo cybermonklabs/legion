@@ -301,6 +301,9 @@ WantedBy=default.target
 	before, beforeErr := mainPID()
 	restartErr := restartHelper()
 	after, afterErr := mainPID()
+	for until := time.Now().Add(11 * time.Second); afterErr == nil && after == before && time.Now().Before(until); {
+		after, afterErr = mainPID()
+	}
 	var notReplaced string
 	switch {
 	case beforeErr != nil:
