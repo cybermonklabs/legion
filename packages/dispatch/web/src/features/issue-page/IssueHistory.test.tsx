@@ -1837,6 +1837,13 @@ async function drawFortyFiveIn(
   }
 }
 
+/** The entry of `drawFortyFiveIn` drawn last before a press, `TALL_HEIGHT` px tall in the cases
+ *  below, so the first entry a press draws stands wholly below Details' view. */
+const TALL_ENTRY = "event:26";
+
+/** How tall `TALL_ENTRY` is drawn: it fills Details' view to its foot. */
+const TALL_HEIGHT = 560;
+
 // The last press of Show more on a real issue drew its entries under a new day's line, and the
 // first of them stood below Details' view. The press moved the focus to that entry's control with
 // no scroll, so the focus stood where a keyboard reader could not see it. The press brings the
@@ -1846,7 +1853,7 @@ async function drawFortyFiveIn(
 // press draws stands wholly below the view.
 test("a keyboard press of Show more whose first entry stands below Details' view moves the focus to that entry's control, wholly in Details' view, and scrolls no page", async () => {
   const { box, more, restore } = await drawFortyFiveIn(
-    (row) => (row.getAttribute("data-history-entry") === "event:26" ? 560 : ROW_HEIGHT),
+    (row) => (row.getAttribute("data-history-entry") === TALL_ENTRY ? TALL_HEIGHT : ROW_HEIGHT),
     LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 40
   );
   const intoView = spyOn(Element.prototype, "scrollIntoView");
@@ -1911,10 +1918,6 @@ test("a keyboard press of Show more whose first entry stands in Details' view mo
   }
 });
 
-/** The entry of `drawFortyFiveIn` drawn last before a press, 560 px tall in the cases below, so
- *  the first entry a press draws stands wholly below Details' view. */
-const TALL_ENTRY = "event:26";
-
 /** A keyboard press of Show more over the 45 claims of `drawFortyFiveIn`, made as the case
  *  above whose first entry stands below Details' view makes it: the press hands the focus to that
  *  entry's control and brings it into Details' view by its foot. The resize observers are
@@ -1929,7 +1932,7 @@ async function pressedToFoot(): Promise<{
   restore: () => void;
 }> {
   const sizes = installResizeObserver();
-  const heights = new Map([[TALL_ENTRY, 560]]);
+  const heights = new Map([[TALL_ENTRY, TALL_HEIGHT]]);
   let undraw: (() => void) | undefined;
   const restore = () => {
     undraw?.();
@@ -1983,7 +1986,7 @@ async function pressedToFoot(): Promise<{
 // 51 px, and its foot stood 35 px below Details' view. The hand-on keeps the control wholly in
 // that view through its own growth, by the least scroll, which the history's anchor makes
 // (`keepFocusedInView`), and the anchor then keeps the control where that scroll left it.
-test("a keyboard press of Show more keeps the control it focused wholly in Details' view as the control grows below the view's foot", async () => {
+test("a keyboard press of Show more keeps the control it focused wholly in Details' view as the control grows below the view's foot and holds it there as an entry above it shrinks", async () => {
   const { box, entry, focused, resize, restore } = await pressedToFoot();
 
   try {
@@ -2756,7 +2759,7 @@ test("a handoff's Retry pressed twice by keyboard leaves its fields open once th
       toggle,
       "the second press of Retry landed on the toggle and shut the fields it asked for"
     ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Second pass")).toBeInTheDocument();
+    await screen.findByText("Second pass");
     expect(getHandoff, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
   } finally {
     unmount?.();

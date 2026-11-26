@@ -2119,7 +2119,7 @@ test("a keyboard press of the history's Show more keeps the reference link it fo
         "the cited issue's name landed before the press, so the row proves nothing"
       ).not.toContainText(CITED_TITLE);
       // Read once Details' box has stood still after the press: where the hand-on left the link.
-      const handed = await link.evaluate((element) => element.getBoundingClientRect().top);
+      const handed = (await boxOf(link, "the focused link")).y;
 
       names.resolve();
       await expect(link, "the cited issue's name never landed").toContainText(CITED_TITLE);

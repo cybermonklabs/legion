@@ -35,6 +35,7 @@ import {
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
+import { abortOnReaderAct } from "./useNodeEditing";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
@@ -462,10 +463,10 @@ export function IssueHistory({
       olderRead.current = null;
     });
   };
-  // What ends the keeping of the element the last hand-on gave the focus to in Details' view
+  // The keeping of the element the last hand-on gave the focus to in Details' view
   // (`keepFocusedInView`): the next hand-on ends it, and so does the history going.
-  const focusKept = useRef<(() => void) | null>(null);
-  useEffect(() => () => focusKept.current?.(), []);
+  const focusKept = useRef<AbortController | null>(null);
+  useEffect(() => () => focusKept.current?.abort(), []);
   useLayoutEffect(() => {
     const press = pressed.current;
     const reads = press?.kind === "retry" || press?.reads === true;
@@ -485,7 +486,7 @@ export function IssueHistory({
     // wholly in Details' view by the same least scroll until the reader acts
     // (`keepFocusedInView`).
     const handTo = (element: HTMLElement) => {
-      focusKept.current?.();
+      focusKept.current?.abort();
       focusKept.current = null;
       const box = scroller.current;
       if (box !== null) {
@@ -716,19 +717,19 @@ interface HeldParts {
  * calls resize observers back in the order they were made, so the history's anchor, whose
  * observer is made as the list mounts, first puts back the element's top where a growth moved it
  * (`ViewportAnchor`'s `contentResized`), and this then brings the element's foot into the view.
- * The keeping ends as the focus leaves the element, at the reader's first act that scrolls or
- * names a place (the press that made the hand-on came before it), and at the next hand-on.
- * Returns what ends it.
+ * The keeping ends as the focus leaves the element and at the reader's first act, a key, a press,
+ * a wheel or a touch (`abortOnReaderAct`; the press that made the hand-on came before it).
+ * Returns the keeping, which aborting ends sooner, as the next hand-on does.
  */
 function keepFocusedInView(
   element: HTMLElement,
   box: HTMLElement,
   scrollBy: (by: number) => void
-): () => void {
-  const acts = ["keydown", "wheel", "pointerdown", "touchstart"];
+): AbortController {
+  const kept = abortOnReaderAct();
   const sizes = new ResizeObserver(() => {
     if (document.activeElement !== element) {
-      end();
+      kept.abort();
       return;
     }
     const at = element.getBoundingClientRect();
@@ -737,13 +738,8 @@ function keepFocusedInView(
     const by = nearestScroll(at, view);
     if (by !== 0) scrollBy(by);
   });
-  function end(): void {
-    sizes.disconnect();
-    element.removeEventListener("focusout", end);
-    for (const type of acts) window.removeEventListener(type, end, true);
-  }
+  kept.signal.addEventListener("abort", () => sizes.disconnect());
   sizes.observe(element.closest(`[${HISTORY_ENTRY_ATTRIBUTE}]`) ?? element);
-  element.addEventListener("focusout", end);
-  for (const type of acts) window.addEventListener(type, end, { capture: true, passive: true });
-  return end;
+  element.addEventListener("focusout", () => kept.abort(), { signal: kept.signal });
+  return kept;
 }

@@ -154,3 +154,32 @@ test("the href of a link drawn at the address carries the parameter, and followi
     view.unmount();
   }
 });
+
+// A link to the address the reader is at replaces that entry, as it does with no parameter: the
+// router compares the link's target, which lacks the parameter, with the address, which carries
+// it, and pushes, and the parameter added made that push an entry the same as the one the press
+// was made on, so Back stayed where the reader was.
+test("a link to the address the reader is at adds no history entry, where a link to another of the issue's addresses adds one", async () => {
+  const user = userEvent.setup();
+  const view = drawAt("/issues/CORE-1?issue_page=new");
+  try {
+    await user.click(screen.getByRole("link", { name: "Activity" }));
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+    act(() => held.navigate?.(-1));
+    expect(address(), "the link to another of the issue's addresses added no history entry").toBe(
+      "/issues/CORE-1?issue_page=new"
+    );
+    act(() => held.navigate?.(1));
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+
+    await user.click(screen.getByRole("link", { name: "Activity" }));
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+    act(() => held.navigate?.(-1));
+    expect(
+      address(),
+      "the link to the address the reader is at added a history entry, and Back stayed there"
+    ).toBe("/issues/CORE-1?issue_page=new");
+  } finally {
+    view.unmount();
+  }
+});
