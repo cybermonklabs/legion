@@ -949,44 +949,6 @@ test("under Verification an overtaken check is a row under its statement, marked
   }
 });
 
-// The server closes a statement's coverage row only where the statement, or a node above it in
-// its walk, is overtaken by a state of its own (`coverage_tuples.go`'s `closed`). A question
-// written as an `:::ask` block is overtaken by its ask's node, which stands in no statement's
-// walk, so the row of a statement under that question comes unclosed; the page closes that
-// statement with its question all the same (`stateIdOf`). No count of the summary reads it: not
-// the covered count, and not the "of M" that count is out of. The table still draws it.
-test("the Verification summary leaves out a statement under an overtaken question whose coverage row is not closed", () => {
-  const ask = "ask-q1";
-  const passed = checkThat("c-one", true);
-  const underQuestion = checkThat("c-two", true);
-  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
-  const asked = statementNode("r2", "A later question took this one's place.", [
-    checkNode(underQuestion),
-  ]);
-  const root = stamped(
-    node(KEY, "issue", [
-      first,
-      node("spec#b-q1", "ask", [asked], { source: { id: ask, issue: KEY, kind: "ask" } }),
-    ]),
-    { [ask]: { life: "overtaken" } }
-  );
-  expect(coverageRows(root).map((row) => [row.ref, row.coverage])).toEqual([
-    [first.reference, "unproven"],
-    [asked.reference, "unproven"],
-  ]);
-  expect(nodesInOrder(root).find((one) => one.id === asked.id)?.closed).toBe(true);
-
-  const view = drawVerification(root, [passed, underQuestion]);
-  try {
-    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(2);
-    expect(textOf(view.container, "[data-verification-covered]")).toBe(
-      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
-    );
-  } finally {
-    view.unmount();
-  }
-});
-
 // Under Verification the words filter matches an overtaken check's words and draws it as it draws
 // every match: a row under the statement it serves, marked Overtaken, with its result.
 test("the Verification view's words filter draws an overtaken check it matches as a row, marked", () => {

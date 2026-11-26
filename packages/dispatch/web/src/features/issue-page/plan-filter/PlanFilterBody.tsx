@@ -243,6 +243,8 @@ export function PlanFilterBody({
     rows.push(
       ...[...inView.values()]
         .filter(isOvertaken)
+        // The copy only fits `rows`' element type, whose `facts` is mutable; an overtaken task
+        // has no bar, so it carries no step facts (`stepFacts`).
         .map((node) => ({ ...node, facts: [...node.facts] }))
     );
     return { ...root, children: rows, held: heldBy(rows) };

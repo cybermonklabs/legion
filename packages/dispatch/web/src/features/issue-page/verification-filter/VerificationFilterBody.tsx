@@ -67,10 +67,10 @@ import {
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { outOfCounts } from "../tree-fold";
-import { nodesInOrder } from "../tree-keys";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
+  countedCoverage,
   type IssueCovered,
   inCounts,
   issueCovered,
@@ -161,9 +161,11 @@ export function queryTyped(query: string): boolean {
  *   (`NODE_STATE_WORDS.check`), drawn with the shape its token carries (`NodeGlyph`), so no
  *   state is told from another by colour alone.
  * - **Covered, never proven.** The summary counts the issue's statements that carry a check as
- *   covered, out of every statement of the issue, both from the coverage read, which no page of
- *   the view read cuts; while a document of the issue is still being indexed, it draws that
- *   document's line in place of any count. No count, legend or heading of this body reads proven
+ *   covered, out of every statement of the issue, both from the coverage read, less each row no
+ *   count reads (`countedCoverage`): each the read marks proposed or closed, and each whose
+ *   statement the page reads as out of the counts among the statements the view has loaded.
+ *   While a document of the issue is still being indexed, it draws that document's line in place
+ *   of any count. No count, legend or heading of this body reads proven
  *   or met for it, because a statement that has a check is not a statement that is true. Every
  *   other count the summary and the chips draw is of the statements and checks the view has
  *   loaded, and carries "+" while the view read holds nodes no page read yet holds (R15,
@@ -203,9 +205,11 @@ export function VerificationFilterBody({
   context: ReadonlySet<string>;
   /** The coverage read (`GET /api/v1/issues/{key}/coverage`, the slot's `coverage`): every
    *  statement of the issue's spec, with how many checks serve it, and any line saying a
-   *  document of the issue is still being indexed, which the summary's covered line is read from
-   *  alone (`issueCovered`). That read is one of the three the body waits on (`reads`), so the
-   *  summary is drawn only once it holds an answer. */
+   *  document of the issue is still being indexed. The summary's covered line is read from it
+   *  (`issueCovered`), less each row no count reads (`countedCoverage`): each the read marks
+   *  proposed or closed, and each whose statement the page reads as out of the counts among the
+   *  statements the view has loaded. That read is one of the three the body waits on (`reads`),
+   *  so the summary is drawn only once it holds an answer. */
   coverage: IssueCoverage | undefined;
   /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
    *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
@@ -296,30 +300,9 @@ export function VerificationFilterBody({
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
-  // No count reads a proposed statement, or one at or under an overtaken node (R3): no row the
-  // coverage read marks so, which holds the statements the view has not loaded, and no row whose
-  // statement the issue's view holds at any depth out of the counts (`outOfCounts`). The page
-  // closes a statement under a question its ask's node overtakes (`node-states.ts`' `stateIdOf`),
-  // where the server's walk reaches the question's block alone and leaves the row unclosed. The
-  // body is given no issue to address a node by (`tree-drafts.ts`' `nodeIdOf`), so a row is
-  // paired with its statement by the address the tree gave that statement, which is the row's own
-  // `ref` (`tree-read/tree-nodes.ts`' `keptReference`).
-  const countable = useMemo(() => {
-    if (coverage === undefined) return undefined;
-    const outside = new Set(
-      nodesInOrder(issueView).flatMap((node) =>
-        node.type === "requirement" && node.reference !== undefined && outOfCounts(node)
-          ? [node.reference]
-          : []
-      )
-    );
-    return {
-      ...coverage,
-      requirements: (coverage.requirements ?? []).filter(
-        (row) => row.coverage !== "proposed" && row.coverage !== "closed" && !outside.has(row.ref)
-      ),
-    };
-  }, [coverage, issueView]);
+  // No count reads a proposed statement, or one at or under an overtaken node (R3), so the
+  // covered count reads the coverage read less each row no count reads (`countedCoverage`).
+  const countable = useMemo(() => countedCoverage(coverage, issueView), [coverage, issueView]);
   coverage = countable;
   const covered = useMemo(() => issueCovered(coverage), [coverage]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements
@@ -978,9 +961,10 @@ function Summary({
   reading,
 }: {
   counts: Readonly<Record<StatementState, number>>;
-  /** How the issue's covered count stands, from the coverage read (`issueCovered`): the same on
-   *  every read, whichever page of the view is loaded, or each line saying a document of the
-   *  issue is still being indexed in place of any count. */
+  /** How the issue's covered count stands (`issueCovered`): from the coverage read, less each row
+   *  no count reads (`countedCoverage`), each the read marks proposed or closed and each whose
+   *  statement the page reads as out of the counts among the statements the view has loaded; or
+   *  each line saying a document of the issue is still being indexed in place of any count. */
   covered: IssueCovered;
   /** Whether the view read holds nodes no page read yet holds: each count of the loaded
    *  statements and checks then carries "+" (R15). */
