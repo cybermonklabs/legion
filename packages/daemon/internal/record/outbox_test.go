@@ -1280,14 +1280,15 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 // The review a landed merge forward asks of the reviewer tells it to report what it decided to
 // the architect and to the worker of the phase the issue stands in, which can act on a request for
 // changes there. A reviewer step that ran before a tester step is asked while the issue stands in
-// testing, so it tells the tester too. In accepting the architect holds the phase, so it alone is
-// told.
+// testing, so it tells the tester too. In retro that worker is the agent that does the retro: the
+// agent of the task's last step of the type implementation, or the owner (PlaceWorker), which need
+// not be the implementer. In accepting the architect holds the phase, so it alone is told.
 func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T) {
 	pr := PullRequest{Repo: "sjawhar/legion"}
 	for at, want := range map[phase.Phase]string{
 		phase.Testing:   " Then tell the architect and the tester what you decided, each on the topic of the claim that works its step.",
 		phase.Accepting: " Then tell the architect what you decided, on its role topic.",
-		phase.Retro:     " Then tell the architect and the implementer what you decided, each on the topic of the claim that works its step.",
+		phase.Retro:     " Then tell the architect and the agent that does the retro what you decided, each on the topic of the claim that works its step.",
 		phase.Merging:   " Then tell the architect and the merger what you decided, each on the topic of the claim that works its step.",
 	} {
 		review := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
