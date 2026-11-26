@@ -71,9 +71,10 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	seedDelivery(t, rig.database, commentID, "role:"+second, "", "resumed")
 	_, later := comment("and one more thing")
 
-	// Within the bound: the attempts are half the bound old, their claims this moment's. Half,
-	// not a few seconds short, so that the scan below reads them inside the bound however long a
-	// loaded machine takes to reach it.
+	// Within the bound: the attempts are half the bound old, their claims this moment's. The scan
+	// below must read them inside 60 s, model.DeliveryClaimLapse, before their claims lapse and
+	// before the attempts reach the bound; it follows at once, millisecond work against 60 s of
+	// slack (TestMain names this bound).
 	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound/2)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	if got := recv.receivedNow(t, rig.client); len(got) != 1 {

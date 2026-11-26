@@ -321,8 +321,8 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	inserted := time.Now()
 	// The polling's one bound is the test binary's deadline less testwait's margin, as every
 	// wait's, and it reads every 5 ms, bounding nothing: a coarser poll would only read the same
-	// sequence later.
-	published := testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the back-off due in %s published", backOffDue), func() (time.Time, bool) {
+	// sequence later. A give-up prints the waits armed since the insert, as read by the last poll.
+	reading := testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the back-off due in %s published", backOffDue), func() (pollReading[time.Time], bool) {
 		// Read oldest first, so nothing is judged against a reading younger than itself: the waits,
 		// then the claims (never fewer than the waits' own count), then the database's answer,
 		// whose now() is therefore no earlier than the moment those claims were read.
@@ -330,7 +330,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		claims := outbox.claims.Load()
 		at, beforeDue := backOffState(t, database, backedOff.ID)
 		if at != nil {
-			return *at, true
+			return pollReading[time.Time]{value: *at}, true
 		}
 		// Nothing else wakes the outbox until the timer fires: no claim since the wait was armed,
 		// while the database says the back-off is still ahead on its own clock.
@@ -341,8 +341,15 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 					since[0].at.Sub(inserted).Round(time.Millisecond))
 			}
 		}
-		return time.Time{}, false
+		armedText := make([]string, 0, len(since))
+		for _, each := range since {
+			armedText = append(armedText, fmt.Sprintf("a %s wait %s after the insert, at %d claims",
+				each.wait.Round(time.Millisecond), each.at.Sub(inserted).Round(time.Millisecond), each.claims))
+		}
+		return pollReading[time.Time]{text: fmt.Sprintf("not published %s after its insert, the outbox at %d claims, having armed %d waits since it: %v",
+			time.Since(inserted).Round(time.Millisecond), claims, len(since), armedText)}, false
 	})
+	published := reading.value
 	publishedAfter := time.Since(inserted)
 	since := waitsSince()
 	if len(since) != 1 {
@@ -568,10 +575,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 		Broker:    events.NewBroker(),
 		Listen:    database.Pool.Listener,
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { standby.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(runTheOutbox(t, standby))
 	// Counted from the standby's first try: its LISTEN connection's catch-up wake, which comes as it
 	// starts, lands inside the count and is allowed for below.
 	waitFor(t, "the standby trying the publisher hold once", func() bool {
@@ -724,7 +728,7 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 		t.Fatalf("the holder stopped serving (%s) though its client read connected when the grace ended", *stopped)
 	}
 	cancel()
-	if end := <-ended; end != stopping {
+	if end := testwait.Receive(t, "serve to end once ctx ended", ended); end != stopping {
 		t.Fatalf("serve ended %s once ctx ended, want %s", end, stopping)
 	}
 }
@@ -979,7 +983,7 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 		t.Fatalf("the holder's release is running and it has not logged that it lost the hold yet; it logged %q", loggedMessages(recorder))
 	}
 	held.let()
-	if end := <-ended; end != holdLost {
+	if end := testwait.Receive(t, "publish to end once the release was let go", ended); end != holdLost {
 		t.Fatalf("publish ended %s, want %s", end, holdLost)
 	}
 

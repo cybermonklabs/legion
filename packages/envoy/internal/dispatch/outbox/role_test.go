@@ -1259,7 +1259,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 
 	publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	held := readHeldCopy(t, rig.database, commentID, contracts.RoleTopicPrefix+role)
@@ -1443,7 +1443,7 @@ func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *te
 
 	holding(t, rig.publisherOn(publisher)).scan(ctx, unfenced{})
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, event.ID) == nil {
@@ -1522,7 +1522,7 @@ func TestAKeptCopyHandedToAHolderWhoseMentionLandedCarriesItsOwnMentionsKey(t *t
 
 	holding(t, rig.publisherOn(publisher)).scan(ctx, unfenced{})
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, event.ID) == nil {
@@ -2331,7 +2331,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 
 		publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
 
-		if err := <-claimed; err != nil {
+		if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 			t.Fatalf("the claim made under the keep: %v", err)
 		}
 		held := readHeldCopy(t, rig.database, commentID, roleTopic)

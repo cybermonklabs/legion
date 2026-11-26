@@ -21,7 +21,9 @@ import (
 // claim on it is this very moment's, so it is neither abandoned nor the delivery sweep's
 // (model.MentionAbandonedSQL, model.OwedMentionAttemptSQL). A sender writes that claim again
 // every mentionClaimRefresh for as long as its process lives, so an attempt staged this way
-// stays pending however old it grows (mentionClaimRefresh in internal/dispatch/api).
+// stays pending however old it grows (mentionClaimRefresh in internal/dispatch/api). Here the claim
+// is written once, by this call, so the product reads it live only within model.DeliveryClaimLapse
+// (60 s) of it: the caller scans at once (TestMain names this bound).
 func agedUnnamedAttempts(t *testing.T, database *store.Store, commentID string, age time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -98,7 +100,8 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	})
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
-	// Both attempts are past their lease and within the bound, their claims this moment's.
+	// Both attempts are past their lease and within the bound, their claims this moment's, which the
+	// scan below reads within model.DeliveryClaimLapse (agedUnnamedAttempts).
 	agedUnnamedAttempts(t, rig.database, commentID, unnamedForwardBound/2)
 
 	// The owner's next event of the same issue, which the forward's wait holds behind it: the

@@ -495,7 +495,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	outbox.scan(context.Background(), unfenced{})
 	keptScan := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, kept.ID) == nil {
@@ -595,7 +595,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, later.ID) == nil {
@@ -654,7 +654,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 	scanned := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the first keep", claimed); err != nil {
 		t.Fatalf("the claim made under the first keep: %v", err)
 	}
 	firstKey, secondKey := fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)
@@ -730,7 +730,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
 	for range 2 {
-		if err := <-claimed; err != nil {
+		if err := testwait.Receive(t, "a claim made under one of the keeps", claimed); err != nil {
 			t.Fatalf("a claim made under one of the keeps: %v", err)
 		}
 	}

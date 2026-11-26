@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holding returns an outbox on deps whose instance holds the publisher hold's row for the next
@@ -1175,17 +1176,22 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 				return count
 			}
 			// A backend reports its statistics within a second of going idle: read the count once
-			// it has held still that long.
+			// it has held still that long. The asking's one bound is the test binary's deadline less
+			// testwait's margin; its first read is the count to compare, each later read 1.5 s after
+			// the one before, and a give-up prints the last count read.
 			settled := func() int64 {
-				last := updates()
-				for {
-					time.Sleep(1500 * time.Millisecond)
+				var last int64
+				first := true
+				return testwait.UntilPolling(t, 1500*time.Millisecond, "the events table's update count to hold still for 1.5 s", func() (int64, bool) {
 					now := updates()
-					if now == last {
-						return now
+					if first {
+						first, last = false, now
+						return now, false
 					}
+					held := now == last
 					last = now
-				}
+					return now, held
+				})
 			}
 			before := settled()
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: &recordingPublisher{}})).scan(ctx, unfenced{})

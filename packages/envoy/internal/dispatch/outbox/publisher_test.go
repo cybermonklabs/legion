@@ -2025,8 +2025,9 @@ func run(t *testing.T, database *store.Store, publisher Publisher, broker *event
 }
 
 // outboxOn is the outbox run runs: on database, publishing through publisher, its LISTEN
-// connection on database's pool and every role's holder held (withHeldRoles). A test that sets a
-// hook before Run starts, as restReading does, builds it here and runs it with runTheOutbox.
+// connection on database's pool and every role's holder held (withHeldRoles). The attempt test
+// builds it here to set a hook (restReading) before Run starts; a test that needs other Deps, as
+// the idle test does, builds its own with New. Either runs it with runTheOutbox.
 func outboxOn(database *store.Store, publisher Publisher, broker *events.Broker) *Outbox {
 	return New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
@@ -2182,9 +2183,11 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // Every test calls t.Parallel but two kinds, which run before the rest, one at a time:
 //   - those that change something the whole process shares, the default logger
 //     (logtest.SetDefault, slog.SetDefault);
-//   - those whose subject is a bound on the product's own timing, each marked "Not parallel:"
-//     with its bound (waitWithin): measured on a machine eight other tests load, such a bound fails
-//     a correct product.
+//   - those whose subject is a bound on the product's own timing, each with a "Not parallel:"
+//     line naming that bound, which it waits on through waitWithin
+//     (TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce and
+//     TestAnOutboxThatLosesNATSReleasesThePublisher): measured on a machine eight other tests
+//     load, such a bound fails a correct product.
 //
 // A parallel test's wait is bounded by the test binary's deadline alone (waitFor, testwait.Until,
 // testwait.UntilPolling, testwait.Receive, testwait.Context), so the load of the tests beside it
@@ -2201,7 +2204,13 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //   - TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold: its client must read connected
 //     before natsLossGrace (3 s) after serve began, and the test sets it 200 ms in, so 2.8 s of
 //     slack; natsLossGrace is a constant of the package, not a field a test can lengthen, and
-//     the test's subject is the holder's reading at the grace's end.
+//     the test's subject is the holder's reading at the grace's end;
+//   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
+//     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
+//     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows
+//     that put a mention back in flight. The product reads such a claim live for
+//     model.DeliveryClaimLapse, 60 s, and the test scans or passes at once after the write:
+//     millisecond work against 60 s.
 //
 // The quiet windows are not on that list: a sleep after which a test asserts nothing happened
 // (window_test.go, order_test.go, lease_test.go, publisher_test.go, the owner lane and attempt
@@ -2228,6 +2237,16 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	testwait.Until(t, what, func() (struct{}, bool) { return struct{}{}, condition() })
 }
+
+// pollReading is one poll's value with what a give-up prints of it: testwait.UntilPolling prints
+// the last reading with %+v, which calls String. A poll whose value is a zero until it holds - a
+// time, a scan's end - carries in text what it read so far, so a wait that gives up names it.
+type pollReading[T any] struct {
+	value T
+	text  string
+}
+
+func (r pollReading[T]) String() string { return r.text }
 
 // waitWithin waits at most bound for condition, and fails t once bound has passed. It is for a test
 // whose subject is that bound - the product's own timer or grace - and such a test does not call

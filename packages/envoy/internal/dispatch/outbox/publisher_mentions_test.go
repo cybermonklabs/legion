@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // mentionsOf is a payload's mentions as the scan decodes them from JSON, each resolved to its
@@ -890,7 +891,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				if err := claim.Commit(context.Background()); err != nil {
 					t.Fatalf("commit the claim: %v", err)
 				}
-				err = <-published
+				err = testwait.Receive(t, "the publish to return once the claim committed", published)
 			} else {
 				err = publishing()
 			}
@@ -1210,12 +1211,21 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 	}
 
 	// A pass inside that wait claims the row again, and so reads it again, only if it is due: the
-	// claim it would take is a next_attempt_at of its own.
+	// claim it would take is a next_attempt_at of its own. The wait's length is read above; the
+	// row's due moment moves an hour on here, so the pass below runs inside the wait however late a
+	// loaded machine runs it, where mentionPendingDelay's 2 s would let a slow run find the row due.
+	var waiting time.Time
+	if err := database.Pool.QueryRow(ctx, `
+		update comment_fallback_copies set next_attempt_at = next_attempt_at + interval '1 hour'
+		where comment_id = $1 and destination = $2 returning next_attempt_at
+	`, commentID, sessionTopic).Scan(&waiting); err != nil {
+		t.Fatalf("hold the held copy's wait open past this test: %v", err)
+	}
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 	if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 0 || again.due == nil ||
-		!again.due.Equal(*row.due) {
+		!again.due.Equal(waiting) {
 		t.Fatalf("a pass inside the wait left the held copy attempts=%d next_attempt_at=%v, want 0 and %v: "+
-			"a row that is not due is not claimed", again.attempts, again.due, *row.due)
+			"a row that is not due is not claimed", again.attempts, again.due, waiting)
 	}
 	if published := topicsOf(publisher.all()); !reflect.DeepEqual(published, []string{issueTopic}) {
 		t.Fatalf("the passes published %#v, want the scan's issue topic alone while the mention is in flight", published)

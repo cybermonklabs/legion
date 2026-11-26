@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -187,11 +188,12 @@ func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, h
 	t.Helper()
 	var queued []*recordHold
 	// Its one bound is the test binary's deadline less testwait's margin, as every wait's; it
-	// reads every 2 ms, bounding nothing.
-	end := testwait.UntilPolling(t, 2*time.Millisecond, "the scan to return as the record queues behind each hold in turn", func() (scanEnd, bool) {
+	// reads every 2 ms, bounding nothing. A give-up prints how many holds the record had queued
+	// behind and whether it was queued behind one at the last read.
+	reading := testwait.UntilPolling(t, 2*time.Millisecond, "the scan to return as the record queues behind each hold in turn", func() (pollReading[scanEnd], bool) {
 		select {
 		case end := <-scanned:
-			return end, true
+			return pollReading[scanEnd]{value: end}, true
 		default:
 		}
 		behind := holdsTheRecordWaitsOn(t, ctx, database, holds)
@@ -203,9 +205,10 @@ func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, h
 		default:
 			t.Fatalf("the record queued behind %d holds at once, which one statement cannot do", len(behind))
 		}
-		return scanEnd{}, false
+		return pollReading[scanEnd]{text: fmt.Sprintf("the scan had not returned; the record had queued behind %d of the %d holds in turn, and behind %d at the last read",
+			len(queued), len(holds), len(behind))}, false
 	})
-	return queued, end
+	return queued, reading.value
 }
 
 // holdsTheRecordWaitsOn is every hold still held that the record's backend is queued behind. It
