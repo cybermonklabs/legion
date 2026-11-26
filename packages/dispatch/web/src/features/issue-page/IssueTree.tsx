@@ -107,6 +107,7 @@ export function IssueTree({
   addressKey,
   artifacts,
   context,
+  coverageOut = false,
   emptyLine,
   failedReads = NO_FAILED_READS,
   focusReveal,
@@ -116,6 +117,7 @@ export function IssueTree({
   more,
   older,
   onEditing,
+  placesSettled = true,
   published,
   readsHeld = true,
   readsSettled = true,
@@ -144,6 +146,10 @@ export function IssueTree({
   artifacts: ReadonlyMap<string, Artifact>;
   /** The ids of the rows the view draws as context, faint and marked. */
   context: ReadonlySet<string>;
+  /** Whether the coverage read has not answered yet (`outline-reads.ts`'s `coverageOut`): each
+   *  statement's row holds the line its counts are drawn in until it has (`TreeRows.tsx`).
+   *  Answered unless the page says otherwise. */
+  coverageOut?: boolean;
   /** What the page says where the preset's query matched nothing under the issue, drawn only
    *  where it is given and while the reads are held (`readsHeld`). */
   emptyLine?: string;
@@ -182,6 +188,15 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
   onEditing: OnEditing;
+  /** Whether every read that can place a row of the tree, or say which row the page's first
+   *  focus goes to, has answered, with its data or its failure (`outline-reads.ts`'s
+   *  `placesSettled`): until it first does the tree draws no row, nor the controls above its
+   *  first row and after its last that read more of the outline read (R15), so its first drawing
+   *  holds every row where the reads place it, and no row is pushed down by one a later read
+   *  draws above it. From then on the rows are drawn whatever it says. The failed reads' lines
+   *  are drawn meanwhile: each stands over the tree, above its first row. Settled unless the page
+   *  says otherwise. */
+  placesSettled?: boolean;
   /** What the page publishes of its one batched read (`useIssueTree.ts`'s `published`), which
    *  the tree hands every row and crumb it draws in the render that draws it
    *  (`PublishedReferenceNames`): a reference the page is asking for waits on the page's answer
@@ -357,7 +372,16 @@ export function IssueTree({
   // parent's page where it stands there (R15).
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
   const named = [target?.id, wanted].filter((id): id is string => id !== undefined);
-  const drawn = treeRows(rooted, shown, rootedAbove, named, stop === undefined ? [] : [stop]);
+  // Until every read that can place a row has answered (`placesSettled`) the tree draws none, and
+  // walks none: a row drawn before then would be pushed down by the rows a later read draws
+  // above it. Once drawn the rows stay drawn, whatever it says after: a read that holds no answer
+  // is pending again while it runs again - a failed read's Retry, an event's refresh of it - and
+  // taking the rows away meanwhile would move every one of them.
+  const [placed, setPlaced] = useState(placesSettled);
+  if (placesSettled && !placed) setPlaced(true);
+  const drawn = placed
+    ? treeRows(rooted, shown, rootedAbove, named, stop === undefined ? [] : [stop])
+    : NO_DRAWN_ROWS;
   // The issue is no row: the header is the issue, so the nodes under it are the tree's top
   // level, with no filter on as under one. A zoom into a node keeps that node's own row, which
   // is the node the reader reads from there.
@@ -367,12 +391,14 @@ export function IssueTree({
   // whose node holds what it held is given the same node, and is not drawn again (`NodeRow`'s
   // `memo`).
   const heldRows = useRef<ReadonlyMap<string, DrawnRow>>(NO_ROWS);
-  const rows = keptRows(
-    heldRows,
-    head?.kind === "node" && head.node.id === root.id
-      ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
-      : drawn
-  );
+  const rows = placed
+    ? keptRows(
+        heldRows,
+        head?.kind === "node" && head.node.id === root.id
+          ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
+          : drawn
+      )
+    : NO_DRAWN_ROWS;
   const breadcrumb: readonly TreeNode[] = zoom === undefined ? [] : zoomBreadcrumb(root, zoom);
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row,
   // each mark the one made before for that row where it marks the same write, so a read that
@@ -620,8 +646,9 @@ export function IssueTree({
   // (`TreeRows.tsx`'s `PageControl`); a key's press, and any press of the last, leaves the focus
   // on the first row it drew (`drawnFrom`). A page of children names that row at once. A read
   // names the rows drawn before the press, and the first row it draws after it that none of them
-  // is takes the focus, until the reader's next act (`olderActs`).
-  const olderAbove = older?.remain === true && zoomRoot === undefined ? older : undefined;
+  // is takes the focus, until the reader's next act (`olderActs`). Neither the control above the
+  // first row nor the one after the last is drawn before the rows are (`placed`).
+  const olderAbove = older?.remain === true && zoomRoot === undefined && placed ? older : undefined;
   const [drawnFrom, setDrawnFrom] = useState<
     { readonly key: string } | { readonly before: ReadonlySet<string> }
   >();
@@ -1265,11 +1292,14 @@ export function IssueTree({
           <TreeRows
             artifacts={artifacts}
             context={context}
+            coverageOut={coverageOut}
             editing={editing}
             focused={focused}
             foldedMore={root.moreToRead === true}
             isClosed={isClosed}
-            {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
+            {...(more === undefined || !placed
+              ? {}
+              : { more: { left: more.left, onPress: readMore } })}
             onFocus={focusRow}
             {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
             onPage={(page) => drawPage(page, false)}
@@ -1310,6 +1340,10 @@ const NO_FOLDS: ReadonlySet<string> = new Set();
 /** No row drawn and no thread marked yet: what the tree holds before its first render. */
 const NO_ROWS: ReadonlyMap<string, DrawnRow> = new Map();
 const NO_MARKS: ReadonlyMap<string, ThreadMark> = new Map();
+
+/** No row, while the reads that place the rows are out (`IssueTree`'s `placed`): the same
+ *  empty list on every render, so what reads the rows sees one value meanwhile. */
+const NO_DRAWN_ROWS: readonly DrawnRow[] = [];
 
 /** `rows`, each the row `held` holds under its key (`rowKeyOf`) where that one holds the same
  *  values, as TanStack Query's `replaceEqualDeep` compares two answers of a read

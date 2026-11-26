@@ -1,7 +1,12 @@
-import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
+import { type QueryObserverResult, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { IssueDetails, MessageRead } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PublishedReferences } from "../refs/reference-names";
@@ -60,6 +65,12 @@ export interface OutlineReads {
    *  under that role's own filter its view read, and else the outline read; so a view that
    *  draws from them reads them here, through the observers the outline's reads hold. */
   readonly blocksOf: IssueTreeView["blocksOf"];
+  /** Whether the coverage read has neither answered nor been refused yet: until it has, each
+   *  statement's row holds the line its counts will be drawn in (`TreeRows.tsx`), so the counts
+   *  arriving move nothing (the plan's "The places held", row 6). A read refused before it
+   *  answered holds no place again while it runs again (a Retry, an event's refresh): its row
+   *  draws no counts until a read of it answers. */
+  readonly coverageOut: boolean;
   /** The line of each read the tree's rows come from that stands failed (`standsFailed`), and
    *  the names' line while it stands (`IssueTreeView.namesFailure`), in the order the reads are
    *  given: the six reads (`reads`), and the names last, as the tree reads them last
@@ -75,6 +86,20 @@ export interface OutlineReads {
    *  line that nothing holds a words filter's words waits on (`slots/body.tsx`), as it waits on
    *  the reads the tree is built from (`readsHeld`). */
   readonly namesHeld: boolean;
+  /** Whether every read that can place a row of the tree, or say which row the page's first
+   *  focus goes to, has answered, with its data or with its failure: the tree read
+   *  (`TreeRead.pending`), the decisions, the asks and the comments, each of which can draw a
+   *  node or move one - a decision no node holds, an ask's answer, a Change under its decision -
+   *  and the reader's login, which says which open question waits on the reader
+   *  (`IssueTreeReads.viewer`) and so where the page opens. The outline first draws its rows once
+   *  it holds (`slots/body.tsx`), so that first drawing holds every row where it stays. The other
+   *  three of the six only mark rows those reads placed, so the rows do not wait on them: the
+   *  coverage a statement's counts, in a place the row holds for them from its first drawing
+   *  (`coverageOut`); the results a check's state, which a check of the Verification document
+   *  draws as `no-result` until they answer; and the messages what an author did to a message,
+   *  since the tree read answers every message as a node (`useIssueTree`). A failed read
+   *  answers too, where `readsHeld` would wait for ever. */
+  readonly placesSettled: boolean;
   /** What the page publishes of its batched names read (`IssueTreeView.published`), which the
    *  outline hands its rows in the render that draws them (`IssueTree`'s `published`). */
   readonly published: PublishedReferences;
@@ -273,14 +298,22 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   const own = useQueries({
     combine: (
       answers
-    ): { failed: readonly FailedRead[]; reads: OutlineReads["reads"]; settled: boolean } => {
-      const [, , , asks, comments, messages] = answers;
+    ): {
+      coverageOut: boolean;
+      failed: readonly FailedRead[];
+      placed: boolean;
+      reads: OutlineReads["reads"];
+      settled: boolean;
+    } => {
+      const [coverage, decisions, , asks, comments, messages] = answers;
       return {
+        coverageOut: coverage.isPending && coverage.errorUpdateCount === 0,
         failed: failedLines(answers, (index) => ({
           bringsQuestions: six[index].bringsQuestions,
           key: six[index].line,
           message: six[index].message,
         })),
+        placed: [decisions, asks, comments].every((answer) => !answer.isPending),
         reads: {
           asks: asks.data,
           comments: comments.data,
@@ -292,6 +325,10 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     },
     queries: queriesOf(six),
   });
+  // The reader's login, under the key and with the freshness the tree reads it by
+  // (`useIssueTree`), so it costs no request of its own: it says which open question waits on the
+  // reader, so the first drawing of the rows waits on it (`placesSettled`).
+  const viewerOut = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).isPending;
   const names = useNamesLine(namesFailure);
   const failed = useMemo(
     () => (own.failed.length + names.length === 0 ? NO_FAILED_READS : [...own.failed, ...names]),
@@ -306,9 +343,11 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   );
   return {
     blocksOf,
+    coverageOut: own.coverageOut,
     failed,
     names,
     namesHeld,
+    placesSettled: own.placed && !pending && !viewerOut,
     published,
     reads: own.reads,
     readsHeld: own.reads.held && blocksHeld,

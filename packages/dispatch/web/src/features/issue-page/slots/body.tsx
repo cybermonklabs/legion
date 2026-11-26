@@ -73,8 +73,25 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // held. With no filter on the line reads no words, and does not wait on the names. What the
   // page publishes of its batched names read the tree hands its rows and crumbs in the render
   // that draws them (`published`), so none of them reads a reference the page asks for.
-  const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
-    useOutlineReads(issue);
+  //
+  // The outline draws its first rows once every read that can place a row, or the row the page's
+  // first focus goes to, has answered, with its data or its failure (`placesSettled`), so no row
+  // is drawn where a later read would push it down: the first commit of rows draws them where
+  // they stay. The reads that only mark rows those reads placed - the coverage, the results, the
+  // messages - are not waited on, and a statement's row holds the place of the coverage's counts
+  // until they answer (`coverageOut`). The page's first focus waits for every read the rows come
+  // from (`readsSettled`), and for a row to land on.
+  const {
+    coverageOut,
+    failed,
+    namesHeld,
+    placesSettled,
+    published,
+    reads,
+    readsHeld,
+    readsSettled,
+    root,
+  } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
@@ -222,6 +239,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             addressKey={following}
             artifacts={artifacts}
             context={view.context}
+            coverageOut={coverageOut}
             emptyLine={
               address.filter === ""
                 ? EMPTY_STATE_LINES[outline]
@@ -238,6 +256,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             more={more}
             older={older}
             onEditing={onEditing}
+            placesSettled={placesSettled}
             published={published}
             readsHeld={readsHeld}
             readsSettled={readsSettled && !pages.reading && !graphOut}
