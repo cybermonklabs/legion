@@ -2243,6 +2243,56 @@ test("the control a keyboard press of Show more focused grows wholly below Detai
   }
 });
 
+// The control a press of Show more focuses can stop being a control before the reader acts: a
+// reference link in the entry's line whose target answers that it is missing loses its `href` to
+// its renderer (`RefLink`), its words left as plain text, and Chromium then moves the focus off it
+// to the page's body, with a `focusout` that names no next element, a moment after the change. The
+// entry and its other controls stand. The focus goes on to the entry's first control left, and
+// that control is kept in Details' view as the focused one was. Here the first control of the
+// entry the press drew, its author's link, stands for that reference. happy-dom leaves the focus
+// on an element that loses its `href`, so the case's `blur()` stands for Chromium's move: the
+// same `focusout`, after the change. A removed link is handed on the same way: Chromium sends it
+// a `focusout` as it goes, and happy-dom, as a browser may, sends none and puts the focus on the
+// body, so that case proves the path of a removal heard only by the mutation observer. The browser
+// row of `e2e/issue-page-m.e2e.ts` proves Chromium's own.
+for (const [change, take] of [
+  [
+    "turns into plain words",
+    (link: HTMLElement) => {
+      link.removeAttribute("href");
+      link.blur();
+    },
+  ],
+  ["leaves the entry", (link: HTMLElement) => link.remove()],
+] as const) {
+  test(`a keyboard press of Show more whose focused link then ${change} moves the focus to the entry's next control and keeps it in Details' view`, async () => {
+    const { box, entry, focused, resize, restore } = await pressedToFoot();
+
+    try {
+      const row = focused.closest<HTMLElement>("[data-history-entry]");
+      const next = row?.querySelectorAll<HTMLElement>("a[href], button:not(:disabled)")[1];
+      if (!(focused instanceof HTMLAnchorElement) || next === undefined) {
+        throw new Error("the press did not focus a link of an entry with a control after it");
+      }
+      await act(async () => {
+        take(focused);
+      });
+      expect(
+        document.activeElement,
+        "the focus fell to the page's body when the focused link left the entry"
+      ).toBe(next);
+      const before = box.scrollTop;
+      resize(entry, ROW_HEIGHT + 36);
+      expect(
+        box.scrollTop - before,
+        "the control the focus went on to grew 36 px below Details' view, and Details did not follow it"
+      ).toBe(36);
+    } finally {
+      restore();
+    }
+  });
+}
+
 // The press reads the log's next page, which adds ten files to the run of uploads drawn last, in
 // view above Show more, and draws the next entries under that run. The run grows to 440 px, so
 // the files it gained stand in Details' view and the first entry drawn under them does not, by

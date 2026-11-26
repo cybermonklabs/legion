@@ -504,7 +504,9 @@ export function IssueHistory({
     // the reader's place, is recorded where the reader sees it. The element can grow after the
     // focus, as a reference in an entry's line does once its target's name is read, so it is kept
     // wholly in Details' view by the same least scroll until the reader acts
-    // (`keepFocusedInView`).
+    // (`keepFocusedInView`). It can also stop being a link, as such a reference does once its
+    // target answers that it is missing: the focus then goes on to the entry's first control left,
+    // the same way.
     const handTo = (element: HTMLElement) => {
       focusKept.current?.abort();
       focusKept.current = null;
@@ -517,7 +519,12 @@ export function IssueHistory({
       }
       element.focus({ preventScroll: true });
       if (box !== null) {
-        focusKept.current = keepFocusedInView(element, box, (by) => anchor.current?.scrollBox(by));
+        focusKept.current = keepFocusedInView(
+          element,
+          box,
+          (by) => anchor.current?.scrollBox(by),
+          handTo
+        );
       }
     };
     if (press.kind === "retry") {
@@ -743,17 +750,43 @@ interface HeldParts {
  * (`ViewportAnchor`'s `contentResized`), and this then brings the element's foot into the view.
  * The keeping ends as the focus leaves the element and at the reader's first act, a key, a press,
  * a wheel or a touch (`abortOnReaderAct`; the press that made the hand-on came before it).
+ * Where the element stops being a control before the reader acts and the focus falls to nothing
+ * with it, the focus goes to the first control left in the entry the element stood in, given by
+ * `handOn`, which keeps that control in view the same way. A reference link does so once its
+ * target answers that it is missing: its renderer takes its `href` away and leaves its words as
+ * plain text (`RefLink`), and Chromium then moves the focus off it to the body, with a `focusout`
+ * that names no next element. The entry is found again by its id, as React can draw it anew. A
+ * focus that moved to another element, or off an element that is still a control, is the
+ * reader's or the page's, and stays there. Chromium sends a removed element a `focusout` too, a
+ * browser may send it none, so a removal is also heard from a mutation observer of Details' box;
+ * the `focusout` is read once the change that sent it is done.
  * Returns the keeping, which aborting ends sooner, as the next hand-on does.
  */
 function keepFocusedInView(
   element: HTMLElement,
   box: HTMLElement,
-  scrollBy: (by: number) => void
+  scrollBy: (by: number) => void,
+  handOn: (control: HTMLElement) => void
 ): AbortController {
   const kept = abortOnReaderAct();
+  const entry = element.closest<HTMLElement>(`[${HISTORY_ENTRY_ATTRIBUTE}]`);
+  const entryId = entry?.getAttribute(HISTORY_ENTRY_ATTRIBUTE);
+  // The focus has left the element: the keeping ends, and the focus goes on where the element
+  // stopped being a control and took the focus to nothing with it.
+  const left = () => {
+    if (kept.signal.aborted) return;
+    kept.abort();
+    const active = document.activeElement;
+    const stands = element.isConnected && element.matches(ENTRY_CONTROLS);
+    if (entryId == null || stands || (active !== null && active !== document.body)) return;
+    const control = box
+      .querySelector(`[${HISTORY_ENTRY_ATTRIBUTE}="${CSS.escape(entryId)}"]`)
+      ?.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    if (control != null) handOn(control);
+  };
   const sizes = new ResizeObserver(() => {
     if (document.activeElement !== element) {
-      kept.abort();
+      left();
       return;
     }
     const at = element.getBoundingClientRect();
@@ -762,8 +795,15 @@ function keepFocusedInView(
     const by = nearestScroll(at, view);
     if (by !== 0) scrollBy(by);
   });
-  kept.signal.addEventListener("abort", () => sizes.disconnect());
-  sizes.observe(element.closest(`[${HISTORY_ENTRY_ATTRIBUTE}]`) ?? element);
-  element.addEventListener("focusout", () => kept.abort(), { signal: kept.signal });
+  const removals = new MutationObserver(() => {
+    if (!element.isConnected) left();
+  });
+  kept.signal.addEventListener("abort", () => {
+    sizes.disconnect();
+    removals.disconnect();
+  });
+  sizes.observe(entry ?? element);
+  if (entryId != null) removals.observe(box, { childList: true, subtree: true });
+  element.addEventListener("focusout", () => queueMicrotask(left), { signal: kept.signal });
   return kept;
 }
