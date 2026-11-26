@@ -313,3 +313,74 @@ func TestAReviewTheFixRanBesideKeepsItsCommitWhateverTheClock(t *testing.T) {
 		})
 	}
 }
+
+// fixEndsWithNoCommit is fix 1's own completion at the head its check failed at, X: the fix made no
+// commit of its own, so its EndHead is its Head, and its way waits for the running review step.
+func (r *fixRig) fixEndsWithNoCommit() {
+	r.t.Helper()
+	if result := r.apply("fix-done", fixCompletion(fixHead)); result.Refusal != nil {
+		r.t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+	r.assertFixEnded("passed", fixHead, false, 0)
+}
+
+// A person can push to a task's branch at any moment, and after the fix ended nobody else is held
+// off it either, so a head the fix did not make is no fix's. Fix 1 runs beside the review step that
+// started at X and ends with no commit of its own, so its way waits for that step; a person then
+// pushes P. The round stays open: the push asks the reviewer for a review of P, and the approval of
+// X is refused at P, since the reviewer read neither P nor a head the fix made. Its red is the rule
+// before: any head beside a fix of the step's start counted as the fix's, so the push asked nothing,
+// the approval of X ended the round, and the task left its review at P with nobody's review of it.
+func TestAPersonsPushBesideAnEndedFixIsNoFixs(t *testing.T) {
+	r := besideTheFix(t)
+	r.fixEndsWithNoCommit()
+	if got := r.reviewBesideFix(); got != fixHead {
+		t.Fatalf("the review step beside fix 1 at its end stands beside a fix at %q, want %s", got, fixHead)
+	}
+
+	r.personPushes(fixHead, headThree)
+
+	if got := r.reviewBesideFix(); got != "" {
+		t.Errorf("after a person pushed %s the review stands beside a fix at %q, want none: the head is no fix's", headThree, got)
+	}
+	if told := reviewStuckNotices(t, r.pool); len(told) != 1 {
+		t.Errorf("after a person's push the architect was told %+v, want one notice asking for a review of %s", told, headThree)
+	}
+
+	r.reviewOf(1, "approved", fixHead)
+
+	want := "footer names " + fixHead + ", not the head " + headThree
+	if decision := reviewerDecision(t, r.pool); decision == nil || decision.State != "" || !strings.HasPrefix(decision.Refused, want) {
+		t.Fatalf("the reviewer's decision = %+v, want none, refused as %q", decision, want)
+	}
+	assertPhase(t, r.pool, phase.Reviewing)
+	if end := r.runEnd(3, 1); end != nil {
+		t.Fatalf("the review's run ended %+v, want it open: no review of %s has come", end, headThree)
+	}
+}
+
+// The way after a fix counts the commits of the task's branch, not the fix's own: where the branch
+// moved while the fix ran, the steps after the fix run again at the head it moved to, whoever pushed
+// it. Fix 1 ends with no commit of its own beside the running review step, a person pushes P, and
+// the reviewer approves P: the way after the fix is way 2, which runs the tester again with its
+// working copy moved to P. Its red is the count before: the fix's own end against its own start,
+// which read no new commits and took way 3, so the task went on to its retro with P reviewed by its
+// reviewer but tested by nobody.
+func TestTheWayAfterAFixCountsTheTasksCommits(t *testing.T) {
+	r := besideTheFix(t)
+	r.fixEndsWithNoCommit()
+
+	r.personPushes(fixHead, headThree)
+	r.reviewOf(1, "approved", headThree)
+
+	if decision := reviewerDecision(t, r.pool); decision == nil || decision.State != "approved" || decision.Head != headThree {
+		t.Fatalf("the reviewer's decision = %+v, want the approval of %s", decision, headThree)
+	}
+	if way := r.fixWay(1); way != wayAfterFix {
+		t.Fatalf("fix 1 took way %d, want %d: the task's branch moved while the fix ran, so the steps after it run again", way, wayAfterFix)
+	}
+	assertPhase(t, r.pool, phase.Testing)
+	if got := r.moveToOf(claim.RoleTester); got != headThree {
+		t.Fatalf("the tester's start moves its working copy to %q, want %s, the head the task's branch stands at", got, headThree)
+	}
+}
