@@ -261,6 +261,12 @@ func main() {
 	// destination's, with an allow list, in Authorization alone, and no kind binds that host; each
 	// destination needs a dpop block to bind its host.
 	fatal(config.ProxyMintedRules(fileRules, cfg.ProxyPrivateUpstreams))
+	// The approve capability, from the dpop block named oauth.ApproveName: a person's sign-in is
+	// traded for its placeholder, and the proxy mints a token for the grant on each pod at the
+	// grant's first allowed request there, and again there after the policy version moves, and
+	// spends it while the grant lives. A file with no such block serves none.
+	approve, approveServed := approveCapabilityOf(profiles, fileRules, cfg.ProxyPrivateUpstreams)
+	logApproveCapability(approve, approveServed)
 	// And the proxy's certificate authority, built in the same breath and refused the same way.
 	// With BROKER_PROXY_CA_POOL it starts with no certificate and asks the pool for this pod's
 	// intermediate at once, beside the rest of the boot, renewing it for as long as the process
@@ -542,6 +548,13 @@ func main() {
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
+	// The approve capability's grants, which the proxy reads by a presented placeholder's hash
+	// and mints a token of this pod's key for (requests.MintedKind).
+	var approveSettings *oauth.ApproveSettings
+	if approveServed {
+		reqMachine.Minted = append(reqMachine.Minted, approve.kind(oauthStore))
+		approveSettings = approve.settings(cfg.AirlockProxyURL, airlockCA.ReleaseRoots)
+	}
 	// The one table that says which principal holds a session name is written by both of the
 	// things that name a session: the token exchange, at every token it mints, and an
 	// enrollment, at every session it enrols (enroll.Service.Sessions). So a name a session
@@ -643,6 +656,7 @@ func main() {
 		RefreshLifetime: credentialLifetime, VerificationURL: cfg.MachineLoginURL,
 		ProofSkew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		Exchange:  exchangeConfig,
+		Approve:   approveSettings,
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {

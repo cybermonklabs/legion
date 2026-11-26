@@ -34,8 +34,8 @@ var heldWorks = []heldWork{
 }
 
 // heldBeneath is the open issue beneath a parent held for its children: the transition writes
-// that hold only while an issue beneath the parent is in the workflow (beneathRetro), and the last
-// one's leave starts the retro.
+// that hold only while a hold on the parent's acceptance holds it (retroHeld), here an issue
+// beneath it in the workflow, and the last one's leave starts the retro.
 const heldBeneath = "LEGION-210"
 
 func (h heldWork) held() bool { return h.reason != "" }
@@ -197,7 +197,8 @@ func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 	t.Parallel()
 	const beneath = heldBeneath
 	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing."}
-	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro for these issues beneath it: " + beneath + ". Legion starts the retro when the last one leaves. This retry changed nothing."}
+	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro while these issues beneath it are still in the workflow: " + beneath + ". " +
+		retroHeldStarts + " This retry changed nothing."}
 	for _, h := range heldWorks {
 		for _, release := range []struct {
 			name string

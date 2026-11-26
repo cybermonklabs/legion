@@ -350,6 +350,7 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 // recorded source beyond the inputs it names would count them current. Both statements count
 // them lacking.
 func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	states := seedEveryCoverageState(t, database)
@@ -422,6 +423,7 @@ var coverageCostProfiles = []struct{ name, settings string }{
 // (TestNoOtherIndexCanReadTheWindowKinds names it): either leaves the answer right and the
 // statement testing every window's text again.
 func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	for _, statistics := range []struct{ name, statement string }{
@@ -476,6 +478,7 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 // TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes, analyzed, and the plan is read under
 // each of coverageCostProfiles.
 func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedEveryCoverageState(t, database)
