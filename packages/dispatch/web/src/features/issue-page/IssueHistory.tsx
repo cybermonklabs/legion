@@ -29,6 +29,7 @@ import {
   type HistoryPlace,
   historyBlocks,
   historyDownTo,
+  leftAfterNext,
   placeUnder,
   turnPlace,
 } from "./history-model";
@@ -61,7 +62,9 @@ export interface AddressedTurn {
 /**
  * The issue's history, a list in the panel (`history-model.ts`): newest first, every day drawn
  * open under a line that names it, which is no control. It draws its first `HISTORY_PAGE`
- * entries, and one control under the last entry drawn draws the next ones (Show more). An event
+ * entries, and one control under the last entry drawn draws the next ones (Show more); each of
+ * those draws first reads older pages of the log until more entries are read than it draws, or
+ * the log has ended, so Show more says how many entries are left while any may be. An event
  * is one line with its pin, and a handoff's line holds its fields, open until the reader folds
  * them (`HistoryHandoff`); a run of uploads - one author's newest upload and their uploads made at
  * most a minute before it, with no other author's upload between them - is one entry that opens
@@ -220,7 +223,8 @@ export function IssueHistory({
   // (`HistoryPlace`), so an entry that arrives above it is drawn and takes no entry drawn out from
   // under the reader. Until that place is held, the first `HISTORY_PAGE` entries are drawn. It is
   // held from the render in which the log and every read the threads come from have answered, so
-  // that a thread those reads bring stands among the first entries rather than above them.
+  // that a thread those reads bring stands among the first entries rather than above them, once
+  // the log holds more entries than that or has ended (`short`).
   const [end, setEnd] = useState<HistoryPlace | undefined>(undefined);
   const firstEnd = useMemo(() => placeUnder(days, undefined, HISTORY_PAGE), [days]);
   const shownEnd = end ?? firstEnd;
@@ -229,11 +233,9 @@ export function IssueHistory({
     comments.status !== "pending" &&
     messages.status !== "pending" &&
     asks.status !== "pending";
-  // How many pages of the log were held when a press of the control, or of the next page's
-  // Retry in its place, asked for the next one: once that page lands, the next entries are drawn
-  // from it.
-  const pages = log.data?.pages.length ?? 0;
-  const [asked, setAsked] = useState<number | undefined>(undefined);
+  // Whether a press of the control, or of the next page's Retry in its place, waits for the next
+  // entries it asked for, which are drawn once the log holds enough of them (`short`).
+  const [asked, setAsked] = useState(false);
   // The entry of the thread that holds the turn the address names, which is drawn however far
   // under the entries drawn it stands, with every entry above it.
   const itemId = item?.id;
@@ -241,21 +243,36 @@ export function IssueHistory({
     () => (itemId === undefined ? undefined : turnPlace(days, itemId)),
     [days, itemId]
   );
+  const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
+  // Whether the history reads the log's next page before it draws on. Its first entries wait
+  // until it holds more than `HISTORY_PAGE`, and the next ones a press asks for until more than
+  // `HISTORY_PAGE` are read and not drawn, or in either case until the log has ended: so every
+  // draw leaves an entry read and not drawn while an older page is unread, and Show more says
+  // how many. A history drawn down to every entry read, as to the turn an address names, reads
+  // on as well.
+  const short = older && (asked ? leftAfterNext(days, shownEnd) === 0 : drawn.left === 0);
+  // A failed read of the log stops the reading on: the history draws what it holds, and the next
+  // page's Retry reads on from there (`failed` below).
+  const stopped = log.isError && !log.isFetching;
+  // The first entries wait under the loading line while the history reads on for them.
+  const firstFill = end === undefined && short && !stopped;
+  const listDrawn = log.data !== undefined && !firstFill;
+  // Whether a press waits for the pages its next entries are read from.
+  const pressWaits = asked && !stopped;
   // Each move of the place is drawn in the render that finds it, before React commits anything.
   let nextEnd = end;
-  if (asked !== undefined && pages > asked) {
-    setAsked(undefined);
+  if (asked && !short) {
+    setAsked(false);
     nextEnd = placeUnder(days, shownEnd, HISTORY_PAGE);
   } else if (
     itemPlace !== undefined &&
     (shownEnd === undefined || comparePlaces(itemPlace, shownEnd) < 0)
   ) {
     nextEnd = itemPlace;
-  } else if (end === undefined && settled) {
+  } else if (end === undefined && settled && (!short || stopped)) {
     nextEnd = shownEnd;
   }
   if (nextEnd !== end) setEnd(nextEnd);
-  const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
   // The address of a turn of a thread that began before the oldest event read so far names an
   // entry the history does not hold yet (`HistoryInput.loadedFrom`), so the log is read on, one
   // page at a time, until that thread is in or the log has ended; the history is then drawn down
@@ -272,10 +289,31 @@ export function IssueHistory({
     log.hasNextPage &&
     !log.isFetching &&
     !log.isError;
-  const { fetchNextPage } = log;
+  // The read of the next page while it is out, from a press of Show more, of the next page's
+  // Retry, or the history's own reading on: a press made meanwhile joins it and sends nothing,
+  // where the render's `isFetchingNextPage` can be older than a second press made before React
+  // draws the first one's read. It is marked here, and not joined by `cancelRefetch: false`,
+  // which joins whatever read of the log is out: a refetch a live event sent, common on a busy
+  // issue, would take the press and read no page. A press with no such read out reads the next
+  // page as `fetchNextPage` does by default, ending a refetch that is out. The read's end is
+  // drawn again once it is no longer marked, since the render its page lands in can come first,
+  // and the history reads on from that one.
+  const olderRead = useRef<Promise<unknown> | null>(null);
+  const [, setOlderReadsEnded] = useState(0);
+  const readOlderPage = () => {
+    if (olderRead.current !== null) return;
+    olderRead.current = log.fetchNextPage().finally(() => {
+      olderRead.current = null;
+      setOlderReadsEnded((ended) => ended + 1);
+    });
+  };
+  // The history reads on, a page at a time, for the turn an address names or for the entries it
+  // draws next (`short`), once the threads' reads have answered, while no read of the log is out,
+  // and never after one failed.
+  const readsOn = seeksItem || (short && settled && !log.isFetching && !log.isError);
   useEffect(() => {
-    if (seeksItem) void fetchNextPage();
-  }, [fetchNextPage, seeksItem]);
+    if (readsOn) readOlderPage();
+  });
   const togglePin = (eventId: number) =>
     writePin(queryClient, issueKey, (dismissed) => ({
       id: eventItemId({ id: eventId }),
@@ -334,7 +372,7 @@ export function IssueHistory({
       headingLanded.current === activityFollowing ||
       element === null ||
       element.getClientRects().length === 0 ||
-      log.data === undefined
+      !listDrawn
     ) {
       return;
     }
@@ -355,7 +393,6 @@ export function IssueHistory({
   // That box is found once the list is drawn; moving the panel to another host remounts it.
   const anchorRoot = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
-  const listDrawn = log.data !== undefined;
   useLayoutEffect(() => {
     if (listDrawn) scroller.current = scrollingAncestor(anchorRoot.current);
   }, [listDrawn]);
@@ -382,7 +419,7 @@ export function IssueHistory({
   // as the next entries are drawn where the control stood; else any the press added; else the
   // control again, where entries or pages are left; else the last control drawn before the press,
   // which stood just above it; and only then the heading, above the whole list. A press that
-  // reads the log's next page moves it once that page has landed and its first entries are drawn.
+  // reads older pages first moves it once they have landed and its entries are drawn.
   // A control of the history that goes away under the reader's focus so leaves the focus in the
   // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). The Retry of a failed
   // next page, which stands where the control stood, hands it on the same way; the Retry of a
@@ -410,7 +447,7 @@ export function IssueHistory({
         readonly before: HeldParts;
         readonly control: Element;
         readonly kind: "more";
-        /** Whether the press reads the log's next page, rather than draws entries read. */
+        /** Whether the press reads older pages of the log before it draws (`short`). */
         readonly reads: boolean;
       }
     | { readonly control: Element; readonly kind: "retry" }
@@ -446,23 +483,6 @@ export function IssueHistory({
       entries === undefined ? null : entries.item(control === "under" ? entries.length - 1 : 0)
     );
   };
-  // The reader's own read of the next page while it is out, from a press of Show more or of the
-  // next page's Retry: a press made meanwhile joins it and sends nothing, where the render's
-  // `isFetchingNextPage` can be older than a second press made before React draws the first
-  // one's read. It is marked here, at the press, and not joined by `cancelRefetch: false`, which
-  // joins whatever read of the log is out: a refetch a live event sent, common on a busy issue,
-  // would take the press and read no page. A press with no read of its own out reads the next
-  // page as `fetchNextPage` does by default, ending a refetch that is out. Where every entry read
-  // is drawn as the press is made, the next entries are drawn from that page once it lands
-  // (`asked`).
-  const olderRead = useRef<Promise<unknown> | null>(null);
-  const readOlderPage = () => {
-    if (drawn.left === 0) setAsked((held) => held ?? pages);
-    if (olderRead.current !== null) return;
-    olderRead.current = log.fetchNextPage().finally(() => {
-      olderRead.current = null;
-    });
-  };
   // The keeping of the element the last hand-on gave the focus to in Details' view
   // (`keepFocusedInView`): the next hand-on ends it, and so does the history going.
   const focusKept = useRef<AbortController | null>(null);
@@ -470,7 +490,7 @@ export function IssueHistory({
   useLayoutEffect(() => {
     const press = pressed.current;
     const reads = press?.kind === "retry" || press?.reads === true;
-    if (press === undefined || (reads && log.isFetching)) return;
+    if (press === undefined || (reads && (log.isFetching || pressWaits))) return;
     pressed.current = undefined;
     const active = document.activeElement;
     const onPage = active === null || active === document.body;
@@ -544,7 +564,7 @@ export function IssueHistory({
   // which the anchor recorded as the focus moved and leaves alone here, and a focus it left
   // where the reader put it names no place in the history.
   useLayoutEffect(() => {
-    if (!keeping.current || log.isFetching) return;
+    if (!keeping.current || log.isFetching || pressWaits) return;
     keeping.current = false;
     anchor.current?.keepRow(null);
   });
@@ -552,7 +572,8 @@ export function IssueHistory({
   // stands under the heading, in place of the loading line, while the log stands failed
   // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and
   // its Retry reads that page again; that line stays while the page is read again, since the log
-  // keeps that failure meanwhile.
+  // keeps that failure meanwhile. Where every entry read is drawn, the Retry stands in Show
+  // more's place and Show more is not drawn, as it would say no number there.
   const logFailed = standsFailed(log);
   const saysFailure = logFailed || log.isFetchNextPageError;
   const failed = saysFailure ? (
@@ -582,15 +603,17 @@ export function IssueHistory({
               : { control: active, kind: "retry" };
           }
           keepEntryBeside(log.isFetchNextPageError ? "under" : "above");
-          if (log.isFetchNextPageError) readOlderPage();
-          else void retryRead(log)();
+          if (log.isFetchNextPageError) {
+            setAsked(true);
+            readOlderPage();
+          } else void retryRead(log)();
         }}
         retrying={log.isFetching}
       />
     </div>
   ) : null;
-  // Show more reads busy while the page its press asked for is read, the entries read all drawn.
-  const readsPage = drawn.left === 0 && log.isFetchingNextPage;
+  // Show more reads busy while the history reads older pages for the next entries it draws.
+  const readsPage = short && !stopped;
 
   return (
     <section
@@ -608,11 +631,11 @@ export function IssueHistory({
         {CONTROL_LABELS.history}
       </h2>
       {log.isFetchNextPageError ? null : failed}
-      {log.isPending && !logFailed ? (
+      {(log.isPending && !logFailed) || firstFill ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {ANSWER_LINES.loading_history}
         </p>
-      ) : log.data === undefined ? null : (
+      ) : listDrawn ? (
         <ViewportAnchor
           enabled={holdsPlace}
           item={HISTORY_ENTRY_ATTRIBUTE}
@@ -649,29 +672,30 @@ export function IssueHistory({
             ))}
           </ol>
         </ViewportAnchor>
-      )}
+      ) : null}
       {log.isFetchNextPageError ? failed : null}
-      {log.data !== undefined && (drawn.left > 0 || log.hasNextPage) ? (
+      {listDrawn && (drawn.left > 0 || (log.hasNextPage && !log.isFetchNextPageError)) ? (
         <button
           aria-busy={readsPage || undefined}
           className={`${SHOW_MORE_CONTROL} self-start`}
           onClick={(event) => {
-            // Not disabled while its page is read, since Chromium drops the focus of a focused
-            // button that turns disabled to the page: a press then joins the reader's own read of
-            // that page (`readOlderPage`), and keeps the first press's hold. It draws the entries
-            // read and not drawn yet, and reads the next page only where it has drawn them all.
+            // Not disabled while its pages are read, since Chromium drops the focus of a focused
+            // button that turns disabled to the page: a press then joins the read of the page
+            // that is out (`readOlderPage`), and keeps the first press's hold. It draws the next
+            // entries at once where more than `HISTORY_PAGE` are read and not drawn, or the log
+            // has ended, and else reads older pages first until it can (`short`).
             const control = event.currentTarget;
+            const reads = log.hasNextPage && leftAfterNext(days, shownEnd) === 0;
             if (document.activeElement === control && pressed.current?.control !== control) {
-              pressed.current = {
-                before: heldParts(),
-                control,
-                kind: "more",
-                reads: drawn.left === 0,
-              };
+              pressed.current = { before: heldParts(), control, kind: "more", reads };
             }
             keepEntryBeside("under");
-            if (drawn.left > 0) setEnd((held) => placeUnder(days, held ?? shownEnd, HISTORY_PAGE));
-            else readOlderPage();
+            if (reads) {
+              setAsked(true);
+              readOlderPage();
+            } else {
+              setEnd((held) => placeUnder(days, held ?? shownEnd, HISTORY_PAGE));
+            }
           }}
           ref={more}
           type="button"

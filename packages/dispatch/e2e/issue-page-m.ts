@@ -3,6 +3,7 @@ import { expect, type Locator, type Page, type Request, type Response } from "@p
 
 import { routeUrl } from "../web/src/api/paths";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
 import { baseUrl, e2eAgentToken } from "./api";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
@@ -31,8 +32,9 @@ import { settledState } from "./settled";
  *   thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]` and its time the link
  *   `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`. Under the last entry
  *   drawn stands one control, Show more, "Show more (<n> left)" while entries read are left to
- *   draw, its count `[data-history-left]` and "<n>+" while an older page of the log is unread, and
- *   "Show more" alone once every entry read is drawn and that page is left, which its press reads.
+ *   draw, its count `[data-history-left]` and "<n>+" while an older page of the log is unread; a
+ *   press that would leave no entry read and not drawn reads that page first, the control reading
+ *   "Loading older" meanwhile, and the control goes once the whole log is drawn.
  * - **The facts** `[data-testid="focused-node-facts"]`, carrying `data-focused-node` with the
  *   focused node's id, or the issue's key with no node focused (`FocusedNodeFacts.tsx`); its
  *   deliveries are `[data-deliveries] li`, its controls `[data-focused-controls]`, and what
@@ -69,28 +71,41 @@ const SHOW_MORE = new RegExp(
 );
 
 /** The history's Show more, the one control under its last entry drawn, whatever its count says:
- *  it draws the next entries read, or reads the log's next page where every entry read is drawn. */
+ *  it draws the next entries, reading the log's next page first where it holds too few. */
 export function historyShowMore(page: Page): Locator {
   return historyPanel(page).getByRole("button", { name: SHOW_MORE });
 }
 
-/** The history's Show more where it says no number: every entry read is drawn, and its press
- *  reads the log's next page. */
+/** Show more's name where its press reads the log's next page before it draws: "Show more
+ *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so fewer entries are read and not drawn than a
+ *  press draws. */
+const READS_FIRST = new RegExp(
+  `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE }, (_, index) => index + 1).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
+  "u"
+);
+
+/** The history's Show more where its press reads the log's next page before it draws the next
+ *  entries: it says "<n>+" with `n` at most `PAGE_SIZE`. */
 export function historyNextPage(page: Page): Locator {
-  return historyPanel(page).getByRole("button", { exact: true, name: CONTROL_LABELS.show_more });
+  return historyPanel(page).getByRole("button", { name: READS_FIRST });
 }
 
-/** What the history's Show more says, read once the page shows one of them: `counted` where it
- *  says how many entries read are left, `uncounted` where it says no number and its press reads
- *  the log's next page, `reading` while that page is read, and `gone` where the history has drawn
- *  entries and no control stands under them. */
+/** What the history's Show more says, read once the page shows one of them: `reads` where its
+ *  press reads the log's next page before it draws (`historyNextPage`), `counted` where it says
+ *  how many entries read are left and its press draws the next ones, `uncounted` where it says no
+ *  number, `reading` while it reads, and `gone` where the history has drawn entries and no control
+ *  stands under them. */
 export function historyShowMoreState(
   page: Page
-): Promise<"counted" | "gone" | "reading" | "uncounted"> {
+): Promise<"counted" | "gone" | "reading" | "reads" | "uncounted"> {
   const busy = 'button[aria-busy="true"]';
   return settledState("the history's Show more", [
+    ["reads", historyNextPage(page)],
     ["counted", historyShowMore(page).filter({ has: page.locator("[data-history-left]") })],
-    ["uncounted", historyNextPage(page)],
+    [
+      "uncounted",
+      historyPanel(page).getByRole("button", { exact: true, name: CONTROL_LABELS.show_more }),
+    ],
     ["reading", historyPanel(page).locator(busy)],
     [
       "gone",
@@ -103,8 +118,10 @@ export function historyShowMoreState(
 }
 
 /** The answer to the history's read of a page of issue `key`'s log older than the first, the
- *  read Show more sends where it says no number (`GET /api/v1/issues/<key>/events` with
- *  `before`), waited for from the call on: a row calls it before the press that sends that read. */
+ *  read the history sends before it draws where it holds too few entries, and the one Show more
+ *  sends where its press reads the next page first (`historyNextPage`) (`GET
+ *  /api/v1/issues/<key>/events` with `before`), waited for from the call on: a row calls it
+ *  before what sends that read. */
 export function olderPageAnswered(page: Page, key: string): Promise<Response> {
   return page.waitForResponse((response) => {
     const url = new URL(response.url());

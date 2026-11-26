@@ -3028,16 +3028,18 @@ function claimsNewestFirst(count: number): DispatchEvent[] {
 }
 
 /** A full first page of the log, 200 events, whose entries in the history are `entries` claims
- *  (`claimsNewestFirst`) and the agents' thread: the rest are moves of a child's status, which
- *  the outline draws and the history leaves out. With no more entries than one press of Show
- *  more draws, every entry read is drawn, and Show more reads the log's next page. */
+ *  (`claimsNewestFirst`), the agents' thread and a claim older than all of them, at sequence 0,
+ *  which the reader has read: the rest are moves of a child's status, which the outline draws and
+ *  the history leaves out. With `PAGE_SIZE - 1` claims the history holds one entry more than a
+ *  press of Show more draws, so it draws the claims and the thread under a Show more that says
+ *  "1+", whose press reads the log's next page before it draws. */
 function fullPageOfFewEntries(entries: number): DispatchEvent[] {
   const left = Array.from(
-    { length: 200 - entries },
+    { length: 199 - entries },
     (_, index) =>
       ({ ...claimMade(1000 + index, 1), payload: {}, type: "child.status" }) as DispatchEvent
   );
-  return [...left, ...claimsNewestFirst(entries)];
+  return [...left, ...claimsNewestFirst(entries), claimMade(0, (entries + 1) * 9)];
 }
 
 /** How long the case lets pass for a scroll not to be taken for the reader's own: past the
@@ -3065,12 +3067,12 @@ type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
 /**
  * Draws Details with the history of `place`'s case open in it, and the reader's place left in
  * that history by `place`: a log of 30 claims and the agents' thread, or, where the reader
- * pressed Show more to read the log's next page, a full page of 200 events that holds 19 claims
- * and the thread, with older pages left to read, whose next page is never answered while the case
- * runs. The box anchors its scroll as the browser does while its own scroll anchoring is on, and
- * the clock the reader's acts are read by stands still until a case moves it on. Returns the
- * page, the entry the reader's place names, and the point of the page the reader looked at: that
- * entry's middle.
+ * pressed Show more to read the log's next page, a full page of 200 events that holds 19 claims,
+ * the thread and one older claim (`fullPageOfFewEntries`), with older pages left to read, whose
+ * next page is never answered while the case runs. The box anchors its scroll as the browser does
+ * while its own scroll anchoring is on, and the clock the reader's acts are read by stands still
+ * until a case moves it on. Returns the page, the entry the reader's place names, and the point of
+ * the page the reader looked at: that entry's middle.
  */
 async function readerLeftAPlace(place: EarlierPlace) {
   const { client, getIssueCoverage, names } = agentsThreadClient();
@@ -3127,7 +3129,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(api.putIssueState).toHaveBeenCalledTimes(1));
     } else if (place === "older") {
-      const more = screen.getByRole("button", { name: CONTROL_LABELS.show_more });
+      const more = screen.getByRole("button", { name: SHOW_MORE });
       act(() => more.focus());
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(more).toHaveAttribute("aria-busy", "true"));

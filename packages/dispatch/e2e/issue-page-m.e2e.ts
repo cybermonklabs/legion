@@ -200,26 +200,30 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
 }
 
 /**
- * Presses the history's Show more by `press` until it reaches `end`: `uncounted`, where every
- * entry the history has read is drawn and the control says no number, or `gone`, where no
- * control is left under the last entry, so the history draws the whole log of `key`, which holds
- * `events` events. A press of a control that says how many entries are left draws the next ones,
- * waited for until more are drawn; a press of one that says no number reads the log's next page,
- * waited for until its answer has landed and two frames drew it. Each press draws an entry or
- * reads a page, so a control still offered after as many presses as the log has entries and
- * pages fails as offered past the log's end.
+ * Presses the history's Show more by `press` until it reaches `end`: `reads`, where the control
+ * says "<n>+" with `n` at most `PAGE_SIZE` and its press reads the log's next page before it
+ * draws (`historyNextPage`), or `gone`, where no control is left under the last entry, so the
+ * history draws the whole log of `key`, which holds `events` events. Each press draws the next
+ * entries, waited for until more are drawn; a press that reads the next page first draws them
+ * once that page's answer has landed. A control that says no number fails: the history says how
+ * many entries are left while any may be. Each press draws an entry, so a control still offered
+ * after as many presses as the log has entries and pages fails as offered past the log's end.
  */
 async function readHistoryDown(
   page: Page,
   key: string,
   events: number,
   press: (control: Locator) => Promise<void>,
-  end: "gone" | "uncounted"
+  end: "gone" | "reads"
 ): Promise<void> {
   const most = Math.ceil(events / PAGE_SIZE) + Math.ceil(events / 200) + 1;
   for (let presses = 0; ; presses += 1) {
     const state = await historyShowMoreState(page);
     if (state === end || state === "gone") return;
+    expect(
+      state,
+      `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`
+    ).not.toBe("uncounted");
     if (state === "reading") {
       await expect(
         historyPanel(page).locator('button[aria-busy="true"]'),
@@ -230,21 +234,16 @@ async function readHistoryDown(
     expect(presses, `${CONTROL_LABELS.show_more} is still offered past the log's end`).toBeLessThan(
       most
     );
-    if (state === "counted") {
-      // The entries drawn as the press is made: the press draws at least one more.
-      const drawn = await historyEntries(page).count();
-      await press(historyShowMore(page));
-      await expect
-        .poll(() => historyEntries(page).count(), {
-          message: `${CONTROL_LABELS.show_more} drew no entry`,
-        })
-        .toBeGreaterThan(drawn);
-    } else {
-      const answered = olderPageAnswered(page, key);
-      await press(historyShowMore(page));
-      await answered;
-      await nextFrames(page);
-    }
+    // The entries drawn as the press is made: the press draws at least one more.
+    const drawn = await historyEntries(page).count();
+    const answered = state === "reads" ? olderPageAnswered(page, key) : undefined;
+    await press(historyShowMore(page));
+    await answered;
+    await expect
+      .poll(() => historyEntries(page).count(), {
+        message: `${CONTROL_LABELS.show_more} drew no entry`,
+      })
+      .toBeGreaterThan(drawn);
   }
 }
 
@@ -1385,10 +1384,10 @@ test("entries made before the reader's midnight are found in the day the history
 
 // Paging is the history's: the outline reads each of its three lists whole and offers no Show
 // more at all. The history draws 20 entries at a time, and its Show more says how many of the
-// entries read are left, with "+" while an older page of the log is unread; once every entry
-// read is drawn it says no number, and its press reads that page and draws the next entries from
-// it. Those land beneath the entries already on screen, so the entry the reader is on does not
-// move; and the reader who presses on reaches the log's start, where the control goes.
+// entries read are left, with "+" while an older page of the log is unread; a press that would
+// leave none of them reads that page first, and then draws the next entries. Those land beneath
+// the entries already on screen, so the entry the reader is on does not move; and the reader who
+// presses on reaches the log's start, where the control goes.
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
   // The seed's 205 messages and the presses that draw 200 of them, 20 at a time.
   test.setTimeout(120_000);
@@ -1418,14 +1417,9 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       historyShowMore(page),
       "Show more does not say that an older page of the log is unread"
     ).toHaveText(new RegExp(`\\(\\d+\\+ ${CONTROL_LABELS.show_more_left}\\)$`, "u"));
-    // The reader draws every entry the first page holds, until the control says no number.
-    await readHistoryDown(
-      page,
-      issue.key,
-      events.length,
-      (control) => control.click(),
-      "uncounted"
-    );
+    // The reader draws the entries the first page holds, until the press of the control reads
+    // the older page before it draws.
+    await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "reads");
     const showMore = historyNextPage(page);
     await expect(showMore).toBeVisible();
     await showMore.scrollIntoViewIfNeeded();
@@ -1440,16 +1434,22 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     const anchor = historyPanel(page).locator(`[data-history-entry="${entry}"]`);
     const before = (await anchor.boundingBox())?.y;
     expect(before, `the entry the reader is on, ${entry}, has no box`).toBeDefined();
+    const drawn = await historyEntries(page).count();
+    const answered = olderPageAnswered(page, issue.key);
     await showMore.click();
 
-    // The proof the older page landed is the oldest entry of all: the issue's own creation,
-    // which only the page beneath the first 200 holds.
-    await seededHistoryEntry(
-      page,
-      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
-      created.created_at
-    );
-    await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
+    // The older page was the log's last: once it has landed and the press has drawn the next
+    // entries, the count says no "+".
+    await answered;
+    await expect
+      .poll(() => historyEntries(page).count(), {
+        message: `${CONTROL_LABELS.show_more} drew no entry once the older page landed`,
+      })
+      .toBeGreaterThan(drawn);
+    await expect(
+      historyShowMore(page),
+      "Show more says an older page is unread once the log's last page has landed"
+    ).toHaveText(new RegExp(`\\(\\d+ ${CONTROL_LABELS.show_more_left}\\)$`, "u"));
     await expect
       .poll(
         async () => (await anchor.boundingBox())?.y,
@@ -1457,11 +1457,99 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       )
       .toBe(before);
 
-    // The older page was the log's last, and every entry it holds is drawn: the control goes.
+    // The reader presses on to the log's start: the oldest entry of all, the issue's own
+    // creation, which only the page beneath the first 200 holds, is drawn, and the control goes.
+    await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "gone");
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
+    );
+    await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
     await expect(
       historyShowMore(page),
       `${CONTROL_LABELS.show_more} is still offered once the whole log is read`
     ).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+/** How many messages of the daemon's the row below writes under a person's comments, each an
+ *  entry of the history: more than it draws at once. */
+const UNDER_COMMENTS = 30;
+
+/** How many comments a person writes over those messages in the row below, each left out of the
+ *  history: more than the log's first page of 200 events holds, so that page holds no entry. */
+const OVER_ENTRIES = 205;
+
+// The log's first page is its newest 200 events, and on a real issue most of them are comments
+// of people, which the outline draws and the history leaves out. Found by a row on copies of real
+// issues: the first page held 0, 12 or 17 entries of the history, which drew them under a Show
+// more that said no number, the older pages unread. The history reads older pages before it
+// draws, one at a time, until it holds more entries than it draws at once or the log has ended.
+// Here the log's first page holds none of its entries and the second all of them: the first view
+// draws 20, Show more says how many are left, and the reader presses down to the log's start.
+// SLOW(>=2s): 30 messages and 205 comments written, a sign-in, one load of the history and its
+// read down.
+test("the history reads older pages before it draws, so its first view draws 20 entries and Show more says how many are left", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { issue, newest } = await seedMessages(
+    "A history under comments",
+    UNDER_COMMENTS,
+    "Older message"
+  );
+  for (let index = 0; index < OVER_ENTRIES; index += 1) {
+    await createComment(issue.key, { body: `A person's comment ${index}` });
+  }
+  const events = await allEvents(issue.key);
+  const created = events.find((event) => event.type === "issue.created");
+  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  expect(
+    events.length,
+    "the seed wrote events the row does not count, so its count of entries proves nothing"
+  ).toBe(1 + UNDER_COMMENTS + OVER_ENTRIES);
+  expect(
+    events.slice(0, 200).filter((event) => event.type !== "comment.created"),
+    "the log's first page holds events other than the person's comments, so the row proves nothing"
+  ).toEqual([]);
+  // Every entry of the history: the daemon's messages and the issue's creation.
+  const total = UNDER_COMMENTS + 1;
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    // Each read of a page of the log older than the first that the page sends.
+    const olderReads: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === `/api/v1/issues/${issue.key}/events` && url.searchParams.has("before")) {
+        olderReads.push(url.search);
+      }
+    });
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    expect(
+      await historyShowMoreState(page),
+      "the history's first view drew a Show more that says no number, the older page unread"
+    ).not.toBe("uncounted");
+    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
+    await expect(
+      historyEntries(page),
+      "the history's first view did not draw 20 entries"
+    ).toHaveCount(PAGE_SIZE);
+    await expect(historyShowMore(page)).toHaveText(showMoreName(total - PAGE_SIZE));
+    expect(olderReads, "the first view did not read the older page once").toHaveLength(1);
+
+    await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "gone");
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
+    );
+    await expect(historyEntries(page)).toHaveCount(total);
+    expect(olderReads, "reading down read an older page again").toHaveLength(1);
   } finally {
     await context.close();
   }
@@ -1478,6 +1566,54 @@ async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
   return event;
 }
 
+/**
+ * An issue of `title` whose log's first page of 200 events ends in a run of ten uploads by one
+ * author that straddles it (`history-model.ts`): eight uploads, `between` messages of the
+ * daemon's, which split no run, the run's two newest uploads within the minute, and as many
+ * messages after them as fill that page, so the first page holds the run's two newest uploads and
+ * the older page its other eight. That page holds 199 entries with 19 or 20 messages between the
+ * uploads: the history draws them 20 at a time down to the 180th, and Show more then says "19+",
+ * fewer entries left than a press draws (`historyNextPage`), so that press reads the older page,
+ * which extends the run, before it draws. With 19 messages between the uploads the run is the
+ * 180th entry, the last drawn above Show more; with 20, the newest of them stands between the run
+ * and Show more. Answers the issue's key, the newest message between the uploads, the newest
+ * upload's event and the log's events.
+ */
+async function seedRunAcrossPage(
+  title: string,
+  between: 19 | 20
+): Promise<{
+  between: { readonly created_at: string; readonly id: string };
+  events: DispatchEvent[];
+  key: string;
+  newestUpload: DispatchEvent;
+}> {
+  await createProject({ key: "CORE", name: "Core" });
+  const { key } = await createIssue({ project: "CORE", title });
+  const upload = (index: number) =>
+    uploadIssueFile(key, {
+      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+      contentType: "image/png",
+      name: `shot-${index}.png`,
+    });
+  for (let index = 0; index < 8; index += 1) await upload(index);
+  let newestBetween: { readonly created_at: string; readonly id: string } | undefined;
+  for (let index = 0; index < between; index += 1) {
+    newestBetween = await createMessage(key, { body: `Between the uploads ${index}` }, asDaemon);
+  }
+  if (newestBetween === undefined) throw new Error(`${key} holds no message between the uploads`);
+  for (let index = 8; index < 10; index += 1) await upload(index);
+  for (let index = 0; index < 200 - 2 - between; index += 1) {
+    await createMessage(key, { body: `Later message ${index}` }, asDaemon);
+  }
+  return {
+    between: newestBetween,
+    events: await allEvents(key),
+    key,
+    newestUpload: await uploadEvent(key, "shot-9.png"),
+  };
+}
+
 // Show more, where it reads the log's next page, adds entries under the reader, and the line
 // they read keeps its place on the screen; and by the focus rule of `IssueHistory.tsx`, that
 // press made by keyboard hands the focus to a control the page it read added, never one out of
@@ -1489,31 +1625,23 @@ async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
 // page landed (the entry's key went from uploads:4736 to uploads:4709), where an event line in
 // the same place stayed put; and the press by keyboard put the focus on that run's author link
 // 752 px above Details' view (6,624 px on the next press). A run now lists its files newest first
-// and keeps its key as the older page extends it. The run is the last entry of the log's first
-// page, so the reader first draws every entry that page holds, pressing Show more while it says
-// how many are left; those presses are dispatched to the control, so they move neither the focus
-// nor Details, and the reader comes to the run by a scroll of their own.
+// and keeps its key as the older page extends it. The run stands at the foot of the log's first
+// page (`seedRunAcrossPage`), so the reader first draws that page's entries down to it, pressing
+// Show more while it draws the next ones at once; those presses are dispatched to the control, so
+// they move neither the focus nor Details, and the reader comes to the run by a scroll of their
+// own. The press that reads the older page is the one made once fewer entries are left than it
+// draws, with the run the last entry drawn above it.
 test("loading older keeps the reader's place on an upload run the older page extends, and the focus in view", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Uploads across a page" });
-  // Ten uploads by one author, one after another: one run. The 199 messages after them push all
-  // but the newest upload onto the log's second page.
-  for (let index = 0; index < 10; index += 1) {
-    await uploadIssueFile(issue.key, {
-      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
-      contentType: "image/png",
-      name: `shot-${index}.png`,
-    });
-  }
-  for (let index = 0; index < 199; index += 1) {
-    await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
-  }
+  const {
+    events: log,
+    key,
+    newestUpload: upload,
+  } = await seedRunAcrossPage("Uploads across a page", 19);
   const newest = "shot-9.png";
-  const upload = await uploadEvent(issue.key, newest);
-  const events = (await allEvents(issue.key)).length;
+  const events = log.length;
 
   const context = await reader(browser, "alice");
   try {
@@ -1542,10 +1670,10 @@ test("loading older keeps the reader's place on an upload run the older page ext
     const dispatched = (control: Locator) => control.dispatchEvent("click");
 
     // By pointer: the reader is on the newest file of the run, and the older page lands.
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await gotoIssue(page, `/issues/${key}/activity`);
     await withoutScrollAnchoring(page);
     await newestHistoryEntry(page);
-    await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
+    await readHistoryDown(page, key, events, dispatched, "reads");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await expect(showMore).toBeVisible();
@@ -1555,6 +1683,10 @@ test("loading older keeps the reader's place on an upload run the older page ext
       firstPage > 0 && firstPage < 10,
       `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
     ).toBe(true);
+    await expect(
+      historyEntries(page).last(),
+      "the run is not the last entry drawn above Show more, so the row proves nothing"
+    ).toHaveAttribute("data-history-uploads", String(firstPage));
     await putFileAtCentre();
     const before = (await file.boundingBox())?.y;
     expect(before, `${newest} has no box`).toBeDefined();
@@ -1572,9 +1704,9 @@ test("loading older keeps the reader's place on an upload run the older page ext
       .toBe(before);
 
     // By keyboard: Show more pressed with the focus on it hands the focus to a control in view.
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await gotoIssue(page, `/issues/${key}/activity`);
     await newestHistoryEntry(page);
-    await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
+    await readHistoryDown(page, key, events, dispatched, "reads");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await putFileAtCentre();
@@ -1604,51 +1736,37 @@ test("loading older keeps the reader's place on an upload run the older page ext
 // next page hands the focus to a control the page it read added, never one out of the reader's
 // view, where a press of Enter would follow a link the reader cannot see. Here a message of the
 // daemon's stands between the run and Show more, so the older page's files of the run land above
-// that message and push every control below it down by their height: the first new control
-// below the message is the issue's creation line, out of view under Details' foot. Found by the
+// that message and push every control below it down by their height: the first entry the press
+// draws, the next message between the uploads, is pushed down under Details' foot. Found by the
 // tester on a running build of 864163bf with a copy of a large real issue: after the press by
 // keyboard the focus was on a turn's time link at 1,425 px, the view ending at 900, with 13 files
 // of a run (572 px) added above the entry between that run and the control; the next page's Retry
-// did the same. The run and the message are the last entries of the log's first page, so the
-// reader first draws every entry that page holds, by presses dispatched to Show more while it
-// says how many are left, which move neither the focus nor Details.
+// did the same. The run and the message stand at the foot of the log's first page
+// (`seedRunAcrossPage`), so the reader first draws that page's entries down to them, by presses
+// dispatched to Show more while it draws the next ones at once, which move neither the focus nor
+// Details.
 test("Show more by keyboard keeps the focus in view when the older page it reads extends a run above the entries under it", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A run above a message" });
-  const upload = (index: number) =>
-    uploadIssueFile(issue.key, {
-      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
-      contentType: "image/png",
-      name: `shot-${index}.png`,
-    });
-  // Eight uploads, a message of the daemon's, two more uploads within the minute: one run of ten
-  // whose newest upload sorts it above the message. The 197 messages after them leave the run's
-  // two newest uploads and the message at the foot of the log's first page.
-  for (let index = 0; index < 8; index += 1) await upload(index);
-  const between = await createMessage(issue.key, { body: "Between the uploads" }, asDaemon);
-  for (let index = 8; index < 10; index += 1) await upload(index);
-  for (let index = 0; index < 197; index += 1) {
-    await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
-  }
-  const newestUpload = await uploadEvent(issue.key, "shot-9.png");
-  const events = await allEvents(issue.key);
+  const { between, events, key, newestUpload } = await seedRunAcrossPage(
+    "A run above a message",
+    20
+  );
   const created = events.find((event) => event.type === "issue.created");
-  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  if (created === undefined) throw new Error(`${key} recorded no issue.created`);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await gotoIssue(page, `/issues/${key}/activity`);
     await newestHistoryEntry(page);
     await readHistoryDown(
       page,
-      issue.key,
+      key,
       events.length,
       (control) => control.dispatchEvent("click"),
-      "uncounted"
+      "reads"
     );
     const run = historyPanel(page).locator("[data-history-uploads]");
     await seededHistoryEntry(page, run, newestUpload.created_at);
@@ -1660,7 +1778,7 @@ test("Show more by keyboard keeps the focus in view when the older page it reads
     ).toBe(true);
     await seededHistoryEntry(page, historyItem(page, between.id), between.created_at);
     await expect(
-      historyPanel(page).getByText("Between the uploads"),
+      historyPanel(page).getByText("Between the uploads 19", { exact: true }),
       "the message between the uploads is not drawn on the first page"
     ).toHaveCount(1);
     const showMore = historyNextPage(page);

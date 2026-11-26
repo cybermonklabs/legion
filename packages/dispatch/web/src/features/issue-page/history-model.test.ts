@@ -13,6 +13,7 @@ import {
   type HistoryInput,
   historyBlocks,
   historyDownTo,
+  leftAfterNext,
   placeUnder,
   turnPlace,
 } from "./history-model";
@@ -695,7 +696,9 @@ function entriesIn(days: readonly HistoryDay[]): number {
 
 // The history draws its first 20 entries, and each press of its control the next 20, where a
 // thread with every turn of it is one entry, a run of uploads one entry, and the line that says
-// what is new none. The control says how many entries are left to draw.
+// what is new none. The control says how many entries are left to draw, and each draw counts by
+// the same entries how many the next 20 drawn would leave, which decides whether it reads an
+// older page first.
 test("the history is drawn 20 entries at a time, a thread and a run of uploads one entry each", () => {
   seq = 0;
   const thread = comment("post", "2026-11-15T12:00:30Z", AGENT);
@@ -718,6 +721,11 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
   ).toBe(true);
   expect(flat(first.days)[0]?.kind, "the thread is not the newest entry").toBe("thread");
   expect(first.left).toBe(23);
+  expect(leftAfterNext(days, undefined), "the first 20 drawn do not leave 23 entries").toBe(23);
+  expect(
+    leftAfterNext(days, placeUnder(days, undefined, PAGE_SIZE)),
+    "the 20 drawn under the first 20 do not leave 3 entries"
+  ).toBe(3);
 
   const second = historyDownTo(
     days,
@@ -725,6 +733,10 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
   );
   expect(entriesIn(second.days)).toBe(2 * PAGE_SIZE);
   expect(second.left).toBe(3);
+  expect(
+    leftAfterNext(days, placeUnder(days, undefined, 2 * PAGE_SIZE)),
+    "the next 20 drawn under 40 leave entries though only 3 stand there"
+  ).toBe(0);
 
   const end = placeUnder(days, placeUnder(days, undefined, 2 * PAGE_SIZE), PAGE_SIZE);
   const whole = historyDownTo(days, end);

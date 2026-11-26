@@ -402,6 +402,16 @@ export function placeUnder(
   return last === undefined ? from : placeOf(last);
 }
 
+/** How many entries of `days` are left under the next `HISTORY_PAGE` entries drawn under `from`,
+ *  or under its first `HISTORY_PAGE` where `from` is undefined (`placeUnder`): none where that
+ *  many or fewer stand there. */
+export function leftAfterNext(days: readonly HistoryDay[], from: HistoryPlace | undefined): number {
+  const under = datedIn(days).filter(
+    (entry) => from === undefined || comparePlaces(entry, from) < 0
+  ).length;
+  return Math.max(0, under - HISTORY_PAGE);
+}
+
 /** The place of the entry of the thread that holds the turn `id`, its root or a reply, where
  *  `days` holds that thread. */
 export function turnPlace(days: readonly HistoryDay[], id: string): HistoryPlace | undefined {
