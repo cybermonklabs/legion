@@ -3193,7 +3193,9 @@ function rowFor(stdout: string, askId: string): string {
   return row ?? "";
 }
 
-/** The three numbers the listing carries: its total, and the size of each of its two groups. */
+/** The three numbers the listing carries: its total, and the size of each of its two groups. The
+ *  total opens the header in both forms: `<n> unanswered asks you authored …` for the session's
+ *  own listing, and `<n> unanswered asks on the <PROJECT> project's …` for `--project`. */
 function printedCounts(stdout: string): { agent: number; human: number; total: number } {
   const number = (pattern: RegExp): number => {
     const found = pattern.exec(stdout);
@@ -3203,7 +3205,7 @@ function printedCounts(stdout: string): { agent: number; human: number; total: n
   return {
     agent: number(/^Waiting on agent \((\d+)\):$/m),
     human: number(/^Waiting on human \((\d+)\):$/m),
-    total: number(/^(\d+) unanswered asks? you authored/m),
+    total: number(/^(\d+) unanswered asks? (?:you authored|on the [A-Z][A-Z0-9]* project's)/m),
   };
 }
 
