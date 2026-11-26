@@ -1175,19 +1175,25 @@ const legionSlotsReading = z.object({
   line: nonEmptyString.optional(),
 });
 
-/** Who changed a setting of admission by signals (`store.PauseActor`, `setBy` of `store.SignalSet`
- * and of an entry of the record of changes): the controller, from its session, on a person's
- * word, or the operator. The pause's actor in shape; only its `kind` is required, since no plugin
- * code reads the rest. */
-const legionSignalSetter = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("controller"), session: nonEmptyString.optional() }),
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), who set the
+ * P0 bound while the daemon runs (the P0 start's contract entry), and who changed a setting of
+ * admission by signals (`setBy` of `store.SignalSet` and of an entry of its record of changes): the
+ * controller, with the session it acted from, or the operator, who acts from none. The daemon's
+ * store holds these two shapes and no other (`project_pauses_by_session` and
+ * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`,
+ * `project_p0_bound_changes_by_session` in `20261125181828_p0_bound`, `signal_settings_by_session`
+ * and `signal_changes_set` in `20261126072843_signal_settings`), so a controller's entry always
+ * names its session, and the reader requires it: the controller's `read_state` summary names the
+ * session of each controller it prints (LEGION_ANSWER_READS). */
+const legionPauseActor = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
   z.object({ kind: z.literal("operator") }),
 ]);
 
 /** `store.SignalSet` — a setting's last change: who made it, when, and the person's cited
  * reason. */
 const legionSignalSet = z.object({
-  setBy: legionSignalSetter.optional(),
+  setBy: legionPauseActor.optional(),
   at: timestamp.optional(),
   reason: nonEmptyString.optional(),
 });
@@ -1250,22 +1256,9 @@ const legionSignalChange = z.object({
   what: nonEmptyString.optional(),
   value: z.number().nullable().optional(),
   absent: nonEmptyString.nullable().optional(),
-  setBy: legionSignalSetter.nullable().optional(),
+  setBy: legionPauseActor.nullable().optional(),
   reason: nonEmptyString.nullable().optional(),
 });
-
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who set the
- * P0 bound while the daemon runs (the P0 start's contract entry): the controller, with the session it acted from,
- * or the operator, who acts from none. The daemon's store holds these two shapes and no other
- * (`project_pauses_by_session` and `project_pauses_ended_by_session` in its migration
- * `20261115194357_project_pause`, `project_p0_bound_changes_by_session` in
- * `20261125181828_p0_bound`), so a controller's entry always names its session, and the reader
- * requires it: the controller's `read_state` summary names the session of each controller it prints
- * (LEGION_ANSWER_READS). */
-const legionPauseActor = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
-  z.object({ kind: z.literal("operator") }),
-]);
 
 /** A P0 bound: how many P0 issues may hold an admission slot at once, a whole number from 1 to
  * 2147483647, the most the daemon's store holds: the daemon refuses a set of any other number
@@ -3085,6 +3078,19 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.p0Bound.live.setBy|0.session",
     "admission.p0Bound.live.setAt",
     "admission.p0Bound.live.reason",
+    // No plugin code reads admission by signals' actor: the summary prints no line of it. Its
+    // `setBy` is the pause's actor, and the census matches a read by the field's name under its
+    // parent, so the summary's reads of the P0 bound's `live.setBy.kind` and `live.setBy.session`
+    // are reads of these as well.
+    "admission.signals.switch.setBy|0.kind",
+    "admission.signals.switch.setBy|1.kind",
+    "admission.signals.switch.setBy|0.session",
+    "admission.signals.series[].limitSet.setBy|0.kind",
+    "admission.signals.series[].limitSet.setBy|1.kind",
+    "admission.signals.series[].limitSet.setBy|0.session",
+    "admission.signalChanges[].setBy|0.kind",
+    "admission.signalChanges[].setBy|1.kind",
+    "admission.signalChanges[].setBy|0.session",
     "capabilities",
     "capabilities[].name",
     "capabilities[].status",
@@ -3223,6 +3229,16 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "live.setBy|0.session",
     "live.setAt",
     "live.reason",
+  ],
+  // No plugin code reads the answer to a change of admission by signals either: the controller
+  // hands it to its agent whole. Its actor's fields are named for the reason the state's are.
+  LegionProjectSignalsResponse: [
+    "settings.switch.setBy|0.kind",
+    "settings.switch.setBy|1.kind",
+    "settings.switch.setBy|0.session",
+    "settings.limits[].set.setBy|0.kind",
+    "settings.limits[].set.setBy|1.kind",
+    "settings.limits[].set.setBy|0.session",
   ],
   LegionProjectResumeResponse: [
     "pause.by|0.kind",
