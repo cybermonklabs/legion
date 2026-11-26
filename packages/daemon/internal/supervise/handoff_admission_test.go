@@ -441,6 +441,58 @@ func TestATurnThatRanUnderTheCompactionIsChargedNothingWhileItsResultIsLate(t *t
 	h.wantPrompts(ladderSends + 1)
 }
 
+// A prompt's whole turn and result can reach the machine before the send's own acknowledgement
+// while a compaction keeps the claim working. promptResulted marks the send answered, so
+// fenceOutcome drops that late acknowledgement before acked and takeAck read it. The compaction's
+// end then retires the task: no task stays owed, the claim is idle, and no second prompt goes out.
+func TestAnAcknowledgementAfterItsPromptsResultUnderTheCompactionIsDropped(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	gated := newGatedConn()
+	h.conns.Register(testToken, gated)
+	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := waitFor(t, "the send", gated.entered)
+	release := gated.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for c := h.m.View().Claim; !c.Compacting || gated.CompactsHeld() == 0; c = h.m.View().Claim {
+		if time.Now().After(deadline) {
+			t.Fatal("the claim never reported itself being compacted with the compaction held at its connection")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for _, ev := range []Event{
+		StreamTurnStart{Claim: testToken},
+		StreamTurnEnd{Claim: testToken},
+		StreamPromptResult{Claim: testToken, DeliveryID: sent, AgentInvoked: true},
+	} {
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+
+	gated.release <- struct{}{}
+	h.m.Wait()
+	release()
+	if err := <-compacted; err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	h.m.Wait()
+
+	if owed := h.claim().Pending; owed != nil {
+		t.Fatalf("the claim still owes %+v after its prompt's turn and result, and the compaction's end", owed)
+	}
+	if got := h.state(); got != StateIdle {
+		t.Fatalf("the claim is %s, want it idle once the compaction and the turn are over", got)
+	}
+	if prompts := gated.Prompts(); len(prompts) != 1 {
+		t.Fatalf("the task was prompted %d times, %+v, want once", len(prompts), prompts)
+	}
+}
+
 // The send of a task is still adopting the working copy when the compaction is taken, and an
 // Envoy turn starts and ends while Oh My Pi writes the handoff. That turn is taken for the task's,
 // since the task's send is in flight (turnAnswers), so it confirms the task; but only the send's
