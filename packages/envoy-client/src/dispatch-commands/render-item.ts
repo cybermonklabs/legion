@@ -6,6 +6,7 @@ import type {
   Comment,
   CommentNodeAnchor,
   CommentRead,
+  CommentWithNodeAnchor,
   GraphEdge,
   GraphReferences,
   MessageRead,
@@ -16,7 +17,7 @@ import type {
 import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
 import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
-import type { DispatchClient, WithNodeAnchor } from "../dispatch-http";
+import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
@@ -286,7 +287,7 @@ export function commentSummary(
  *  post (`postBodyLines`): the deleted mark alone for a deleted comment. */
 export function commentsSummary(
   issueKey: string,
-  comments: readonly WithNodeAnchor<Comment>[]
+  comments: readonly CommentWithNodeAnchor[]
 ): string {
   return [
     `Comments: ${issueKey}`,
@@ -339,9 +340,10 @@ function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
  *  a lens, a finding, a risk, a constraint or a result has no document anchor to print, and a
  *  node whose state is `gone` was deleted since the comment was written. */
 function anchorLines(
-  record: Pick<Comment, "anchor" | "anchor_block" | "anchor_block_error"> & {
-    readonly node_anchor?: CommentNodeAnchor;
-  }
+  record: Pick<
+    CommentWithNodeAnchor,
+    "anchor" | "anchor_block" | "anchor_block_error" | "node_anchor"
+  >
 ): string[] {
   const node = record.node_anchor;
   return [

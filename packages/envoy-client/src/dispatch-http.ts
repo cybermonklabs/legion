@@ -22,8 +22,8 @@ import type {
   CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
-  CommentNodeAnchor,
   CommentRead,
+  CommentWithNodeAnchor,
   CommentWriteResponse,
   ConstraintInput,
   ConstraintRead,
@@ -619,11 +619,6 @@ export interface CommentReadOptions {
    *  and answers none. */
   readonly nodeAnchors?: boolean;
 }
-
-/** A comment as a read with `CommentReadOptions.nodeAnchors` answers it: with `node_anchor`
- *  (`CommentNodeAnchor` of the route table) where its anchor names a node or a block. `GET
- *  /api/v1/comments/{id}`'s answer (`CommentRead`) carries it on its comment already. */
-export type WithNodeAnchor<Read> = Read & { readonly node_anchor?: CommentNodeAnchor };
 
 /** The query of a comment read asked with `options`: `node_anchor=true` for node anchors, and
  *  none otherwise. */
@@ -2331,7 +2326,7 @@ export class DispatchClient {
   async getComments(
     issue: string,
     options: CommentReadOptions = {}
-  ): Promise<WithNodeAnchor<Comment>[]> {
+  ): Promise<CommentWithNodeAnchor[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],

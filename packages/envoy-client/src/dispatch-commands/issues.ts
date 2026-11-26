@@ -189,7 +189,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const assignee = optionalString(args, "assignee");
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
-  const labels = args.labels;
+  const labels = optionalStringArray(args, "labels");
   const blockedBy = optionalStringArray(args, "blocked_by");
   const duplicateOf = optionalString(args, "duplicate_of");
   const filedFrom = optionalString(args, "filed_from");
@@ -210,7 +210,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       ...(assignee === undefined ? {} : { assignee }),
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo }),
-      ...(Array.isArray(labels) ? { labels: labels as string[] } : {}),
+      ...(labels === undefined ? {} : { labels }),
       actor,
     });
     refuseUnsavedRepository(created.created ? "created" : "already holds", created, repo);
