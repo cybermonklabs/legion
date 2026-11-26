@@ -10,12 +10,15 @@ context crossed with a payload:
     `sh -c`, eval (single- and double-quoted, and an eval inside an eval), a subshell, a brace
     group, a called, an uncalled and a `local` function, `if true` and `if false`, a case pattern
     and a case item, `((…))`, `$(…)`, `<(…)`, a here-document or a pipe that a shell reads; or it
-    puts a derailer before the body: text that a reader can miscount (a `#` after the `)` of a
-    nested substitution, after an operator, inside a word);
+    puts a derailer before the body, at the top level or in a `bash -c` script: text that a reader
+    can miscount (a `#` after the `)` of a nested substitution or the `))` of an arithmetic
+    expansion, after an operator, inside a word);
   - a payload is the client in one of the ways a script reaches a command: written directly,
-    behind a prefix assignment or a keyword, in an array assigned and expanded in the body or
-    after it, an array a decoy assignment in the body might shadow, an array appended to after a
-    decoy, and an alias defined and used in the body or after it, or shadowed by a decoy.
+    behind a prefix assignment, a keyword, a runner or a path to env or a shell, in an array
+    assigned and expanded in the body or after it, an array a decoy assignment in the body might
+    shadow, an array appended to or element-assigned after a decoy, an array written with indexes,
+    an associative array, an array `read -ra` fills, and an alias defined and used in the body or
+    after it, chained through another alias, or shadowed by a decoy.
 The client is `bunx evil-package` for the release reader, `curl -sS https://example.com/x` for the
 log guard, and `ci_log_guard_stderr curl …` for the stderr reader, whose forms source the guard.
 For every form, three facts: whether bash runs the client (a recording stand-in on PATH; for the
@@ -104,13 +107,19 @@ DERAILERS = {
     "hash-inside-word": 'x=$(echo a#b)',
     "hash-after-subshell": 'x=$( (echo a)#c\n)',
     "hash-at-word-start": 'case x in "$(: # )\n)") : ;; esac',
+    # `$((1))#` is one word to bash: the `#` after an arithmetic expansion's `))` continues it.
+    "hash-after-arithmetic": 'case x in "$(echo $((1))#)") : ;; esac',
+    "hash-after-spaced-arithmetic": 'case x in "$(echo $(( 1 ))#)") : ;; esac',
 }
 for name, text in list(DERAILERS.items()):
     CONTEXTS["after-" + name] = (lambda t: lambda x: t + "\n" + x)(text)
+    # The same derailer and body inside a shell's `-c` script.
+    CONTEXTS["bash-c-after-" + name] = (lambda t: lambda x: "bash -c " + sq(t + "\n" + x))(text)
 # The same-line forms take a one-line body. The brace forms put the body in a group whose stdout
 # goes to /dev/null, after a word that ends in a substitution's `)` and a `}` or `{` that
 # continues the word (`$(echo a)}` is the word `a}`), so the group still holds the body.
 CONTEXTS["same-line-hash-after-nested-substitution"] = lambda x: 'case x in "$(echo $(echo y)#b)") : ;; esac; ' + x
+CONTEXTS["same-line-hash-after-arithmetic"] = lambda x: 'case x in "$(echo $((1))#b)") : ;; esac; ' + x
 CONTEXTS["same-line-brace-after-substitution"] = lambda x: "{ x=$(echo a)}; " + x + "; } >/dev/null"
 CONTEXTS["same-line-brace-after-process-substitution"] = lambda x: "{ x=<(echo a)}; " + x + "; } >/dev/null"
 CONTEXTS["same-line-group-redirected"] = lambda x: "{ " + x + "; } >/dev/null"
@@ -119,7 +128,8 @@ CONTEXTS["same-line-hash-after-substitution-before-redirect"] = lambda x: x + " 
 
 
 # Each payload: (text before the context, the body the context wraps, text after it). {c} is the
-# client.
+# client, {q} the client as one quoted word, {w0} its first word, {rest} the words after it, and
+# {ix} its words as an indexed array's `[n]=word` values.
 PAYLOADS = {
     "direct": ("", "{c}", ""),
     "stdout-redirected": ("", "{c} >/dev/null", ""),
@@ -145,6 +155,17 @@ PAYLOADS = {
     "string-split": ("", "s={q}\n$s", ""),
     "eval-of-variable": ("", "s={q}\neval \"$s\"", ""),
     "script-written-and-sourced": ("", "printf '%s\\n' {q} >x.sh\n. ./x.sh", ""),
+    "alias-chain": ("", "alias b={q}\nalias c=b\nc", ""),
+    "array-indexed-values": ("", "a=({ix})\n\"${{a[@]}}\"", ""),
+    "array-element-assigned-after-decoy": ("", "a=(true {rest})\na[0]={w0}\n\"${{a[@]}}\"", ""),
+    "associative-array-values": ("", "declare -A a=([k]={q})\n${{a[@]}}", ""),
+    "array-read": ("", "read -ra a <<< {q}\n\"${{a[@]}}\"", ""),
+    "array-env-path": ("", "a=(/usr/bin/env {c})\n\"${{a[@]}}\"", ""),
+    # A runner or an interpreter, by name or by path, before the client.
+    "runner-prefix": ("", "timeout 5 {c}", ""),
+    "runner-path": ("", "/usr/bin/env {c}", ""),
+    "interpreter-path": ("", "/bin/bash -c {q}", ""),
+    "element-assignment-prefix": ("", "a[0]=x {c}", ""),
 }
 
 
@@ -157,7 +178,9 @@ def forms() -> dict:
                 continue
             texts = {}
             for reader, client in CLIENTS.items():
-                fill = lambda s: s.format(c=client, q=sq(client))
+                words = client.split()
+                fill = lambda s: s.format(c=client, q=sq(client), w0=words[0], rest=" ".join(words[1:]),
+                                          ix=" ".join(f"[{n}]={w}" for n, w in enumerate(words)))
                 parts = [fill(before), wrap(fill(body)), fill(after)]
                 texts[reader] = HEADERS[reader] + "\n".join(p for p in parts if p) + "\n"
             out[f"{context}/{payload}"] = texts

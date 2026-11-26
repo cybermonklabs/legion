@@ -19,7 +19,14 @@
 eval-*/*	stderr	a ci_log_guard_stderr call in a string eval runs is text to this reader, which reads a call only where the step writes it
 trap-fires/*	stderr	a ci_log_guard_stderr call in a string a trap runs is text to this reader, which reads a call only where the step writes it
 */alias-*	stderr	an alias that expands to a ci_log_guard_stderr call is no call this reader reads
-*/array-used-after	stderr	an array whose values are a ci_log_guard_stderr call runs them where "${a[@]}" stands, which this reader does not follow
 */string-split	stderr	the call is a variable's value, split by the shell ($s), which no reader of the text knows
 */eval-of-variable	stderr	eval runs a variable's value (eval "$s"), which no reader of the text knows
 */script-written-and-sourced	stderr	the script runs a file it writes at run time (. ./x.sh), which is no file of the repository
+*/runner-prefix	release	a command behind a runner other than env, exec and time (timeout 5 bunx) is the runner's to this check, which accepts that pass-through (check-release-credentials.sh's header: xargs, nohup)
+*/associative-array-values	release	an associative array's value is one word holding the command and its arguments (declare -A a=([k]='bunx …')), which bash splits where ${a[@]} stands unquoted; the reader keeps each value one word
+*/associative-array-values	guard	an associative array's value is one word holding the command and its arguments (declare -A a=([k]='curl …')), which bash splits where ${a[@]} stands unquoted; the reader keeps each value one word
+*/associative-array-values	stderr	an associative array's value is one word holding the call, which this reader, reading a call only where the step writes it, does not read
+*/array-read	release	read -ra fills the array at run time from its input (here a here-string), which the reader does not read as the array's values
+*/array-read	guard	read -ra fills the array at run time from its input (here a here-string), which the reader does not read as the array's values
+*/array-read	stderr	read -ra fills the array at run time from its input, which this reader does not read as a call
+*/array-element-assigned-after-decoy	stderr	the call is assembled from an array's values and an element assignment (a[0]=ci_log_guard_stderr), which this reader, reading a call only where the step writes it, does not assemble

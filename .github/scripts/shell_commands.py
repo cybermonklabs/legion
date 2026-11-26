@@ -48,33 +48,41 @@ function a `()` defines (`curl() {`).
 
 A command word a shell builds rather than one written is read as what it will be only where the
 text itself says what: `"${name[@]}"` of an array the text assigns is each list of values an
-assignment gives it, wherever the assignment stands (a `+=` is a list of its own too); an alias
-the text defines is each text a definition gives it (whether or not expand_aliases is set); a
-`$'…'` word is decoded; env's `-S STRING` is STRING's words, and the `$@`, `$*` and `${name[@]}`
-words env is handed are arguments of env, and so are their slices (`"${@:2}"`, `"${a[@]:0}"`);
-`trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the command. Every
-assignment and definition is kept, whether or not bash would run it where it stands (a trap that
-never fires, `if false`, an uncalled function, a `bash -c` child), so none shadows another: this
-reads more, never less. Any other built word, a variable or a substitution in command position
-(`"$tool" build`, `$cmd`, `"$@"`), is read as that word, not as a command this reader can name.
+assignment gives it, wherever the assignment stands (a `+=` is a list of its own too, an element
+assignment `name[N]=value` gives each list with that element set, and a value written `[N]=value`
+is its value); an alias the text defines is each text a definition gives it (whether or not
+expand_aliases is set), and the first word of that text is read as an alias again, as bash does
+(`alias c=b`); a `$'…'` word is decoded; env's `-S STRING` is STRING's words, and the `$@`, `$*`
+and `${name[@]}` words env is handed are arguments of env, and so are their slices (`"${@:2}"`,
+`"${a[@]:0}"`); `trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the
+command. Every assignment and definition is kept, whether or not bash would run it where it stands
+(a trap that never fires, `if false`, an uncalled function, a `bash -c` child), so none shadows
+another: this reads more, never less. Any other built word, a variable or a substitution in
+command position (`"$tool" build`, `$cmd`, `"$@"`), is read as that word, not as a command this
+reader can name.
 .github/scripts/shell_reader_forms.py runs generated forms under bash and holds this reader to
 them, and .github/shell-reader-misses.tsv lists the forms it knows it misses.
 
-Each command sheds its leading `VAR=value` assignments and the keywords that precede a command (if,
-then, for, do, `{`, `}`, …), env, exec and time with their options, and the wrappers that run the
-words after them (`ci_log_guard` and `ci_log_guard_stderr`, .github/scripts/ci-log-guard.sh's),
-and the first word left is the command; an interpreter there (one of INTERPRETERS: bash, sh, dash,
-zsh, source, `.`) is looked through, past its flags and the option name an `-o`, `+o`, `-O` or `+O`
-takes, to the word after it (`bash -o pipefail scripts/x.sh` runs `scripts/x.sh`), and the script
-string behind its `-c`, like the words behind `eval`, is scanned the same way (`sh -c 'bun
-install'`, `eval "bun install"` and `eval bun install` run `bun`).
+Each command sheds its leading `VAR=value` and `name[N]=value` assignments and the keywords that
+precede a command (if, then, for, do, `{`, `}`, …), env, exec and time with their options, by name
+or by path (`/usr/bin/env`), and the wrappers that run the words after them (`ci_log_guard` and
+`ci_log_guard_stderr`, .github/scripts/ci-log-guard.sh's), and the first word left is the command;
+an interpreter there, by name or by path (one of INTERPRETERS: bash, sh, dash, zsh, source, `.`),
+is looked through, past its flags and the option name an `-o`, `+o`, `-O` or `+O` takes, to the
+word after it (`bash -o pipefail scripts/x.sh` runs `scripts/x.sh`), and the script string behind
+its `-c`, like the words behind `eval`, is scanned the same way (`sh -c 'bun install'`, `eval "bun
+install"` and `eval bun install` run `bun`).
 """
 
 import itertools
 import re
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
-ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
+# An element assignment of an indexed array: `name[N]=value`.
+ELEMENT_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+)\]=(.*)", re.S)
+# The `[N]=` or `[key]=` before a value of an array written with its index (`a=([0]=cmd)`).
+INDEXED_VALUE = re.compile(r"^\[[^]]*\]=")
 SKIP_WORDS = {
     "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "in",
     "time", "exec", "env", "!", "{", "}", "case", "esac",
@@ -188,6 +196,18 @@ class Scanner:
                     name, _, value = definition.partition("=")
                     if _ and name and value not in self.aliases.setdefault(name, []):
                         self.aliases[name].append(value)
+            if self.collecting:
+                # `a[0]=cmd`: each list an assignment gave the array, with that element set, is a list
+                # of its own; the earlier lists stay, as the assignment may be one bash never runs.
+                for word in self.words[:at]:
+                    element = ELEMENT_ASSIGNMENT.fullmatch(word)
+                    if element:
+                        name, index, value = element.group(1), int(element.group(2)), element.group(3)
+                        lists = self.arrays.setdefault(name, [])
+                        for values in list(lists) or [[]]:
+                            changed = values[:index] + [value] + values[index + 1:]
+                            if changed not in lists:
+                                lists.append(changed)
             for words in self.expand(self.words):
                 self.line_words.append(list(words))
                 self.line_pipes.append(self.pipe_in)
@@ -209,14 +229,17 @@ class Scanner:
             ref = ARRAY_REFERENCE.fullmatch(word)
             options.append(self.arrays[ref.group(1)] if ref and self.arrays.get(ref.group(1)) else [[word]])
         expanded = [[w for part in choice for w in part] for choice in itertools.product(*options)]
-        out = []
-        for words in expanded:
-            at = next((i for i, word in enumerate(words) if not ASSIGNMENT.match(word)), len(words))
-            if at < len(words) and words[at] in self.aliases:
-                out += [words[:at] + value.split() + words[at + 1:] for value in self.aliases[words[at]]]
-            else:
-                out.append(words)
-        return out
+        return [out for words in expanded for out in self.unalias(words, frozenset())]
+
+    def unalias(self, words: list[str], seen: frozenset) -> list[list[str]]:
+        """The words with the alias at command position, past the assignments before it, read as
+        each text a definition gives it, and the first word of that text read as an alias again,
+        but not one already being read (`alias c=b` runs b's text; `alias ls='ls -l'` stops)."""
+        at = next((i for i, word in enumerate(words) if not ASSIGNMENT.match(word)), len(words))
+        if at >= len(words) or words[at] not in self.aliases or words[at] in seen:
+            return [words]
+        return [out for value in self.aliases[words[at]]
+                for out in self.unalias(words[:at] + value.split() + words[at + 1:], seen | {words[at]})]
 
     def record(self, words: list[str]) -> None:
         """Notes the command an ended simple command's words run (command_of), a string it hands a
@@ -242,6 +265,8 @@ class Scanner:
         """Ends an array's values, which are words of no command, noting them as the array's when
         collecting, and reads on in the assignment the array's `(` interrupted."""
         self.end_word()
+        # `a=([0]=cmd [1]=arg)`: each value is the text after its `[N]=`.
+        self.words = [INDEXED_VALUE.sub("", word, count=1) for word in self.words]
         assigned = ARRAY_TARGET.fullmatch(saved[1])
         if self.collecting and assigned:
             name, append = assigned.group(1), assigned.group(2)
@@ -647,8 +672,9 @@ def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
     depth = 0
     # Whether the next character starts a word: after the `(` itself, a blank, a newline or an
     # operator (`;`, `&`, `|`, `<`, `>`, and a `(` or `)` that opens or closes a subshell). A
-    # quoted string, a backslash and a substitution `$(…)`, `<(…)` or `>(…)` are parts of a word,
-    # so a `#` just after one of those continues the word (`$(echo y)#`), as bash reads it.
+    # quoted string, a backslash, a substitution `$(…)`, `<(…)` or `>(…)` and an arithmetic
+    # expansion `$((…))` are parts of a word, so a `#` just after one of those continues the word
+    # (`$(echo y)#`, `$((1))#`), as bash reads it.
     word_start = True
     while i < len(text):
         char = text[i]
@@ -665,8 +691,10 @@ def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
             i = double_quote_end(text, i)
             word_start = False
             continue
-        if char in "$<>" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
-            i = arithmetic_end(text, i + 1, commands=True)
+        if char in "$<>" and text[i + 1:i + 2] == "(":
+            # An arithmetic expansion holds no commands, so no `#` in it starts a comment.
+            arithmetic = char == "$" and text[i + 2:i + 3] == "(" and is_arithmetic(text, i + 1)
+            i = arithmetic_end(text, i + 1, commands=not arithmetic)
             word_start = False
             continue
         if commands and char == "#" and word_start:
@@ -907,12 +935,12 @@ NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 def shed_prefix(words: list[str], keywords: frozenset | set = frozenset(), runners: tuple = ("env", "exec", "time")) -> None:
     """Takes off `words`, in place, what stands before the command: `VAR=value` assignments, the
-    words of `keywords` (SKIP_WORDS when none are given), each of `runners` with its options
-    (strip_runner), `function NAME` (a body on its line follows), and coproc with the NAME a
+    words of `keywords` (SKIP_WORDS when none are given), each of `runners` with its options, by
+    name or by path (strip_runner), `function NAME` (a body on its line follows), and coproc with the NAME a
     compound command after it takes."""
     keywords = keywords or SKIP_WORDS
     while words:
-        if words[0] in runners:
+        if words[0].rsplit("/", 1)[-1] in runners:
             strip_runner(words)
         elif ASSIGNMENT.match(words[0]) or words[0] in keywords:
             words.pop(0)
@@ -948,7 +976,7 @@ def command_of(words: list[str], within: "Scanner | None" = None) -> list[list[s
         return commands_of(rest[0], within=within) if rest and not rest[0].startswith("-") else []
     if words[0] == "eval":
         return commands_of(" ".join(words[1:]), within=within)
-    if words[0] not in INTERPRETERS:
+    if words[0].rsplit("/", 1)[-1] not in INTERPRETERS:
         return [words]
     words.pop(0)
     while words and words[0].startswith(("-", "+")):

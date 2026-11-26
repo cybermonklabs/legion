@@ -381,13 +381,19 @@ def stdout_safe(line: str, start: int, frames: list) -> bool:
     return end > 0 and stdout_safe(line, end, frames[:frames.index(group)])
 
 
+# The assignment word just before an array's `(`: `a=`, `a+=`, `a[1]=`, at a word's start.
+ARRAY_VALUES_OPEN = re.compile(r"(?:^|[\s;&|(])[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=$")
+
+
 def loose_stderr_guards(run: str) -> list:
     """Each ci_log_guard_stderr call whose stdout is neither captured nor kept out of the log:
     that command's stdout reaches the log outside the block. Read by the line, a
     backslash-continued line joined to the next first, each line from the quote it starts inside
     (a string a line before opened), and each call by its own command alone. A call inside a quoted
     string is text: a harness's expected output, or a script string that `sh -c` or eval runs,
-    whose client the finding rule reads as not routed."""
+    whose client the finding rule reads as not routed. A call among an array's values
+    (`a=(ci_log_guard_stderr curl …)`) is loose wherever it stands: it runs where `"${a[@]}"`
+    stands, which this reader does not follow."""
     loose = []
     text = EXPRESSION.sub("EXPR", run).replace("\\\n", " ")
     starts = quoted_line_starts(text)
@@ -402,6 +408,9 @@ def loose_stderr_guards(run: str) -> list:
                 continue
             frames = [(kind, pos) for kind, pos, _ in stack]
             if any(kind in ("capture", "`") for kind, _ in frames):
+                continue
+            if any(kind == "subshell" and ARRAY_VALUES_OPEN.search(read[:pos]) for kind, pos in frames):
+                loose.append(line.strip(" \t"))
                 continue
             if not stdout_safe(read, call.end(), frames):
                 loose.append(line.strip(" \t"))
