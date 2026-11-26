@@ -35,12 +35,14 @@ function Probe(): ReactNode {
   );
 }
 
-/** Draws the probe under the rule, in a router whose one entry is `path`. */
-function drawAt(path: string): RenderResult {
+/** Draws the probe under the rule, with `words` beside it, in a router whose entries are
+ *  `before` and then `path`, at `path`. */
+function drawAt(path: string, words?: ReactNode, before: readonly string[] = []): RenderResult {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={[...before, path]}>
       <KeepNewIssuePage>
         <Probe />
+        {words}
       </KeepNewIssuePage>
     </MemoryRouter>
   );
@@ -198,3 +200,181 @@ test("a link to the address the reader is at adds no history entry, nor does a p
     view.unmount();
   }
 });
+
+/** The address the cases below open the new page at. */
+const OPENED = "/issues/CORE-1?issue_page=new";
+
+/**
+ * Dispatches a click of `init` (a plain one by default) on the link named `name`, and answers
+ * whether it was left to the browser: whether no handler, the rule's among them, prevented it. A
+ * listener added after the rule's then prevents it, since the unit suite's document loads no
+ * page.
+ */
+function press(name: string, init: MouseEventInit = {}): boolean {
+  const link = screen.getByRole("link", { name });
+  let left = false;
+  const stop = (event: Event) => {
+    left = !event.defaultPrevented;
+    event.preventDefault();
+  };
+  document.addEventListener("click", stop);
+  try {
+    act(() => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+    });
+  } finally {
+    document.removeEventListener("click", stop);
+  }
+  return left;
+}
+
+// A rendered body's link is a plain `<a href>` the router never drew: its `href` lacks the
+// parameter, and the browser would load the issue's address without it, where a reader whose
+// setting is off gets today's page. A plain click on one to another of the issue's addresses is
+// followed in place with the parameter added, and Back finds the address the click was made at.
+test("a plain click on a rendered link to another of the issue's addresses is followed in place with the parameter, and Back finds the address it was made at", () => {
+  const view = drawAt(OPENED, <a href={ACTIVITY}>Words</a>);
+  try {
+    expect(press("Words"), "the click was left to load the page").toBe(false);
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+    act(() => held.navigate?.(-1));
+    expect(address()).toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a plain click on a rendered link to the address the reader is at adds no history entry", () => {
+  const view = drawAt(OPENED, <a href="/issues/CORE-1">Words</a>, ["/inbox"]);
+  try {
+    expect(press("Words"), "the click was left to load the page").toBe(false);
+    expect(address()).toBe(OPENED);
+    act(() => held.navigate?.(-1));
+    expect(address(), "the click added a history entry, and Back stayed where it was made").toBe(
+      "/inbox"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a plain click on a rendered link to a thread keeps its parameters and hash and adds the parameter after them", () => {
+  const view = drawAt(OPENED, <a href="/issues/CORE-1/comments/abc?mark=x#b-1">Words</a>);
+  try {
+    expect(press("Words"), "the click was left to load the page").toBe(false);
+    expect(address()).toBe("/issues/CORE-1/comments/abc?mark=x&issue_page=new#b-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The clicks on a rendered link the rule leaves to the browser at `OPENED`: each by what it is,
+ *  with the link's target (the activity's by default), its own attributes and the click's keys
+ *  and button. */
+const LEFT_TO_THE_BROWSER: readonly {
+  readonly click?: MouseEventInit;
+  readonly href?: string;
+  readonly link?: { readonly download?: string; readonly target?: string };
+  readonly what: string;
+}[] = [
+  { click: { ctrlKey: true }, what: "a click with Control held" },
+  { click: { metaKey: true }, what: "a click with Command held" },
+  { click: { shiftKey: true }, what: "a click with Shift held" },
+  { click: { altKey: true }, what: "a click with Alt held" },
+  { click: { button: 1 }, what: "a click of the middle button" },
+  { link: { target: "_blank" }, what: "a link to another window" },
+  { link: { download: "" }, what: "a link to a download" },
+  { href: "http://elsewhere.test/issues/CORE-1/activity", what: "a link to another origin" },
+  { href: "/issues/CORE-2", what: "a link to another issue" },
+  { href: "/issues/CORE-1/activity?issue_page=old", what: "a link that names issue_page itself" },
+];
+
+for (const { click, href = ACTIVITY, link, what } of LEFT_TO_THE_BROWSER) {
+  test(`${what} is left to the browser, and the router stays where it is`, () => {
+    const view = drawAt(
+      OPENED,
+      <a href={href} {...link}>
+        Words
+      </a>
+    );
+    try {
+      expect(press("Words", click), `${what} was followed in place`).toBe(true);
+      expect(address()).toBe(OPENED);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+/** A rendered link whose own handler takes a plain click, as a row's words take theirs: it moves
+ *  to the issue's collaborators itself, wherever its `href` points. */
+function TakenLink(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <a
+      href={ACTIVITY}
+      onClick={(event) => {
+        event.preventDefault();
+        navigate("/issues/CORE-1/collaborators");
+      }}
+    >
+      Taken
+    </a>
+  );
+}
+
+// A click a handler of the page took is prevented before it reaches the document, and the rule
+// leaves it to that handler: the router moves once, where the handler moved it.
+test("a click a link's own handler already took moves the router once, where that handler moved it", () => {
+  const view = drawAt(OPENED, <TakenLink />);
+  try {
+    expect(press("Taken"), "the link's own handler left the click to load the page").toBe(false);
+    expect(address(), "the rule moved the router after the link's own handler").toBe(
+      "/issues/CORE-1/collaborators?issue_page=new"
+    );
+    act(() => held.navigate?.(-1));
+    expect(address(), "the click moved the router twice").toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a click the router's Link already took moves the router once, where the Link moved it", () => {
+  const view = drawAt(OPENED);
+  try {
+    expect(press("Activity"), "the router's Link left the click to load the page").toBe(false);
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+    act(() => held.navigate?.(-1));
+    expect(address(), "the click moved the router twice").toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
+for (const from of UNOPENED) {
+  test(`from ${from}, a plain click on a rendered link to the issue is left to the browser`, () => {
+    const view = drawAt(from, <a href={ACTIVITY}>Words</a>);
+    try {
+      expect(press("Words"), "the click was followed in place").toBe(true);
+      expect(address()).toBe(from);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+for (const away of ["/issues/CORE-2", "/inbox"]) {
+  test(`once the reader moves to ${away}, a plain click on a rendered link to the first issue is left to the browser`, () => {
+    const view = drawAt(OPENED, <a href={ACTIVITY}>Words</a>);
+    try {
+      move(away);
+      expect(address()).toBe(away);
+      expect(press("Words"), "the rule still followed the issue's links once the reader left").toBe(
+        true
+      );
+      expect(address()).toBe(away);
+    } finally {
+      view.unmount();
+    }
+  });
+}

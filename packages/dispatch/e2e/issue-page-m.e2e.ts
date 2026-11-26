@@ -58,6 +58,8 @@ import {
   requestApproval,
   resolveAsk,
   resolveComment,
+  reviewArtifact,
+  setGatedSteps,
   syncArchitectureSource,
   uploadIssueFile,
   withOpenedAsk,
@@ -6348,6 +6350,26 @@ async function openReferencedBy(page: Page): Promise<{ control: Locator; panel: 
   return { control, panel: page.locator(`[id="${await control.getAttribute("aria-controls")}"]`) };
 }
 
+/** An issue a comment of another issue cites, as bob, so Details' Referenced by draws that
+ *  comment's excerpt whole through the renderer, with a link to the issue in it; the issue's key.
+ *  The project is `CORE`. */
+async function seedCitedIssue(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Cited by another issue" });
+  const other = await createIssue({ project: "CORE", title: "Citing issue" });
+  await createComment(
+    other.key,
+    { body: `This comment cites dispatch://${issue.key} in its excerpt.` },
+    { login: "bob" }
+  );
+  return issue.key;
+}
+
+/** The link to the issue `key` in an excerpt Details' Referenced by draws, in `panel`. */
+function excerptLinkTo(panel: Locator, key: string): Locator {
+  return panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${key}"]`);
+}
+
 // A comment of another issue cites the issue, so Details' Referenced by draws its whole excerpt
 // through the renderer. The excerpt's wrapper carries `data-node-words`, so the link the renderer
 // draws for that reference takes the words' own ink rather than the old application's link blue.
@@ -6358,25 +6380,12 @@ test("a reference in an excerpt of Details' Referenced by is drawn in the words'
 }) => {
   await phase(
     browser,
-    async () => {
-      await createProject({ key: "CORE", name: "Core" });
-      const issue = await createIssue({ project: "CORE", title: "Cited by another issue" });
-      const other = await createIssue({ project: "CORE", title: "Citing issue" });
-      await createComment(
-        other.key,
-        { body: `This comment cites dispatch://${issue.key} in its excerpt.` },
-        { login: "bob" }
-      );
-      return { key: issue.key };
-    },
+    async () => ({ key: await seedCitedIssue() }),
     async (page, seeded) => {
       await gotoIssue(page, `/issues/${seeded.key}`);
       await openDetails(page);
       const { panel } = await openReferencedBy(page);
-      await expectLinkInWordsInk(
-        panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${seeded.key}"]`),
-        "Referenced by"
-      );
+      await expectLinkInWordsInk(excerptLinkTo(panel, seeded.key), "Referenced by");
     }
   );
 });
@@ -6418,6 +6427,82 @@ test("a reference in a question the history quotes is drawn in the words' ink, n
       await expectLinkInWordsInk(
         pinsList(page).locator(`.dispatch-markdown a[href="/issues/${seeded.cited}"]`),
         "Pinned"
+      );
+    }
+  );
+});
+
+// The issue touches no component, for a reason that cites another issue: Details' Components row
+// draws that reason through the renderer (`IssueComponentsLine`), inside the words' mark, so the
+// link the renderer draws for the reference takes the words' own ink rather than the old
+// application's link blue.
+// SLOW(>=2s): two issues written and one of them patched, a sign-in, and one load of the issue
+// with Details opened.
+test("a reference in the reason for no components in Details is drawn in the words' ink, not the old application's blue", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const cited = await createIssue({ project: "CORE", title: "The staffing plan" });
+      const issue = await createIssue({ project: "CORE", title: "Hire someone" });
+      await patchIssue(issue.key, {
+        components: { mode: "none", reason: `See dispatch://${cited.key}` },
+      });
+      return { cited: cited.key, key: issue.key };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openDetails(page);
+      await expectLinkInWordsInk(
+        detailsRow(page, PROPERTY_LABELS.components).locator(
+          `[data-testid="issue-components"] .dispatch-markdown a[href="/issues/${seeded.cited}"]`
+        ),
+        "the reason for no components"
+      );
+    }
+  );
+});
+
+// bob sends the spec of a root issue under the design gate back, for a reason that cites another
+// issue: Details' Approval row draws that reason under the spec's step through the renderer
+// (`ApprovalSteps`), inside the words' mark, so the link the renderer draws for the reference
+// takes the words' own ink rather than the old application's link blue.
+// SLOW(>=2s): two issues, the project's gated steps and a review written, a sign-in, and one load
+// of the issue with Details opened.
+test("a reference in a reviewer's reason for changes requested in Details is drawn in the words' ink, not the old application's blue", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      await setGatedSteps("CORE", ["spec"]);
+      const cited = await createIssue({ project: "CORE", title: "The rollback plan" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: "The plan.",
+        title: "A spec sent back",
+      });
+      await reviewArtifact(
+        issue.primary_artifact_id,
+        {
+          reason: `Name the rollback path: see dispatch://${cited.key}`,
+          state: "changes_requested",
+        },
+        { login: "bob" }
+      );
+      return { cited: cited.key, key: issue.key };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openDetails(page);
+      await expectLinkInWordsInk(
+        detailsRow(page, PROPERTY_LABELS.approval).locator(
+          `[data-approval-step-reason="spec"] .dispatch-markdown a[href="/issues/${seeded.cited}"]`
+        ),
+        "a reviewer's reason"
       );
     }
   );
@@ -6490,6 +6575,59 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
       await page.evaluate(() => window.localStorage.getItem("dispatch.issue.page:alice")),
       "the address stored a choice"
     ).toBeNull();
+  } finally {
+    await alice.close();
+  }
+});
+
+// What the row below keeps on the page's window.
+declare global {
+  interface Window {
+    /** Set by the row before its press; a load of a document drops it, a move of the router
+     *  keeps it. */
+    __stayed?: true;
+  }
+}
+
+// alice has never turned the new page on, and opens the issue's address with `?issue_page=new`.
+// Details' Referenced by draws a comment's excerpt through the renderer, whose link to the issue
+// itself is a plain `<a href>` the router never drew, to the address without the parameter. A
+// press on it is followed in place by the router, which keeps the parameter: no document is
+// loaded, and the new page stays where a load of that address would draw today's page.
+// SLOW(>=2s): two issues and a citing comment written, a sign-in, one load of the issue with
+// Referenced by opened, and a press on its link.
+test("a link in Details' Referenced by to the issue itself, pressed at ?issue_page=new with the setting off, keeps the new page and loads no document", async ({
+  browser,
+}) => {
+  const key = await seedCitedIssue();
+  const opened = `/issues/${key}?issue_page=new`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, opened);
+    await openDetails(page);
+    const { panel } = await openReferencedBy(page);
+    const link = excerptLinkTo(panel, key);
+    await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
+    await page.evaluate(() => {
+      window.__stayed = true;
+    });
+    await link.click();
+    await expect(page, "the press loaded the issue's address without the parameter").toHaveURL(
+      opened
+    );
+    await expectIssuePageDrawn(page);
+    // A press that starts a load returns once that load has committed (Playwright's click waits
+    // for the navigation it began), so this read is of the document the press left the reader in.
+    expect(
+      await page.evaluate(() => window.__stayed === true),
+      "the press loaded the document again"
+    ).toBe(true);
+    await expect(
+      page.getByRole("tab", { exact: true, name: "Spec" }),
+      "the press drew today's page"
+    ).toHaveCount(0);
   } finally {
     await alice.close();
   }

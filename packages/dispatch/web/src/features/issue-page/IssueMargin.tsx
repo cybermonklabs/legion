@@ -798,9 +798,15 @@ export function IssueMarginPanel({
           ) : null}
         </Row>
         {/* The issue's components, then its retired ones, as one list, 20 at a time: each chip
-            carries the line's mark (`COMPONENT_CHIP`), in the list's order. */}
+            carries the line's mark (`COMPONENT_CHIP`), in the list's order. The reason for no
+            components is drawn by the renderer, so the line stands in the words' mark
+            (`data-node-words`), by which a link in that reason takes the words' own ink rather
+            than the application's link blue (`styles.css`); the mark's box draws nothing
+            (`contents`), so the line is the row's own item as it was. */}
         <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components} valueRef={componentPages.list}>
-          <IssueComponentsLine inRow issue={issue} limit={componentPages.drawn} />
+          <div className="contents" data-node-words="">
+            <IssueComponentsLine inRow issue={issue} limit={componentPages.drawn} />
+          </div>
           {componentPages.more(
             componentChips,
             (index) => componentPages.list.current?.querySelectorAll(COMPONENT_CHIP)[index]
@@ -855,17 +861,23 @@ export function IssueMarginPanel({
         sections={sections}
       >
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
-            wherever no approval request waits on the reader. */}
+            wherever no approval request waits on the reader. A reason is drawn by the renderer,
+            so the steps stand in the words' mark (`data-node-words`), by which a link in a
+            reason takes the words' own ink rather than the application's link blue
+            (`styles.css`); the mark's box draws nothing (`contents`), so the steps are the row's
+            own item as they were. */}
         <Row glyph={LINED_SQUARE} label={PROPERTY_LABELS.approval}>
-          <ApprovalSteps
-            actions={!approvalWaits}
-            entries={approvalEntries}
-            primaryArtifactId={issue.primary_artifact_id}
-            reasons
-            size="compact"
-            testId="issue-details-approval-steps"
-            versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
-          />
+          <div className="contents" data-node-words="">
+            <ApprovalSteps
+              actions={!approvalWaits}
+              entries={approvalEntries}
+              primaryArtifactId={issue.primary_artifact_id}
+              reasons
+              size="compact"
+              testId="issue-details-approval-steps"
+              versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
+            />
+          </div>
         </Row>
         <Row valueRef={referencesValue} wide>
           {/* Details' own control of the list, with the name, the role and the states of the
