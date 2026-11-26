@@ -149,6 +149,12 @@ jobs:
       - name: Isolation test for store-live-check.sh (a stub go; no live store and no network)
         run: ../../.github/scripts/harness-pool.sh start scripts/store-live-check.test.sh bash scripts/store-live-check.test.sh
         working-directory: packages/envoy
+      - name: Count test for backend-count.sh (a stub go; no Go test runs)
+        run: ../../.github/scripts/harness-pool.sh start scripts/backend-count.test.sh bash scripts/backend-count.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for store-forms-check.sh (stand-ins for dev-broker.sh and agent-secrets; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/store-forms-check.test.sh bash scripts/store-forms-check.test.sh
+        working-directory: packages/envoy
       - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
         run: ../../.github/scripts/harness-pool.sh start deploy/scripts/up-dispatch_test.sh bash deploy/scripts/up-dispatch_test.sh
         working-directory: packages/envoy
