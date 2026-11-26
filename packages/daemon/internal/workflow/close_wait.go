@@ -624,7 +624,8 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 // tellAtOnce tells the owning architect at once of each item of stored that old did not hold in
 // that state: a check Dispatch computes as failed, naming its deciding result and its commit; a
 // check unknown for a pass and a fail at one commit; and checks changed since the approved version,
-// which a person must approve.
+// which a person must approve. Under `production_check: off` it also tells, at the first read that
+// counts after the entry, each check with no pass, which an eligible agent must run (D5).
 func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, old, stored record.StoredWait, wait record.CloseWait) error {
 	stood := func(check record.WaitCheck) bool {
 		for _, was := range old.Checks {
@@ -649,6 +650,17 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 				Reason: fmt.Sprintf("Check %s of %s has a pass and a fail at one commit. Dispatch counts no pass of it, and no later pass at that commit ends it.", check.ID, issue.Key)}); err != nil {
 				return err
 			}
+		}
+	}
+	if e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
+		var ids []string
+		for _, check := range stored.Checks {
+			ids = append(ids, fmt.Sprintf("%s (%s)", check.ID, strings.Trim(check.Answer+", "+check.Reason, ", ")))
+		}
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
+			"No role of this project runs a check after the merge of %s. These checks have no pass:%s\nHave an eligible agent run each check and record its result.",
+			issue.Key, listed(ids))}); err != nil {
+			return err
 		}
 	}
 	if stored.Unapproved != nil && (old.Unapproved == nil || !slices.Equal(old.Unapproved.Checks, stored.Unapproved.Checks)) {
