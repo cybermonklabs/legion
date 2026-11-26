@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
 import {
@@ -21,6 +22,7 @@ import {
   secondaryButtonGroupHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
+import { useDetailsRefusal } from "../issue/HeaderDetails";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PriorityChip } from "./PriorityChip";
@@ -58,6 +60,13 @@ export function priorityTriggerName(issueKey: string, adds: boolean): string {
   return adds ? addPriorityControlName(issueKey) : "Edit priorities";
 }
 
+/** On a phone, the picker's trigger moves 12 px back over the line's gap and starts its square
+ *  8 px in, where it follows the chips' group (`CappedGroup`, `data-layout-group="advances"`) and
+ *  that group's last entry is a chip (`PriorityChip`'s link). The chips sit inside the group's
+ *  element, so a selector on the trigger's own previous sibling would never see a chip. */
+export const PRIORITY_TRIGGER_AFTER_CHIP =
+  "max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:-ml-3 max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:justify-start max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:pl-2";
+
 /** The issue's own set while the picker is open, and the read it was drawn from: the set the
  *  close compares it with, and the revision the close's write carries. */
 interface Draft {
@@ -67,17 +76,18 @@ interface Draft {
 }
 
 /**
- * The item after the P0-P3 tag in the issue header's state row from 768 px up, and below it the
- * first item of the header's details row, where the state row has no room left (INFRA-2947, R16
- * and R3): each
- * priority this issue advances, as the chip of its place in the one order (`PriorityChip`, `#1`)
- * that links to that priority's own page, its title in its name and its tooltip, and the shared
- * `MultiSelect` that adds and removes the issue's own, as the labels and components are edited.
- * Like those it stages a draft while open and saves the final draft once, when it closes. The
- * chips are the line's only words, so it takes no more of the row than a few tags do, whatever
- * the titles: no `Advances` stands before them, and the group they make carries that word as its
- * name for a screen reader alone. That row wraps, and so does the line: a refusal's reason takes
- * a line of its own under the chips rather than push the row past the header's edge.
+ * The value of the Advances row of today's issue header's Details (INFRA-2947, R16 and R3;
+ * dispatch://INFRA-5200): each priority this issue advances, as the chip of its place in the one
+ * order (`PriorityChip`, `#1`) that links to that priority's own page, its title in its name and
+ * its tooltip, and the shared `MultiSelect` that adds and removes the issue's own, as the labels
+ * and components are edited. Like those it stages a draft while open and saves the final draft
+ * once, when it closes. Its groups, in this order: the chips, at most ten and then a "+N" that
+ * shows the rest (`CappedGroup`; an issue advances up to `MAX_ISSUE_ADVANCES`); the picker's
+ * trigger; then the line that says a failed read or a refused save, under the chips rather than
+ * past the row's edge. Details' row names the line, so no `Advances` stands before the chips;
+ * the group they make carries that word as its name for a screen reader. Advances is one of the
+ * properties Details holds, and the header's State group holds the issue's own status and
+ * priority, not the priorities it advances, so the line stands there and not in the state row.
  *
  * An issue that advances none carries no chip and no empty label — only the picker's trigger,
  * which places it under a priority, and which is how a person acts on a row of the page's first
@@ -105,14 +115,10 @@ interface Draft {
  * advances none, which is then named by `addPriorityControlName`.
  */
 export function IssuePriorityLine({
-  className,
   disabled,
   inRow = false,
   issue,
 }: {
-  /** How the row the line stands in places it, outside `NoTooltips`: the issue header's details
-   *  row, which scrolls sideways on a phone, keeps it whole (`shrink-0`). */
-  className?: string;
   disabled: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
@@ -225,6 +231,9 @@ export function IssuePriorityLine({
       })
     : apiErrorMessage(write.error, notSaved);
   const failureIsPageWords = stopped || saveFailure === notSaved;
+  // A refused save stands under the header while Details is closed, named by its row; a stopped
+  // write is no refusal.
+  useDetailsRefusal(write.error !== null && !stopped ? saveFailure : null);
   // In a row of Details, with no priority to stand beside, the trigger says what it does, as the
   // labels' says "Add a label", because that panel raises no tooltip that could say it instead.
   // Its name then begins with the words it draws and ends with the joining word and the issue's
@@ -266,22 +275,23 @@ export function IssuePriorityLine({
       // as an empty box where no CJK font is installed, which is this pod's Chromium and some
       // readers' browsers.
       triggerAriaLabel={triggerName}
-      // Outside `NoTooltips` it is drawn as the labels' trigger draws its "+" in the details row
-      // (`IssueLabels`, `variant="rail"`): a small bordered square, here as tall as the chips
-      // beside it, inside a hit area that draws nothing: 44 px on a phone, and 32 px from `md`,
-      // as the P0-P3 tag's beside it is (`badge-select.ts`). Inside `NoTooltips` it is 28 px tall
-      // from `md`, as the controls beside it in Details are (the repository's box, `main`'s input
-      // in `RepoControl.tsx`, with its `md:min-h-7`; the labels' and the components' triggers'
-      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor. On a phone, after a
-      // chip, the square stands 8 px after the chip's edge (`PriorityChip` gives its link no room
-      // at its right there): the hit area starts at that edge, over the line's gap, and keeps its
-      // 44 px to the square's right, above the chip's own target where the two meet. The square
-      // lights under the pointer and dims while the trigger is `disabled` or `aria-disabled`, as
-      // the labels' trigger does: the trigger is the `group` its states are read from, since the
-      // square itself is never disabled.
+      // Outside `NoTooltips` it draws a small bordered square, as tall as the chips beside it,
+      // inside a hit area that draws nothing: 44 px on a phone, and 32 px from `md`, as the P0-P3
+      // tag's is (`badge-select.ts`). Inside `NoTooltips` it is 28 px tall from `md`, as the
+      // controls beside it in Details are (the repository's box, `main`'s input in
+      // `RepoControl.tsx`, with its `md:min-h-7`; the labels' and the components' triggers'
+      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor. On a phone, after the
+      // chips' group (`CappedGroup`, `data-layout-group="advances"`) when its last entry is a
+      // chip, the square stands 8 px after that chip's edge (`PriorityChip` gives its link no room
+      // at its right there): the hit area moves 12 px back over the line's gap and starts its
+      // square 8 px in, keeping its 44 px to the square's right, above the chip's own target where
+      // the two meet. After a "+N" control, or with no chip, it stands at the line's gap. The
+      // square lights under the pointer and dims while the trigger is `disabled` or
+      // `aria-disabled`: the trigger is the `group` its states are read from, since the square
+      // itself is never disabled.
       triggerClassName={
         page === null
-          ? `group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 ${focusVisibleRing}`
+          ? `group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative ${PRIORITY_TRIGGER_AFTER_CHIP} md:min-h-8 md:min-w-8 ${focusVisibleRing}`
           : `inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`
       }
     >
@@ -298,7 +308,7 @@ export function IssuePriorityLine({
   );
   // Nothing of the line keeps its width: a refusal's reason is a value, which breaks anywhere and
   // stays within its line (`max-w-full`) rather than push the line past its row, whether that row
-  // is a row of Details inside `NoTooltips` or the issue header's state row, which wraps.
+  // is a row of Details inside `NoTooltips` or the Advances row of today's issue header's Details.
   const refusals = (
     <>
       {priorities.isError ? (
@@ -327,22 +337,24 @@ export function IssuePriorityLine({
       // biome-ignore lint/a11y/useSemanticElements: the chips are links and a picker's trigger, which no form's fieldset holds; the group names them for a screen reader, since no word on the row does.
       <div
         aria-label="Advances"
-        className={`flex max-w-full flex-wrap items-center gap-1 max-md:gap-x-3${className === undefined ? "" : ` ${className}`}`}
+        className="flex max-w-full flex-wrap items-center gap-1 max-md:gap-x-3"
         data-testid="issue-advances"
         role="group"
       >
-        {advances.map((entry) => {
-          const known = places.get(entry.id);
-          return (
-            <PriorityChip
-              id={entry.id}
-              inherited={entry.inherited}
-              key={entry.id}
-              place={known?.place}
-              title={known?.title}
-            />
-          );
-        })}
+        <CappedGroup className="contents" label="priorities" name="advances">
+          {advances.map((entry) => {
+            const known = places.get(entry.id);
+            return (
+              <PriorityChip
+                id={entry.id}
+                inherited={entry.inherited}
+                key={entry.id}
+                place={known?.place}
+                title={known?.title}
+              />
+            );
+          })}
+        </CappedGroup>
         {picker}
         {refusals}
       </div>

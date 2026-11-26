@@ -1,5 +1,5 @@
-import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
-import { ID_AMBIGUOUS } from "@legion/contracts";
+import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { ID_AMBIGUOUS, IDEMPOTENCY_ANSWER_NOT_KEPT } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,7 +12,8 @@ import { correction } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { pickIn } from "../../__tests__/issue-picks";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
+import { pickIn, pickRepo } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
@@ -22,7 +23,7 @@ import {
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, AnswerNotKeptError, ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   Agent,
@@ -363,8 +364,12 @@ function renderIssuePage(
   return { ...view, runtime, syncOpenedDocuments };
 }
 
+// Details is the reader's to open, and stays open for them: each row starts with it closed.
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
 async function openSubscribedAgents(count: number) {
   const user = userEvent.setup();
+  await openIssueDetails(user);
   const toggle = await screen.findByRole("button", { name: `Subscribers: ${count}` });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
@@ -373,11 +378,13 @@ async function openSubscribedAgents(count: number) {
 }
 
 async function expectCreator(label: string): Promise<HTMLElement> {
-  const rail = await screen.findByTestId("issue-metadata-rail");
+  const details = await openIssueDetails(userEvent.setup());
   // `AgentName` draws the name; the span around it carries the whole label as its `title`.
-  const creator = await within(rail).findByTitle(label);
+  const creator = await within(details).findByTitle(label);
   expect(creator.textContent).toBe(label);
-  expect(creator.parentElement?.textContent).toBe(`Opened by:${label}`);
+  expect(within(details).getByTestId("issue-details-opened-by").textContent).toBe(
+    `Opened by${label}`
+  );
   return creator;
 }
 
@@ -447,7 +454,8 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 
   try {
     await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    const details = await openIssueDetails(userEvent.setup());
+    expect(within(details).queryByTestId("issue-details-opened-by")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -455,12 +463,9 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 });
 
 test("IssuePage's header warns when nobody holds the route, and adds nothing when it is live", async () => {
-  // The warning sits in the wrapping state row, not the metadata rail, which clips at every width.
-  const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
-  };
+  // The warning sits in the header's Attention group, which wraps with the state row, never in
+  // Details, which a reader may keep closed.
+  const stateRow = async () => screen.findByTestId("issue-state-actions");
 
   const unheld = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
   const unheldView = renderIssuePage();
@@ -528,16 +533,307 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   }
 });
 
+/** The Repository list's trigger in the open Details `details`. */
+const repositoryTrigger = (details: HTMLElement) => () =>
+  within(details).getByRole("button", { name: pickNamed(`Repository of ${issue.key}`) });
+
+// A refusal a Details row holds stays with the row when Details closes, and the header says it,
+// named by its row, until Details opens again: a write refused out of sight is never lost.
+test("IssuePage says a refused Details write under the header while Details is closed, and keeps it in its row", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "repo zed/elsewhere is not allowed" })
+  );
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    await pickRepo(user, repositoryTrigger(details), "zed/elsewhere");
+    const row = within(details).getByTestId("issue-details-repository");
+    expect(await within(row).findByText("repo zed/elsewhere is not allowed")).toBeDefined();
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+
+    const toggle = within(screen.getByTestId("issue-header")).getByRole("button", {
+      name: "Details",
+    });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(details).not.toBeVisible();
+    expect(await screen.findByTestId("issue-details-refusals")).toHaveTextContent(
+      "Repository: repo zed/elsewhere is not allowed"
+    );
+
+    await user.click(toggle);
+    expect(within(row).getByText("repo zed/elsewhere is not allowed")).toBeVisible();
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A name that is no `owner/name` is refused in the open Repository list, under its options, and
+// writes nothing. A press on Details is a press outside the list, which closes it with the typed
+// text given up, so the closed header has no refusal to say.
+test("IssuePage's closed Details says nothing of a name the open Repository list refused, which wrote nothing", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const trigger = repositoryTrigger(details);
+    await user.click(trigger());
+    const panel = within(panelOf(trigger()));
+    await user.click(panel.getByRole("combobox"));
+    await user.paste("not a repository");
+    await user.keyboard("{Enter}");
+    expect(panel.getByText("Write the repository as owner/name.")).toBeVisible();
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+
+    const toggle = within(screen.getByTestId("issue-header")).getByRole("button", {
+      name: "Details",
+    });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(details).not.toBeVisible();
+    expect(
+      screen.queryByRole("listbox", { name: `Repository of ${issue.key} options` })
+    ).toBeNull();
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A repository write Dispatch refuses shows its words and a Retry in its row. With Details closed
+// the header says the words alone, named by the row: no Retry, which nothing there can press.
+test("IssuePage says a repository write Dispatch refused under the closed Details by its words alone, with no Retry", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "repo zed/elsewhere is not allowed" })
+  );
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    await pickRepo(user, repositoryTrigger(details), "zed/elsewhere");
+    const row = within(details).getByTestId("issue-details-repository");
+    expect(await within(row).findByText("repo zed/elsewhere is not allowed")).toBeDefined();
+    expect(within(row).getByRole("button", { name: "Retry" })).toBeDefined();
+
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    const refusals = await screen.findByTestId("issue-details-refusals");
+    expect(refusals.textContent).toBe("Repository: repo zed/elsewhere is not allowed");
+    expect(within(refusals).queryByRole("button")).toBeNull();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A failed read is no refusal: the priorities that could not be read say so in their row, and
+// the closed header says nothing of it.
+test("IssuePage keeps a failed read of the priorities in its Details row, not under the closed header", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({
+    ...issue,
+    advances: [{ id: "priority-1", inherited: false }],
+  } as IssueDetails);
+  const priorities = spyOn(api, "listPriorities").mockRejectedValue(
+    new ApiError(500, { code: "SERVER_ERROR", error: "boom" })
+  );
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const row = within(details).getByTestId("issue-details-advances");
+    expect(await within(row).findByText("Could not load the priorities.")).toBeDefined();
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    expect(details).not.toBeVisible();
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The priorities' picker saves what it staged as it closes, whichever way it closes (#4316). A
+// press on Details is a press outside it, so closing Details over an open picker closes the
+// picker first and saves its pick: the reader loses nothing they ticked, and the panel closes
+// with no picker left open in it.
+test("IssuePage's Details, closed over an open priorities picker, closes the picker and saves its pick", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    priorities: [{ id: "priority-1", order: 1, project: "CORE", title: "Ship the layout rule" }],
+  } as never);
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    advances: [{ id: "priority-1", inherited: false }],
+  });
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const row = within(details).getByTestId("issue-details-advances");
+    await user.click(within(row).getByRole("button", { name: "Edit priorities" }));
+    await user.click(await screen.findByRole("option", { name: /Ship the layout rule/ }));
+
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    expect(screen.queryByRole("listbox", { name: "Priorities options" })).toBeNull();
+    expect(details).not.toBeVisible();
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue.mock.calls[0]?.[1]).toMatchObject({ advances: ["priority-1"] });
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The route's warnings speak for the saved route: they hide only while a route save is in
+// flight, and a refused save leaves the saved route, so its warning is back at once, with Details
+// open or closed.
+test("IssuePage hides the route's warning only while a route save is in flight, and shows it again when the save is refused", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const view = renderIssuePage();
+  try {
+    const stateRow = await screen.findByTestId("issue-state-actions");
+    await openIssueDetails(user);
+    await user.click(await screen.findByRole("button", { name: "Messages default to role:sre" }));
+    const routeInput = await screen.findByLabelText("Message route");
+    await user.clear(routeInput);
+    await user.type(routeInput, "role:other");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() =>
+      expect(within(stateRow).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument()
+    );
+
+    save.reject(new Error("The route was refused."));
+    await waitFor(() =>
+      expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined()
+    );
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toHaveTextContent(
+      "Nobody holds it right now"
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+// A route save that lands with no answer kept by Dispatch is read back with the issue: until
+// that read returns, the issue the page holds still names the route before the save, and the
+// warnings must not judge that old route as the saved one (dispatch://INFRA-5200). They come back
+// for the route the read brings.
+test("IssuePage hides the route's warnings after a save with no answer until the issue is read again", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new AnswerNotKeptError(IDEMPOTENCY_ANSWER_NOT_KEPT, 200, "Dispatch did not keep the answer")
+  );
+  const view = renderIssuePage();
+  try {
+    const stateRow = await screen.findByTestId("issue-state-actions");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
+    await openIssueDetails(user);
+    await user.click(await screen.findByRole("button", { name: "Messages default to role:sre" }));
+    const routeInput = await screen.findByLabelText("Message route");
+    await user.clear(routeInput);
+    await user.type(routeInput, "role:other");
+
+    // The read the save starts is held, so the page keeps the issue as it was.
+    const reread = Promise.withResolvers<IssueDetails>();
+    api.getIssue = () => reread.promise;
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Messages default to role:other" })).toBeDefined()
+    );
+    expect(within(stateRow).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+
+    reread.resolve({ ...issue, last_seq: 251, route: "role:other", route_status: "no_holder" });
+    await waitFor(() =>
+      expect(within(stateRow).getByTestId("issue-route-unreachable")).toHaveTextContent(
+        "role:other"
+      )
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The route editor lives in Details. Closing Details over an edit not saved gives the edit up,
+// as Cancel does: the header shows the saved route's warning again, and nothing is written.
+test("IssuePage's Details, closed over a route edit not saved, gives the edit up and shows the route's warning again", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const view = renderIssuePage();
+  try {
+    const stateRow = await screen.findByTestId("issue-state-actions");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
+
+    await openIssueDetails(user);
+    await user.click(await screen.findByRole("button", { name: "Messages default to role:sre" }));
+    const routeInput = await screen.findByLabelText("Message route");
+    await user.clear(routeInput);
+    await user.type(routeInput, "role:draft");
+    // A draft changes nothing saved, so the saved route's warning stays on the header.
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
+
+    const details = within(screen.getByTestId("issue-header")).getByRole("button", {
+      name: "Details",
+    });
+    await user.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toHaveTextContent(
+      "Nobody holds it right now"
+    );
+
+    // Opened again, the row shows the saved route, not the draft.
+    await user.click(details);
+    expect(
+      await screen.findByRole("button", { name: "Messages default to role:sre" })
+    ).toBeDefined();
+    expect(screen.queryByDisplayValue("role:draft")).not.toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // A route whose holder has missed its heartbeats is neither unreachable nor unjudged: the
 // listener judged it and said the session is stalled, and what is sent to the issue waits for
 // it. Folding that into either of the other two markers tells a reader to re-staff a role that
 // is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
 test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
-  const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
-  };
+  const stateRow = async () => screen.findByTestId("issue-state-actions");
 
   const stalled = stubIssuePage({
     ...issue,
@@ -587,7 +883,8 @@ test("IssuePage omits creator metadata when an issue response omits it", async (
 
   try {
     await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    const details = await openIssueDetails(userEvent.setup());
+    expect(within(details).queryByTestId("issue-details-opened-by")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -1029,6 +1326,7 @@ test("IssuePage says the agent list is refilling and counts no subscribers from 
     expect(
       screen.queryByText("Subscribed agents unavailable — Envoy listener unreachable.")
     ).not.toBeInTheDocument();
+    await openIssueDetails(userEvent.setup());
     expect(screen.getByRole("button", { name: "Subscribers" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Subscribers: / })).not.toBeInTheDocument();
   } finally {
@@ -1237,9 +1535,12 @@ for (const fixture of [
     const view = renderIssuePage();
 
     try {
-      await screen.findByText("Merge native Dispatch");
-      expect(screen.getByText("merged")).toBeDefined();
-      expect(await screen.findByText(`checks: ${fixture.checks}`)).toBeDefined();
+      // The issue's pull requests are a row of Details.
+      await openIssueDetails(userEvent.setup());
+      const pullRequests = await screen.findByTestId("issue-details-pull-requests");
+      await within(pullRequests).findByText("Merge native Dispatch");
+      expect(within(pullRequests).getByText("merged")).toBeDefined();
+      expect(await within(pullRequests).findByText(`checks: ${fixture.checks}`)).toBeDefined();
     } finally {
       view.unmount();
       githubRest.mockRestore();
@@ -1273,6 +1574,7 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
   const view = renderIssuePage("/issues/CORE-1", undefined, undefined, queryClient);
 
   try {
+    await openIssueDetails(userEvent.setup());
     // Only once the check-runs query has failed does the assertion mean anything: while it is
     // still pending the pre-fix code showed the title too.
     await waitFor(() =>
@@ -1284,12 +1586,84 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
         ])?.status
       ).toBe("error")
     );
-    // The failed check-runs read drops only the checks pill; the loaded title and state stay.
+    // The failed check-runs read says the checks are unavailable where their result would stand
+    // (INFRA-5200, c-review F5); the loaded title and state stay.
     const link = screen.getByRole("link", { name: /#7 Keep the title when checks vanish/ });
     expect(within(link).getByText("Keep the title when checks vanish")).toBeDefined();
     expect(within(link).getByText("open")).toBeDefined();
-    expect(within(link).queryByText(/^checks:/)).not.toBeInTheDocument();
+    expect(within(link).getByText("checks: unavailable")).toBeDefined();
     expect(link).toHaveAttribute("title", "owner/repository#7: Keep the title when checks vanish");
+  } finally {
+    view.unmount();
+    githubRest.mockRestore();
+    restore();
+  }
+});
+
+// The CLI and an agent send a link as its address alone, and the server stores it as kind `url`:
+// a pull request linked that way is a pull request all the same, told by its address.
+test("IssuePage lists a pull request stored as kind url under Pull requests with its checks, and another address under Links", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    external_links: [
+      { kind: "url", url: "https://github.com/owner/repository/pull/7" },
+      { kind: "url", url: "https://example.com/design-notes" },
+    ],
+  });
+  const githubRest = spyOn(api, "githubRest").mockImplementation(async (path) => {
+    if (path === "repos/owner/repository/pulls/7") {
+      return new Response(
+        JSON.stringify({
+          head: { sha: "abcdef" },
+          merged: false,
+          state: "open",
+          title: "Link sent with no kind",
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (path === "repos/owner/repository/commits/abcdef/check-runs?per_page=100&page=1") {
+      return new Response(
+        JSON.stringify({
+          check_runs: [
+            {
+              check_suite: { id: 11 },
+              conclusion: "success",
+              id: 21,
+              name: "ci",
+              status: "completed",
+            },
+          ],
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (path === "repos/owner/repository/actions/runs?head_sha=abcdef&per_page=100&page=1") {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [{ check_suite_id: 11, event: "pull_request", id: 31, name: "CI" }],
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+    throw new Error(`unexpected GitHub read ${path}`);
+  });
+  const view = renderIssuePage();
+
+  try {
+    const details = await openIssueDetails(userEvent.setup());
+    const pullRequests = within(details).getByTestId("issue-details-pull-requests");
+    const link = await within(pullRequests).findByRole("link", {
+      name: /#7 Link sent with no kind/,
+    });
+    expect(within(link).getByText("open")).toBeDefined();
+    expect(await within(link).findByText("checks: success")).toBeDefined();
+    const links = within(details).getByTestId("issue-details-links");
+    expect(within(links).getByRole("link", { name: /example\.com\/design-notes/ })).toHaveAttribute(
+      "href",
+      "https://example.com/design-notes"
+    );
+    expect(within(links).queryByRole("link", { name: /#7/ })).toBeNull();
   } finally {
     view.unmount();
     githubRest.mockRestore();
@@ -1309,8 +1683,10 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
   const view = renderIssuePage();
 
   try {
-    await screen.findByText("Issue remains an issue");
-    expect(screen.getByText("open")).toBeDefined();
+    await openIssueDetails(userEvent.setup());
+    const links = await screen.findByTestId("issue-details-links");
+    await within(links).findByText("Issue remains an issue");
+    expect(within(links).getByText("open")).toBeDefined();
     expect(githubRest).toHaveBeenCalledWith("repos/owner/repository/issues/9");
   } finally {
     view.unmount();
@@ -1597,6 +1973,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   const originalGetInbox = api.getInbox;
   const originalGetMyState = api.getMyState;
   const originalGetIssueSubscribers = api.getIssueSubscribers;
+  const originalListIssueAsks = api.listIssueAsks;
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1604,6 +1981,8 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   // pending/loading transition — the scenario where a stale-state leak would
   // otherwise go unnoticed by a naive loading-gate remount.
   queryClient.setQueryData(["issue", "CORE-2"], secondIssue);
+  // The signed-in reader, as `renderIssuePage` caches it: Details keeps its open state per login.
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
 
   try {
     api.getIssue = async (key: string) => (key === "CORE-2" ? secondIssue : issue);
@@ -1614,6 +1993,8 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     });
     api.getIssueEvents = async () => [];
     api.getIssueSubscribers = async () => [];
+    // A signed-in reader's page reads the issue's asks, for whose turn it is.
+    api.listIssueAsks = async () => [];
 
     const view = render(
       <MemoryRouter initialEntries={["/issues/CORE-1"]}>
@@ -1629,6 +2010,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     );
 
     try {
+      await openIssueDetails(user);
       await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
       expect(
         await screen.findByText(
@@ -1643,6 +2025,9 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
       await user.click(screen.getByRole("link", { name: "Go to CORE-2" }));
 
       await screen.findByRole("heading", { level: 1, name: "Second issue" });
+      // No reader is signed in here, so nothing keeps Details open across the remount; it is
+      // opened again, as such a reader would.
+      await openIssueDetails(user);
       // The route field marks itself dirty on edit and, absent a remount,
       // skips resyncing to the newly loaded issue's own route — leaking
       // CORE-1's unsaved draft onto CORE-2's page instead of showing CORE-2's
@@ -1660,6 +2045,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     api.getInbox = originalGetInbox;
     api.getMyState = originalGetMyState;
     api.getIssueSubscribers = originalGetIssueSubscribers;
+    api.listIssueAsks = originalListIssueAsks;
   }
 });
 
@@ -2479,36 +2865,35 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     ).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
-    expect(within(stateActions).getByRole("button", { name: "Close issue" })).not.toBeNull();
+    // Close is the header's action, at the end of its last line.
+    expect(
+      within(screen.getByTestId("issue-actions")).getByRole("button", { name: "Close issue" })
+    ).not.toBeNull();
   } finally {
     view.unmount();
     restore();
   }
 });
 
-// The priorities an issue advances are chips with the picker's "+" after them, in the state row
-// directly after the P0-P3 tag at the test DOM's desktop width: that row wraps, where the details
-// row under it scrolls sideways. On a phone they open the details row instead
-// (`e2e/priorities.e2e.ts` reads both).
-test("IssuePage draws the priorities' chips in the state row after the P0-P3 tag, not in the details row", async () => {
+// The priorities an issue advances are chips with the picker's "+" after them, the value of the
+// Advances row of the header's Details at every width: Advances is one of the properties Details
+// holds, and the state row holds the issue's own status and P0-P3 tag, not the priorities it
+// advances (dispatch://INFRA-5200, which moves them from where #4316 placed them;
+// `e2e/priorities.e2e.ts` reads them at a desktop's width and a phone's).
+test("IssuePage draws the priorities' chips in the Advances row of Details, not in the state row", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
     const stateActions = screen.getByTestId("issue-state-actions");
-    const line = within(stateActions).getByTestId("issue-advances");
+    expect(within(stateActions).queryByTestId("issue-advances")).toBeNull();
+    await openIssueDetails(user);
+    const row = screen.getByTestId("issue-details-advances");
+    expect(within(row).getByText("Advances").tagName).toBe("DT");
+    const line = within(row).getByTestId("issue-advances");
     expect(within(line).getByRole("button", { name: "Edit priorities" })).not.toBeNull();
-    // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows,
-    // in the element right before the chips.
-    const before = line.previousElementSibling;
-    if (!(before instanceof HTMLElement)) throw new Error("nothing stands before the chips");
-    expect(
-      within(before).getByRole("button", { name: pickNamed("Priority of CORE-1") })
-    ).not.toBeNull();
-    expect(
-      within(screen.getByTestId("issue-metadata-rail")).queryByTestId("issue-advances")
-    ).toBeNull();
   } finally {
     view.unmount();
     restore();

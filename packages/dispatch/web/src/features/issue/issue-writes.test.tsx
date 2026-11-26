@@ -1,4 +1,4 @@
-import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one pick repeated inside a single act batch
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
@@ -165,12 +166,17 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 
+// A row that reads alice's identity keeps Details open for her once it opens it; each row starts
+// with it closed.
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
 async function openRouteEditor(): Promise<HTMLInputElement> {
   const existing = screen.queryByLabelText("Message route");
   if (existing instanceof HTMLInputElement) {
     return existing;
   }
   const user = userEvent.setup();
+  await openIssueDetails(user);
   await user.click(await screen.findByRole("button", { name: /Messages default to/ }));
   return (await screen.findByLabelText("Message route")) as HTMLInputElement;
 }
@@ -183,6 +189,7 @@ test("IssuePage keeps an unsaved route draft when a stale refetch arrives", asyn
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     let saveRoute = screen.getByRole("button", { name: "Save route" });
@@ -263,6 +270,7 @@ test("IssuePage keeps a route cleared while the previous save was still in fligh
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     let saveRoute = screen.getByRole("button", { name: "Save route" });
@@ -305,6 +313,7 @@ test("IssuePage keeps the document and a route draft across a save response", as
   const { unmount } = renderIssuePage();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     await user.click(route);
@@ -339,6 +348,7 @@ test("IssuePage ignores a stale route refetch after a newer successful save", as
   const staleRefetch = deferred<IssueDetails>();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     let saveRoute = screen.getByRole("button", { name: "Save route" });
@@ -1840,6 +1850,7 @@ test("IssuePage sends a route that waited behind a failed status write ahead of 
     route = await openRouteEditor();
     expect(route.value).toBe("role:b");
     await user.clear(route);
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
@@ -1898,6 +1909,7 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
   const { unmount } = renderIssuePage();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
@@ -1926,6 +1938,7 @@ test("IssuePage gives a parent draft cancelled while its write is out the parent
   const { unmount } = renderIssuePage();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     let parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
@@ -1967,6 +1980,7 @@ test("IssuePage keeps a parent draft cleared while its write is out as that writ
   const { queryClient, unmount } = renderIssuePage();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     let parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
@@ -2006,6 +2020,7 @@ test("IssuePage clears the parent with an empty editor save", async () => {
   const { unmount } = renderIssuePage();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "Edit parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     expect(parent.value).toBe("CORE-9");
@@ -2037,6 +2052,7 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   const { unmount } = renderIssuePage();
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
@@ -2106,6 +2122,7 @@ test("IssuePage says what saving the parent again does after a save the reader s
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
   try {
+    await openIssueDetails(user);
     await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     await user.click(await screen.findByLabelText("Parent"));
     await user.paste("CORE-9");

@@ -111,6 +111,7 @@ import {
   type ViewRow,
   valuesOf,
 } from "./inbox-view";
+import { openIssueDetails } from "./issue-details";
 import { focusThePage } from "./issue-page-g";
 import { rowSnooze } from "./keyboard-inbox";
 import { seedLegionDaemon } from "./legion-seed";
@@ -4260,14 +4261,15 @@ const ASKED_OF_LINE = 32;
  *  below 1280 px (`badgeSelectTrigger`). */
 const ASSIGNEE_BADGE = 32;
 
-/** The issue header's `Repository:` line in its details rail from `md`, around the shared list
- *  trigger's wrapper: the 28 px of that wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), which
- *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the head's own
- *  shared trigger box, not a reading at the base: R3's intended difference from main's visible
- *  text box, which this change replaces with the shared list's trigger. At 6ef60ff0, the merge
- *  base when that line was read, the line holds that text box, and the same read of that line,
- *  this row's run over that commit's build, measured 44 px at 1024x768. */
-const REPOSITORY_LINE = 28;
+/** The Repository row's value in the Details of today's issue header from `md`: the line around
+ *  the shared list trigger's wrapper, which is that wrapper's 32 px (`badgeSelectPageWrapper`'s
+ *  `md:min-h-8`), since the trigger overhangs the wrapper below 1280 px (`badgeSelectPageTrigger`).
+ *  The reference is still the head's own shared trigger box, not a reading at the base: R3's
+ *  intended difference from main's visible text box, which this change replaces with the shared
+ *  list's trigger. At 6ef60ff0, the merge base when that line was read, the line holds that text
+ *  box, and the same read of that line, this row's run over that commit's build, measured 44 px at
+ *  1024x768. */
+const REPOSITORY_LINE = 32;
 
 /** The parts a Board card or a List row draws now where it drew `parts` at the base. R3 changes
  *  one of them, the issue's priority: the base drew the badge's words with a native select laid
@@ -4285,10 +4287,11 @@ function priorityAtTheHead(parts: string): string {
 // which is the shared list's trigger now (`priorityAtTheHead`), in a box of the same
 // size, where a height the fonts decide is the one its lines and the base's classes give it
 // (`linedHeights`). It holds an ask card's "Asked of" line and the issue header's Assignee badge
-// to their heights at the base too, and the header's `Repository:` line to the box of the shared
-// trigger that replaces the base's text box (`REPOSITORY_LINE`), at 1024x768, between `md` and
-// `xl`, the widths where every button is 44 px tall. The Delivery list draws its clock times in
-// the browser's own zone and words, so both are pinned to the ones the base was read in.
+// to their heights at the base too, and the Repository row's value in the header's Details to the
+// box of the shared trigger that replaces the base's text box (`REPOSITORY_LINE`), at 1024x768,
+// between `md` and `xl`, the widths where every button is 44 px tall. The Delivery list draws its
+// clock times in the browser's own zone and words, so both are pinned to the ones the base was
+// read in.
 test.describe("R8's rows and cards", () => {
   test.use({ locale: "en-US", timezoneId: "UTC" });
 
@@ -4456,12 +4459,13 @@ test.describe("R8's rows and cards", () => {
       ]
     );
 
-    // The issue header's two controls, read once CORE has a default repository, so its rail
-    // names one: the Assignee's wrapper, the control's parent at the base as now and the badge's
-    // own item in the wrapping row, and the `Repository:` line, the control's grandparent, around
-    // the shared trigger's wrapper.
+    // The issue header's two controls, read once CORE has a default repository, so its
+    // Repository names one: the Assignee's wrapper, the control's parent at the base as now and
+    // the badge's own item in the wrapping row, and the Repository row's value in Details, which
+    // the reader opens, the control's grandparent: the line around the shared trigger's wrapper.
     await putProjectDefaultRepository("CORE", "acme/widgets");
     await page.goto(`/issues/${issue}`);
+    await openIssueDetails(page);
     const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
     const repositoryControl = page.getByLabel(`Repository of ${issue}`);
     await expect(assigneeControl, "the issue header draws no Assignee at 1024x768").toBeVisible();
@@ -4480,7 +4484,7 @@ test.describe("R8's rows and cards", () => {
         "at the base",
       ],
       [
-        "the issue header's `Repository:` line",
+        "the Repository row's value in the issue header's Details",
         await repositoryControl.evaluate(
           (control) =>
             Math.round(
@@ -6466,6 +6470,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       // Its value is the badge: the trigger's words of its own, which say whether the issue
       // inherits it, are what its name goes on to after its label and are never shown.
       name: "the issue header's Repository",
+      // The list is the value of the Repository row of the header's Details, which the reader
+      // opens, on the issue the Assignee's list was read on.
+      reach: async () => {
+        await openIssueDetails(page);
+      },
       trigger: repository,
       // The badge, the one hidden element of the trigger that is not its chevron's `svg`.
       value: async () =>
@@ -6764,6 +6773,8 @@ test("every list of options a reader picks from holds a text box that narrows it
         ? ["queue", /^#\d+ Cut the review queue$/]
         : ["ledger", /^#\d+ Retire the old ledger$/];
     await page.goto(`/issues/${seed.header}`);
+    // Edit priorities and the chips are the Advances row of the header's Details.
+    await openIssueDetails(page);
     const header = page.getByTestId("issue-header");
     const editPriorities = header.getByRole("button", { exact: true, name: "Edit priorities" });
     const chipLink = header.getByRole("link", { name: priorityOption });
@@ -7019,6 +7030,8 @@ test("Edit priorities opens its list in view with the focus in its text box, and
     for (const press of ["Enter", "click"] as const) {
       const at = `${size.width}x${size.height}, by ${press}`;
       await page.goto(`/issues/${issue.key}`);
+      // Edit priorities is in the Advances row of the header's Details, which the reader opens.
+      await openIssueDetails(page);
       const trigger = page
         .getByTestId("issue-header")
         .getByRole("button", { exact: true, name: "Edit priorities" });

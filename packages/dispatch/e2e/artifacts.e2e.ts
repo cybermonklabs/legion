@@ -3,7 +3,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
 import {
   createAsk,
@@ -457,8 +456,8 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
 });
 
 // SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
-// tabs with each tab's box and the tablist's fade measured, at 390 px and back, then the comment
-// margin hidden and shown again.
+// tabs with each tab's box measured, at 390 px and back, then the comment margin hidden and shown
+// again.
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
   page,
 }, testInfo) => {
@@ -479,41 +478,27 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
   await expect(tabs).toHaveCount(10);
-  const insideTablist = async (tab: Locator) => {
-    const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
-    expect(listBox).not.toBeNull();
-    expect(box).not.toBeNull();
-    expect(box?.height).toBeLessThanOrEqual(48);
-    expect(box?.x).toBeGreaterThanOrEqual(listBox?.x ?? 0);
-    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
-      (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
-    );
-  };
-  // Ten tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
-  // sideways there (as it already did at 360 px). No label is shortened to buy the room, every
-  // tab is reachable from the keyboard, each is scrolled fully into view as it takes focus, and
-  // each keeps its 44 px touch target. While tabs lie past its trailing edge the tablist wears
-  // the trailing fade, which says the cut is a scroll, and a tab taking focus stops clear of it;
-  // at the end of the scroll the fade is off, since it would hide the last tab. A tablist that
-  // narrows with no change of tab - a narrower window, the comment margin opening - brings the
-  // selected tab back whole and clear of the fade too.
-  const masked = () => tablist.evaluate((node) => getComputedStyle(node).maskImage !== "none");
-  // Polled: the reveal that answers a narrower tablist runs on the browser's next resize
-  // observation, after the change that narrowed it.
-  const wholeAndClearOfFade = (tab: Locator) =>
+  // Every tab lies whole inside the tablist, which never scrolls sideways: ten tabs that do not
+  // fit its width wrap onto a further line (dispatch://INFRA-5200, the layout rule's 4). A tab is
+  // one line, at most 48 px tall: the tabs wrap between tabs, never inside one.
+  const wholeInTablist = (tab: Locator) =>
     expect
       .poll(async () => {
-        const [faded, listBox, box] = await Promise.all([
-          masked(),
+        const [listBox, box, scrolls] = await Promise.all([
           tablist.boundingBox(),
           tab.boundingBox(),
+          tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5),
         ]);
         const listLeft = listBox?.x ?? 0;
         const listRight = listLeft + (listBox?.width ?? 0);
         const left = box?.x ?? Number.NEGATIVE_INFINITY;
         const right = left + (box?.width ?? 0);
-        const visibleRight = faded ? listRight - scrollFadeTrailingPx + 1 : listRight + 0.5;
-        return left >= listLeft - 0.5 && right <= visibleRight;
+        return (
+          !scrolls &&
+          left >= listLeft - 0.5 &&
+          right <= listRight + 0.5 &&
+          (box?.height ?? Number.POSITIVE_INFINITY) <= 48
+        );
       })
       .toBe(true);
   const viewport = page.viewportSize();
@@ -530,13 +515,15 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Decisions",
     "Collaborators",
   ]);
-  expect(await tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)).toBe(true);
-  // The row opened on Conversation, which the narrower window left cut off at the edge.
+  // At 390 px the ten tabs take more than one line.
+  const tops = await tabs.evaluateAll((nodes) =>
+    nodes.map((node) => Math.round(node.getBoundingClientRect().top))
+  );
+  expect(new Set(tops).size).toBeGreaterThan(1);
   const conversationTab = page.getByRole("tab", { exact: true, name: "Conversation" });
   await expect(conversationTab).toHaveAttribute("aria-selected", "true");
-  await wholeAndClearOfFade(conversationTab);
+  await wholeInTablist(conversationTab);
   await page.getByRole("tab", { name: "Spec" }).focus();
-  await expect.poll(masked).toBe(true);
   for (const label of [
     "Verification",
     "Plan",
@@ -551,32 +538,29 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     await page.keyboard.press("ArrowRight");
     const tab = page.getByRole("tab", { exact: true, name: label });
     await expect(tab).toBeFocused();
-    await insideTablist(tab);
-    await wholeAndClearOfFade(tab);
+    await wholeInTablist(tab);
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
   const specTab = page.getByRole("tab", { name: "Spec" });
   await expect(specTab).toBeFocused();
-  await insideTablist(specTab);
+  await wholeInTablist(specTab);
   expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-  await expect.poll(masked).toBe(true);
   await page.keyboard.press("End");
   await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
-  await expect.poll(masked).toBe(false);
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
-  // At 1280 px every tab fits beside the hidden margin, and Activity, chosen there, is whole. The
-  // margin coming back narrows the tablist with no change of tab, and Activity, which it left past
-  // the trailing edge, is brought back whole and clear of the fade.
+  // The comment margin coming back narrows the tablist with no change of tab, and Activity, chosen
+  // with the margin hidden, is still whole inside it.
   await page.getByRole("button", { name: "Hide margin" }).click();
   await expect(page.getByTestId("margin-rail")).toBeVisible();
   const activityTab = page.getByRole("tab", { name: "Activity" });
   await activityTab.click();
   await expect(activityTab).toHaveAttribute("aria-selected", "true");
-  await expect.poll(masked).toBe(false);
   await page.getByRole("button", { name: "Show margin" }).click();
-  await expect.poll(masked).toBe(true);
-  await wholeAndClearOfFade(activityTab);
+  // The count of ten above settled the tabs, so one read lists them all.
+  for (const tab of await tabs.all()) {
+    await wholeInTablist(tab);
+  }
 
   const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
   const added = rows.filter({ hasText: `added ${name}` });
@@ -608,62 +592,6 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await added.getByRole("link", { name }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
   await expect(page.getByTestId("artifact-header")).toContainText(name);
-});
-
-// The issue's tab strip rests where its last layout puts the selected tab: at the smallest scroll
-// that shows that tab whole and clear of the trailing fade. The tablist can be narrower for a
-// moment while the page lays out, and a reveal that only ever added the scroll it needed left the
-// strip where that moment put it once the tablist widened again: the visual row of this page then
-// read the strip at the end of its scroll, 212 px from where its baseline is shot. Here the
-// tablist is made 300 px wide for a moment, with the Artifacts tab selected, and released: it must
-// scroll for the narrow moment, and come back to the scroll its own layout gives it, not stay.
-test("the issue's tab strip rests where its last layout puts the selected tab, whatever narrower layout came first", async ({
-  page,
-}) => {
-  await createProject({ key: "OPS", name: "Ops" });
-  const issue = await createIssue({ project: "OPS", title: "A strip that settles" });
-  await page.goto(`/issues/${issue.key}/artifacts`);
-  const tablist = page.getByRole("tablist", { name: "Issue detail" });
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toHaveAttribute(
-    "aria-selected",
-    "true"
-  );
-  await expect(tablist.getByRole("tab")).toHaveCount(10);
-  // The comment margin loads after the first paint, and until it is drawn the tablist is wider
-  // and every tab fits: a resting point read then would be the start, and the strip moves again
-  // once the margin arrives. So the resting point is read only with the margin drawn.
-  await expect(page.getByTestId("desktop-margin-shell")).toBeVisible();
-  // Where the strip is, and where its layout alone puts the selected tab: its right edge in the
-  // strip's content, less what the fade leaves of the tablist. Sub-pixel layout rounds a scroll
-  // to a whole pixel, so the two are compared within one.
-  const place = () =>
-    tablist.evaluate((list, fade) => {
-      const tab = list.querySelector('[role="tab"][aria-selected="true"]');
-      const right = (tab?.getBoundingClientRect().right ?? 0) - list.getBoundingClientRect().left;
-      const target = Math.max(0, right + list.scrollLeft - (list.clientWidth - fade));
-      return {
-        offBy: Math.abs(list.scrollLeft - target),
-        overflow: list.scrollWidth - list.clientWidth,
-        scrollLeft: list.scrollLeft,
-      };
-    }, scrollFadeTrailingPx);
-  await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
-  const { overflow, scrollLeft: rested } = await place();
-  // The strip can scroll past where it rests, so a strip left at the end of its scroll is a
-  // different reading from the resting one, and the last assertion below can fail.
-  expect(overflow).toBeGreaterThan(rested + 1);
-
-  await tablist.evaluate((list) => {
-    list.style.width = "300px";
-  });
-  // The narrow moment moves the strip, or this row proves nothing.
-  await expect.poll(async () => (await place()).scrollLeft).toBeGreaterThan(rested + 50);
-  await tablist.evaluate((list) => {
-    list.style.width = "";
-  });
-  // Polled: the strip answers a layout change on the browser's next resize observation.
-  await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
-  expect(Math.abs((await place()).scrollLeft - rested)).toBeLessThanOrEqual(1);
 });
 
 test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({

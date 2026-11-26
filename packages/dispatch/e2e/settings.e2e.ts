@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { listTrigger } from "./filters";
+import { openIssueDetails } from "./issue-details";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -128,8 +129,9 @@ test("a person sets a project's default repository in Settings, a new issue of t
       resolved_repo: "acme/gadgets",
     });
     await page.goto(`/issues/${inheriting.key}`);
-    // The issue page's Repository list names the default after its label, as the repository the
-    // issue inherits.
+    // The issue page's Repository list, in the header's Details, names the default after its
+    // label, as the repository the issue inherits.
+    await openIssueDetails(page);
     await expect(page.getByLabel(`Repository of ${inheriting.key}`)).toHaveAccessibleName(
       `Repository of ${inheriting.key} acme/widgets, inherited or the project's default`
     );
