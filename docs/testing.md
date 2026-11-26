@@ -637,6 +637,19 @@ a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTempora
 `internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
 record) needs neither.
 
+## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
+
+Every top-level test of `packages/daemon/internal/runtime/sandbox`, in the default build and the
+e2e build, calls `t.Parallel()` as its first statement or says on its first line, in a
+`// Not parallel:` comment, why it cannot; the package's `TestMain` runs 8 at once
+(`sandboxTestParallelism`). Each test drives a fake API server, launchers and store of its own
+(`newRig`). A test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
+`gitHubRefreshInterval`, or needs a step to land inside a window of the wall clock, which the
+comment names. A test that asserts which deadline a wait meets sets a `clocktest.Fake` as the
+runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
+others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
+by 2026-11-25.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),

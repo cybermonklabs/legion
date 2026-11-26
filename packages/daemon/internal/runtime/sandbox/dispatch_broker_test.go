@@ -76,6 +76,7 @@ type brokerLaunch struct {
 // since none of it rides the Sandbox manifest: every DISPATCH_ variable travels in the start
 // command. With the setting off every other golden is the one it was (TestManifestGoldens).
 func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	dispatchBroker("")(&opts)
 	r, err := configure(opts)
@@ -99,6 +100,7 @@ func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
 // DISPATCH_TOKEN_BROKER, since its role has no identity to trade until the pod's update round
 // replaces the pod.
 func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(testTransitionToken))
@@ -132,6 +134,7 @@ func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) 
 // identity whenever the deployment names an exchange audience, nor one that keeps a pod built with
 // it.
 func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 	loc := g.spawn(workerSpec(t))
 	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) != 1 {
@@ -158,6 +161,7 @@ func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 // what the supervisor keeps of a claim that records no process, and what the update round opens
 // over and replaces the pod through where no claim records one.
 func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
@@ -222,6 +226,7 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 // carries the exchange identity: that launch carries no Dispatch token at all, and tells its role
 // DISPATCH_TOKEN_BROKER=1 (dispatch://INFRA-4425 R4).
 func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
@@ -259,6 +264,7 @@ func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(
 // (movedInPod). So under the setting the controller's launch carries no Dispatch token, whether it
 // builds the pod or finds one built before the setting, with no transition file named.
 func TestTheControllerLaunchCarriesNoDispatchToken(t *testing.T) {
+	t.Parallel()
 	t.Run("a pod the launch builds", func(t *testing.T) {
 		g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 		g.spawn(controllerSpec(t))
