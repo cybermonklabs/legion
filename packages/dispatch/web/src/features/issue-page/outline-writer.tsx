@@ -171,6 +171,11 @@ export function OutlineWriterProvider({
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAskThreadsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
+  // What the writer's functions read of those reads and of the names, as it stands when one is
+  // called: the writer is every row's, so a function that closed over an answer made a new writer
+  // for each answer of a read, and every row drew again for it.
+  const latest = useRef({ agentText, asks: asks.data, messages: messages.data });
+  latest.current = { agentText, asks: asks.data, messages: messages.data };
   // Each press that sets the line, counted, so a Reply whose comment is still being read sets
   // nothing once the reader has pressed something else.
   const presses = useRef(0);
@@ -199,7 +204,8 @@ export function OutlineWriterProvider({
       const press = presses.current;
       const set = (comment: Pick<Comment, "author" | "mentions"> | undefined) => {
         if (press !== presses.current || store.sendingNow(sendKey)) return;
-        const target = replyTargetOf(item, issueKey, comment, messages.data, agentText);
+        const { agentText, messages } = latest.current;
+        const target = replyTargetOf(item, issueKey, comment, messages, agentText);
         setAnswer(undefined);
         setEditing(undefined);
         setReply(redirectedReplyTarget(store, sendKey, target));
@@ -220,7 +226,7 @@ export function OutlineWriterProvider({
           () => set(undefined)
         );
     },
-    [agentText, focus, issueKey, messages.data, queryClient, sendKey, setReply, store]
+    [focus, issueKey, queryClient, sendKey, setReply, store]
   );
   const answering = useCallback((node: TreeNode): AnswerTarget | undefined => {
     const item = conversationItem(node);
@@ -246,7 +252,7 @@ export function OutlineWriterProvider({
     (node: TreeNode) => {
       if (store.sendingNow(sendKey)) return;
       const target = answering(node);
-      const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
+      const recorded = (latest.current.asks ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
       const offered = new Set((node.options ?? []).map((option) => option.label));
       presses.current += 1;
@@ -259,7 +265,7 @@ export function OutlineWriterProvider({
       });
       focus();
     },
-    [answering, asks.data, focus, sendKey, setReply, store]
+    [answering, focus, sendKey, setReply, store]
   );
   const pick = useCallback(
     (node: TreeNode, label: string) => {

@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,7 +20,9 @@ import { PublishedReferenceNames, type PublishedReferences } from "../refs/refer
 import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { ChangeDraftsProvider } from "./DecisionActions";
+import { EditedRowContext } from "./edited-row";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
+import { createHeld, type Held } from "./held-value";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
@@ -27,7 +30,7 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
-import { threadMarks } from "./outline-thread-read";
+import { type ThreadMark, threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
@@ -51,7 +54,7 @@ import {
 } from "./tree-fold";
 import { decisionBehind, nextQuestion, nodesInOrder, rowKeyOf } from "./tree-keys";
 import type { NextTreePage, OlderComments } from "./tree-read/tree-read";
-import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
+import { abortOnReaderAct, type EditedRow, type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { moveToRow, type TreeSearch, useTreeKeymap } from "./useTreeKeymap";
 
 /**
@@ -293,12 +296,18 @@ export function IssueTree({
         : { line, ...(row === undefined ? {} : { row }) }
     );
   }, []);
-  const { edit, editing, stopEditing } = useNodeEditing({
-    artifacts,
-    container: body,
-    onEditing,
-    onReport: reportHere,
+  // The row being edited is held below the tree, in `RowEditing`, and read by each row for itself
+  // (`EditedRowContext`), so Enter's change of state draws the edited row and never the tree. The
+  // tree reaches what `RowEditing` holds through `edits`, by functions that stay the same for the
+  // tree's whole life.
+  const [edited] = useState(() => createHeld<EditedRow | undefined>(undefined));
+  const edits = useRef<RowEditingBridge>({
+    edit: () => {},
+    releaseFocus: () => {},
+    stopEditing: () => {},
   });
+  const edit = useCallback((row: string, node: TreeNode) => edits.current.edit(row, node), []);
+  const stopEditing = useCallback(() => edits.current.stopEditing(), []);
 
   const target = reveal?.at(-1);
   // Each following of an address that names a node lands on that node's row (`addressKey`), so
@@ -367,13 +376,31 @@ export function IssueTree({
   // level, with no filter on as under one. A zoom into a node keeps that node's own row, which
   // is the node the reader reads from there.
   const head = drawn[0];
-  const rows =
+  // Each read builds the tree again, every node of it a new object, so each row is the one the
+  // render before drew under its key wherever the two hold the same values (`keptRows`): a row
+  // whose node holds what it held is given the same node, and is not drawn again (`NodeRow`'s
+  // `memo`).
+  const heldRows = useRef<ReadonlyMap<string, DrawnRow>>(NO_ROWS);
+  const rows = keptRows(
+    heldRows,
     head?.kind === "node" && head.node.id === root.id
       ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
-      : drawn;
+      : drawn
+  );
   const breadcrumb: readonly TreeNode[] = zoom === undefined ? [] : zoomBreadcrumb(root, zoom);
-  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
-  const threads = useMemo(() => threadMarks(root), [root]);
+  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row,
+  // each mark the one made before for that row where it marks the same write, so a read that
+  // builds the tree again hands a row the mark it held.
+  const heldMarks = useRef<ReadonlyMap<string, ThreadMark>>(NO_MARKS);
+  const threads = useMemo(() => {
+    const marks = new Map<string, ThreadMark>();
+    for (const [node, mark] of threadMarks(root)) {
+      const held = heldMarks.current.get(node);
+      marks.set(node, held !== undefined && replaceEqualDeep(held, mark) === held ? held : mark);
+    }
+    heldMarks.current = marks;
+    return marks;
+  }, [root]);
 
   // A row the page takes the reader to of its own accord - the node an address names, the open
   // question the page opens on - takes the focus while the outline's other reads are still
@@ -436,7 +463,13 @@ export function IssueTree({
     setUnplaced(undefined);
     setReport(undefined);
   }, []);
-  const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
+  // Reached through `edits`: the hook runs in `RowEditing`, beside the editing it keeps the row
+  // for.
+  const releaseFocus = useCallback(
+    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) =>
+      edits.current.releaseFocus(event),
+    []
+  );
   // What the twisty, the arrow keys and `o` do to one row, by its key: the reader's fold, which
   // lasts for the load and leaves every other row of the node as it was (`tree-fold.ts`'s
   // `withFold`).
@@ -453,6 +486,17 @@ export function IssueTree({
       }));
     }
   }, []);
+  // What every row calls as the focus comes into it, and as its fold control is pressed, each
+  // with the row's key: one function of each for every row, so a render of the tree hands no
+  // row a new one (`NodeRow`'s `memo`).
+  const focusRow = useCallback(
+    (row: string, node: TreeNode) => press.focus({ node, row }),
+    [press]
+  );
+  const toggleRow = useCallback(
+    (row: string, expanded: boolean | undefined) => unfold(row, expanded !== true),
+    [unfold]
+  );
   // What `z` does: every row the reader folded is unfolded (`withEveryFoldUndone`), and the
   // focused row is placed once the tree is drawn again (`unfoldedAll`).
   const unfoldAll = useCallback(() => {
@@ -709,7 +753,9 @@ export function IssueTree({
   useTreeKeymap({
     container: body,
     cycleLabel: "Unfold every row you folded",
-    editing: editing !== undefined,
+    get editing() {
+      return edited.get() !== undefined;
+    },
     holdsEscape,
     onCycle: unfoldAll,
     onEdit: edit,
@@ -1041,21 +1087,20 @@ export function IssueTree({
   // during React's commit, where React hears no event, so `leave` never runs for it.
   //
   // A render that no longer draws the row being edited ends its editing as Escape ends it
-  // (`stopEditing`), the page's editor of the document and its box with it, wherever the focus
-  // is: in that row, which takes the editor's focus out with it, before the nearest row takes the
-  // focus (above); on another row; or out of the tree - in Details, where a press leaves the
-  // editing on (`useNodeEditing.ts`), with no row noted as holding the focus at the render
-  // before. The frame that end asks for, to give the row the focus back (`leaving`), then finds no
-  // row and moves no focus. Left on, the editing waited for a row no read draws
-  // (`useNodeEditing.ts`), and the tree held every row the focus came to as the one being edited
-  // (`useReleaseFocus`): a Tab out of the tree kept that row's body and its facts in Details.
+  // (`stopEditing`, called from `RowEditing`), the page's editor of the document and its box with
+  // it, wherever the focus is: in that row, which takes the editor's focus out with it, before
+  // the nearest row takes the focus (above); on another row; or out of the tree - in Details,
+  // where a press leaves the editing on (`useNodeEditing.ts`), with no row noted as holding the
+  // focus at the render before. The frame that end asks for, to give the row the focus back
+  // (`leaving`), then finds no row and moves no focus. Left on, the editing waited for a row no
+  // read draws (`useNodeEditing.ts`), and the tree held every row the focus came to as the one
+  // being edited (`useReleaseFocus`): a Tab out of the tree kept that row's body and its facts in
+  // Details.
   const heldRow = useRef<{ readonly index: number; readonly key: string } | undefined>(undefined);
-  const editingRow = editing?.row;
   useEffect(() => {
     const tree = body.current;
     const order = rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
     const held = heldRow.current;
-    if (editingRow !== undefined && !order.includes(editingRow)) stopEditing();
     if (held !== undefined && !order.includes(held.key)) {
       if (
         focusIsLoose(tree) &&
@@ -1072,7 +1117,7 @@ export function IssueTree({
     const focusedKey = focusedRowIn(tree)?.dataset.rowKey;
     heldRow.current =
       focusedKey === undefined ? undefined : { index: order.indexOf(focusedKey), key: focusedKey };
-  }, [editingRow, rows, stopEditing]);
+  }, [rows]);
 
   // A write from the line at the foot takes the reader to what they wrote: their newest
   // node under what the write answered - the reply, the comment, the question - its branch
@@ -1247,29 +1292,34 @@ export function IssueTree({
             artifacts={artifacts}
             context={context}
             coverageOut={coverageOut}
-            editing={editing}
             focused={focused}
             foldedMore={root.moreToRead === true}
             isClosed={isClosed}
             {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
-            onFocus={(row, node) => press.focus({ node, row })}
+            onFocus={focusRow}
             {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
             onPage={(page) => drawPage(page, false)}
-            onToggle={(row, expanded) => unfold(row, expanded !== true)}
+            onToggle={toggleRow}
             {...(report === undefined
               ? {}
               : { report: { line: report.line, row: report.row ?? tabStop } })}
             rows={rows}
             tabStop={tabStop}
             threads={threads}
-            // The row the reader is editing in places nothing of its own: the editor keeps its
-            // caret on screen as they write, and grows the row, and the row put back at its top
-            // at each change of its size took the caret off the screen - a new line written deep
-            // in the spec moved the page from 3120 px to 89 px.
-            unplaced={editing?.row ?? unplaced}
+            unplaced={unplaced}
             zoomRoot={zoomRoot}
           />
         </ChangeDraftsProvider>
+        <RowEditing
+          artifacts={artifacts}
+          bridge={edits}
+          container={body}
+          edited={edited}
+          onEditing={onEditing}
+          onLeave={leave}
+          onReport={reportHere}
+          rows={rows}
+        />
       </div>
       {root.children.length === 0 && readsHeld && emptyLine !== undefined ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>
@@ -1278,7 +1328,11 @@ export function IssueTree({
       ) : null}
     </div>
   );
-  return <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>;
+  return (
+    <EditedRowContext.Provider value={edited}>
+      <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>
+    </EditedRowContext.Provider>
+  );
 }
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to
@@ -1288,6 +1342,31 @@ export const LANDING_WAIT_MS = 10_000;
 
 /** No place has been let go from the address path's hold (`released`). */
 const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/** No row drawn and no thread marked yet: what the tree holds before its first render. */
+const NO_ROWS: ReadonlyMap<string, DrawnRow> = new Map();
+const NO_MARKS: ReadonlyMap<string, ThreadMark> = new Map();
+
+/** `rows`, each the row `held` holds under its key (`rowKeyOf`) where that one holds the same
+ *  values, as TanStack Query's `replaceEqualDeep` compares two answers of a read
+ *  (`api/queries.ts`), with `held` set to the rows answered, by their keys, for the next render.
+ *  A node holds its children, so a change anywhere under a node is a change of its row too. */
+function keptRows(
+  held: RefObject<ReadonlyMap<string, DrawnRow>>,
+  rows: readonly DrawnRow[]
+): DrawnRow[] {
+  const before = held.current;
+  const now = new Map<string, DrawnRow>();
+  const kept = rows.map((row) => {
+    const key = rowKeyOf(row);
+    const was = before.get(key);
+    const one = was !== undefined && replaceEqualDeep(was, row) === was ? was : row;
+    now.set(key, one);
+    return one;
+  });
+  held.current = now;
+  return kept;
+}
 
 /** The keys of the node rows, in drawing order. */
 function nodeRowKeys(rows: readonly DrawnRow[]): string[] {
@@ -1585,6 +1664,60 @@ export function useReleaseFocus({
     },
     [editing, letGo]
   );
+}
+
+/** What `RowEditing` hands back to `IssueTree` without putting editing state on the tree. */
+interface RowEditingBridge {
+  edit: (row: string, node: TreeNode) => void;
+  releaseFocus: (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => void;
+  stopEditing: () => void;
+}
+
+/**
+ * Holds the outline's row editing (`useNodeEditing`) and the blur rule that waits on it
+ * (`useReleaseFocus`) below `IssueTree`, and publishes the row being edited to `edited`
+ * (`EditedRowContext`), where each row reads whether it is the one. The state change of Enter,
+ * and of the editing's end, is this component's alone, so it draws the edited row and not the
+ * tree. A render that draws no row for the row being edited ends the editing as Escape does.
+ */
+function RowEditing({
+  artifacts,
+  bridge,
+  container,
+  edited,
+  onEditing,
+  onLeave,
+  onReport,
+  rows,
+}: {
+  artifacts: ReadonlyMap<string, Artifact>;
+  bridge: RefObject<RowEditingBridge>;
+  container: RefObject<HTMLElement | null>;
+  edited: Held<EditedRow | undefined>;
+  onEditing: OnEditing;
+  onLeave: () => void;
+  onReport: (report: string) => void;
+  rows: readonly DrawnRow[];
+}): ReactNode {
+  const { edit, editing, stopEditing } = useNodeEditing({
+    artifacts,
+    container,
+    onEditing,
+    onReport,
+  });
+  const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave });
+  bridge.current.edit = edit;
+  bridge.current.releaseFocus = releaseFocus;
+  bridge.current.stopEditing = stopEditing;
+  // Published before paint, so the edited row has its stage in the commit that draws the editor.
+  useLayoutEffect(() => {
+    edited.set(editing);
+  }, [edited, editing]);
+  const editingRow = editing?.row;
+  useEffect(() => {
+    if (editingRow !== undefined && !nodeRowKeys(rows).includes(editingRow)) stopEditing();
+  }, [editingRow, rows, stopEditing]);
+  return null;
 }
 
 /** One ask the Contents list makes of the outline (`outline-request.tsx`): the node to go to,
