@@ -1,12 +1,13 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
 // approved spec and prints the approved text, checks that no CI file of a repository runs that
-// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
-// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
-// within the size bound, and passes over every other entry. Every rule of the spec files and of a
-// scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive and WaitCycle); the
-// command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
-// CI files and no spec file.
+// comparison, derives the states of a scenario, names each program check that CI refuses at a
+// commit, and lists the files that changed between two commits. It reads the directory as the
+// Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file
+// directly in it, within the size bound, and passes over every other entry. Every rule of the spec
+// files and of a scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive,
+// WaitCycle and Citations); the command states none of its own. The rule of guard is the
+// command's (cifiles.go), since it reads CI files and no spec file.
 //
 // Usage:
 //
@@ -26,6 +27,9 @@
 //	  production or of the graph, counts at another commit only when the check's tie is known at both
 //	  and no path that changed between them is covered by the tie at either; one that the test missed
 //	  never counts at another commit)
+//	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
+//	    --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
+//	spec-check changed --repo <root> --base <commit> [--head <commit>]
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -169,6 +173,17 @@
 // commit, and one that its test missed never counts at another commit; the reader refuses a commit
 // of ties.json of no letter and no digit, as it refuses such a commit of a subject, and names the
 // form that ties.json needs when a value in it is of another type, such as ties by check alone.
+//
+// citations names each program check that CI must refuse at the commit of --repo
+// (specgraph.Citations, R48): its test is not in the code, its selector picks two tests, its job is
+// not in the workflow or the citations job does not wait for it, or code that its test reads
+// changed and the job's report does not show the test run. A report counts a run only after the
+// run's package ends, and a run that go test replayed from its cache did not run. changed writes
+// the line "base <commit>" and then each path that differs between two commits, the list that
+// citations --changed reads. Both refuse a --repo that is not the top of its git clone. citations
+// runs go list and .github/scripts/go-test-reads.sh in <root>, and for a tie at the base the
+// base's own script in a temporary checkout; changed runs git. runCitations and runChanged give
+// each exit status.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on

@@ -1,7 +1,0 @@
-{"Time":"2026-11-17T06:37:01.793503391Z","Action":"start","Package":"example.com/acme/gotest/forgedpass"}
-{"Time":"2026-11-17T06:37:01.813483225Z","Action":"run","Package":"example.com/acme/gotest/forgedpass","Test":"TestPrintsAPassLineOfItselfThenExits"}
-{"Time":"2026-11-17T06:37:01.813575825Z","Action":"output","Package":"example.com/acme/gotest/forgedpass","Test":"TestPrintsAPassLineOfItselfThenExits","Output":"=== RUN   TestPrintsAPassLineOfItselfThenExits\n","OutputType":"frame"}
-{"Time":"2026-11-17T06:37:01.813600254Z","Action":"output","Package":"example.com/acme/gotest/forgedpass","Test":"TestPrintsAPassLineOfItselfThenExits","Output":"--- PASS: TestPrintsAPassLineOfItselfThenExits (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-17T06:37:01.818189482Z","Action":"pass","Package":"example.com/acme/gotest/forgedpass","Test":"TestPrintsAPassLineOfItselfThenExits","Elapsed":0}
-{"Time":"2026-11-17T06:37:01.81822036Z","Action":"output","Package":"example.com/acme/gotest/forgedpass","Output":"FAIL\texample.com/acme/gotest/forgedpass\t0.024s\n","OutputType":"frame"}
-{"Time":"2026-11-17T06:37:01.818231868Z","Action":"fail","Package":"example.com/acme/gotest/forgedpass","Elapsed":0.025}

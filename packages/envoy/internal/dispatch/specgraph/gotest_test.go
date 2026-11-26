@@ -102,8 +102,9 @@ func TestAKilledTestCouldNotRun(t *testing.T) {
 // JSON events of the other tests and of a test that does not exist. And a test prints go test's
 // end line of its own name of the other kind (ownlines), or prints its own end line and is then
 // killed (killprinted, killprintedfail), or a parallel sibling prints a fail line of a test that
-// is then killed (killsibling): in both forms of report, where go tool test2json writes a fail
-// event at its exit for the test it named last.
+// is then killed (killsibling). go tool test2json writes a fail event at its exit for the test it
+// named last, and that event is also the end of the package, so in that form the sibling that
+// passed reads could_not_run too (t2j-killsibling).
 func TestWhatATestPrintsDecidesNoOutcome(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
@@ -192,11 +193,13 @@ func TestAPassStaysWhenThePackageFailsAfterIt(t *testing.T) {
 //   - "a test that prints, with the marker, go test's end line of its own name, or of another test
 //     of its package that is running, ... can still give that test an outcome": TestPrinter prints
 //     the marked pass line of TestSleeps while TestSleeps runs, and go test then kills TestSleeps,
-//     which reads pass in both forms (killsiblingpass);
-//   - "a report of another form ... lets a test write an end line with no marker": in the text of
-//     go test -v through go tool test2json, a test prints its own pass line with no marker and is
-//     then killed, and it reads pass (piped-killprinted). Under go test -json the same test could
-//     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome).
+//     which reads pass in a report of go test -json (killsiblingpass); go tool test2json's report
+//     of the same binary holds no end of its package, so each run there reads could_not_run
+//     (t2j-killsiblingpass);
+//   - "a report of another form ... lets a test write go test's lines with no marker": in the text
+//     of go test -v through go tool test2json, a test prints its own pass line with no marker and
+//     is then killed, and it reads pass (piped-killprinted). Under go test -json the same test
+//     could not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome).
 func TestStatedLimitsOfTheReader(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{

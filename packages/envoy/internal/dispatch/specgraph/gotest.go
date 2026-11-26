@@ -264,8 +264,7 @@ func (r *run) output() string {
 // -test.v=test2json, and the -v after it gives -test.v=true, which wins; go test -json with
 // -test.v=true given to the binary after -args makes one too. So in such a report a test can print
 // the run and end lines of any test of its package, its own or another's, with no marker, and make
-// that test read as run or passed, and a test that prints with no line feed gets no end event and
-// reads as not run (TestStatedLimitsOfTheReader; another test's lines, through the command:
+// that test read as run or passed (another test's lines, through the command:
 // TestCitationsStatedLimitAForgedRun of cmd/spec-check). The reader cannot refuse such a report by
 // its content: of a package of passing tests with no subtest and no error line, its events are
 // those of go test -json. So a step that makes a report for CI runs go test -json with no -v and no
