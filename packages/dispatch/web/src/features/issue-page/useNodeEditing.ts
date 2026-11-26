@@ -303,8 +303,9 @@ export function useNodeEditing({
    *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
    *  `onOwnEdit`) - with the key of the row being edited and the row's block as the edit left
    *  it, so the tree reads a read that drops the row while its note of the edit lasts as the
-   *  reader's (`IssueTree.tsx`'s `ownAct`). */
-  onOwnEdit: (row: string, block: DisplayTree) => void;
+   *  reader's (`IssueTree.tsx`'s `ownAct`). A list that keeps no such note - the Spec filter's
+   *  editing of a statement in place (`spec-filter/SpecFilterBody.tsx`) - passes none. */
+  onOwnEdit?: (row: string, block: DisplayTree) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -428,7 +429,7 @@ export function useNodeEditing({
       },
       (block) => {
         const { onOwnEdit: heard, row } = ownEdit.current;
-        if (row !== undefined) heard(row, block);
+        if (row !== undefined) heard?.(row, block);
       }
     );
   }, []);
