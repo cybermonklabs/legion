@@ -1,14 +1,16 @@
 /**
  * What the skill-cuts commands share: a whole-file write, JSON text and a JSON file's value as a
- * refusal, a count in words, a zod error's faults on one line, strict option parsing, the
- * configuration as a refusal, the two errors a command's `main` turns into its exit status
- * (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads, splits and names it (`ompText`,
- * `splitFrontmatter`, `readFrontmatter`, `ompSkillName`: the runner's one frontmatter reader), and
- * the one rule by which a gh call or a registry's request that failed is sent again (`GhRetries`),
- * with the words a registry request's failure is read in (`httpFailure`, `fetchFailure`). It
- * imports no other command's file, so every one of them can import it.
+ * refusal, the lines of a JSON-lines text and file (`jsonTextLines`, `jsonLines`), a count in
+ * words, a zod error's faults on one line, strict option parsing, an option's directory as a
+ * refusal (`mustBeDirectory`), the configuration as a refusal, the two errors a command's `main`
+ * turns into its exit status (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads,
+ * splits and names it (`ompText`, `splitFrontmatter`, `readFrontmatter`, `ompSkillName`: the
+ * runner's one frontmatter reader), and the one rule by which a gh call or a registry's request
+ * that failed is sent again (`GhRetries`), with the words a registry request's failure is read in
+ * (`httpFailure`, `fetchFailure`). It imports no other command's file, so every one of them can
+ * import it.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -61,6 +63,26 @@ export function readJson(file: string, what: string): unknown {
   }
 }
 
+/** Each line of the JSON-lines text `text` that is not blank, with its line number (from 1) and
+ *  its value (`parseJson`: undefined for a line that is no JSON). */
+export function* jsonTextLines(
+  text: string
+): Generator<{ readonly at: number; readonly value: unknown }> {
+  for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim() === "") continue;
+    yield { at: index + 1, value: parseJson(line) };
+  }
+}
+
+/** The lines of the JSON-lines file `file`, read as UTF-8 (`jsonTextLines`); none when the file is
+ *  missing. load.ts reads its run files by it, and cli.ts the request log. */
+export function* jsonLines(
+  file: string
+): Generator<{ readonly at: number; readonly value: unknown }> {
+  if (!existsSync(file)) return;
+  yield* jsonTextLines(readFileSync(file, "utf8"));
+}
+
 /** `count` with `word`, or with `plural` unless the count is 1: `1 session`, `2 sessions`. */
 export function counted(count: number, word: string, plural = `${word}s`): string {
   return `${count} ${count === 1 ? word : plural}`;
@@ -99,6 +121,13 @@ export function required<K extends string>(
     throw new Refused(`${missing.map((name) => `--${name}`).join(", ")} required. ${usage}`);
   }
   return values as Record<K, string>;
+}
+
+/** A refusal unless `dir`, the value of the option `flag` (`--new`, `--skill`), is a directory. */
+export function mustBeDirectory(flag: string, dir: string): void {
+  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`${flag} ${dir} is not a directory`);
+  }
 }
 
 /** The configuration in `file`. Throws a refusal naming why it is none. */

@@ -2188,6 +2188,16 @@ export function profileCopies(
   });
 }
 
+/** The records of the repository copies of `arm`'s profile (`profileCopies`), in order: the
+ *  skills its context installs from their repositories, as its ContextRecord's `skills` names
+ *  them. capture.ts's `restoreCopies` compares a saved capture's record with them, and cli.ts
+ *  answers a read of another skill from their cache entries where an arm's capture is not saved. */
+export function profileRecords(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
+): CachedSkillRecord[] {
+  return profileCopies(arm).flatMap(({ record }) => (record === undefined ? [] : [record]));
+}
+
 /** Writes the context of `c`'s arm `arm` under `options.root`, replacing one written there. */
 export async function buildContext(
   c: ContextCase,

@@ -321,6 +321,7 @@ import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases"
 import {
   counted,
   json,
+  jsonLines,
   ompSkillName,
   ompText,
   parseJson,
@@ -375,6 +376,7 @@ import {
   LeftOutCall,
   LOAD_RULE,
   MAX_SKILL_ROUNDS,
+  partTools,
   ReadsPastLastRound,
   type Replayed,
   replayOnce,
@@ -1322,6 +1324,12 @@ export function namesSkill(text: string, name: string): boolean {
   ).test(text);
 }
 
+/** Whether load run `run` is judged: it `loaded` the skill or did not (`not loaded`). A run of any
+ *  other outcome makes its task run again (`taskOutcome`). */
+export function isJudged(run: Pick<LoadRun, "outcome">): boolean {
+  return run.outcome === "loaded" || run.outcome === "not loaded";
+}
+
 /** The outcome of a task labelled `label` from its `runs`, of the `wanted` judged runs the test
  *  asks for (see the file's header): a run that is not judged makes the task run again, at most
  *  MAX_EXTRA_RUNS times beyond `wanted`. A task that lacks its judged runs once those are made
@@ -1331,7 +1339,7 @@ export function taskOutcome(
   runs: readonly LoadRun[],
   wanted: number
 ): TaskOutcome {
-  const judged = runs.filter((run) => run.outcome === "loaded" || run.outcome === "not loaded");
+  const judged = runs.filter(isJudged);
   const loadedRuns = runs.filter((run) => run.outcome === "loaded").map((run) => run.run);
   const senders = new Map<string, number>();
   for (const { sentBy } of runs) {
@@ -1596,19 +1604,6 @@ export function loadRunFile(out: string, taskId: string): string {
 /** The file of task `taskId`'s failed runs under `out` (FailedRun). */
 export function loadFailedRunFile(out: string, taskId: string): string {
   return path.join(out, "runs", `${encodeURIComponent(taskId)}.failed.jsonl`);
-}
-
-/** Each line of the JSON-lines file `file` that is not blank, with its line number (from 1) and
- *  its value (`parseJson`: undefined for a line that is no JSON); none when the file is missing.
- *  cli.ts reads the request log by it too. */
-export function* jsonLines(
-  file: string
-): Generator<{ readonly at: number; readonly value: unknown }> {
-  if (!existsSync(file)) return;
-  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
-    if (line.trim() === "") continue;
-    yield { at: index + 1, value: parseJson(line) };
-  }
 }
 
 /** What a Claude Code capture used and saw. */
@@ -3560,7 +3555,7 @@ export function auditLoadMixed(o: {
     const audit = {
       task: id,
       runs: runs.length,
-      judged: runs.filter((run) => run.outcome === "loaded" || run.outcome === "not loaded").length,
+      judged: runs.filter(isJudged).length,
       untouched: 0,
       ends: 0,
       skillRound: 0,
@@ -3629,7 +3624,7 @@ export function auditLoadMixed(o: {
         const named = (part: CallPart) => ({
           run: run.run,
           userId: run.userId,
-          tools: others.flatMap((call) => (call.part === part ? [call.tool] : [])),
+          tools: partTools(others, part),
         });
         const sender = boundary.reads.find(
           ({ read, text }) =>

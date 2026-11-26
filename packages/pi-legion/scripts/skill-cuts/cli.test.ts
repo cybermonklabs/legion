@@ -39,7 +39,7 @@ import {
 import { loadConfig } from "./config";
 import { cacheKey, installedCopies, skillFrontmatter } from "./context";
 import { countSql } from "./countsql";
-import { GATEWAY_TRIES } from "./gateway";
+import { GATEWAY_TRIES, usdOf } from "./gateway";
 import { NOTHING_REPLY } from "./judge";
 import { ATTACK_PLANTED_LINE, loadPrompt, READER_TRIES } from "./readers";
 import {
@@ -4001,8 +4001,6 @@ describe("behaviour continue-mixed", () => {
   const NONE_ELSE = "confirm old 0, new 0; control old 0, minus 0, twin 0";
   /** Dollars as the report prints them. */
   const dollars = (amount: number) => `$${(Math.abs(amount) < 0.00005 ? 0 : amount).toFixed(4)}`;
-  const usdSum = (spent: readonly { usd: number }[]) =>
-    spent.reduce((all, each) => all + each.usd, 0);
 
   /** A scenario of `cases` whose act is a `bash` call, with the captures of its screen's arms. */
   function savedScenario(name: string, cases: Parameters<typeof scenario>[2]): Scenario {
@@ -4343,8 +4341,8 @@ describe("behaviour continue-mixed", () => {
       expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
       const lines = reported.stdout.split("\n");
       const runs = [...(c04?.runs ?? []), ...(c05?.runs ?? [])];
-      const continuations = usdSum(runs.flatMap((run) => run.continueMixed ?? []));
-      const freshUsd = usdSum(fresh.flatMap((run) => [...run.replaySpent, ...run.judgeSpent]));
+      const continuations = usdOf(runs.flatMap((run) => run.continueMixed ?? []));
+      const freshUsd = usdOf(fresh.flatMap((run) => [...run.replaySpent, ...run.judgeSpent]));
       for (const line of [
         `continue-mixed: 2 case stages written from ${path.resolve(s.out)}, every one selected`,
         `continue-mixed continued (a saved run judged at a mixed reply whose other calls only prepare, continued from that reply and judged again), runs by stage and arm: screen old 3, new 0, none 0; ${NONE_ELSE}`,
@@ -4985,9 +4983,6 @@ describe("behaviour: the runner of each run", () => {
 // screen command's line nor its request log): the report says what its sum is made of, part by
 // part, and sets it against the request log.
 describe("behaviour: the report's spend", () => {
-  /** The dollars of each call `spent` records. */
-  const usdSum = (spent: readonly { usd: number }[]) =>
-    spent.reduce((sum, each) => sum + each.usd, 0);
   /** The calls no run records, as the report names them. */
   const UNRECORDED =
     "its captures' hint calls, the rounds a replay that then failed had answered, replies whose judgement the budget refused";
@@ -5080,8 +5075,8 @@ describe("behaviour: the report's spend", () => {
     );
     expect(answered).toHaveLength(1);
     const controls = c.controls?.usd ?? 0;
-    const replays = runs.reduce((sum, run) => sum + usdSum(run.replaySpent), 0);
-    const judgements = runs.reduce((sum, run) => sum + usdSum(run.judgeSpent), 0);
+    const replays = runs.reduce((sum, run) => sum + usdOf(run.replaySpent), 0);
+    const judgements = runs.reduce((sum, run) => sum + usdOf(run.judgeSpent), 0);
     const unrecorded = (c.stages.screen?.usd ?? 0) - replays - judgements;
     expect(unrecorded).toBeCloseTo(answered[0].usd + HINT, 10);
     // Three judge controls; 30 judged runs' replay calls and judgements; the failed run's call and
@@ -5133,9 +5128,9 @@ describe("behaviour: the report's spend", () => {
     const kept = result(s.out, "c04");
     const runsOf = (r: CaseResult) => r.stages.screen?.runs ?? [];
     const judged = (r: CaseResult) =>
-      (r.controls?.usd ?? 0) + runsOf(r).reduce((sum, run) => sum + usdSum(run.judgeSpent), 0);
+      (r.controls?.usd ?? 0) + runsOf(r).reduce((sum, run) => sum + usdOf(run.judgeSpent), 0);
     const replayed = (r: CaseResult) =>
-      runsOf(r).reduce((sum, run) => sum + usdSum(run.replaySpent), 0);
+      runsOf(r).reduce((sum, run) => sum + usdOf(run.replaySpent), 0);
     const total = (r: CaseResult) => (r.controls?.usd ?? 0) + (r.stages.screen?.usd ?? 0);
     expect([total(kept), judged(gone), replayed(gone)].map((usd) => usd.toFixed(4))).toEqual([
       "19.2000",

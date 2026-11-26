@@ -281,6 +281,12 @@ function callWords(call: SortedCall): string {
   return `${call.tool} ${argument.length > 80 ? `${argument.slice(0, 79)}…` : argument}`;
 }
 
+/** The skill files `reads` read, in words: each one's skill and file, joined by ", ". The
+ *  messages of a run with no verdict name them so, and cli.ts's continue-mixed reasons too. */
+export function readsWords(reads: readonly AnsweredRead[]): string {
+  return reads.map((read) => `${read.skill} ${read.file}`).join(", ");
+}
+
 /** What a replay rejects with when the reply after its last answered round still only reads skill
  *  files, or reads them beside calls that only prepare the act (`beside`, the calls of a mixed
  *  reply `replyBoundary` would continue): the run gets no verdict (see the file's header).
@@ -292,7 +298,7 @@ export class ReadsPastLastRound extends Error {
     last: readonly AnsweredRead[],
     beside: readonly SortedCall[] = []
   ) {
-    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const files = readsWords(last);
     const others = beside.map(callWords).join(", ");
     super(
       beside.length === 0
@@ -314,7 +320,7 @@ export class UndecidedReply extends Error {
     undecided: readonly SortedCall[],
     text: boolean
   ) {
-    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const files = readsWords(last);
     const what = [...undecided.map(callWords), ...(text ? ["its text"] : [])].join(", ");
     super(
       `${MIXED_UNDECIDED}: after ${replayed.rounds} answered rounds of skill reads, the reply reads skill files (${files}) beside what the rule sorts neither as an act nor as preparation (${what}), so it is neither judged nor continued`
@@ -336,7 +342,7 @@ export class FurtherRoundLimit extends Error {
     last: readonly AnsweredRead[],
     beside: readonly SortedCall[]
   ) {
-    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const files = readsWords(last);
     const others =
       beside.length === 0
         ? ""
@@ -873,6 +879,12 @@ export interface SortedCall {
   readonly part: CallPart;
 }
 
+/** The tools of `others`, a mixed reply's sorted calls, that the rule sorts as `part`, in order:
+ *  what cli.ts's and load.ts's audits and continue-mixed name a run by. */
+export function partTools(others: readonly SortedCall[], part: CallPart): string[] {
+  return others.flatMap((call) => (call.part === part ? [call.tool] : []));
+}
+
 /** What a replay does with a reply (`replyBoundary`): `ends`, the run ends at it (no tool call,
  *  no read the replay answers, or without a rule a call that is not one); `skill round`, every
  *  call is a read it answers; or, for a mixed reply, its reads and its other calls sorted, with
@@ -1125,14 +1137,10 @@ async function replaySent(
       const undecided = boundary.others.filter((call) => call.part === "undecided");
       throw new UndecidedReply(replayed, last, undecided, boundary.text === "undecided");
     }
-    if (rounds >= maxSkillRounds) {
-      throw new ReadsPastLastRound(
-        replayed,
-        last,
-        boundary.kind === "continue" ? boundary.others : []
-      );
-    }
     const others = boundary.kind === "continue" ? boundary.others : [];
+    if (rounds >= maxSkillRounds) {
+      throw new ReadsPastLastRound(replayed, last, others);
+    }
     if (start.furtherRounds !== undefined && rounds - first + 1 >= start.furtherRounds) {
       throw new FurtherRoundLimit(replayed, start.furtherRounds, last, others);
     }

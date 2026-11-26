@@ -544,8 +544,8 @@ export const SpentRecord = z.strictObject({
 });
 export type Spent = Readonly<z.infer<typeof SpentRecord>>;
 
-/** The dollars of `spent`, summed. */
-export function usdOf(spent: readonly Spent[]): number {
+/** The dollars of `spent` (each a Spent, or any record of its `usd`), summed. */
+export function usdOf(spent: readonly { readonly usd: number }[]): number {
   return spent.reduce((sum, each) => sum + each.usd, 0);
 }
 

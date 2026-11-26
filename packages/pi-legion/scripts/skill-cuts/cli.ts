@@ -427,6 +427,9 @@ import {
   configFrom,
   counted,
   json,
+  jsonLines,
+  jsonTextLines,
+  mustBeDirectory,
   parse,
   pastLimit,
   Refused,
@@ -442,7 +445,7 @@ import {
   ghSource,
   installedCopies,
   localSource,
-  profileCopies,
+  profileRecords,
   type RepoSource,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
@@ -480,7 +483,6 @@ import {
 import {
   auditLoadMixed,
   Host,
-  jsonLines,
   LOAD_MODEL,
   LOAD_THINKING,
   runLoad,
@@ -513,9 +515,11 @@ import {
   MIXED_UNDECIDED,
   type MixedRule,
   NotResumable,
+  partTools,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
   type Replayed,
+  readsWords,
   replayInterleaved,
   replyBoundary,
   resumeReplay,
@@ -551,6 +555,7 @@ import {
   POOLED_CONFIRMS,
   RunRecord,
   SCREEN_RUNS,
+  Arm as ScoreArm,
   type SkillScore,
   STAGE_ARMS,
   STAGE_RUNS,
@@ -1276,17 +1281,21 @@ export function runnerDigest(): string {
  *  the stage commands name it and as `--allow-runners` names it. */
 const UNRECORDED_RUNNER = "unrecorded";
 
-/** Each runner that made runs of `stage`, with how many it made: a run's own `runner`, else (a run
- *  made before runs recorded it) its stage's, else UNRECORDED_RUNNER. A stage with no run counts
- *  under its own runner, with 0 runs. */
+/** The runner that made `run` of stage `stage`: the run's own `runner`, else (a run made before
+ *  runs recorded it) its stage's, else UNRECORDED_RUNNER. */
+function runRunner(run: Run, stage: StageResult): string {
+  return run.runner ?? stage.runner ?? UNRECORDED_RUNNER;
+}
+
+/** Each runner that made runs of `stage`, with how many it made (`runRunner`). A stage with no
+ *  run counts under its own runner, else UNRECORDED_RUNNER, with 0 runs. */
 function stageRunners(stage: StageResult): Map<string, number> {
-  const own = stage.runner ?? UNRECORDED_RUNNER;
   const runs = new Map<string, number>();
   for (const run of stage.runs) {
-    const runner = run.runner ?? own;
+    const runner = runRunner(run, stage);
     runs.set(runner, (runs.get(runner) ?? 0) + 1);
   }
-  if (runs.size === 0) runs.set(own, 0);
+  if (runs.size === 0) runs.set(stage.runner ?? UNRECORDED_RUNNER, 0);
   return runs;
 }
 
@@ -1307,6 +1316,17 @@ export function armCaptureDir(
           ? texts.old
           : textDigest(arm.skillDir);
   return path.join(out, "captures", `${arm.name}-${text}`);
+}
+
+/** The key of case `id` in a scratch path: the first 16 hex digits of the SHA-256 of its id. */
+function caseKey(id: string): string {
+  return createHash("sha256").update(id).digest("hex").slice(0, 16);
+}
+
+/** Where the arms of case `id` are built under the runner's scratch `root` (buildArm's
+ *  `scratch`): runStage's, and continue-mixed's, which builds them as runStage does. */
+function armsScratch(root: string, id: string): string {
+  return path.join(root, "arms", caseKey(id));
 }
 
 /** The chance of each count, 0 to `runs`, of `runs` runs that each pass with chance `p`. */
@@ -1626,6 +1646,11 @@ function placeWords(place: Pick<StagePlace, "stage" | "confirm">): string {
   return place.confirm === undefined ? place.stage : `${place.stage} ${place.confirm}`;
 }
 
+/** Case `caseId`'s stage at `place` as `--only` names it (`onlyStages`): `<case id>\t<stage>`. */
+function stageKey(caseId: string, place: Pick<StagePlace, "stage" | "confirm">): string {
+  return `${caseId}\t${placeWords(place)}`;
+}
+
 /** The texts of `stage` (or of a runner's `texts`) as score.ts's MadeConfirm holds them: the two
  *  digests in one string. */
 const textsOf = (stage: { readonly texts: { readonly old: string; readonly new: string } }) =>
@@ -1843,11 +1868,7 @@ function newResult(c: Case): CaseResult {
  *  than this run's: its runs and this run's would be of different arms. */
 function checkSameTexts(r: Runner, caseId: string, stage: Stage, existing: StageResult): void {
   const plantedLine = stage === "control" ? (r.dirs.plantedLine ?? null) : null;
-  if (
-    existing.texts.old === r.texts.old &&
-    existing.texts.new === r.texts.new &&
-    existing.plantedLine === plantedLine
-  ) {
+  if (sameTexts(r, existing) && existing.plantedLine === plantedLine) {
     return;
   }
   throw new Refused(
@@ -2139,11 +2160,7 @@ async function runStage(
     return writeResult(r, current, phases);
   };
 
-  const scratch = path.join(
-    r.scratch,
-    "arms",
-    createHash("sha256").update(c.id).digest("hex").slice(0, 16)
-  );
+  const scratch = armsScratch(r.scratch, c.id);
   const arms = new Map<ArmName, { arm: Arm; capture: Capture }>();
   const captures = { ...state.captures };
   const readsBefore = r.source.reads?.() ?? { calls: 0, ms: 0 };
@@ -2554,17 +2571,23 @@ function stageVerdict(stage: Stage, passes: Record<ArmName, number>): string {
   }
 }
 
-/** Each arm of `stage` with how many of `runs`, a stage's runs, got no verdict because the reply
- *  after the last answered round still read skill files, alone or beside calls that only prepare
- *  (replay.ts's ReadsPastLastRound, whose reason begins READS_PAST_LAST_ROUND). */
-function readsPast(runs: readonly Run[], stage: Stage): { arm: ArmName; count: number }[] {
+/** Each arm of `stage` with how many of `runs`, a stage's runs, `matches`. */
+function armRuns(
+  runs: readonly Run[],
+  stage: Stage,
+  matches: (run: Run) => boolean
+): { arm: ArmName; count: number }[] {
   return STAGE_ARMS[stage].map((arm) => ({
     arm,
-    count: runs.filter(
-      (run) =>
-        run.arm === arm && run.verdict === null && run.reason.startsWith(READS_PAST_LAST_ROUND)
-    ).length,
+    count: runs.filter((run) => run.arm === arm && matches(run)).length,
   }));
+}
+
+/** Whether `run` got no verdict because the reply after the last answered round still read skill
+ *  files, alone or beside calls that only prepare (replay.ts's ReadsPastLastRound, whose reason
+ *  begins READS_PAST_LAST_ROUND). */
+function readsPast(run: Run): boolean {
+  return run.verdict === null && run.reason.startsWith(READS_PAST_LAST_ROUND);
 }
 
 /** Counts of arms in words: `old 1, new 0, none 3`. */
@@ -2577,7 +2600,7 @@ function armCounts(counts: readonly { arm: ArmName; count: number }[]): string {
  *  answered round, when it has one or more such runs; then every arm's count of them. Undefined
  *  when no arm that lacks its runs has one: the stage then stays unscreened. */
 function readsPastDrop(runs: readonly Run[], stage: Stage): string | undefined {
-  const past = readsPast(runs, stage);
+  const past = armRuns(runs, stage, readsPast);
   const short = past.flatMap(({ arm, count }) => {
     const own = runs.filter((run) => run.arm === arm);
     const judged = own.filter((run) => run.verdict !== null).length;
@@ -2650,6 +2673,17 @@ function waits(run: Run): boolean {
   return run.verdict === null && run.reason.startsWith(FURTHER_ROUND_LIMIT);
 }
 
+/** What continue-mixed made of `run`, as its report and its lines name it: run again fresh (a
+ *  ContinueMixedRun of kind `run again`), waiting at the further-round limit (one of kind
+ *  `continued` that `waits`), or continued (any other of kind `continued`); undefined for a run
+ *  with no ContinueMixedRun. */
+function continuedKind(run: Run): "run again" | "waiting" | "continued" | undefined {
+  const mark = run.continueMixed;
+  if (mark === undefined) return undefined;
+  if (mark.kind === "run again") return "run again";
+  return waits(run) ? "waiting" : "continued";
+}
+
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
  *  they say, and how many runs got no verdict, those that read skill files past the last answered
  *  round counted by arm; a stage not finished says what it still starts and, by arm, the runs
@@ -2663,7 +2697,7 @@ function stageLine(
   if (state === undefined) return `${label}: not run`;
   const outcome = stageOutcome(state.runs, caseId, stage);
   const unjudged = state.runs.filter((run) => run.verdict === null).length;
-  const past = readsPast(state.runs, stage);
+  const past = armRuns(state.runs, stage, readsPast);
   const pastWords = past.some(({ count }) => count > 0)
     ? `; ${READS_PAST_LAST_ROUND}: ${armCounts(past)}`
     : "";
@@ -2681,10 +2715,7 @@ function stageLine(
       const toStart = Object.entries(outcome.toStart)
         .map(([arm, count]) => `${arm} ${count}`)
         .join(", ");
-      const waiting = STAGE_ARMS[stage].map((arm) => ({
-        arm,
-        count: state.runs.filter((run) => run.arm === arm && waits(run)).length,
-      }));
+      const waiting = armRuns(state.runs, stage, waits);
       const waitWords = waiting.some(({ count }) => count > 0)
         ? `; waiting at the further-round limit for the next decision: ${armCounts(waiting)}`
         : "";
@@ -3266,7 +3297,7 @@ function routingLines(stage: Stage, runs: readonly Run[]): string[] {
  * judgements), each by stage kind. Counts only: they change no verdict.
  */
 function continuedLines(results: ReadonlyMap<string, CaseResult>): string[] {
-  type Kind = "continued" | "waiting" | "again" | "fresh" | "unchanged";
+  type Kind = "continued" | "waiting" | "run again" | "fresh" | "unchanged";
   const rows: { stage: Stage; arm: ArmName; kind: Kind; usd: number }[] = [];
   const froms = new Set<string>();
   const selected: string[] = [];
@@ -3280,19 +3311,11 @@ function continuedLines(results: ReadonlyMap<string, CaseResult>): string[] {
       froms.add(continued.from);
       if (continued.selected) selected.push(`${result.caseId} ${placeWords(place)}`);
       for (const run of state.runs) {
-        const mark = run.continueMixed;
         const kind: Kind =
-          mark?.kind === "run again"
-            ? "again"
-            : mark !== undefined
-              ? waits(run)
-                ? "waiting"
-                : "continued"
-              : run.round > continued.savedRounds
-                ? "fresh"
-                : "unchanged";
+          continuedKind(run) ?? (run.round > continued.savedRounds ? "fresh" : "unchanged");
         const usd =
-          mark?.usd ?? (kind === "fresh" ? usdOf(run.replaySpent) + usdOf(run.judgeSpent) : 0);
+          run.continueMixed?.usd ??
+          (kind === "fresh" ? usdOf(run.replaySpent) + usdOf(run.judgeSpent) : 0);
         rows.push({ stage: place.stage, arm: run.arm, kind, usd });
       }
     }
@@ -3308,20 +3331,19 @@ function continuedLines(results: ReadonlyMap<string, CaseResult>): string[] {
       .join("; ");
   const spent = (kinds: readonly Kind[]) => {
     const own = rows.filter((row) => kinds.includes(row.kind));
-    const sum = (each: readonly { usd: number }[]) => each.reduce((all, row) => all + row.usd, 0);
     const parts = Stage.options.map(
-      (stage) => `${stage} ${dollars(sum(own.filter((row) => row.stage === stage)))}`
+      (stage) => `${stage} ${dollars(usdOf(own.filter((row) => row.stage === stage)))}`
     );
-    return `${dollars(sum(own))} over ${counted(own.length, "run")} (${parts.join(", ")})`;
+    return `${dollars(usdOf(own))} over ${counted(own.length, "run")} (${parts.join(", ")})`;
   };
   return [
     `continue-mixed: ${counted(stages, "case stage")} written from ${[...froms].join(", ")}, ${selected.length === stages ? "every one selected" : `${selected.length} of them selected by --only${selected.length === 0 ? "" : ` (${selected.join(", ")})`}, the others' runs all kept as saved`}`,
     `continue-mixed continued (a saved run judged at a mixed reply whose other calls only prepare, continued from that reply and judged again), runs by stage and arm: ${byStage("continued")}`,
     `continue-mixed waiting (${FURTHER_ROUND_LIMIT}: a continued run stopped with no verdict at the further-round limit, whose reply would be continued again, which no fresh run replaces until the next round is decided), runs by stage and arm: ${byStage("waiting")}`,
-    `continue-mixed run again fresh (a saved run the rule gives no verdict, or whose continuation its record could not rebuild, failed, or another deployment answered), runs by stage and arm: ${byStage("again")}`,
+    `continue-mixed run again fresh (a saved run the rule gives no verdict, or whose continuation its record could not rebuild, failed, or another deployment answered), runs by stage and arm: ${byStage("run again")}`,
     `continue-mixed fresh runs (made by the stage's extra-run rule in place of the runs with no verdict), runs by stage and arm: ${byStage("fresh")}`,
     `continue-mixed unchanged (saved runs kept as they were), runs by stage and arm: ${byStage("unchanged")}`,
-    `continue-mixed spend at list price: the continuations ${spent(["continued", "waiting", "again"])}, their requests and judgements, a discarded one's among them; the fresh runs ${spent(["fresh"])}, their replays and judgements`,
+    `continue-mixed spend at list price: the continuations ${spent(["continued", "waiting", "run again"])}, their requests and judgements, a discarded one's among them; the fresh runs ${spent(["fresh"])}, their replays and judgements`,
   ];
 }
 
@@ -3396,7 +3418,7 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   // agent reading acts differently.
   const runsByStage = Stage.options.map((stage) => [stage, kindRuns(results, stage)] as const);
   const pastByStage = runsByStage.map(
-    ([stage, runs]) => `${stage} ${armCounts(readsPast(runs, stage))}`
+    ([stage, runs]) => `${stage} ${armCounts(armRuns(runs, stage, readsPast))}`
   );
   lines.push(
     `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads still read skill files, alone or beside calls that only prepare, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
@@ -3405,15 +3427,9 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   // calls (replay.ts's `replyBoundary`): continued past one whose other calls only prepare the
   // case's act, judged at one with an act, or left with no verdict by one with an undecided call.
   // One past the last round counts above, as reads-past-last-round.
-  const mixedByStage = (counted: (run: Run) => boolean) =>
+  const mixedByStage = (holds: (run: Run) => boolean) =>
     runsByStage
-      .map(([stage, runs]) => {
-        const byArm = STAGE_ARMS[stage].map((arm) => ({
-          arm,
-          count: runs.filter((run) => run.arm === arm && counted(run)).length,
-        }));
-        return `${stage} ${armCounts(byArm)}`;
-      })
+      .map(([stage, runs]) => `${stage} ${armCounts(armRuns(runs, stage, holds))}`)
       .join("; ");
   lines.push(
     `mixed replies continued (the reply read skill files beside calls that only prepare the case's act: its reads answered and sent back alone, its other calls left out, never run), runs by stage and arm: ${mixedByStage((run) => (run.leftOut?.length ?? 0) > 0)}`,
@@ -3556,7 +3572,7 @@ interface AuditedRun {
  *  saved, the case's saved profile (`profile`, `profileInstalledCopies`). */
 type CopiesFrom = "capture" | "profile";
 
-/** The installed copies of `arm`'s profile's repository skills (context.ts's `profileCopies`, the
+/** The installed copies of `arm`'s profile's repository skills (context.ts's `profileRecords`, the
  *  skills a context of the arm installs from their repositories): each under the name the profile
  *  lists it under, from its cache entry `<cacheDir>/skills/<key>`, exactly as `installedCopies`
  *  gives a saved capture record's copies, since a capture's record names those copies. What a
@@ -3566,8 +3582,7 @@ export function profileInstalledCopies(
   arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">,
   cacheDir: string
 ): InstalledCopy[] {
-  const skills = profileCopies(arm).flatMap(({ record }) => (record === undefined ? [] : [record]));
-  return installedCopies({ skills }, cacheDir);
+  return installedCopies({ skills: profileRecords(arm) }, cacheDir);
 }
 
 /** Why the cache cannot give the profile's installed copies `copies`, or undefined: the first one
@@ -3607,6 +3622,19 @@ function stageCaptureFiles(
     caseId,
     arm.name
   );
+}
+
+/** The skill directories the arms of saved stage `state` are built from: `--old` and `--new` of
+ *  `dirs`, with the stage's own planted line where it has one. */
+function stageArmDirs(
+  dirs: { readonly old: string; readonly new: string },
+  state: Pick<StageResult, "plantedLine">
+): ArmDirs {
+  return {
+    old: dirs.old,
+    new: dirs.new,
+    ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
+  };
 }
 
 /** What the mixed-reply rule makes of a saved run's judged reply (`sortRun`): no reply saved (a
@@ -3753,32 +3781,32 @@ function auditMixedCommand(
   const auditCase = (c: Case, result: CaseResult): ArmAudit[] | AuditSkip => {
     const found: ArmAudit[] = [];
     const rule: MixedRule = { kind: "case", act: caseAct(c) };
-    const armScratch = path.join(
-      scratch,
-      createHash("sha256").update(c.id).digest("hex").slice(0, 16)
-    );
+    const armScratch = path.join(scratch, caseKey(c.id));
+    // Each saved capture the case's stages share (one per arm and text, `armCaptureDir`), parsed
+    // once, by its record file.
+    const captures = new Map<string, Capture | undefined>();
     for (const place of stagePlaces(result)) {
       const state = place.get(result);
       if (state === undefined || state.runs.length === 0) continue;
       const { stage, confirm } = place;
       const where = { caseId: c.id, stage, ...(confirm === undefined ? {} : { confirm }) };
-      if (state.texts.old !== texts.old || state.texts.new !== texts.new) {
+      if (!sameTexts({ texts }, state)) {
         skipped.push({
           ...where,
           why: `run with the texts old ${state.texts.old} and new ${state.texts.new}, not --old ${texts.old} and --new ${texts.new}`,
         });
         continue;
       }
-      const armDirs = {
-        ...dirs,
-        ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
-      };
+      const armDirs = stageArmDirs(dirs, state);
       for (const name of STAGE_ARMS[stage]) {
         const runs = state.runs.filter((run) => run.arm === name);
         if (runs.length === 0) continue;
         const arm = buildArm(c, name, armDirs, armScratch);
         const files = stageCaptureFiles(b.out, c.id, arm, state, texts);
-        const capture = savedCapture(files);
+        const capture = captures.has(files.record)
+          ? captures.get(files.record)
+          : savedCapture(files);
+        captures.set(files.record, capture);
         const copiesFrom: CopiesFrom = capture === undefined ? "profile" : "capture";
         const copies =
           capture === undefined
@@ -3826,7 +3854,7 @@ function auditMixedCommand(
               userId: run.userId,
               verdict: run.verdict,
               tools: [
-                ...sorted.others.flatMap((call) => (call.part === part ? [call.tool] : [])),
+                ...partTools(sorted.others, part),
                 ...(sorted.text === part ? ["(text)"] : []),
               ],
             });
@@ -3915,11 +3943,12 @@ interface SavedLog {
  *  the session id (`userId`) of each line that holds the gateway's headers of its answer (`gateway`,
  *  a request that got one), the deployment that answered it (gateway.ts's `deploymentOf` of its
  *  `x-litellm-model-id`; "" where it names none). A line that is no JSON, or that names no session
- *  id or no answer, is left out. */
+ *  id or no answer, is left out. The file is read once, so its SHA-256 is of the bytes parsed. */
 function readSavedLog(file: string): SavedLog | undefined {
   if (!existsSync(file)) return undefined;
+  const bytes = readFileSync(file);
   const byUser = new Map<string, Set<string>>();
-  for (const { value } of jsonLines(file)) {
+  for (const { value } of jsonTextLines(bytes.toString("utf8"))) {
     const userId = field(value, "userId");
     const headers = field(value, "gateway");
     if (typeof userId !== "string" || typeof headers !== "object" || headers === null) continue;
@@ -3931,8 +3960,23 @@ function readSavedLog(file: string): SavedLog | undefined {
     each.add(deployment);
     byUser.set(userId, each);
   }
-  const sha256 = createHash("sha256").update(readFileSync(file)).digest("hex");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
   return { file, sha256, byUser };
+}
+
+/** The request log of the saved `--out` `from` as continue-mixed and its probe read it: its file
+ *  (`logFile`, `<from>/<REQUEST_LOG>`), and `log()`, which reads it (`readSavedLog`) on its first
+ *  call and gives that read on every call after, so the file is read at most once. */
+function savedLogReader(from: string): Pick<ContinueOptions, "log" | "logFile"> {
+  const logFile = path.join(from, REQUEST_LOG);
+  let read: SavedLog | undefined | null = null;
+  return {
+    log: () => {
+      if (read === null) read = readSavedLog(logFile);
+      return read;
+    },
+    logFile,
+  };
 }
 
 /** The deployment that answered saved run `run`'s saved reply (SavedDeployment), or why none can
@@ -4029,31 +4073,34 @@ interface SavedArm {
  *  them (capture.ts's `restoreCopies`, which refuses a capture whose record names other copies
  *  than the profile now gives), or, where the capture is not saved, the copies of the case's
  *  profile (`profileInstalledCopies`); or why the case cannot be continued, a profile copy the
- *  cache does not hold or cannot read. */
+ *  cache does not hold or cannot read. `captures` holds each capture of the case read already,
+ *  by its record file (one per arm and text, `armCaptureDir`, which the case's stages share):
+ *  each is parsed, and its copies made again, once per case. */
 async function savedArms(
   r: Runner,
   c: Case,
   stage: Stage,
   state: StageResult,
   from: string,
-  scratch: string
+  scratch: string,
+  captures: Map<string, Capture | undefined>
 ): Promise<Map<ArmName, SavedArm> | { readonly unreadable: string }> {
-  const dirs = {
-    old: r.dirs.old,
-    new: r.dirs.new,
-    ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
-  };
+  const dirs = stageArmDirs(r.dirs, state);
   const arms = new Map<ArmName, SavedArm>();
   for (const name of STAGE_ARMS[stage]) {
     const arm = buildArm(c, name, dirs, scratch);
     const files = stageCaptureFiles(from, c.id, arm, state, r.texts);
-    const capture = savedCapture(files, arm);
+    const seen = captures.has(files.record);
+    const capture = seen ? captures.get(files.record) : savedCapture(files, arm);
+    captures.set(files.record, capture);
     if (capture !== undefined) {
-      await restoreCopies(c, arm, capture, {
-        source: r.source,
-        cacheDir: r.cacheDir,
-        scratchDir: path.join(r.scratch, "captures"),
-      });
+      if (!seen) {
+        await restoreCopies(c, arm, capture, {
+          source: r.source,
+          cacheDir: r.cacheDir,
+          scratchDir: path.join(r.scratch, "captures"),
+        });
+      }
       const copies = installedCopies(capture.record.context, r.cacheDir);
       arms.set(name, { arm, files, capture, copies, copiesFrom: "capture" });
       continue;
@@ -4107,10 +4154,10 @@ function planRun(
   ) {
     return { kind: "keep", why: `the rule leaves it as it was (${sorted.kind})` };
   }
-  const files = sorted.reads.map(({ read }) => `${read.skill} ${read.file}`).join(", ");
+  const files = readsWords(sorted.reads.map(({ read }) => read));
   if (sorted.kind === "unresolved") {
     const what = [
-      ...sorted.others.flatMap((call) => (call.part === "undecided" ? [call.tool] : [])),
+      ...partTools(sorted.others, "undecided"),
       ...(sorted.text === "undecided" ? ["its text"] : []),
     ].join(", ");
     return {
@@ -4146,14 +4193,14 @@ function planRun(
 }
 
 /** Saved run `run` of stage `state` as a ContinueMixedRun names it: its number, blind id, round,
- *  verdict, and the runner that made it (its own, else its stage's, else UNRECORDED_RUNNER). */
+ *  verdict, and the runner that made it (`runRunner`). */
 function savedRunNote(run: Run, state: StageResult): ContinueMixedRun["saved"] {
   return {
     run: run.run,
     id: run.id,
     round: run.round,
     verdict: run.verdict,
-    runner: run.runner ?? state.runner ?? UNRECORDED_RUNNER,
+    runner: runRunner(run, state),
   };
 }
 
@@ -4395,11 +4442,7 @@ async function continueStage(
   // The runs it changed, in the stage's order, by what it made of each.
   const changed = runs.filter((run, at) => run !== state.runs[at]);
   const of = (kind: "continued" | "waiting" | "run again") => {
-    const own = changed.filter((run) =>
-      kind === "run again"
-        ? run.continueMixed?.kind === "run again"
-        : run.continueMixed?.kind === "continued" && waits(run) === (kind === "waiting")
-    );
+    const own = changed.filter((run) => continuedKind(run) === kind);
     const each = own.map((run) => `${run.arm} run ${run.run}`).join(", ");
     const what =
       kind === "waiting"
@@ -4420,14 +4463,7 @@ async function continueStage(
   }
   if (toStart) {
     copyCaptures(r, c, stage, next, arms, o.from);
-    const stageRunner: Runner = {
-      ...r,
-      dirs: {
-        old: r.dirs.old,
-        new: r.dirs.new,
-        ...(next.plantedLine === null ? {} : { plantedLine: next.plantedLine }),
-      },
-    };
+    const stageRunner: Runner = { ...r, dirs: stageArmDirs(r.dirs, next) };
     current = await runStage(stageRunner, c, stage, current, phases, place);
   }
   return current;
@@ -4510,22 +4546,25 @@ function copyCaptures(
   }
 }
 
-/** Whether stage `state` was run with this command's texts (`--old`, `--new`), so its arms can be
- *  built again: a stage run with others is left as saved. */
-function sameTexts(r: Runner, state: StageResult): boolean {
+/** Whether stage `state` was run with the texts of `r` (this command's `--old` and `--new`), so
+ *  its arms can be built again: a stage run with others is left as saved. */
+function sameTexts(
+  r: { readonly texts: { readonly old: string; readonly new: string } },
+  state: StageResult
+): boolean {
   return state.texts.old === r.texts.old && state.texts.new === r.texts.new;
 }
 
 /** Whether `--only` (`o.only`) selects case `c`'s stage at `place`: every stage without it. */
 function selectedBy(o: Pick<ContinueOptions, "only">, c: Case, place: StagePlace): boolean {
-  return o.only === undefined || o.only.has(`${c.id}\t${placeWords(place)}`);
+  return o.only === undefined || o.only.has(stageKey(c.id, place));
 }
 
 /** The stages `--only <file>` selects: each line, blank lines aside, `<case id>`, a tab, and
  *  `screen`, `control` or `confirm <n>` (a case's confirms numbered from 1, oldest first, as
  *  `behaviour audit-mixed` numbers them), each as `<case id>\t<stage>`. Refuses a line of another
  *  form, naming the file and the line. */
-function readOnly(file: string): Set<string> {
+function onlyStages(file: string): Set<string> {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -4552,7 +4591,7 @@ function readOnly(file: string): Set<string> {
  * mixed-reply rule continues are continued, and this does it, from the saved `--out` `from`,
  * which it only reads, into `r.out`. Before any model call it refuses a saved stage (or one it
  * wrote in `r.out` before) of a runner that is neither this one nor one `--allow-runners` names
- * (`refuseOtherRunners`), and an `--only` (`onlyFile`, `readOnly`) that names a case the file
+ * (`refuseOtherRunners`), and an `--only` (`onlyFile`, `onlyStages`) that names a case the file
  * lacks or a stage its result does not hold. Then per case in the file's order: a case with no
  * saved result is skipped, and a dropped one (`caseDrop`) is written as saved; any other gets,
  * for each stage its saved result holds (screen, each confirm, control), the stage
@@ -4572,17 +4611,11 @@ async function continueMixedCommand(
   furtherRounds: number | undefined
 ): Promise<void> {
   const saved: Behaviour = { ...r, out: from };
-  const savedLogFile = path.join(from, REQUEST_LOG);
-  let savedLog: SavedLog | undefined | null = null;
   const o: ContinueOptions = {
     from,
     continuations: loggedGateway(r.gateway, logFile, "continuation"),
-    log: () => {
-      if (savedLog === null) savedLog = readSavedLog(savedLogFile);
-      return savedLog;
-    },
-    logFile: savedLogFile,
-    only: onlyFile === undefined ? undefined : readOnly(onlyFile),
+    ...savedLogReader(from),
+    only: onlyFile === undefined ? undefined : onlyStages(onlyFile),
     furtherRounds,
   };
   /** Case `c`'s result to continue, from `r.out` where it holds one, else from `from`. */
@@ -4593,14 +4626,17 @@ async function continueMixedCommand(
     return result === undefined ? undefined : { result, out: from };
   };
   const held = new Set<string>();
+  // Each case's result slim (`forScore`), which holds the stages, the drop and the runners this
+  // checks, so no case's replies are held while it runs; the loop below reads each case again.
   const checked = r.cases.flatMap((c) => {
     const each = input(c);
     if (each === undefined) return [];
-    const places = stagePlaces(each.result);
-    for (const place of places) held.add(`${c.id}\t${placeWords(place)}`);
-    if (caseDrop(c, each.result) !== undefined) return [];
+    const result = forScore(each.result);
+    const places = stagePlaces(result);
+    for (const place of places) held.add(stageKey(c.id, place));
+    if (caseDrop(c, result) !== undefined) return [];
     return places.flatMap((place) => {
-      const state = place.get(each.result);
+      const state = place.get(result);
       return state === undefined
         ? []
         : [{ caseId: c.id, label: placeWords(place), state, out: each.out }];
@@ -4642,17 +4678,14 @@ async function continueMixedCommand(
     // The arms of every stage it continues, read before any of the case is written.
     const places = stagePlaces(result);
     const armsOf = new Map<StagePlace, ReadonlyMap<ArmName, SavedArm>>();
-    const scratch = path.join(
-      r.scratch,
-      "arms",
-      createHash("sha256").update(c.id).digest("hex").slice(0, 16)
-    );
+    const scratch = armsScratch(r.scratch, c.id);
+    const captures = new Map<string, Capture | undefined>();
     let unreadable: string | undefined;
     for (const place of places) {
       const state = place.get(result);
       if (state === undefined || state.runs.length === 0) continue;
       if (!sameTexts(r, state) || !selectedBy(o, c, place)) continue;
-      const armed = await savedArms(r, c, place.stage, state, from, scratch);
+      const armed = await savedArms(r, c, place.stage, state, from, scratch, captures);
       if (!(armed instanceof Map)) {
         unreadable = `its ${placeWords(place)}: ${armed.unreadable}`;
         break;
@@ -4699,10 +4732,10 @@ async function probeCommand(
   const caseId = probe.slice(0, Math.max(0, armAt));
   const armName = probe.slice(armAt + 1, at);
   const number = Number(probe.slice(at + 1));
-  const arms: readonly string[] = Stage.options.flatMap((stage) => STAGE_ARMS[stage]);
+  const arms: readonly string[] = ScoreArm.options;
   if (armAt <= 0 || !arms.includes(armName) || !Number.isInteger(number) || number < 1) {
     throw new Refused(
-      `--probe ${probe} is not <case id>/<arm>/<run number>, an arm of ${[...new Set(arms)].join(", ")} and a run number from 1`
+      `--probe ${probe} is not <case id>/<arm>/<run number>, an arm of ${arms.join(", ")} and a run number from 1`
     );
   }
   const c = r.cases.find((each) => each.id === caseId);
@@ -4712,14 +4745,7 @@ async function probeCommand(
   if (result === undefined) {
     throw new Refused(`--probe ${probe}: ${from} holds no result of case ${caseId}`);
   }
-  const savedLogFile = path.join(from, REQUEST_LOG);
-  const log = (() => {
-    let read: SavedLog | undefined | null = null;
-    return () => {
-      if (read === null) read = readSavedLog(savedLogFile);
-      return read;
-    };
-  })();
+  const { log, logFile: savedLogFile } = savedLogReader(from);
   const scratch = path.join(r.scratch, "probe", createHash("sha256").update(c.id).digest("hex"));
   const rule: MixedRule = { kind: "case", act: caseAct(c) };
   const found: {
@@ -4730,16 +4756,17 @@ async function probeCommand(
     plan: Extract<RunPlan, { kind: "continue" }>;
   }[] = [];
   const notes: string[] = [];
+  const captures = new Map<string, Capture | undefined>();
   for (const place of stagePlaces(result)) {
     const state = place.get(result);
     const run = state?.runs.find((each) => each.arm === armName && each.run === number);
     if (state === undefined || run === undefined) continue;
     const words = placeWords(place);
-    if (state.texts.old !== r.texts.old || state.texts.new !== r.texts.new) {
+    if (!sameTexts(r, state)) {
       notes.push(`${words}: its stage was run with other texts than --old and --new`);
       continue;
     }
-    const armed = await savedArms(r, c, place.stage, state, from, scratch);
+    const armed = await savedArms(r, c, place.stage, state, from, scratch, captures);
     if (!(armed instanceof Map)) {
       notes.push(`${words}: ${armed.unreadable}`);
       continue;
@@ -4920,6 +4947,20 @@ function readReadingModels(file: string): ModelCount {
   return parsed.data;
 }
 
+/** The options `behaviour <command>` needs (`required`): `report` reads the saved results alone;
+ *  `audit-mixed` builds the arms from `--new` too; a stage command calls the model
+ *  (`--key-file`), and `continue-mixed` does too, from a saved `--out` (`--from`). */
+function behaviourNeeds(
+  report: boolean,
+  audit: boolean,
+  continuing: boolean
+): readonly ("config" | "key-file" | "out" | "from" | "old" | "new" | "cases")[] {
+  if (report) return ["config", "out", "old", "cases"];
+  if (audit) return ["config", "out", "old", "new", "cases"];
+  if (continuing) return ["config", "key-file", "out", "from", "old", "new", "cases"];
+  return ["config", "key-file", "out", "old", "new", "cases"];
+}
+
 /** `skill-cuts behaviour <command>`. */
 async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
@@ -5001,17 +5042,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   const routePins = routePinsOf(values["route-id"] ?? [], command ?? "");
   const report = command === "report";
   const audit = command === "audit-mixed";
-  const given = required(
-    values,
-    report
-      ? ["config", "out", "old", "cases"]
-      : audit
-        ? ["config", "out", "old", "new", "cases"]
-        : continuing
-          ? ["config", "key-file", "out", "from", "old", "new", "cases"]
-          : ["config", "key-file", "out", "old", "new", "cases"],
-    BEHAVIOUR_USAGE
-  );
+  const given = required(values, behaviourNeeds(report, audit, continuing), BEHAVIOUR_USAGE);
   // A stage command writes the cases' session text under --out; `report` writes nothing, and
   // `audit-mixed` only ids, counts and tool names.
   const inCheckout = report || audit ? undefined : outRefusal(given.out);
@@ -5045,9 +5076,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     return EXIT.ok;
   }
   if (audit) {
-    if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
-      throw new Refused(`--new ${given.new} is not a directory`);
-    }
+    mustBeDirectory("--new", given.new);
     auditMixedCommand(
       behaviour,
       { old: given.old, new: given.new },
@@ -5065,9 +5094,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     }
   }
 
-  if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Refused(`--new ${given.new} is not a directory`);
-  }
+  mustBeDirectory("--new", given.new);
   const from = values.from;
   if (continuing) {
     if (from === undefined || !statSync(from, { throwIfNoEntry: false })?.isDirectory()) {
@@ -5264,9 +5291,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     host.data === "omp" && values.models !== undefined ? requiredOmp(values.omp) : undefined;
   const runs = wholeOption("runs", values.runs, LOAD_RUNS);
   const hintDraw = wholeOption("hint-draw", values["hint-draw"], 1);
-  if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Refused(`--skill ${given.skill} is not a directory`);
-  }
+  mustBeDirectory("--skill", given.skill);
   const config = configFrom(given.config);
   const named = values["context-session"];
   let contextSession: { store: string; pathHash: string } | undefined;
@@ -5352,9 +5377,7 @@ function loadAuditCommand(argv: readonly string[], io: CliIo): number {
     LOAD_AUDIT_USAGE
   );
   const given = required(values, ["out", "skill"], LOAD_AUDIT_USAGE);
-  if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Refused(`--skill ${given.skill} is not a directory`);
-  }
+  mustBeDirectory("--skill", given.skill);
   const tasks = auditLoadMixed({
     out: given.out,
     skillDir: path.resolve(given.skill),

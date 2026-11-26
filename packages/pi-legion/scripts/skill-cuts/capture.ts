@@ -249,7 +249,7 @@ import {
   type InstalledSkill,
   installedCopies,
   legionRole,
-  profileCopies,
+  profileRecords,
   type RepoSource,
 } from "./context";
 import { sessionHeadSql } from "./countsql";
@@ -942,7 +942,7 @@ export function savedCapture(
 
 /**
  * Refuses a saved capture of `c`'s arm `arm` whose record names other repository copies than the
- * case's profile now gives (context.ts's `profileCopies`: the copies `buildContext` installs),
+ * case's profile now gives (context.ts's `profileRecords`: the copies `buildContext` installs),
  * whether or not `options.cacheDir` holds the record's copies (Refused, naming the case, the arm
  * and the first copy that differs): a replay of it would answer a read of a skill from another
  * copy than the one the capture was made with. The comparison reads the record and the arm alone:
@@ -969,9 +969,7 @@ export async function restoreCopies(
         : [`${name} from ${from.path} of ${from.repo} at ${from.commit} (cache key ${from.key})`]
     );
   const was = copies(saved.skills);
-  const now = copies(
-    profileCopies(arm).flatMap(({ record }) => (record === undefined ? [] : [record]))
-  );
+  const now = copies(profileRecords(arm));
   for (let at = 0; at < Math.max(was.length, now.length); at += 1) {
     if (was[at] === now[at]) continue;
     throw new Refused(
