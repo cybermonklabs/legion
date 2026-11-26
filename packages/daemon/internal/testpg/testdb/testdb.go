@@ -121,6 +121,11 @@ func create(dsn, prefix string) (string, func() error, error) {
 		_ = conn.Close(ctx)
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}
+	if _, err := conn.Exec(ctx, WithoutJIT(name)); err != nil {
+		_ = Drop(ctx, conn, name)
+		_ = conn.Close(ctx)
+		return "", nil, fmt.Errorf("turn JIT off on %s: %w", name, err)
+	}
 	drop := func() error {
 		defer func() { _ = conn.Close(context.Background()) }()
 		if err := Drop(context.Background(), conn, name); err != nil {
@@ -129,6 +134,19 @@ func create(dsn, prefix string) (string, func() error, error) {
 		return nil
 	}
 	return database, drop, nil
+}
+
+// WithoutJIT is the statement that turns JIT off for every session that connects to the database
+// name from then on, as production's database runs every statement: Cloud SQL does not support
+// PostgreSQL's LLVM JIT, and CI's Postgres image runs with it on. Under jit = on a statement whose
+// estimate passes jit_above_cost compiles before it runs, which production never pays (in envoy's
+// internal/dispatch/refs it was 445-475 ms of each 453-564 ms run of one statement,
+// dispatch://INFRA-1075). The setting is the database's, so it reaches every pool and process a
+// test opens there, and it goes with the database: no setting of the server changes. A clone does
+// not copy its template's settings, so every database here takes it when it is made (create,
+// testpg's template and Clone).
+func WithoutJIT(name string) string {
+	return "alter database " + name + " set jit = off"
 }
 
 // insufficientPrivilege is PostgreSQL's 42501, which a forced drop answers when a session of the

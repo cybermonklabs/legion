@@ -87,8 +87,9 @@ func (d *processDatabase) create(prefix string) error {
 	if err := execOn(d.adminURL, d.host, "create database "+name+" strategy file_copy"); err != nil {
 		return err
 	}
+	// Named once it exists, so Run drops it even when the setting below fails.
 	d.name, d.url = name, databaseURL(*server, name)
-	return nil
+	return execOn(d.adminURL, d.host, WithoutJIT(name))
 }
 
 // Main runs the package's tests and then drops the database ProcessDatabaseOn made for them. A
