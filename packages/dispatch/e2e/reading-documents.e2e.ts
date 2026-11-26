@@ -121,16 +121,17 @@ test("margin-decision-passage: a margin decision card's passage draws every form
     readingAgent
   );
   const shaped = await blockId(spec, SHAPED);
-  // A decision stands beside a spec block it links, so its passage is the reading text and the
-  // link to that block; the link draws as its block's name, which leaves no address as text.
-  // The passage is a record of `decisions.md`, so a `#id` in it is read against that document
-  // (the card hands the renderer the document as the passage's source): the document declares
-  // the question block itself, ahead of its first decision, and the world is scoped to it.
+  // A decision stands beside a spec block its `shaped` attribute ties it to, and its passage is
+  // the reading text and a link to that block; the link draws as its block's name, which leaves
+  // no address as text. The decision is written in a document of the issue, so a `#id` in its
+  // passage is read against that document (the card hands the renderer the document as the
+  // passage's source): the document declares the question block itself ahead of the decision,
+  // and the world is scoped to it.
   const { artifact } = await createIssueArtifact(
     world.host.key,
     {
-      content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n`,
-      name: "decisions.md",
+      content: `${readingQuestionBlock()}\n\n:::decision{#d-read shaped="dispatch://${world.host.key}/spec#b-${shaped}"}\n### ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n:::\n`,
+      name: "choices.md",
     },
     readingAgent
   );

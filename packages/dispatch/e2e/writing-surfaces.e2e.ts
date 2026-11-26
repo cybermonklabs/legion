@@ -8,8 +8,8 @@ import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentRow } from "./agents";
 import {
   answerAsk,
-  createIssueArtifact,
   createPriority,
+  editArtifact,
   getArtifactText,
   listPriorities,
   publishAgentStreamFrame,
@@ -139,8 +139,9 @@ function composerSend(
     .getByRole("button", { exact: true, name: "Send" });
 }
 
-/** The decision the Decisions panel's box changes: the heading of the issue's `decisions.md`,
- *  which the form the change is written in is named after (`ChangeComposer`). */
+/** The decision the Decisions panel's box changes: the heading of an agent's `decision` block in
+ *  the spec's `## Decisions` part, which the form the change is written in is named after
+ *  (`ChangeComposer`). */
 const DECISION = "Store notices in a table";
 
 const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
@@ -388,15 +389,22 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       );
     },
     seed: async (world) => {
-      const decisions = await createIssueArtifact(
-        world.host,
+      // An agent's decision waits for a person's review, so the panel offers its Change: the
+      // agent writes it into the host's spec as decisions are written.
+      await editArtifact(
+        world.spec,
         {
-          content: `## ${DECISION}\n\nChosen for the simplest storage.\n`,
-          name: "decisions.md",
+          ops: [
+            {
+              after: "end",
+              markdown: `## Decisions\n\n:::decision{#d-store}\n### ${DECISION}\n\nChosen for the simplest storage.\n:::\n`,
+              op: "insert",
+            },
+          ],
+          summary: "decided",
         },
         { actor: { id: SESSION.session_id, kind: "session" }, as: "agent" }
       );
-      expect(decisions.artifact.slug).toBe("decisions-md");
     },
   },
   "document-body": {

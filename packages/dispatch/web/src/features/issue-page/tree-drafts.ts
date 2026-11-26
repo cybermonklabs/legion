@@ -16,7 +16,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
-import { isDecisionEntry } from "../issue/decision-entries";
+import { isDecisionEntry, personDecisionAsk } from "../issue/decision-entries";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { ReferenceNameReading } from "../refs/reference-names";
@@ -1086,8 +1086,15 @@ function addDecisions(
       linked.set(ref, { ...context.chipOf(ref), stale });
     }
     if (decision.kind === "person") {
+      // Two sections of the release before can cite one ask (`personDecisionAsk`): its node
+      // carries each target once, stale where any of its links is.
       const ask = drafts.get(id);
-      if (ask !== undefined) ask.chips = [...ask.chips, ...linked.values()];
+      if (ask === undefined) return;
+      const chips = new Map(ask.chips.map((chip) => [chip.ref, chip]));
+      for (const [ref, chip] of linked) {
+        chips.set(ref, { ...chip, stale: chip.stale || chips.get(ref)?.stale === true });
+      }
+      ask.chips = [...chips.values()];
       return;
     }
     const held = drafts.get(id);
@@ -1133,18 +1140,19 @@ function addDecisions(
 
 /**
  * The node the tree draws `decision` as: an agent's decision its own block's node, and a
- * person's, which is the answered ask itself (`DecisionEntry.kind`) named by the ask's own
- * address, the node `addAsks` drew that ask as. Undefined for a decision the tree addresses no
- * node for, and for a person's whose ask it drew no node for. `addDecisions` draws each decision
- * at it and `addRequirements` reads each one's `shaped` edge from it, so the two name one node.
+ * person's, which is the answered ask itself (`DecisionEntry.kind`), the node `addAsks` drew
+ * that ask as (`personDecisionAsk`). Undefined for a decision the tree addresses no node for,
+ * and for a person's whose ask it drew no node for. `addDecisions` draws each decision at it and
+ * `addRequirements` reads each one's `shaped` edge from it, so the two name one node.
  */
 function decisionNodeId(
-  decision: Pick<DecisionEntry, "kind" | "ref">,
+  decision: Pick<DecisionEntry, "from_ask" | "kind" | "node" | "ref">,
   context: TreeContext,
   asks: ReadonlyMap<string, string>
 ): string | undefined {
-  const id = context.nodeIdOf(decision.ref);
-  return id === undefined || decision.kind !== "person" ? id : asks.get(id);
+  if (decision.kind !== "person") return context.nodeIdOf(decision.ref);
+  const ask = personDecisionAsk(decision);
+  return ask === undefined ? undefined : asks.get(ask);
 }
 
 /**

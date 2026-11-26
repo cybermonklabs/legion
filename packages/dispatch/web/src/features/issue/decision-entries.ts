@@ -31,6 +31,24 @@ export function isDecisionEntry(entry: Pick<DecisionEntry, "answer_state" | "kin
 }
 
 /**
+ * The ask a person's decision is, by the ask's id: an answered ask's entry names it as its own
+ * node. Undefined for an agent's decision, whose block is its own node. Every view that draws a
+ * person's decision at its ask - the tree's node and its `shaped` edge, the Decisions filter's
+ * entry - reads the ask here, so they cannot disagree.
+ */
+export function personDecisionAsk(
+  entry: Pick<DecisionEntry, "from_ask" | "kind" | "node">
+): string | undefined {
+  if (entry.kind !== "person") return undefined;
+  if (entry.node.kind === "ask") return entry.node.id;
+  // A section of the release before that cites an ask is a person's decision too
+  // (`sectionEntry`), whose node and address are its heading block's, which names no ask: it is
+  // the decision of the first ask it cites, the one the release before drew it under first.
+  // kept for one release: compat-objects
+  return entry.from_ask?.[0];
+}
+
+/**
  * `read` with its `entries`, as every view reads it. This build's server answers them, and the
  * read is handed back as it came. A server of the release before answers no `entries`, and a page
  * of this build can reach one while a deploy rolls: its `open_questions` and `decisions` are then
@@ -104,7 +122,10 @@ function openQuestionEntry(ask: IssueAskRow, issueKey: string): DecisionEntry {
  * and `decisionBlockId`), so it names no `document` of its own: the read gives no id for it. A
  * section that cites an ask is a person's decision, which an entry names answered; the asks a
  * section cites are the questions it settles (`from_ask`), and its doubt is a `high`
- * uncertainty. No entry of that read names a decider or a reading.
+ * uncertainty. The tree and the Decisions filter draw a person's section at the first ask it
+ * cites (`personDecisionAsk`), with its links as that ask's ties, and draw no node of its own;
+ * the Decisions tab draws its words under its address. No entry of that read names a decider or
+ * a reading.
  *
  * kept for one release: compat-objects
  */

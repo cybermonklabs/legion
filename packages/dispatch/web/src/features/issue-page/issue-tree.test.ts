@@ -1896,6 +1896,62 @@ test("a Decisions read of the release before, with no entries, still places its 
   expect(nodeOf(root, id)?.chips.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r1`]);
 });
 
+// The release before answers a person's decision as a section that cites the answered ask, and
+// addresses it by the section's heading block, which names no ask. A page of this build reads it
+// at the first ask it cites (`personDecisionAsk`), as it reads this build's person's decision at
+// its ask: the ask's node carries what the section shaped, the requirement it shaped reads that
+// edge from the ask, and no decision node stands for the section, so the person's decision is
+// drawn once. Two sections that cite one ask and link one statement give the ask one chip for
+// it, stale where either link is.
+test("a person's section of the release before stands at the ask it cites, with what it shaped", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const answer = { at: "2026-11-06T00:00:00Z", selected: [], text: "One read.", user: "alice" };
+  const section = (block: string, stale: boolean): Decision => {
+    const made = decision(block, "The person chose one read.", ["r-shaped"]);
+    return {
+      ...made,
+      asks: ["ask-own"],
+      kind: "person",
+      links: made.links.map((link) => ({ ...link, stale })),
+      ref: `dispatch://${KEY}/artifact/decisions-md#b-${block}`,
+      text: "## The person chose one read\n\nOne read keeps it simple.",
+    };
+  };
+  const read = withEntries(
+    {
+      decisions: [section("h-one", false), section("h-two", true)],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
+  const root = buildIssueTree({
+    asks: [question("ask-own", { answer, state: "answered" })],
+    coverage: coverage([
+      requirement("r-origin", "The requirement the other one came from."),
+      requirement("r-shaped", "The requirement the person's section claims."),
+    ]),
+    decisions: read,
+    documents: [
+      {
+        artifactId: spec.id,
+        blocks: [
+          block("r-origin", "requirement"),
+          block("r-shaped", "requirement", { from: `dispatch://${KEY}/spec#b-r-origin` }),
+        ],
+      },
+    ],
+    issue: issueDetails([spec]),
+  });
+
+  expect(nodeOf(root, "ask-own")?.chips.map(({ ref, stale }) => ({ ref, stale }))).toEqual([
+    { ref: `dispatch://${KEY}/spec#b-r-shaped`, stale: true },
+  ]);
+  expect(nodesInOrder(root).filter((node) => node.type === "decision")).toEqual([]);
+  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual(["shaped_disagreement"]);
+  expect(decisionBehind(root, blockNodeId(SPEC, "r-shaped"))?.id).toBe("ask-own");
+});
+
 // A read of the release before built a decision's asks and links paragraph by paragraph and
 // kept every repeat, so a decision whose two paragraphs cite one question and link one statement
 // named each twice; this build's read names each tie once, from the decision's node. A repeat is
