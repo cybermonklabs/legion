@@ -3062,15 +3062,15 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   // source, not back to the artifact the reader is already on. What references the opened
   // artifact is drawn open, in the page's own words (part N's R2, R12): a comment of the issue's
   // own is named by its words, beside the page's word for a comment, with no issue named, and the
-  // words name the document they cite by the page's word for a document, as the outline's chip
-  // does (part G's R4).
-  const citingWords = `See ${NODE_TYPE_NAMES.document} before deciding.`;
-  const citing = page.getByRole("link", { exact: true, name: citingWords });
+  // words name the document they cite by the name the page's one batched read gave it, its file
+  // name, as a plain line reads a link to it (main's one reference framework, #3125); the page's
+  // word for a document stands only until that read answers.
+  const diagramWords = "See diagram.png before deciding.";
   const diagramRow = openedArtifact(page)
     .getByRole("region", { name: PROPERTY_LABELS.referenced_by })
     .getByRole("listitem")
-    .filter({ has: citing });
-  const diagramSource = diagramRow.getByRole("link", { exact: true, name: citingWords });
+    .filter({ has: page.getByRole("link", { exact: true, name: diagramWords }) });
+  const diagramSource = diagramRow.getByRole("link", { exact: true, name: diagramWords });
   await expect(diagramSource).toHaveAttribute(
     "href",
     `/issues/${issue.key}/comments/${diagramCitation.id}`
@@ -3084,11 +3084,12 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   await openDocumentsList(page, testInfo.project.name === "iphone");
   await documentLink(page, "notes.md").click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
+  const notesWords = "See notes.md before deciding.";
   const notesRow = openedArtifact(page)
     .getByRole("region", { name: PROPERTY_LABELS.referenced_by })
     .getByRole("listitem")
-    .filter({ has: citing });
-  await expect(notesRow.getByRole("link", { exact: true, name: citingWords })).toHaveAttribute(
+    .filter({ has: page.getByRole("link", { exact: true, name: notesWords }) });
+  await expect(notesRow.getByRole("link", { exact: true, name: notesWords })).toHaveAttribute(
     "href",
     `/issues/${issue.key}/comments/${notesCitation.id}`
   );
@@ -4957,8 +4958,8 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
     agent
   );
   // The option's stored text, which the panel shows as the row's excerpt: its label, an em dash
-  // and its description.
-  const optionText = `Wait — Hold until dispatch://${target.key} ships.`;
+  // and its description, drawn by the renderer, so the address in it reads as the issue's name.
+  const optionText = `Wait — Hold until ${target.key} ${target.title} ships.`;
 
   await page.goto(`/issues/${target.key}`);
   // The backlink panel is the References section of the issue page's one panel, Details, where
@@ -4975,7 +4976,7 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
   const askSource = references.getByRole("link", { name: `Ask · ${source.key}` });
   await expect(askSource).toBeVisible();
   await expect(references.getByText(/^Artifact · /)).toHaveCount(0);
-  await expect(references.getByText(optionText, { exact: true })).toBeVisible();
+  await expect(references.locator(".dispatch-markdown")).toHaveText(optionText);
   // One row, not two: an ask's own links are its question's, so the option's citation is the
   // part's edge alone.
   await expect(askSource).toHaveCount(1);
