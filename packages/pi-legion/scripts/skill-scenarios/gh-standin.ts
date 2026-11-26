@@ -197,7 +197,13 @@ if (route.clone === true) {
     (arg, index) =>
       !arg.startsWith("-") && !["-u", "--upstream-remote-name"].includes(own[index - 1] ?? "")
   );
-  const [repository = "", directory = repository.replace(/\.git$/, "").split("/").at(-1)] = named;
+  const [
+    repository = "",
+    directory = repository
+      .replace(/\.git$/, "")
+      .split("/")
+      .at(-1),
+  ] = named;
   const cloned = Bun.spawnSync(
     [
       "git",

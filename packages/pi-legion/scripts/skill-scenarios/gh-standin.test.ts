@@ -214,9 +214,9 @@ test("a -R or --repo before a pr or run command is read after the command, as gh
   expect(
     ask(runs.moved, "--repo=example/widgets", "pr", "view", "702", "--json", "number").stdout
   ).toBe('{"number":702}\n');
-  expect(
-    ask(runs.moved, "--repo", "example/widgets", "run", "list", "--limit", "10").stdout
-  ).toBe("the runs\n");
+  expect(ask(runs.moved, "--repo", "example/widgets", "run", "list", "--limit", "10").stdout).toBe(
+    "the runs\n"
+  );
   const api = ask(runs.moved, "-R", "example/widgets", "api", "repos/example/widgets/pulls/702");
   expect(api.code).toBe(97);
   expect(api.call).toMatchObject({
@@ -261,7 +261,17 @@ test("gh repo clone clones the run's remote into the directory it names, with gi
   mkdirSync(work);
   routed(runs.cloned, [{ match: "^gh repo clone example/widgets( |$)", clone: true }]);
 
-  const named = askIn(work, runs.cloned, "repo", "clone", "example/widgets", "w702", "--", "--depth", "1");
+  const named = askIn(
+    work,
+    runs.cloned,
+    "repo",
+    "clone",
+    "example/widgets",
+    "w702",
+    "--",
+    "--depth",
+    "1"
+  );
   expect(named.code).toBe(0);
   expect(named.call).toMatchObject({ route: "^gh repo clone example/widgets( |$)", exit: 0 });
   expect(readFileSync(path.join(work, "w702", "README.md"), "utf8")).toBe("# widgets\n");

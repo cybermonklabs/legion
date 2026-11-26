@@ -279,10 +279,14 @@ test(
   () => {
     const bin = path.join(rig, "standin-go-bin");
     mkdirSync(bin, { recursive: true });
+    // The stand-in prints its GOMAXPROCS and then its arguments, a line each. An unset GOMAXPROCS
+    // prints an empty value, which the row's expected line does not hold.
     writeFileSync(
       path.join(bin, "go"),
-      '#!/bin/sh\nprintf "%s\\n" "GOMAXPROCS=${GOMAXPROCS-unset}" "$@"\n',
-      { mode: 0o700 }
+      '#!/bin/sh\nprintf "%s\\n" "GOMAXPROCS=$GOMAXPROCS" "$@"\n',
+      {
+        mode: 0o700,
+      }
     );
     const script = [
       `import { DAEMON_MODULE, runDaemonPane } from ${JSON.stringify(path.join(import.meta.dir, "daemon-pane.ts"))};`,
