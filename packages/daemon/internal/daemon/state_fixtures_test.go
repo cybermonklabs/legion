@@ -151,7 +151,7 @@ func TestTheStateFixturesSettingsAreReadFromInternalAPIsGoldens(t *testing.T) {
 // moves moves the fixture, and a value no rule of the daemon serves over the seed cannot reach one.
 //
 // Each fixture is the body as the route serves it to a caller at this daemon's own contract, less
-// the route's `contract` mark (api's stateFor; apifixture.WithoutOwnContractMarks) and with 0 in
+// the route's `contract` mark (api's stateFor; apifixture.WithoutContractMarks) and with 0 in
 // place of `daemon.schemaVersion` (withNoSchemaVersion), both taken off here, in the test, before
 // the fixture is compared or written. Both numbers of the mark name this daemon's own contract,
 // which is LastNumberedContract plus the build's count of entries, so a fixture that held it would
@@ -175,9 +175,9 @@ func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newSeeding(t)
-			body, taken := apifixture.WithoutOwnContractMarks(t, s.served(tc.seed(s)), api.DaemonAPIVersion())
+			body, taken := apifixture.WithoutContractMarks(t, s.served(tc.seed(s)), "daemon", "caller")
 			if own := api.DaemonAPIVersion(); !maps.Equal(taken, map[string]int{"daemon": own, "caller": own}) {
-				t.Fatalf("the state route marked the body with %v of this daemon's own contract, want the daemon and the caller mark both at %d, the marks of a caller at this daemon's own contract", taken, own)
+				t.Fatalf("the state route marked the body %v, want the daemon and the caller mark both at %d, the marks of a caller at this daemon's own contract", taken, own)
 			}
 			body = withNoSchemaVersion(t, body)
 			testgolden.Check(t, apifixture.Path(tc.file), json.RawMessage(body), *updateStateFixtures, apifixture.StateFixturesRewrite)
@@ -291,7 +291,7 @@ func (s *seeding) served(c composition) []byte {
 // store reads (store.Store.SchemaVersionTx), which every migration added moves; a fixture that
 // held it would go stale at every migration and conflict as text between any two pull requests
 // that add one. So the served version is held here to the newest migration the store embeds
-// (migrations.All), and the fixture holds 0 in its place, as apifixture.WithoutOwnContractMarks
+// (migrations.All), and the fixture holds 0 in its place, as apifixture.WithoutContractMarks
 // takes off the marks of this daemon's own contract.
 func withNoSchemaVersion(t testing.TB, body []byte) []byte {
 	t.Helper()

@@ -304,7 +304,7 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // below the contract it is served at, which is why the golden carries `lowestPluginContract` and
 // each claim view's `updateState`; the populated state holds no pause, so it carries no `paused`.
 // The mark's `daemon` names this daemon's own contract, which an entry moves, so it is taken out
-// before the golden is compared or written (apifixture.WithoutOwnContractMarks) and held to that
+// before the golden is compared or written (apifixture.WithoutContractMarks) and held to that
 // number here, as internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes
 // out state.json's marks with the same strip; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
@@ -312,9 +312,9 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
-	body, taken := apifixture.WithoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1), DaemonAPIVersion())
+	body, taken := apifixture.WithoutContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1), "daemon")
 	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
-		t.Errorf("the state served below repositoriesLiveContract has the marks %v naming this daemon's own contract, want its daemon mark alone at %d", taken, DaemonAPIVersion())
+		t.Errorf("the state served below repositoriesLiveContract has the daemon mark %v, want %v, this daemon's own contract", taken, want)
 	}
 	stateGolden(t, "state-narrowed-repositories.json", body)
 }

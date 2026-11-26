@@ -1,6 +1,6 @@
 // Package apifixture holds what the daemon API's fixtures (packages/contracts/fixtures/daemon-api)
 // are made from where the tests of more than one package make them: the fixtures' path, the
-// commands that write the state fixtures, the strip of a state's own contract marks, the loader of
+// commands that write the state fixtures, the strip of a state's contract marks, the loader of
 // the legion.yaml files the goldens load, and the pause the pause routes' goldens answer.
 // internal/api's goldens and internal/daemon's composition of the state fixtures read the same
 // ones, so the last pause the last-pause fixture carries and the pause the pause routes' fixtures
@@ -41,13 +41,15 @@ func Path(name string) string {
 const StateFixturesRewrite = "go test ./internal/daemon/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
 	"then go test ./internal/api/ -run Golden -update"
 
-// WithoutOwnContractMarks is body, the JSON of a state, with each mark of its `contract` that
-// names own, the contract of the daemon that served it (api.DaemonAPIVersion, which the caller
-// passes, since this package imports no api), taken out, and `contract` itself where that leaves
-// it empty, every other key in its place and every other byte as it stands; and the marks it took
-// out, by name. A state fixture holds no mark of the daemon's own contract, since every contract
-// entry moves that number: the caller holds the marks taken out to the ones it expects instead.
-func WithoutOwnContractMarks(t testing.TB, body []byte, own int) (json.RawMessage, map[string]int) {
+// WithoutContractMarks is body, the JSON of a state, with the marks of its `contract` that names
+// names taken out, and `contract` itself where that leaves it empty, every other key in its place
+// and every other byte as it stands; and the number each mark it took out held, by name. A state
+// fixture holds no mark that names the daemon's own contract, since every contract entry moves
+// that number, so its test takes those marks out here and holds the numbers they held to
+// api.DaemonAPIVersion() itself. The comparison stays in the test's own file: internal/api's
+// TestEveryContractComparisonHasARow holds each comparison of a contract number in a Go file that
+// is not a test, this one too, to a row of the Design's table, and this package compares none.
+func WithoutContractMarks(t testing.TB, body []byte, names ...string) (json.RawMessage, map[string]int) {
 	t.Helper()
 	var state jsonObject
 	if err := json.Unmarshal(body, &state); err != nil {
@@ -63,11 +65,14 @@ func WithoutOwnContractMarks(t testing.TB, body []byte, own int) (json.RawMessag
 		t.Fatalf("decode the state's contract mark: %v", err)
 	}
 	marks = slices.DeleteFunc(marks, func(member jsonMember) bool {
-		var contract int
-		if json.Unmarshal(member.value, &contract) != nil || contract != own {
+		if !slices.Contains(names, member.key) {
 			return false
 		}
-		taken[member.key] = contract
+		var number int
+		if err := json.Unmarshal(member.value, &number); err != nil {
+			t.Fatalf("decode the state's %s mark %s: %v", member.key, member.value, err)
+		}
+		taken[member.key] = number
 		return true
 	})
 	if len(marks) == 0 {
