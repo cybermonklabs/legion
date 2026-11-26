@@ -1727,13 +1727,19 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 //     while its send was out, or one taken back under a new id since — so the turn is taken for
 //     the task's, and credits nothing of it: told twice, never credited for a prompt that was not
 //     this delivery's.
-//   - A send whose prompt has answered (sending.resulted) is no reason at all, under any id. A
-//     result that ran a turn has said which turn the prompt's was (promptResulted), and an answer
-//     that ran none has taken the task back under a new id (promptFailed, takeBackPending), so a
-//     turn that starts after it is another input's. Taken for the task's, it would confirm a task
-//     no prompt carried to the agent: a let-go in that turn would vouch for the confirmation,
-//     since no answer is left to come (confirmationInDoubt), and the end of the turn a busy answer
-//     named would retire the task as served (settle).
+//   - A send whose answer has come (sending.resulted) is read as no send at all, under any id, so
+//     a turn that starts after that answer is the task's only by the bullet below. The answer has
+//     said what became of the prompt: a result that ran a turn says which turn that was
+//     (promptResulted), and a no-turn answer takes the task back under a new id (promptFailed,
+//     takeBackPending) or, where that write fails, leaves it under the send's own id with its
+//     confirmation cleared, so the pending task's own send is read by its answer too, not by its
+//     id alone. Taken for the task's, such a turn would confirm a task with nothing left to come
+//     that could take the confirmation back: a let-go in that turn would vouch for it
+//     (confirmationInDoubt), and the end of the turn a busy answer named would retire the task as
+//     served (settle). A resend that an earlier prompt's result marked answered, that result's
+//     turn having ended in a provider error, is read the same way, though the resend's own turn
+//     can still run after that one: nothing confirms the task, the retry sends it again, and the
+//     resend's result is fenced, as when the resend's acknowledgement is read before that result.
 //   - Otherwise the turn is taken for the task's while the wait for an acknowledged prompt's turn
 //     is armed, or while a restart's question stands for a task it may take (askFirst,
 //     askFirstNeverTakes), and it credits the copy the delivery holds: the copy the earlier

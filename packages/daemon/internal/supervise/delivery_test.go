@@ -1005,15 +1005,17 @@ func TestAnEarlierPromptsNoTurnAnswerTakesTheTaskBackOnceTheResendHasAnswered(t 
 // A turn that starts while the send of the task's prompt is in flight is taken for the task's only
 // while that send's answer is still to come (turnAnswers, sendUnanswered). Once the prompt has said
 // it ran no turn, by its result or by its refusal after the acknowledgement, read before the
-// send's outcome, the task has gone back under a new id that no prompt has carried, and a turn
-// that starts then is another input's. Taken for the task's, it confirmed that task, its entry's
-// handshake and the record of the last let-go, and nothing left to come could take them back. So
-// where the agent was in no turn, a death in that foreign turn kept the handshake's confirmation
-// and replaced launch 1's untold record with its own rather than joining it: the relaunched agent
-// was never told what launch 1 ended. Where Oh My Pi's answer was its busy one, the end of the
-// turn it named retired the task as served, though no turn of it ran. The turn now confirms
-// nothing: the death's record joins launch 1's, and the busy turn's end leaves the task to go
-// again once the send's outcome is read.
+// send's outcome, the answer has taken the task back unconfirmed, under a new id or, where the
+// take-back's write fails, under the send's own id, and a turn that starts then is another
+// input's. Taken for the task's, it confirmed that task, its entry's handshake and the record of
+// the last let-go, and nothing left to come could take them back. So where the agent was in no
+// turn, a death in that foreign turn kept the handshake's confirmation and replaced launch 1's
+// untold record with its own rather than joining it: the relaunched agent was never told what
+// launch 1 ended. Where Oh My Pi's answer was its busy one, the end of the turn it named retired
+// the task as served, though no turn of it ran; where the take-back's write failed too, the task
+// kept the send's id, and a reading of the pending task's send by its id alone did the same. The
+// turn now confirms nothing: the death's record joins launch 1's, and the busy turn's end leaves
+// the task to go again once the send's outcome is read.
 func TestATurnThatStartsAfterTheSendsPromptRanNoTurnIsNotTheTasks(t *testing.T) {
 	const refusal = "the model provider refused the request"
 	for _, answer := range []struct {
@@ -1071,40 +1073,57 @@ func TestATurnThatStartsAfterTheSendsPromptRanNoTurnIsNotTheTasks(t *testing.T) 
 			h.wantHandshake("after a death in the turn of another input's,", unconfirmed)
 		})
 
-		t.Run(answer.name+", Oh My Pi busy, then the turn it named", func(t *testing.T) {
-			h := newHarness(t)
-			h.reach(StateReady)
-			gated := newGatedConn()
-			h.conns.Register(testToken, gated)
-			handle := func(ev Event) {
-				t.Helper()
-				if err := h.m.Handle(h.ctx, ev); err != nil {
-					t.Fatalf("handle %T: %v", ev, err)
+		for _, unwritten := range []bool{false, true} {
+			name := answer.name + ", Oh My Pi busy, then the turn it named"
+			if unwritten {
+				name = answer.name + ", Oh My Pi busy and the take-back's write failing, then the turn it named"
+			}
+			t.Run(name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateReady)
+				gated := newGatedConn()
+				h.conns.Register(testToken, gated)
+				handle := func(ev Event) {
+					t.Helper()
+					if err := h.m.Handle(h.ctx, ev); err != nil {
+						t.Fatalf("handle %T: %v", ev, err)
+					}
 				}
-			}
-			handle(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
-			sent := testwait.Receive(t, "the send", gated.entered)
-			handle(answer.of(sent, busyAnswer))
-			taken := h.pending()
-			if state := h.state(); state != StateWorking || taken.ID == sent || !taken.ConfirmedAt.IsZero() {
-				t.Fatalf("after the busy answer the claim is %s holding %+v, want it recorded working for the turn Oh My Pi named and the task taken back under a new id, unconfirmed: this test proves nothing", state, taken)
-			}
+				handle(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+				sent := testwait.Receive(t, "the send", gated.entered)
+				if unwritten {
+					// The take-back's write fails, so the task stays under the send's id
+					// (takeBackPending), its confirmation cleared and the claim recorded working.
+					h.store.fail("PutDelivery", errBoom)
+					if err := h.m.Handle(h.ctx, answer.of(sent, busyAnswer)); !errors.Is(err, errBoom) {
+						t.Fatalf("the busy answer with the delivery's write failing = %v, want %v: this test proves nothing", err, errBoom)
+					}
+					h.store.fail("PutDelivery", nil)
+				} else {
+					handle(answer.of(sent, busyAnswer))
+				}
+				taken := h.pending()
+				if state := h.state(); state != StateWorking || (taken.ID == sent) != unwritten || !taken.ConfirmedAt.IsZero() {
+					t.Fatalf("after the busy answer the claim is %s holding %+v, want it recorded working for the turn Oh My Pi named and the task taken back unconfirmed, under the send's id %s = %v: this test proves nothing",
+						state, taken, sent, unwritten)
+				}
 
-			handle(StreamTurnStart{Claim: testToken})
-			handle(StreamTurnEnd{Claim: testToken})
-			if c := h.claim(); c.Pending == nil || c.Pending.ID != taken.ID || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
-				t.Fatalf("after the end of the turn the busy answer named: pending %+v serving %d, want %s kept, unconfirmed: no prompt carried it into that turn", c.Pending, c.ServingGeneration, taken.ID)
-			}
+				handle(StreamTurnStart{Claim: testToken})
+				handle(StreamTurnEnd{Claim: testToken})
+				if c := h.claim(); c.Pending == nil || c.Pending.ID != taken.ID || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+					t.Fatalf("after the end of the turn the busy answer named: pending %+v serving %d, want %s kept, unconfirmed: no prompt carried it into that turn", c.Pending, c.ServingGeneration, taken.ID)
+				}
 
-			// The send's outcome sends the task again: the plain connection takes that send, so no
-			// send waits at the gate.
-			h.conns.Register(testToken, h.conn)
-			gated.release <- struct{}{}
-			h.m.Wait()
-			if again := h.wantPrompts(1)[0]; again.DeliveryID != taken.ID {
-				t.Fatalf("the send's outcome sent %s, want the task again under %s", again.DeliveryID, taken.ID)
-			}
-		})
+				// The send's outcome sends the task again: the plain connection takes that send, so
+				// no send waits at the gate.
+				h.conns.Register(testToken, h.conn)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				if again := h.wantPrompts(1)[0]; again.DeliveryID != taken.ID {
+					t.Fatalf("the send's outcome sent %s, want the task again under %s", again.DeliveryID, taken.ID)
+				}
+			})
+		}
 	}
 }
 

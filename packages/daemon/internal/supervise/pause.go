@@ -372,11 +372,14 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 // provider's refusal of it takes it back for another prompt (providerErrored) — so a stop made at
 // the turn's end would retire a refused task and leave the role owed nothing at the resume (check
 // k1 of dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). Oh My Pi
-// writes the result right behind the turn's end, and a process that dies before it does ends the
-// hold through its death (died). A send refused or lost brings no result, and a result or a
-// refusal that says the prompt ran no turn runs no stop (promptResulted, lateRefused): the hold
-// then stands until something else ends it, at the latest the pause's stop asked again
-// (pauseStopWait in internal/daemon), which stops an idle claim at once (suspend).
+// writes the result right behind the turn's end, and a result that says the turn ran runs the
+// stop once it has decided the task, in a claim still idle (promptResulted, pauseHoldAtResult);
+// a process that dies before it does ends the hold through its death (died). Neither a send
+// refused or lost, which brings no result, nor a result or a refusal that says the prompt ran no
+// turn runs the stop (refused, promptResulted, lateRefused), unless the prompt failure it charges
+// reaches the limit, where chargePrompt runs the held stop. Short of that the hold stands until
+// something else ends it, at the latest the pause's stop asked again (pauseStopWait in
+// internal/daemon), which stops an idle claim at once (suspend).
 func (m *Machine) stopWaitsForResult() bool {
 	return m.held != nil && m.held.Pause != 0 && m.resultPending()
 }

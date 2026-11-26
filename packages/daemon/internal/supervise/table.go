@@ -2234,11 +2234,10 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
 // cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
 // it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
-// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead for
-// the result of the turn's prompt where Oh My Pi has not written it yet (stopWaitsForResult), and
-// runs from that result (promptResulted, stopAtResult): only the result says whether the turn
-// finished its task or a provider refused it, and a stop made first would retire a refused task
-// the role is still owed.
+// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead
+// while the answer to the turn's prompt is still to come, and stopWaitsForResult says what ends
+// that wait: only the answer says whether the turn finished its task or a provider refused it,
+// and a stop made first would retire a refused task the role is still owed.
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2286,10 +2285,8 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	if m.resultPending() {
 		// Oh My Pi has not said yet which turn this prompt's was, so settle retired nothing and
-		// the task is still in the worker's hands. What is held for the turn runs from the
-		// result instead (promptResulted), which is where this turn is over for it. In the send
-		// window no result may come: a send then refused or lost brings none, and refused runs
-		// nothing held for the turn (afterTurn says where that is left).
+		// the task is still in the worker's hands. What is held for the turn waits for that
+		// answer: a pause's hold as stopWaitsForResult says, and the rest as afterTurn says.
 		return nil
 	}
 	return m.afterTurn(ctx)
@@ -2301,13 +2298,21 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // from the process it replaces (refreshPlugin) — so it may not run while the task whose turn just
 // ended is still unsettled. The send runs last, as it does from every other decision.
 //
-// A turn that ended in the send window (resultPending) may get no result at all: the send is
-// then refused or lost, and refused runs nothing of this. A busy refusal records the claim
-// working (recordBusyTurn), and the end of the turn it names comes back through here; any other
-// leaves the held relaunch to the next sweep, which posts StalePlugin for the claim, idle by then
-// (refreshStalePlugin). No send reaches the stale process meanwhile, since sendPending hands no
-// task to a claim whose plugin is stale (staleRefusesClaim), so the cost is at most one sweep, as
-// for a relaunch the refresh gate refuses below.
+// A turn that ended while its prompt's answer was still to come (resultPending) comes back here
+// from that answer only where it is a result that says a turn ran with no provider error and no
+// pause's hold stops the claim at it (promptResulted), or the no-turn answer of a prompt whose
+// wait for its turn ran out, taking an idle claim's confirmation back (waitedOutAnswer). No other
+// answer runs this: not a send refused or lost (refused), not a result or a refusal after the
+// acknowledgement that says the prompt ran no turn (promptFailed, recordBusyTurn), and not a
+// result whose turn ended in a provider error (providerErrored). After a busy answer the claim is
+// recorded working, and the end of the turn it names comes here through turnEnded. After any
+// other, a stale-plugin relaunch held for the turn waits for its lane: the next sweep posts
+// StalePlugin for the claim, idle by then (refreshStalePlugin), as it does for a relaunch the
+// refresh gate refuses below, except for a claim in a pod round, which the lane leaves until that
+// round ends (staleForTheLane in internal/daemon). Meanwhile sendPending hands no task to a claim
+// whose calls this daemon refuses for its plugin (staleRefusesClaim), which is every claim such a
+// relaunch is held for unless it is in an update round; a claim in an update round is served on
+// its old contract (StaleRefusesCalls), so a task can reach its stale process.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
