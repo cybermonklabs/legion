@@ -157,6 +157,13 @@ func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen || !classify.ConflictRound(*pr) {
 		return err
 	}
+	if issue, err := e.store.Issue(ctx, tx, key); err != nil || issue == nil {
+		return err
+	} else if w, err := e.walk(ctx, tx, *issue); err != nil {
+		return err
+	} else {
+		return e.mergeForward(ctx, tx, *issue, w, pr, record.ConflictRulesUnread)
+	}
 	if e.cfg.ReadMergeState == nil {
 		return nil
 	}
