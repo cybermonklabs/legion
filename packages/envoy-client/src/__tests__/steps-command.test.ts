@@ -364,6 +364,42 @@ describe("dispatch steps", () => {
     );
   });
 
+  // A check id is a Dispatch block id, which holds whatever the writer of the check wrote: a line
+  // break in one would print a line of a run nobody ran, and a space in one would hide where the
+  // id begins. So the column prints the id as it stands only where it is a plain word, as `k-ci`
+  // is above, and otherwise as one JSON string, which reads back as the id. The line breaks below
+  // are the ones a reader splitting lines the Unicode way breaks at: the line feed JSON escapes
+  // itself, and U+0085, U+2028 and U+2029, which it leaves as they are.
+  test("a check id that is no plain word prints as one JSON string, and the line keeps its lines", async () => {
+    const forged = "default 9 step reviewer review attempt 1 - - - - failed";
+    for (const [check, printed] of [
+      ["k-ci", "k-ci"],
+      ["ci / go test (1.27)", '"ci / go test (1.27)"'],
+      ['the check "k-ci"', '"the check \\"k-ci\\""'],
+      [`k-ci\n${forged}`, `"k-ci\\n${forged}"`],
+      [`k-ci\u0085${forged}`, `"k-ci\\u0085${forged}"`],
+      [`k-ci\u2028${forged}`, `"k-ci\\u2028${forged}"`],
+      [`k-ci\u2029${forged}`, `"k-ci\\u2029${forged}"`],
+    ] as const) {
+      const { result } = await readSteps({
+        issue: "LEG-1",
+        tasks: [{ task: "default", steps: [{ ...fixRun, fix_check: check }] }],
+      });
+
+      const lines = result.text.split("\n");
+      expect(lines, JSON.stringify(check)).toHaveLength(2);
+      expect(lines[1], JSON.stringify(check)).toBe(
+        "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer " +
+          `anthropic/claude-opus-5 2026-11-16T10:30:00Z 2026-11-16T10:50:00Z passed at a1b2c3d4e5..b2c3d4e5f6 fix of ${printed}`
+      );
+      // The details hold the id as Dispatch answered it, whatever the line prints.
+      expect(result.details, JSON.stringify(check)).toEqual({
+        issue: "LEG-1",
+        tasks: [{ task: "default", steps: [{ ...fixRun, fix_check: check }] }],
+      });
+    }
+  });
+
   // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of
   // one still running (workflowstore's stepResults). The read's generated type admits those words
   // and no other: each run below is a StepRecord, so `bun run typecheck` holds its result to them,

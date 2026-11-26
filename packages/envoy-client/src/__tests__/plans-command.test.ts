@@ -264,6 +264,31 @@ describe("dispatch plans", () => {
     expect(result.details).toEqual({ project: "INFRA", issues: [ratedOnce, unrated] });
   });
 
+  // A Dispatch older than the count of fixes answers each issue without the field at all. The
+  // line then ends at its count of failed steps, where that Dispatch's own clients ended it, and
+  // never prints a count nobody answered. The control is the issue beside it, whose count is 0: a
+  // count the read holds prints, and only an absent one is left out.
+  test("an issue a Dispatch that counts no fixes answers ends at its failed steps", async () => {
+    const { fixes: _counted, ...noCount } = ratedOnce;
+    const answer: ProjectPlans = {
+      project: "INFRA",
+      issues: [noCount as FinishedIssue, { ...unrated, fixes: 0 }],
+    };
+
+    const { result } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(result.text.split("\n")).toEqual([
+      "INFRA: 2 finished issues",
+      'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
+      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0 fixes 0",
+    ]);
+    // The details hold each issue as Dispatch answered it, the one with no count among them.
+    expect(result.details).toEqual({
+      project: "INFRA",
+      issues: [noCount, { ...unrated, fixes: 0 }],
+    });
+  });
+
   test("an issue with three ratings lists each in the order the retros ran, each reason one JSON string", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [ratedThrice] };
 

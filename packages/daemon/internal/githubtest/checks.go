@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,6 +41,13 @@ import (
 // only a token the fake minted, which expires an hour after its mint. Each other request is
 // answered 401 and kept (Refused).
 //
+// It reads the listing's filter, per_page and page as GitHub reads them (checkRunsQueryOf), and
+// refuses any other parameter of it: a reader that asked for a part of a commit's runs and was
+// served every one of them reads the same as a reader that asked for them all, so a fake that
+// served the whole set whatever it was asked shows no rig a lost filter or a page never asked
+// for. Envoy's poller asks filter=all&per_page=100&page=N and reads on while a page is full
+// (githubapp's CommitCheckRuns).
+//
 // Every other route is answered 404 and kept (Unanswered): a Dispatch that holds an App calls
 // GitHub for more than a test plans, such as its webhook redelivery sweep, so such a request is
 // what a test that waited for nothing names, never a failure of its own.
@@ -59,12 +67,16 @@ type Checks struct {
 }
 
 // CheckRunsRead is one read of a commit's check runs the fake answered (Reads): when it answered,
-// the repository and the commit read, and the runs it served, as they stood at that moment.
+// the repository and the commit read, the listing's filter, page size and page as the fake read
+// them, defaults and all, and the runs it served on that page, as they stood at that moment.
 type CheckRunsRead struct {
-	At   time.Time
-	Repo string
-	SHA  string
-	Runs []CheckRun
+	At      time.Time
+	Repo    string
+	SHA     string
+	Filter  string
+	PerPage int
+	Page    int
+	Runs    []CheckRun
 }
 
 // App is a GitHub App as its client holds it: its client id, which its JWT names as the issuer,
@@ -154,7 +166,9 @@ func (c *Checks) Reads() []CheckRunsRead {
 	return slices.Clone(c.reads)
 }
 
-// Refused is each request the server answered 401, as "METHOD /path: why", in the order it came.
+// Refused is each request the server refused, in the order it came: a credential GitHub would not
+// take, as "METHOD /path: why" with its 401, and a listing the fake will not answer as asked, as
+// "METHOD /path?query: why" with its 400 (refuseQuery).
 func (c *Checks) Refused() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -254,6 +268,18 @@ func (c *Checks) refuse(w http.ResponseWriter, r *http.Request, message, why str
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"message": message, "documentation_url": "https://docs.github.com/rest"})
 }
 
+// refuseQuery answers r 400 with why as GitHub writes a message, and keeps the request with its
+// query beside the credentials the fake refused (Refused). GitHub passes over a parameter it
+// does not know; the fake refuses instead, since a reader it served the whole commit after
+// asking for a part of it would read as one that asked for the whole, and the rig would call
+// that a pass.
+func (c *Checks) refuseQuery(w http.ResponseWriter, r *http.Request, why string) {
+	c.mu.Lock()
+	c.refused = append(c.refused, r.Method+" "+r.URL.RequestURI()+": "+why)
+	c.mu.Unlock()
+	writeJSON(w, http.StatusBadRequest, map[string]string{"message": why, "documentation_url": "https://docs.github.com/rest"})
+}
+
 // installation answers the App's installation on any repository, with the permissions a read of
 // a repository's contents and check runs needs.
 func (c *Checks) installation(w http.ResponseWriter, _ *http.Request) {
@@ -286,19 +312,110 @@ func (c *Checks) repository(w http.ResponseWriter, r *http.Request) {
 		"owner": map[string]string{"login": owner}, "private": false, "default_branch": "main"})
 }
 
-// checkRuns answers every run set on the commit, in one page: the listing GitHub gives
-// filter=all, each attempt of each check. It keeps the read, with the runs it served (Reads).
+// checkRuns answers the check runs set on the commit as GitHub's listing answers them: the runs
+// the query's filter leaves, the page its per_page and page name, and total_count every run the
+// filter leaves rather than the page's, which is what GitHub counts there. A query the fake will
+// not answer as asked is refused (checkRunsQueryOf, refuseQuery) and is no read. It keeps each
+// read it answers, with the parameters it read and the runs it served (Reads).
 func (c *Checks) checkRuns(w http.ResponseWriter, r *http.Request) {
 	repo, sha := r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("ref")
+	asked, why := checkRunsQueryOf(r.URL.Query())
+	if why != "" {
+		c.refuseQuery(w, r, why)
+		return
+	}
 	c.mu.Lock()
-	runs := slices.Clone(c.runs[repo+"@"+sha])
-	c.reads = append(c.reads, CheckRunsRead{At: time.Now(), Repo: repo, SHA: sha, Runs: runs})
+	left := checkRunsFiltered(c.runs[repo+"@"+sha], asked.filter)
+	served := checkRunsPage(left, asked.perPage, asked.page)
+	c.reads = append(c.reads, CheckRunsRead{At: time.Now(), Repo: repo, SHA: sha,
+		Filter: asked.filter, PerPage: asked.perPage, Page: asked.page, Runs: served})
 	c.mu.Unlock()
-	listed := make([]map[string]any, 0, len(runs))
-	for _, run := range runs {
+	listed := make([]map[string]any, 0, len(served))
+	for _, run := range served {
 		listed = append(listed, run.listed(sha))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(listed), "check_runs": listed})
+	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(left), "check_runs": listed})
+}
+
+// checkRunsQuery is one listing's query as GitHub reads it: its filter, latest or all; how many
+// runs a page holds; and which page, counted from 1.
+type checkRunsQuery struct {
+	filter  string
+	perPage int
+	page    int
+}
+
+// checkRunsLatest and checkRunsAll are the two filters GitHub's listing takes, latest its
+// default; checkRunsPerPage is its default page size and checkRunsPerPageMost the largest it
+// takes, which it cuts a larger one down to.
+const (
+	checkRunsLatest      = "latest"
+	checkRunsAll         = "all"
+	checkRunsPerPage     = 30
+	checkRunsPerPageMost = 100
+)
+
+// checkRunsQueryOf is query as GitHub's listing reads it, with GitHub's own defaults for what it
+// leaves out, and why the fake will not answer it, "" where it will: a parameter the fake does
+// not model — GitHub's own check_name, status and app_id among them — and a value GitHub itself
+// refuses are each a refusal, so a reader that starts to send one is told, rather than served
+// runs it asked to leave out.
+func checkRunsQueryOf(query url.Values) (checkRunsQuery, string) {
+	asked := checkRunsQuery{filter: checkRunsLatest, perPage: checkRunsPerPage, page: 1}
+	for name := range query {
+		if name != "filter" && name != "per_page" && name != "page" {
+			return asked, fmt.Sprintf("the listing's %s is no parameter this fake models", name)
+		}
+	}
+	if raw := query.Get("filter"); raw != "" {
+		if raw != checkRunsLatest && raw != checkRunsAll {
+			return asked, fmt.Sprintf("filter %q is neither latest nor all", raw)
+		}
+		asked.filter = raw
+	}
+	if raw := query.Get("per_page"); raw != "" {
+		size, err := strconv.Atoi(raw)
+		if err != nil || size < 1 {
+			return asked, fmt.Sprintf("per_page %q is no whole number above zero", raw)
+		}
+		asked.perPage = min(size, checkRunsPerPageMost)
+	}
+	if raw := query.Get("page"); raw != "" {
+		page, err := strconv.Atoi(raw)
+		if err != nil || page < 1 {
+			return asked, fmt.Sprintf("page %q is no whole number above zero", raw)
+		}
+		asked.page = page
+	}
+	return asked, ""
+}
+
+// checkRunsFiltered is the runs the listing's filter leaves, in the order they were set: every
+// one for all, and for latest the newest attempt of each check name, which is the run of the
+// highest id, as Dispatch reads an attempt (CheckRun).
+func checkRunsFiltered(runs []CheckRun, filter string) []CheckRun {
+	if filter == checkRunsAll {
+		return slices.Clone(runs)
+	}
+	latest := make([]CheckRun, 0, len(runs))
+	for _, run := range runs {
+		newer := func(other CheckRun) bool { return other.Name == run.Name && other.ID > run.ID }
+		if !slices.ContainsFunc(runs, newer) {
+			latest = append(latest, run)
+		}
+	}
+	return latest
+}
+
+// checkRunsPage is the page of runs per_page and page name, and none at all past the end. The
+// page is tested against the pages there are before it is counted out, so a page number far past
+// the end cannot overflow its product.
+func checkRunsPage(runs []CheckRun, perPage, page int) []CheckRun {
+	if len(runs) == 0 || page-1 > (len(runs)-1)/perPage {
+		return nil
+	}
+	from := (page - 1) * perPage
+	return runs[from:min(from+perPage, len(runs))]
 }
 
 // listed is run as GitHub lists it on commit sha: a field the run does not have yet is null.
