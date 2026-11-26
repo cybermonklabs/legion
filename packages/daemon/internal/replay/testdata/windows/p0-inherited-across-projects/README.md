@@ -3,7 +3,8 @@
 A recorded window of project ACME, written by hand by the conventions of `../README.md`: one hour, from 2001-03-05T09:00Z to 10:00Z, an admission cap of 1, four issues of ACME and two of the project ACMEAUX, recorded under the rule `main`.
 It holds the full-cap window of check k1 with a child that inherits P0 across a Dispatch parent link in another project and outside its Legion tree, an explicit P1 child under the same root, and an ancestor's change while an issue waits (spec R10).
 The record is Dispatch's from before it served `resolved_priority`: no event carries it, so the replay reconstructs each issue's resolved priority from the window's parent chains.
-`expect.json` holds the scorecards of a replay under `main` and under `p0-at-once`, each a rule with R10's start of a P0 issue outside the cap since cybermonklabs/legion#5488, worked by hand below; nothing is drawn, so every seed gives them.
+`expect.json` holds the scorecard of a replay under `main`, a rule with R10's start of a P0 issue outside the cap since cybermonklabs/legion#5488, worked by hand below; nothing is drawn, so every seed gives it.
+It held one under `p0-at-once` too, the same but for the rule's name, until the repository kept that rule no more ("What moved with cybermonklabs/legion#5488").
 
 ## The issues
 
@@ -22,7 +23,7 @@ The tree root of each is the issue itself, whose own priority is none for ACME-2
 
 ## What happens
 
-| time (UTC) | fact | the record, `main` before cybermonklabs/legion#5488 | `p0-at-once`, and `main` since cybermonklabs/legion#5488 |
+| time (UTC) | fact | the record, `main` before cybermonklabs/legion#5488 | `main` since cybermonklabs/legion#5488 |
 | --- | --- | --- | --- |
 | 09:00 | the daemon boots | | |
 | 09:05 | ACME-1 filed `todo`, `legion` | promoted: slot 1 of 1, architect turn from 09:05, open at 10:00 | the same |
@@ -32,7 +33,7 @@ The tree root of each is the issue itself, whose own priority is none for ACME-2
 | 09:40 | a person raises ACMEAUX-2 to P0 | nothing moves | ACME-4 is P0 from this moment: the pass starts it outside the cap, its slot held with no turn |
 
 Under the recorded rule, `main` before cybermonklabs/legion#5488, which starts no issue outside the cap on a priority it inherits, the replay is the record: every pass falls at its recorded time and ACME-1's segment starts at its recorded worker start, so nothing outside the cap starts.
-Under `p0-at-once`, and `main` since cybermonklabs/legion#5488, the recorded event of ACMEAUX-2 at 09:40 moves ACME-4's resolved priority, as the update Dispatch appends on each descendant whose resolved priority a write changes (spec R10), so the daemon's pass of that moment, and no later one, reads ACME-4 as P0.
+Under `main` since cybermonklabs/legion#5488, the recorded event of ACMEAUX-2 at 09:40 moves ACME-4's resolved priority, as the update Dispatch appends on each descendant whose resolved priority a write changes (spec R10), so the daemon's pass of that moment, and no later one, reads ACME-4 as P0.
 The record never started ACME-2 or ACME-4, so under the `none` scenario each takes its slot and its architect's start opens a segment with no turn and no end (`../README.md`, "The knobs").
 
 ## The scorecards, worked by hand
@@ -50,7 +51,7 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
   P0: 2 issues, the first-slot waits 40 and 50 (median 45, 90th percentile 50, both cut), the same to `done`; P1: 1 issue, 45 each, cut.
 - `assumptions`: 1; 8 (ACME-2, ACME-3 and ACME-4 are handed to Legion and the record never starts them); 9; 10 (the window holds three Dispatch children, ACME-2 and ACME-3 under ACMEAUX-1 and ACME-4 under ACMEAUX-2); 15.
 
-**Under `p0-at-once`, and `main` since cybermonklabs/legion#5488.**
+**Under `main` since cybermonklabs/legion#5488.**
 
 - Slots: ACME-1 09:05 to 10:00 (55 minutes, in a turn), ACME-2 09:10 to 10:00 (50, no turn), ACME-4 09:40 to 10:00 (20, no turn): `slotHoursInTurn` 55/60 = 0.91666…, `slotHoursNoTurn` 70/60 = 1.16666…; three slots, `firstSlot` ACME-1 09:05, ACME-2 09:10, ACME-4 09:40.
   The waits: ACME-1 0, ACME-2 0, ACME-4 20 (from its filing at 09:20, behind the cap, to 09:40): sorted 0, 0, 20, `medianSlotWaitMinutes` 0.
@@ -81,7 +82,7 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
 ## What moved with cybermonklabs/legion#5488
 
 The record was made under `main` at `0d3786da`, before R10 reached the daemon.
-Since cybermonklabs/legion#5488, `main` starts a P0 issue outside the cap and reads the priority Dispatch resolves (`record.SlotRule.StartsNow`), as `p0-at-once` does; the two now differ only in name, so the run under `main` is the one worked above under `p0-at-once`.
+Since cybermonklabs/legion#5488, `main` starts a P0 issue outside the cap and reads the priority Dispatch resolves (`record.SlotRule.StartsNow`), as the candidate `p0-at-once` did; the two then differed only in name, so the run under `main` is the one worked above, and the row of `p0-at-once` went from `expect.json` with that rule.
 Worked from the events: at 09:10 ACME-2, P0 from ACMEAUX-1, starts outside the full cap; ACME-3, its own P1, and ACME-4, P2 from ACMEAUX-2, need a slot of the cap, which ACME-1 holds; ACMEAUX-2's raise to P0 at 09:40 makes ACME-4 P0, and that pass starts it outside the cap.
 The record started neither, so each holds its slot with no turn to 10:00.
 
@@ -101,13 +102,13 @@ The record started neither, so each holds its slot with no turn to 10:00.
 ## What the window shows
 
 The rule with the new P0 start starts ACME-2 when only the cap holds it; ACME-3, an explicit P1 under the same Dispatch root, does not pass the cap; ACMEAUX-2's raise at 09:40 moves ACME-4 from P2 to P0 at that moment and starts it; and the recorded rule starts nothing outside the cap.
-A replay that reads each issue's own priority, or its tree root's, as the replay did before the resolved priority, starts neither ACME-2 nor ACME-4 under `p0-at-once`, and counts only ACME-3 in the urgent waits of either rule; one that takes the new P0 classification only at a later pass starts ACME-4 late.
+A replay that reads each issue's own priority, or its tree root's, as the replay did before the resolved priority, starts neither ACME-2 nor ACME-4 under `main`, and counts only ACME-3 in the urgent waits of either rule; one that takes the new P0 classification only at a later pass starts ACME-4 late.
 
 ## The signals, worked by hand
 
 The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
 So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
-Each run limits all six signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
+The run limits all six signals (`limits`), and run.json echoes them; `main` admits by no signal, so the limits decide nothing.
 
 - `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
 - `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.

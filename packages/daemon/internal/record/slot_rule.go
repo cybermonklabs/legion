@@ -100,14 +100,15 @@ type SlotRule struct {
 	// on in MainRule and the candidates built on it, and off in the recorded rules and before-p0,
 	// under which a P0 issue waits for a slot of the cap as any issue does and the cap counts every
 	// holder, as the daemon admitted before R10. A replay under a rule whose field is on serves each
-	// issue the priority Dispatch resolves for it, which the replay's copy of Dispatch shows.
+	// issue the priority Dispatch resolves for it, which the replay's copy of Dispatch shows, and
+	// under a rule whose field is off each issue's own alone.
 	StartsNow bool
 	// IdleReturn is how long a slot holder that waits on its children or on a person may go with
 	// no turn of any of its roles before it gives its slot back (LineFacts.IdleReturns, admit's
 	// releaseIdleSlots). Such a holder carries the mark of a release for a wait
 	// (Issue.ReleasedForWaitAt), and the line keeps its place by that mark, ahead of every slot
 	// given back after it, while it waits (Waiting). Zero, the daemon's own and every rule's but
-	// idle-return-1h's and p0-idle's, gives no slot back for idleness.
+	// idle-return-1h's, gives no slot back for idleness.
 	IdleReturn time.Duration
 	// Signals is the mode in which a pass under the rule admits below P0 by signals, as the
 	// tool's spec R11 gives it (signals.Ceiling: the cap becomes a ceiling, and a start needs
@@ -380,25 +381,26 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules three recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the sixteen candidates of the
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the fourteen candidates of the
 // comparison (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and
 // wait-grace-1h, one rule at two graces, returned-by-first-slot, rework-first and
 // rework-first-keep, one order with and without the slot kept past the review, arrival-order,
 // before-p0, the daemon's own with no P0 started outside the cap, measured for reference,
-// p0-at-once, idle-return-1h and p0-idle, two answers apart and together, and signals and
+// idle-return-1h, the daemon's own with an idle holder's slot given back, and signals and
 // signals-backoff, which admit below P0 by signals). The daemon's own rule
 // orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran as
 // the candidate priority-first before that change merged, stops a started parent's phase for
 // its open children since cybermonklabs/legion#4592 (WaitStopsPhase), and starts a P0 issue
-// outside the cap since cybermonklabs/legion#5488 (StartsNow), which p0-at-once ran before that
-// change merged; each candidate, built from the daemon's own, keeps all three, and the recorded
+// outside the cap since cybermonklabs/legion#5488 (StartsNow), which the comparison ran as the
+// candidates p0-at-once and, with idle-return-1h's idle return, p0-idle before that change merged;
+// each candidate, built from the daemon's own, keeps all three, and the recorded
 // rules, whose releases came before them, keep none. `legion replay rules` prints them. Each
 // answer is built afresh, so a caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
-		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), beforeP0Rule(), p0AtOnceRule(), idleReturnRule(), p0IdleRule(),
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), beforeP0Rule(), idleReturnRule(),
 		signalsRule(), signalsBackoffRule()}
 }
 
@@ -641,17 +643,6 @@ func beforeP0Rule() SlotRule {
 	})
 }
 
-// p0AtOnceRule is the daemon's own rule with an issue that admission reads as P0 started outside
-// the cap (StartsNow, StartsOutsideCap): an owner's direction that a P0 issue starts at once, with
-// the daemon's own rule below P0. The cap counts the holders below P0 alone, and the P0 bound in
-// force limits the P0 holders. Since cybermonklabs/legion#5488 turned main's field on it is the
-// daemon's own rule in every choice but its name.
-func p0AtOnceRule() SlotRule {
-	return mainRuleWith("p0-at-once", func(rule *SlotRule) {
-		rule.StartsNow = true
-	})
-}
-
 // idleReturnRule is the daemon's own rule with a slot holder that waits on its children or on a
 // person giving its slot back once none of its roles has had a turn for idleReturn (IdleReturn),
 // so that the slot goes to work that can start, while the holder keeps its place in the line.
@@ -671,19 +662,9 @@ func idleReturnRule() SlotRule {
 }
 
 // idleReturn is the time without a turn after which a holder gives its slot back under
-// idle-return-1h and p0-idle: one hour, the longer of the two graces the comparison runs for a
-// wait on another issue (longWaitGrace).
+// idle-return-1h: one hour, the longer of the two graces the comparison runs for a wait on another
+// issue (longWaitGrace).
 const idleReturn = time.Hour
-
-// p0IdleRule is p0-at-once and idle-return-1h together (StartsNow, IdleReturn), so the
-// comparison reads whether the two answers add up or overlap. Since cybermonklabs/legion#5488
-// turned main's field on it is idle-return-1h in every choice but its name.
-func p0IdleRule() SlotRule {
-	return mainRuleWith("p0-idle", func(rule *SlotRule) {
-		rule.StartsNow = true
-		rule.IdleReturn = idleReturn
-	})
-}
 
 // signalsRule is the daemon's own rule with R10's start of a P0 issue outside the cap
 // (StartsNow) and admission by signals below P0 (Signals, signals.Ceiling), a candidate that only

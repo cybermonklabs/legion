@@ -34,9 +34,9 @@ body: |-
     direction (`signals`, `signals-backoff`) can be named best. `run.json` gives each draw of a
     stretch's conflict with its key and value, and `compare` counts the draws that each rule's runs
     share with `main`'s and gives each run's admissions with no recorded work. `rules` prints the
-    twenty rules that a replay can run, each with its commit: the daemon's own, the rules of three
-    recorded windows
-    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
+    eighteen rules that a replay can run, each with its commit: the daemon's own, the rules of
+    three recorded windows
+    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and fourteen candidates. The
     daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
     does, and the rules of the recorded windows, whose releases came before that order, do not. A
     rule that starts a P0 issue outside the cap reads the priority Dispatch resolves for each issue,
@@ -54,10 +54,9 @@ body: |-
     `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another issue for its
     first five minutes or its first hour, `returned-by-first-slot`, `rework-first` and
     `rework-first-keep` place returned work first, `arrival-order` places every issue by its
-    arrival, `before-p0` starts no issue outside the cap, `p0-at-once` starts a P0 issue outside
-    the cap, `idle-return-1h` gives back the slot of
-    a holder that waits on its children or on a person once none of its roles has had a turn for an
-    hour, and `p0-idle` joins the last two. `signals` and `signals-backoff` admit below P0 by
+    arrival, `before-p0` starts no issue outside the cap, and `idle-return-1h` gives back the slot
+    of a holder that waits on its children or on a person once none of its roles has had a turn for
+    an hour. `signals` and `signals-backoff` admit below P0 by
     signals, the second with an allowance that falls at each refusal and kill. `run --limit` sets
     each signal's limit, `--idle-after` the idle time that the idle share counts, and `--probe`
     each moment at which `run.json` gives each limited signal's value. `--token-limit` gives `run`,

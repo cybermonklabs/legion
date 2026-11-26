@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // A replay admits under R10's P0 bound in force at each pass, as the window records its changes
@@ -13,9 +15,10 @@ import (
 // ACME-1, with no priority, holds from 09:00, under a bound of 1 from 09:00. ACME-2, at P0, is filed
 // at 09:05 and takes its slot outside the cap; ACME-3, at P0, is filed at 09:10 and waits at the
 // bound, which is raised to 2 at 09:30, where the record starts it. No other fact falls after 09:10,
-// and the window records no tick, so only the pass of the raise starts ACME-3. Under p0-at-once
-// ACME-2 takes its slot at 09:05 and ACME-3 at 09:30; under before-p0, which starts no P0 issue
-// outside the cap, neither takes one while ACME-1 holds the cap.
+// and the window records no tick, so only the pass of the raise starts ACME-3. Under main, which
+// starts a P0 issue outside the cap since cybermonklabs/legion#5488, ACME-2 takes its slot at 09:05
+// and ACME-3 at 09:30; under before-p0, which starts no P0 issue outside the cap, neither takes one
+// while ACME-1 holds the cap.
 func TestARaiseOfTheP0BoundStartsAP0IssueAtItsOwnPass(t *testing.T) {
 	t.Parallel()
 	b := newWindowBuilder(t, clock(9, 0), clock(11, 0))
@@ -34,7 +37,7 @@ func TestARaiseOfTheP0BoundStartsAP0IssueAtItsOwnPass(t *testing.T) {
 		rule string
 		want map[string]time.Time
 	}{
-		{"p0-at-once", map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 5), "ACME-3": clock(9, 30)}},
+		{record.MainRule.Name, map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 5), "ACME-3": clock(9, 30)}},
 		{"before-p0", map[string]time.Time{"ACME-1": clock(9, 0)}},
 	} {
 		t.Run(run.rule, func(t *testing.T) {

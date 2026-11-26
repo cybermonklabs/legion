@@ -34,8 +34,6 @@ func TestAnIssueStartsOutsideTheCapByItsOwnP0UnderARuleThatSaysSo(t *testing.T) 
 		rule SlotRule
 		want map[string]bool
 	}{
-		{keptRule(t, "p0-at-once"), map[string]bool{"ACME-1": true, "ACME-2": false, "ACME-3": true, "ACME-4": false, "ACME-5": false}},
-		{keptRule(t, "p0-idle"), map[string]bool{"ACME-1": true, "ACME-2": false, "ACME-3": true, "ACME-4": false, "ACME-5": false}},
 		{MainRule, map[string]bool{"ACME-1": true, "ACME-2": false, "ACME-3": true, "ACME-4": false, "ACME-5": false}},
 		{keptRule(t, "before-p0"), map[string]bool{"ACME-1": false, "ACME-2": false, "ACME-3": false, "ACME-4": false, "ACME-5": false}},
 		{SlotRule{}, map[string]bool{"ACME-1": true, "ACME-2": false, "ACME-3": true, "ACME-4": false, "ACME-5": false}},
@@ -69,8 +67,6 @@ func TestTheCapCountsTheHoldersBelowP0AndTheP0BoundTheRest(t *testing.T) {
 		rule SlotRule
 		want SlotHolders
 	}{
-		{keptRule(t, "p0-at-once"), SlotHolders{Capped: 2, P0: 2}},
-		{keptRule(t, "p0-idle"), SlotHolders{Capped: 2, P0: 2}},
 		{MainRule, SlotHolders{Capped: 2, P0: 2}},
 		{keptRule(t, "before-p0"), SlotHolders{Capped: 4}},
 		{keptRule(t, "legion-v20.42.5"), SlotHolders{Capped: 4}},
@@ -90,8 +86,8 @@ func TestTheCapCountsTheHoldersBelowP0AndTheP0BoundTheRest(t *testing.T) {
 		}
 	}
 	lowered := withPriority(urgent, P2)
-	if got := heldUnder(keptRule(t, "p0-at-once"), HoldersOf([]Issue{root, child, lowered, high}, own[:4])); got != (SlotHolders{Capped: 3, P0: 1}) {
-		t.Errorf("with ACME-3 lowered to P2 while it holds its slot, the holders count %+v under p0-at-once, want 3 of the cap's and 1 P0", got)
+	if got := heldUnder(MainRule, HoldersOf([]Issue{root, child, lowered, high}, own[:4])); got != (SlotHolders{Capped: 3, P0: 1}) {
+		t.Errorf("with ACME-3 lowered to P2 while it holds its slot, the holders count %+v under main, want 3 of the cap's and 1 P0", got)
 	}
 }
 

@@ -67,100 +67,10 @@
         }
       },
       "from": "2001-03-05T09:00:00Z"
-    },
-    "p0-at-once": {
-      "source": "replay",
-      "rule": "p0-at-once",
-      "branch": "main",
-      "seed": 1,
-      "slowdown": 1,
-      "to": "2001-03-05T10:30:00Z",
-      "unplaced": 0,
-      "done": 0,
-      "workLeft": 1,
-      "waitOnlyForSlot": {
-        "average": 0.0,
-        "max": 0,
-        "hours": 0.0
-      },
-      "startedWithoutSlot": {
-        "average": 0.0,
-        "max": 0,
-        "hours": 0.0
-      },
-      "pastReviewHolding": {
-        "average": 0.0,
-        "max": 0,
-        "hours": 0.0
-      },
-      "pastReviewNotHolding": {
-        "average": 0.0,
-        "max": 0,
-        "hours": 0.0
-      },
-      "priorityTaken": 0.3333333333333333,
-      "priorityTakenBanded": 0,
-      "loops": {},
-      "waits": {},
-      "slotHoursInTurn": 0.0,
-      "slotHoursNoTurn": 0.5,
-      "inFlight": {
-        "average": 0.3333333333333333,
-        "max": 1,
-        "hours": 0.5
-      },
-      "slotsGivenByDay": {
-        "2001-03-05": 1
-      },
-      "medianSlotWaitMinutes": 0,
-      "firstSlot": {
-        "ACME-2": "2001-03-05T10:00:00Z"
-      },
-      "doneAt": {},
-      "assumptions": [1, 7, 8, 9, 10, 15],
-      "scenario": "none",
-      "urgentWaits": {
-        "P1": {
-          "issues": 1,
-          "firstSlot": {
-            "medianMinutes": 45,
-            "p90Minutes": 45,
-            "cut": 0
-          },
-          "done": {
-            "medianMinutes": 75,
-            "p90Minutes": 75,
-            "cut": 1
-          }
-        }
-      },
-      "from": "2001-03-05T09:00:00Z"
     }
   },
   "checks": {
     "main": {
-      "run": {
-        "limits": {
-          "idle": 0.5,
-          "queue": 2,
-          "provider": 1,
-          "refusals": 4,
-          "kills": 2,
-          "approvals": 3
-        },
-        "signalValues": {
-          "2001-03-05T09:00:00Z": {
-            "idle": null,
-            "queue": null,
-            "provider": null,
-            "refusals": null,
-            "kills": null,
-            "approvals": null
-          }
-        }
-      }
-    },
-    "p0-at-once": {
       "run": {
         "limits": {
           "idle": 0.5,

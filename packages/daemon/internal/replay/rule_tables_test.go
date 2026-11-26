@@ -39,9 +39,6 @@ func TestEveryCandidateOfTheDesignIsARule(t *testing.T) {
 		{"wait-grace-1h", "one-hour grace before a wait gives back a slot"},
 		{"returned-by-first-slot", "order returned work by its first slot"},
 		{"rework-first-keep", "rework first with slots kept past review"},
-		// Remove these two rows when main and idle-return-1h take over their P0 behavior.
-		{"p0-at-once", "start P0 outside the cap"},
-		{"p0-idle", "start P0 outside the cap and return idle slots"},
 		{"legion-v19.57.3", "recorded rule of window two"},
 		{"legion-v20.42.5", "recorded rule of window one"},
 		{"legion-v22.14.1", "recorded rule of window three"},

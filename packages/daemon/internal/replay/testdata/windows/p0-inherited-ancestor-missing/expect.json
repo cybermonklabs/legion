@@ -55,8 +55,7 @@
     }
   },
   "refused": {
-    "main": "ACMEAUX-1",
-    "p0-at-once": "ACMEAUX-1"
+    "main": "ACMEAUX-1"
   },
   "checks": {
     "before-p0": {

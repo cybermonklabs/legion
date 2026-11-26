@@ -3,8 +3,9 @@
 The measured span is 09:00–10:00 UTC. Replay continues to 10:15. Cap 1 is never reached by work below P0 that holds a slot in this record: ACME-1 and ACME-2 take exempt slots. ACME-3's link to an unfinished issue keeps it from starting, even though there is room.
 
 R10 is the start of a P0 issue outside the cap.
-`p0-at-once` runs it, and so does `main`, which starts a P0 issue outside the cap since cybermonklabs/legion#5488.
-So the values below are those of both rules.
+`main` runs it, since cybermonklabs/legion#5488.
+So the values below are those of `main`.
+`expect.json` held them under `p0-at-once` too, the candidate that ran R10 before that change, until the repository kept that rule no more: since that change it was `main` in every choice but its name.
 
 | Issue | First `todo` | Priority before first slot | First slot | `done` |
 | --- | --- | --- | --- | --- |
@@ -20,7 +21,7 @@ The two turns remain open. They account for 55 + 30 = 85 minutes of the measured
 
 The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
 So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
-Each run limits all six signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
+The run limits all six signals (`limits`), and run.json echoes them; `main` admits by no signal, so the limits decide nothing.
 
 - `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
 - `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
