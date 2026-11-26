@@ -819,8 +819,10 @@ const (
 // `codegraph` tool: the actions of the step it carries at the point where it decides, besides
 // `status` and `init`, which the rule for a missing, an empty or a stale answer names for every role
 // that reads code. A role that is not here fails TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost
-// until someone says whether it reads code. The controller has no claim role: its spawn spec
-// carries no repository or workspace, so its prompt files are checked apart.
+// until its actions are listed. Every claim role reads code today. A claim role added later that
+// reads no code needs this test to hold its prompt to no `xd://codegraph` instead. The controller
+// has no claim role: its spawn spec carries no repository or workspace, so its prompt files are
+// checked apart.
 var codeGraphRoles = map[claim.Role][]string{
 	claim.RoleArchitect:   {"impact", "callers", "affected", "explore"},
 	claim.RolePlanner:     {"impact", "callers", "affected", "explore"},
@@ -896,14 +898,15 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 	}
 	const (
 		callShape          = "`write` to `xd://codegraph` the content `{\"action\":"
-		staleAnswer        = "It does not see an edit made since, yours or the base's"
-		pendingChange      = "`status` counts the changed file as a pending change"
-		buildRunning       = "While a build runs, `status` says the index is truncated"
+		staleAnswer        = "It does not see an edit made since the build, by you, by another role or by the base"
+		pendingChange      = "`status` counts each changed file as a pending change"
+		buildRunning       = "While a build runs, `status` says the index is truncated or that an index rebuild is running in another process"
 		statusFirst        = "Ask `{\"action\":\"status\"}` before your first query"
 		readsSource        = "Read the source with grep and the read tool in three cases"
 		missingTool        = "The tool is missing: it says it is unavailable on `PATH`, or the workspace is not initialized"
 		emptyAnswer        = "An empty answer never means \"none\""
 		partialAnswer      = "The answer may be stale or partial"
+		anyEditor          = "whoever changed it"
 		nameMatching       = "`impact` and `callers` match by name"
 		blockPerDefinition = "give one block for each definition of a name"
 		laterInit          = "only when that later answer says the workspace is not initialized too"
@@ -913,7 +916,7 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 		claudeMapping = "is the `codegraph` command"
 		retiredCall   = "codegraph({"
 	)
-	onceEach := []string{callShape, staleAnswer, pendingChange, buildRunning, statusFirst, readsSource, missingTool, emptyAnswer, partialAnswer, nameMatching, blockPerDefinition, laterInit, noIndexAction}
+	onceEach := []string{callShape, staleAnswer, pendingChange, buildRunning, statusFirst, readsSource, missingTool, emptyAnswer, partialAnswer, anyEditor, nameMatching, blockPerDefinition, laterInit, noIndexAction}
 	action := regexp.MustCompile(`"action":"([^"]*)"`)
 	affectedCall := regexp.MustCompile(`\{"action":"affected"[^}]*\}`)
 
