@@ -66,7 +66,6 @@ else
     [ "$what" = role ] || continue
     role_file "$name"
     printf '%s\n' "${permissions//,/$'\n'}" | sed '/^$/d' | sort -u >"$ROLE_FILE"
-    role_written
   done 3<"$WORK/preview.rec"
   judged=0
   while IFS="$US" read -r -u 3 what a b c d e f; do

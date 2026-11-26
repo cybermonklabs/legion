@@ -60,8 +60,6 @@
 #        that RoleBinding by name; escalate of that ClusterRole by name; and on another cluster
 #        ci/runner with patch of the ClusterRoleBinding cluster-admin and bind of the ClusterRole
 #        cluster-admin, each by name: each exits 1 naming the rights;
-#   (bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations,
-#        or cannot be read on the operator's cluster or another, reads UNKNOWN;
 #   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
 #        (ci-bot@corp.example) bound to cluster-admin reads UNKNOWN: that cluster's own
 #        authenticator names its users, so the name proves no person;
@@ -610,42 +608,6 @@ binding_write_row() {
 if row bd; then
   each binding_write_row update patch-named update-named escalate-named cluster-admin
   passed "(bd) update of rolebindings, patch or update of the operator's RoleBinding by name, bind or escalate of its ClusterRole by name, and patch of cluster-admin's binding with bind of its role by name on another cluster each exit 1 naming the rights"
-fi
-
-# --- (bg) The admission resources' discovery. Every API server serves the two webhook
-# configurations, so a list without one is not whole, and a discovery that cannot be read leaves
-# the admission policies unasked. ---
-admission_names_row() {
-  base_world
-  case "$1" in
-    missing)
-      printf '%s.admissionregistration.k8s.io\n' mutatingwebhookconfigurations validatingadmissionpolicies validatingadmissionpolicybindings \
-        >"$world/clusters/operator-cluster/admission-resources"
-      run
-      want_status 2 "a discovery without validatingwebhookconfigurations"
-      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io lists no validatingwebhookconfigurations.admissionregistration.k8s.io, which every API server serves, so its list is not whole" \
-        "a discovery without validatingwebhookconfigurations"
-      ;;
-    refused)
-      : >"$world/clusters/operator-cluster/refuse-admission-resources"
-      run
-      want_status 2 "a discovery of admissionregistration.k8s.io that cannot be read"
-      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
-        "a discovery of admissionregistration.k8s.io that cannot be read"
-      ;;
-    refused-other)
-      add_cluster other-cluster us-east1
-      : >"$world/clusters/other-cluster/refuse-admission-resources"
-      run
-      want_status 2 "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
-      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
-        "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
-      ;;
-  esac
-}
-if row bg; then
-  each admission_names_row missing refused refused-other
-  passed "(bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations, or cannot be read on the operator's or another cluster, reads UNKNOWN"
 fi
 
 # --- (bi) An email-shaped User on a fleet member that is no GKE cluster. Its own authenticator names

@@ -171,8 +171,8 @@ if row dd; then
   iam "$gsa_res" roles/iam.serviceAccountKeyAdmin "serviceAccount:$broker"
   run
   want_status 1 "the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account too"
-  want_text "FINDING serviceAccount:$broker: " "the broker holding a second role on the operator's account"
-  want_text " on $gsa_res through roles/iam.serviceAccountKeyAdmin, granted at $gsa_res" "the broker holding a second role on the operator's account"
+  want_line "FINDING serviceAccount:$broker: iam.serviceAccountKeys.create on $gsa_res through roles/iam.serviceAccountKeyAdmin, granted at $gsa_res" \
+    "the broker holding a second role on the operator's account"
   passed "(dd) the broker holding a second role on the operator's account, beside its roles/iam.serviceAccountTokenCreator, is a finding naming that role"
 fi
 

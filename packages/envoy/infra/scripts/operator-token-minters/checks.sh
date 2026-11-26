@@ -157,27 +157,22 @@ role_perms() {
 # Each role file is read into ROLE_LISTED once, every line of it, a last one no line break ends too,
 # so a preview's many bindings of one role start no process. Its callers run it as a condition,
 # where errexit is off, so a file it cannot read stops the run here (exit 2, which on_exit reads as
-# UNKNOWN), never as a role that lists nothing. The cache holds a file as it was when first read:
-# a step that writes a role file again (step-code-iam.sh's custom roles) calls role_written after,
-# so the next read is of the file it wrote. Each read of a file is a generation of its own, so a
-# permission the old file listed is not listed for the new one.
+# UNKNOWN), never as a role that lists nothing. The cache holds a file as it was when first read,
+# which is right because each role file is written before it is first read: role_perms writes one
+# only where none exists, and step-code-iam.sh writes every custom role of the previews before its
+# first role_granted.
 declare -A ROLE_READ=() ROLE_LISTED=()
-ROLE_GENERATION=0
 role_listed() {
-  local permission generation="${ROLE_READ[$ROLE_FILE]:-}"
-  if [ -z "$generation" ]; then
-    ROLE_GENERATION=$((ROLE_GENERATION + 1))
-    generation=$ROLE_GENERATION
-    { while IFS= read -r permission || [ -n "$permission" ]; do ROLE_LISTED["$generation $permission"]=1; done <"$ROLE_FILE"; } || {
+  local permission
+  if [ -z "${ROLE_READ[$ROLE_FILE]:-}" ]; then
+    { while IFS= read -r permission || [ -n "$permission" ]; do ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"; } || {
       echo "operator-token-minters: the role file $ROLE_FILE could not be read" >&2
       exit 2
     }
-    ROLE_READ[$ROLE_FILE]=$generation
+    ROLE_READ[$ROLE_FILE]=1
   fi
-  [ -n "${ROLE_LISTED["$generation $1"]:-}" ]
+  [ -n "${ROLE_LISTED["$ROLE_FILE $1"]:-}" ]
 }
-# role_written: the role file ROLE_FILE was written again, so role_listed reads it anew.
-role_written() { unset 'ROLE_READ[$ROLE_FILE]'; }
 # role_granted CHECK: sets GRANTED to those of CHECK's permissions (CHECK_PERMS, in that order) that
 # the role file ROLE_FILE lists (role_listed), comma-separated, or "" for none.
 role_granted() {

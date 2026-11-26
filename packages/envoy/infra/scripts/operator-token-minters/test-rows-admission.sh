@@ -12,6 +12,8 @@
 #        nothing else, is a finding naming it, and no finding of that ServiceAccount names another
 #        planted account's right or a right of another verb or resource (two worlds, one
 #        ServiceAccount a right);
+#   (bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations,
+#        or cannot be read on the operator's cluster or another, reads UNKNOWN;
 #   (ce) a mutating webhook whose selector can match a guarded namespace, backed by the Service
 #        hooks/hook: apps/deployer that may patch deployments in hooks, or create jobs (rv16),
 #        cronjobs or replicationcontrollers, create pods/exec or pods/attach, or patch
@@ -79,8 +81,9 @@ admission_rights_row() {
     done
     other+=("create|admissionregistration.k8s.io|$resource|||=create $resource.admissionregistration.k8s.io cluster-wide")
   done
+  # The discovery lists each name once, in its order, as an API server does.
   for cluster in operator-cluster other-cluster; do
-    printf '%s.admissionregistration.k8s.io\n' "${admission_gke[@]}" "$@" >"$world/clusters/$cluster/admission-resources"
+    printf '%s.admissionregistration.k8s.io\n' "${admission_gke[@]}" "$@" | sort -u >"$world/clusters/$cluster/admission-resources"
   done
   plant_rights operator-cluster legion "" "${operator[@]}"
   plant_rights other-cluster ci " on cluster $project/us-east1/other-cluster" "${other[@]}"
@@ -92,6 +95,42 @@ if row bf; then
   admission_rights_row "${admission_mutating[@]}"
   # Four rights a resource: create, update and patch on the operator's cluster, create on another.
   passed "(bf) each of the $((4 * (${#admission_gke[@]} + ${#admission_mutating[@]}))) admission rights, given on the operator's cluster or another of the pool where its discovery lists the resource to a ServiceAccount that holds nothing else, is a finding naming it, and no finding of that ServiceAccount names another planted account's right or a right of another verb or resource"
+fi
+
+# --- (bg) The admission resources' discovery. Every API server serves the two webhook
+# configurations, so a list without one is not whole, and a discovery that cannot be read leaves
+# the admission policies unasked. ---
+admission_names_row() {
+  base_world
+  case "$1" in
+    missing)
+      printf '%s.admissionregistration.k8s.io\n' mutatingwebhookconfigurations validatingadmissionpolicies validatingadmissionpolicybindings \
+        >"$world/clusters/operator-cluster/admission-resources"
+      run
+      want_status 2 "a discovery without validatingwebhookconfigurations"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io lists no validatingwebhookconfigurations.admissionregistration.k8s.io, which every API server serves, so its list is not whole" \
+        "a discovery without validatingwebhookconfigurations"
+      ;;
+    refused)
+      : >"$world/clusters/operator-cluster/refuse-admission-resources"
+      run
+      want_status 2 "a discovery of admissionregistration.k8s.io that cannot be read"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
+        "a discovery of admissionregistration.k8s.io that cannot be read"
+      ;;
+    refused-other)
+      add_cluster other-cluster us-east1
+      : >"$world/clusters/other-cluster/refuse-admission-resources"
+      run
+      want_status 2 "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
+      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
+        "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
+      ;;
+  esac
+}
+if row bg; then
+  each admission_names_row missing refused refused-other
+  passed "(bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations, or cannot be read on the operator's or another cluster, reads UNKNOWN"
 fi
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
