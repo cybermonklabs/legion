@@ -186,7 +186,7 @@ type eventStreamRelay struct {
 	// answers runs once that page's read has returned; nil in production. The read itself is
 	// always the production one: a test counts the pages through the hook, or holds one before
 	// its read.
-	aroundPage func(after int64) (ended func())
+	aroundPage func() (ended func())
 	// aroundRead runs before each read of a generation's loop (run), and the function it answers
 	// runs once that read has ended, its retries included; nil in production. A test holds the
 	// reads back and counts the ones under way through it, so it orders a reset of the log
@@ -572,7 +572,7 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 // as one that proves no author (refs' visibility registry).
 func (r *eventStreamRelay) page(ctx context.Context, after int64, afterAt time.Time, through int64) ([]model.Event, error) {
 	if r.aroundPage != nil {
-		if ended := r.aroundPage(after); ended != nil {
+		if ended := r.aroundPage(); ended != nil {
 			defer ended()
 		}
 	}

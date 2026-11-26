@@ -93,17 +93,17 @@ func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
 }
 
 // newCountedRelay is a relay of its own on deps' database, on a lifetime the test ends and waits
-// out, whose every page read is reported on reads, after it returns, with the id it read after.
-// It watches the relay's own read through aroundPage rather than replacing it, so what it counts
-// is the read production makes.
-func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
+// out, whose every page read is reported on reads after it returns. It watches the relay's own
+// read through aroundPage rather than replacing it, so what it counts is the read production
+// makes.
+func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan struct{}) {
 	t.Helper()
 	lifetime, stop := context.WithCancel(t.Context())
 	relay := newEventStreamRelay(directServer(deps), lifetime)
 	relay.coalesce = time.Millisecond
-	reads := make(chan int64, 1024)
-	relay.aroundPage = func(after int64) func() {
-		return func() { reads <- after }
+	reads := make(chan struct{}, 1024)
+	relay.aroundPage = func() func() {
+		return func() { reads <- struct{}{} }
 	}
 	t.Cleanup(func() {
 		stop()
@@ -162,7 +162,7 @@ func receiveRelayedThrough(t *testing.T, database *store.Store, subscription <-c
 // 300 ms: a generation's start, its LISTEN catch-up and the re-reads a gap above the horizon
 // schedules all read on their own, so a count of the reads one commit costs is taken after them.
 // Its one bound is the test binary's deadline (awaitStill).
-func quietRelayReads(t *testing.T, reads <-chan int64) {
+func quietRelayReads(t *testing.T, reads <-chan struct{}) {
 	t.Helper()
 	var drained int64
 	awaitStill(t, "the relay's page reads", 300*time.Millisecond, func() int64 {
@@ -491,9 +491,10 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 }
 
 // TestEventStreamRelayRecoversWhenTheEventLogIsReset: the browser suite empties the event log
-// between its scenarios (`truncate ... restart identity cascade`, e2e/seed.ts), so the new rows'
-// ids restart at 1, below the cursor the relay has published through, and `id > cursor` matches
-// nothing. A relay that only ever published forward would fall silent there for good: every live
+// between its scenarios (e2e/seed.ts deletes its rows and restarts its ids; this test truncates it
+// with `restart identity`, which does the same), so the new rows' ids restart at 1, below the
+// cursor the relay has published through, and `id > cursor` matches nothing. A relay that only
+// ever published forward would fall silent there for good: every live
 // update of every later scenario would be lost, with no error anywhere. The relay reads the reset
 // through events.EventCursorCheck and ends its generation with every subscription it holds -- the
 // stream's answer to a reader it can no longer serve in order, which ends each open events
@@ -569,13 +570,12 @@ func TestARelayReadOvertakenByAResetPublishesNothingOfTheNewLog(t *testing.T) {
 	var hold atomic.Bool
 	held, release := make(chan struct{}), make(chan struct{})
 	releaseHeld := sync.OnceFunc(func() { close(release) })
-	counted := relay.aroundPage
-	relay.aroundPage = func(after int64) func() {
+	relay.aroundPage = func() func() {
 		if hold.CompareAndSwap(true, false) {
 			close(held)
 			<-release
 		}
-		return counted(after)
+		return nil
 	}
 	// Cleanups run last first, so a test that fails while the read is held lets it go before the
 	// relay's cleanup waits for its goroutines.
@@ -621,9 +621,10 @@ func TestARelayReadOvertakenByAResetPublishesNothingOfTheNewLog(t *testing.T) {
 		fmt.Sprintf("the reset that overtook the relay's held read, after the events it published through %d", committed))
 }
 
-// TestEventLogResetClearsTheRelaysHorizon: a reset log (`truncate events restart identity`, what
-// e2e/seed.ts does between browser scenarios) hands out ids from 1 again, far below the horizon the
-// relay read the old log through. The relay forgets that horizon (Horizon.Reset) and takes its new
+// TestEventLogResetClearsTheRelaysHorizon: a reset log hands out ids from 1 again, far below the
+// horizon the relay read the old log through (this test truncates the log with `restart identity`;
+// e2e/seed.ts deletes its rows and restarts its ids between browser scenarios). The relay forgets
+// that horizon (Horizon.Reset) and takes its new
 // cursor under one proven afresh, ends every subscription open across the reset as it always has,
 // and serves the new log to the subscriptions made after it.
 //
