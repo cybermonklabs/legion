@@ -21,16 +21,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// recordedHolds is what file holds: the boxes, and the sign-ins held for want of a record.
-func recordedHolds(t *testing.T, file string) (boxes, signIns []string) {
+// recordedHolds is what file holds: the boxes, each with the thumbprint of the sign-in it stands
+// under, and the sign-ins held for want of a record.
+func recordedHolds(t *testing.T, file string) (boxes map[string]string, signIns []string) {
 	t.Helper()
 	data, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatalf("read the record of the boxes: %v", err)
 	}
 	var kept struct {
-		Boxes   []string `json:"boxes"`
-		SignIns []string `json:"sign_ins_with_unrecorded_boxes"`
+		Boxes   map[string]string `json:"boxes"`
+		SignIns []string          `json:"sign_ins_with_unrecorded_boxes"`
 	}
 	if err := json.Unmarshal(data, &kept); err != nil {
 		t.Fatalf("the record of the boxes is %q, no record: %v", data, err)

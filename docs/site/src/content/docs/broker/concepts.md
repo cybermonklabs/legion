@@ -239,13 +239,20 @@ from its end, or the credential fifteen minutes from its, whichever comes first,
 fails is tried twice more before the credential lapses; it logs each such failure at WARN. A
 helper that holds no such enrollment trades nothing, so the sign-in's **Last used** on Dispatch
 says whether the box is in use. A box renews with its own key and tells the helper nothing, so
-the helper keeps a record of the boxes it enrolled, beside its session records. Where it finds
-no record it can read, as at its first start after a release that kept none, it cannot tell which
-boxes stand under the sign-in on the box: it keeps that sign-in traded until the sign-in leaves
-the box, by a sign-out or a new `agent-secrets login`, and logs a WARN naming the person. Where
-the person can no longer be traded, the broker refuses those sessions' next renewal and the
-helper enrols each again under the machine's own credential: the person's access through them
-ends, and the sessions go on as the machine's.
+the helper keeps a record of each box it enrolled, with the sign-in it enrolled it under, beside
+its session records. A record counts while its sign-in is the one on the box, and goes once that
+sign-in leaves, since nothing there can trade it again. A box that ends without being unenrolled
+keeps its record, and with it the trades and the **Last used** of its sign-in: unenrol it through
+the helper (`agent-secrets unenroll --helper --enrollment <id>`, the id in the record), which
+removes the record also where the broker answers that the enrollment is gone. Where the helper
+finds no record it can read, as at its first start after a release that kept none, it cannot
+tell which boxes stand under the sign-in on the box: it keeps that sign-in traded until the
+sign-in leaves the box, by a sign-out or a new `agent-secrets login`, and logs a WARN naming the
+person. Where the person can no longer be traded, the broker refuses those sessions' next renewal
+and the helper enrols each again under the machine's own credential: the person's access through
+them ends, and the sessions go on as the machine's. A box renews with its own `agent-secrets
+renew`, which exits 76 when refused instead, and is enrolled again only by running `agent-secrets
+enroll --helper` again.
 
 A renewer that is killed, with its machine or its process tree, renews nothing until a command
 starts one: the next command of the sign-in, or within a second a use command still waiting for

@@ -85,19 +85,19 @@ func (b *Broker) keepSignIns(ctx context.Context) {
 }
 
 // signInNeeded reports whether keepSignIns asks for the sign-in at now: an enrollment this helper
-// recorded may stand under it, or it is a sign-in the helper holds for want of a record of its
-// boxes (signInHolds.needed). It reads which sign-in is on the box (SignIns.SignedIn) only while
-// such a hold stands, and drops a hold whose sign-in is no longer the one on the box: its key went
-// with its record, so no later sign-in is it, and nothing here can trade it again. Where it cannot
-// tell which sign-in is on the box (two people signed in and none named), it keeps every hold and
-// asks nothing for them, since Current could not trade one either.
+// recorded may stand under it (signInHolds.needed). A box and a sign-in held for want of a record
+// each name the sign-in they stand under, by its box key's thumbprint, so it reads which sign-in
+// is on the box (SignIns.SignedIn) while either is recorded, and drops each that names another:
+// its key went with its record, so no later sign-in is it, and nothing here can trade it again.
+// Where it cannot tell which sign-in is on the box (two people signed in and none named), it keeps
+// every record and asks nothing for them, since Current could not trade one either.
 func (b *Broker) signInNeeded(now time.Time) bool {
 	here := ""
-	if b.signInHolds.holdsUnrecorded() {
+	if b.signInHolds.namesSignIns() {
 		if _, thumbprint, err := b.SignIns.SignedIn(); err == nil {
 			here = thumbprint
-			if err := b.signInHolds.keepUnrecorded(thumbprint); err != nil {
-				b.logger().Warn("the helper could not record that a sign-in it held for want of a record of its boxes has left this box; a helper started again holds it until it sees that again",
+			if err := b.signInHolds.keepSignIn(thumbprint); err != nil {
+				b.logger().Warn("the helper could not record that a sign-in its record named has left this box; a helper started again keeps it until it sees that again",
 					"file", SignInBoxesNamed, "error", redact.File(err))
 			}
 		}
@@ -166,13 +166,15 @@ type signInHolds struct {
 	// back after a restart, may stand under the sign-in, and counts.
 	sessions map[string]heldEnrollment
 	// boxes are the enrollments this helper made under a sign-in for a launcher's key
-	// (Broker.EnrollSessionKey). Such a box renews with its own key and tells the helper nothing,
-	// so each counts until it is unenrolled through this helper.
-	boxes map[string]bool
+	// (Broker.EnrollSessionKey), each with the thumbprint of the sign-in's box key it stands
+	// under. Such a box renews with its own key and tells the helper nothing, so each counts
+	// while its sign-in is the one on this box, until it is unenrolled through this helper; once
+	// another sign-in is on the box, or none, no trade here can keep it, and it goes (keepSignIn).
+	boxes map[string]string
 	// unrecorded are the sign-ins, by their box keys' thumbprints, that were on this box when the
 	// helper found no record it could read (Broker.loadSignInHolds): a box a helper before it
 	// enrolled under one may stand that no record names. Each counts while it is the sign-in on
-	// this box, and goes once another is, or none (keepUnrecorded).
+	// this box, and goes once another is, or none (keepSignIn).
 	unrecorded map[string]bool
 }
 
@@ -184,21 +186,26 @@ type heldEnrollment struct {
 
 // signInHoldsFile is the content of SignInBoxesPath's file.
 type signInHoldsFile struct {
-	// Boxes is signInHolds.boxes, by enrollment id.
-	Boxes []string `json:"boxes"`
+	// Boxes is signInHolds.boxes: each enrollment id, with its sign-in's thumbprint.
+	Boxes map[string]string `json:"boxes"`
 	// SignInsWithUnrecordedBoxes is signInHolds.unrecorded, by thumbprint.
 	SignInsWithUnrecordedBoxes []string `json:"sign_ins_with_unrecorded_boxes"`
 }
 
-// needed reports whether an enrollment may stand under the sign-in at now: a box; a session whose
-// lease runs past now and that this helper did not enroll under its own machine credential; or
-// the sign-in on this box, whose box key's thumbprint is here ("" where it was not read), held for
-// want of a record of its boxes.
+// needed reports whether an enrollment may stand under the sign-in at now: a session whose lease
+// runs past now and that this helper did not enroll under its own machine credential; or, where
+// here is the thumbprint of the sign-in on this box ("" where it was not read), a box enrolled
+// under that sign-in, or that sign-in held for want of a record of its boxes.
 func (h *signInHolds) needed(now time.Time, here string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.boxes) > 0 || (here != "" && h.unrecorded[here]) {
+	if here != "" && h.unrecorded[here] {
 		return true
+	}
+	for _, under := range h.boxes {
+		if here != "" && under == here {
+			return true
+		}
 	}
 	for _, held := range h.sessions {
 		if !held.machine && held.until.After(now) {
@@ -208,11 +215,12 @@ func (h *signInHolds) needed(now time.Time, here string) bool {
 	return false
 }
 
-// holdsUnrecorded reports whether a sign-in is held for want of a record of its boxes.
-func (h *signInHolds) holdsUnrecorded() bool {
+// namesSignIns reports whether a box, or a sign-in held for want of a record, is recorded: each
+// names a sign-in, which needed counts only while it is the one on this box.
+func (h *signInHolds) namesSignIns() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.unrecorded) > 0
+	return len(h.boxes) > 0 || len(h.unrecorded) > 0
 }
 
 // holdUnrecorded holds the sign-in whose box key's thumbprint is thumbprint for want of a record
@@ -228,15 +236,22 @@ func (h *signInHolds) holdUnrecorded(thumbprint string) error {
 	return h.saveLocked()
 }
 
-// keepUnrecorded drops every sign-in held for want of a record but the one whose box key's
-// thumbprint is here, the sign-in on this box ("" where there is none), and saves what it dropped.
-func (h *signInHolds) keepUnrecorded(here string) error {
+// keepSignIn drops every box and every hold that names a sign-in other than the one whose box
+// key's thumbprint is here, the sign-in on this box ("" where there is none), and saves what it
+// dropped.
+func (h *signInHolds) keepSignIn(here string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	dropped := false
 	for thumbprint := range h.unrecorded {
 		if thumbprint != here {
 			delete(h.unrecorded, thumbprint)
+			dropped = true
+		}
+	}
+	for id, under := range h.boxes {
+		if under != here {
+			delete(h.boxes, id)
 			dropped = true
 		}
 	}
@@ -257,16 +272,16 @@ func (h *signInHolds) session(id string, until time.Time, signIn bool) {
 	h.sessions[id] = heldEnrollment{until: until, machine: !signIn}
 }
 
-// box records an enrollment this helper made under a person's sign-in for a launcher's key, and
-// saves it. It answers the error of that save, which leaves the box counted until this helper
-// stops.
-func (h *signInHolds) box(id string) error {
+// box records an enrollment this helper made for a launcher's key under the sign-in whose box
+// key's thumbprint is under, and saves it. It answers the error of that save, which leaves the box
+// counted until this helper stops.
+func (h *signInHolds) box(id, under string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.boxes == nil {
-		h.boxes = map[string]bool{}
+		h.boxes = map[string]string{}
 	}
-	h.boxes[id] = true
+	h.boxes[id] = under
 	return h.saveLocked()
 }
 
@@ -290,7 +305,7 @@ func (h *signInHolds) ended(id string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.sessions, id)
-	if !h.boxes[id] {
+	if _, held := h.boxes[id]; !held {
 		return nil
 	}
 	delete(h.boxes, id)
@@ -310,7 +325,11 @@ func (h *signInHolds) saveLocked() error {
 	if h.file == "" {
 		return nil
 	}
-	data, err := json.Marshal(signInHoldsFile{Boxes: sortedKeys(h.boxes), SignInsWithUnrecordedBoxes: sortedKeys(h.unrecorded)})
+	boxes := h.boxes
+	if boxes == nil {
+		boxes = map[string]string{}
+	}
+	data, err := json.Marshal(signInHoldsFile{Boxes: boxes, SignInsWithUnrecordedBoxes: sortedKeys(h.unrecorded)})
 	if err != nil {
 		return err
 	}
@@ -344,10 +363,12 @@ func (h *signInHolds) load(file string) error {
 		return fmt.Errorf("%s is no record of boxes and sign-ins", SignInBoxesNamed)
 	}
 	if h.boxes == nil {
-		h.boxes = map[string]bool{}
+		h.boxes = map[string]string{}
 	}
-	for _, id := range kept.Boxes {
-		h.boxes[id] = true
+	for id, under := range kept.Boxes {
+		if under != "" {
+			h.boxes[id] = under
+		}
 	}
 	if h.unrecorded == nil {
 		h.unrecorded = map[string]bool{}

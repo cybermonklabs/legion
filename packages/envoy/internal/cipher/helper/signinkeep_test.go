@@ -185,14 +185,39 @@ func TestAHelperTradesItsSignInOnlyWhileAnEnrollmentMayStandUnderIt(t *testing.T
 			t.Fatalf("the helper started after the box was unenrolled asked for the sign-in %d times; want none", n)
 		}
 	})
+	t.Run("a box whose sign-in has left the box", func(t *testing.T) {
+		f := newEnrolBroker(t)
+		file := SignInBoxesPath(filepath.Join(t.TempDir(), "sessions.json"))
+		b, _, _ := machineIdentityBroker(t, f)
+		b.SignInBoxesFile = file
+		signIns := &stubSignIns{}
+		asks, _ := startKeeping(t, b, signIns)
+		signIns.mu.Lock()
+		signIns.authority = signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
+		signIns.mu.Unlock()
+		if _, _, err := b.EnrollSessionKey(ctx, "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "three asks for the box under the sign-in", func() bool { return asks() >= 4 })
+		// The person signs in again, which makes a key of its own: nothing here can trade the
+		// sign-in the box stands under any more, so its record goes and no ask comes for it.
+		signIns.mu.Lock()
+		signIns.authority = signedIn(t, f, "ada@example.com", "credential-of-adas-next-sign-in")
+		signIns.mu.Unlock()
+		asksStop(t, asks, "once the box's sign-in has left the box")
+		if boxes, _ := recordedHolds(t, file); len(boxes) != 0 {
+			t.Fatalf("the record still holds boxes %q after their sign-in left the box", boxes)
+		}
+	})
 }
 
 // TestSignInHoldsCountWhatMayStandUnderTheSignIn is the rule keepSignIns reads, on a clock of the
 // test's own: a session counts while its lease runs unless this helper enrolled it under its own
-// machine credential, one it renews without having enrolled it counts, a box counts until it
-// ends, whatever the time, and a sign-in held for want of a record counts while it is the one on
-// the box, until another is.
+// machine credential, and one it renews without having enrolled it counts. A box, and a sign-in
+// held for want of a record, count whatever the time while the sign-in they name is the one on the
+// box, until the box ends or another sign-in takes that one's place, which drops them.
 func TestSignInHoldsCountWhatMayStandUnderTheSignIn(t *testing.T) {
+	const ada, adaAgain = "thumbprint-of-adas-key", "thumbprint-of-adas-next-key"
 	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
 	var holds signInHolds
 	if holds.needed(now, "") {
@@ -210,37 +235,44 @@ func TestSignInHoldsCountWhatMayStandUnderTheSignIn(t *testing.T) {
 	if holds.needed(now.Add(20*time.Minute), "") {
 		t.Fatal("a session whose lease has run out is needed")
 	}
-	if err := holds.box("signin-box"); err != nil {
+
+	// A day on, no session's lease runs, so only a box or a hold can make the sign-in needed.
+	later := now.Add(24 * time.Hour)
+	if err := holds.box("signin-box", ada); err != nil {
 		t.Fatal(err)
 	}
-	if !holds.needed(now.Add(24*time.Hour), "") {
-		t.Fatal("a box enrolled under the sign-in is not needed a day on; it renews with no word to the helper")
+	if !holds.needed(later, ada) {
+		t.Fatal("a box enrolled under the sign-in on the box is not needed a day on; it renews with no word to the helper")
+	}
+	if holds.needed(later, adaAgain) || holds.needed(later, "") {
+		t.Fatal("a box is needed while another sign-in is on the box, or none, or while the box was not read")
 	}
 	if err := holds.ended("signin-box"); err != nil {
 		t.Fatal(err)
 	}
-	if holds.needed(now.Add(20*time.Minute), "") {
+	if holds.needed(later, ada) {
 		t.Fatal("a box unenrolled is still needed")
 	}
 
-	// A day on, no session's lease runs, so only the hold can make the sign-in needed.
-	later := now.Add(24 * time.Hour)
-	if err := holds.holdUnrecorded("thumbprint-of-adas-key"); err != nil {
+	if err := holds.holdUnrecorded(ada); err != nil {
 		t.Fatal(err)
 	}
-	if !holds.needed(later, "thumbprint-of-adas-key") {
+	if err := holds.box("another-signin-box", ada); err != nil {
+		t.Fatal(err)
+	}
+	if !holds.needed(later, ada) {
 		t.Fatal("the sign-in on the box, held for want of a record of its boxes, is not needed")
 	}
-	if holds.needed(later, "thumbprint-of-adas-next-key") || holds.needed(later, "") {
+	if holds.needed(later, adaAgain) || holds.needed(later, "") {
 		t.Fatal("a sign-in held for want of a record is needed while another is on the box, or none, or while the box was not read")
 	}
-	if err := holds.keepUnrecorded("thumbprint-of-adas-key"); err != nil || !holds.holdsUnrecorded() {
-		t.Fatalf("the hold of the sign-in still on the box was dropped (%v)", err)
+	if err := holds.keepSignIn(ada); err != nil || !holds.namesSignIns() {
+		t.Fatalf("the box and the hold of the sign-in still on the box were dropped (%v)", err)
 	}
-	if err := holds.keepUnrecorded("thumbprint-of-adas-next-key"); err != nil {
+	if err := holds.keepSignIn(adaAgain); err != nil {
 		t.Fatal(err)
 	}
-	if holds.holdsUnrecorded() || holds.needed(later, "thumbprint-of-adas-key") {
-		t.Fatal("a sign-in held for want of a record is still held after another took its place on the box")
+	if holds.namesSignIns() || holds.needed(later, ada) {
+		t.Fatal("a box or a hold is still recorded after another sign-in took the place of the one it names")
 	}
 }
