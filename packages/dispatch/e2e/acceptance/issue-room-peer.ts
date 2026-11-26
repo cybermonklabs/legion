@@ -218,6 +218,8 @@ function blocks(fragment: Y.XmlFragment): { id: string; type: string; text: stri
   const walk = (node: Y.XmlElement | Y.XmlFragment) => {
     for (const child of node.toArray()) {
       if (!(child instanceof Y.XmlElement)) continue;
+      // A Yjs element's attribute in the peer's own in-memory document, never a page's state:
+      // no page has to settle before this read, so one instant's answer is the answer.
       const id = child.getAttribute("blockId");
       if (typeof id === "string" && id !== "") {
         const text = child
