@@ -73,20 +73,46 @@ func ReadStartMark(path string) (StartMark, error) {
 	if err != nil {
 		return StartMark{}, fmt.Errorf("the start mark %s: %w", path, err)
 	}
+	started, err := starttimeOf(stat)
+	if err != nil {
+		return StartMark{}, fmt.Errorf("the start mark %s: %w", path, err)
+	}
+	return StartMark{Started: started, Reached: reached}, nil
+}
+
+// ProcStart is when the kernel made the live process pid, as a time since boot, read from its
+// /proc/<pid>/stat starttime. It is for a binary a row starts itself, which has no shell to write
+// MarkStart: the row reads it right after Start, while the process still lives.
+func ProcStart(pid int) (time.Duration, error) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, err
+	}
+	started, err := starttimeOf(strings.TrimSuffix(string(raw), "\n"))
+	if err != nil {
+		return 0, fmt.Errorf("process %d: %w", pid, err)
+	}
+	return started, nil
+}
+
+// starttimeOf is the starttime a /proc/<pid>/stat line gives, as a time since boot. Its fields are
+// counted from after the line's last ')', since the command's name in parentheses may hold one, and
+// starttime is field 22 (proc(5)).
+func starttimeOf(stat string) (time.Duration, error) {
 	end := strings.LastIndexByte(stat, ')')
 	if end < 0 {
-		return StartMark{}, fmt.Errorf("the start mark %s holds no stat line: %q", path, stat)
+		return 0, fmt.Errorf("no stat line: %q", stat)
 	}
 	const starttime = 22 - 3
 	fields := strings.Fields(stat[end+1:])
 	if len(fields) <= starttime {
-		return StartMark{}, fmt.Errorf("the start mark %s holds no starttime: %q", path, stat)
+		return 0, fmt.Errorf("no starttime: %q", stat)
 	}
 	ticks, err := strconv.ParseInt(fields[starttime], 10, 64)
 	if err != nil {
-		return StartMark{}, fmt.Errorf("the start mark %s: starttime %q: %w", path, fields[starttime], err)
+		return 0, fmt.Errorf("starttime %q: %w", fields[starttime], err)
 	}
-	return StartMark{Started: time.Duration(ticks) * ClockTick, Reached: reached}, nil
+	return time.Duration(ticks) * ClockTick, nil
 }
 
 // uptimeOf is the time since boot that a /proc/uptime line gives first, to its hundredth of a second.
