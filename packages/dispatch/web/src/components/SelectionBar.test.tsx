@@ -118,6 +118,44 @@ test("the bar's box takes the page's size: the comfortable padding by default, t
   }
 });
 
+/** Tailwind's definitions of the utilities the bar's line is drawn by below `sm`, and of the `sm:`
+ *  ones as they apply from 640 px up, read after them as Tailwind orders them. */
+const LINE_CSS =
+  ".flex-nowrap{flex-wrap:nowrap}.flex-wrap{flex-wrap:wrap}.overflow-x-auto{overflow-x:auto}";
+const SM_LINE_CSS = String.raw`.sm\:flex-wrap{flex-wrap:wrap}.sm\:overflow-x-visible{overflow-x:visible}`;
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 07:01Z): below `sm` the bar stands
+// under the header over the list's top rows, and the compact line wrapped there stood 210 px over
+// the rows it acts on at 390x664 (builds Jobs `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`).
+// So it keeps one line that scrolls sideways there, and wraps from `sm` up, where the bar stands at
+// the foot and the foot inset gives the list its room.
+test("the compact bar's line is one line that scrolls sideways below sm, and wraps from sm up", () => {
+  const view = render(
+    <SelectionBar count={2} label="Selected rows" size="compact">
+      <button type="button">Clear selection</button>
+    </SelectionBar>
+  );
+  const line = screen.getByRole("button", { name: "Clear selection" }).parentElement;
+  if (line === null) throw new Error("the bar draws no line around its actions");
+  const drawn = (css: string) => {
+    const sheet = document.createElement("style");
+    sheet.textContent = css;
+    document.head.appendChild(sheet);
+    try {
+      const style = getComputedStyle(line);
+      return { flexWrap: style.flexWrap, overflowX: style.overflowX };
+    } finally {
+      sheet.remove();
+    }
+  };
+  try {
+    expect(drawn(LINE_CSS)).toEqual({ flexWrap: "nowrap", overflowX: "auto" });
+    expect(drawn(LINE_CSS + SM_LINE_CSS)).toEqual({ flexWrap: "wrap", overflowX: "visible" });
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the bar hands its own element back and takes focus, for a page whose keymap puts it there", () => {
   const barRef = createRef<HTMLElement>();
   const view = render(

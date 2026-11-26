@@ -1041,6 +1041,19 @@ export const otherPagesBreaches: readonly KnownLayoutBreach[] = [
     kind: "group-missing",
     element: "labels",
   },
+  // The List's selection bar keeps one line that scrolls sideways below `sm`, where it stands under
+  // the header over the list's top rows (`components/SelectionBar.tsx`, `BAR_LINE`). Main's list
+  // holds the sideways scroll of this state at 360 too (`[aria-label="Project issues"]`), and a
+  // bar wrapped there stood 210 px over the rows it acts on at 390x664 (builds Jobs
+  // `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`). From `sm` up it wraps, and scrolls
+  // nothing.
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 360,
+    kind: "box-scroll",
+    element: '[aria-label="Selected issues"]',
+  },
   { route: "project-issues", width: 900, kind: "group-missing", element: "labels" },
   {
     route: "project-issues",

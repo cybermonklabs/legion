@@ -463,16 +463,21 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
   return <DrawnBar {...bar} wentHolding={wentHolding} />;
 }
 
-/** How the bar's line of actions stands at each size. The compact line wraps onto more lines, for
- *  the project List's bar, whose actions hold more room than its box at 360 and 900 px: main's
- *  layout rule reads a box that scrolls sideways as a breach, and read that bar with two rows
- *  marked as one (builds Job `infra-3135-infra-3135-r29m-lay-z5wrh`, and cybermonklabs/legion#4304,
- *  whose own fix this is). The comfortable line, the Inbox's, and the toolbar line keep the one
- *  line they had, which scrolls sideways where it must. Each control keeps its own text on one line
- *  and its own size at every size. */
+/** How the bar's line of actions stands at each size. Each line is one line that scrolls sideways
+ *  where it must, and each control keeps its own text on one line and its own size at every size.
+ *  The compact line, the project List's bar, wraps onto more lines from `sm` up, where the bar
+ *  stands at the foot of the screen and the foot inset gives the list the room the bar takes
+ *  (`hooks/useFootInset.ts`): its actions hold more room than its box at 900 px, and main's layout
+ *  rule reads a box that scrolls sideways as a breach (builds Job
+ *  `infra-3135-infra-3135-r29m-lay-z5wrh`, and cybermonklabs/legion#4304). Below `sm` the bar stands
+ *  under the header, over the list's top rows, with no room given for it, so it keeps one line
+ *  there: wrapped at 390x664 it stood 210 px tall over the rows it acts on, and a double click on a
+ *  marked row's held Start next landed on the bar instead (builds Jobs
+ *  `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`). `e2e/layout-breaches.ts` holds the
+ *  sideways scroll that one line leaves at 360. */
 const BAR_LINE: Record<ControlSize, string> = {
   comfortable: "flex-nowrap overflow-x-auto",
-  compact: "flex-wrap",
+  compact: "flex-nowrap overflow-x-auto sm:flex-wrap sm:overflow-x-visible",
   toolbar: "flex-nowrap overflow-x-auto",
 };
 
