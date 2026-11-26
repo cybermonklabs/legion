@@ -940,7 +940,11 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	killed := procgroup.Configure(cmd)
 	job.attach(cmd)
 	started := time.Now()
-	err := cmd.Run()
+	var err error
+	if err = cmd.Start(); err == nil {
+		time.Sleep(time.Second)
+		err = cmd.Wait()
+	}
 	job.release()
 	if ctx.Err() != nil {
 		return ran{}, ctx.Err()
