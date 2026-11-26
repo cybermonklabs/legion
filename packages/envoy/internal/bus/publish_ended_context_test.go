@@ -110,7 +110,7 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 			if err := client.PublishWithin(live, envelope); err != nil {
 				t.Fatalf("publish under a live context: %v", err)
 			}
-			if _, err := received.NextMsg(5 * time.Second); err != nil {
+			if _, err := received.NextMsgWithContext(live); err != nil {
 				t.Fatalf("the subscriber received nothing from the live publish: %v", err)
 			}
 			if !tc.core {

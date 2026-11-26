@@ -155,7 +155,8 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 	if err := publishDuringReconnect(testwait.Context(t), func() {}); err != nil {
 		t.Fatalf("publish under a live context released by the reconnect: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	// No span of its own: the delivery can come late on a loaded machine with nothing wrong.
+	if _, err := f.received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish released by the reconnect: %v", err)
 	}
 }
@@ -229,7 +230,8 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 	if err := publishAsTheReconnectCompletes(testwait.Context(t), func() {}); err != nil {
 		t.Fatalf("publish under a live context as the reconnect completed: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	// No span of its own: the delivery can come late on a loaded machine with nothing wrong.
+	if _, err := f.received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish as the reconnect completed: %v", err)
 	}
 }

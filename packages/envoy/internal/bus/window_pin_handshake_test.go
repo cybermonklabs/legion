@@ -95,8 +95,11 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		count := func() { waits.Add(1) }
 		w.connectionWaitEntered.Store(&count)
 		answers := make(chan error, 2)
+		// No span of its own: each first send waits for a connection until the test binary's
+		// deadline less testwait's margin, and the hold's release gives it one.
+		wait := testwait.Remaining(t, 30*time.Second)
 		for range 2 {
-			go func() { answers <- w.pin(time.Minute) }()
+			go func() { answers <- w.pin(wait) }()
 		}
 		testwait.UntilPolling(t, time.Millisecond, "both first sends to reach their wait for a connection side by side (the last read is how many had; one that waits behind the other on the window's pin never does)", func() (int64, bool) {
 			select {

@@ -98,7 +98,8 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	if err := session.Flush(); err != nil {
 		t.Fatalf("flush the session: %v", err)
 	}
-	msg, err := heard.NextMsg(5 * time.Second)
+	// No span of its own: the delivery can come late on a loaded machine with nothing wrong.
+	msg, err := heard.NextMsgWithContext(testwait.Context(t))
 	if err != nil || msg.Subject != own {
 		t.Fatalf("the watcher heard %v (%v), want the session's own reply subject %s", msg, err, own)
 	}
