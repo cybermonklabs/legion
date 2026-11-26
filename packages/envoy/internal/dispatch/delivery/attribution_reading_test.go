@@ -25,10 +25,8 @@ import (
 
 // readingCorpusPath is the corpus of the reading in the database (attribution_keys): each text
 // as Dispatch stores it, beside the four lists the Go reading gave for it. The file is frozen as
-// the Go reading wrote it (readingCorpusInputs says why), with one change made since: the reading
-// reads the commit messages newest first (attribution_keys' header), so the one case whose
-// messages name keys in two commits, TestAttributionFallsBackToCommitMessages, lists the newest
-// commit's key first. TestTheReadingAnswersItsCorpus holds the database to it.
+// the Go reading wrote it (readingCorpusInputs says why), and TestTheReadingAnswersItsCorpus holds
+// the database to it.
 const readingCorpusPath = "testdata/attribution_reading.json"
 
 // readingText is what the reading reads of one pull request: the texts a read of GitHub stores
@@ -797,9 +795,8 @@ func TestTheReadingCallsNoUserFunction(t *testing.T) {
 	if _, err := pool.Exec(ctx, `create function reading_probe_helper(text) returns text language sql immutable begin atomic select $1; end`); err != nil {
 		t.Fatal(err)
 	}
-	const messages = "pg_catalog.array_to_string(array(select u.m from pg_catalog.unnest(coalesce(messages, '{}')) with ordinality u(m, i) order by u.i desc), E'\\n')"
 	createReadingCopy(t, ctx, pool, "attribution_keys_probe",
-		readingEdit{messages, schema + ".reading_probe_helper(" + messages + ")", 1})
+		readingEdit{"pg_catalog.array_to_string(coalesce(messages, '{}'), E'\\n')", schema + ".reading_probe_helper(pg_catalog.array_to_string(coalesce(messages, '{}'), E'\\n'))", 1})
 	if calls := userFunctionsOf(t, ctx, pool, "attribution_keys_probe(text,text,text,text,text[])"); !slices.Equal(calls, []string{"reading_probe_helper(text)"}) {
 		t.Errorf("the control: the copy that calls a helper names %v, want [reading_probe_helper(text)]", calls)
 	}

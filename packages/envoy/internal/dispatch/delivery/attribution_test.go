@@ -196,21 +196,21 @@ func TestAttributionTakesTheHeadBranch(t *testing.T) {
 	}
 }
 
-// TestAttributionFallsBackToCommitMessages: source 5, the first known key across the commit
-// messages, the newest commit first, which is read only where the four sources above name nobody.
-// GitHub lists a pull request's commits oldest first; the head commit's key is the branch's word
-// now, and an older commit's can be history the branch carries
-// (TestALaterPullRequestIsCreditedToItsHeadCommitsTrailerAndNotToAClosedIssueAnOlderCommitNames).
+// TestAttributionFallsBackToCommitMessages: source 5, the one key the commit messages name, which
+// is read only where the four sources above name nobody. A key counts where it names an issue
+// Dispatch holds, so ATTR-999, which names none, leaves ATTR-131 the messages' one key. Messages
+// that name two keys credit no issue
+// (TestCommitMessagesNamingTwoIssuesCreditNoIssue).
 func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-131", "ATTR-132"}, nil)
 	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/130",
-		CommitMessages: []string{"wip", "refs ATTR-999 and ATTR-132", "closes ATTR-131"},
+		CommitMessages: []string{"wip", "refs ATTR-999", "closes ATTR-131"},
 	})
 	if key != "ATTR-131" || source != sourceCommitMessage {
-		t.Fatalf("resolved %q from %q, want ATTR-131, the newest commit's, from %q", key, source, sourceCommitMessage)
+		t.Fatalf("resolved %q from %q, want ATTR-131, the messages' one key, from %q", key, source, sourceCommitMessage)
 	}
 }
 

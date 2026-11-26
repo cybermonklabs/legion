@@ -1,12 +1,17 @@
 kind: Fixed
 body: |-
-    A pull request credited from its commit messages is credited to the first issue its newest
-    commit names, and no longer to the first its oldest commit names. GitHub lists a pull
-    request's commits oldest first, so a branch that carries an older commit with another issue's
-    `Dispatch:` trailer was credited to that issue, a closed one among them, over the issue its
-    head commit names; that issue's checks then read the later pull request's head, where its own
-    merged head had passed. The reading `attribution_keys` reads the messages newest first, and
-    the next read of each stored pull request gives its keys again with no read of GitHub.
+    A pull request whose commit messages name more than one issue is credited to none of them by
+    its commit messages; its branch name and its body's Dispatch line still decide, and messages
+    that name one issue credit it as before. A key counts where it names an issue Dispatch holds, in
+    any repository, so a token such as SHA-256 is no key. A branch can carry commits of other work,
+    and the issue an older commit's `Dispatch:` trailer named had been credited with a later pull
+    request, though that issue was closed, and its checks read the later pull request's head
+    instead of its own merged head, which had passed.
+
+    A database that ran an earlier head of this pull request's branch is refused at boot, since
+    two of its migrations changed in place, and must be reset. A database of the release before
+    holds no texts of its pull requests, so each is credited by the rule above at its first read of
+    GitHub.
 time: 2026-11-25T19:30:37.000000000Z
 custom:
     Issue: pr4209

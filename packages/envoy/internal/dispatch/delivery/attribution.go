@@ -32,9 +32,13 @@ import (
 //     (citedPullRequest);
 //  3. a key in its head branch name, whatever its case;
 //  4. a key in its title or body, title first;
-//  5. a key in its commit messages, the newest commit first: GitHub lists a pull request's
-//     commits oldest first, and the head commit's key is the branch's word now, where an older
-//     commit's can be history the branch carries from other work.
+//  5. the key in its commit messages, where they name exactly one: a key counts where it names
+//     an issue Dispatch holds, in any repository, as the other sources count one, so a token of
+//     the same shape that names no issue (`SHA-256`) is no key. Where the messages name more than
+//     one such key, they credit no issue, and the higher sources alone decide (R9 of the results
+//     lookup): a branch carries commits of other work, a cherry-pick or an older commit's
+//     `Dispatch:` trailer of a closed issue among them, and no order of the commits says which key
+//     is the pull request's.
 //
 // The prototype's collector/attribution.py tried the title and the body first, and ranks 1 to 3
 // below them. R8 of INFRA-1522 moved them above: a branch name and a link are acts that name the
@@ -394,6 +398,7 @@ func attributedTermsOver(schema string, renames refs.Renames, judged, texts stri
 		select src.repo, src.number, src.held_as, u.key, '` + string(sourceCommitMessage) + `', 4, u.n
 		from batch src cross join lateral unnest(src.commit_keys) with ordinality u(key, n) join issues i on i.key = u.key
 		where src.texts_current and src.own_head
+			and (select count(distinct c.key) from unnest(src.commit_keys) c(key) join issues ci on ci.key = c.key) = 1
 	), candidates as (
 		select pr_repo, pr_number, pr_held_as, key, source, rank, n
 		from (select named.*, row_number() over (partition by pr_repo, pr_number order by rank, n, key collate "C") place from named) r

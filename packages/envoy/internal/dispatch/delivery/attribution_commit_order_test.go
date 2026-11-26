@@ -6,8 +6,13 @@ package delivery
 // commit's, naming the closed issue, and its head commit's, naming another issue. The older
 // trailer won, so the later pull request was credited to the closed issue from its commit messages,
 // and the closed issue's check that CI proves read the later pull request's head, where its own
-// merged head's check runs had passed. How the older commit entered the branch is not known; its
-// trailer is history the branch carries, and the head's trailer is the branch's own word now.
+// merged head's check runs had passed. How the older commit entered the branch is not known.
+//
+// The rule (R9 of the results lookup): where a pull request's commit messages name more than one
+// key, each naming an issue Dispatch holds in any repository, the messages credit no issue, and the
+// higher sources alone decide; one key in them credits its issue. No order of the commits picks
+// one: the oldest first credits the closed issue here, and the newest first credits a commit
+// cherry-picked last (TestCommitMessagesNamingTwoIssuesCreditNoIssue).
 //
 // Here the closed issue is ACME-6201, whose pull request #893 merged; ACME-6202 is the issue #901's
 // head commit names. Each event goes through Intake.deliver, as production's did.
@@ -53,13 +58,13 @@ func ev162Pull(number int, state string, merged bool, head, branch, title string
 	return pull
 }
 
-// The later pull request is credited to the issue its head commit's trailer names, from its commit
-// messages, and not to the closed issue an older commit's trailer names; the closed issue keeps its
-// merged pull request as its only pull request, and the newest head of the issue, the head the
-// check CI proves is read at, is that merged head (NewestPullRequestHead). The issue the head's
-// trailer names lists the later pull request. At a6003a51b0 the older trailer won: #901 was
-// credited to ACME-6201 from its commit messages, and ACME-6201's newest head was #901's.
-func TestALaterPullRequestIsCreditedToItsHeadCommitsTrailerAndNotToAClosedIssueAnOlderCommitNames(t *testing.T) {
+// The later pull request, whose messages name both issues, credits neither, and not the closed
+// issue an older commit's trailer names; the closed issue keeps its merged pull request as its only
+// pull request, and the newest head of the issue, the head the check CI proves is read at, is that
+// merged head (NewestPullRequestHead). The issue the head's trailer names lists nothing.
+// At a6003a51b0 the older trailer won: #901 was credited to ACME-6201 from its commit messages,
+// and ACME-6201's newest head was #901's.
+func TestALaterPullRequestWhoseCommitsNameTwoIssuesCreditsNeitherAndNotTheClosedOne(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedProjectRepository(t, ctx, pool, "ACME", "Acme", ev162Repo)
@@ -119,7 +124,7 @@ func TestALaterPullRequestIsCreditedToItsHeadCommitsTrailerAndNotToAClosedIssueA
 	}
 	// The older commit, whose trailer names the closed issue, comes first in GitHub's list of the
 	// pull request's commits, which is oldest first; the head commit, whose trailer names another
-	// issue, comes last.
+	// issue, comes last. Neither its branch, its title nor its body names an issue.
 	deliver(ev162Later, "opened", ev162Pull(ev162Later, "open", false, ev162Head2, "move-to-the-image", "Move the fleet to the new image", laterAt), []string{
 		"Move the fleet to the new release\n\nDispatch: " + ev162Closed,
 		"Move the fleet to the new image\n\nDispatch: " + ev162Newer,
@@ -135,8 +140,8 @@ func TestALaterPullRequestIsCreditedToItsHeadCommitsTrailerAndNotToAClosedIssueA
 	}
 	t.Logf("#%d: %s; #%d: %s; %s lists %v, newest head #%d %.8s (found %v); %s lists %v",
 		ev162Later, later, ev162Merged, merged, ev162Closed, closedHeads, newest.Number, newest.HeadSHA, found, ev162Newer, newerHeads)
-	if want := ev162Newer + " from " + string(sourceCommitMessage); later != want {
-		t.Errorf("#%d is %s, want %s: the head commit's trailer is the branch's word now, and an older commit's trailer for a closed issue is history it carries", ev162Later, later, want)
+	if want := "nobody from " + string(sourceNone); later != want {
+		t.Errorf("#%d is %s, want %s: its commit messages name two issues, so they credit none, and no higher source names one", ev162Later, later, want)
 	}
 	if want := ev162Closed + " from " + string(sourceBranch); merged != want {
 		t.Errorf("#%d is %s, want %s", ev162Merged, merged, want)
@@ -148,8 +153,68 @@ func TestALaterPullRequestIsCreditedToItsHeadCommitsTrailerAndNotToAClosedIssueA
 		t.Errorf("%s's newest head is #%d at %.8s (found %v), want the merged #%d at %.8s, where its check CI proves is read",
 			ev162Closed, newest.Number, newest.HeadSHA, found, ev162Merged, ev162Head1)
 	}
-	if want := fmt.Sprintf("[#%d at %.8s]", ev162Later, ev162Head2); fmt.Sprint(newerHeads) != want {
-		t.Errorf("%s lists %v, want %s", ev162Newer, newerHeads, want)
+	if want := "[]"; fmt.Sprint(newerHeads) != want {
+		t.Errorf("%s lists %v, want %s: the later pull request credits no issue", ev162Newer, newerHeads, want)
+	}
+}
+
+// TestCommitMessagesNamingTwoIssuesCreditNoIssue holds the rule over commit messages (R9 of the
+// results lookup) row by row, each through the statement (resolvedKey): messages that name two
+// keys of issues Dispatch holds, in any repository, credit no issue, whatever the order of the
+// commits; one key credits its issue; a token of a key's shape that names no issue is no key; and
+// where the messages name two, the branch and the body still decide. The rows the old orders get
+// wrong are the red: the commits in GitHub's order, oldest first, credit the closed issue of event
+// 162, and newest first credit the commit cherry-picked last.
+func TestCommitMessagesNamingTwoIssuesCreditNoIssue(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-141", "ATTR-142", "ATTR-143", "ATTR-144", "ATTR-145", "ATTR-146",
+		"ATTR-147", "ATTR-148", "ATTR-149", "ATTR-150", "ATTR-151", "ATTR-152"}, nil)
+	if _, err := pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = 'ATTR-141'`); err != nil {
+		t.Fatalf("close ATTR-141: %v", err)
+	}
+	other := seedGadgetsIssue(t, ctx, pool, 140)
+	for _, row := range []struct {
+		name         string
+		branch, body string
+		messages     []string
+		wantKey      string
+		wantSource   attributionSource
+	}{
+		{name: "an older commit's trailer of a closed issue and the head's of another (event 162)",
+			messages:   []string{"Move the fleet to the new release\n\nDispatch: ATTR-141", "Move the fleet to the new image\n\nDispatch: ATTR-142"},
+			wantSource: sourceNone},
+		{name: "a commit of another issue cherry-picked last",
+			messages:   []string{"Fix the lease\n\nDispatch: ATTR-143", "Fix the pool\n\n(cherry picked from commit 4c2a9e1)\n\nDispatch: ATTR-144"},
+			wantSource: sourceNone},
+		{name: "the head commit alone names two keys",
+			messages:   []string{"Fix the flake ATTR-146 found\n\nDispatch: ATTR-145"},
+			wantSource: sourceNone},
+		{name: "a commit of an issue of another repository cherry-picked last",
+			messages:   []string{"Fix the lease\n\nDispatch: ATTR-149", "Fix the pool\n\nDispatch: " + other},
+			wantSource: sourceNone},
+		{name: "one key in two commits",
+			messages: []string{"Start the work\n\nDispatch: ATTR-147", "Finish the work\n\nDispatch: ATTR-147"},
+			wantKey:  "ATTR-147", wantSource: sourceCommitMessage},
+		{name: "SHA-256 beside one key",
+			messages: []string{"Hash each body with SHA-256\n\nDispatch: ATTR-148"},
+			wantKey:  "ATTR-148", wantSource: sourceCommitMessage},
+		{name: "two keys in the messages and a key in the branch",
+			branch:   "legion/ATTR-150",
+			messages: []string{"Fix the lease\n\nDispatch: ATTR-143", "Fix the pool\n\nDispatch: ATTR-144"},
+			wantKey:  "ATTR-150", wantSource: sourceBranch},
+		{name: "two keys in the messages and a Dispatch line in the body",
+			body:     "Dispatch: ATTR-151",
+			messages: []string{"Fix the lease\n\nDispatch: ATTR-143", "Fix the pool\n\nDispatch: ATTR-152"},
+			wantKey:  "ATTR-151", wantSource: sourceTitleBody},
+	} {
+		key, source := resolvedKey(t, ctx, pool, ruleFacts{
+			Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/140",
+			HeadRef: row.branch, Body: row.body, Title: "Tidy the build", CommitMessages: row.messages,
+		})
+		if key != row.wantKey || source != row.wantSource {
+			t.Errorf("%s: resolved %q from %q, want %q from %q", row.name, key, source, row.wantKey, row.wantSource)
+		}
 	}
 }
 
