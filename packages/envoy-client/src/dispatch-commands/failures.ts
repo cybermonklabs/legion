@@ -1,4 +1,4 @@
-import { ISSUE_UPDATE_PATCH_FIELDS, issueProject } from "@legion/contracts";
+import { ISSUE_UPDATE_PATCH_FIELDS } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
 import { DispatchGatewayError, DispatchNoRouteError, DispatchServiceError } from "../dispatch-http";
 import type { Owner } from "../dispatch-owner";
@@ -9,10 +9,11 @@ import { optionalString } from "./context";
  * A Dispatch refusal carrying its own code in the message the host shows: the code
  * (ISSUE_CLAIMED, CLAIM_CONTENDED, EXTERNAL_LINK_TAKEN, ...) is the part an agent acts on, and
  * the prose alone hides it. Only the message changes: every other field of the refusal
- * (`candidates`, `current`, `mismatches`, `issues`, `changed`, `hint`) rides along, since a
- * caller reads them off the error it catches. An error that is not a refusal is returned as it is, so a caller's
- * `throw refusalWithCode(error)` rethrows it untouched. This returns rather than throws, so the
- * throw stays at the call site, where a reader of the handler sees that the path ends there.
+ * (`candidates`, `current`, `mismatches`, `issues`, `changed`, `textRefusal`, `hint`) rides
+ * along, since a caller reads them off the error it catches. An error that is not a refusal is
+ * returned as it is, so a caller's `throw refusalWithCode(error)` rethrows it untouched. This
+ * returns rather than throws, so the throw stays at the call site, where a reader of the handler
+ * sees that the path ends there.
  *
  * A gateway's answer stays a `DispatchGatewayError`, and the caller's account of what its call did
  * joins it in one sentence. Where the request may have reached Dispatch (`mayHaveReachedDispatch`),
@@ -70,20 +71,8 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
  *   Those flags go with the status alone (and the reason of a close), so beside any other field
  *   it also says to send the other changes in a call of their own.
  *
- * Dispatch also refuses a credential scoped to one project each step that writes an issue of
- * another project (403 PROJECT_SCOPE). The CLI keeps no record of its credential's scope, which
- * only `GET /api/v1/whoami` answers, and it sends no request to print a refusal. So where an issue
- * the refusal names, which a flag of the line writes, is in another project than the issue the
- * call names, the line also says that a credential scoped to one project is refused that step,
- * and that a person, or a credential that names no project, must make it
- * (`otherProjectSentence`). The refusal names only the issues that hold the rule, so an issue of
- * another project that it does not name gets no such sentence. A create or a reparent under a
- * parent of another project is refused such a credential before the rule is judged, so the parent
- * that a create's or a reparent's refusal names gets none either.
- *
  * `issue` is absent from `args` when the owner came from `LEGION_ISSUE`, which a command run again
  * without `--issue` resolves the same way, so a line names `--issue` only where the call did.
- * `legionIssue` is that variable, which then tells the project of the issue the call names.
  * Dispatch writes each issue's status into the message too, so a reader that takes no `issues`
  * still sees them. Undefined for any other error, and for a conflict that names no issue, which
  * prints as its message alone.
@@ -91,8 +80,7 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
 export function parentStatusConflictLines(
   error: unknown,
   tool: string,
-  args: Readonly<Record<string, unknown>>,
-  legionIssue?: string
+  args: Readonly<Record<string, unknown>>
 ): string[] | undefined {
   if (!dispatchAnswered(error, 409) || error.code !== "PARENT_STATUS_CONFLICT") return undefined;
   const issues = error.issues ?? [];
@@ -102,7 +90,7 @@ export function parentStatusConflictLines(
   return [
     messageFor(error),
     ...issues.map((issue) => `${issue.key} [${issue.status}] ${issue.title}`),
-    ...nextSteps(tool, args, parents, children, legionIssue),
+    ...nextSteps(tool, args, parents, children),
   ];
 }
 
@@ -111,23 +99,6 @@ const CHILD_FLAGS =
 
 const PARENT_FLAG =
   "dispatch issue-update --status takes --include-parent, which moves each issue above the issue that is not in work to in_progress.";
-
-/** The sentence a line ends with where some of `keys`, issues a refusal names that a flag of the
- *  line writes, are in another project than `named`, the issue the call names: a credential
- *  scoped to one project is refused that step (`parentStatusConflictLines`). Empty where each is
- *  in the project of `named`, and where `named` is no Dispatch issue key (a GitHub issue), whose
- *  project the CLI cannot tell. */
-function otherProjectSentence(named: string | undefined, keys: readonly string[]): string {
-  const project = named === undefined ? undefined : issueProject(named);
-  if (project === undefined) return "";
-  const others = keys.filter((key) => {
-    const other = issueProject(key);
-    return other !== undefined && other !== project;
-  });
-  if (others.length === 0) return "";
-  const one = others.length === 1;
-  return ` ${others.join(", ")} ${one ? "is" : "are"} not in the project of ${named}. A credential scoped to one project is refused a step that writes ${one ? "it" : "them"} (403 PROJECT_SCOPE), so a person, or a credential that names no project, must make that step.`;
-}
 
 /** The call that moves `key` into work, with the clause on what else it moves, as each line of
  *  `nextSteps` that names a parent writes it. */
@@ -142,8 +113,7 @@ function nextSteps(
   tool: string,
   args: Readonly<Record<string, unknown>>,
   parents: readonly string[],
-  children: readonly string[],
-  legionIssue: string | undefined
+  children: readonly string[]
 ): string[] {
   if (tool === "dispatch_issue") {
     return parents.map(
@@ -159,10 +129,7 @@ function nextSteps(
     (field) => field !== "issue" && written[field] !== undefined
   );
   const issue = optionalString(written, "issue");
-  // The issue the call names, which LEGION_ISSUE supplies where the call has no --issue.
-  const named = issueUpdate ? (issue ?? legionIssue) : undefined;
   const childHolds = children.length > 0;
-  const childScope = otherProjectSentence(named, children);
   const status = optionalString(written, "status");
   const parent = optionalString(written, "parent");
   const alone = `--status${status === "done" ? " and --reason" : ""} alone`;
@@ -181,7 +148,7 @@ function nextSteps(
     return [
       ...(childHolds
         ? [
-            `${CHILD_FLAGS} Each goes with ${alone}, so run the status change first, in a call of its own, and the reparent after it: ${reparent}.${childScope}`,
+            `${CHILD_FLAGS} Each goes with ${alone}, so run the status change first, in a call of its own, and the reparent after it: ${reparent}.`,
           ]
         : []),
       ...parents.map(
@@ -196,10 +163,8 @@ function nextSteps(
       ? ` ${subject} with ${alone}, so send the call's other changes in a call of their own.`
       : "";
   return [
-    ...(childHolds ? [`${CHILD_FLAGS}${apart("Each goes")}${childScope}`] : []),
-    ...(parents.length > 0
-      ? [`${PARENT_FLAG}${apart("It goes")}${otherProjectSentence(named, parents)}`]
-      : []),
+    ...(childHolds ? [`${CHILD_FLAGS}${apart("Each goes")}`] : []),
+    ...(parents.length > 0 ? [`${PARENT_FLAG}${apart("It goes")}`] : []),
   ];
 }
 

@@ -365,6 +365,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/me/inbox/dismiss":                                        noObject,
 	"POST /api/v1/projects":                                                noObject,
 	"POST /api/v1/priorities":                                              noObject,
+	"POST /api/v1/deploys":                                                 noObject,
 	"POST /api/v1/delivery/session-groups":                                 noObject,
 	"POST /api/v1/credential-requests/{id}/approve":                        noObject,
 	"POST /api/v1/credential-requests/{id}/deny":                           noObject,
@@ -379,4 +380,5 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/settings/new-issue/_test":                                noObject,
 	"POST /api/v1/writes/_test/slow":                                       noObject,
 	"POST /api/v1/markdown/round-trip":                                     noObject,
+	"POST /api/v1/markdown/file-round-trip":                                noObject,
 }

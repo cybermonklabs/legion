@@ -44,6 +44,7 @@ const PAYLOAD_TYPES = [
   "CommentDeliveryEventPayload",
   "CommentEventPayload",
   "DecisionKeptEventPayload",
+  "DeployRecordedEventPayload",
   "DispatchServerStartedPayload",
   "HandoffRecordedPayload",
   "IssueClaimEventPayload",

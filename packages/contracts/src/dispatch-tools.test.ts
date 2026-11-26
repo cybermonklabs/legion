@@ -206,6 +206,8 @@ const validCalls = {
     verdict: "pass",
     commit: "1111111111111111111111111111111111111111",
   },
+  dispatch_deploy: { repo: "acme/widgets", program: "renderer", commit: "a".repeat(40) },
+  dispatch_deploys: { repo: "acme/widgets", program: "renderer" },
   dispatch_results: { issue: "DSP-1" },
   dispatch_artifact: { issue: "DSP-1", name: "design.pdf", path: "design.pdf" },
   dispatch_read: { issue: "DSP-1" },
@@ -329,6 +331,8 @@ describe("dispatchToolSpecs", () => {
       "dispatch_plan_approve",
       "dispatch_review",
       "dispatch_result",
+      "dispatch_deploy",
+      "dispatch_deploys",
       "dispatch_results",
       "dispatch_artifact",
       "dispatch_read",
@@ -1253,9 +1257,20 @@ describe("dispatchToolSpecs", () => {
       properties: Record<string, { description?: string }>;
     };
 
-    expect(json.properties.priority?.description).toBe(
-      "Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."
-    );
+    expect(json.properties.priority?.description).toMatch(/\bp0\b/);
+  });
+
+  // A priority of 0 needs the p0 scope, which only a person at a browser or a token its maker gave
+  // it to holds, so the description a host shows beside each issue tool's priority, and the
+  // command prints on its --priority row, names the scope before Dispatch refuses the write.
+  test("dispatch_issue and dispatch_issue_update say a priority of 0 needs p0", () => {
+    for (const name of ["dispatch_issue", "dispatch_issue_update"] as const) {
+      const json = z.toJSONSchema(schemaFor(name), { io: "input" }) as {
+        properties: Record<string, { description?: string }>;
+      };
+
+      expect(json.properties.priority?.description, name).toMatch(/\bp0\b/);
+    }
   });
 
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
@@ -1762,12 +1777,14 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
+  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch and the broker refuse and what a build without its route does", () => {
     const { description } = specFor("dispatch_review");
 
     for (const words of [
       "A review records an approval or a changes request in the person's name at that version, so it works only with a token that names a person who holds approve",
       "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
+      "through Cipher's proxy",
+      "a secrets broker that serves no approve capability refuses that trade 400 invalid_request, with a reason that says so",
       "it must be the version the review would record",
       "409 REVIEW_VERSION_MOVED",
       "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",

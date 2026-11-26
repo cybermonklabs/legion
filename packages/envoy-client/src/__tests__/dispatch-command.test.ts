@@ -4,15 +4,18 @@ import { z } from "zod";
 import { fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import {
+  COMMANDS_OUTSIDE_THE_SPECS,
   commandFlags,
   commandHelp,
   commandLine,
   commandName,
+  commandsHelp,
   flagName,
   parseCommand,
   toolForCommand,
 } from "../dispatch-command";
 import { executeDispatchTool } from "../dispatch-execute";
+import { NotUtf8Error } from "../dispatch-file-text";
 import { projectBody } from "./dispatch-command-surface-responses";
 
 const noFiles = {
@@ -61,8 +64,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 43 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(43);
+  test("names map both ways for all 45 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(45);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -290,6 +293,24 @@ describe("the dispatch command surface", () => {
 
   test("an unknown command is refused with the list of commands", () => {
     expect(parseCommand(["isue"], noFiles)).toMatchObject({ kind: "refused" });
+  });
+
+  test("dispatch --help lists every command as a row, and an unknown command's refusal names each", () => {
+    const outside = COMMANDS_OUTSIDE_THE_SPECS.map(({ name }) => name);
+    expect(outside).toEqual(["proxy", "login"]);
+    const names = [...dispatchToolSpecs.map((spec) => commandName(spec.name)), ...outside];
+    const rows = commandsHelp()
+      .split("\n")
+      .flatMap((line) => /^ {2}([a-z][a-z0-9-]*) {2,}\S/.exec(line)?.[1] ?? []);
+    expect(rows).toEqual(names);
+    // Each row of a command outside the specs is the first sentence of its own help.
+    for (const { name, sentence, help } of COMMANDS_OUTSIDE_THE_SPECS) {
+      expect(commandsHelp()).toContain(`  ${sentence}\n`);
+      expect(help().split("\n\n")[1], name).toStartWith(sentence);
+    }
+    const refused = parseCommand(["isue"], noFiles);
+    if (refused.kind !== "refused") throw new Error(`isue was not refused: ${refused.kind}`);
+    expect(refused.problems.join("\n")).toContain(`the commands are: ${names.join(", ")}`);
   });
 
   test("a bare issue key first is the --issue of a command that takes --issue", () => {
@@ -616,6 +637,36 @@ describe("a bare - given to a text flag", () => {
       kind: "refused",
       tool: "dispatch_result",
       problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});
+
+describe("a file flag whose bytes are not UTF-8", () => {
+  const bytes = Uint8Array.of(0x41, 0xff);
+  const notUtf8 = {
+    readText: (path: string): string => {
+      if (path === "bad") throw new NotUtf8Error(bytes);
+      throw new Error(`unexpected read ${path}`);
+    },
+  };
+
+  test("is refused for the bytes, naming the field the flag sets, unless the argv is refused for a field given twice, in either order", () => {
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({ kind: "unstorable", tool: "dispatch_comment", field: "body", bytes });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad", "--body", "x"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body-file and --body both set body"],
+    });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body", "x", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body and --body-file both set body"],
     });
   });
 });

@@ -947,6 +947,18 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// read that did not answer fails and is NAKed.
 	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
 	gone := errors.Is(entryErr, nats.ErrKeyNotFound)
+	// What follows is handed a missing entry and never this read's error, so the hold, the NAK
+	// and the give-up name no cause of their own: the error is logged here. The cache answers a
+	// session it holds with no read and a session the bucket holds no record of is gone, so the
+	// line is a read that did not answer within its bound, never one a healthy bus writes per
+	// message.
+	if entryErr != nil && !gone {
+		cfg.logger.Warn("listener agent delivery could not read the session's record within its bound",
+			slog.String("session_id", sessionID),
+			slog.String("event_id", item.EventID),
+			slog.Duration("bound", deliverySessionReadTimeout),
+			slog.String("error", entryErr.Error()))
+	}
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
 		entryPtr = &entry

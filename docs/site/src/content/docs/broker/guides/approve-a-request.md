@@ -34,9 +34,9 @@ end it, however old that read is. A member may approve a request their own sessi
 one owner of a person's secret may: a group owner is not a second person.
 
 Some requests never reach you. Where the deployment configures a model judge, a request for keys
-whose profile's `proxy` block in the profiles file (`BROKER_PROFILES_FILE`) gives the judge seconds,
-none of them an administrator's or an Anthropic federation key, is the judge's to decide: it grants
-or refuses it, each key against the guidance its owner gave in that block, and while it decides the
+whose `judge` tag gives the judge seconds of them, none of them an administrator's or an Anthropic
+federation key, is the judge's to decide: it grants or refuses it, each key against the guidance
+its owner wrote in its `guidance` tag, and while it decides the
 request is on no list. A request the judge cannot decide comes to you once,
 as an ordinary card. If you open such a request's page while the judge holds it, the page is
 read-only and says the judge is deciding it. A judged grant's **State** line reads
@@ -156,16 +156,18 @@ The page then shows, under **What happened**, what became of each request it dec
 | `not yours to decide; only <approver> may` | The request names someone else, or a group the broker's last read of it does not list you in. |
 | `still pending; it was not decided` | The broker refused your approval though the request names you: the secret's tags now name someone else to approve it ([what an owner change does](/legion/broker/concepts/#approvals)), the session's operator withheld one of its secrets, which only that secret's owner may then approve, and no one while the broker does not serve that secret to that session (it is out of the policy, or a service's), or the secret's `max-grant` became shorter than the lifetime the request asked for, which no one may then approve. You can still deny it. |
 | `still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.` | The secret's `requesters` name a Google group the broker has not read for 2 hours, so it cannot say whether the session's person is on the list ([A group's secret](/legion/broker/concepts/#a-groups-secret)). The request stays pending. Approve it again once the group is read: the broker reads every group within the hour, and at the next five-minute policy read for one whose first read failed. |
-| `unavailable: the secrets broker could not ask Dispatch whether you may see this request, …` | Dispatch did not answer whether you may see the request, so nothing was decided and it stays pending. The line names the request by its record id, not by its secrets. Decide it once Dispatch answers. |
+| `unavailable: the secrets broker could not ask Dispatch whether you may see this request, …` | Dispatch did not answer whether you may see the request, and the broker keeps no earlier answer of Dispatch's that shows it to you, so nothing was decided and it stays pending. The line names the request by its record id, not by its secrets. While Dispatch does not answer, a request whose projects Dispatch last answered public or visible to you, or no project at all, is shown and decided as before. Decide it once Dispatch answers. |
 | `still pending; it was not decided: Dispatch called you a restricted member, who decides no secret request.` | Dispatch called you a restricted member when you decided: someone an access list admitted from outside the deployment's sign-in domain, who is no approver of a secret ([Machine login](/legion/broker/concepts/#machine-login)). Nothing was decided. |
 
 The page shows no request at all to a person Dispatch calls a restricted member: it answers `A
 person Dispatch calls a restricted member is no approver of a secret, and Dispatch calls you one,
 so this page shows you no secret request.` (`403`), whatever request it names. While the broker
-cannot learn from Dispatch within 2 seconds what kind of member you are, it answers `The secrets
-broker could not ask Dispatch whether you may decide secret requests, so this page shows you none,
-nor what became of a decision you made. Try again shortly.` (`503`): a decision you made before
-stands, and the same address shows what became of it once Dispatch answers. Either page lets you
+cannot learn from Dispatch within 2 seconds what kind of member you are, and keeps no earlier
+answer that you are a full member, it answers `The secrets broker could not ask Dispatch whether
+you may decide secret requests, so this page shows you none, nor what became of a decision you
+made. Try again shortly.` (`503`): a decision you made before stands, and the same address shows
+what became of it once Dispatch answers. A person Dispatch last answered a full member is shown
+the page as before while Dispatch does not answer. Either page lets you
 sign in as someone else.
 
 A decision is accepted only from the page itself, within an hour of opening it, while your sign-in
