@@ -30,6 +30,7 @@ import {
   type MainHolds,
   mainHolds,
   READER,
+  readDecisions,
   seedAskToday,
 } from "./dashboard-seed";
 import { literal } from "./dashboard-support";
@@ -46,6 +47,7 @@ import {
 } from "./inbox-pane";
 import { inboxAt } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
+import { specBlockRef } from "./issue-layout-seed-text";
 import { viewportAt } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -404,31 +406,15 @@ test("the answer box stands in place on every surface", async ({ page }) => {
   }
 });
 
-/** The words of `words` that the page breaks over two lines: each word's own text rectangles,
- *  read where it stands, sit on more than one line. A word that fits its line is one rectangle. */
-async function brokenWords(words: Locator): Promise<string[]> {
-  return words.evaluate((element) => {
-    const broken: string[] = [];
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      for (const match of (node.textContent ?? "").matchAll(/\S+/g)) {
-        const range = document.createRange();
-        range.setStart(node, match.index);
-        range.setEnd(node, match.index + match[0].length);
-        const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
-        if (lines.size > 1) broken.push(match[0]);
-      }
-    }
-    return broken;
-  });
-}
-
-/** The words of `words` that run past its own box's left or right edge: a word longer than the
- *  room its line leaves, which the page neither breaks nor wraps, so it stands over whatever is
- *  drawn beside it. */
-async function overrunWords(words: Locator): Promise<string[]> {
+/** The words of `words` that the page draws wrong, each read by its own text rectangles where it
+ *  stands. `broken`: a word the page breaks over two lines, whose rectangles sit on more than one
+ *  line; a word that fits its line is one rectangle. `overrun`: a word that runs past the box of
+ *  `words` itself on the left or the right, a word longer than the room its line leaves, which the
+ *  page neither breaks nor wraps, so it stands over whatever is drawn beside it. */
+async function wordFaults(words: Locator): Promise<{ broken: string[]; overrun: string[] }> {
   return words.evaluate((element) => {
     const box = element.getBoundingClientRect();
+    const broken: string[] = [];
     const overrun: string[] = [];
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -437,14 +423,21 @@ async function overrunWords(words: Locator): Promise<string[]> {
         range.setStart(node, match.index);
         range.setEnd(node, match.index + match[0].length);
         const rects = [...range.getClientRects()];
+        if (new Set(rects.map((rect) => Math.round(rect.top))).size > 1) broken.push(match[0]);
         if (rects.some((rect) => rect.left < box.left - 1 || rect.right > box.right + 1)) {
           overrun.push(match[0]);
         }
       }
     }
-    return overrun;
+    return { broken, overrun };
   });
 }
+
+/** The agent both whole-words rows write as. */
+const WHOLE_WORDS_AGENT = {
+  actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+  as: "agent",
+} as const;
 
 // The comments margin is a column about 384 px wide at a desktop width, where the first line's
 // end (the kind, an agent's name control and the time) stands beside the words. The words must
@@ -463,10 +456,7 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   const asked = await createAsk(
     issue.key,
     { anchor: { artifact: "spec", quote: "reseed" }, question },
-    {
-      actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
-      as: "agent",
-    }
+    WHOLE_WORDS_AGENT
   );
   await wide(page);
   await page.goto(`/issues/${issue.key}/spec`);
@@ -474,28 +464,22 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   const words = body.getByText(question, { exact: true }).first();
   await expect(words).toBeVisible();
   expect(
-    await brokenWords(words),
+    (await wordFaults(words)).broken,
     "the margin breaks a word of the question over two lines"
   ).toEqual([]);
 });
 
 /** Whether the issue's decisions read holds the agent's decision `heading` with its tie indexed,
- *  as the seed waits for its own (`awaitDecisions` in `dashboard-seed.ts`): on a bare main the
- *  bare member waiting for review with a link, and where decisions are nodes the entry of the
- *  `decision` block `block`. */
+ *  as the seed reads and waits for its own (`readDecisions` and `awaitDecisions` in
+ *  `dashboard-seed.ts`): on a bare main the bare member waiting for review with a link, and where
+ *  decisions are nodes the entry of the `decision` block `block`. */
 async function decisionWritten(key: string, heading: string, block: string): Promise<boolean> {
-  if (holds === undefined) throw new Error("The server probe did not run");
-  const read = await getIssueDecisions(key);
-  if (!holds.decisionsAreNodes) {
-    return (read.decisions ?? []).some(
-      (decision) =>
-        decision.heading === heading && decision.waiting_review && (decision.links ?? []).length > 0
-    );
-  }
-  return (
-    "entries" in read &&
-    Array.isArray(read.entries) &&
-    read.entries.some((entry) => entry.document?.block_id === block)
+  const main = holds;
+  if (main === undefined) throw new Error("The server probe did not run");
+  return (await readDecisions(key, main)).some((decision) =>
+    main.decisionsAreNodes
+      ? decision.id === block
+      : decision.heading === heading && decision.waiting
   );
 }
 
@@ -511,17 +495,13 @@ test("in today's comments margin an agent's decision keeps each word of its head
   if (holds === undefined) throw new Error("The server probe did not run");
   const heading = "Keep the internationalization troubleshooting section in the runbook";
   const why = "Chosen so a reader finds each fix where they look for it.";
-  const asAgent = {
-    actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
-    as: "agent",
-  } as const;
   await createProject({ key: "WHOLE", name: "Whole words" });
   const issue = await createIssue({
     project: "WHOLE",
     spec: ":::requirement{#r1}\nThe runbook keeps its troubleshooting section.\n:::\n",
     title: "Whole words",
   });
-  const shaped = `dispatch://${issue.key}/spec#b-r1`;
+  const shaped = specBlockRef(issue.key, "r1");
   // The decision as the seed writes its own on each main R27 names (`writeDecisions` in
   // `dashboard-seed.ts`): a `decision` block of the spec that shapes r1, where the server refuses
   // a new `decisions.md` with `409 DECISIONS_ARE_NODES`, and else a section of a `decisions.md`
@@ -538,13 +518,13 @@ test("in today's comments margin an agent's decision keeps each word of its head
           },
         ],
       },
-      asAgent
+      WHOLE_WORDS_AGENT
     );
   } else {
     await createIssueArtifact(
       issue.key,
       { content: `## ${heading}\n\n${why} Shapes ${shaped}.\n`, name: "decisions.md" },
-      asAgent
+      WHOLE_WORDS_AGENT
     );
   }
   await expect
@@ -557,12 +537,13 @@ test("in today's comments margin an agent's decision keeps each word of its head
   const card = margin(page).locator(CARD).filter({ hasText: heading }).first();
   const words = card.getByRole("heading", { exact: true, name: heading });
   await expect(words).toBeVisible();
+  const faults = await wordFaults(words);
   expect(
-    await brokenWords(words),
+    faults.broken,
     "the margin breaks a word of the decision's heading over two lines"
   ).toEqual([]);
   expect(
-    await overrunWords(words),
+    faults.overrun,
     "a word of the decision's heading runs past its line, under the kind and the time beside it"
   ).toEqual([]);
 });

@@ -20,9 +20,9 @@ import type { CheckState, StatementState } from "./page-words";
  * statement by these alone, so each draws the same Met, Unknown and Out of date (R6, R14).
  *
  * They hold no React, make no request, and import nothing of the tree's model - `tree-drafts.ts`,
- * `useIssueTree.ts` and `buildIssueTree`'s module - not even its types, so Dashboard reads the
- * one rule the tree reads without carrying the tree in its chunk (R14), and a part that reads one
- * of them, as `RowText.tsx` reads `titleReading`, carries none of the tree's model in its imports.
+ * `issue-tree.ts`, `useIssueTree.ts` - not even its types, so Dashboard reads the one rule the
+ * tree reads without carrying the tree in its chunk (R14), and a part that reads one of them, as
+ * `RowText.tsx` reads `titleReading`, carries none of the tree's model in its imports.
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -303,7 +303,7 @@ export function statementState(
  *  so nothing in it is parsed, since a title is no markdown: a parse would read
  *  `1. Migrate the table` as a list item with no label, and leave out the marks of
  *  ``Add `x` flag``. The line of the issue and of a child issue is projected from it
- *  (the tree model's `lineReading`), and so is the name of a chip naming an issue
+ *  (`issue-tree.ts`'s `lineReading`), and so is the name of a chip naming an issue
  *  (`treeContext`), so a row and a chip read one title by one rule. */
 export function titleReading(title: string): DisplayTree {
   return {

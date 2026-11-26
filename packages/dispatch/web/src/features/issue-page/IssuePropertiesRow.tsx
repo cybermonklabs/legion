@@ -85,11 +85,8 @@ export function IssuePropertiesRow({
   // events that name its key, never by its age (`EVENT_FRESH`), and none is the issue's whole
   // comments list: a Change is matched to its decision by its anchor, with no blocks read.
   const waiting = useWaitingItems(issue.key).items;
-  // The document each approval request that waits on the reader is on, by artifact id
-  // (`requestedDocument`): the ask's own, else the one its approval names by slug, else the
-  // issue's spec. The header's approval control for each carries Approve and Request changes, and
-  // is where the count puts the focus when nothing else waits. A stale approval is no request and
-  // moves no control.
+  // The document each approval request that waits on the reader is on (`requestedDocument`). A
+  // stale approval is no request and moves no control.
   const requested = waiting.flatMap((item) =>
     item.kind === "approval" ? [requestedDocument(item.ask, issue)] : []
   );

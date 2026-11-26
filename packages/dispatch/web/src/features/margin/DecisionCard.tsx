@@ -190,7 +190,7 @@ const decisionKey = (item: DecisionMarginItem): string => item.id;
  * is two cards, which both read `["decisions", <key>]`, so a write from one settles both. The
  * one read the margin sends of its own is the names of the statements the cards' decisions
  * shaped, which their read holds no words for: one for the whole list (`useStatementExcerpts`).
- * Where it fails, the list says so above its cards as the margin says of its other failed reads
+ * Where it fails, the list says so below its cards as the margin says of its other failed reads
  * (`QueryError`), and each card still draws each statement as a link.
  */
 export function DecisionList({
@@ -236,12 +236,6 @@ export function DecisionList({
   }
   return (
     <>
-      {namesFailure === undefined ? null : (
-        <QueryError
-          message="Could not load the statements these decisions shaped."
-          {...namesFailure}
-        />
-      )}
       <section
         aria-label="Decisions"
         className="relative"
@@ -266,6 +260,12 @@ export function DecisionList({
           </div>
         ))}
       </section>
+      {namesFailure === undefined ? null : (
+        <QueryError
+          message="Could not load the statements these decisions shaped."
+          {...namesFailure}
+        />
+      )}
     </>
   );
 }

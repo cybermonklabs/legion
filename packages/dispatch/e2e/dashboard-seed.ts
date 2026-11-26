@@ -567,7 +567,10 @@ interface DecisionRead {
 
 /** The issue's decisions: the bare member's `decisions`, or the `entries` of a main where
  *  decisions are nodes, read for the fields the seed waits on. */
-async function readDecisions(key: string, holds: MainHolds): Promise<readonly DecisionRead[]> {
+export async function readDecisions(
+  key: string,
+  holds: MainHolds
+): Promise<readonly DecisionRead[]> {
   const read = await getIssueDecisions(key);
   if (!holds.decisionsAreNodes) {
     return (read.decisions ?? []).map((decision) => ({

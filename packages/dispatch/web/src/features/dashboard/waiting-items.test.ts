@@ -362,8 +362,8 @@ function requestNaming(artifactId: string | null, slug: string): IssueAskRow {
 }
 
 // The document an approval request is on, which the header's approval control for it is drawn on
-// (`requestedDocument`), as `main`'s count read it (`waitingOnReader`'s `approvals`): the ask's
-// own document, else the one its approval names by slug, else the spec.
+// (`requestedDocument`), as `main`'s count read it: the ask's own document, else the one its
+// approval names by slug, else the spec.
 describe("the document an approval request is on", () => {
   test("a request with no artifact_id and no slug the issue holds is on the spec", () => {
     expect(APPROVAL.artifact_id).toBeNull();
