@@ -4,8 +4,8 @@ body: |-
   began from, as before, or a non-empty list of the texts it may go over: that one and the writer's
   own earlier writes that may have landed unseen. The write lands where the priority stores any of
   them, and is refused 409 PRIORITY_CHANGED, naming the stored text, where it stores none; another
-  person's text is never among them. An empty list, or a list holding anything but strings, is
-  refused 400 PRIORITY_INPUT. A build from before the list refuses one 400 INVALID_JSON, a verdict
+  person's text is never among them. An empty list, or a list holding anything but a string - a null
+  among them - is refused 400 PRIORITY_INPUT. A build from before the list refuses one 400 INVALID_JSON, a verdict
   that writes nothing, so no write goes over another person's change while two builds serve.
 time: 2026-11-26T19:35:25Z
 custom:

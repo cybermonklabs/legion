@@ -191,6 +191,21 @@ func TestPriorityPatchExpected(t *testing.T) {
 				map[string]any{"description": "D6", "expected": map[string]any{"description": []any{"D5", 1}}},
 				"expected.description is the description an edit started from, a string, or a list",
 			},
+			// A list naming null is no list of strings: read as a list of strings it would name
+			// "", the text of a description nobody has written, which a writer who never read
+			// the priority could then write over.
+			"a list holding a null": {
+				map[string]any{"description": "D6", "expected": map[string]any{"description": []any{nil}}},
+				"expected.description is the description an edit started from, a string, or a list",
+			},
+			"a list holding a null beside her texts": {
+				map[string]any{"description": "D6", "expected": map[string]any{"description": []any{"D5", nil, "D4"}}},
+				"expected.description is the description an edit started from, a string, or a list",
+			},
+			"a title list holding a null": {
+				map[string]any{"title": "Ship", "expected": map[string]any{"title": []any{nil, "Ship it"}}},
+				"expected.title is the title an edit started from, a string, or a list",
+			},
 			"a number": {
 				map[string]any{"title": "Ship", "expected": map[string]any{"title": 7}},
 				"expected.title is the title an edit started from, a string, or a list",
@@ -242,6 +257,51 @@ func TestPriorityPatchExpected(t *testing.T) {
 		if code, text := refusalOf(t, missing); missing.Code != http.StatusNotFound || code != codePriorityNotFound {
 			t.Fatalf("an expected on an id no priority carries: status=%d code=%s error=%q, want 404 %s",
 				missing.Code, code, text, codePriorityNotFound)
+		}
+	})
+
+	// The reach a list holding a null would have: a priority whose description nobody has
+	// written stores "", so a writer who never read it, naming a null the server read as "",
+	// would write over it. Each shape of that write is refused and the description stays empty.
+	// A writer who did read it names "" itself, and that write lands: the precondition guards
+	// what the server holds, not who read it, and "" is the value one read answers.
+	t.Run("an empty description is not writable by a client that never read it", func(t *testing.T) {
+		const empty = "unwritten-description"
+		createTestPriority(t, handler, map[string]any{"id": empty, "title": "No description yet"}, "alice")
+		if stored := readTestPriority(t, handler, empty).Description; stored != "" {
+			t.Fatalf("the new priority's description is %q, want it empty", stored)
+		}
+		for _, test := range []struct {
+			what string
+			over any
+		}{
+			{"a list holding a null", []any{nil}},
+			{"a list holding a null beside a text", []any{"Never stored", nil}},
+			{"a list of two nulls", []any{nil, nil}},
+		} {
+			body := map[string]any{
+				"description": "Written by a stranger",
+				"expected":    map[string]any{"description": test.over},
+			}
+			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/"+empty, body, "bob")
+			code, text := refusalOf(t, response)
+			if response.Code != http.StatusBadRequest || code != codePriorityInput {
+				t.Fatalf("%s: status=%d code=%s error=%.300q, want 400 %s",
+					test.what, response.Code, code, text, codePriorityInput)
+			}
+			if stored := readTestPriority(t, handler, empty).Description; stored != "" {
+				t.Fatalf("%s wrote %q over the empty description", test.what, stored)
+			}
+		}
+		// Read first, and the same write lands: she names the "" a read answered.
+		written := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/"+empty,
+			map[string]any{"description": "Written by a reader", "expected": map[string]any{"description": []any{""}}}, "bob")
+		if code, text := refusalOf(t, written); written.Code != http.StatusOK {
+			t.Fatalf("a write naming the empty description it read: status=%d code=%s error=%.300q, want 200",
+				written.Code, code, text)
+		}
+		if stored := readTestPriority(t, handler, empty).Description; stored != "Written by a reader" {
+			t.Fatalf("the description is %q after the write that named it, want it written", stored)
 		}
 	})
 

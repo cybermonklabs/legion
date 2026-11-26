@@ -331,8 +331,14 @@ type patchPriorityExpected struct {
 
 // expectedValues reads one attribute of a patch's expected: nil where it is absent or null, the
 // one value of a string, and the values of a list of strings. It answers why it refuses anything
-// else - a list naming no value, or holding something that is not a string - naming where.
+// else - a list naming no value, or holding anything but a string - naming where. Each element
+// is read on its own, and a null element refused by its own bytes: unmarshalling a list straight
+// into []string reads null as "", and so does unmarshalling the element, since taking null into
+// a value that is no pointer is a no-op that answers no error (encoding/json). A write naming
+// [null] would then name "", the description of a priority nobody has written, and go over it
+// though its writer never read it.
 func expectedValues(name string, raw json.RawMessage) ([]string, string) {
+	refuses := fmt.Sprintf("expected.%s is the %s an edit started from, a string, or a list of the strings it may go over", name, name)
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, ""
@@ -341,14 +347,25 @@ func expectedValues(name string, raw json.RawMessage) ([]string, string) {
 	if err := json.Unmarshal(trimmed, &one); err == nil {
 		return []string{one}, ""
 	}
-	var many []string
-	if err := json.Unmarshal(trimmed, &many); err != nil {
-		return nil, fmt.Sprintf("expected.%s is the %s an edit started from, a string, or a list of the strings it may go over", name, name)
+	var elements []json.RawMessage
+	if err := json.Unmarshal(trimmed, &elements); err != nil {
+		return nil, refuses
 	}
-	if len(many) == 0 {
+	if len(elements) == 0 {
 		return nil, fmt.Sprintf("expected.%s names no %s: a list holds at least one value the write may go over", name, name)
 	}
-	return many, ""
+	values := make([]string, 0, len(elements))
+	for _, element := range elements {
+		var value string
+		if bytes.Equal(bytes.TrimSpace(element), []byte("null")) {
+			return nil, refuses
+		}
+		if err := json.Unmarshal(element, &value); err != nil {
+			return nil, refuses
+		}
+		values = append(values, value)
+	}
+	return values, ""
 }
 
 // patchPriority is PATCH /api/v1/priorities/{id}: the attributes the body names, and the move
