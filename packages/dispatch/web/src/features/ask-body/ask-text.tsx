@@ -70,6 +70,12 @@ export const markdownText: AskTextRenderer = (text) => {
  *  other host hands none, and the body then draws no mark of its own. */
 export type TextMarks = Pick<PageWords, "authorText" | "pageChrome">;
 
+/** Whose colours the ask body's children and its settled record draw (`AskBodyProps.palette`):
+ *  `main`'s, as every surface of today's pages and the Inbox draws them, or the new issue page's
+ *  (`theme/classes.ts`' page tokens, dispatch://INFRA-3940 R13). Dashboard on the new page hands
+ *  `page`; every other host hands none. */
+export type AskPalette = "main" | "page";
+
 /** `value` inside the mark of a value, where the host hands the marks, and as it is where it
  *  hands none, so a host that hands none draws the same elements it always drew. */
 export function authored(marks: TextMarks | undefined, value: ReactNode): ReactNode {

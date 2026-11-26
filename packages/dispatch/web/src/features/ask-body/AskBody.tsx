@@ -59,7 +59,7 @@ import {
   ASK_FORM_WORDS,
   ASK_LINE_WORDS,
 } from "./ask-body-words";
-import { type AskTextRenderer, authored, type TextMarks } from "./ask-text";
+import { type AskPalette, type AskTextRenderer, authored, type TextMarks } from "./ask-text";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 
@@ -70,9 +70,10 @@ import { EarlierApproval } from "./EarlierApproval";
  * page's warning, its waiting orange; the answer box is the page's field, which keeps `main`'s
  * focus rule, the application's one focus indicator; Answer and Ask back instead are filled with
  * the ink, as the page's one filled control is, and the other actions are its header control's
- * rule and muted words. What the body's children draw - the options, the earlier approval, the
- * unsent answer's box (`UnsentBox`) - is theirs, and the card's frame is the card's own
- * (`inbox/AskCard.tsx`).
+ * rule and muted words. What the body's children draw is theirs: the options, the earlier
+ * approval, the anchor, Decline to answer and the record in the palette the host hands them
+ * (`AskBodyProps.palette`), the unsent answer's box (`UnsentBox`) in its own, and the card's
+ * frame is the card's own (`inbox/AskCard.tsx`).
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -185,6 +186,14 @@ export interface AskBodyProps {
   /** The project document that owns an ask whose read lacks `document`
    *  (`AskCardProps.owner`), where a file pasted into the answer goes. */
   owner?: { project: string; slug: string };
+  /** The palette the body's children and its settled record draw in (`AskPalette`): the
+   *  options, the earlier approval, the anchor's link and quote, Decline to answer and its
+   *  dialog, and the record. The body's own elements take the page's colours inside
+   *  `NoTooltips` whatever the host hands (`ON_PAGE`), so today's Dashboard, which is drawn
+   *  there, keeps `main`'s children while the new page's Dashboard hands `page` and draws every
+   *  element of the body in the page's colours (dispatch://INFRA-3940 R13). No other host hands
+   *  it, so every other surface draws the elements it always drew. */
+  palette?: AskPalette;
   /** The caller's renderer of every text of the ask the body draws (R17, `AskText`): the
    *  question, the options' labels and descriptions, and in the record the answer, the earlier
    *  answers, the reason a question was closed and the question's earlier wordings. */
@@ -228,6 +237,7 @@ export function AskBody({
   marks,
   onAnswered,
   owner,
+  palette = "main",
   renderText,
   urgencyWord,
 }: AskBodyProps): ReactNode {
@@ -533,6 +543,7 @@ export function AskBody({
           frame={frame}
           markRef={markRecord}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
+          palette={palette}
           renderText={renderText}
         />
         {unsentAnswer === "" ? null : (
@@ -663,7 +674,12 @@ export function AskBody({
           spec's own placement), with the diff from that version behind Show diff; a first
           request carries no earlier approval, and EarlierApproval renders nothing for it. */}
       {displayedAsk.approval === undefined ? null : (
-        <EarlierApproval agentNames={agentNames} approval={displayedAsk.approval} marks={marks} />
+        <EarlierApproval
+          agentNames={agentNames}
+          approval={displayedAsk.approval}
+          marks={marks}
+          palette={palette}
+        />
       )}
       {/* Whose turn it is, the one part of the ask's provenance a reader acts on, on its own line
           under the question. An agent's name is what gives up width. */}
@@ -730,6 +746,7 @@ export function AskBody({
                   if (!refusing) selectRealOption(option.label);
                 }}
                 option={option}
+                palette={palette}
                 renderText={renderText}
                 source={source}
               />
@@ -744,6 +761,7 @@ export function AskBody({
                   if (!refusing) toggleOther();
                 }}
                 option={{ label: ASK_FORM_WORDS.other }}
+                palette={palette}
                 renderText={renderText}
                 source={source}
               />
@@ -783,6 +801,7 @@ export function AskBody({
           decline={decline}
           marks={marks}
           onDeclined={onAnswered}
+          palette={palette}
         />
       ) : null}
     </>
@@ -797,10 +816,11 @@ export function AskBody({
         ask={displayedAsk}
         inBlock={inBlock}
         marks={marks}
+        palette={palette}
         quoteSpacing="roomy"
         tone="surface"
       />
-      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
+      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} palette={palette} />
       {inBlock ||
       displayedAsk.block_id === undefined ||
       displayedAsk.block_id === null ||

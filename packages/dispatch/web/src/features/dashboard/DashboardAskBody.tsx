@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { AskWithTrees, IssueAskRow } from "../../api/types";
 import { AskBody } from "../ask-body/AskBody";
+import type { AskPalette } from "../ask-body/ask-text";
 import { answerAsk, createReply, declineAsk, getAskThread } from "../ask-body/ask-writes";
 import { useAskAnswerForm } from "../inbox/useAskAnswerForm";
 import { authorText } from "../issue-page/page-structure";
@@ -12,8 +13,16 @@ import { rowText, textMarks } from "./row-text";
  *  asks, or the thread's own read, under the key the form reads a thread by - so the form reads
  *  no thread of its own. Agents are named from the registry the cache holds, which starts no
  *  read, the urgency word stands beside the kind, where no card's notch says it, and the body
- *  marks its own words apart from its values, as Dashboard's own parts do (`textMarks`). */
-export function DashboardAskBody({ ask }: { ask: IssueAskRow | AskWithTrees }): ReactNode {
+ *  marks its own words apart from its values, as Dashboard's own parts do (`textMarks`). The
+ *  body's children and its record draw in `palette`: the page's on the new page, and `main`'s,
+ *  as they always drew, on today's. */
+export function DashboardAskBody({
+  ask,
+  palette = "main",
+}: {
+  ask: IssueAskRow | AskWithTrees;
+  palette?: AskPalette;
+}): ReactNode {
   const form = useAskAnswerForm({
     answer: answerAsk,
     ask,
@@ -37,6 +46,7 @@ export function DashboardAskBody({ ask }: { ask: IssueAskRow | AskWithTrees }): 
         form={form}
         frame="card"
         marks={textMarks}
+        palette={palette}
         renderText={rowText}
         urgencyWord
       />
